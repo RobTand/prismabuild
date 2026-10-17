@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 import pbwait  # noqa: E402
 
@@ -83,13 +84,13 @@ def test_a_withdrawal_after_a_retry_is_readable(
     path = withdrawn.item_path(pool.WITHDRAWN, KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
 
-    summary = pbrun.action_client.outcome_summary(withdrawn, path, record)
+    summary = submit_core.action_client.outcome_summary(withdrawn, path, record)
     assert summary["status"] == "withdrawn"
     assert summary["withdrawn_by"] == "rob"
     assert summary["adopted"] is None
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001, raising=False)
-    assert pbrun.action_client.report_pool_outcome(withdrawn, KEY, wait_s=1.0) == pbrun.action_client.WITHDRAWN_EXIT
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001, raising=False)
+    assert submit_core.action_client.report_pool_outcome(withdrawn, KEY, wait_s=1.0) == submit_core.action_client.WITHDRAWN_EXIT
     assert pbwait._from_ending(withdrawn, (path, record))["status"] == "withdrawn"
 
 

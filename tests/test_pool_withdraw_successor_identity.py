@@ -1,4 +1,5 @@
 """A withdrawal already superseded cannot mutate the successor claim (#318)."""
+from prismabuild import submission as submit_core
 import pytest
 from prismabuild import pool, resource_scope
 from test_pool_resource_scope import scoped, _process
@@ -187,6 +188,8 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     import pbstatus
     import pbwait
     queue = AdmittedQueueFixture(
@@ -210,7 +213,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     assert queue.claim() is None
     assert queue.find_key(KEY[:12]) == KEY
     assert pbwait.resolve_key(queue, KEY[:12], lane_root=tmp_path / "slurm") == KEY
-    path, ending = pbrun.action_wait.await_ending(
+    path, ending = submit_core.action_wait.await_ending(
         queue, KEY, wait_s=0, generation=original["published_unix"])
     assert ending["status"] == "withdrawn"
     assert path == queue.withdrawal_decision_path(original)

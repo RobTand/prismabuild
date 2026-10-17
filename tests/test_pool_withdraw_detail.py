@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -94,10 +95,10 @@ def test_pbrun_does_not_print_the_failed_attempts_stderr_for_a_withdrawal(
 
     retried.withdraw(KEY, by="rob", reason="not needed", signal_child=False)
 
-    code = pbrun.action_client.report_pool_outcome(retried, KEY, wait_s=1.0)
+    code = submit_core.action_client.report_pool_outcome(retried, KEY, wait_s=1.0)
     printed = capsys.readouterr()
 
-    assert code == pbrun.action_client.WITHDRAWN_EXIT
+    assert code == submit_core.action_client.WITHDRAWN_EXIT
     assert "withdrawn by rob" in printed.err
     assert "boom" not in printed.err
     assert "boom" not in printed.out
