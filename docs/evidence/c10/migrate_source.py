@@ -120,6 +120,9 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
             container = shape(node.value, enclosing)
             if isinstance(container, dict):
                 return container.get(node.slice.value, False)
+            if (isinstance(container, tuple) and isinstance(node.slice.value, int)
+                    and -len(container) <= node.slice.value < len(container)):
+                return container[node.slice.value]
         if isinstance(node, ast.Attribute):
             container = shape(node.value, enclosing)
             if isinstance(container, dict) and "@class" in container:
@@ -131,6 +134,12 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 return {"@class": owning_class(enclosing)}
             return values.get((enclosing, node.id), returns.get(node.id, False))
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {"values", "items"}:
+                container = shape(node.func.value, enclosing)
+                if isinstance(container, dict) and not any(k.startswith("@") for k in container
+                                                          if isinstance(k, str)):
+                    return (tuple(container.values()) if node.func.attr == "values" else
+                            tuple((False, value) for value in container.values()))
             if isinstance(node.func, ast.Name) and node.func.id in classes:
                 return {"@class": node.func.id}
             if isinstance(node.func, ast.Name) and node.func.id == "type" and node.args:
@@ -171,6 +180,17 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     bind(target, shape(node.value, enclosing), enclosing)
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                collection = shape(node.iter, enclosing)
+                if (isinstance(collection, tuple) and collection
+                        and all(item == collection[0] for item in collection)):
+                    bind(node.target, collection[0], enclosing)
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append" and len(node.args) == 1):
+                collection = shape(node.func.value, enclosing)
+                item = shape(node.args[0], enclosing)
+                if isinstance(collection, tuple) and item not in collection:
+                    bind(node.func.value, (*collection, item), enclosing)
             if (isinstance(node, (ast.Attribute, ast.Subscript, ast.Name, ast.Call))
                     and shape(node, enclosing) is True):
                 aliases[enclosing].add(spelling(node))
