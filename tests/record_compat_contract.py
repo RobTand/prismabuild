@@ -100,7 +100,8 @@ def protocol_group(kind):
         return "core"
     if owner == "prismabuild.pool":
         return "queue"
-    if owner in ("prismabuild.produced_output", "prismabuild.produced_spool"):
+    if owner in ("prismabuild.produced_output", "prismabuild.produced_spool",
+                 "prismabuild.batch_ledger", "prismabuild.output_contract"):
         return "outputs"
     if owner in ("prismabuild.residency_map", "prismabuild.reader_lease", "prismabuild.storage_tiers",
                  "prismabuild.resident_sets", "prismabuild.local_resident", "prismabuild.residency_plan"):
