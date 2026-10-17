@@ -69,6 +69,7 @@ def staged_replay_capture(checkout: Path, data: Path):
 
     actual_fragment, actual_material = residency_map.write_fragment, reader_lease.write_material
     actual_unlink = Path.unlink
+    actual_move_record = queue.record_move
 
     def fragment(where, document):
         path = actual_fragment(where, document)
@@ -93,6 +94,17 @@ def staged_replay_capture(checkout: Path, data: Path):
                            "path": str(path).replace(str(data), "$data")})
         return result
 
+    def record_move(key, record):
+        path = actual_move_record(key, record)
+        if phase[0] == "adoption":
+            filed = json.loads(path.read_bytes())
+            events.append({"phase": phase[0], "op": "complete_adoption_receipt",
+                "path": str(path).replace(str(data), "$data"),
+                "record": normalized({k: v for k, v in filed.items()
+                                      if k not in ("host", "unix")})})
+        return path
+
+    queue.record_move = record_move
     residency_map.write_fragment, reader_lease.write_material, Path.unlink = fragment, material, unlink
     try:
         stage_receipt = stage_move.move(fixture._stage_args(
@@ -158,6 +170,7 @@ def staged_replay_capture(checkout: Path, data: Path):
         assert queue.tier(fixture.RAM_TIER).holdings(fixture.RAM_MOVER) == {}
         assert all(not p.exists() for p in fixture._named(data / "stage", body) + fixture._named(ram, body))
     finally:
+        queue.record_move = actual_move_record
         residency_map.write_fragment, reader_lease.write_material, Path.unlink = actual_fragment, actual_material, actual_unlink
     return {"events": events, "wire_documents": wires,
             "facts": {"stage_bytes": stage_receipt["bytes_staged"], "ram_bytes": ram_receipt["bytes_staged"],
@@ -207,14 +220,24 @@ def staged_replay_cli():
         new_order = [e["op"] for e in current["events"] if e["phase"] == "egress-stage"]
         assert old_order == ["unlink_fragment", "unlink_retiring", "unlink_material"]
         assert new_order == ["unlink_fragment", "unlink_material", "unlink_retiring"]
+        old_adoption = [e["op"] for e in old["events"] if e["phase"] == "adoption"]
+        new_adoption = [e["op"] for e in current["events"] if e["phase"] == "adoption"]
+        assert old_adoption == ["material", "fragment", "unlink_fragment", "unlink_material",
+                                "complete_adoption_receipt"]
+        assert new_adoption == ["material", "fragment", "complete_adoption_receipt",
+                                "unlink_fragment", "unlink_material"]
         def comparable(capture):
             events = capture["events"]
-            return [e for e in events if e["phase"] != "egress-stage"] + sorted(
-                (e for e in events if e["phase"] == "egress-stage"), key=lambda e: e["op"])
-        assert comparable(old) == comparable(current), "wire or ordered effects changed outside the withdrawal repair"
+            return ([e for e in events if e["phase"] != "egress-stage"
+                     and e["op"] != "complete_adoption_receipt"]
+                    + [e for e in events if e["op"] == "complete_adoption_receipt"]
+                    + sorted((e for e in events if e["phase"] == "egress-stage"),
+                             key=lambda e: e["op"]))
+        assert comparable(old) == comparable(current), "wire or ordered effects changed outside the two declared order repairs"
         assert old["facts"] == current["facts"]
         result = {"base": STAGED_REPLAY_BASE, "wire_and_effects_equal": True,
                   "explicit_withdrawal_change": {"old": old_order, "current": new_order},
+                  "explicit_adoption_completion_change": {"old": old_adoption, "current": new_adoption},
                   "old": old, "current": current}
         assert executable.read_bytes() == executable_bytes
         result["runtime"] = {
