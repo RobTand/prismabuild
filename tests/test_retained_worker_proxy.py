@@ -375,7 +375,7 @@ def test_real_contained_launch_uses_retained_proxy(
     if affinity:
         cpu = min(os.sched_getaffinity(0))
         tiers = {"preferred": [cpu], "fallback": []}
-        pool.record_store._write_json(
+        pool.immutable_files.write_json_atomic(
             queue.ledger().base / "cpu-map.json", tiers)
         item["cpu_allocation"] = queue.ledger().cpu_allocation(
             item["action_key"], tiers)

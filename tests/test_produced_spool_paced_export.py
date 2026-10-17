@@ -35,7 +35,7 @@ def offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, FILL: mb_s}
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
 
 
 def sealed(spool, batch="b1") -> dict:
@@ -262,7 +262,7 @@ def test_new_explicit_paced_export_cannot_guess_an_unresolved_price(tmp_path, da
         assert isinstance(record, dict)
         values = {"zero": 0, "negative": -1, "bool": True, "string": "7", "float": 7.0}
         record["tokens"] = [] if damage == "tokens-shape" else {FILL: values[damage]}
-        pool.record_store._write_json(path, record)
+        pool.immutable_files.write_json_atomic(path, record)
     refuse_unpriced_export_then_retry(spool, source, destination, entries, paced=True)
 
 
@@ -306,7 +306,7 @@ def test_a_sealed_export_replays_after_its_price_disappears(tmp_path, original_p
     tier = pool.record_store.read_document(path)
     assert isinstance(tier, dict)
     tier.pop("tokens", None)
-    pool.record_store._write_json(path, tier)
+    pool.immutable_files.write_json_atomic(path, tier)
     assert ps.export_fill(spool.queue, fx.TIER, spool.owner) is None
     # Republish an absent row from its immutable action, not today's price or mode.
     spool.queue.records.item_path(pool.record_store.READY, first["export_key"]).unlink()
