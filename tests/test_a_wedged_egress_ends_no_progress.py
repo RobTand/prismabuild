@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -163,7 +164,7 @@ def _second_window(base: Path) -> tuple[Path, int]:
     total = 3 * MIB
     manifest = base / "gate-manifest.json"
     manifest.write_text(json.dumps({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
         "annotations": {"phases": [{"name": "layer-0", "bytes": total,
                                     "cumulative_bytes": total}]},
         "mount_prefix": str(mount), "entries": listed,

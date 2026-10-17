@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb, pool, reader_lease, residency_map, storage_tiers  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
 import stage_release  # noqa: E402
@@ -82,7 +83,7 @@ def _reference_action(fleet, *, tier=None, claim=False, command=None):
     queue, stage, mount, quarantine, good = fleet
     cas = pb.PrismaBuildCAS(queue.root.parent / "cas")
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
         "mount_prefix": str(mount), "entry_count": 1, "total_bytes": SIZE,
         "entries": [{"path": str(mount / NAMES[0]), "offset": 0,
                      "bytes": SIZE, "sha256": None}]}
@@ -94,7 +95,7 @@ def _reference_action(fleet, *, tier=None, claim=False, command=None):
     checkout = stage.parent / "request-code"
     checkout.mkdir(exist_ok=True)
     (checkout / "task.py").write_text("# fixture task\n")
-    manifest_input = {"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+    manifest_input = {"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                       "sha256": digest, "bytes": len(raw)}
     demand = {"cpu": 1, "mem_gb": 1}
     residency = None
