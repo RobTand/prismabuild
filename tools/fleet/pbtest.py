@@ -58,18 +58,25 @@ from runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+def configured_store():
+    return store_for(__file__)
+
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
 from prismabuild import dependency_digest  # noqa: E402
-from pbrun import require_gpu_memory_scope  # noqa: E402
+from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
 #: drift apart.
 import pbtest_capabilities  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
-import pbrun  # noqa: E402
+from prismabuild import submission
+from prismabuild import submission
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
@@ -131,8 +138,8 @@ def start_shard(index: int, command: list[str], *, result: dict,
         inherited = environment.get('PYTHONPATH')
         environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
             os.pathsep + inherited if inherited else '')
-    return client_channel.ClientProcess.launch(command, queue_root=pbrun.SH / 'pb-queue',
-        cas_root=pbrun.SH / 'cas', env=environment, expected_identity=expected_identity,
+    return client_channel.ClientProcess.launch(command, queue_root=configured_store().root / 'pb-queue',
+        cas_root=configured_store().root / 'cas', env=environment, expected_identity=expected_identity,
         on_identity=submitted)
 
 
@@ -262,7 +269,7 @@ def fleet_queue():
     alike, so the two questions cannot drift onto different roots.
     """
 
-    return pool.PoolQueue(pbrun.SH / "pb-queue")
+    return pool.PoolQueue(configured_store().root / "pb-queue")
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
@@ -284,7 +291,7 @@ def interpreter_refusal(queue, python: str, *, tags, resources,
         "needs_gpu": bool(needs_gpu),
     }
     verdict = queue.interpreter_placement_verdict(
-        probe, python, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S)
+        probe, python, max_age_s=submission.RECORDED_OFFER_MAX_AGE_S)
     if verdict == "absent":
         return ("refusal",
                 "pbtest: every recorded worker that could take these shards "
@@ -348,7 +355,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
     if not action_key:
         return None
-    path = core.PrismaBuildCAS(pbrun.SH / "cas").receipt_path(action_key)
+    path = core.PrismaBuildCAS(configured_store().root / "cas").receipt_path(action_key)
     try:
         return str(path) if path.is_file() else None
     except OSError:
@@ -1158,10 +1165,8 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
-def shard_command(flags, *, environment, python_entry, arguments):
-    """Bind a shard's child environment and entry at the pbrun boundary."""
-    env_flags = [word for entry in environment for word in ("--env", entry)]
-    return [*flags, *env_flags, "--", *python_entry, *arguments]
+def shard_command(request: SubmissionRequest, *, environment, python_entry, arguments):
+    """Send a typed request across the existing C06 client process boundary."""
 
 
 def _client_environment():
