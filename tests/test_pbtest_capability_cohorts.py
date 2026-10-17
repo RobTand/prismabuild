@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 
 import pytest
@@ -338,7 +339,14 @@ def test_an_unused_config_leaves_the_dispatch_byte_identical(
     calls: list[list[str]] = []
 
     def _popen(command, **kwargs):
-        calls.append(list(command))
+        declaration = list(command)
+        if "--client-events-fd" in declaration:
+            slot = declaration.index("--client-events-fd") + 1
+            report_fd = int(declaration[slot])
+            assert report_fd in kwargs["pass_fds"]
+            assert stat.S_ISFIFO(os.fstat(report_fd).st_mode)
+            declaration[slot] = "<client-events-pipe>"
+        calls.append(declaration)
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
