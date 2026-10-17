@@ -45,6 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
+from prismabuild.queue_publication import RowPublication  # noqa: E402
 import tier_loop  # noqa: E402
 
 import test_pbrun_residency_stage_submission as submission  # noqa: E402
@@ -91,7 +93,7 @@ def _stage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, o
         "queue": prepared["queue"], "template": template,
         "cas": template["cas"], "args": args,
         "key": str(submit_core.seal(template)["action_key"]),
-        "tier": submit_core.resolve_stage_tier(
+        "tier": residency_plan.resolve_stage_tier(
             prepared["queue"], args.residency_tier),
     }
 
@@ -99,10 +101,7 @@ def _stage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, o
 def _stage_rows(built: dict[str, object]) -> dict[str, object]:
     """Call the real planner and file its plan, exactly as ``main`` does."""
 
-    staged = submit_core.residency_stage_rows(
-        built["template"], consumer_action_key=built["key"],
-        tier=built["tier"], args=built["args"], queue=built["queue"],
-        cas=built["cas"], store=pbrun.configured_store())
+    staged = residency_plan.prepare_window(built['template'], consumer_action_key=built['key'], tier=built['tier'], queue=built['queue'], cas=built['cas'], options=submit_core.filing_options(built['args']), publication=submit_core.row_publication(built['args'], pbrun.configured_store()))
     residency_plan.freeze(built["queue"], staged["plan"])
     return staged
 
@@ -321,19 +320,19 @@ def test_cleanup_cannot_archive_a_fresh_plan_before_its_consumer_is_published(
     entered = threading.Event()
     completed = threading.Event()
     cleanup_events: list[dict[str, object]] = []
-    real_publication_row = submit_core.publication_row
+    real_publication_row = RowPublication.row
 
-    def paused_publication_row(action, *args, **kwargs):
+    def paused_publication_row(self, action, *args, **kwargs):
         # The consumer's own publication is the one after freeze and before its
         # row exists: the exact window in which a cleanup pass sees a plan with
         # no owner.  The mover rows sealed before freeze never pause.
         if action.get("action_key") != key:
-            return real_publication_row(action, *args, **kwargs)
+            return real_publication_row(self, action, *args, **kwargs)
         entered.set()
         assert completed.wait(10)
-        return real_publication_row(action, *args, **kwargs)
+        return real_publication_row(self, action, *args, **kwargs)
 
-    monkeypatch.setattr(submit_core, "publication_row", paused_publication_row)
+    monkeypatch.setattr(RowPublication, "row", paused_publication_row)
 
     def cleanup() -> None:
         assert entered.wait(10)

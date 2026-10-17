@@ -4,6 +4,7 @@ from __future__ import annotations
 from submission_support import patch_store
 from submission_support import refusal_value
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 
 import importlib.util
 import json
@@ -299,7 +300,7 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
     def identity(_cwd, _seen=seen):
         return {"commit": _seen.pop(0)}
 
-    monkeypatch.setattr(submit_core, '_git_identity', identity)
+    monkeypatch.setattr(movement_actions, 'checkout_identity', identity)
     names = []
     for commit in ("aaaa", "bbbb", "aaaa"):
         seen.append(commit)
@@ -326,13 +327,13 @@ def test_portable_submission_identity_ignores_the_source_checkout_path() -> None
     )
 
     assert first == second
-    assert submit_core.container_owner(
+    assert movement_actions.submission_container_owner(
         command, Path("/home/rob/tmp/first"), demand, variables,
         determinism="stochastic",
         retry_policy={"max_attempts": 1, "retry_safe": False},
         marker_root="/mnt/shared/prismabuild-fleet/pb-queue/container-owners",
         identity=identity, logical_cwd=".",
-    ) == submit_core.container_owner(
+    ) == movement_actions.submission_container_owner(
         command, Path("/mnt/shared/second"), demand, variables,
         determinism="stochastic",
         retry_policy={"max_attempts": 1, "retry_safe": False},
@@ -474,7 +475,7 @@ def test_pbrun_preflight_refuses_checkout_drift_after_sealing(tmp_path) -> None:
     checkout = _git_checkout(tmp_path)
     stamp_name = f"{submit_core.STAMP_PREFIX}test.json"
     (checkout / stamp_name).write_text(
-        json.dumps({"cwd": str(checkout), **submit_core._git_identity(checkout)})
+        json.dumps({"cwd": str(checkout), **movement_actions.checkout_identity(checkout)})
     )
     action = _sealed_pbrun_action(checkout, stamp_name)
 
@@ -503,11 +504,11 @@ def test_pbrun_identity_includes_bytes_below_an_untracked_directory(tmp_path) ->
     helper = checkout / "experiments" / "campaign.py"
     helper.parent.mkdir()
     helper.write_text("print('first')\n")
-    before = submit_core._git_identity(checkout)
+    before = movement_actions.checkout_identity(checkout)
 
     helper.write_text("print('second')\n")
 
-    assert submit_core._git_identity(checkout) != before
+    assert movement_actions.checkout_identity(checkout) != before
 
 
 def test_pbrun_identity_hashes_untracked_symlink_to_directory_text(tmp_path) -> None:
@@ -523,12 +524,12 @@ def test_pbrun_identity_hashes_untracked_symlink_to_directory_text(tmp_path) -> 
     (tmp_path / "outside-b").mkdir()
     link = checkout / "helper-tree"
     link.symlink_to("../outside-a", target_is_directory=True)
-    before = submit_core._git_identity(checkout)
+    before = movement_actions.checkout_identity(checkout)
 
     link.unlink()
     link.symlink_to("../outside-b", target_is_directory=True)
 
-    assert submit_core._git_identity(checkout) != before
+    assert movement_actions.checkout_identity(checkout) != before
 
 
 def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> None:
@@ -539,12 +540,12 @@ def test_pbrun_identity_hashes_symlink_text_not_target_contents(tmp_path) -> Non
     (tmp_path / "outside-b.py").write_text("print('same')\n")
     link = checkout / "helper.py"
     link.symlink_to("../outside-a.py")
-    before = submit_core._git_identity(checkout)
+    before = movement_actions.checkout_identity(checkout)
 
     link.unlink()
     link.symlink_to("../outside-b.py")
 
-    assert submit_core._git_identity(checkout) != before
+    assert movement_actions.checkout_identity(checkout) != before
 
 
 def test_pbrun_identity_refuses_an_untracked_fifo_without_opening_it(
@@ -587,7 +588,7 @@ def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
 
     monkeypatch.setattr(core_module, "git_checkout_identity", refuse)
     with pytest.raises(submit_core.SubmissionRefused, match="unsupported file type"):
-        submit_core._git_identity(checkout)
+        movement_actions.checkout_identity(checkout)
 
 
 def test_pbrun_identity_prunes_git_ignored_directories(
@@ -611,7 +612,7 @@ def test_pbrun_identity_prunes_git_ignored_directories(
         return real_scandir(path)
 
     monkeypatch.setattr(core_module.os, "scandir", observed_scandir)
-    submit_core._git_identity(checkout)
+    movement_actions.checkout_identity(checkout)
 
     assert checkout in visited
     assert ignored not in visited
@@ -623,11 +624,11 @@ def test_pbrun_identity_hashes_untracked_nul_delimited_paths(tmp_path: Path) -> 
     checkout = _git_checkout(tmp_path)
     unusual = checkout / 'line\nbreak\\quote".txt'
     unusual.write_text("first bytes\n")
-    before = submit_core._git_identity(checkout)
+    before = movement_actions.checkout_identity(checkout)
 
     unusual.write_text("second bytes\n")
 
-    assert submit_core._git_identity(checkout) != before
+    assert movement_actions.checkout_identity(checkout) != before
 
 
 def test_pbrun_identity_does_not_hide_legitimate_prefix_paths(tmp_path: Path) -> None:
@@ -638,11 +639,11 @@ def test_pbrun_identity_does_not_hide_legitimate_prefix_paths(tmp_path: Path) ->
     note = checkout / "notes" / "pbrun_result.notes.py"
     note.parent.mkdir()
     note.write_text("first bytes\n")
-    before = submit_core._git_identity(checkout)
+    before = movement_actions.checkout_identity(checkout)
 
     note.write_text("second bytes\n")
 
-    assert submit_core._git_identity(checkout) != before
+    assert movement_actions.checkout_identity(checkout) != before
 
 
 def test_pbrun_identity_scans_the_repository_above_requested_cwd(
@@ -656,7 +657,7 @@ def test_pbrun_identity_scans_the_repository_above_requested_cwd(
     os.mkfifo(checkout / "outside-requested-cwd.pipe")
 
     with pytest.raises(submit_core.SubmissionRefused, match="unsupported file type"):
-        submit_core._git_identity(requested)
+        movement_actions.checkout_identity(requested)
 
 
 def test_pbrun_identity_refuses_an_unreadable_untracked_file(
@@ -676,7 +677,7 @@ def test_pbrun_identity_refuses_an_unreadable_untracked_file(
 
     monkeypatch.setattr(Path, "open", unreadable)
     with pytest.raises(submit_core.SubmissionRefused, match="cannot hash untracked path"):
-        submit_core._git_identity(checkout)
+        movement_actions.checkout_identity(checkout)
 
 
 @pytest.mark.parametrize("failed_git_verb", ["ls-files", "diff-index"])
@@ -702,7 +703,7 @@ def test_pbrun_identity_fails_closed_after_git_repository_detection(
 
     monkeypatch.setattr(core_module.subprocess, "run", fail_one_git_read)
     with pytest.raises(submit_core.SubmissionRefused, match="cannot compute pbrun checkout identity"):
-        submit_core._git_identity(checkout)
+        movement_actions.checkout_identity(checkout)
 
 
 def test_pbrun_identity_refuses_failed_initial_git_detection(
@@ -725,7 +726,7 @@ def test_pbrun_identity_refuses_failed_initial_git_detection(
 
     monkeypatch.setattr(core_module.subprocess, "run", fail_toplevel)
     with pytest.raises(submit_core.SubmissionRefused, match="cannot compute pbrun checkout identity"):
-        submit_core._git_identity(checkout)
+        movement_actions.checkout_identity(checkout)
 def test_git_snapshot_moves_with_nested_untracked_bytes(tmp_path) -> None:
     """The portable tree is the submitted dirty tree, not merely ``HEAD``."""
 

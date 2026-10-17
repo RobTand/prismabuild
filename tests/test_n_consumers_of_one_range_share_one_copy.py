@@ -24,6 +24,7 @@ main is recorded.  Everything runs on ``tmp_path`` queues and stage roots
 from __future__ import annotations
 import pbrun
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 from prismabuild import claim_identity
 
@@ -260,17 +261,14 @@ def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
 
     if announce:
         _announce(tmp_path, queue)
-    tier = submit_core.resolve_stage_tier(queue, None)
-    args = types.SimpleNamespace(
+    tier = residency_plan.resolve_stage_tier(queue, None)
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3,
         residency_share=share)
     cas = _Cas(manifest_path)
-    staged = submit_core.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=consumer, tier=tier, args=args, queue=queue,
-        cas=cas, store=pbrun.configured_store())
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=consumer, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     return staged, cas, digest, STAGE_TIER
 
 

@@ -48,6 +48,7 @@ sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.materialize as materialize  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402

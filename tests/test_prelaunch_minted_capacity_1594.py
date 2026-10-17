@@ -23,6 +23,7 @@ from prismabuild import storage_tiers  # noqa: E402
 import pbgang  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 from test_prelaunch_plan_1594 import GIB, TIER, _member  # noqa: E402
 
 #: The announced record of prismabuild-stage:dl380g10 at 2026-10-07 18:36Z,
@@ -83,12 +84,12 @@ def test_a_record_with_no_capacity_at_all_mints_nothing():
 
 @pytest.mark.parametrize("peak", [88, 102, 178])
 def test_a_prefix_that_fits_the_minted_supply_is_not_refused(peak):
-    assert submit_core.prelaunch_capacity_refusal(
+    assert residency_plan.prelaunch_capacity_refusal(
         LIVE, TIER, _bound(peak), ["source"], "e5342393c5fc" + "0" * 52) is None
 
 
 def test_a_prefix_above_the_minted_supply_is_still_refused_naming_it():
-    message = submit_core.prelaunch_capacity_refusal(
+    message = residency_plan.prelaunch_capacity_refusal(
         LIVE, TIER, _bound(179), ["source"], "e5342393c5fc" + "0" * 52)
     assert message is not None
     assert "needs peak 179 GiB" in message
@@ -98,14 +99,14 @@ def test_a_prefix_above_the_minted_supply_is_still_refused_naming_it():
 
 def test_an_empty_tier_behaves_as_before():
     digest = "e5342393c5fc" + "0" * 52
-    assert submit_core.prelaunch_capacity_refusal(
+    assert residency_plan.prelaunch_capacity_refusal(
         EMPTY_TIER, TIER, _bound(210), ["source"], digest) is None
-    assert "210 GiB" in submit_core.prelaunch_capacity_refusal(
+    assert "210 GiB" in residency_plan.prelaunch_capacity_refusal(
         EMPTY_TIER, TIER, _bound(211), ["source"], digest)
 
 
 def test_unknown_capacity_never_refuses():
-    assert submit_core.prelaunch_capacity_refusal(
+    assert residency_plan.prelaunch_capacity_refusal(
         {"tier": "stage", "tier_id": TIER}, TIER, _bound(10_000),
         ["source"], "e5342393c5fc" + "0" * 52) is None
 

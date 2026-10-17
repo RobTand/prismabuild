@@ -12,7 +12,7 @@ This module is the planner the #1247 design adds to the tier role's single
 writer.  For the first READY rows in claim order it does exactly what a
 ``--residency stage`` submitter does, off the row's own sealed request:
 
-* ``pbrun.residency_stage_rows`` seals every movement, promotion and egress
+* ``residency_plan.prepare_window`` seals every movement, promotion and egress
   node this consumer will ever have and freezes the plan (first-writer), and
   ``residency_plan.seal_window`` retires predecessor cancellation markers --
   the same ownership transaction pbrun runs under the consumer's transition
@@ -50,6 +50,7 @@ from prismabuild import core as pb
 from prismabuild import data_manifest as manifest_codec
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from prismabuild.queue_publication import RowPublication
 
 
 from prismabuild import movement_actions
@@ -61,7 +62,6 @@ from prismabuild import storage_tiers
 # inserted once and unconditionally (REVIEW-1252 item 8), and the import is
 # never conditional on a package context that a caller may or may not give.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import submission
 from prismabuild import submission
 
 
@@ -85,32 +85,6 @@ MANIFEST_ROWS_EXAMINED_PER_CYCLE = 64
 TIER_RECEIPT_DESTINATION = "ram-tier"
 
 
-def planner_args(**overrides: object) -> SubmissionRequest:
-    """The submitter's own ``--residency`` defaults, spelled once.
-
-    Everything ``pbrun.residency_stage_rows`` reads off ``args`` is here with
-    the CLI's defaults: the ram leg ``auto`` (``resolve_ram_tier`` inside the
-    sealing path decides from the announced tiers), sharing ``auto`` (#1026,
-    so two consumers of one range share its mover), and the mover sizing the
-    fleet already runs.  The planner passes no reader declaration: it is not
-    the consumer's submitter and will not guess how the row reads.
-    """
-
-    args = SubmissionRequest(
-        residency_ram="auto",
-        residency_share="auto",
-        residency_mover_max_attempts=3,
-        residency_mover_mem_gb=1,
-        residency_mover_readers=4,
-        # The publication row's own fields: a movement node's priority is the
-        # submitter's ordinary priority and its attempts are the mover
-        # policy's, both of which ``publication_row`` reads off the namespace
-        # exactly as it reads them off the CLI's.
-        priority=-10,
-        max_attempts=3,
-        retry_safe=True,
-    )
-    return replace(args, **overrides)
 
 
 def row_request(cas_root: Path, action_key: str) -> dict | None:
@@ -220,31 +194,6 @@ def is_movement_row(request: Mapping[str, object] | None) -> bool:
                for part in command)
 
 
-def superseded_consumers(queue: pool.PoolQueue) -> set[str] | None:
-    """The consumers with live retirement markers, or ``None`` when unknown.
-
-    One listing of ``residency-plans/superseded/`` per call, not per row
-    (REVIEW-1252-r4 [P2]): the live directory holds hundreds of markers and
-    the loop runs every few seconds, so the membership question is answered
-    from one set.  A filed plan answers before this is ever asked; what the
-    set catches is the consumer whose plan was superseded and reaped -- its
-    markers are still live, and the owner that withdrew it owns its reseal
-    (``handoff_safe`` checks the markers this planner must not retire).  Such
-    a row stands down: the planner advises bare rows, never a lifecycle
-    another flow is driving.  ``None`` is the fail-closed answer -- a
-    directory that cannot be listed is history nobody can see, and every row
-    stands down for that cycle.
-    """
-
-    first_ready_key = "0" * 64
-    directory = (queue.records.residency_plan_path(first_ready_key).parent
-                 / residency_plan.SUPERSEDED)
-    try:
-        return {marker.name.split(".", 1)[0]
-                for marker in pb.immutable_files.scan_optional(directory)}
-    except (OSError, ValueError):
-        return None
-
 
 def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
     """Whether a sealed request carries a ``pbcampaign.data-manifest`` input.
@@ -302,7 +251,7 @@ def promote_ready_manifest_rows(
         for stale in [key for key in table if key not in live]:
             del table[stale]
     counters = {"fresh": 0, "replayed": 0, "stands_down": 0, "examined": 0}
-    history = superseded_consumers(queue)
+    history = residency_plan.retired_consumers(queue)
     outcomes: list[dict[str, object]] = []
     planned = 0
     examined = 0
@@ -375,8 +324,8 @@ def promote_ready_manifest_rows(
             # item 4): a priority-1 consumer's staging waits behind the -10
             # band otherwise.  Zero is a band, not a missing value (item C).
             raw_priority = item.get("priority")
-            args = planner_args(
-                priority=-10 if raw_priority is None else int(raw_priority))
+            priority = -10 if raw_priority is None else int(raw_priority)
+            floor_request = SubmissionRequest()
             template = movement_template_of(queue, request, key)
             if template is None:
                 outcome["outcome"] = "refused"
@@ -395,15 +344,14 @@ def promote_ready_manifest_rows(
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
             store = replace(store_for(__file__), queue_root=Path(queue.root), cas_root=Path(row_cas))
-            with submission.write_window(args, store=store):
-                with queue.action_transition_lock(key):
-                    staged = submission.residency_stage_rows(
-                        template, consumer_action_key=key,
-                        tier=dict(stage_tier), args=args,
-                        queue=queue, cas=cas, store=store)
-                    if not staged.get("reused_frozen_plan"):
-                        residency_plan.seal_window(
-                            queue, staged["plan"], renew=True)
+            with submission.write_window(floor_request, store=store):
+                staged = residency_plan.file_manifest_row(
+                    queue, key, template=template, tier=dict(stage_tier),
+                    options=residency_plan.FilingOptions(),
+                    publication=RowPublication(
+                        queue_root=store.queue_root, cas_root=store.cas_root,
+                        worker_script=store.runtime_root / "tools" / "prismabuild_worker.py",
+                        priority=priority, max_attempts=3, retry_safe=True), cas=cas)
         except SubmissionRefused as exc:
             # pbrun's refusal vocabulary: the sealing path says no with a
             # SystemExit, which ``except Exception`` does not see.  A sealing
@@ -436,7 +384,7 @@ def promote_ready_manifest_rows(
             _receipt_gated(queue, memo_key, key, status="refused",
                            detail=repr(exc))
             continue
-        plan = staged["plan"]
+        plan = staged.plan
         phases = list(plan.get("phases") or ())
         # The contract ``pbrun`` refuses a staged submission without, checked
         # here and recorded rather than refused (#1332): a refused row would

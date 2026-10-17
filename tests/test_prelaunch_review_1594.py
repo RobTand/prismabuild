@@ -4,6 +4,7 @@ Each test drives tier_loop.residency_window through real transitions, in the
 style of test_prelaunch_tier_publish_1594.py.  The integrator runs them.
 """
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 from pathlib import Path
 import sys
 
@@ -198,7 +199,7 @@ def test_prefix_cuts_follow_phase_names_when_a_declared_phase_is_empty() -> None
     from submission_support import patch_store
     ranges = [{"name": "kept"}, {"name": "streamed"}]
     cuts = [[(0, 4)], [(4, 8)]]
-    prefix, suffix = submit_core.split_prelaunch_cuts(
+    prefix, suffix = residency_plan.split_prelaunch_cuts(
         ranges, cuts, {"empty-declared", "kept"})
     assert prefix == [[(0, 4)]]
     assert suffix == [[(4, 8)]]

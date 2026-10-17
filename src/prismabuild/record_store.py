@@ -125,6 +125,9 @@ RESIDENCY = "residency"
 
 
 RESIDENCY_PLANS = "residency-plans"
+RESIDENCY_SUPERSEDED = "superseded"
+RESIDENCY_SHARED = "shared"
+RESIDENCY_SHARED_MOVERS = "movers"
 
 
 RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
@@ -1226,7 +1229,7 @@ class RecordStore:
     def residency_supersession_path(self, consumer: str, digest: str) -> Path:
         return self.residency_plan_path(
             consumer,
-        ).parent / "superseded" / f"{consumer}.{digest}.superseded.json"
+        ).parent / RESIDENCY_SUPERSEDED / f"{consumer}.{digest}.superseded.json"
 
     @staticmethod
     def lane_unreadable_name(path: Path, stamp: int, token: str) -> str:
@@ -2212,6 +2215,29 @@ class RecordStore:
         return sorted(name for name in os.listdir(self.released_origin_consumers_dir())
                       if name.startswith(f"{consumer}.") and name.endswith(".json"))
 
+    def residency_registry_root(self) -> Path:
+        return self.root / RESIDENCY_PLANS
+
+    def optional_plan_paths(self) -> list[Path]:
+        return immutable_files.scan_optional(self.residency_registry_root())
+
+    def supersession_paths(self) -> list[Path]:
+        return immutable_files.scan_optional(
+            self.residency_registry_root() / RESIDENCY_SUPERSEDED)
+
+    def shared_registry_present(self) -> bool:
+        return (self.residency_registry_root() / RESIDENCY_SHARED).is_dir()
+
+    def shared_mover_names(self) -> frozenset[str]:
+        directory = (self.residency_registry_root() / RESIDENCY_SHARED
+                     / RESIDENCY_SHARED_MOVERS)
+        try:
+            with os.scandir(directory) as entries:
+                return frozenset(entry.name for entry in entries
+                                 if entry.name.endswith(".json"))
+        except FileNotFoundError:
+            return frozenset()
+
     def required_plan_paths(self) -> list[Path]:
         with os.scandir(self.root / RESIDENCY_PLANS) as entries:
             return sorted(Path(entry.path) for entry in entries
@@ -2417,8 +2443,8 @@ class RecordStore:
             directory, select=_visible_json_entry, parse=_diagnostic_json_record,
             keep=_diagnostic_kept)
 
-    def _residency_supersession_names(self) -> frozenset[str]:
-        directory = self.root / RESIDENCY_PLANS / "superseded"
+    def residency_supersession_names(self) -> frozenset[str]:
+        directory = self.root / RESIDENCY_PLANS / RESIDENCY_SUPERSEDED
         if self._records is None:
             return frozenset(os.listdir(directory))
         return self._records.names(directory, select=_all_entries)
@@ -2566,22 +2592,6 @@ class RecordStore:
             paths = sorted(Path(entry.path) for entry in entries if entry.name.endswith('.json'))
         return [(path, _diagnostic_queue_record(path)) for path in paths]
 
-
-    def residency_supersession_keys(self) -> frozenset[str] | None:
-        try:
-            names = self._residency_supersession_names()
-        except FileNotFoundError:
-            return frozenset()
-        except OSError:
-            return None
-        keys: set[str] = set()
-        for name in names:
-            key = _active_marker_key(name)
-            if key is not None:
-                keys.add(key)
-            elif not _archived_supersession_name(name):
-                return None
-        return frozenset(keys)
 
 
     def claim_denial_hosts_at(self, directory: Path) -> list[Path]:
@@ -2943,57 +2953,6 @@ _RELEASE_FILING = re.compile(
     r'\A(?P<key>[0-9a-f]{64})\.(?P<when>[0-9]+\.[0-9]{6})\.unstarted-claim\.json\Z')
 
 
-_SUPERSEDED_MARKER_SUFFIX = ".superseded.json"
 
 #: The characters a reaped plan body's reason slug is built from
 #: (``residency_plan._retired_slug``).
-_SLUG_CHARACTERS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz0123456789-")
-
-
-def _active_marker_key(name: str) -> str | None:
-    """The consumer key an active supersession marker name carries, or ``None``.
-
-    The address is ``{key}.{plan_sha256}.superseded.json``, both 64 lowercase
-    hex characters.  Any other name is not an active marker; the caller tells
-    a known archive name from an unrecognized one.
-    """
-
-    if not name.endswith(_SUPERSEDED_MARKER_SUFFIX):
-        return None
-    stem = name[:-len(_SUPERSEDED_MARKER_SUFFIX)]
-    key, separator, digest = stem.partition(".")
-    if not separator or "." in digest:
-        return None
-    if not key_shaped(key) or not key_shaped(digest):
-        return None
-    return key
-
-
-def _archived_supersession_name(name: str) -> bool:
-    """Whether one marker-directory name is a known archive entry.
-
-    ``residency_plan`` archives a reaped plan body as
-    ``{key}.{seconds}.{micros}.{reason-slug}.json`` and retires an active
-    marker beside it as
-    ``{key}.{digest}.{filing}.{seconds}.{micros}.marker.json``; a
-    publication temporary is ``.{name}.{random}.tmp``.  None of these can be
-    the address an active marker is read at, so a directory holding them
-    still answers which keys have one.  Anything else is unrecognized, and
-    the caller treats the whole listing as unknown.
-    """
-
-    if name.startswith("."):
-        return True
-    if name.endswith(".marker.json"):
-        parts = name[:-len(".marker.json")].split(".")
-        return (len(parts) == 5 and key_shaped(parts[0]) and key_shaped(parts[1])
-                and all(part.isdigit() for part in parts[2:]))
-    if name.endswith(".json"):
-        parts = name[:-len(".json")].split(".")
-        return (len(parts) == 4 and key_shaped(parts[0])
-                and parts[1].isdigit() and parts[2].isdigit()
-                and bool(parts[3])
-                and all(character in _SLUG_CHARACTERS
-                        for character in parts[3]))
-    return False

@@ -67,7 +67,7 @@ def test_explicit_resident_declaration_is_sealed_and_projected_not_a_gate(tmp_pa
     action = submit_core.seal(template)
     options = argparse.Namespace(priority=0, max_attempts=1, retry_safe=False)
     queue = pool.PoolQueue(tmp_path / "queue")
-    row = submit_core.publication_row(action, args=options, queue=queue, store=pbrun.configured_store())
+    row = submit_core.row_publication(options, pbrun.configured_store()).row(action, queue=queue)
     assert row["resident_set"] == set_id
     queue.publish(**row)
     # An absent set cannot turn the optional accelerator into admission gating.

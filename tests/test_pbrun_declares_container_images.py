@@ -27,6 +27,7 @@ import fleet_submit  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 
 from test_pbrun_detach import _checkout, _one_json_line, _queue, _run_pbrun  # noqa: E402
 
@@ -279,10 +280,10 @@ def test_container_owner_includes_images_only_when_declared(tmp_path):
         marker_root=tmp_path / "markers", identity="checkout",
         logical_cwd=".", placement={"required_tags": []},
     )
-    legacy = submit_core.container_owner(**common)
-    empty = submit_core.container_owner(**common, container_images=[])
-    with_a = submit_core.container_owner(**common, container_images=[REF_A])
-    with_b = submit_core.container_owner(**common, container_images=[REF_B])
+    legacy = movement_actions.submission_container_owner(**common)
+    empty = movement_actions.submission_container_owner(**common, container_images=[])
+    with_a = movement_actions.submission_container_owner(**common, container_images=[REF_A])
+    with_b = movement_actions.submission_container_owner(**common, container_images=[REF_B])
     assert legacy == empty
     assert with_a != with_b != legacy
 

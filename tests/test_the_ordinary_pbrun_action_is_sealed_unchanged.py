@@ -59,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 
 #: Fixed so the fixture's commit object, and every digest downstream of it, is
 #: the same bytes wherever this runs.
@@ -244,9 +245,9 @@ def test_every_masked_value_is_re_derived_from_the_body(
     """
 
     seen: dict[str, object] = {}
-    identify = submit_core._git_identity
+    identify = movement_actions.checkout_identity
     monkeypatch.setattr(
-        submit_core, "_git_identity",
+        movement_actions, "checkout_identity",
         lambda cwd, **_context: seen.setdefault('identity', identify(cwd)),
     )
     body = _seal(tmp_path, monkeypatch, row)
@@ -257,7 +258,7 @@ def test_every_masked_value_is_re_derived_from_the_body(
     owner = variables.pop(submit_core.CONTAINER_OWNER_ENV)
     marker = variables.pop(submit_core.CONTAINER_MARKER_ENV)
     marker_root = tmp_path / "pb-queue" / pool.CONTAINER_OWNERS
-    assert owner == submit_core.container_owner(
+    assert owner == movement_actions.submission_container_owner(
         params["command"], work, params["demand"], variables,
         determinism=body["task"]["determinism"],
         retry_policy=params["retry_policy"],

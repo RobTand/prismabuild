@@ -22,6 +22,7 @@ same key, and a leftover ``done`` record must not read as "already staged".
 from __future__ import annotations
 from submission_support import refusal_value
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import json
 import os
@@ -157,15 +158,14 @@ def test_the_consumer_depends_on_its_first_phase_and_no_other(queue) -> None:
 def test_only_the_phases_the_free_tokens_cover_are_published(queue) -> None:
     """Five free GiB and two GiB a phase is two phases, not four."""
 
-    decision = residency_plan.window(
-        _plan(queue), accepted_phase=None, free_gib=5)
+    decision = residency_plan.ConsumerWindow(_plan(queue), None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=5)).decision
 
     assert [phase["phase"] for phase in decision["publish"]] == ["phase-0", "phase-1"]
     assert decision["evict"] == []
 
 
 def test_nothing_is_published_when_the_stage_is_full(queue) -> None:
-    decision = residency_plan.window(_plan(queue), accepted_phase=None, free_gib=1)
+    decision = residency_plan.ConsumerWindow(_plan(queue), None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=1)).decision
 
     assert decision["publish"] == []
 
@@ -176,8 +176,7 @@ def test_the_phase_the_consumer_is_reading_is_not_evicted(queue) -> None:
     plan = _plan(queue)
     staged = [_hexkey(f"mover{n}") for n in range(4)]
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-2", free_gib=0, published=staged, staged=staged)
+    decision = residency_plan.ConsumerWindow(plan, 'phase-2', residency_plan.LegObservation(published=staged, staged=staged), residency_plan.WindowBudget(free_gib=0)).decision
 
     assert [phase["phase"] for phase in decision["evict"]] == ["phase-0", "phase-1"]
 
@@ -188,8 +187,7 @@ def test_a_terminal_mover_that_holds_nothing_is_published_again(queue) -> None:
     plan = _plan(queue)
     # Everything staged once and already given back: nothing is pinned, so the
     # window must treat all four phases as work to do rather than as done.
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0", free_gib=4, published=[], staged=[])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0', residency_plan.LegObservation(published=[], staged=[]), residency_plan.WindowBudget(free_gib=4)).decision
 
     assert [phase["phase"] for phase in decision["publish"]] == ["phase-0", "phase-1"]
 
@@ -400,7 +398,7 @@ def test_a_submission_cannot_stage_onto_a_tier_the_fleet_does_not_announce(
     from submission_support import patch_store
 
     with pytest.raises(submit_core.SubmissionRefused, match="no box announces one"):
-        submit_core.resolve_stage_tier(queue, None)
+        residency_plan.resolve_stage_tier(queue, None)
 
 
 def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> None:
@@ -413,9 +411,9 @@ def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> No
                              "mountpoint": str(tmp_path / "stage")})
 
     with pytest.raises(submit_core.SubmissionRefused, match="--residency-tier"):
-        submit_core.resolve_stage_tier(queue, None)
+        residency_plan.resolve_stage_tier(queue, None)
 
-    named = submit_core.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
+    named = residency_plan.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
     assert named["host"] == "elsewhere"
 
 
@@ -426,7 +424,7 @@ def test_one_announced_stage_tier_needs_no_flag(queue, tmp_path) -> None:
                          "tier_id": TIER, "tier": "stage", "host": "dl380g10",
                          "capacity_bytes": 1 << 40, "mountpoint": str(tmp_path / "stage")})
 
-    assert submit_core.resolve_stage_tier(queue, None)["tier_id"] == TIER
+    assert residency_plan.resolve_stage_tier(queue, None)["tier_id"] == TIER
 
 
 def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:

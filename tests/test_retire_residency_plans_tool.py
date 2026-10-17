@@ -20,6 +20,8 @@ import sys
 
 import pytest
 
+from prismabuild import residency_plan
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
@@ -45,17 +47,17 @@ def test_dry_run_changes_nothing_and_apply_archives_a_concluded_plan(
     assert pbrun.main() == 0
     key = _detach_key(capsys)
     # A live (ready) consumer is not a candidate.
-    assert tool.candidates(queue) == []
+    assert residency_plan.concluded_consumers(queue) == []
     # Conclude it the old way: the terminal file appears with no plan retirement.
     queue.records.item_path(pool.record_store.READY, key).unlink()
-    assert tool.candidates(queue) == [key]
+    assert residency_plan.concluded_consumers(queue) == [key]
 
     assert tool.retire_concluded_plans(queue, apply=False)["would_retire"] == [key]
     assert queue.records.residency_plan_path(key).exists()
 
     assert tool.retire_concluded_plans(queue, apply=True)["retired"] == [key]
     assert not queue.records.residency_plan_path(key).exists()
-    assert tool.candidates(queue) == []
+    assert residency_plan.concluded_consumers(queue) == []
 
 
 def _synthetic_queue(tmp_path: Path) -> tuple[Path, Path]:

@@ -25,6 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import action_edges as ae, pool, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
+from prismabuild.queue_publication import RowPublication  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import _announce_tier, _manifest  # noqa: E402
 
@@ -121,7 +123,7 @@ def test_a_refused_row_on_the_plain_path_files_no_supersession(tmp_path, monkeyp
     def refuse(*args, **kwargs):
         raise SystemExit("pbrun: the row cannot be built")
 
-    monkeypatch.setattr(submit_core, "publication_row", refuse)
+    monkeypatch.setattr(RowPublication, "row", refuse)
     assert "row cannot be built" in _refused(monkeypatch, work, manifest, "--supersedes", OLD, word="printf plain")
     assert ae.read_supersession(queue.root, OLD) is None
 
@@ -134,7 +136,7 @@ def test_what_can_be_refused_early_is_refused_before_any_preparation(tmp_path, m
     def prepared(*args, **kwargs):
         raise AssertionError("the window was prepared for a submission that could never supersede")
 
-    monkeypatch.setattr(submit_core, "residency_stage_rows", prepared)
+    monkeypatch.setattr(residency_plan, "prepare_window", prepared)
     message = _refused(monkeypatch, work, manifest, "--residency", "stage", "--supersedes", OLD,
                        word="printf early")
     assert "cannot be superseded" in message, message

@@ -18891,3 +18891,67 @@ The existing withdrawn-attempt adoption path and its reader contract remain.
 Source/component evidence for this repair is scoped to SM-01, ID-02, INV-01,
 ACC-02 and ACC-04 in the staged-read ledger and acceptance record; it grants
 no deployment, campaign or whole-requirement satisfaction.
+
+### Residency filing and cycle decisions (C21)
+
+`residency_plan` owns preparation, the filed-plan registry, supersession
+observations, shared ranges, prelaunch legs and window decisions.
+`FilingOptions` carries residency choices and mover/reader facts. C14 projects
+publication policy and paths into `queue_publication.RowPublication`; residency
+never imports submission or reconstructs a `SubmissionRequest` or `FleetStore`.
+The common row projection keeps the sealed action authoritative.
+
+`consumer_filing` holds the consumer's existing action-transition lock while it
+resolves the tier, reuses or reseals, freezes, renews and yields the filing to
+C14. C14 constructs and publishes or attaches its consumer row before leaving
+that context. The supersession hook retains its position immediately before
+publication. No wait or floor allowance moves into this lock. A deliberate
+submission renews a reused plan. A deferred attachment suppresses renewal only
+when it reuses its own frozen plan. An immutable decomposed plan refuses
+supersession and installs only inside this transaction. `file_manifest_row`
+files for an already-published bare consumer and renews only a newly prepared
+plan. Decomposition prepares every movement graph before publishing any child,
+without installing ownerless plans in the registry.
+
+`ConsumerWindow` holds one captured plan, accepted phase, `LegObservation` and
+`WindowBudget`. Its decision and advance facts are computed once for that
+observation. Stage and RAM observations stay at their original positions;
+pressure probes and publication still take their independent budget and
+freshness observations. Adoption, eviction, RAM publication and stage
+publication keep their order. No cycle-wide I/O cache merges these boundaries.
+Unknown evidence stays unknown, and accepted-phase, horizon, eligibility,
+prelaunch, alignment and run-ahead algebra are unchanged.
+
+RecordStore captures registry names, paths and records. Residency interprets
+those captures through concrete observations. `active_supersessions` retains
+the strict marker-name grammar and unknown result; `retired_consumers` retains
+the bare-row planner's broader retirement-history rule. Census keeps its
+independent section completeness, selected reads and denial windows, and uses
+public residency observations. Public fragment validation and mover keys remain
+tolerant of foreign files; strict diagnostic fragment capture remains
+`RecordStore.inspection_fragment_records_at`.
+
+Plan and registry schemas, filenames, JSON bytes, hashing recipes, seal order,
+filing incarnation, generation authority, renewal and cancellation boundaries
+are unchanged. Historical readers continue to find the same files.
+
+
+The cycle-local residency question requires an explicit `WindowBudget.free_gib`
+for `ConsumerWindow.decision`. An absent budget raises `TypeError`; it grants
+no zero-capacity observation. `ConsumerWindow.advance` and the geometric
+`pre_progress_stage_reach` need no free-capacity probe. The stage and RAM,
+publication and pressure captures remain independent. Manifest promotion
+constructs `FilingOptions` and `RowPublication` directly. Its separate standard
+submission request serves only the unchanged C14 filesystem-floor context.
+Physical residency directory names belong to RecordStore; RP keeps the domain
+registry questions and interpretation above its captures.
+
+The pure `residency_plan.pre_progress_stage_reach` question takes only its
+plan and accepted phase. It supplies no invented staging observation. Manifest
+promotion captures its filesystem-floor request before checking the movement
+template, preserving the original current-directory read and refusal order.
+Qualification shards use explicit interpreter paths. The test conftest records
+the running executable bytes, actual Python version, assigned affinity, native
+thread bounds and selected files in each shard's real log. The retained-data
+qualifier checks those facts against the sealed plan. A generic interpreter
+pathname alone establishes no version claim.

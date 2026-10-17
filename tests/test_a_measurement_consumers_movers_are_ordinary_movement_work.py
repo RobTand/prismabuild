@@ -25,6 +25,7 @@ from __future__ import annotations
 from submission_support import patch_store
 import pbrun
 from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -154,14 +155,11 @@ def _seal(tmp_path: Path, monkeypatch, *, measurement: bool = True):
     cas = _Cas(manifest_path, tmp_path / "cas")
     consumer = submit_core.seal(template)
     cas.publish_action_request(consumer)
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
-    staged = submit_core.residency_stage_rows(
-        template, consumer_action_key=str(consumer["action_key"]),
-        tier=submit_core.resolve_stage_tier(queue, None), args=args, queue=queue,
-        cas=cas, store=pbrun.configured_store())
+    staged = residency_plan.prepare_window(template, consumer_action_key=str(consumer['action_key']), tier=residency_plan.resolve_stage_tier(queue, None), queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     phase = staged["plan"]["phases"][0]
     return queue, template, consumer, phase["mover_row"], phase["egress_row"], cas
 

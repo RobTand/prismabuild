@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 import pbrun
 from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 from prismabuild import core as pb
 from test_pbrun_detach import _checkout, _queue, _run_pbrun
 
@@ -32,7 +33,7 @@ def test_overlay_materializes_the_declared_stamp_and_closure(tmp_path, subdirect
     cwd.mkdir(exist_ok=True)
     submit_core.keep_droppings_out_of_git(cwd)
     stamp = f"{submit_core.STAMP_PREFIX}{'a' * 16}.json"
-    payload = json.dumps({"cwd": subdirectory, **submit_core._git_identity(cwd)},
+    payload = json.dumps({"cwd": subdirectory, **movement_actions.checkout_identity(cwd)},
                          indent=1, sort_keys=True)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     overlay = submit_core.snapshot_checkout(
@@ -66,7 +67,7 @@ def test_concurrent_overlays_need_no_shared_stamp_path(tmp_path):
     submit_core.keep_droppings_out_of_git(checkout)
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     stamp = f"{submit_core.STAMP_PREFIX}{'b' * 16}.json"
-    identity = submit_core._git_identity(checkout)
+    identity = movement_actions.checkout_identity(checkout)
     payload = json.dumps({"cwd": ".", **identity}, indent=1, sort_keys=True)
     def seal(_):
         return submit_core.snapshot_checkout(
@@ -76,7 +77,7 @@ def test_concurrent_overlays_need_no_shared_stamp_path(tmp_path):
         snapshots = list(workers.map(seal, range(16)))
     assert all(snapshot == snapshots[0] for snapshot in snapshots)
     assert not list(checkout.glob(f"{submit_core.STAMP_PREFIX}*"))
-    assert submit_core._git_identity(checkout) == identity
+    assert movement_actions.checkout_identity(checkout) == identity
 
 
 def test_overlay_cannot_escape_the_checkout(tmp_path):
