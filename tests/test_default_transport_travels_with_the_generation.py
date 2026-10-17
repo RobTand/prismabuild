@@ -17,6 +17,7 @@ published before the cutover has no such field and has to keep behaving as it
 did.
 """
 from __future__ import annotations
+import pbrun
 
 from pbtest_shard_output import finish_submission
 

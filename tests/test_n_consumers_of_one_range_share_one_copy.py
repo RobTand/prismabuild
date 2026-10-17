@@ -22,6 +22,7 @@ main is recorded.  Everything runs on ``tmp_path`` queues and stage roots
 (#628).
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

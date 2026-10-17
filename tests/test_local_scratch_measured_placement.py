@@ -636,13 +636,13 @@ def test_traffic_requires_pool_one_pair_and_exact_version_at_prepare(fleet, faul
     args = pbrun.parse_args(["--cwd", str(fleet.work), "--no-default-env", "--tag", "gb10",
                              "--transport", "slurm" if fault == "slurm" else "pool", *extra,
                              "--", "/bin/bash", "-c", "true"])
-    with pytest.raises(SystemExit, match=IO_ENV):
+    with pytest.raises(submit_core.SubmissionRefused, match=IO_ENV):
         submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
     assert fleet.queue.ready_items() == []
 
 
 def test_freeze_cannot_omit_opted_in_worker_code_fence(fleet):
-    with pytest.raises(SystemExit, match=CAPABILITY):
+    with pytest.raises(submit_core.SubmissionRefused, match=CAPABILITY):
         submit_core.freeze(
             command=["/bin/bash", "-c", "true"], cwd=fleet.work, logical_cwd=".",
             demand={"cpu": 1, "mem_gb": 4, "spool_gb": 186},

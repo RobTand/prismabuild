@@ -1,4 +1,5 @@
 """Retry failed publication dispatch without rewriting the immutable set."""
+import pbrun
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path

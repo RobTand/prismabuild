@@ -6,6 +6,7 @@ tests and the live ZFS case retain their own samples. Host disk occupancy
 therefore cannot turn an admission scenario into an unrelated floor refusal.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import json
