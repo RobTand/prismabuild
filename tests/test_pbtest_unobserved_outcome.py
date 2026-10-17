@@ -10,6 +10,8 @@ from __future__ import annotations
 import pytest
 
 from test_pbtest_reports_whether_pytest_ran import _one_shard
+from pbtest_shard_output import ClientReply
+from prismabuild import action_client as client, action_wait
 
 
 UNOBSERVED = [
@@ -32,7 +34,9 @@ UNOBSERVED = [
 def test_unobserved_outcome_is_not_reported_as_files_that_did_not_run(
     tmp_path, monkeypatch, output,
 ):
-    exit_code, record = _one_shard(tmp_path, monkeypatch, output, 74, with_exit=True)
+    exit_code, record = _one_shard(tmp_path, monkeypatch, output, 74, with_exit=True,
+        client_reply=ClientReply(output, client.ClientUnavailable('13e6c8621baf' + '0' * 52,
+            None, action_wait.WaitEnd.FINAL_EMPTY)))
     assert "did not run" not in record["summary"]
     assert record["summary"].startswith("OUTCOME UNOBSERVED")
     assert "13e6c8621baf" in record["summary"]

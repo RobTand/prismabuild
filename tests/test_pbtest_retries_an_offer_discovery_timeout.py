@@ -24,7 +24,10 @@ import types
 
 import pytest
 
-from pbtest_shard_output import ShardProcess, ONE_PASS, shard_output
+from pbtest_shard_output import (
+    ShardProcess, ONE_PASS, shard_output, ClientReply, emit_client_events, submission_command,
+)
+from prismabuild import action_client as client, client_recovery
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +44,7 @@ TODAY = ("NO PYTEST SUMMARY -- 1 file(s) have no verified final result "
          "(the shard ended rc=1; execution/coverage unknown)")
 
 
-def _pbrun_refusal(monkeypatch, result: dict, *, retained: bool = False) -> str:
+def _pbrun_refusal(monkeypatch, result: dict, *, retained: bool = False) -> ClientReply:
     """What ``pbrun`` prints when its offer read ends in ``result``.
 
     ``bounded_offer_snapshot`` builds the message and raises it as a
@@ -58,10 +61,12 @@ def _pbrun_refusal(monkeypatch, result: dict, *, retained: bool = False) -> str:
         patch.setattr(pbrun.pbstatus, "bounded", bounded)
         with pytest.raises(SystemExit) as caught:
             pbrun.bounded_offer_snapshot(pbrun.pool.PoolQueue(Path("/nonexistent")))
-    return f"{caught.value.code}\n"
+    verdict = (client.ClientOfferTimeout() if isinstance(caught.value, pbrun.OfferDiscoveryTimedOut)
+               else client.ClientRefused(1))
+    return ClientReply(f"{caught.value.code}\n", verdict)
 
 
-def _timed_out(monkeypatch) -> str:
+def _timed_out(monkeypatch) -> ClientReply:
     """The retryable refusal, exactly as ``pbrun`` prints it."""
 
     return _pbrun_refusal(monkeypatch, {"status": "timed_out", "elapsed_s": 5.005})
@@ -99,6 +104,7 @@ def _shard(tmp_path: Path, monkeypatch, endings: list[tuple[str, int]],
 
     clock = _Clock(submission_s)
     launches: list[list[str]] = []
+    submitted_identity = None
 
     class FinishedProcess(ShardProcess):
         def __init__(self, output: str, returncode: int) -> None:
@@ -109,12 +115,26 @@ def _shard(tmp_path: Path, monkeypatch, endings: list[tuple[str, int]],
             return self.output, None
 
     def popen(command, **kwargs):
-        if str(pbtest.PBRUN) not in [str(part) for part in command]:
+        nonlocal submitted_identity
+        if (str(pbtest.PBRUN) not in [str(part) for part in command]
+                and 'prismabuild.client_recovery' not in command):
             return REAL_POPEN(command, **kwargs)
-        launches.append([str(part) for part in command])
+        launches.append([str(part) for part in submission_command(command)])
         clock.now += clock.submission_s
         output, returncode = endings[min(len(launches), len(endings)) - 1]
-        return FinishedProcess(output, returncode)
+        if isinstance(output, ClientReply):
+            reply = output
+        elif submitted_identity is not None:
+            reply = ClientReply(output, client.ClientExecution(submitted_identity.action_key,
+                submitted_identity.published_unix, 'executed' if returncode == 0 else 'failed',
+                returncode, None, None, False, returncode), submitted_identity)
+        else:
+            reply = ClientReply(output, client.ClientCommand(returncode))
+        recovering = 'prismabuild.client_recovery' in command
+        if reply.identity is not None and not recovering:
+            submitted_identity = reply.identity
+        return emit_client_events(FinishedProcess(reply.output, returncode), kwargs, reply,
+            expected_identity=submitted_identity if recovering else None)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
     # ``raising=False``: the clock is read through ``pbtest.time``, which a
@@ -122,6 +142,7 @@ def _shard(tmp_path: Path, monkeypatch, endings: list[tuple[str, int]],
     # the shard reports, not on the patch.
     monkeypatch.setattr(pbtest, "time", types.SimpleNamespace(
         monotonic=clock.monotonic, sleep=clock.sleep), raising=False)
+    monkeypatch.setattr(client_recovery, 'time', pbtest.time)
     report = tmp_path / "shards.json"
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
@@ -213,7 +234,7 @@ def _not_retryable(monkeypatch):
         # the text is not pbrun's last line, so it is not pbrun's refusal.
         ("quoted-by-a-failing-test", shard_output(
             passed=1, prefix="----- Captured stderr call -----\n"
-            + _timed_out(monkeypatch)).replace("1 passed", "1 failed"), 1),
+            + _timed_out(monkeypatch).output).replace("1 passed", "1 failed"), 1),
     ]
 
 

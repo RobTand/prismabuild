@@ -13,7 +13,7 @@ from test_pbrun_detach import _checkout, pbrun
 from prismabuild import capability_eligibility
 from prismabuild import contracts
 from prismabuild import core as pb, pool
-from pbtest_shard_output import ShardProcess, shard_output_for
+from pbtest_shard_output import ShardProcess, shard_output_for, submission_command
 
 PUBLISHED = Path('/mnt/shared/prismabuild-fleet/repo')
 
@@ -32,7 +32,7 @@ def _generated(root, monkeypatch, *, extra=(), python=sys.executable):
             return self.output, None
 
     def capture(command, **kwargs):
-        calls.append(command)
+        calls.append(submission_command(command))
         return Finished(command)
 
     with monkeypatch.context() as scoped:
