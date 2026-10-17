@@ -514,71 +514,8 @@ def _worker_finish(
         with suppress(Exception):
             queue.note_fill_borrow_end(effective_record)
     if queue.withdrawal_covers(record, action_key=action_key) is not None:
-        # Cancellation remains the ending, but the worker owns the proof
-        # that its exact attempt stopped. Preserve that proof before giving
-        # up the claim; never overwrite an operator's decision or a newer
-        # generation's visible marker.
-        dst = queue.records.item_path(WITHDRAWN, action_key)
-        if read_claim is None:
-            return dst
-        with queue.action_transition_lock(action_key):
-            live = record_store.read_document(src)
-            if live is None or not claim_identity.same_claim(live, read_claim):
-                return dst
-            decision = queue.withdrawal_covers(record, action_key=action_key)
-            marker = record_store.read_document(dst)
-            current = (marker is not None and
-                       marker.get("published_unix") == record.get("published_unix"))
-            archive = (None if current else queue.records.withdrawn_finish_path(
-                action_key,
-                record,
-            ))
-            filed = dict(marker if current else record_store.read_document(archive) or decision)
-            if "withdrawn_attempt" not in filed:
-                retained = dict(record)
-                retained.pop("finish_pending", None)
-                retained.pop("container_cleanup_pending", None)
-                prior_attempts = int(retained.get("attempts", 0))
-                if (prior_attempts and "attempt_history" not in retained
-                        and "attempt_history_missing_before" not in retained):
-                    retained["attempt_history_missing_before"] = prior_attempts
-                finished_detail = dict(detail or {})
-                for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
-                    if field in record:
-                        finished_detail[field] = record[field]
-                finished_detail["container_cleanup"] = container_cleanup
-                retained.update(status=WITHDRAWN, attempts=prior_attempts + 1,
-                                finished_unix=pool._now(), finished_host=socket.gethostname(),
-                                detail=finished_detail)
-                retained["attempt_history"] = queue.archive_attempt(
-                    retained, attempt=retained["attempts"], status=WITHDRAWN,
-                    disposition=WITHDRAWN, detail=finished_detail)
-                adopted = queue.attempt_ending(retained)
-                if adopted["status"] != WITHDRAWN:
-                    raise PoolContractError("withdrawn finish conflicts with an archived attempt")
-                for field in ("status", "finished_unix", "finished_host", "detail"):
-                    retained[field] = adopted[field]
-                # Nested history keeps the decision's attempt count and
-                # inherited evidence unchanged. Readers never adopt an
-                # execution result in place of the cancellation.
-                filed["withdrawn_attempt"] = retained
-                for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
-                    if field in record:
-                        filed.setdefault(field, record[field])
-                filed.setdefault("container_cleanup", adopted["detail"]["container_cleanup"])
-                filed.setdefault("finished_unix", adopted["finished_unix"])
-                filed.setdefault("finished_host", adopted["finished_host"])
-                if current:
-                    queue.records.replace_record_at(dst, filed)
-                else:
-                    queue.records.file_record_if_absent_at(archive, filed)
-            if ("scratch_declaration_record" in record
-                    or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
-                queue.records.file_superseded(record, key=action_key,
-                                      kind="scratch-declarations-after-withdrawal", when=pool._now())
-            return _commit_claim(queue, CancelledClaim(
-                action_key, record, read_claim, holder, dst, decision, filed,
-                dst if current else archive))
+        return _complete_cancellation(queue, action_key, record, read_claim,
+                                      holder, container_cleanup, detail)
     if record is None:
         # A reaper concluded this claim while the work was still running,
         # so the claim file is gone and the item has already been filed
@@ -795,7 +732,16 @@ class CancelledClaim:
     proof_path: Path
 
 
-def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
+@dataclass(frozen=True)
+class CancellationRelease:
+    action_key: str
+    record: dict[str, object]
+    original: Mapping[str, object]
+    holder: str | None
+    destination: Path
+
+
+def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationRelease) -> Path | None:
     """Retire the exact owner before publishing its chosen next home.
 
     Policies retain their conditional reads and historical retention rules.
@@ -804,7 +750,7 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
     from . import pool
 
     key, record, destination = plan.action_key, plan.record, plan.destination
-    cancelled = isinstance(plan, CancelledClaim)
+    cancelled = isinstance(plan, (CancelledClaim, CancellationRelease))
     transition = Transition.CANCEL if cancelled else plan.transition
     disposition = WITHDRAWN if cancelled else plan.disposition
     target = disposition if disposition in {DONE, FAILED, WITHDRAWN} else READY
@@ -826,13 +772,13 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
         keep_tier = (plan.adopted.get("output_retry_stopped") is True
                      and queue.pin_holds_tier_tokens(record, key))
     holder = (plan.holder if isinstance(plan.holder, str) else socket.gethostname()
-              ) if transition in {Transition.EXPIRE, Transition.RELEASE_UNSTARTED} else plan.holder
+              ) if transition in {Transition.EXPIRE, Transition.RELEASE_UNSTARTED} or isinstance(plan, CancellationRelease) else plan.holder
     if transition in {Transition.FINISH, Transition.EXPIRE}:
         queue._release_reservation(key, host=holder, keep_tier=keep_tier)
     else:
         queue._release_reservation(key, host=holder)
     if cancelled:
-        if isinstance(plan.decision.get("gang_backfill_preemption"), Mapping):
+        if isinstance(plan, CancelledClaim) and isinstance(plan.decision.get("gang_backfill_preemption"), Mapping):
             from . import _gang
             timing = {**plan.decision["gang_backfill_preemption"], "tokens_returned_unix": pool._now()}
             plan.filed["gang_backfill_release"] = timing
@@ -846,7 +792,7 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
         tombstone.unlink(missing_ok=True)
         return destination
     retired = (_archive_earlier_terminal(queue, record, str(disposition))
-               if transition is Transition.FINISH and disposition in {DONE, FAILED} else None)
+               if transition in {Transition.FINISH, Transition.EXPIRE} and disposition in {DONE, FAILED} else None)
     if retired is not None:
         record["supersedes_terminal"] = retired[1]
     try:
@@ -926,23 +872,34 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         queue.records.lease_path(key).unlink(missing_ok=True)
         return None
     if queue.withdrawal_covers(record, action_key=key) is not None:
+        # Only an already filed worker result grants adoption. A cancellation
+        # alone cannot invent an execution or take a late worker's archive slot.
+        try:
+            prior = int(record.get("attempts", 0))
+            present = record_store.value_or_raise(queue.records.attempt_presence(record, prior + 1))
+            if present:
+                recovered = dict(record)
+                if prior and "attempt_history" not in recovered and "attempt_history_missing_before" not in recovered:
+                    recovered["attempt_history_missing_before"] = prior
+                recovered["attempts"] = prior + 1
+                recovered["attempt_history"] = [*recovered.get("attempt_history", []), {
+                    "attempt": prior + 1,
+                    "outcome": str(queue.records.attempt_path(record, prior + 1).relative_to(queue.root))}]
+                adopted = queue.attempt_ending(recovered)
+                if adopted["status"] != WITHDRAWN:
+                    raise PoolContractError("cancelled recovery conflicts with an archived attempt")
+                _complete_cancellation(queue, key, record, read_claim, holder,
+                                       container_cleanup, adopted["detail"])
+                return None
+        except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError) as exc:
+            print(f"pool cancelled recovery {key} retained: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return None
         if ("scratch_declaration_record" in record
                 or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
             queue.records.file_superseded(record, key=key,
-                                  kind="scratch-declarations-after-withdrawal", when=pool._now())
-        # A withdrawal that could not finish its own cleanup -- the
-        # operator's box died mid-verb, say -- leaves a claimed record
-        # whose lease nobody refreshes.  Requeueing that is the one
-        # thing withdrawal exists to prevent, so conclude it here
-        # instead: capacity back, records gone, nothing counted as
-        # reaped because nothing was returned to the pool.
-        tombstone, mine = queue._entomb_claim(key, expect=read_claim)
-        if not mine or tombstone is None:
-            return None
-        queue.records.lease_path(key).unlink(missing_ok=True)
-        queue._release_reservation(
-            key, host=holder if isinstance(holder, str) else socket.gethostname())
-        tombstone.unlink(missing_ok=True)
+                                          kind="scratch-declarations-after-withdrawal", when=pool._now())
+        _commit_claim(queue, CancellationRelease(
+            key, record, read_claim, holder, queue.records.item_path(WITHDRAWN, key)))
         return None
     # The filename is the identity; a record that disagrees with it, or
     # has lost it, must not be written back to a queue directory where
@@ -1201,10 +1158,9 @@ def _sweep_finish_tombstones(
                     bool(record_store.value_or_raise(queue.records.item_presence(state, key)))
                     for state in (READY, CLAIMED)
                 )
-                covered = (
-                    queue.terminal_outcome_covers(record, action_key=key) is not None
-                    or queue.withdrawal_covers(record, action_key=key) is not None
-                )
+                terminal = queue.terminal_outcome_covers(record, action_key=key)
+                covered = (terminal is not None
+                           or queue.withdrawal_covers(record, action_key=key) is not None)
                 if record is not None and type(record.get("published_unix")) in (int, float):
                     generation = record["published_unix"]
                     decision = queue.publication_ending(key, generation=generation)
@@ -1293,6 +1249,12 @@ def _sweep_finish_tombstones(
                             and lease.get("owner") == record.get("claimed_by")):
                         queue.records.lease_path(key).unlink(missing_ok=True)
                 except (OSError, PoolContractError, pb.CASUnavailableError):
+                    continue
+            if terminal is not None and not live:
+                try:
+                    if not _retire_recorded_terminal(queue, terminal[1]):
+                        continue
+                except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError):
                     continue
             if successor is not None:
                 try:
@@ -1813,3 +1775,111 @@ class DeferredLaunch:
 class TerminalReclaim:
     action_key: str
     unpin: bool = False
+
+
+def _complete_cancellation(queue, action_key, record, read_claim, holder,
+                           container_cleanup, detail) -> Path:
+    """Retain the decision and verified attempt before removing its exact claim."""
+    from . import pool
+
+    src = queue.records.item_path(CLAIMED, action_key)
+    # Cancellation remains the ending, but the worker owns the proof
+    # that its exact attempt stopped. Preserve that proof before giving
+    # up the claim; never overwrite an operator's decision or a newer
+    # generation's visible marker.
+    dst = queue.records.item_path(WITHDRAWN, action_key)
+    if read_claim is None:
+        return dst
+    with queue.action_transition_lock(action_key):
+        live = record_store.read_document(src)
+        if live is None or not claim_identity.same_claim(live, read_claim):
+            return dst
+        decision = queue.withdrawal_covers(record, action_key=action_key)
+        marker = record_store.read_document(dst)
+        current = (marker is not None and
+                   marker.get("published_unix") == record.get("published_unix"))
+        archive = (None if current else queue.records.withdrawn_finish_path(
+            action_key,
+            record,
+        ))
+        filed = dict(marker if current else record_store.read_document(archive) or decision)
+        if "withdrawn_attempt" not in filed:
+            retained = dict(record)
+            retained.pop("finish_pending", None)
+            retained.pop("container_cleanup_pending", None)
+            prior_attempts = int(retained.get("attempts", 0))
+            if (prior_attempts and "attempt_history" not in retained
+                    and "attempt_history_missing_before" not in retained):
+                retained["attempt_history_missing_before"] = prior_attempts
+            finished_detail = dict(detail or {})
+            for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
+                if field in record:
+                    finished_detail[field] = record[field]
+            finished_detail["container_cleanup"] = container_cleanup
+            retained.update(status=WITHDRAWN, attempts=prior_attempts + 1,
+                            finished_unix=pool._now(), finished_host=socket.gethostname(),
+                            detail=finished_detail)
+            retained["attempt_history"] = queue.archive_attempt(
+                retained, attempt=retained["attempts"], status=WITHDRAWN,
+                disposition=WITHDRAWN, detail=finished_detail)
+            adopted = queue.attempt_ending(retained)
+            if adopted["status"] != WITHDRAWN:
+                raise PoolContractError("withdrawn finish conflicts with an archived attempt")
+            for field in ("status", "finished_unix", "finished_host", "detail"):
+                retained[field] = adopted[field]
+            # Nested history keeps the decision's attempt count and
+            # inherited evidence unchanged. Readers never adopt an
+            # execution result in place of the cancellation.
+            filed["withdrawn_attempt"] = retained
+            for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup"):
+                if field in record:
+                    filed.setdefault(field, record[field])
+            filed.setdefault("container_cleanup", adopted["detail"]["container_cleanup"])
+            filed.setdefault("finished_unix", adopted["finished_unix"])
+            filed.setdefault("finished_host", adopted["finished_host"])
+            if current:
+                queue.records.replace_record_at(dst, filed)
+            else:
+                queue.records.file_record_if_absent_at(archive, filed)
+        if ("scratch_declaration_record" in record
+                or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
+            queue.records.file_superseded(record, key=action_key,
+                                  kind="scratch-declarations-after-withdrawal", when=pool._now())
+        return _commit_claim(queue, CancelledClaim(
+            action_key, record, read_claim, holder, dst, decision, filed,
+            dst if current else archive))
+
+
+
+def _retire_recorded_terminal(queue, outcome: Mapping[str, object]) -> bool:
+    """Complete only the historical unlink this filed ending already recorded."""
+    summary = outcome.get("supersedes_terminal")
+    if not isinstance(summary, Mapping):
+        return True
+    state, key = summary.get("state"), str(outcome["action_key"])
+    if state not in {DONE, FAILED}:
+        return False
+    prior = record_store.value_or_raise(queue.records.confirmed_item(state, key))
+    if prior is None:
+        return True
+    earlier = endings.publication_generation(prior.get("published_unix"))
+    current = endings.publication_generation(outcome.get("published_unix"))
+    if earlier is None or current is None or earlier >= current:
+        return False
+    # Interpretation stays in C06. A mutable summary does not verify history.
+    adopted = queue.attempt_ending(outcome)
+    if any(outcome.get(field) != adopted[field]
+           for field in ("status", "finished_unix", "finished_host", "detail")):
+        return False
+    for path, archived in queue.records.superseded_records(key, fresh=True):
+        if str(path) != summary.get("superseded_path"):
+            continue
+        if (not isinstance(archived, Mapping)
+                or archived.get("action_key") != key
+                or any(field not in archived or archived[field] != value for field, value in prior.items())
+                or any(archived.get(field) != value for field, value in summary.items()
+                       if field not in {"state", "superseded_path"})):
+            return False
+        queue.records.item_path(state, key).unlink(missing_ok=True)
+        return True
+    return False
