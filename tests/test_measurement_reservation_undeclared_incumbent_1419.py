@@ -96,7 +96,7 @@ def _export_of(tmp_path, queue, clock, producer, name, *, sealed_owner=True):
     ``dependent_of``, the producer's priority and its host's tag. No export
     allowance: it needs free tokens, so it meets every gate a real one meets.
     """
-    clock[0] += 0.001
+    clock.now += 0.001
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     checkout = tmp_path / "checkout"
     action = pb.seal_action({

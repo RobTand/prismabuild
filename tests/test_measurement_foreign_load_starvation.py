@@ -39,7 +39,7 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 T0 = 2_000_000.0
 
 
-from fleet_world import FleetWorld
+from fleet_world import Clock, FleetWorld
 
 
 def _key(seed: str) -> str:
@@ -48,9 +48,9 @@ def _key(seed: str) -> str:
 
 @pytest.fixture()
 def clock(monkeypatch):
-    now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
-    monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
+    now = Clock(now=T0)
+    monkeypatch.setattr(pool, "_now", lambda: now.now)
+    monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now.now)
     return now
 
 
@@ -65,7 +65,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _publish(queue, clock, key, resources):
-    clock[0] += 0.001
+    clock.now += 0.001
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources=resources)
     return key
@@ -95,7 +95,7 @@ def _foreign_sample(clock, *, held_quiet, foreign_level=0.43, spread=15):
     rest = 3.44 - 4 * foreign_level
     per_cpu.update({str(cpu): rest / spread for cpu in range(5, 5 + spread)})
     return {
-        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
+        "sampled_unix": clock.now, "cpu_count": 20, "interval_s": 1.,
         "psi_some": 0.034, "busy_cpus": 3.44,
         "per_cpu_busy": per_cpu, "foreign_per_cpu_busy": dict(per_cpu),
     }
@@ -199,7 +199,7 @@ def test_holder_busy_keeps_the_withhold_then_admits(
         level = 0.6 if state["busy"] else 0.
         per_cpu["0"] = per_cpu["1"] = level
         return {
-            "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
+            "sampled_unix": clock.now, "cpu_count": 20, "interval_s": 1.,
             "psi_some": 0.034, "busy_cpus": 2. * level,
             "per_cpu_busy": dict(per_cpu),
             "foreign_per_cpu_busy": dict(per_cpu),
@@ -222,5 +222,5 @@ def test_holder_busy_keeps_the_withhold_then_admits(
     # The drain completes and the host reads idle: the measurement runs.
     queue.finish(holder, status="executed")
     state["busy"] = False
-    clock[0] += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
+    clock.now += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
     assert claim(cpu_sampler=cpu_sampler) == measurement
