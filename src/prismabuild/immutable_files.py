@@ -830,8 +830,10 @@ def write_json_atomic(
     (#1331). Best-effort local sidecars can retain fsync=False. A failed
     rename removes the temporary before propagating the original error.
 
-    Standalone upgrade and broker writers keep their distinct temporary,
-    chmod, no-follow and directory-fsync contracts outside this owner.
+    Standalone upgrade, broker, progress and resource-scope writers keep
+    their distinct temporary, chmod, no-follow and directory-fsync contracts
+    outside this owner. Progress and resource-scope helpers must also remain
+    usable before the package closure is available.
     """
     if text not in ('canonical', 'canonical_lf', 'sorted_lf'):
         raise MaterializationContractError(
