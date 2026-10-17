@@ -1972,16 +1972,7 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
             if owed[0] is not None and (not generation
                                         or owed[0][2] <= generation):
                 owed[0] = None      # this write carries what was owed
-            if identities:
-                reader_lease.write_material(
-                    residency_root,
-                    consumer_action_key=args.consumer_action_key,
-                    mover_action_key=args.action_key,
-                    tier_id=args.tier_id, stage_root=str(args.stage_root),
-                    manifest_sha256=manifest_sha256,
-                    generation=publisher.material_generation(),
-                    entries=identities)
-            residency_map.write_fragment(residency_root, {
+            staged_path.publish_vouch(residency_root, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": args.consumer_action_key,
                 "mover_action_key": args.action_key,
@@ -1989,7 +1980,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
                 "stage_root": str(args.stage_root),
                 "manifest_sha256": manifest_sha256,
                 "entries": staged,
-            })
+            }, generation=publisher.material_generation() if identities else None,
+                material_entries=identities)
             return True
 
     served = served_for(args)

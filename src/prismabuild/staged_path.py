@@ -3,6 +3,7 @@ from __future__ import annotations
 import array
 import bisect
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
 import contextvars
 import errno
@@ -22,6 +23,55 @@ from prismabuild import output_vocabulary
 from prismabuild import progress as pb_progress
 from . import data_manifest as manifest_codec
 from prismabuild.stage_marks import STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, source_identity
+
+
+def _date_vouch(root, fragment, generation, entries):
+    return reader_lease.write_material(
+        root, consumer_action_key=str(fragment["consumer_action_key"]),
+        mover_action_key=str(fragment["mover_action_key"]),
+        tier_id=str(fragment["tier_id"]), stage_root=str(fragment["stage_root"]),
+        manifest_sha256=str(fragment["manifest_sha256"]),
+        generation=generation, entries=entries, epoch=fragment.get("epoch"))
+
+
+def publish_vouch(root: str | Path, fragment: Mapping[str, object], *,
+                  generation: str | None = None,
+                  material_entries: Mapping[str, object] | None = None) -> Path:
+    """Date new coverage before publishing the fragment that vouches for it."""
+    if material_entries:
+        _date_vouch(root, fragment, generation, material_entries)
+    return residency_map.write_fragment(root, fragment)
+
+
+def reissue_vouch(root: str | Path, source: Mapping[str, object], *,
+                  consumer_action_key: str, mover_action_key: str,
+                  generation: str, material_entries: Mapping[str, object]) -> Path:
+    """Date a shared copy before reissuing its fragment to another namespace."""
+    _date_vouch(root, {**source, "consumer_action_key": consumer_action_key,
+                      "mover_action_key": mover_action_key}, generation, material_entries)
+    return residency_map.write_fragment(root, residency_map.reissue(
+        source, consumer_action_key=consumer_action_key, mover_action_key=mover_action_key))
+
+
+@dataclass(frozen=True)
+class VouchShrink:
+    fragment_committed: bool
+    complete: bool
+    error: str = ""
+
+
+def shrink_vouch(root: str | Path, fragment: Mapping[str, object], *,
+                 generation: str, material_entries: Mapping[str, object]) -> VouchShrink:
+    """Withdraw mentions before trimming their dates, retaining partial results."""
+    try:
+        residency_map.write_fragment(root, fragment)
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        return VouchShrink(False, False, f"fragment rewrite: {exc}")
+    try:
+        _date_vouch(root, fragment, generation, material_entries)
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        return VouchShrink(True, False, f"material rewrite: {exc}")
+    return VouchShrink(True, True)
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
 #: question cannot be answered here".  Linux reports ``ENODATA``; the name
@@ -3070,14 +3120,9 @@ def prune_stale_mentions(
             material_final_version = material_trusted
             if not exact_material:
                 try:
-                    reader_lease.write_material(
-                        root, consumer_action_key=consumer_action_key,
-                        mover_action_key=mover_action_key, tier_id=tier_id,
-                        stage_root=str(current["stage_root"]),
-                        manifest_sha256=str(current["manifest_sha256"]),
-                        generation=str(material["generation"]),
-                        entries={key: material_entries[key] for key in entries},
-                        epoch=material.get("epoch"))
+                    _date_vouch(
+                        root, current, str(material["generation"]),
+                        {key: material_entries[key] for key in entries})
                 except (OSError, ValueError, pb.PrismaBuildError) as exc:
                     errors.append(f"material trim: {exc}")
                     return receipt(retained=total)
@@ -3156,26 +3201,13 @@ def prune_stale_mentions(
         survivor_mentions = {key: material_entries[key] for key in surviving}
         document = {key: current[key] for key in current if key != "entries"}
         document["entries"] = surviving
-        try:
-            residency_map.write_fragment(root, document)
-        except (OSError, ValueError, pb.PrismaBuildError) as exc:
-            errors.append(f"fragment rewrite: {exc}")
-            return partial_receipt(fragment_committed=False,
-                                   pair_complete=False)
-        try:
-            reader_lease.write_material(
-                root, consumer_action_key=consumer_action_key,
-                mover_action_key=mover_action_key, tier_id=tier_id,
-                stage_root=str(current["stage_root"]),
-                manifest_sha256=str(current["manifest_sha256"]),
-                generation=str(material["generation"]),
-                entries=survivor_mentions,
-                epoch=material.get("epoch"))
-        except (OSError, ValueError, pb.PrismaBuildError) as exc:
-            errors.append(f"material rewrite: {exc}")
-            return partial_receipt(fragment_committed=True,
-                                   pair_complete=False)
-        return partial_receipt(fragment_committed=True, pair_complete=True)
+        rewritten = shrink_vouch(
+            root, document, generation=str(material["generation"]),
+            material_entries=survivor_mentions)
+        if rewritten.error:
+            errors.append(rewritten.error)
+        return partial_receipt(fragment_committed=rewritten.fragment_committed,
+                               pair_complete=rewritten.complete)
 
     # One hold for the whole transaction, as before #988: its per-entry
     # ``lstat`` classification is the act's own identity evidence, and a
@@ -7639,17 +7671,12 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
             if isinstance(old_material, dict):
                 material_entries = old_material.get("entries")
                 assert isinstance(material_entries, dict)
-                reader_lease.write_material(
-                    residency_root, consumer_action_key=consumer_action_key,
-                    mover_action_key=new_key,
-                    tier_id=str(source.get("tier_id") or ""),
-                    stage_root=str(source.get("stage_root") or ""),
-                    manifest_sha256=str(source.get("manifest_sha256") or ""),
+                publish_vouch(
+                    residency_root, successor,
                     generation=reader_lease.adopted_generation(old_material),
-                    entries=material_entries,  # type: ignore[arg-type]
-                    epoch=(str(source.get("epoch") or "")
-                           if source.get("epoch") is not None else None))
-            residency_map.write_fragment(residency_root, successor)
+                    material_entries=material_entries)
+            else:
+                publish_vouch(residency_root, successor)
             expected = sum(before.values())
             moved = queue.tier(tier_id).handover(old_key, new_key)
             if moved != expected:

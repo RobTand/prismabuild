@@ -331,18 +331,9 @@ def promote(args, *, stop=None) -> dict[str, object]:
         # other promotion of these names adopt them by content.  The other
         # order left a vouch without a date, which the publication gate
         # reads as a pending date and refuses on forever.
-        if copier.sidecar:
-            reader_lease.write_material(
-                residence,
-                consumer_action_key=args.consumer_action_key,
-                mover_action_key=args.action_key,
-                tier_id=args.tier_id, stage_root=str(args.ram_root),
-                manifest_sha256=args.manifest_sha256,
-                generation=material_generation, entries=copier.sidecar,
-                epoch=str(epoch["epoch"]))
         # The fragment carries the epoch so every reader of the map can
         # tell a current promotion from one the reboot deleted.
-        residency_map.write_fragment(args.residency_root, {
+        staged_path.publish_vouch(args.residency_root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": args.consumer_action_key,
             "mover_action_key": args.action_key,
@@ -351,7 +342,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
             "epoch": str(epoch["epoch"]),
             "manifest_sha256": args.manifest_sha256,
             "entries": copier.staged,
-        })
+        }, generation=material_generation, material_entries=copier.sidecar)
     receipt["material_generation"] = material_generation
     receipt["source_covers"] = proof.get("covers")
     if not copier.staged and not overran:

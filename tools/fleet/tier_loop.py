@@ -2196,19 +2196,11 @@ def fan_out_shared_ranges(queue: pool.PoolQueue,
             try:
                 generation = reader_lease.adopted_generation(material)
                 for reader in stale:
-                    reader_lease.write_material(
-                        root, consumer_action_key=reader,
-                        mover_action_key=mover,
-                        tier_id=str(source["tier_id"]),
-                        stage_root=str(source["stage_root"]),
-                        manifest_sha256=str(source["manifest_sha256"]),
+                    staged_path.reissue_vouch(
+                        root, {**source, "entries": entries},
+                        consumer_action_key=reader, mover_action_key=mover,
                         generation=generation,
-                        entries={key: dated_entries[key] for key in entries},
-                        epoch=(str(source["epoch"])
-                               if source.get("epoch") is not None else None))
-                    residency_map.write_fragment(root, residency_map.reissue(
-                        {**source, "entries": entries},
-                        consumer_action_key=reader, mover_action_key=mover))
+                        material_entries={key: dated_entries[key] for key in entries})
                     _FANOUT_FINGERPRINTS[(str(queue.root), reader, mover)] = version
             except (OSError, ValueError, reader_lease.ReaderLeaseError) as exc:
                 events.append({"event": "shared-range-fan-out-failed",
