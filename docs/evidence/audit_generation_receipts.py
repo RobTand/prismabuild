@@ -16,7 +16,9 @@ TERMS = re.compile(r"RUNTIME_VERSION|runtime_version|generation_receipt|"
                    r"MAINTENANCE_DURABLE_PROTOCOL")
 OWNERS = {"generation_receipt", "runtime_publication", "resource_scope",
           "upgrade_client", "publish_runtime", "supervise", "role_session",
-          "compatibility_window"}
+          "compatibility_window", "submission", "pbrun", "fleet_membership",
+          "pbcanary_watch", "generation_fixture", "client_proof_bridge_fixture",
+          "movement_publication_support", "receipt_reader_fixture"}
 
 
 def sha(data):
@@ -33,6 +35,8 @@ def inventory(root):
     paths = sorted(set(tracked.decode().rstrip("\0").split("\0")))
     occurrences, contracts, modules, sources = [], {}, {}, {}
     for relative in paths:
+        if relative.startswith("qualification_"):
+            continue
         path = root / relative
         if not path.is_file() or path.suffix not in (".py", ".sh"):
             continue
@@ -41,8 +45,23 @@ def inventory(root):
         hits = [(number, line) for number, line in enumerate(text.splitlines(), 1)
                 if TERMS.search(line)]
         tree = ast.parse(text) if path.suffix == ".py" else None
-        imports, symbols, embedded = [], [], []
+        imports, symbols, embedded, aliases, reads = [], [], [], set(), []
         if tree:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign) and any(
+                        isinstance(child, ast.Constant) and isinstance(child.value, str)
+                        and TERMS.search(child.value) for child in ast.walk(node.value)):
+                    aliases.update(child.id for target in node.targets for child in ast.walk(target)
+                                   if isinstance(child, ast.Name))
+            grew = True
+            while grew:
+                before = set(aliases)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Assign) and any(
+                            isinstance(child, ast.Name) and child.id in aliases for child in ast.walk(node.value)):
+                        aliases.update(child.id for target in node.targets for child in ast.walk(target)
+                                       if isinstance(child, ast.Name))
+                grew = aliases != before
             for node in ast.walk(tree):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
                     imports.extend([node.module or ""] if isinstance(node, ast.ImportFrom)
@@ -50,6 +69,12 @@ def inventory(root):
                     imports.extend(alias.name for alias in node.names)
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     symbols.append((node.lineno, node.end_lineno, node.name))
+                if isinstance(node, ast.Call) and any(
+                        isinstance(child, ast.Name) and child.id in aliases for child in ast.walk(node)):
+                    reads.append({'line': node.lineno, 'call': ast.unparse(node)[:320]})
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and TERMS.search(node.value):
+                    if not any(number == node.lineno for number, _ in hits):
+                        hits.append((node.lineno, repr(node.value)[:320]))
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     if TERMS.search(node.value) and "\n" in node.value:
                         try:
@@ -69,6 +94,8 @@ def inventory(root):
         modules[relative] = imports
         if hits:
             sources[relative] = sha(raw)
+            occurrences.append({'path': relative, 'line': 0, 'symbol': '<alias-map>',
+                                'aliases': sorted(aliases), 'dependent_calls': reads})
             for number, line in hits:
                 enclosing = [(end - start, name) for start, end, name in symbols
                              if start <= number <= end]
@@ -79,6 +106,7 @@ def inventory(root):
                 if path.startswith("tests/test_") and any(
                     item.rsplit(".", 1)[-1] in OWNERS for item in imports)}
     selected.update(item["path"] for item in occurrences if item["path"].startswith("tests/test_"))
+    selected.add("tests/test_duplication_baseline.py")
     dependencies = {Path(path).stem for path in selected}
     changed = True
     while changed:
