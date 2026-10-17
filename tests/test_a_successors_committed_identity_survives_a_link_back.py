@@ -36,6 +36,8 @@ The refused link is simulated by making ``os.link`` of a private retiring
 name raise ``EPERM`` when the name is free, as the kernel does.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import contextlib
 import errno
@@ -127,8 +129,8 @@ def _while_a_retirement_holds_the_lock(monkeypatch, queue, prefix: str,
 
 def _filed(queue, instance: dict, batch_id: str) -> dict:
     return json.loads((Path(queue.root) / "residency"
-                       / po.OUTPUT_BATCHES_SUBDIR
-                       / po.instance_namespace(instance)
+                       / oc.OUTPUT_BATCHES_SUBDIR
+                       / oc.instance_namespace(instance)
                        / f"{batch_id}.json").read_text())
 
 
@@ -153,12 +155,12 @@ class _Successor:
             self.template = r2._template(str(origin))
             self.queue = r2._queue(tmp_path)
             self.instance = r2._bind(self.queue, self.template)["instance"]
-            assert po.admit_instance(self.queue, self.instance,
+            assert bl.BatchLedger.admit(self.queue, self.instance,
                                      self.template)["ok"] is True
             self.batch_id = "w0"
             self.path = origin / "w0.pt"
             payload = b"S" * 64
-            assert po.require_prewrite(
+            assert bl.BatchLedger.reserve(
                 self.queue, self.instance, self.template,
                 batch_id=self.batch_id, tier=r2.STAGE_TIER,
                 class_bytes={"payload": len(payload), "checkpoint": 0,
@@ -166,11 +168,11 @@ class _Successor:
                 paths=[str(self.path)])["ok"] is True
             r2._write(self.path, payload)
             # The DEV convention: no digest, so the identity is the proof.
-            self.descriptor = po.validate_descriptor({
-                "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+            self.descriptor = oc.validate_descriptor({
+                "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
                 "artifact_class": "payload", "path": str(self.path),
                 "bytes": len(payload), "sha256": None,
-                "producer_generation": po.mint_generation(),
+                "producer_generation": oc.mint_output_generation(),
                 "owner_action_key": self.instance["owner_action_key"],
                 "owner_attempt": dict(self.instance["owner_attempt"]),
             }, self.template, self.instance)
@@ -203,7 +205,7 @@ class _Successor:
             return po.commit_batch(self.queue, self.instance, self.template,
                                    [self.descriptor], batch_id=self.batch_id,
                                    tier=r2.STAGE_TIER, mover_key=r2.MOVER0)
-        return po.commit_origin_batch(self.queue, self.instance, self.template,
+        return bl.BatchLedger.commit_origin(self.queue, self.instance, self.template,
                                       [self.descriptor], batch_id=self.batch_id,
                                       landed=self.landed)
 
@@ -222,7 +224,7 @@ def _assert_the_identity_is_the_files(successor: _Successor, committed: dict,
         f"{recorded} against {_identity(successor.path)}")
     if successor.kind == "staged-null-digest":
         # The restage gate: with no digest, the identity is all it has.
-        assert po._check_origin_identity(filed, filed["entries"]) == {
+        assert bl.check_origin_identity(filed, filed["entries"]) == {
             "ok": True, "repins": []}
         return
     if successor.kind == "origin-only-landed":
@@ -238,8 +240,7 @@ def _assert_the_identity_is_the_files(successor: _Successor, committed: dict,
                                         [committed["ref"]])
     assert [entry["path"] for entry in manifest["entries"]] == [
         str(successor.path)]
-    entry = po._read_commitments(po._commitments_path(
-        successor.queue.root, successor.instance))["batches"][successor.batch_id]
+    entry = bl.BatchLedger.for_instance(successor.queue.root, successor.instance).capture()["batches"][successor.batch_id]
     assert "origin_repins" not in entry
 
 
@@ -312,8 +313,7 @@ def test_an_origin_whose_timestamps_keep_moving_is_refused_not_committed_stale(
     assert committed["ok"] is False, committed
     assert committed["refusal"] == "origin-is-not-the-landed-copy", committed
     assert str(successor.path) in committed["detail"]
-    batches = po._read_commitments(po._commitments_path(
-        successor.queue.root, successor.instance))["batches"]
+    batches = bl.BatchLedger.for_instance(successor.queue.root, successor.instance).capture()["batches"]
     assert successor.batch_id not in batches, "the refused commit filed a batch"
 
     # Nothing was consumed: once the file stops moving, the commit is taken.
@@ -376,7 +376,7 @@ def test_a_writers_file_the_retirement_may_not_link_goes_back_to_its_path(
         "the successor's file is not at its path")
     assert _same_file(landed["identity"], _identity(path)), (
         "the file at the path is not the successor's")
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     assert retired[0]["unlinked"] == []
     assert retired[0]["superseded"] == [str(path)]
@@ -397,7 +397,7 @@ def test_an_interrupted_delete_puts_a_writers_file_back_without_a_link(
     events = po.origin_retirement_tick(queue)
 
     assert refused, "the put-back never met a refused link"
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     assert retired[0]["unlinked"] == []
     assert retired[0]["superseded"] == [str(path)]
@@ -424,7 +424,7 @@ def test_a_file_nothing_can_put_back_is_kept_named_and_put_back_later(
 
     events = po.origin_retirement_tick(queue)
 
-    refused = _events(events, po.ORIGIN_RETIREMENT_REFUSED_EVENT)
+    refused = _events(events, oc.ORIGIN_RETIREMENT_REFUSED_EVENT)
     assert len(refused) == 1, events
     assert refused[0]["reason"].startswith("origin-displaced"), refused
     assert str(private) in refused[0]["reason"]
@@ -438,7 +438,7 @@ def test_a_file_nothing_can_put_back_is_kept_named_and_put_back_later(
     monkeypatch.setattr(po, "_rename_noreplace", real_rename)
     events = po.origin_retirement_tick(queue)
 
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1 and retired[0]["superseded"] == [str(path)], events
     assert path.read_bytes() == b"the successor's bytes"
     assert not private.exists()

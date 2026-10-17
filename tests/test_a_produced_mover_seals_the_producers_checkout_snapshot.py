@@ -33,6 +33,8 @@ a fleet worker loop; pbrun's submitter handles (``pbrun.SH``) are redirected
 into the fixture so ``freeze_action_template`` ingests into a temp CAS.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from submission_support import patch_store
 
 import json
@@ -183,7 +185,7 @@ class _Producer:
         # handles; redirect them into the fixture, never the live CAS.
         patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
         demand = {"cpu": 1, "mem_gb": 1,
-                  **po.owner_demand_terms(self.template)}
+                  **oc.owner_demand_terms(self.template)}
         frozen = submit_core.freeze_template(
             command=["/bin/true"], cwd=cwd, logical_cwd=subdirectory,
             demand=demand, placement={"required_tags": []},
@@ -221,8 +223,8 @@ class _Producer:
         self.inst = po.bind_instance(self.q, self.template,
                                      owner_action_key=self.key,
                                      claim_snapshot=claimed, env=env)
-        po.declare_instance(self.q.root, self.inst)
-        assert po.admit_instance(self.q, self.inst, self.template)["ok"] is True
+        bl.declare_instance(self.q.root, self.inst)
+        assert bl.BatchLedger.admit(self.q, self.inst, self.template)["ok"] is True
         self.stage_root = tmp_path / "stage"
         _announce_tier(self.q, self.stage_root)
 
@@ -337,7 +339,7 @@ def test_a_repeat_materialization_seals_the_same_snapshot(
     retired = po.retire_batch(
         world.q, world.inst, world.template, "b1",
         stage_root=str(world.stage_root),
-        residency_root=po.output_fragment_root(world.q.root / pool.record_store.RESIDENCY))
+        residency_root=bl.output_fragment_root(world.q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, retired
     refill = po.refill_window(world.q, world.inst, world.template, tier=TIER)
     assert refill.get("ok") is True, refill

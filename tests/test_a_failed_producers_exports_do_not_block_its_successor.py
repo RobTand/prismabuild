@@ -26,6 +26,8 @@ Everything runs on a synthetic origin prefix, spool and queue under
 ``tmp_path``.  Nothing reads or writes a real stage, origin or queue.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 from pathlib import Path
@@ -85,9 +87,9 @@ def _retry(spool):
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": spool.owner,
                                      "PRISMABUILD_ACTION_NONCE": control["nonce"],
                                      "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(q.root, instance)
-    assert po.admit_instance(q, instance, spool.template)["ok"]
-    assert po._producer_attempt_state(q, spool.instance) == "dead"
+    bl.declare_instance(q.root, instance)
+    assert bl.BatchLedger.admit(q, instance, spool.template)["ok"]
+    assert bl.producer_attempt_state(q, spool.instance) == "dead"
     return ps.ProducedSpool(q, instance, spool.template, cas_root=spool.cas_root,
                             root=spool.root, max_bytes=spool.max_bytes)
 
@@ -101,7 +103,7 @@ def _new_key(spool, label):
     q = spool.queue
     q.withdraw(spool.owner, reason="test: the producer failed")
     q.finish(spool.owner, status="failed")
-    assert po._producer_attempt_state(q, spool.instance) == "dead"
+    assert bl.producer_attempt_state(q, spool.instance) == "dead"
     cas, request = po._read_producer_request(spool.cas_root, spool.owner)
     request.pop("action_key")
     request["environment"]["variables"]["PB_TEST_PRODUCER"] = label
@@ -317,11 +319,11 @@ def test_a_committed_file_is_adopted_with_its_bytes_and_never_replaced(tmp_path)
     first = world(tmp_path)
     payload = b"committed before the attempt died"
     destination, _ = _landed(first, "b39", payload)
-    descriptor = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
+    descriptor = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
         "path": str(destination), "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": first.owner, "owner_attempt": first.instance["owner_attempt"]},
         first.template, first.instance)
     batch = po.publish_prepaid_batch(first.queue, first.instance, first.template,

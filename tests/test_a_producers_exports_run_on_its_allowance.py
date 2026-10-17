@@ -25,6 +25,8 @@ path on sparklina's live CPU map, and its exports are published by the real
 telemetry are stated.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from pathlib import Path
 import time
@@ -106,7 +108,7 @@ def _publish_producer(tmp_path: Path, *, measurement: bool = False,
     queue.publish(action_key=owner, cas_root=str(cas_root),
                   worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
                   checkout_root=str(tmp_path / "mover-checkout"),
-                  resources={**demand, **po.owner_demand_terms(template)},
+                  resources={**demand, **oc.owner_demand_terms(template)},
                   produced_output_template=template)
     return SimpleNamespace(queue=queue, owner=owner, template=template,
                              cas_root=cas_root), cas
@@ -135,8 +137,8 @@ def _producer(tmp_path: Path, monkeypatch, *, measurement: bool = False,
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
             "PRISMABUILD_ACTION_NONCE": control["nonce"],
             "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"]
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"]
     fx._announce_tier(queue, tmp_path / "stage")
     spool = ps.ProducedSpool(queue, instance, template, cas_root=cas_root,
                              root=tmp_path / "local", max_bytes=256)
@@ -448,7 +450,7 @@ def test_a_published_producer_that_fits_without_its_allowance_still_claims(
     published, _cas = _publish_producer(tmp_path, demand=demand)
     queue, owner = published.queue, published.owner
     if measured_slots is not None:
-        rates = {po.template_sha256(published.template): {
+        rates = {oc.template_sha256(published.template): {
             "landing_s": [float(measured_slots)], "spacing_s": [1.]}}
         base = adaptive_cpu.local_state_base(queue.ledger().base)
         adaptive_cpu.write_json(base / adaptive_cpu.EXPORT_RATES, rates)

@@ -104,6 +104,8 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 """
 
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from . import claim_identity
 
@@ -975,8 +977,6 @@ def normalize_placement_tags(tags: Sequence[object]) -> list[str]:
     return sorted(normalized)
 
 
-
-
 def normalize_priority_reason(value: object) -> str | None:
     """Validate an optional scheduling annotation, never an action parameter."""
     if value is None:
@@ -1032,8 +1032,6 @@ def tested_repository_of(record: object) -> str:
                 and value.strip().isprintable()):
             return value.strip()
     return TESTED_REPOSITORY_UNKNOWN
-
-
 
 
 class WithdrawnActionError(PoolContractError):
@@ -2363,8 +2361,6 @@ def read_queue_record(path: Path) -> dict[str, object] | None:
     return record_store.read_document(path)
 
 
-
-
 def _retirement_checkpoint_digest(body: Mapping[str, object]) -> str:
     """The self-consistency digest of one checkpoint body, digest field excluded."""
 
@@ -3381,10 +3377,6 @@ def _reaped_children(
         "max_rss_bytes": (watermark if after.ru_maxrss > before.ru_maxrss
                           else None),
     }
-
-
-
-
 
 
 def _acquisition_clock(holder: Path) -> float | None:
@@ -7070,7 +7062,7 @@ class PoolQueue:
 
                 produced_mod.declare_template(
                     self.root, validated_produced_template)
-            except produced_mod.ProducedOutputError as exc:
+            except oc.ProducedOutputError as exc:
                 raise PoolContractError(
                     f"produced-output template conflict: {exc}") from exc
         published_unix = _now()
@@ -11983,7 +11975,7 @@ class PoolQueue:
         One exception, which keeps the rule's point: a produced-output step
         that claims or deletes an origin path holds the locks of its output
         prefix and of every filed template prefix that overlaps it
-        (``produced_output._output_prefix_locks``, #1063).  It asks for them
+        (``batch_ledger.path_locks``, #1063).  It asks for them
         all at once, sorted by absolute path, and for no other lock of this
         family while it holds them; every other caller holds one and asks
         for no other.  A holder only ever waits for a lock that sorts after
@@ -12150,19 +12142,11 @@ class PoolQueue:
             pass
 
 
-
-
     #: Host-ledger holder prefix for RAM-tier fill holds (#1222).  The
     #: holder names a mover grant, so eviction and reaping can release
     #: exactly the tokens the fill took, and the rows-held read can
     #: subtract exactly those holds.
     RAM_HOST_MEMORY_PREFIX = storage_tiers.RAM_HOST_MEMORY_PREFIX
-
-
-
-
-
-
 
 
     def rows_host_memory_held(self, host: str) -> int | None:
@@ -12193,8 +12177,6 @@ class PoolQueue:
                 return None
             total -= int(tokens.get("mem_gb", 0))
         return max(0, total)
-
-
 
 
     # -- advance-credit funding records (window progress protection) --------
@@ -13421,7 +13403,7 @@ class PoolQueue:
         (no scope/template scans, no unbounded reads): instance at
         `scopes/{owner}/{template_id}.{nonce}/instance.json` (bounded 64KB),
         template at `produced-output-templates/{template_id}.json` (bounded
-        1MB), commitments via existing `_read_commitments`, batch file via
+        1MB), commitments via `BatchLedger.capture`, batch file via
         the loader. A missing/unreadable/mismatched commit is unknown (no
         credit); a failed loader never downgrades to prewrite authorization.
         Validates exact instance/template/batch/range using existing
@@ -13457,9 +13439,8 @@ class PoolQueue:
         total = bound_range[1] - bound_range[0]
         # Deterministic instance path (no scan).
         try:
-            inst_path = (Path(self.root) / "residency"
-                         / produced_mod.OUTPUT_SCOPES_SUBDIR / owner_key
-                         / f"{template_id}.{owner_nonce}" / "instance.json")
+            inst_path = bl.BatchLedger.at_scope(bl.attempt_scope(
+                self.root, owner_key, template_id, owner_nonce)).instance_path
             try:
                 with open(inst_path, "rb") as handle:
                     raw_inst = handle.read(64 * 1024 + 1)
@@ -13470,10 +13451,10 @@ class PoolQueue:
             if len(raw_inst) > 64 * 1024:
                 return False
             try:
-                instance = produced_mod.validate_instance(
+                instance = oc.validate_instance(
                     _json.loads(raw_inst.decode()))
             except (ValueError, UnicodeDecodeError,
-                    produced_mod.ProducedOutputError):
+                    oc.ProducedOutputError):
                 return False
         except (OSError, PoolContractError, ValueError):
             return False
@@ -13489,7 +13470,7 @@ class PoolQueue:
         # Deterministic template path (no scan).
         try:
             tmpl_path = (Path(self.root) / "residency"
-                         / produced_mod.OUTPUT_TEMPLATES_SUBDIR
+                         / oc.OUTPUT_TEMPLATES_SUBDIR
                          / f"{template_id}.json")
             try:
                 with open(tmpl_path, "rb") as handle:
@@ -13501,83 +13482,25 @@ class PoolQueue:
             if len(raw_tmpl) > 1024 * 1024:
                 return False
             try:
-                checked_template = produced_mod.validate_template(
+                checked_template = oc.validate_template(
                     _json.loads(raw_tmpl.decode()))
             except (ValueError, UnicodeDecodeError,
-                    produced_mod.ProducedOutputError):
+                    oc.ProducedOutputError):
                 return False
         except (OSError, PoolContractError, ValueError):
             return False
-        if produced_mod.template_sha256(checked_template) != template_sha:
+        if oc.template_sha256(checked_template) != template_sha:
             return False
-        # Commitments entry (existing helper; small file per instance).
-        try:
-            commitments = produced_mod._read_commitments(
-                produced_mod._commitments_path(self.root, instance))
-        except produced_mod.ProducedOutputError:
-            return False
-        batches = commitments.get("batches")
-        if not isinstance(batches, dict):
-            return False
-        entry = batches.get(batch_id)
-        if not isinstance(entry, dict):
-            return False
-        if (str(entry.get("manifest_digest")) != manifest
-                or str(entry.get("tier")) != tier_id):
-            return False
-        # WHICH mover this committed batch authorizes. The batch's own first
-        # publication always does. A RE-materialization of the same batch
-        # (`produced_output.ensure_batch_materialized`) stages the identical
-        # manifest over the identical origins under a successor mover whose
-        # key PB sealed and filed on the batch's materialization list, so the
-        # committed batch authorizes that key too -- and ONLY while it is the
-        # single live row on that list, with the batch's own tier. A
-        # malformed list is unknown and authorizes nothing (no credit), never
-        # a downgrade to the prewrite path.
-        if str(entry.get("mover_key")) != mover_key:
-            try:
-                live = produced_mod._live_materialization(entry)
-            except produced_mod.ProducedOutputError:
-                return False
-            except (OSError, ValueError):
-                return False
-            if (live is None
-                    or str(live.get("mover_key")) != mover_key
-                    or str(live.get("tier")) != tier_id):
-                return False
-        # Strict loader (R4): bounded, exact binding, re-validated entries,
-        # recomputed manifest. Missing/empty entries refuse inside (never
-        # vacuously True); corrupt/mismatched commitments never fall through
-        # to prewrite (no downgrade).
-        try:
-            filed, _ = produced_mod._load_batch_record(
-                self.root, instance, checked_template, entry, batch_id)
-        except produced_mod.ProducedOutputError:
-            return False
-        except (OSError, ValueError):
-            return False
-        if (str(filed.get("manifest_digest")) != manifest
-                or str(filed.get("tier")) != tier_id
-                or int(filed.get("total_bytes", -1)) != total):
-            return False
-        # The immutable record names the FIRST mover; a successor is
-        # authorized only through the filed materialization list checked
-        # above, and the record's own mover must still agree with the entry
-        # (a changed mover in commitments authorizes nothing).
-        if (str(filed.get("mover_key")) != str(entry.get("mover_key"))
-                or (str(filed.get("mover_key")) != mover_key
-                    and not any(
-                        str(item.get("mover_key")) == mover_key
-                        for item in (entry.get("materializations") or [])
-                        if isinstance(item, Mapping)))):
-            return False
-        return True
+        return bl.BatchLedger.authorizes_mover(
+            self.root, instance, checked_template, batch_id=batch_id,
+            manifest=manifest, tier_id=tier_id, mover_key=mover_key,
+            total=total)
 
     def _output_precommit_authority(self, record: Mapping[str, object]) -> bool:
         """Durable-prewrite authority for drive/fund recovery (R2).
 
         Deterministic instance path (no scan), bounded prewrite read (64KB
-        via `_read_prewrite` helper which reads one file; prewrites are
+        via `BatchLedger.prewrite` which reads one file; prewrites are
         tiny). Checks tier/owner/attempt match + class_bytes total == intent
         range total. Used by drive (transfer remainder before commit) and
         fund (creation); NEVER by cover/claim (which requires filed commit
@@ -13605,9 +13528,8 @@ class PoolQueue:
             return False
         total = bound_range[1] - bound_range[0]
         try:
-            inst_path = (Path(self.root) / "residency"
-                         / produced_mod.OUTPUT_SCOPES_SUBDIR / owner_key
-                         / f"{template_id}.{owner_nonce}" / "instance.json")
+            inst_path = bl.BatchLedger.at_scope(bl.attempt_scope(
+                self.root, owner_key, template_id, owner_nonce)).instance_path
             try:
                 with open(inst_path, "rb") as handle:
                     raw_inst = handle.read(64 * 1024 + 1)
@@ -13616,32 +13538,30 @@ class PoolQueue:
             if len(raw_inst) > 64 * 1024:
                 return False
             try:
-                instance = produced_mod.validate_instance(
+                instance = oc.validate_instance(
                     _json.loads(raw_inst.decode()))
             except (ValueError, UnicodeDecodeError,
-                    produced_mod.ProducedOutputError):
+                    oc.ProducedOutputError):
                 return False
         except (OSError, PoolContractError, ValueError):
             return False
         if (str(instance.get("template_sha256")) != template_sha):
             return False
         try:
-            prewrite = produced_mod._read_prewrite(
-                produced_mod._prewrites_dir(self.root, instance)
-                / f"{batch_id}.prewrite.json")
-        except produced_mod.ProducedOutputError:
+            prewrite = bl.BatchLedger.for_instance(self.root, instance).prewrite(batch_id)
+        except oc.ProducedOutputError:
             return False
         if prewrite is None:
             return False
-        if str(prewrite.get("tier")) != tier_id:
+        if str(prewrite.tier) != tier_id:
             return False
-        if str(prewrite.get("owner_action_key")) != owner_key:
+        if str(prewrite.owner) != owner_key:
             return False
         try:
-            if dict(prewrite.get("owner_attempt", {})) != dict(
+            if prewrite.attempt_binding != dict(
                     instance.get("owner_attempt", {})):
                 return False
-            classes = dict(prewrite.get("class_bytes", {}))
+            classes = dict(prewrite.class_bytes)
             pre_total = (int(classes.get("payload", 0))
                          + int(classes.get("checkpoint", 0))
                          + int(classes.get("temp", 0)))
@@ -13690,10 +13610,10 @@ class PoolQueue:
             return {"ok": False, "refusal": "bad-descriptors"}
         try:
             from . import produced_output as produced_mod
-            binding = produced_mod.describe_output_precommit_for_funding(
+            binding = bl.BatchLedger.precommit(
                 self, instance, template, batch_id, descriptors,
                 tier, str(mover_key))
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             text = str(exc)
             if "template-mismatch" in text:
                 return {"ok": False, "refusal": "template-mismatch"}
@@ -13723,7 +13643,7 @@ class PoolQueue:
             kind = storage_tiers.capacity_kind_of(tier)
             total = int(binding["total_bytes"])
             batch_gib = storage_tiers.stage_tokens_for_bytes(total)
-            checked_template = produced_mod.validate_template(template)
+            checked_template = oc.validate_template(template)
             window = int(checked_template["working_demands"][tier]["window_gib"])
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -13870,7 +13790,7 @@ class PoolQueue:
 
         Exact subset transfer, never a second reservation from free.
         Validates authority from LIVE precommit records via
-        ``produced_output.describe_output_precommit_for_funding`` (bound
+        ``batch_ledger.BatchLedger.precommit`` (bound
         template/live owner/prewrite/descriptors/manifest; filed batch NOT
         required) plus live mover publication; caller hashes prove nothing.
 
@@ -13896,10 +13816,10 @@ class PoolQueue:
             return {"ok": False, "refusal": "bad-descriptors"}
         try:
             from . import produced_output as produced_mod
-            binding = produced_mod.describe_output_precommit_for_funding(
+            binding = bl.BatchLedger.precommit(
                 self, instance, template, batch_id, descriptors,
                 tier, str(mover_key))
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             text = str(exc)
             if "template-mismatch" in text:
                 return {"ok": False, "refusal": "template-mismatch"}
@@ -13938,7 +13858,7 @@ class PoolQueue:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         try:
             from . import produced_output as produced_mod2
-            checked_template = produced_mod2.validate_template(template)
+            checked_template = oc.validate_template(template)
             window = int(checked_template["working_demands"][tier]["window_gib"])
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -15129,7 +15049,7 @@ class PoolQueue:
 
         from . import produced_output as produced_mod
 
-        root = produced_mod.output_fragment_root(self.root / RESIDENCY)
+        root = bl.output_fragment_root(self.root / RESIDENCY)
         name = f"{action_key}.json"
         try:
             namespaces = list(os.scandir(root))
@@ -15328,11 +15248,6 @@ class PoolQueue:
                 except (OSError, PoolContractError, ValueError):
                     continue
             return released + tier_released
-
-
-
-
-
 
 
     def announce_tier(self, record: Mapping[str, object], *,
@@ -16084,12 +15999,12 @@ class PoolQueue:
                 f"produced-output template needs produced_output: {exc}"
             ) from None
         try:
-            validated = produced_mod.validate_template(template)
-        except produced_mod.ProducedOutputError as exc:
+            validated = oc.validate_template(template)
+        except oc.ProducedOutputError as exc:
             raise PoolContractError(f"produced-output template: {exc}") from exc
         try:
-            terms = produced_mod.owner_demand_terms(validated)
-        except produced_mod.ProducedOutputError as exc:
+            terms = oc.owner_demand_terms(validated)
+        except oc.ProducedOutputError as exc:
             raise PoolContractError(f"produced-output demand: {exc}") from exc
         _, expected_grouped = storage_tiers.split_demand(
             {str(k): int(v) for k, v in terms.items()})
@@ -16120,9 +16035,9 @@ class PoolQueue:
                 f"declared {sorted(declared_grouped.items())} != "
                 f"expected {sorted(expected.items())}")
         ref = {
-            "schema": produced_mod.PRODUCED_OUTPUT_REF_SCHEMA_V1,
+            "schema": oc.PRODUCED_OUTPUT_REF_SCHEMA_V1,
             "template_id": str(validated["template_id"]),
-            "template_sha256": produced_mod.template_sha256(validated),
+            "template_sha256": oc.template_sha256(validated),
         }
         if "export_rate_family" in validated:
             # Projected beside the digest that covers it, for the claim path
@@ -16154,12 +16069,12 @@ class PoolQueue:
                 f"produced-output batch needs produced_output: {exc}"
             ) from None
         try:
-            checked_template = produced_mod.validate_template(template)
-            checked_instance = produced_mod.validate_instance(instance)
-        except produced_mod.ProducedOutputError as exc:
+            checked_template = oc.validate_template(template)
+            checked_instance = oc.validate_instance(instance)
+        except oc.ProducedOutputError as exc:
             raise PoolContractError(f"batch reference: {exc}") from exc
         if (str(checked_instance.get("template_sha256"))
-                != produced_mod.template_sha256(checked_template)):
+                != oc.template_sha256(checked_template)):
             raise PoolContractError("batch reference: template-mismatch")
         if str(tier_id) not in checked_template.get("permitted_tiers", []):
             raise PoolContractError("batch reference: tier-not-permitted")
@@ -16170,12 +16085,12 @@ class PoolQueue:
         if not isinstance(descriptors, list) or not descriptors:
             raise PoolContractError("batch reference descriptors required")
         try:
-            sealed = [produced_mod.validate_descriptor(
+            sealed = [oc.validate_descriptor(
                 dict(d), checked_template, checked_instance)
                 for d in descriptors]
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             raise PoolContractError(f"batch reference: {exc}") from exc
-        manifest = produced_mod.output_manifest_sha256(sealed)
+        manifest = oc.output_manifest_sha256(sealed)
         total = sum(int(d["bytes"]) for d in sealed)
         if total <= 0:
             raise PoolContractError("batch reference total must be positive")
@@ -16183,14 +16098,14 @@ class PoolQueue:
         if not isinstance(attempt, dict):
             raise PoolContractError("batch reference: bad owner attempt")
         try:
-            _ns, batch_ns = produced_mod.namespace_for_batch_reference(
+            _ns, batch_ns = oc.namespace_for_batch_reference(
                 owner_action_key=str(checked_instance["owner_action_key"]),
                 template_sha256=str(checked_instance["template_sha256"]),
                 nonce=str(attempt["nonce"]), scope_id=str(attempt["scope_id"]),
                 template_id=str(checked_template["template_id"]),
                 output_prefix=str(checked_template["output_prefix"]),
                 batch_id=batch_id, manifest_digest=manifest)
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             raise PoolContractError(f"batch reference: {exc}") from exc
         return {
             "schema": PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1,
@@ -16198,7 +16113,7 @@ class PoolQueue:
             "owner_nonce": str(attempt["nonce"]),
             "owner_scope_id": str(attempt["scope_id"]),
             "template_id": str(checked_template["template_id"]),
-            "template_sha256": produced_mod.template_sha256(checked_template),
+            "template_sha256": oc.template_sha256(checked_template),
             "batch_id": batch_id,
             "manifest_digest": manifest,
             "tier_id": str(tier_id),
@@ -16284,7 +16199,7 @@ class PoolQueue:
             ) from None
         try:
             with open(self.root / "residency"
-                      / produced_mod.OUTPUT_TEMPLATES_SUBDIR
+                      / oc.OUTPUT_TEMPLATES_SUBDIR
                       / f"{ref['template_id']}.json", "rb") as handle:
                 raw_tmpl = handle.read(1024 * 1024 + 1)
         except FileNotFoundError:
@@ -16297,19 +16212,19 @@ class PoolQueue:
             raise PoolContractError("batch reference template oversize")
         try:
             import json as _json
-            filed_template = produced_mod.validate_template(
+            filed_template = oc.validate_template(
                 _json.loads(raw_tmpl.decode()))
         except (ValueError, UnicodeDecodeError,
-                produced_mod.ProducedOutputError) as exc:
+                oc.ProducedOutputError) as exc:
             raise PoolContractError(
                 f"batch reference template: {exc}") from exc
-        if (produced_mod.template_sha256(filed_template)
+        if (oc.template_sha256(filed_template)
                 != str(ref.get("template_sha256"))):
             raise PoolContractError("batch reference template-mismatch")
         if str(tier_id) not in filed_template.get("permitted_tiers", []):
             raise PoolContractError("batch reference tier-not-permitted")
         try:
-            _inst_ns, batch_ns = produced_mod.namespace_for_batch_reference(
+            _inst_ns, batch_ns = oc.namespace_for_batch_reference(
                 owner_action_key=str(owner),
                 template_sha256=str(ref.get("template_sha256")),
                 nonce=str(nonce),
@@ -16318,7 +16233,7 @@ class PoolQueue:
                 output_prefix=str(filed_template["output_prefix"]),
                 batch_id=str(ref.get("batch_id")),
                 manifest_digest=str(ref.get("manifest_digest")))
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             raise PoolContractError(f"batch reference: {exc}") from exc
         if batch_ns != str(ref.get("batch_namespace")):
             raise PoolContractError("batch reference namespace-mismatch")
@@ -22070,7 +21985,6 @@ class PoolQueue:
         return requeued
 
 
-
     def sweep_finish_tombstones(self, *, grace_s: float = LEASE_TIMEOUT_S) -> list[str]:
         """Recover interrupted conclusions without taking successor ownership."""
         return lifecycle.conclude(self, lifecycle.FinishRecovery(grace_s))
@@ -22111,7 +22025,6 @@ class PoolQueue:
                 continue
             swept.extend(f"{TIER_RESERVATIONS}/{tier_id}/{name}" for name in names)
         return swept
-
 
 
     @staticmethod
@@ -22755,9 +22668,6 @@ class PoolQueue:
             validate_output_retry_stop=self._validate_output_retry_stop)
 
 
-
-
-
     def _gang_reservation_priority(self, item: Mapping[str, object], *,
                                    authority: bool) -> int | None:
         """The priority of the gang that ``item`` belongs to when it reserves its hosts now (#1579).
@@ -23206,7 +23116,7 @@ class PoolQueue:
 
         try:
             release = produced_mod.origin_consumer_release(self, key)
-        except (produced_mod.ProducedOutputError, OSError,
+        except (oc.ProducedOutputError, OSError,
                 PoolContractError) as exc:
             self.record_denial(item, "origin_consumer_release_unreadable",
                                {"error": str(exc)})
@@ -23303,7 +23213,7 @@ class PoolQueue:
                 return False
             try:
                 proof = produced_mod.dead_input_dependency(self, item)
-            except (produced_mod.ProducedOutputError, OSError,
+            except (oc.ProducedOutputError, OSError,
                     PoolContractError) as exc:
                 # Unreadable queue state is unknown state: it invents no
                 # ending, and the row stays claimable (#1184).

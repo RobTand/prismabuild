@@ -1,4 +1,6 @@
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import pool as c13_pool
 
 import json
 from pathlib import Path
@@ -29,7 +31,7 @@ def test_output_memo_defaults_to_fresh_reads_and_scope_resets(tmp_path, monkeypa
     scope.mkdir()
     commitments = scope / "commitments.json"
     commitments.write_text(json.dumps({"batches": {"b": {"state": "filed"}}}))
-    memo = produced_output._TickReads(None, trust=ObservedTrust())
+    memo = bl.LedgerReads(None, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S, trust=ObservedTrust())
     memo.batches(scope)
     memo.batches(scope)
     assert (memo.commitments_read, memo.commitments_reused) == (2, 0)

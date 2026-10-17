@@ -1,4 +1,5 @@
 """Poll-site re-pins survive in the existing commit answer (#1179)."""
+from prismabuild import batch_ledger as bl
 import json
 
 import pytest
@@ -33,7 +34,7 @@ def test_commit_retains_poll_repins_after_namespace_retirement(tmp_path, recall,
     assert replay["ok"] and replay["duplicate"]
     assert not replay.get("landed_repins"), "duplicate counted the old re-pin again"
     spool.queue.finish(spool.owner, status="executed")
-    assert po._producer_attempt_state(spool.queue, spool.instance) == "succeeded"
+    assert bl.producer_attempt_state(spool.queue, spool.instance) == "succeeded"
     retired = ps.retire_namespace(spool.queue, spool.directory)
     assert retired.get("namespace_removed"), retired
     assert not (spool._group("b1") / "receipt.json").exists()
@@ -45,11 +46,11 @@ def test_poll_and_commit_repins_are_both_retained(tmp_path, monkeypatch):
     _, destination, _ = _landed(spool)
     descriptor = _descriptor(spool.instance, spool.template, destination, b"hello")
     _recall_ctime(destination)
-    original = po.commit_origin_batch
+    original = bl.BatchLedger.commit_origin
     def commit(*args, **kwargs):
         _recall_mtime(destination)  # another recall after the spool poll
         return original(*args, **kwargs)
-    monkeypatch.setattr(po, "commit_origin_batch", commit)
+    monkeypatch.setattr(bl.BatchLedger, 'commit_origin', commit)
     answer = spool.commit_origin_group("b1", [descriptor])
     assert answer["ok"]
     repins = answer["landed_repins"]

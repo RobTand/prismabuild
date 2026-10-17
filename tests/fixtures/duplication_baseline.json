@@ -6,10 +6,6 @@
    "tools/fleet/resource_broker.py::_proc_starttime"
   ],
   [
-   "src/prismabuild/produced_output.py::_broker_scope_id",
-   "tools/fleet/resource_broker.py::scope_id"
-  ],
-  [
    "tools/fleet/fleet_membership.py::_membership_owner_parts",
    "tools/fleet/resource_broker.py::_supervisor_owner_parts"
   ],
@@ -45,17 +41,10 @@
   "hashlib:src/prismabuild/pool_reconcile.py::_cleanup",
   "hashlib:src/prismabuild/pool_reconcile.py::reconcile",
   "hashlib:src/prismabuild/produced_output.py::_DeadStagedReports.refused",
-  "hashlib:src/prismabuild/produced_output.py::_broker_scope_id",
   "hashlib:src/prismabuild/produced_output.py::_retire_consumed_batch_locked",
-  "hashlib:src/prismabuild/produced_output.py::_retire_consumed_batch_locked.report",
   "hashlib:src/prismabuild/produced_output.py::_sweep_ended_prewrites",
   "hashlib:src/prismabuild/produced_output.py::_unfiled_report",
-  "hashlib:src/prismabuild/produced_output.py::batch_namespace",
-  "hashlib:src/prismabuild/produced_output.py::instance_namespace",
-  "hashlib:src/prismabuild/produced_output.py::manifest_object_set_id",
   "hashlib:src/prismabuild/produced_output.py::origin_retirement_tick",
-  "hashlib:src/prismabuild/produced_output.py::output_manifest_sha256",
-  "hashlib:src/prismabuild/produced_output.py::template_sha256",
   "hashlib:src/prismabuild/produced_spool.py::_export_entry",
   "hashlib:src/prismabuild/produced_spool.py::_file_digest",
   "hashlib:src/prismabuild/produced_spool.py::_read",
@@ -127,23 +116,6 @@
   "sorted-json:src/prismabuild/container_images.py::content_ref",
   "sorted-json:src/prismabuild/movement_actions.py::container_owner",
   "sorted-json:src/prismabuild/produced_output.py::_DeadStagedReports.refused",
-  "sorted-json:src/prismabuild/produced_output.py::_index_attempt",
-  "sorted-json:src/prismabuild/produced_output.py::_publish_prewrite_record",
-  "sorted-json:src/prismabuild/produced_output.py::_release_index_body",
-  "sorted-json:src/prismabuild/produced_output.py::_release_origin_consumer_locked",
-  "sorted-json:src/prismabuild/produced_output.py::_retire_consumed_batch_locked.report",
-  "sorted-json:src/prismabuild/produced_output.py::_sweep_ended_prewrites",
-  "sorted-json:src/prismabuild/produced_output.py::_unfiled_report",
-  "sorted-json:src/prismabuild/produced_output.py::_write_commitments",
-  "sorted-json:src/prismabuild/produced_output.py::bind_instance",
-  "sorted-json:src/prismabuild/produced_output.py::commit_batch",
-  "sorted-json:src/prismabuild/produced_output.py::commit_origin_batch",
-  "sorted-json:src/prismabuild/produced_output.py::declare_instance",
-  "sorted-json:src/prismabuild/produced_output.py::declare_origin_consumer",
-  "sorted-json:src/prismabuild/produced_output.py::declare_template",
-  "sorted-json:src/prismabuild/produced_output.py::origin_retirement_tick",
-  "sorted-json:src/prismabuild/produced_output.py::output_manifest_sha256",
-  "sorted-json:src/prismabuild/produced_output.py::template_sha256",
   "sorted-json:src/prismabuild/produced_spool.py::_append_line",
   "sorted-json:src/prismabuild/produced_spool.py::_file_refusal",
   "sorted-json:src/prismabuild/produced_spool.py::_write",
@@ -362,10 +334,6 @@
    "tools/fleet/seal_and_publish.py",
    "tools/fleet/shape_gate.py"
   ],
-  "_hex64": [
-   "src/prismabuild/action_edges.py",
-   "src/prismabuild/produced_output.py"
-  ],
   "_host": [
    "src/prismabuild/gpu_memory.py",
    "tools/fleet/pbmetrics.py"
@@ -393,10 +361,6 @@
   "_matches": [
    "src/prismabuild/produced_spool.py",
    "tools/fleet/pbmcp.py"
-  ],
-  "_name": [
-   "src/prismabuild/action_edges.py",
-   "src/prismabuild/produced_output.py"
   ],
   "_now": [
    "src/prismabuild/materialize.py",
@@ -532,10 +496,6 @@
    "src/prismabuild/prewarm_loop.py",
    "src/prismabuild/stage_move.py"
   ],
-  "mint_generation": [
-   "src/prismabuild/produced_output.py",
-   "src/prismabuild/reader_lease.py"
-  ],
   "movement_tools": [
    "src/prismabuild/movement_actions.py",
    "tools/fleet/pbrun.py"
@@ -584,10 +544,6 @@
   "run_cycles": [
    "tools/fleet/bench_tier_cycle.py",
    "tools/fleet/bench_tier_cycle_r13.py"
-  ],
-  "seal_movement_action": [
-   "src/prismabuild/movement_actions.py",
-   "tools/fleet/pbrun.py"
   ],
   "submit": [
    "src/prismabuild/slurm_lane.py",

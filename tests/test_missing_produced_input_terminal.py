@@ -3,6 +3,8 @@
 All queue/CAS/origin paths are private tmp_path fixtures. No stage mover is
 executed and no real mountpoint is read or removed.
 """
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 import json
 import os
 from pathlib import Path
@@ -34,7 +36,7 @@ def test_terminal_failed_producer_missing_input_ends_ready_mover(tmp_path):
     before = json.loads(world.q.records.item_path(pool.record_store.READY, world.mover).read_text())
     assert before["produced_output_batch"]["owner_nonce"] == world.inst["owner_attempt"]["nonce"]
     world.fail_the_producer()
-    assert po._producer_attempt_state(world.q, world.inst) == "dead"
+    assert bl.producer_attempt_state(world.q, world.inst) == "dead"
 
     _warm(world, tmp_path)
 
@@ -56,7 +58,7 @@ def test_live_producer_missing_input_remains_ready_and_can_land(tmp_path):
     origin = Path(world.descs[0]["path"])
     payload = origin.read_bytes()
     origin.unlink()
-    assert po._producer_attempt_state(world.q, world.inst) == "live"
+    assert bl.producer_attempt_state(world.q, world.inst) == "live"
     _warm(world, tmp_path)
     assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
@@ -88,10 +90,10 @@ def test_unknown_producer_evidence_does_not_prove_death(tmp_path):
                     worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
                     checkout_root=str(tmp_path / "mover-checkout"),
                     resources={"cpu": 1, "mem_gb": 1,
-                               **po.owner_demand_terms(world.template)},
+                               **oc.owner_demand_terms(world.template)},
                     produced_output_template=world.template,
                     max_attempts=1, retry_safe=False)
-    state = po._producer_attempt_state(world.q, world.inst)
+    state = bl.producer_attempt_state(world.q, world.inst)
     assert state == "unknown", state
     _warm(world, tmp_path)
     assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()

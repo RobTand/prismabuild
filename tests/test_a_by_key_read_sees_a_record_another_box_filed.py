@@ -20,6 +20,7 @@ revalidate ``movers`` -- and a read that revalidates nothing fails for as long
 as it polls.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 
 import json
 import os
@@ -128,10 +129,10 @@ def test_the_owners_readiness_gate_turns_true_without_waiting_out_the_cache(
     queue.records.move_path(KEY).parent.mkdir(parents=True, exist_ok=True)
     NegativeLookupCache(monkeypatch)
 
-    assert produced_output._mover_receipt_complete(queue, KEY) is None
+    assert bl.mover_receipt_complete(queue, KEY) is None
     _file_receipt(queue, KEY, complete=True)
 
-    assert produced_output._mover_receipt_complete(queue, KEY) is True
+    assert bl.mover_receipt_complete(queue, KEY) is True
 
 
 def test_a_terminal_row_filed_after_the_first_poll_is_named(

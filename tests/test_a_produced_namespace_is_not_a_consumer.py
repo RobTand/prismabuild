@@ -27,6 +27,8 @@ next to a legacy flat consumer, and drive the actual
 ``tier_loop.sweep_orphans`` boundary rather than a helper.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from pathlib import Path
 import shutil
@@ -119,8 +121,8 @@ def world(tmp_path: Path):
     template = produced._template(str(origin))
     bound = produced._bind_live(queue, tmp_path, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
-    assert po.require_prewrite(
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="w0", tier=TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w0.pt")])["ok"] is True
@@ -128,7 +130,7 @@ def world(tmp_path: Path):
     batch = po.commit_batch(queue, instance, template, [desc], batch_id="w0",
                             tier=TIER, mover_key=PRODUCED_MOVER)
     assert batch["ok"] is True, batch
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     moved = produced._move(queue, batch, origin, stage, out_base, tmp_path, "w0")
     assert moved["complete"] is True, moved
     namespace = str(batch["batch_namespace"])
@@ -318,7 +320,7 @@ def test_a_symlinked_produced_container_taints_instead_of_recursing(world) -> No
     """A link back into the store is unknown ownership, never a walk."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
+    (world.out_base / oc.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
         "..", target_is_directory=True)
 
     events = _sweep(world.queue, world.stage)
@@ -336,7 +338,7 @@ def test_a_nested_produced_container_is_unknown(world) -> None:
     """One produced container, at the base store; a second is not a layout."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
+    (world.out_base / oc.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
 
     events = _sweep(world.queue, world.stage)
 

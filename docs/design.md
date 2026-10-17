@@ -19040,3 +19040,54 @@ the running executable bytes, actual Python version, assigned affinity, native
 thread bounds and selected files in each shard's real log. The retained-data
 qualifier checks those facts against the sealed plan. A generic interpreter
 pathname alone establishes no version claim.
+
+### Produced-batch ownership after C13
+
+`output_contract` owns the produced-output schemas, validators, identity recipes
+and `ProducedOutputError`. `batch_ledger.BatchLedger` owns commitments intake
+and filing, immutable batch validation and publication, prewrites, origin charge,
+and sequential materialization bookkeeping. `BatchFacets` derives kind,
+lifetime, copy history and origin reclamation from one captured entry. These
+facts are independent. No derived phase is filed in `commitments.json`.
+
+`BatchLedger(path)` and `at_scope(scope)` perform no I/O. `entries()` captures
+one generation at the existing conditional read point; `BatchCapture` answers
+entry, history and charge questions and owns batch-id transitions. `BatchFacets`
+and `StageCopy` are named observations, with unknown history retained until a
+question validates it. A typed origin delete intent is distinct from the
+truthiness guard used by declarations, preserving legacy empty-object intent
+behavior. Callers keep their prefix locks. A `RetirementEntry`
+keeps the selected private entry copy and invalidates the tick before each
+canonical file attempt. There is no implicit refresh or eager history scan.
+
+The canonical `capture()`/`file()` codec remains the exact wire boundary, also
+used by deliberate corruption and captured replay fixtures. Production batch
+callers use the captured owner rather than mutable commitment maps. Prewrite
+addresses and validated `PrewriteFacts` come from the same ledger. Consumer
+release preparation stays before its queue index; release publication stays
+after it. The owner retains origin-proof cache observations and attempt-index
+bookkeeping. `produced_output` orchestrates funding, sealing, movement work and
+physical retirement. C12 owns the separately handed-off legacy funding seams.
+
+The documented module-level exceptions from #955 remain permanent object
+bindings: `produced_output.batch_record`, `batch_records`, their three batch
+state constants and `ProducedOutputError`. Their implementation lives in the
+ledger and contract owners. The client SDK remains version 6 with its full
+surface and signatures.
+
+Path capture and addressing live in `batch_ledger`, with four named policies.
+`own_write_owner` considers the active staged copy, unreclaimed origin-only
+batches and other prewrites. `foreign_write_owner` first checks foreign claims
+and skips dead or superseded attempts before reading their records.
+`LedgerReads.path_owners` retains all committed supersessions, counts succeeded
+prewrites as commitments, retains live or unknown pending writes and their
+unknown fingerprints, and ignores dead prewrites. `spool_claims` captures
+foreign export claims only when the spool meets an existing file. The spool
+still checks byte identity and proves failed groups' exports have ended before
+adopting or retiring their files. These policies share captured path facts and
+the legacy immutable-record fallback without sharing one authority boolean.
+
+The schemas, JSON byte recipes, namespace grammar, immutable writer,
+materialization generations, locks and origin-retirement protocol are unchanged.
+The observability adapter reads the same batch questions through these owners;
+a retained historical source closure keeps its own original module APIs.

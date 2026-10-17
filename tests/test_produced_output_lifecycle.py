@@ -12,6 +12,8 @@ PASS here. SDK-connected tests skip on checkouts without the accepted
 package and prove the corrected path here.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -43,8 +45,8 @@ OWNER = "c" * 64
 
 
 def _template(output_prefix: str, template_id: str = "life-v1") -> dict:
-    return po.validate_template({
-        "schema": po.TEMPLATE_SCHEMA_V1,
+    return oc.validate_template({
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": template_id,
         "output_prefix": output_prefix,
@@ -114,7 +116,7 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
+    bl.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
             "env": env}
 
@@ -133,7 +135,7 @@ def test_missing_sdk_retains(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     _finish_bare(queue, OWNER, claimed)
     refused = po.safe_release_instance(queue, instance, template)
     assert refused["ok"] is False
@@ -149,7 +151,7 @@ def test_bare_terminal_without_proof_retains(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     _finish_bare(queue, OWNER, claimed)
     if not HAS_SDK:
         pytest.skip("needs accepted reader_lease")
@@ -169,10 +171,10 @@ def test_funding_intent_absent_mover_retains(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
-    funding_dir = po._funding_dir(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+    funding_dir = bl._funding_dir(queue.root, instance)
     funding_dir.mkdir(parents=True, exist_ok=True)
-    po._write_funding(funding_dir / "ghost.funding.json", {
+    bl._write_funding(funding_dir / "ghost.funding.json", {
         "batch_id": "ghost", "tier": STAGE_TIER,
         "mover_key": "a" * 64, "batch_gib": 1,
         "manifest_digest": "0" * 64})
@@ -203,28 +205,28 @@ def test_prewrite_abort_keeps_headroom_and_duplicate_commit_stable(
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     target = str(origin / "boundary-0.pt")
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="pw", tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[target])["ok"] is True
     Path(target).write_bytes(b"A" * 64)
-    refused = po.abort_prewrite(queue, instance, template, batch_id="pw")
+    refused = bl.BatchLedger.abort(queue, instance, template, batch_id="pw")
     assert refused == {"ok": False, "refusal": "abort-files-present-retain",
                        "path": target}
     # Headroom still reserved: a competing reservation still refuses.
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="other", tier=STAGE_TIER,
         class_bytes={"payload": 1 << 20, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "other.pt")])["ok"] is False
     Path(target).unlink()
-    assert po.abort_prewrite(queue, instance, template,
+    assert bl.BatchLedger.abort(queue, instance, template,
                              batch_id="pw") == {
         "ok": True, "batch_id": "pw", "aborted": True}
     # Durable-origin quota stays distinct from the tier window credit.
-    assert po.checked_instance_maxima(template)["payload_max_bytes"] == 1 << 20
-    assert po.owner_demand_terms(template) == {
+    assert oc.checked_instance_maxima(template)["payload_max_bytes"] == 1 << 20
+    assert oc.owner_demand_terms(template) == {
         f"{STAGE_BARE}@{STAGE_TIER}": 2}
 
 
@@ -236,7 +238,7 @@ def test_wrong_nonce_terminal_retains(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     _finish_bare(queue, OWNER, claimed)
     # Terminal telemetry names another nonce: exact-attempt proof fails.
     done_path = queue.records.item_path(pool.record_store.DONE, OWNER)
@@ -260,7 +262,7 @@ def test_unreadable_census_retains(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     _finish_bare(queue, OWNER, claimed)
     # A non-pin file under our owner namespace taints the SDK census while
     # the structural per-namespace scan stays empty.
@@ -283,7 +285,7 @@ def test_current_claim_retains_and_pending_tickets_retain(
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     # Live claim on the exact attempt retains without reaching containment.
     refused = po.safe_release_instance(
         queue, instance, template, lease_sdk=rlc)
@@ -341,7 +343,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
     try:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", endpoint)
         owner = "d" * 64
-        terms = po.owner_demand_terms(template)
+        terms = oc.owner_demand_terms(template)
         queue.publish(action_key=owner, cas_root="/cas",
                       worker_script="/w.py", checkout_root="/co",
                       resources={"cpu": 1, "mem_gb": 1, **terms},
@@ -369,8 +371,8 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         instance = po.bind_instance(
             queue, template, owner_action_key=owner,
             claim_snapshot=claimed, env=env)
-        po.declare_instance(queue.root, instance)
-        assert po.admit_instance(queue, instance, template)["ok"] is True
+        bl.declare_instance(queue.root, instance)
+        assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
         terminal = queue.finish(owner, status="executed", detail={})
         assert terminal == queue.records.item_path(pool.record_store.DONE, owner)
         proof = rlc.read_scope_attestation(queue, owner, nonce)
@@ -387,40 +389,40 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         # egressed, fragment gone) with one remainder token, as a
         # partial transfer would leave. Holder identity comes from the
         # validated record, so both halves are required.
-        desc = po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+        desc = oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
             "artifact_class": "payload",
             "path": str(origin / "left.pt"),
             "bytes": 64, "sha256": hashlib.sha256(b"L" * 64).hexdigest(),
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": instance["owner_action_key"],
             "owner_attempt": dict(instance["owner_attempt"]),
         }, template, instance)
-        digest = po.output_manifest_sha256([desc])
-        ns = po.batch_namespace(instance, "batch-left", digest)
+        digest = oc.output_manifest_sha256([desc])
+        ns = oc.batch_namespace(instance, "batch-left", digest)
         mover = "e" * 64
-        batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                      / po.instance_namespace(instance) / "batch-left.json")
+        batch_file = (queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                      / oc.instance_namespace(instance) / "batch-left.json")
         batch_file.parent.mkdir(parents=True, exist_ok=True)
         batch_file.write_bytes(json.dumps({
-            "schema": po.BATCH_SCHEMA_V1, "batch_id": "batch-left",
+            "schema": oc.BATCH_SCHEMA_V1, "batch_id": "batch-left",
             "batch_namespace": ns,
-            "manifest_schema": po.BATCH_MANIFEST_SCHEMA_V1,
+            "manifest_schema": oc.BATCH_MANIFEST_SCHEMA_V1,
             "manifest_digest": digest, "tier": STAGE_TIER,
             "mover_key": mover,
             "class_bytes": {"payload": 64, "checkpoint": 0, "temp": 0},
             "total_bytes": 64, "entry_count": 1, "entries": [desc],
-            "template_id": str(po.validate_template(template)["template_id"]),
-            "template_sha256": po.template_sha256(template),
+            "template_id": str(oc.validate_template(template)["template_id"]),
+            "template_sha256": oc.template_sha256(template),
             "owner_action_key": instance["owner_action_key"],
             "owner_attempt": dict(instance["owner_attempt"]),
-            "object_set_id": po.manifest_object_set_id(
+            "object_set_id": oc.manifest_object_set_id(
                 {f"64:{desc['path']}": {"bytes": 64,
                                         "sha256": desc["sha256"]}}),
             "unix": 0.0}, sort_keys=True).encode() + b"\n")
         import stat as _stat
         os.chmod(batch_file, _stat.S_IRUSR | _stat.S_IRGRP | _stat.S_IROTH)
-        commitments_path = po._commitments_path(queue.root, instance)
+        commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
         record = {"batches": {
             "batch-left": {
                 "manifest_digest": digest, "batch_namespace": ns,
@@ -430,7 +432,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
             "admission": {"minimum_gib": {STAGE_TIER: 1},
                           "window_gib": {STAGE_TIER: 2},
                           "bound_unix": 0.0}}
-        po._write_commitments(commitments_path, record)
+        bl.BatchLedger(commitments_path).file(record)
         assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
         third = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)

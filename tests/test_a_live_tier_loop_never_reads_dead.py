@@ -33,6 +33,8 @@ Nothing here touches the live queue, a real stage root or a real device.
 """
 
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import argparse
 import json
@@ -139,7 +141,7 @@ class _Loop:
         return bench._tier_record(self.stage)
 
     def _charge(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        output_root = po.OUTPUT_FRAGMENTS_SUBDIR
+        output_root = oc.OUTPUT_FRAGMENTS_SUBDIR
         real_evict = stage_release.evict
         real_prune = stage_release.prune_stale_mentions
 
@@ -182,8 +184,7 @@ class _Loop:
 
     def unretired(self) -> list[str]:
         return [batch_id for batch_id in self.replay.unretired
-                if not po._batch_stage_retired(
-                    self.replay.entry(self.queue.root, batch_id))]
+                if not bl.BatchFacets(self.replay.entry(self.queue.root, batch_id)).stage_retired]
 
 
 @pytest.fixture(autouse=True)

@@ -6,6 +6,7 @@ existing ledger channel, and runtime binding from the sealed queue item.
 No prewrite/commit/retire/release/funding bodies, no mover copy, no GPU.
 """
 from __future__ import annotations
+from prismabuild import output_contract as oc
 from submission_support import patch_store
 import pbrun
 from prismabuild import submission as submit_core
@@ -35,7 +36,7 @@ OTHER = "b" * 64
 
 def _template(output_prefix: str, template_id: str = "admit-v1") -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": template_id,
         "output_prefix": output_prefix,
@@ -53,7 +54,7 @@ def _template(output_prefix: str, template_id: str = "admit-v1") -> dict:
         },
         "permitted_tiers": [STAGE_TIER],
     }
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path, stage_gib: int = 8) -> pool.PoolQueue:
@@ -107,7 +108,7 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     assert terms == {f"{STAGE_BARE}@{STAGE_TIER}": 2}
 
     # Enough capacity: publish projects the ref, claim holds host+tier.
@@ -121,13 +122,13 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert isinstance(item, dict)
     ref = item["produced_output"]
-    assert ref["schema"] == po.PRODUCED_OUTPUT_REF_SCHEMA_V1
+    assert ref["schema"] == oc.PRODUCED_OUTPUT_REF_SCHEMA_V1
     assert ref["template_id"] == "admit-v1"
-    assert ref["template_sha256"] == po.template_sha256(template)
+    assert ref["template_sha256"] == oc.template_sha256(template)
     # Filed immutably beside the queue.
-    filed = json.loads((queue.root / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    filed = json.loads((queue.root / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
                         / "admit-v1.json").read_text())
-    assert po.template_sha256(filed) == ref["template_sha256"]
+    assert oc.template_sha256(filed) == ref["template_sha256"]
 
     claimed = queue.claim(owner="w1")
     assert claimed is not None and claimed["action_key"] == key
@@ -156,7 +157,7 @@ def test_input_and_output_demand_coexist(tmp_path: Path) -> None:
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     queue = _queue(tmp_path, stage_gib=8)
     key = "d" * 64
     # Input residency (leads) carries no tier demand; output window does.
@@ -183,7 +184,7 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     queue = _queue(tmp_path)
 
     # Underdeclared tier demand refuses.
@@ -220,8 +221,8 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
     other = dict(other)
     other["durable_maxima"] = dict(other["durable_maxima"])
     other["durable_maxima"]["payload_max_bytes"] = 2 << 20
-    other_validated = po.validate_template(other)
-    other_terms = po.owner_demand_terms(other_validated)
+    other_validated = oc.validate_template(other)
+    other_terms = oc.owner_demand_terms(other_validated)
     with pytest.raises(pool.PoolContractError):
         queue.publish(action_key="4" * 64, cas_root="/cas",
                       worker_script="/w.py", checkout_root="/co",
@@ -256,7 +257,7 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
 
 def test_core_declaration_binds_input_row(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "out"))
-    digest = po.template_sha256(template)
+    digest = oc.template_sha256(template)
     good_input = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
                   "sha256": "a" * 64, "bytes": 100}
     declaration = {"schema": pb.PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
@@ -307,7 +308,7 @@ def test_runtime_binds_declared_template_not_caller_template(
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin), "bind-a")
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     queue = _queue(tmp_path)
     key = "c" * 64
     queue.publish(action_key=key, cas_root="/cas", worker_script="/w.py",
@@ -331,7 +332,7 @@ def test_runtime_binds_declared_template_not_caller_template(
     # item declared: binding it directly would answer for the wrong scope.
     foreign = _template(str(origin), "bind-b")
     po.declare_template(queue.root, foreign)
-    assert po.template_sha256(foreign) != po.template_sha256(declared)
+    assert oc.template_sha256(foreign) != oc.template_sha256(declared)
 
 
 def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
@@ -361,7 +362,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     template = _template(str(out_prefix), "pbrun-path-v1")
     tpath = tmp_path / "template.json"
     _write_template(tpath, template)
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     demand = {"cpu": 1, "mem_gb": 1, **terms}
     frozen = submit_core.freeze_template(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
@@ -384,7 +385,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     frozen2 = submit_core.freeze_template(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand={"cpu": 1, "mem_gb": 1,
-                **po.owner_demand_terms(
+                **oc.owner_demand_terms(
                     _template(str(out_prefix), "pbrun-path-v2"))},
         placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -416,7 +417,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     assert captured != tpath.read_bytes()
     runtime_body = po.declared_template(queue, key)
     assert runtime_body["template_id"] == "pbrun-path-v1"
-    assert po.template_sha256(runtime_body) == decl["template_sha256"]
+    assert oc.template_sha256(runtime_body) == decl["template_sha256"]
 
 
 def test_refused_declaration_leaves_withdrawal_untouched(
@@ -424,7 +425,7 @@ def test_refused_declaration_leaves_withdrawal_untouched(
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     first = _template(str(origin), "conflict-v1")
-    terms = po.owner_demand_terms(first)
+    terms = oc.owner_demand_terms(first)
     queue = _queue(tmp_path)
     key = "7" * 64
     queue.publish(action_key=key, cas_root="/cas", worker_script="/w.py",
@@ -442,13 +443,13 @@ def test_refused_declaration_leaves_withdrawal_untouched(
     other = dict(other)
     other["durable_maxima"] = dict(other["durable_maxima"])
     other["durable_maxima"]["payload_max_bytes"] = 2 << 20
-    other_validated = po.validate_template(other)
+    other_validated = oc.validate_template(other)
     with pytest.raises(pool.PoolContractError):
         queue.publish(
             action_key=key, cas_root="/cas", worker_script="/w.py",
             checkout_root="/co",
             resources={"cpu": 1, "mem_gb": 1,
-                       **po.owner_demand_terms(other_validated)},
+                       **oc.owner_demand_terms(other_validated)},
             produced_output_template=other_validated)
     assert pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.READY, key),
@@ -460,7 +461,7 @@ def test_refused_declaration_leaves_withdrawal_untouched(
 
 def test_core_declaration_rejects_empty_and_oversized_input() -> None:
     template = _template("/out")
-    digest = po.template_sha256(template)
+    digest = oc.template_sha256(template)
     empty = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
              "sha256": "a" * 64, "bytes": 0}
     with pytest.raises(pb.ActionContractError):

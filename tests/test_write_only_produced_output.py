@@ -32,6 +32,8 @@ member devices); the export runs through ``PoolQueue.execute`` as in
 ``test_produced_spool``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from submission_support import patch_store
 
 import hashlib
@@ -71,8 +73,8 @@ READ_BACK_SHA256_BEFORE_912 = (
 def _template(prefix: Path) -> dict:
     """A write-only template: every tier's minimum and window are zero."""
 
-    return po.validate_template({
-        "schema": po.TEMPLATE_SCHEMA_V1,
+    return oc.validate_template({
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "write-only-integ-v1",
         "output_prefix": str(prefix),
@@ -88,7 +90,7 @@ def _template(prefix: Path) -> dict:
 
 def _read_back_body() -> dict:
     return {
-        "schema": po.TEMPLATE_SCHEMA_V1, "version": 1,
+        "schema": oc.TEMPLATE_SCHEMA_V1, "version": 1,
         "template_id": "pinned-v1", "output_prefix": "/srv/pb-outputs",
         "slots": {"s0": {"class": "payload"}},
         "durable_maxima": {"payload_max_bytes": 1 << 20,
@@ -111,12 +113,12 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _descriptor(instance: dict, template: dict, path: Path, payload: bytes,
                 *, digest: bool = True) -> dict:
-    return po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    return oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(path),
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest() if digest else None,
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -124,7 +126,7 @@ def _descriptor(instance: dict, template: dict, path: Path, payload: bytes,
 
 def _prewrite(queue, instance, template, batch_id: str, paths: list[Path],
               size: int) -> dict:
-    return po.require_prewrite(
+    return bl.BatchLedger.reserve(
         queue, instance, template, batch_id=batch_id, tier=TIER,
         class_bytes={"payload": size, "checkpoint": 0, "temp": 0},
         paths=[str(path) for path in paths])
@@ -143,7 +145,7 @@ def _direct_batch(queue, template, seed: str, *, batch_id: str = "b1",
     if not path.exists():
         path.write_bytes(payload)
     descriptor = _descriptor(instance, template, path, path.read_bytes())
-    committed = po.commit_origin_batch(queue, instance, template, [descriptor],
+    committed = bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                        batch_id=batch_id)
     assert committed["ok"], committed
     return instance, path, descriptor, committed
@@ -216,18 +218,18 @@ def _queued_rows(queue: pool.PoolQueue) -> set[str]:
 def test_a_write_only_template_declares_no_window_and_refuses_one(
         tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
-    assert po.is_write_only(template)
+    assert oc.is_write_only(template)
     assert template["working_demands"] == {
         TIER: {"minimum_gib": 0, "window_gib": 0}}
-    assert po.owner_demand_terms(template) == {}
+    assert oc.owner_demand_terms(template) == {}
     body = {key: value for key, value in template.items()}
     body["working_demands"] = {TIER: {"minimum_gib": 0, "window_gib": 1}}
-    with pytest.raises(po.ProducedOutputError, match="write-only template"):
-        po.validate_template(body)
+    with pytest.raises(oc.ProducedOutputError, match="write-only template"):
+        oc.validate_template(body)
     body["working_demands"] = {TIER: {"minimum_gib": 0, "window_gib": 0}}
     body["write_only"] = "yes"
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_template(body)
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_template(body)
 
 
 def test_the_producer_admission_charges_no_stage_window(tmp_path: Path) -> None:
@@ -272,16 +274,16 @@ def test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite(
     assert committed["ok"] is True, committed
     assert committed["origin_only"] is True and committed["tier"] == TIER
     assert destination.read_bytes() == payload
-    prewrites = po._prewrites_dir(queue.root, spool.instance)
+    prewrites = bl.prewrites_dir(queue.root, spool.instance)
     assert not list(prewrites.glob("*.prewrite.json")), (
         "the commit consumes the prewrite")
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                         / po.instance_namespace(spool.instance)
+    record = json.loads((queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                         / oc.instance_namespace(spool.instance)
                          / "b1.json").read_text())
     assert record["origin_only"] is True and record["mover_key"] is None
     assert ledger.free_supply() == before, "no stage token moved"
     assert _queued_rows(queue) == {spool.owner}, "no mover was published"
-    assert committed["ref"] == po.origin_batch_ref(
+    assert committed["ref"] == oc.origin_batch_ref(
         spool.instance, batch_id="b1",
         manifest_digest=committed["manifest_digest"])
 
@@ -317,16 +319,16 @@ def test_the_staged_paths_refuse_a_write_only_template_and_the_origin_checks_bit
                             )["refusal"] == "template-is-write-only"
 
     unhashed = _descriptor(instance, template, path, payload, digest=False)
-    assert po.commit_origin_batch(queue, instance, template, [unhashed],
+    assert bl.BatchLedger.commit_origin(queue, instance, template, [unhashed],
                                   batch_id="b1"
                                   )["refusal"] == "origin-batch-needs-sha256"
     identity = reader_lease.portable_identity(os.lstat(path))
     wrong = {str(path): dict(identity, ino=identity["ino"] + 1)}
-    assert po.commit_origin_batch(queue, instance, template, [descriptor],
+    assert bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                   batch_id="b1", landed=wrong
                                   )["refusal"] == "origin-is-not-the-landed-copy"
     right = {str(path): identity}
-    assert po.commit_origin_batch(queue, instance, template, [descriptor],
+    assert bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                   batch_id="b1", landed=right)["ok"]
     assert po.ensure_batch_materialized(
         queue, instance, template, batch_id="b1", cas_root=tmp_path / "cas",
@@ -337,7 +339,7 @@ def test_the_staged_paths_refuse_a_write_only_template_and_the_origin_checks_bit
     read_back = fx._template(str(other / "outputs"))
     other_queue = fx._queue(other)
     other_instance = fx._bind(other_queue, read_back, fx._hexkey("rb-owner"))
-    assert po.commit_origin_batch(other_queue, other_instance, read_back, [],
+    assert bl.BatchLedger.commit_origin(other_queue, other_instance, read_back, [],
                                   batch_id="b1"
                                   )["refusal"] == "template-reads-back"
 
@@ -353,7 +355,7 @@ def test_an_origin_only_batch_reads_as_never_staged_and_owns_its_path_until_recl
                            stage_root=str(tmp_path / "stage"),
                            residency_root=queue.root / pool.record_store.RESIDENCY) == {
         "ok": True, "batch_id": "b1", "origin_only": True, "staged": False}
-    state = po.materialization_state(queue, instance, template, batch_id="b1")
+    state = bl.BatchLedger.materialization(queue, instance, template, batch_id="b1")
     assert state["ok"] is True and state["stage_retired"] is True
     assert state["mover_key"] == "" and state["funding_state"] == "origin-only"
     events = po.recover_batches(queue, instance, template)
@@ -367,12 +369,12 @@ def test_an_origin_only_batch_reads_as_never_staged_and_owns_its_path_until_recl
     # The origin stays owned: a consumer may have declared it.
     again = _prewrite(queue, instance, template, "b2", [path], 32)
     assert again["refusal"] == "prewrite-path-owned-by-live-batch"
-    assert po.reclaim_origin(queue, instance, template, batch_id="b1"
+    assert bl.BatchLedger.reclaim(queue, instance, template, batch_id="b1"
                              )["refusal"] == "origin-present-retain"
     path.unlink()
-    assert po.reclaim_origin(queue, instance, template, batch_id="b1")["ok"]
+    assert bl.BatchLedger.reclaim(queue, instance, template, batch_id="b1")["ok"]
     assert _prewrite(queue, instance, template, "b2", [path], 32)["ok"]
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-reclaimed"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-reclaimed"):
         po.origin_batch_manifest(queue.root, [committed["ref"]])
 
 
@@ -390,7 +392,7 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     queue.finish(spool.owner, status="executed")
 
     manifest = po.origin_batch_manifest(queue.root, [committed["ref"]])
-    assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [
+    assert manifest["annotations"][oc.ORIGIN_BATCHES_ANNOTATION] == [
         committed["ref"]]
     manifest_path = tmp_path / "consumer-manifest.json"
     manifest_path.write_text(json.dumps(manifest))
@@ -458,11 +460,11 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
         check(tampered(mount_prefix=str(tmp_path)), transport="pool",
               queue_root=queue.root)
     annotations = dict(manifest["annotations"])
-    annotations[po.ORIGIN_BATCHES_ANNOTATION] = [dict(ref, manifest_digest="1" * 64)]
+    annotations[oc.ORIGIN_BATCHES_ANNOTATION] = [dict(ref, manifest_digest="1" * 64)]
     with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-mismatch"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
-    annotations[po.ORIGIN_BATCHES_ANNOTATION] = [ref, ref]
+    annotations[oc.ORIGIN_BATCHES_ANNOTATION] = [ref, ref]
     with pytest.raises(submit_core.SubmissionRefused, match="names a batch twice"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
@@ -483,7 +485,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
         "--data-manifest", str(manifest_path), "--residency", "stage",
         "--", "/bin/bash", "-lc", "true"])
-    with pytest.raises(SystemExit, match=po.ORIGIN_BATCHES_ANNOTATION):
+    with pytest.raises(SystemExit, match=oc.ORIGIN_BATCHES_ANNOTATION):
         pbrun.main()
 
     # The origin rewritten after its commit, same length: the batch no longer
@@ -509,7 +511,7 @@ def test_two_batches_over_one_origin_path_cannot_be_declared_together(
     _i2, same, _d2, second = _direct_batch(queue, template, "wo-second",
                                            name=path.name)
     assert same == path
-    with pytest.raises(po.ProducedOutputError, match="twice"):
+    with pytest.raises(oc.ProducedOutputError, match="twice"):
         po.origin_batch_manifest(queue.root, [first["ref"], second["ref"]])
 
 
@@ -517,13 +519,13 @@ def test_two_batches_over_one_origin_path_cannot_be_declared_together(
 
 
 def test_a_template_without_write_only_is_the_template_it_was() -> None:
-    validated = po.validate_template(_read_back_body())
+    validated = oc.validate_template(_read_back_body())
     assert "write_only" not in validated
-    assert not po.is_write_only(validated)
-    assert po.template_sha256(validated) == READ_BACK_SHA256_BEFORE_912
-    explicit = po.validate_template(dict(_read_back_body(), write_only=False))
-    assert po.template_sha256(explicit) == READ_BACK_SHA256_BEFORE_912
-    assert po.owner_demand_terms(validated) == {
+    assert not oc.is_write_only(validated)
+    assert oc.template_sha256(validated) == READ_BACK_SHA256_BEFORE_912
+    explicit = oc.validate_template(dict(_read_back_body(), write_only=False))
+    assert oc.template_sha256(explicit) == READ_BACK_SHA256_BEFORE_912
+    assert oc.owner_demand_terms(validated) == {
         "stage_gib@prismabuild-stage:dl380g10": 2}
 
 

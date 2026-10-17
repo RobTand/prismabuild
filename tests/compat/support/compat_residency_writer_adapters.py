@@ -15,6 +15,7 @@ def fixture(name, symbol):
 
 
 def operate(request, store, load):
+    bl = load("prismabuild.batch_ledger")
     variant = request["case"].split("/", 1)[1]
     pool, core = load("prismabuild.pool"), load("prismabuild.core")
     queue = pool.PoolQueue(store / "queue")
@@ -36,7 +37,7 @@ def operate(request, store, load):
             assert result["published"], result
             path = queue.item_path(pool.READY, M)
         else:
-            rows = po.due_mover_rows(queue, instance, template)
+            rows = bl.BatchLedger.due_mover_rows(queue, instance, template, residency_schema=pool.RESIDENCY_SCHEMA_V1)
             assert len(rows) == 1, rows
             row = rows[0]
             path = queue.publish(action_key=M, cas_root=store / "cas", worker_script="/compat/worker.py",

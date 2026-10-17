@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from record_compat import accepted, decode_wire, historical_absence, historical_writer, invoke, probe_wire, retained, write
 from prismabuild.record_kinds import KINDS
 from prismabuild.digest_primitives import canonical_sha256
+from compat_references import generation_reference
 
 DATA = ROOT / "tests/compat"
 def records(pattern):
@@ -99,7 +100,8 @@ def protocol_group(kind):
         return "core"
     if owner == "prismabuild.pool":
         return "queue"
-    if owner in ("prismabuild.produced_output", "prismabuild.produced_spool"):
+    if owner in ("prismabuild.produced_output", "prismabuild.produced_spool",
+                 "prismabuild.batch_ledger", "prismabuild.output_contract"):
         return "outputs"
     if owner in ("prismabuild.residency_map", "prismabuild.reader_lease", "prismabuild.storage_tiers",
                  "prismabuild.resident_sets", "prismabuild.local_resident", "prismabuild.residency_plan"):
@@ -158,6 +160,8 @@ class RecordContract:
                 observed = invoke(root, case, tmp_path / generation / direction, raw=raw, manifest=attestation,
                                   evidence=evidence(generation + "/" + label + "-" + direction + ".json"))
                 accepted(observed)
+                readers = {generation_reference(root, reference).split(":")[1].rsplit(".", 1)[-1].lstrip("_")
+                           for reference in (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers}
                 assert any(call[1].lstrip("_") in readers for call in observed["calls"]), observed
 
 
@@ -202,6 +206,6 @@ class RecordContract:
                     assert observed["result"]["body_decoded"] is False
                     continue
                 assert observed["returncode"] == 1 and not observed.get("attestation_error"), observed
-                readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
+                readers = {generation_reference(root, reference).split(":")[1].rsplit(".", 1)[-1].lstrip("_")
                            for reference in (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers}
                 assert any(call[1].lstrip("_") in readers for call in observed["calls"]), observed

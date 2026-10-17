@@ -19,6 +19,8 @@ Same real primitives and the same disclosed fixture concessions as
 ``tests/test_produced_output_restage.py``, whose world this reuses.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import json
 import os
@@ -166,7 +168,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
         egress0 = _assert_own_egress_deferral(deferred)
         assert deferred["receipt"]["egress_state"] == "published"
         assert egress0 != mover0
-        assert po.OWN_EGRESS_IN_FLIGHT == OWN_EGRESS
+        assert oc.OWN_EGRESS_IN_FLIGHT == OWN_EGRESS
 
         # Nothing was deleted from here, and nothing was filed as retired.
         assert staged.read_bytes() == payload
@@ -427,7 +429,7 @@ def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(
     command = [str(part) for part in request["params"]["command"]]
     assert command[command.index("--stage-root") + 1] == str(world.stage_root)
     assert command[command.index("--residency-root") + 1] == str(
-        po.output_fragment_root(Path(world.q.root) / pool.record_store.RESIDENCY))
+        bl.output_fragment_root(Path(world.q.root) / pool.record_store.RESIDENCY))
 
 
 def test_a_finished_egress_is_read_by_its_receipt_whatever_the_rows_state(

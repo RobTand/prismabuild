@@ -22,6 +22,8 @@ What each batch class must come to:
 Nothing here reads or writes the live queue, stage or origin.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import os
@@ -87,18 +89,18 @@ class _Cycle:
         return po.origin_retirement_tick(self.q)
 
     def descriptor(self, producer: _Producer, path: str, payload: bytes) -> dict:
-        return po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": SLOT,
+        return oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": SLOT,
             "artifact_class": "payload", "path": path, "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest(),
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": producer.owner,
             "owner_attempt": dict(producer.inst["owner_attempt"]),
         }, self.replay.template, producer.inst)
 
     def prewrite(self, producer: _Producer, batch_id: str,
                  paths: list[str]) -> dict:
-        return po.require_prewrite(
+        return bl.BatchLedger.reserve(
             self.q, producer.inst, self.replay.template, batch_id=batch_id,
             tier=TIER, class_bytes={"payload": 1 << 20, "checkpoint": 0,
                                     "temp": 0},
@@ -140,7 +142,7 @@ def test_the_r13_dead_instance_replayed(tmp_path: Path, monkeypatch) -> None:
     # -- before a successor writes ------------------------------------------
     events = cycle.run()
 
-    assert not _events(events, po.ORIGIN_RETIREMENT_REFUSED_EVENT), events
+    assert not _events(events, oc.ORIGIN_RETIREMENT_REFUSED_EVENT), events
     retired = _events(events, DEAD_BATCH_RETIRED)
     assert sorted(event["batch"] for event in retired) == sorted(
         replay.coordinates(batch_id) for batch_id in replay.unretired)
@@ -150,18 +152,18 @@ def test_the_r13_dead_instance_replayed(tmp_path: Path, monkeypatch) -> None:
         assert event["superseded"] == [], event
     for batch_id in replay.unretired:
         entry = replay.entry(cycle.q.root, batch_id)
-        assert po._batch_stage_retired(entry), batch_id
+        assert bl.BatchFacets(entry).stage_retired, batch_id
         assert entry.get("origin_reclaimed") is False, batch_id
     orphaned = _events(events, PREWRITE_ORPHANED)
     assert sorted(event["prewrite"] for event in orphaned) == sorted(
         replay.coordinates(batch_id) for batch_id in replay.prewrites)
     for event in orphaned:
-        assert event["remedy"] == po.ORPHANED_PREWRITE_REMEDY, event
+        assert event["remedy"] == oc.ORPHANED_PREWRITE_REMEDY, event
         assert len(event["paths"]) == 64, event
     assert not _events(events, PREWRITE_RECLAIMED)
     listed = po.blocked_origin_batches(cycle.q)["orphaned_prewrites"]
     assert len(listed) == 28
-    assert {item["remedy"] for item in listed} == {po.ORPHANED_PREWRITE_REMEDY}
+    assert {item["remedy"] for item in listed} == {oc.ORPHANED_PREWRITE_REMEDY}
 
     assert cycle.run() == [], "settled: a second pass reports nothing new"
     assert cycle.run() == []
@@ -172,17 +174,17 @@ def test_the_r13_dead_instance_replayed(tmp_path: Path, monkeypatch) -> None:
 
     # -- a relaunch on the same template, a new action key ------------------
     relaunch = _Producer(cycle.fleet, "r13-relaunch")
-    read_commitments = po._read_commitments
+    read_commitments = bl.BatchLedger.capture
     looked: list[Path] = []
-    monkeypatch.setattr(po, "_read_commitments", lambda path: (
-        looked.append(Path(path)), read_commitments(path))[1])
+    monkeypatch.setattr(bl.BatchLedger, 'capture', lambda ledger: (
+        looked.append(ledger.path), read_commitments(ledger))[1])
     regenerated = cycle.regenerate(
         relaunch, "relaunch-at-44",
         sorted(path for batch_id in replay.colliding
                for path in replay.paths[batch_id]))
     assert replay.scope / "commitments.json" not in looked, (
         "a dead attempt's records are never read by another action's prewrite")
-    monkeypatch.setattr(po, "_read_commitments", read_commitments)
+    monkeypatch.setattr(bl.BatchLedger, 'capture', read_commitments)
 
     assert cycle.run() == [], "the dead prewrites are still orphaned, unchanged"
 
@@ -207,7 +209,7 @@ def test_the_r13_dead_instance_replayed(tmp_path: Path, monkeypatch) -> None:
                 for item in event["superseded"]} == {
             (relaunch.owner, "relaunch-at-43")}, event
     assert not _events(events, PREWRITE_ORPHANED), events
-    assert not _events(events, po.ORIGIN_RETIREMENT_REFUSED_EVENT), events
+    assert not _events(events, oc.ORIGIN_RETIREMENT_REFUSED_EVENT), events
     assert all(not (replay.scope / "prewrites" / f"{batch_id}.prewrite.json"
                     ).exists() for batch_id in replay.prewrites)
     assert po.blocked_origin_batches(cycle.q)["orphaned_prewrites"] == []
