@@ -44,6 +44,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 #: The live fleet's shape at the incident (``tools/fleet/fleet_boxes.json``).
@@ -121,7 +122,7 @@ def test_a_stale_admission_sample_does_not_remove_a_box_from_placement(
     assert queue.placeable_hosts(item) == ["dl380g10", "sparky"]
     assert queue.placeable(item) is True
 
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.rows(queue.root).value
     box = next(n for n in census["nodes"] if n["node"] == "dl380g10")
     assert box["state"] == "live" and box["healthy"] is True
     assert box["admission"]["cpu"]["state"] == "stale"
@@ -211,7 +212,7 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     # the one subsystem which never ran.
     assert queue.passes("a" * 64) == 0
 
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.rows(queue.root).value
     box = next(n for n in census["nodes"] if n["node"] == "dl380g10")
     assert box["healthy"] is True
     assert box["admission"]["cpu"]["state"] == "stale"

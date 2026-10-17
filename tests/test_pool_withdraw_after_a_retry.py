@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 import pbwait  # noqa: E402
 
@@ -118,7 +119,7 @@ def test_the_withdrawn_record_keeps_the_attempts_it_inherited(
     assert outcomes[0]["stderr"] == "boom\n"
 
     assert withdrawn.withdrawal_covers(record, action_key=KEY) is not None
-    endings = pbstatus.read_endings(withdrawn.root, limit=10)
+    endings = fleet_census.endings(withdrawn.root, limit=10)
     assert [row["status"] for row in endings if row["action_key"] == KEY] == [
         "withdrawn"
     ]

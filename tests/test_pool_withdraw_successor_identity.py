@@ -1,4 +1,5 @@
 """A withdrawal already superseded cannot mutate the successor claim (#318)."""
+from prismabuild import census as fleet_census
 import pbstatus
 from prismabuild import submission as submit_core
 import pytest
@@ -198,6 +199,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     import pbrun
     from prismabuild import submission
     from submission_support import patch_store
+    from prismabuild import census as fleet_census
     import pbstatus
     import pbwait
     queue = AdmittedQueueFixture(
@@ -232,7 +234,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
         old_path = queue.records.item_path(pool.record_store.DONE, KEY)
         os.utime(old_path, ns=(old_path.stat().st_atime_ns, stamp))
         assert old_path.stat().st_mtime_ns == stamp
-    statuses = [row["status"] for row in pbstatus.read_endings(queue.root)]
+    statuses = [row["status"] for row in fleet_census.endings(queue.root)]
     assert statuses[0] == "withdrawn"
     assert len(statuses) == (2 if old_terminal else 1)
 

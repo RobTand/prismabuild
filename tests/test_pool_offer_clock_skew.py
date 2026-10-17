@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
 
 
@@ -51,7 +52,7 @@ def test_status_reports_future_skew_without_granting_admission(tmp_path, monkeyp
     directory = queue.ledger("dl380g10").base / "adaptive"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": 1007.0}))
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.rows(queue.root).value
     node = next(node for node in result["nodes"] if node["node"] == "dl380g10")
     assert node["state"] == expected_state
     assert node["offer_clock_skew_s"] == ahead_s
