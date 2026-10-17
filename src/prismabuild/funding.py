@@ -199,6 +199,18 @@ class AdvanceProtection:
                 and (key, tier_id) in self.permitted)
 
 
+@dataclass(frozen=True)
+class GrantRelease:
+    released: int
+    verdict: ReleaseVerdict
+
+
+@dataclass(frozen=True)
+class ChunkRelease:
+    chunks: dict[str, int]
+    events: list[str]
+
+
 class FundingLedger:
     """One lazy domain owner; the queue retains claim and lifecycle policy."""
 
@@ -290,9 +302,7 @@ class FundingLedger:
         return record if status == "record" else None
 
     def window_evidence(self, mover_action_key: str,
-                              tier_id: str) -> tuple[str,
-                                                     dict[str, object] | None,
-                                                     str | None]:
+                              tier_id: str) -> WindowEvidence:
         """``("record", record, None)`` / ``("absent", None, None)`` /
         ``("unknown", None, reason)`` for one funding record.
 
@@ -4165,3 +4175,123 @@ class FundingLedger:
                 return CommitFunding(funding_path, prepaid, {"ok": False, "refusal": "transfer-short",
                         "moved": mover_now, "expected": batch_gib})
         return CommitFunding(funding_path, prepaid)
+
+
+    @staticmethod
+    def chunk_binds(intent: dict | None, record: Mapping[str, object],
+                     mover: str) -> bool:
+        """True when one funding record funds this group's chunk of one mover."""
+        if intent is None:
+            return False
+        chunks = intent.get("chunks")
+        if not isinstance(chunks, list):
+            return False
+        try:
+            want_range = (int(record["range_start_bytes"]),  # type: ignore[index]
+                          int(record["range_end_bytes"]))  # type: ignore[index]
+            want_plan = str(record["plan_sha256"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        for entry in chunks:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                if (str(entry.get("mover_action_key")) == mover
+                        and (int(entry["start_bytes"]),  # type: ignore[index]
+                             int(entry["end_bytes"])) == want_range  # type: ignore[index]
+                        and str(entry.get("plan_sha256")) == want_plan):
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+
+    def _chunk_release_row_state(self, mover: str) -> str:
+        """One mover's row state: claimed, ready, or gone."""
+        if record_store.value_or_raise(
+            self.queue.records.item_presence(record_store.CLAIMED, mover),
+        ):
+            return "claimed"
+        if record_store.value_or_raise(
+            self.queue.records.item_presence(record_store.READY, mover),
+        ):
+            return "ready"
+        return "gone"
+
+    def release_chunks(self, ledger, tier_id, movers, shared, intent) -> ChunkRelease:
+        events: list[str] = []
+        chunks: dict[str, int] = {}
+        for mover in movers:
+            try:
+                evidence, record, _ = self.window_evidence(mover, tier_id)
+            except (OSError, PoolContractError, ValueError):
+                events.append("prelaunch-unknown-evidence")
+                continue
+            if evidence != "record" or record is None:
+                if evidence == "unknown":
+                    events.append("prelaunch-unknown-evidence")
+                continue
+            if (str(record.get("state")) not in ("reserved", "transferring")
+                    or mover in shared
+                    or not self.chunk_binds(intent, record, mover)):
+                continue
+            try:
+                if self._chunk_release_row_state(mover) == "claimed":
+                    continue
+            except (OSError, PoolContractError, ValueError):
+                events.append("prelaunch-unknown-evidence")
+                continue
+            generation = record.get("generation")
+            try:
+                closed = self.advance_window(
+                    mover, tier_id, expect=str(record.get("state")),
+                    advance_to="released",
+                    generation=(str(generation)
+                                if isinstance(generation, str) else None))
+            except (OSError, PoolContractError, ValueError):
+                closed = False
+            if not closed:
+                events.append("prelaunch-unknown-evidence")
+                continue
+            tokens = self._chunk_record_tokens(record) or []
+            try:
+                state = self._chunk_release_row_state(mover)
+            except (OSError, PoolContractError, ValueError):
+                events.append("prelaunch-unknown-evidence")
+                continue
+            if state == "ready":
+                try:
+                    held = set(ledger.holder_state(mover))
+                except (OSError, PoolContractError, ValueError):
+                    events.append("prelaunch-unknown-evidence")
+                    continue
+                count = len(set(tokens) & held)
+                try:
+                    ledger.release_unspent(mover, authority=tier_holdings.Unspent.UNUSED_GRANT)
+                except (OSError, PoolContractError, ValueError):
+                    events.append("prelaunch-unknown-evidence")
+                    continue
+                chunks[mover] = count
+            else:
+                try:
+                    held = set(ledger.holder_state(mover))
+                except (OSError, PoolContractError, ValueError):
+                    held = set()
+                chunks[mover] = len(set(tokens) & held)
+        return ChunkRelease(chunks, events)
+
+    def cancel_window(self, tier_id: str, grant: str, mover: str, *,
+                      evidence: WindowEvidence | None = None) -> GrantRelease:
+        """Return an unused grant, preserving the caller's conditional capture."""
+        released = self.queue.tier(tier_id).cancel_fence(grant)['released']
+        record = (self.read_window(mover, tier_id) if evidence is None
+                  else evidence.record)
+        verdict = ReleaseVerdict.REFUSED
+        if record is not None and record.get("state") in ("reserved", "transferring"):
+            marked = self.advance_window(
+                mover, tier_id, expect=str(record.get("state")),
+                advance_to="released",
+                generation=(str(record.get("generation"))
+                            if isinstance(record.get("generation"), str) else None))
+            verdict = ReleaseVerdict.RELEASED if marked else ReleaseVerdict.UNKNOWN
+        return GrantRelease(released, verdict)

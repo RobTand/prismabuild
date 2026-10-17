@@ -7242,17 +7242,12 @@ def _protect_tier_advances(
                 if (record is None
                         or str(record.get("consumer_action_key")) != key
                         or str(record.get("plan_sha256")) != live_digest):
-                    released = queue.tier(tier_id).cancel_fence(grant)['released']
+                    cancelled = queue.funding.cancel_window(
+                        tier_id, grant, mover, evidence=funding.WindowEvidence(
+                            record_status, record, record_reason))
+                    released = cancelled.released
                     if released:
                         held_total -= released
-                    if record is not None and record.get("state") in (
-                            "reserved", "transferring"):
-                        queue.funding.advance_window(
-                            mover, tier_id, expect=str(record.get("state")),
-                            advance_to="released",
-                            generation=(str(record.get("generation"))
-                                        if isinstance(record.get("generation"),
-                                                     str) else None))
                     if released:
                         events.append({"event": "advance-released",
                                        "consumer": key, "tier_id": tier_id,
@@ -7279,18 +7274,10 @@ def _protect_tier_advances(
                     need_gib=demand,
                     mover_holds_need=(mover_holds and not target_fence_live))
                 if due is not None:
-                    released = queue.tier(tier_id).cancel_fence(grant)['released']
+                    cancelled = queue.funding.cancel_window(tier_id, grant, mover)
+                    released = cancelled.released
                     if released:
                         held_total -= released
-                    record = queue.funding.read_window(mover, tier_id)
-                    if record is not None and record.get("state") in (
-                            "reserved", "transferring"):
-                        queue.funding.advance_window(
-                            mover, tier_id, expect=str(record.get("state")),
-                            advance_to="released",
-                            generation=(str(record.get("generation"))
-                                        if isinstance(record.get("generation"),
-                                                     str) else None))
                     if released:
                         events.append({"event": "advance-released",
                                        "consumer": key, "tier_id": tier_id,

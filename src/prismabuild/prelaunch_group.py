@@ -319,32 +319,6 @@ def _check_movers(chunk_movers: object) -> list[str]:
 # ------------------------------------------------------------- census
 
 
-def _chunk_binds(intent: dict | None, record: Mapping[str, object],
-                 mover: str) -> bool:
-    """True when one funding record funds this group's chunk of one mover."""
-    if intent is None:
-        return False
-    chunks = intent.get("chunks")
-    if not isinstance(chunks, list):
-        return False
-    try:
-        want_range = (int(record["range_start_bytes"]),  # type: ignore[index]
-                      int(record["range_end_bytes"]))  # type: ignore[index]
-        want_plan = str(record["plan_sha256"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    for entry in chunks:
-        if not isinstance(entry, Mapping):
-            continue
-        try:
-            if (str(entry.get("mover_action_key")) == mover
-                    and (int(entry["start_bytes"]),  # type: ignore[index]
-                         int(entry["end_bytes"])) == want_range  # type: ignore[index]
-                    and str(entry.get("plan_sha256")) == want_plan):
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
 
 
 def _intent_span_gib(intent: dict | None, mover: str) -> int:
@@ -538,7 +512,7 @@ def prospective_need_gib(queue: pool.PoolQueue, tier_id: str, unit: str,
             continue
         if (str(record.get("state")) not in ("reserved", "transferring",
                                              "consumed")
-                or not _chunk_binds(intent, record, mover)):
+                or not queue.funding.chunk_binds(intent, record, mover)):
             _count_shared_pinned(queue, ledger, kind, mover, intent,
                                  tier_id, found)
             continue
@@ -619,7 +593,7 @@ def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         # the group holder counts zero here: the mover holds none of them.
         if (str(record.get("state")) not in ("reserved", "transferring",
                                              "consumed")
-                or not _chunk_binds(intent, record, mover)):
+                or not queue.funding.chunk_binds(intent, record, mover)):
             _count_shared_pinned(queue, ledger, kind, mover, intent,
                                  tier_id, found)
             continue
@@ -942,17 +916,6 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
 # ------------------------------------------------------------- release
 
 
-def _release_row_state(queue: pool.PoolQueue, mover: str) -> str:
-    """One mover's row state: claimed, ready, or gone."""
-    if pool.record_store.value_or_raise(
-        queue.records.item_presence(pool.record_store.CLAIMED, mover),
-    ):
-        return "claimed"
-    if pool.record_store.value_or_raise(
-        queue.records.item_presence(pool.record_store.READY, mover),
-    ):
-        return "ready"
-    return "gone"
 
 
 def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
@@ -975,64 +938,9 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
     except (OSError, pool.PoolContractError, ValueError):
         holder_freed = 0
         events.append("prelaunch-unknown-evidence")
-    chunks: dict[str, int] = {}
-    for mover in movers:
-        try:
-            evidence, record, _ = queue.funding.window_evidence(mover, tier_id)
-        except (OSError, pool.PoolContractError, ValueError):
-            events.append("prelaunch-unknown-evidence")
-            continue
-        if evidence != "record" or record is None:
-            if evidence == "unknown":
-                events.append("prelaunch-unknown-evidence")
-            continue
-        if (str(record.get("state")) not in ("reserved", "transferring")
-                or mover in shared
-                or not _chunk_binds(intent, record, mover)):
-            continue
-        try:
-            if _release_row_state(queue, mover) == "claimed":
-                continue
-        except (OSError, pool.PoolContractError, ValueError):
-            events.append("prelaunch-unknown-evidence")
-            continue
-        generation = record.get("generation")
-        try:
-            closed = queue.funding.advance_window(
-                mover, tier_id, expect=str(record.get("state")),
-                advance_to="released",
-                generation=(str(generation)
-                            if isinstance(generation, str) else None))
-        except (OSError, pool.PoolContractError, ValueError):
-            closed = False
-        if not closed:
-            events.append("prelaunch-unknown-evidence")
-            continue
-        tokens = queue.funding._chunk_record_tokens(record) or []
-        try:
-            state = _release_row_state(queue, mover)
-        except (OSError, pool.PoolContractError, ValueError):
-            events.append("prelaunch-unknown-evidence")
-            continue
-        if state == "ready":
-            try:
-                held = set(ledger.holder_state(mover))
-            except (OSError, pool.PoolContractError, ValueError):
-                events.append("prelaunch-unknown-evidence")
-                continue
-            count = len(set(tokens) & held)
-            try:
-                ledger.release_unspent(mover, authority=tier_holdings.Unspent.UNUSED_GRANT)
-            except (OSError, pool.PoolContractError, ValueError):
-                events.append("prelaunch-unknown-evidence")
-                continue
-            chunks[mover] = count
-        else:
-            try:
-                held = set(ledger.holder_state(mover))
-            except (OSError, pool.PoolContractError, ValueError):
-                held = set()
-            chunks[mover] = len(set(tokens) & held)
+    released = queue.funding.release_chunks(ledger, tier_id, movers, shared, intent)
+    events.extend(released.events)
+    chunks = released.chunks
     status, prior, _ = _read_receipt(directory / "released.json")
     if status == "unknown":
         events.append("prelaunch-unknown-evidence")
