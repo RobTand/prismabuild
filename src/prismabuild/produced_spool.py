@@ -543,12 +543,11 @@ class ProducedSpool:
     def reserve_group(self, batch_id, ceiling_bytes):
         self._live()
         _positive(ceiling_bytes, "ceiling_bytes")
-        prewrite = bl.read_prewrite(bl.prewrites_dir(
-            self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
-        if (prewrite is None or prewrite.get("owner_action_key") != self.owner
-                or prewrite.get("owner_attempt") != self.instance["owner_attempt"]):
+        prewrite = bl.BatchLedger.for_instance(self.queue.root, self.instance).prewrite(batch_id)
+        if (prewrite is None or prewrite.owner != self.owner
+                or prewrite.attempt != self.instance["owner_attempt"]):
             raise SpoolError("canonical prewrite must own the group before local allocation")
-        if ceiling_bytes > sum(prewrite["class_bytes"].values()):
+        if ceiling_bytes > sum(prewrite.class_bytes.values()):
             raise SpoolError("local ceiling exceeds the canonical prewrite budget")
         group = self._group(batch_id)
         with _lock(self.directory / ".reservation.lock"):
@@ -613,8 +612,7 @@ class ProducedSpool:
                         != [entry["artifact_class"] for entry in manifest["entries"]]):
                     raise SpoolError("export replay changed its artifact class")
                 return self._publish(old)
-            prewrite = bl.read_prewrite(bl.prewrites_dir(
-                self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
+            prewrite = bl.BatchLedger.for_instance(self.queue.root, self.instance).prewrite(batch_id)
             if prewrite is None:
                 raise SpoolError("canonical prewrite disappeared before export")
             if not isinstance(entries, (list, tuple)) or not entries:
@@ -627,7 +625,7 @@ class ProducedSpool:
                 source = _path(entry["source_path"], group / "payload")
                 destination = _path(entry["destination_path"], Path(self.template["output_prefix"]))
                 temporary = Path(str(destination) + ".tmp")
-                if str(destination) not in prewrite["paths"] or str(temporary) not in prewrite["paths"]:
+                if str(destination) not in prewrite.paths or str(temporary) not in prewrite.paths:
                     raise SpoolError("destination and temporary must be owned by the canonical prewrite")
                 if destination in seen:
                     raise SpoolError("duplicate canonical destination")
@@ -650,20 +648,20 @@ class ProducedSpool:
                 checked.append({"source_path": str(source), "destination_path": str(destination),
                                 "bytes": size, "sha256": digest, "source_identity": identity,
                                 "artifact_class": artifact_class})
-            if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+            if any(class_bytes[key] > prewrite.class_bytes[key] for key in class_bytes):
                 raise SpoolError("export exceeds its canonical artifact class budget")
             if sum(entry["bytes"] for entry in checked) > reservation["ceiling_bytes"]:
                 raise SpoolError("local group exceeded its reserved byte ceiling")
             actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
             if actual != sources:
                 raise SpoolError("local group contains unaccounted payloads or temporaries")
-            declared = {str(path) for path in prewrite["paths"] if not str(path).endswith(".tmp")}
+            declared = {str(path) for path in prewrite.paths if not str(path).endswith(".tmp")}
             if {entry["destination_path"] for entry in checked} != declared:
                 raise SpoolError("export group does not cover the canonical prewrite")
             # Price only new opted-in work, after entry validation but before
             # manifest/CAS publication.  The payload and prewrite remain
             # reserved for a retry; old sealed requests replay above unchanged.
-            tier_id = str(prewrite.get("tier") or "")
+            tier_id = str(prewrite.tier or "")
             fill = (export_fill(self.queue, tier_id, self.owner)
                     if paced and tier_id else None)
             if paced and fill is None:
@@ -1537,18 +1535,17 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
         if _check_receipt(receipt, manifest, record, repin="export"):
             _write(group / "receipt.json", receipt)
         return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
-    prewrite = bl.read_prewrite(bl.prewrites_dir(queue.root, manifest["instance"]) /
-                                f"{manifest['batch_id']}.prewrite.json")
-    if (prewrite is None or prewrite.get("owner_action_key") != manifest["owner"]
-            or prewrite.get("owner_attempt") != manifest["instance"]["owner_attempt"]):
+    prewrite = bl.BatchLedger.for_instance(queue.root, manifest['instance']).prewrite(manifest['batch_id'])
+    if (prewrite is None or prewrite.owner != manifest["owner"]
+            or prewrite.attempt != manifest["instance"]["owner_attempt"]):
         raise SpoolError("canonical prewrite authority is absent or changed")
     class_bytes = {"payload": 0, "checkpoint": 0}
     for entry in manifest["entries"]:
         destination = _path(entry["destination_path"], Path(manifest["template"]["output_prefix"]))
-        if str(destination) not in prewrite["paths"] or str(destination) + ".tmp" not in prewrite["paths"]:
+        if str(destination) not in prewrite.paths or str(destination) + ".tmp" not in prewrite.paths:
             raise SpoolError("canonical export path is not owned")
         class_bytes[entry["artifact_class"]] += entry["bytes"]
-    if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+    if any(class_bytes[key] > prewrite.class_bytes[key] for key in class_bytes):
         raise SpoolError("canonical artifact class budget changed or exceeded")
     pacer = ExportPacer(pace_mb_s) if pace_mb_s is not None else None
     others = _OtherClaims(queue, manifest, export_key, group)

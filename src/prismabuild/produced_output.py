@@ -937,9 +937,7 @@ def commit_batch(queue, instance: Mapping[str, object],
         if gated is not None:
             return gated
         try:
-            prewrite = bl.read_prewrite(
-                bl.prewrites_dir(queue.root, checked_instance)
-                / f"{batch_id}.prewrite.json")
+            prewrite = bl.BatchLedger.for_instance(queue.root, checked_instance).prewrite(batch_id)
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"prewrite-unreadable: {exc}"}
         if prewrite is None:
@@ -949,16 +947,9 @@ def commit_batch(queue, instance: Mapping[str, object],
         # actual per-class bytes at or under the admitted ceiling. The
         # prewrite is consumed here either way, and the class maxima were
         # charged against the (larger) ceiling while it lived.
-        if (prewrite.get("tier") != tier
-                or not bl.actual_within_ceiling(prewrite, sealed)
-                or not set(str(d["path"]) for d in sealed)
-                <= set(prewrite.get("paths", []))
-                or prewrite.get("owner_action_key")
-                != checked_instance["owner_action_key"]
-                or dict(prewrite.get("owner_attempt", {})) != dict(
-                    checked_instance["owner_attempt"])):
+        if not prewrite.matches_commit(checked_instance, tier, sealed):
             return {"ok": False, "refusal": "prewrite-mismatch"}
-        if not bl.planned_omitted_absent(prewrite, sealed):
+        if not prewrite.omitted_absent(sealed):
             return {"ok": False, "refusal": "planned-path-present-retain"}
         try:
             sums = batches.charges
@@ -4350,28 +4341,11 @@ def _unfiled_report(instance: Mapping[str, object], batch_id: str,
     return event
 
 
-def _outstanding_prewrite_ids(scope: Path,
-                              batches: bl.BatchCapture) -> list[str]:
-    """Batch ids with a prewrite record in ``scope`` and no committed batch.
-
-    A commit consumes its prewrite, so a record whose batch id is not in the
-    commitments is outstanding. Raises ``OSError`` when the directory cannot
-    be listed.
-    """
-
-    try:
-        with os.scandir(scope / "prewrites") as iterator:
-            names = sorted(entry.name for entry in iterator
-                           if entry.name.endswith(".prewrite.json"))
-    except FileNotFoundError:
-        return []
-    ids = [name[:-len(".prewrite.json")] for name in names]
-    return [batch_id for batch_id in ids if batch_id not in batches]
 
 
 def _ended_prewrite_dispositions(
         queue, instance: Mapping[str, object], template: Mapping[str, object],
-        records: Mapping[str, Mapping[str, object]],
+        records: Mapping[str, bl.PrewriteFacts],
         reads: bl.LedgerReads,
 ) -> dict[str, dict[str, object]]:
     """What each outstanding prewrite of an ended attempt is now (#949, #1053).
@@ -4420,7 +4394,7 @@ def _ended_prewrite_dispositions(
     for batch_id, record in records.items():
         present: list[str] = []
         try:
-            for path in record.get("paths", []):
+            for path in record.paths:
                 try:
                     os.lstat(str(path))
                 except FileNotFoundError:
@@ -4507,36 +4481,6 @@ def _prepaid_intent_names(reads: bl.LedgerReads, instance: Mapping[str, object],
 #: for a pool funding intent is decided again each cycle.
 
 
-def _prewrite_inputs(record_path: Path, record: Mapping[str, object] | None,
-                     kept_dirs: Sequence[str] | None = None,
-                     seen: dict[str, object] | None = None
-                     ) -> tuple[object, ...] | None:
-    """``(record version, directories, their versions)``, or None if unreadable.
-
-    The record's version is taken before the caller reads it and the
-    directories' before any path is ``lstat``ed, so a change that lands
-    between is seen as a change next cycle, never remembered as none.
-    ``seen`` keeps each directory's version for one caller's pass: an
-    instance's prewrites usually name one directory.
-    """
-
-    def version_of(directory: str) -> object:
-        if seen is None:
-            return bl._file_version(directory)
-        if directory not in seen:
-            seen[directory] = bl._file_version(directory)
-        return seen[directory]
-
-    try:
-        version = bl._file_version(record_path)
-        if kept_dirs is None:
-            paths = (record or {}).get("paths", [])
-            dirs = tuple(sorted({os.path.dirname(str(path)) for path in paths}))
-        else:
-            dirs = tuple(kept_dirs)
-        return (version, dirs, tuple(version_of(item) for item in dirs))
-    except oc.ProducedOutputError:
-        return None
 
 
 def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
@@ -4591,7 +4535,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
         if kept is None:
             return False
         (version, dirs, dir_versions, owners_then), _action = kept
-        inputs = _prewrite_inputs(directory / f"{batch_id}.prewrite.json",
+        inputs = bl.prewrite_inputs(bl.BatchLedger.at_scope(directory.parent).prewrite_path(batch_id),
                                   None, kept_dirs=dirs, seen=seen)
         if inputs is None or inputs != (version, dirs, dir_versions):
             return False
@@ -4611,15 +4555,15 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     reclaimed: list[dict[str, object]] = []
     unlinked: list[str] = []
     with queue.stage_ownership_lock(str(instance["output_prefix"])):
-        records: dict[str, dict[str, object]] = {}
+        records: dict[str, bl.PrewriteFacts] = {}
         inputs: dict[str, tuple[object, ...] | None] = {}
         locked_seen: dict[str, object] = {}
         for batch_id in batch_ids:
             base = {"prewrite": _batch_report_key(instance, batch_id)}
-            record_path = directory / f"{batch_id}.prewrite.json"
-            version = _prewrite_inputs(record_path, {})
+            record_path = bl.BatchLedger.at_scope(directory.parent).prewrite_path(batch_id)
+            version = bl.prewrite_inputs(record_path, None)
             try:
-                record = bl.read_prewrite(record_path)
+                record = bl.BatchLedger.at_scope(directory.parent).prewrite(batch_id)
             except oc.ProducedOutputError as exc:
                 _KEPT_PREWRITES.pop(keys[batch_id], None)
                 reports.append((batch_id, {
@@ -4633,7 +4577,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             records[batch_id] = record
             # The record's version from before it was read; its directories'
             # from before any of its paths is.
-            dirs = _prewrite_inputs(record_path, record, seen=locked_seen)
+            dirs = bl.prewrite_inputs(record_path, record, seen=locked_seen)
             inputs[batch_id] = (None if version is None or dirs is None
                                 else (version[0], dirs[1], dirs[2]))
         dispositions = _ended_prewrite_dispositions(
@@ -4651,7 +4595,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             if action == "reclaim" and staged:
                 named = _prepaid_intent_names(
                     reads, instance, template, batch_id,
-                    str(records[batch_id].get("tier")))
+                    str(records[batch_id].tier))
                 if named is None:
                     disposition = {"action": "refused",
                                    "reason": "unknown-retain",
@@ -4669,7 +4613,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             elif action == "hold":
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
             elif action == "reclaim":
-                path = directory / f"{batch_id}.prewrite.json"
+                path = bl.BatchLedger.at_scope(directory.parent).prewrite_path(batch_id)
                 try:
                     path.unlink()
                 except FileNotFoundError:
@@ -4724,10 +4668,10 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
     if bl.attempt_state(generation, str(attempt["nonce"])) not in oc._ENDED_ATTEMPT_STATES:
         return []
     directory = bl.prewrites_dir(queue.root, instance)
-    records: dict[str, dict[str, object]] = {}
+    records: dict[str, bl.PrewriteFacts] = {}
     for batch_id in batch_ids:
         try:
-            record = bl.read_prewrite(directory / f"{batch_id}.prewrite.json")
+            record = bl.BatchLedger.at_scope(directory.parent).prewrite(batch_id)
         except oc.ProducedOutputError as exc:
             unreadable.append(f"{where}/{batch_id}.prewrite: {exc}")
             continue
@@ -4834,7 +4778,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                 continue
             due = [(batch_id, entry) for batch_id, entry in sorted(batches.items()) if isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (entry.lifetime == oc.ORIGIN_LIFETIME_CONSUMED) and (not entry.origin_reclaimed) and (not entry.retiring)]
             try:
-                outstanding = _outstanding_prewrite_ids(scope, batches)
+                outstanding = batches.outstanding_prewrite_ids()
             except OSError as exc:
                 unreadable.append(f"{where}/prewrites: {exc}")
                 outstanding = []
@@ -4849,7 +4793,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     continue
             try:
                 instance = oc.validate_instance(json.loads(
-                    (scope / "instance.json").read_text()))
+                    bl.BatchLedger.at_scope(scope).instance_path.read_text()))
                 template = oc.validate_template(json.loads(
                     (templates_root / f"{instance['template_id']}.json"
                      ).read_text()))
@@ -5306,7 +5250,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
             continue
         due = [batch_id for batch_id, entry in sorted(batches.items()) if isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (entry.lifetime == oc.ORIGIN_LIFETIME_CONSUMED) and (not entry.origin_reclaimed)]
         try:
-            outstanding = _outstanding_prewrite_ids(scope, batches)
+            outstanding = batches.outstanding_prewrite_ids()
         except OSError:
             outstanding = []
         staged = batches.unretired_staged
@@ -5322,7 +5266,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
             continue
         try:
             instance = oc.validate_instance(json.loads(
-                (scope / "instance.json").read_text()))
+                bl.BatchLedger.at_scope(scope).instance_path.read_text()))
             template = oc.validate_template(json.loads(
                 (templates_root / f"{instance['template_id']}.json"
                  ).read_text()))

@@ -2483,6 +2483,52 @@ class StageCopy:
         return self._row.get("fill_mb_s_pool_side")
 
 
+class PrewriteFacts:
+    """A validated reservation; separate export and commit questions stay named."""
+
+    def __init__(self, record):
+        self._record = record
+
+    @property
+    def owner(self):
+        return self._record.get("owner_action_key")
+
+    @property
+    def attempt(self):
+        return self._record.get("owner_attempt")
+
+    @property
+    def attempt_binding(self):
+        # Missing and explicitly null attempts retain their original meanings.
+        return dict(self._record.get("owner_attempt", {}))
+
+    @property
+    def tier(self):
+        return self._record.get("tier")
+
+    @property
+    def paths(self):
+        return self._record["paths"]
+
+    @property
+    def class_bytes(self):
+        return self._record["class_bytes"]
+
+    def matches_commit(self, instance, tier, sealed):
+        prewrite = self._record
+        return not (prewrite.get("tier") != tier
+                or not actual_within_ceiling(prewrite, sealed)
+                or not set(str(d["path"]) for d in sealed)
+                <= set(prewrite.get("paths", []))
+                or prewrite.get("owner_action_key")
+                != instance["owner_action_key"]
+                or dict(prewrite.get("owner_attempt", {})) != dict(
+                    instance["owner_attempt"]))
+
+    def omitted_absent(self, sealed):
+        return planned_omitted_absent(self._record, sealed)
+
+
 class BatchLedger:
     """The explicit record boundary for one scope; construction performs no I/O.
 
@@ -2501,6 +2547,17 @@ class BatchLedger:
     def at_scope(cls, scope: Path):
         """Address an already selected scope without reading its bindings."""
         return cls(scope / "commitments.json")
+
+    @property
+    def instance_path(self):
+        return self.path.parent / "instance.json"
+
+    def prewrite_path(self, batch_id):
+        return self.path.parent / "prewrites" / f"{batch_id}.prewrite.json"
+
+    def prewrite(self, batch_id):
+        record = read_prewrite(self.prewrite_path(batch_id))
+        return None if record is None else PrewriteFacts(record)
 
     def entries(self):
         """Capture one generation of entries; no entry history is read eagerly."""
@@ -4059,6 +4116,26 @@ class BatchCapture:
     def values(self):
         return (self[key] for key in self._batches)
 
+    def outstanding_prewrite_ids(self) -> list[str]:
+        """Batch ids with a prewrite record in ``scope`` and no committed batch.
+
+        A commit consumes its prewrite, so a record whose batch id is not in the
+        commitments is outstanding. Raises ``OSError`` when the directory cannot
+        be listed.
+        """
+        scope = self.ledger.path.parent
+        batches = self._batches
+
+        try:
+            with os.scandir(scope / "prewrites") as iterator:
+                names = sorted(entry.name for entry in iterator
+                               if entry.name.endswith(".prewrite.json"))
+        except FileNotFoundError:
+            return []
+        ids = [name[:-len(".prewrite.json")] for name in names]
+        return [batch_id for batch_id in ids if batch_id not in batches]
+
+
     @property
     def charges(self):
         return _class_sums(self._batches)
@@ -4363,6 +4440,38 @@ class RetirementEntry(BatchFacets):
             entry["origin_repins"] = [
                 *(entry.get("origin_repins") or []), *repinned]
             repinned.clear()
+
+
+def prewrite_inputs(record_path: Path, record: PrewriteFacts | None,
+                     kept_dirs: Sequence[str] | None = None,
+                     seen: dict[str, object] | None = None
+                     ) -> tuple[object, ...] | None:
+    """``(record version, directories, their versions)``, or None if unreadable.
+
+    The record's version is taken before the caller reads it and the
+    directories' before any path is ``lstat``ed, so a change that lands
+    between is seen as a change next cycle, never remembered as none.
+    ``seen`` keeps each directory's version for one caller's pass: an
+    instance's prewrites usually name one directory.
+    """
+
+    def version_of(directory: str) -> object:
+        if seen is None:
+            return _file_version(directory)
+        if directory not in seen:
+            seen[directory] = _file_version(directory)
+        return seen[directory]
+
+    try:
+        version = _file_version(record_path)
+        if kept_dirs is None:
+            paths = record.paths if record is not None else []
+            dirs = tuple(sorted({os.path.dirname(str(path)) for path in paths}))
+        else:
+            dirs = tuple(kept_dirs)
+        return (version, dirs, tuple(version_of(item) for item in dirs))
+    except oc.ProducedOutputError:
+        return None
 
 
 def spool_claims(queue, instance, template, wanted, *, lease_timeout_s):

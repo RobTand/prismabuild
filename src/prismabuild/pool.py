@@ -13438,8 +13438,8 @@ class PoolQueue:
         total = bound_range[1] - bound_range[0]
         # Deterministic instance path (no scan).
         try:
-            inst_path = (bl.attempt_scope(self.root, owner_key, template_id,
-                                          owner_nonce) / "instance.json")
+            inst_path = bl.BatchLedger.at_scope(bl.attempt_scope(
+                self.root, owner_key, template_id, owner_nonce)).instance_path
             try:
                 with open(inst_path, "rb") as handle:
                     raw_inst = handle.read(64 * 1024 + 1)
@@ -13527,8 +13527,8 @@ class PoolQueue:
             return False
         total = bound_range[1] - bound_range[0]
         try:
-            inst_path = (bl.attempt_scope(self.root, owner_key, template_id,
-                                          owner_nonce) / "instance.json")
+            inst_path = bl.BatchLedger.at_scope(bl.attempt_scope(
+                self.root, owner_key, template_id, owner_nonce)).instance_path
             try:
                 with open(inst_path, "rb") as handle:
                     raw_inst = handle.read(64 * 1024 + 1)
@@ -13547,22 +13547,20 @@ class PoolQueue:
         if (str(instance.get("template_sha256")) != template_sha):
             return False
         try:
-            prewrite = bl.read_prewrite(
-                bl.prewrites_dir(self.root, instance)
-                / f"{batch_id}.prewrite.json")
+            prewrite = bl.BatchLedger.for_instance(self.root, instance).prewrite(batch_id)
         except oc.ProducedOutputError:
             return False
         if prewrite is None:
             return False
-        if str(prewrite.get("tier")) != tier_id:
+        if str(prewrite.tier) != tier_id:
             return False
-        if str(prewrite.get("owner_action_key")) != owner_key:
+        if str(prewrite.owner) != owner_key:
             return False
         try:
-            if dict(prewrite.get("owner_attempt", {})) != dict(
+            if prewrite.attempt_binding != dict(
                     instance.get("owner_attempt", {})):
                 return False
-            classes = dict(prewrite.get("class_bytes", {}))
+            classes = dict(prewrite.class_bytes)
             pre_total = (int(classes.get("payload", 0))
                          + int(classes.get("checkpoint", 0))
                          + int(classes.get("temp", 0)))

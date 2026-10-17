@@ -7967,7 +7967,7 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
         residency = queue.root / pool.record_store.RESIDENCY
         scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
         instance = oc.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
+            json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
         template = oc.validate_template(json.loads(
             (residency / oc.OUTPUT_TEMPLATES_SUBDIR
              / f"{template_id}.json").read_text()))
@@ -8018,7 +8018,7 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
         residency = queue.root / pool.record_store.RESIDENCY
         scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
         instance = oc.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
+            json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
     except (OSError, ValueError):
         return (False, "producer instance unreadable")
     attempt = instance.get("owner_attempt")
@@ -8028,20 +8028,18 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
             or str(attempt.get("scope_id")) != owner_scope):
         return (False, "funding, instance and attempt disagree")
     try:
-        prewrite = bl.read_prewrite(
-            bl.prewrites_dir(queue.root, instance)
-            / f"{batch_id}.prewrite.json")
+        prewrite = bl.BatchLedger.for_instance(queue.root, instance).prewrite(batch_id)
     except oc.ProducedOutputError as exc:
         return (False, f"prewrite unreadable: {exc}")
     if prewrite is None:
         return (False, "prewrite record absent")
-    if str(prewrite.get("tier")) != tier_id:
+    if str(prewrite.tier) != tier_id:
         return (False, "prewrite names another tier")
-    if (str(prewrite.get("owner_action_key")) != owner
-            or dict(prewrite.get("owner_attempt", {}))
+    if (str(prewrite.owner) != owner
+            or prewrite.attempt_binding
             != dict(instance.get("owner_attempt", {}))):
         return (False, "prewrite names another attempt")
-    for planned in (prewrite.get("paths", []) or []):
+    for planned in (prewrite.paths or []):
         try:
             os.lstat(str(planned))
         except FileNotFoundError:
