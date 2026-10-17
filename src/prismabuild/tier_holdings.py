@@ -214,6 +214,21 @@ class TierLedger:
         except (OSError, PoolContractError, ValueError):
             return 0
 
+    def _trim_host_to_occupancy(self, holder: str) -> int:
+        """An unreadable tier retains its host half; retry heals by name."""
+        try:
+            target = sum(name.rsplit("-", 1)[0] == storage_tiers.RAM_CAPACITY_KIND
+                         for name in self.holder_state(holder))
+            ledger = self._host_ledgers(self._ram_host())
+            mirror = storage_tiers.RAM_HOST_MEMORY_PREFIX + str(holder)
+            current = int(ledger.holder_tokens(mirror).get("mem_gb", 0))
+            if current <= target:
+                return 0
+            returned = ledger.release_count(mirror, {"mem_gb": current - target})
+            return int(returned.get("mem_gb", 0))
+        except (OSError, PoolContractError, ValueError):
+            return 0
+
     def _ram_host(self) -> str:
         return str(self.tier_id).split(':', 1)[1]
 
@@ -431,8 +446,8 @@ class TierLedger:
         destroyed = ledger.retire_held(action_key, destroy)
         shortfall = {kind: int(count) - int(destroyed.get(kind, 0)) for kind, count in destroy.items() if int(count) - int(destroyed.get(kind, 0)) > 0}
         released = ledger.release_count(action_key, free)
-        if not shortfall and storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
-            self._release_host(action_key)
+        if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
+            self._trim_host_to_occupancy(action_key)
         return {'destroyed': destroyed, 'released': released, 'shortfall': shortfall}
 
 
