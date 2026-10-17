@@ -1,5 +1,6 @@
 """Produced-batch records, histories, reservations and path authority."""
 from __future__ import annotations
+
 from collections.abc import Collection, Mapping, Sequence
 import contextlib
 import errno
@@ -669,7 +670,7 @@ class LedgerReads:
     def census(self, owner: str) -> tuple[list[dict], bool]:
         if owner not in self._census:
             try:
-                self._census[owner] = self.queue.output_census_for_owner(owner)
+                self._census[owner] = self.queue.funding.output_census(owner)
             except Exception:
                 self._census[owner] = ([], True)
         return self._census[owner]
@@ -2066,7 +2067,7 @@ def funding_verdict(queue, mover_key: str,
     filed, so the ordinary claim path applies; ``("unknown", reason)``
     anything unreadable, unparsable, or disagreeing with itself.
 
-    Read through `PoolQueue.output_funding_file_state`, never
+    Read through `PoolQueue.funding.output_evidence`, never
     `read_output_funding`, because this is a census path and that method
     cannot tell absent from corrupt -- its own docstring forbids it here.
     One question, asked identically wherever a batch's claimability is
@@ -2076,7 +2077,7 @@ def funding_verdict(queue, mover_key: str,
     if not mover_key or not tier:
         return ("unknown", "no mover or tier on the batch entry")
     try:
-        record, file_state = queue.output_funding_file_state(mover_key, tier)
+        record, file_state = queue.funding.output_evidence(mover_key, tier)
     except Exception as exc:
         return ("unknown", repr(exc))
     if file_state == "corrupt":
@@ -3019,7 +3020,7 @@ class BatchLedger:
             # (release_output_funding proves mover nonexecution); abort refuses
             # while one exists. An unreadable census retains the same way.
             try:
-                intents, census_unknown = queue.output_census_for_owner(
+                intents, census_unknown = queue.funding.output_census(
                     str(checked_instance["owner_action_key"]))
             except Exception as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}

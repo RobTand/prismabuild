@@ -18824,3 +18824,17 @@ The schemas, JSON byte recipes, namespace grammar, immutable writer,
 materialization generations, locks and origin-retirement protocol are unchanged.
 The observability adapter reads the same batch questions through these owners;
 a retained historical source closure keeps its own original module APIs.
+
+### Funding ownership after C12
+
+`funding.FundingLedger` owns the existing window/output record validators,
+generation CAS, state table, bind, named handoff repair, cover and release.
+`PoolQueue.funding` is lazy and performs no read at construction. Claims retain
+their existing verification and consumed-mark publication order.
+Prelaunch chunk funding and tier-loop settlement use this owner directly.
+`AdvanceProtection` captures independent stage/RAM pass facts with named fields;
+only an explicit permitted entry outside every unknown/gated set can publish.
+`commit_batch` retains its prefix locks and batch validation; funding completes
+inside those locks before `BatchLedger.publish_stage` publishes and cleans up.
+Wire schemas, token names, publication bindings, native observations and the
+legacy in-flight recovery lane retain their existing contracts.

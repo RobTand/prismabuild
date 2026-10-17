@@ -1,6 +1,7 @@
 """Wire ownership metadata. Production adapters are selected only by qualification."""
 from __future__ import annotations
 
+
 from dataclasses import dataclass
 
 
@@ -625,16 +626,16 @@ KINDS = (
     RecordKind("dc-task-data", "prismabuild.task_data_manifest.v1", "logical request task_data_manifest", "closed",
                "prismabuild.decomposition:validate_task_data_policy", ("prismabuild.decomposition:write_document",), ("plain", "reader")),
     RecordKind("q-funding", "prismabuild.tier_funding.v1", "tier-funding/<mover>.<tier>.funding.json", "closed",
-               "prismabuild.pool:PoolQueue.read_funding", ("prismabuild.pool:PoolQueue.write_funding",),
+               "prismabuild.funding:FundingLedger.read_window", ("prismabuild.funding:FundingLedger.write_window",),
                ("reserved", "transferring", "consumed", "released", "prelaunch-birth", "prelaunch-binding", "reserve-fence"),
-               variant_writers=(("prelaunch-birth", "prismabuild.prelaunch_group:_birth_record"),
-                    ("prelaunch-binding", "prismabuild.prelaunch_group:_fresh_binding"),
-                    ("reserve-fence", "prismabuild.pool:PoolQueue._reserve_fence_locked"))),
+               variant_writers=(("prelaunch-birth", "prismabuild.funding:FundingLedger._chunk_birth_record"),
+                    ("prelaunch-binding", "prismabuild.funding:FundingLedger._chunk_fresh_binding"),
+                    ("reserve-fence", "prismabuild.funding:FundingLedger._reserve_window_locked"))),
     RecordKind("q-output-funding", "prismabuild.tier_funding.output.v1", "tier-funding/<mover>.<tier>.output-funding.json", "closed",
-               "prismabuild.pool:PoolQueue.read_output_funding", ("prismabuild.pool:PoolQueue.write_output_funding",),
+               "prismabuild.funding:FundingLedger.read_output", ("prismabuild.funding:FundingLedger.write_output",),
                ("reserved", "transferring", "consumed", "released", "stage-intent", "fund-direct"), stable_paths=True,
-               variant_writers=(("stage-intent", "prismabuild.pool:PoolQueue.stage_output_intent"),
-                                ("fund-direct", "prismabuild.pool:PoolQueue._fund_output_batch_locked"))),
+               variant_writers=(("stage-intent", "prismabuild.funding:FundingLedger.stage_output"),
+                                ("fund-direct", "prismabuild.funding:FundingLedger._fund_output_batch_locked"))),
     RecordKind("q-denials", "prismabuild.claim_denials.v1", "host adaptive/claim-denials.json", "additive",
                "prismabuild.pool:PoolQueue.latest_denials", ("prismabuild.pool:PoolQueue.record_denial",),
                ("first", "repeat", "damped"), ("reader treats wrapper schema as diagnostic, not authority",), negative_field="records"),
