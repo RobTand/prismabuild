@@ -76,6 +76,8 @@ def operate(request, store, load):
     socket.gethostname = lambda: "compat-host"
     os.environ["PRISMABUILD_BOX_STATE_ROOT"] = str(store / "box-state")
     os.environ.pop("PRISMABUILD_ACTION_PROGRESS_PHASES", None)
+    if family == "egress" and variant.endswith("writer"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_egress_writer_adapters.py")))["operate"](request, store, load)
     if family in ("host-spool-offer", "q-census-report", "q-pricing-log"):
         return runpy.run_path(str(Path(__file__).with_name("compat_diagnostic_state_adapters.py")))["operate"](request, store, load)
     if family == "residency-block" and variant.endswith("writer"):
