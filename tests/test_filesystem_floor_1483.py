@@ -761,11 +761,12 @@ def test_pbrun_holds_growth_while_publishing_and_releases_before_waiting(
     pbrun, _queue_, ledger = _pbrun_world(tmp_path, monkeypatch)
     seen = {}
 
-    def publish(args, **_kw):
+    def publish(args, *, report, **_kw):
         # The real submission body is replaced only here, to observe the
         # allowance while it would run; the guard and ledger are real.
         seen["held"] = ledger.held().get("filesystem_gib", 0)
-        return lambda: seen.setdefault("waited_with", ledger.held().get("filesystem_gib", 0))
+        return lambda: report.finish(pbrun.action_client.ClientCommand(
+            seen.setdefault("waited_with", ledger.held().get("filesystem_gib", 0))))
 
     monkeypatch.setattr(pbrun, "submit_and_publish", publish)
     pbrun.main()

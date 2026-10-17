@@ -15,6 +15,8 @@ complete records for the rest.
 
 from __future__ import annotations
 
+from pbtest_shard_output import finish_submission
+
 import contextlib
 import io
 import json
@@ -45,13 +47,14 @@ class _Recorder:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
 
-    def __call__(self) -> int:
+    def __call__(self, *, report) -> int:
         self.calls.append(list(sys.argv))
         print(json.dumps({
             "status": "submitted", "action_key": KEY, "transport": "slurm",
             "published_unix": 100.0 + len(self.calls),
         }))
-        return 0
+        return finish_submission(report, key=KEY, transport='slurm',
+            generation=100.0 + len(self.calls))
 
 
 def _campaign(argv, recorder, monkeypatch: pytest.MonkeyPatch):

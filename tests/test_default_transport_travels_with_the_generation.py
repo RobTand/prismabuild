@@ -18,6 +18,8 @@ did.
 """
 from __future__ import annotations
 
+from pbtest_shard_output import finish_submission
+
 import importlib.util
 import json
 from pathlib import Path
@@ -198,10 +200,10 @@ def test_an_unflagged_pbcampaign_dispatches_onto_the_lane_the_generation_names(
 
     seen: dict[str, list[str]] = {}
 
-    def fake_main() -> int:
+    def fake_main(*, report) -> int:
         seen["argv"] = list(sys.argv)
         print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return 0
+        return finish_submission(report)
 
     monkeypatch.setattr(pbrun, "main", fake_main)
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)

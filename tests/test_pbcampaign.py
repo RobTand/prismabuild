@@ -9,6 +9,8 @@ order, ``--cpus`` where the row says ``demand.cpu``, tags the other way round
 """
 from __future__ import annotations
 
+from pbtest_shard_output import finish_submission
+
 import json
 from pathlib import Path
 import socket
@@ -359,10 +361,10 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
 
     seen: dict[str, list[str]] = {}
 
-    def fake_main() -> int:
+    def fake_main(*, report) -> int:
         seen["argv"] = list(sys.argv)
         print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return 0
+        return finish_submission(report)
 
     monkeypatch.setattr(pbrun, "main", fake_main)
     published = pbcampaign.submit_row(
