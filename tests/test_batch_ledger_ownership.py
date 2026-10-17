@@ -131,9 +131,10 @@ def test_legacy_missing_paths_use_the_real_immutable_batch(tmp_path):
 
 def test_the_admitted_interpreter_reports_its_actual_identity(capsys):
     executable = Path(sys.executable).resolve()
-    payload = executable.read_bytes()
+    payload = Path('/proc/self/exe').read_bytes()
     identity = {"version": sys.version, "version_info": list(sys.version_info[:3]),
                 "executable": sys.executable, "resolved": str(executable),
+                "mapped_executable": os.readlink('/proc/self/exe'),
                 "bytes": len(payload), "sha256": digest_primitives.raw_sha256(payload),
                 "host": __import__("socket").gethostname(),
                 "cpus": sorted(os.sched_getaffinity(0)),
