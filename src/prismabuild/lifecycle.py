@@ -373,8 +373,8 @@ def _archive_earlier_terminal(
     reverse -- the earlier record stayed beside the new one and the key
     read as both (#1117).  Only a readable record of a different
     generation (``published_unix``) is archived; a same-generation pair
-    is not this method's to judge. Called by ``finish`` after it owns the
-    exact claim's tombstone, before the new terminal is written. Ordinary
+    is not this method's to judge. Worker finish and expired-claim recovery
+    call this after owning the exact claim's tombstone, before writing the new terminal. Ordinary
     ``finish`` does not hold the key's transition lock across this call.
 
     The record is copied whole to ``withdrawn/superseded/``, a name no
@@ -862,11 +862,10 @@ def _recover_cancelled_claim(queue, policy: ExpiredClaim, container_cleanup) -> 
                 "attempt": prior + 1,
                 "outcome": str(queue.records.attempt_path(record, prior + 1).relative_to(queue.root))}]
             adopted = queue.attempt_ending(recovered)
-            if adopted["status"] != WITHDRAWN:
-                raise PoolContractError("cancelled recovery conflicts with an archived attempt")
-            _complete_cancellation(queue, key, record, read_claim, holder,
-                                   container_cleanup, adopted["detail"])
-            return None
+            if adopted["status"] == WITHDRAWN:
+                _complete_cancellation(queue, key, record, read_claim, holder,
+                                       container_cleanup, adopted["detail"])
+                return None
     except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError) as exc:
         print(f"pool cancelled recovery {key} retained: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
