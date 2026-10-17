@@ -31,6 +31,7 @@ from prismabuild import core as pb, cpu_topology, pool, resource_scope  # noqa: 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
 
@@ -213,8 +214,8 @@ raise SystemExit(wl.main())
         membership = Path(f"/proc/{action_pid}/cgroup").read_text()
         assert control["scope_id"] in membership
 
-        assert pbrun.withdraw_main(
-            queue, [key[:12]], reason="ten merges stale", by=f"rob@{host}") == 0
+        assert submit_core.withdraw_main(
+            queue, [key[:12]], reason="ten merges stale", by=f"rob@{host}", store=pbrun.configured_store(), display=pbrun.render) == 0
 
         output, _ = worker.communicate(timeout=60.0)
         assert worker.returncode == 0, output
@@ -242,8 +243,8 @@ raise SystemExit(wl.main())
         assert _await(lambda: not Path(control["cgroup_path"]).exists())
 
         # The submitter is told, rather than waiting out ``--wait-s``.
-        rc = pbrun.action_client.report_pool_outcome(queue, key, wait_s=1.0)
-        assert rc == pbrun.action_client.WITHDRAWN_EXIT
+        rc = submit_core.action_client.report_pool_outcome(queue, key, wait_s=1.0)
+        assert rc == submit_core.action_client.WITHDRAWN_EXIT
     finally:
         if worker.poll() is None:
             # This child belongs to the test. Do not leak it on an assertion;
