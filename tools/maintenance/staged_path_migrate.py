@@ -65,6 +65,16 @@ def staged_symbols(sources):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 chosen.update(n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name))
         selected[module] = chosen
+    # Retiring a definition also retires its old role-module re-exports.
+    for module, path in STAGED_MODULES.items():
+        for node in ast.parse(sources[path]).body:
+            if isinstance(node, ast.ImportFrom):
+                origin = (node.module or "").rsplit(".", 1)[-1]
+                for alias in node.names:
+                    if alias.name in selected.get(origin, ()):
+                        if alias.asname not in (None, alias.name):
+                            raise ValueError("a moved re-export needs an explicit name mapping")
+                        selected[module].add(alias.name)
     return selected
 
 
@@ -86,7 +96,7 @@ def staged_exports(sources):
                     if name in exports:
                         own[alias.asname or alias.name] = name
             elif isinstance(node, ast.ImportFrom):
-                module = (node.module or "").rsplit(".", 1)[-1]
+                module = (node.module or ("prismabuild" if node.level else "")).rsplit(".", 1)[-1]
                 if module in exports:
                     pending.append((own, module, node.names))
     while True:
@@ -125,16 +135,48 @@ def staged_alias_bindings(tree, selected, exports):
                     if alias.asname is None and "." in alias.name:
                         aliases[alias.name.split(".")[0]] = alias.name.split(".")[0]
         elif isinstance(node, ast.ImportFrom):
-            module = (node.module or "").split(".")[-1]
+            module = (node.module or ("prismabuild" if node.level else "")).split(".")[-1]
             if module in exports:
                 aliases.update({a.asname or a.name: exports[module][a.name]
                                 for a in node.names if a.name in exports[module]})
     return aliases
 
 
+def staged_embedded_imports(value, selected, exports):
+    """Keep format placeholders intact when an embedded program cannot parse."""
+    lines = value.splitlines(keepends=True)
+    imports, import_lines = [], []
+    for number, line in enumerate(lines):
+        try:
+            nodes = ast.parse(line.lstrip()).body
+        except SyntaxError:
+            continue
+        if len(nodes) == 1 and isinstance(nodes[0], (ast.Import, ast.ImportFrom)):
+            imports.append(nodes[0]); import_lines.append(number)
+    aliases = staged_alias_bindings(ast.Module(body=imports, type_ignores=[]), selected, exports)
+    for alias, module in aliases.items():
+        if module not in selected or not selected[module]:
+            continue
+        pattern = re.compile(rf"\b{re.escape(alias)}\.({'|'.join(map(re.escape, selected[module]))})\b")
+        value = pattern.sub(lambda m: f"{staged_destination(module)}.{STAGED_PUBLIC.get(m[1], m[1])}", value)
+    present = {a.asname or a.name for n in imports if isinstance(n, ast.ImportFrom)
+               and n.module == "prismabuild" for a in n.names}
+    needs = {m for m in ("staged_path", "output_vocabulary")
+             if re.search(rf"\b{m}\.", value) and m not in present}
+    if needs:
+        lines = value.splitlines(keepends=True)
+        at = import_lines[-1] + 1 if import_lines else 0
+        anchor = lines[at - 1] if at else next((s for s in lines if s.strip()), "")
+        indent = anchor[:len(anchor) - len(anchor.lstrip())]
+        lines.insert(at, indent + "from prismabuild import " + ", ".join(sorted(needs)) + "\n")
+        value = "".join(lines)
+    return value
+
+
 def staged_references(source, selected, *, local=None, exports=None):
     """Rewrite imports, calls, fault seams and embedded programs without reformatting."""
     tree = ast.parse(source)
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     docstrings = {id(n.body[0].value) for n in ast.walk(tree)
                   if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
                   and n.body and isinstance(n.body[0], ast.Expr)
@@ -198,12 +240,32 @@ def staged_references(source, selected, *, local=None, exports=None):
             edit(node, bare[node.id]); needs.add(bare[node.id].split(".")[0])
         elif isinstance(node, ast.Call) and len(node.args) >= 2:
             target, key = node.args[:2]
+            module = staged_reference_module(target, aliases, exports)
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                module = staged_reference_module(target, aliases, exports)
                 if module in selected and key.value in selected[module]:
                     destination = staged_destination(module)
                     edit(target, destination); edit(key, repr(STAGED_PUBLIC.get(key.value, key.value)))
                     needs.add(destination)
+            elif module in selected and isinstance(key, ast.Name):
+                function = parents.get(node)
+                while function is not None and not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    function = parents.get(function)
+                for decorator in function.decorator_list if function is not None else ():
+                    if (not isinstance(decorator, ast.Call) or len(decorator.args) < 2
+                            or not isinstance(decorator.args[0], ast.Constant)
+                            or decorator.args[0].value != key.id
+                            or not isinstance(decorator.args[1], (ast.List, ast.Tuple))):
+                        continue
+                    values = [v.value for v in decorator.args[1].elts
+                              if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+                    if any("." not in v and v not in selected[module] for v in values):
+                        continue
+                    renamed = {v: STAGED_PUBLIC.get(v, v) for v in values if v in selected[module]}
+                    if renamed:
+                        destination = staged_destination(module)
+                        edit(target, destination)
+                        edit(key, f"{renamed!r}.get({key.id}, {key.id})")
+                        needs.add(destination)
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
             value = node.value
             if id(node) in annotation_strings:
@@ -220,11 +282,11 @@ def staged_references(source, selected, *, local=None, exports=None):
                 if module + ":" in value:
                     value = colon_patterns[module].sub(
                         lambda match: f"prismabuild.{staged_destination(module)}:{STAGED_PUBLIC.get(match[1], match[1])}", value)
-            if "from prismabuild" in value and "\n" in value:
+            if "import " in value and "\n" in value:
                 try:
                     value = staged_references(value, selected, exports=exports)
                 except (SyntaxError, IndentationError):
-                    pass
+                    value = staged_embedded_imports(value, selected, exports)
             if value != node.value:
                 edit(node, repr(value))
     unique = {(a, b): text for a, b, text in edits}
@@ -256,6 +318,13 @@ def staged_extract(source, module):
         if selected and module == "stage_release" and getattr(node, "name", None) == "_is_action_key":
             before = end
             continue
+        if selected and module == "stage_release" and getattr(node, "name", None) == "recover_orphaned_range":
+            tokens = []
+            for token in tokenize.generate_tokens(io.StringIO(text).readline):
+                if token.type == tokenize.NAME and token.string == "fragment_owners":
+                    token = token._replace(string="fragment_mentions")
+                tokens.append(token)
+            text = tokenize.untokenize(tokens)
         (moved if selected else remaining).append(text)
         before = end
     remaining.extend(lines[before:])

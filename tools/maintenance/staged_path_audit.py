@@ -218,6 +218,20 @@ def staged_audit_cli():
             if path.startswith(("src/", "tools/")):
                 counter.update(staged_body(node, selected) for node in ast.walk(ast.parse(source))
                                if isinstance(node, ast.Assert))
+    scope_collisions = []
+    for node in ast.walk(new_tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pending, local_nodes = list(node.body), []
+            while pending:
+                child = pending.pop()
+                local_nodes.append(child)
+                if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    pending.extend(ast.iter_child_nodes(child))
+            assigned = {n.id for n in local_nodes if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+            for call in local_nodes:
+                if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                        and call.func.id in assigned and call.func.id in definitions):
+                    scope_collisions.append([node.name, call.lineno, call.func.id])
     preserved_captures = subprocess.check_output(
         ["git", "diff", "--name-only", STAGED_BASE, "--", "tests/compat"],
         cwd=args.root, text=True).splitlines()
@@ -233,6 +247,7 @@ def staged_audit_cli():
               "missing_production_assertions": dict(original_assertions - current_assertions),
               "assertion_binding_migration": "produced_output's existing in-process module-availability assert now names staged_path; all original assertion conditions remain.",
               "changed_historical_captures": preserved_captures,
+              "owner_scope_binding_collisions": scope_collisions,
               "limit": "Source comparison, not runtime proof. Deliberate later protocol changes are reported, never hidden."}
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({k: len(result[k]) for k in ("moves", "body_changes", "changed", "missing_checks", "retired_executable_references", "parse_errors", "remaining_migration_rewrites", "missing_production_assertions", "changed_historical_captures")}))
