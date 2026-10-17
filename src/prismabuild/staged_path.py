@@ -7552,6 +7552,9 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
     retains its authority. The donor pair is read again under ownership;
     an unknown or different successor pair is retained there as well.
     The existing stage lock still orders publication against egress.
+    After a crash following the full handover, both unchanged pairs and a
+    successor charge covering the whole range let a retry finish withdrawal
+    and file the receipt. It moves no token a second time.
     Declining costs a copy; proceeding against an egress mid-delete would cost
     the consumer its bytes.
     """
@@ -7580,7 +7583,8 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 return {**outcome, "reason": "range_in_use", "active_mover": mover,
                         "state": live}
         before = ledger.holdings(old_key)
-        if not before:
+        recovering = not before
+        if recovering and not ledger.holdings(new_key):
             return {**outcome, "reason": "no_longer_resident"}
         receipt = queue.move_record(old_key)
         old_consumer = (str(receipt.get("consumer_action_key") or "")
@@ -7592,6 +7596,10 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         try:
             with open(source_path) as stream:
                 source = residency_map.validate_fragment(json.load(stream))
+        except FileNotFoundError as exc:
+            if recovering:
+                return {**outcome, "reason": "no_longer_resident"}
+            return {**outcome, "reason": "range_not_named", "error": repr(exc)}
         except (OSError, ValueError) as exc:
             # A fragment that is absent or unreadable cannot say which files
             # this range is, and a range nobody can name is not one to take
@@ -7767,12 +7775,22 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                     return {**outcome, "reason": "successor_already_named"}
             except (OSError, ValueError, pb.PrismaBuildError) as exc:
                 return {**outcome, "reason": "successor_ownership_uncertain", "error": repr(exc)}
+            if recovering:
+                occupancy = storage_tiers.capacity_kind_of(tier_id)
+                required = _tokens_for_egressed_bytes(sum(
+                    int(entry["bytes"]) for entry in dict(source["entries"]).values()))
+                held = ledger.holdings(new_key)
+                if (current_successor != successor or successor_material is None
+                        or int(held.get(occupancy, 0)) < required):
+                    return {**outcome, "reason": "handover_recovery_unproven"}
             # The sidecar before the fragment it dates, as the movers and
             # the shared-range fan-out write them (#1087): an interruption
             # leaves a date no vouch cites, which every reader ignores,
             # never a successor vouch without a date, which the publication
             # gate refuses on for as long as it stands.
-            if isinstance(old_material, dict):
+            if recovering:
+                moved = 0
+            elif isinstance(old_material, dict):
                 material_entries = old_material.get("entries")
                 assert isinstance(material_entries, dict)
                 publish_vouch(
@@ -7782,8 +7800,9 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
             else:
                 publish_vouch(residency_root, successor)
             expected = sum(before.values())
-            moved = queue.tier(tier_id).handover(old_key, new_key)
-            if moved != expected:
+            if not recovering:
+                moved = queue.tier(tier_id).handover(old_key, new_key)
+            if not recovering and moved != expected:
                 # The reservation is split across the two keys and the sum is
                 # unchanged, so nothing is over-admitted; the old key is still
                 # resident, so the next cycle asks again and finishes the move.
