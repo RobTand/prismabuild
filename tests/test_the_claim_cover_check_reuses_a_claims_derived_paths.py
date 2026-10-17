@@ -52,8 +52,8 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = base.TIER
 SIZE = base.SIZE
@@ -108,7 +108,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
 
 
 def _publisher(queue: pool.PoolQueue, stage: Path, cas: Path,
-              mover: str) -> "stage_move._StagedPublisher":
+              mover: str) -> "prismabuild.stage_move._StagedPublisher":
     return stage_move._StagedPublisher(
         queue=queue, stage_root=stage, residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
