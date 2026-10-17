@@ -14,6 +14,7 @@ invocation fail.  This one goes through ``fleet_submit.submit`` to a fake
 ``sbatch``.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 from pathlib import Path

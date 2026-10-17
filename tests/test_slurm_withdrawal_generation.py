@@ -109,7 +109,7 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
         assert submit_core.withdraw_slurm_main(
             [KEY], lane_root=lane, queue_root=queue, by="audit-operator",
             reason="stop this generation", squeue=fleet.squeue,
-        store=pbrun.configured_store(), display=pbrun.render) == 0
+        store=pbrun.configured_store(), display=submit_core.render_submission) == 0
         assert marker.exists()
 
     monkeypatch.setattr(sl, "_write_json_atomic", write_then_withdraw)

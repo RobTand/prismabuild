@@ -116,7 +116,7 @@ def _withdraw(tmp_path: Path, **kwargs) -> int:
     return submit_core.withdraw_slurm_main(
         [KEY[:12]], by="rob@sparky", lane_root=lane_root,
         queue_root=tmp_path / "pb-queue", **kwargs,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
 
 def test_it_cancels_the_sibling_the_singleton_is_holding(

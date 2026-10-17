@@ -81,7 +81,7 @@ def test_same_inputs_seal_one_key_whatever_the_tag_says(tmp_path, monkeypatch):
 
     work = _checkout(tmp_path)
     patch_store(monkeypatch, client=pbrun, root=tmp_path)
-    template = submit_core.freeze(
+    template = submit_core.freeze_template(
         command=("/bin/bash", "-lc", "printf ok"), cwd=work, logical_cwd=".",
         demand={"cpu": 1, "mem_gb": 1}, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="deterministic",

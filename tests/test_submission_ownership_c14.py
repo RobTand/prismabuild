@@ -40,7 +40,7 @@ def test_pool_wait_begins_after_growth_release(tmp_path, monkeypatch):
 
     monkeypatch.setattr(filesystem_floor, "operation", operation)
     monkeypatch.setattr(client, "report_pool_outcome", wait)
-    result = submission.submit(request, store=store)
+    result = submission.submit_request(request, store=store)
     assert isinstance(result, client.ClientReport)
     assert isinstance(result.ending.verdict, client.ClientPatienceExpired)
     assert result.ending.readers.complete
@@ -51,7 +51,7 @@ def test_cache_hit_has_identity_and_never_publishes_a_row(tmp_path, monkeypatch)
     store, request = _request(tmp_path, monkeypatch)
     monkeypatch.setattr(core.PrismaBuildCAS, "lookup", lambda self, action: {
         "result": {"sha256": "a" * 64}})
-    result = submission.submit(request, store=store)
+    result = submission.submit_request(request, store=store)
     assert isinstance(result, client.ClientReport)
     assert isinstance(result.identity, client.CachedClientIdentity)
     assert isinstance(result.ending.verdict, client.ClientSubmitted)
@@ -60,8 +60,8 @@ def test_cache_hit_has_identity_and_never_publishes_a_row(tmp_path, monkeypatch)
 
 def test_live_attachment_keeps_the_same_action_and_generation(tmp_path, monkeypatch):
     store, request = _request(tmp_path, monkeypatch)
-    first = submission.submit(request, store=store)
-    second = submission.submit(request, store=store)
+    first = submission.submit_request(request, store=store)
+    second = submission.submit_request(request, store=store)
     assert isinstance(first, client.ClientReport) and isinstance(second, client.ClientReport)
     assert first.identity.action_key == second.identity.action_key
     assert first.identity.published_unix == second.identity.published_unix
@@ -78,7 +78,7 @@ def test_floor_refuses_before_sealing_any_checkout(tmp_path, monkeypatch):
         yield
 
     monkeypatch.setattr(filesystem_floor, "operation", refused)
-    result = submission.submit(request, store=store)
+    result = submission.submit_request(request, store=store)
     assert isinstance(result, SubmissionRefused)
     assert "below its floor" in result.reason
     assert not store.cas_root.exists()

@@ -63,7 +63,7 @@ def _build(work: Path, fleet: Path, monkeypatch, *extra: str, transport: str = "
         "--tag", "sparky", *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+    return submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"]
 
 
 def _fixture(tmp_path: Path):
