@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import ram_promote  # noqa: E402
@@ -73,7 +74,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
         entries.append({"path": str(path), "offset": 0, "bytes": SIZE,
                         "sha256": hashlib.sha256(_payload(index)).hexdigest()})
     body = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "killed-mover-residue-fixture"},
         "mount_prefix": str(origin),
         "entries": entries,
@@ -357,7 +358,7 @@ def test_a_live_promotions_source_leg_is_kept(world):
             "--ram-root", str(world.ram),
             "--source-stage-root", str(world.stage),
             "--range-start-bytes", "0", "--range-end-bytes", str(SIZE)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": world.manifest_sha,
                     "bytes": blob.stat().st_size}],
     }))
