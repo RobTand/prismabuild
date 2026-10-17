@@ -28,6 +28,7 @@ either alone leaves the other trap set:
 Issue #292.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 from submission_support import patch_store
 
 import importlib.util
@@ -63,7 +64,7 @@ WORKTREE = Path("/home/rob/tmp/some-worktree")
 # --------------------------------------------------------------------------
 
 def test_a_worktree_runtime_refuses_a_placement_that_does_not_name_this_box():
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(submit_core.SubmissionRefused) as refusal:
         submit_core.require_reachable_runtime(
             ["x86"], hostname="sparky", runtime_root=WORKTREE)
     said = str(refusal.value)
@@ -78,7 +79,7 @@ def test_a_worktree_runtime_refuses_a_placement_that_does_not_name_this_box():
 def test_a_worktree_runtime_refuses_an_unpinned_placement():
     # ``--anywhere`` normalizes to no tags at all, which is the widest
     # placement there is and therefore the most certainly wrong one here.
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(submit_core.SubmissionRefused) as refusal:
         submit_core.require_reachable_runtime(
             [], hostname="sparky", runtime_root=WORKTREE)
     assert "any eligible worker" in str(refusal.value)

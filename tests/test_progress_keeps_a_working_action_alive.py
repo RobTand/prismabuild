@@ -588,7 +588,7 @@ def test_entering_a_later_phase_rearms_the_allowance_once(tmp_path):
     (["run=1", "run=2"], "repeats"),
 ])
 def test_an_unusable_phase_declaration_is_refused_at_submit(bad, message):
-    with pytest.raises(SystemExit, match=message):
+    with pytest.raises(submit_core.SubmissionRefused, match=message):
         submit_core.parse_progress_phases(bad)
 
 
@@ -656,7 +656,7 @@ def test_a_fleet_that_cannot_honour_the_contract_refuses_the_submission(tmp_path
     """Point 6: no hidden whole-run ceiling under a contract that promised none."""
 
     queue = _fleet(tmp_path, {"dl380g10": None, "sparky": []})
-    with pytest.raises(SystemExit, match="no eligible worker announces"):
+    with pytest.raises(submit_core.SubmissionRefused, match="no eligible worker announces"):
         submit_core.progress_contract_notice(
             queue, _intent([]), policy=_policy(1800, 900))
 
@@ -701,7 +701,7 @@ def test_v1_only_fleet_refuses_helper_submission_precisely(tmp_path):
         tmp_path, {"watchdog-only": [pb.PROGRESS_RECORD_SCHEMA_V1]},
         helper_hosts=set(),
     )
-    with pytest.raises(SystemExit, match="watchdog-only announce the watchdog"):
+    with pytest.raises(submit_core.SubmissionRefused, match="watchdog-only announce the watchdog"):
         submit_core.progress_contract_notice(
             queue, _intent([]), policy=_policy(1800, 900))
 

@@ -7,6 +7,7 @@ before spending an attempt, and the submit-side verdict refuses a fleet that
 offers no capability at all.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

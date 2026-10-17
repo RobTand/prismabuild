@@ -130,7 +130,7 @@ def test_disk_metadata_is_refused_on_a_transport_that_cannot_enforce_it() -> Non
 
     submit_core.require_disk_metadata_scope({"disk_metadata": 1}, transport="pool")
     submit_core.require_disk_metadata_scope({}, transport="slurm")
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         submit_core.require_disk_metadata_scope({"disk_metadata": 1}, transport="slurm")
 
 

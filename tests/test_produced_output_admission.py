@@ -6,6 +6,7 @@ existing ledger channel, and runtime binding from the sealed queue item.
 No prewrite/commit/retire/release/funding bodies, no mover copy, no GPU.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib
