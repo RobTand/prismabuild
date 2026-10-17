@@ -39,7 +39,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 TIER = base.TIER
 WHOLE = 8192
@@ -204,7 +204,7 @@ def test_a_retired_range_whose_directory_was_pruned_is_absent(tmp_path):
     directory above it stays unknown ownership.
     """
 
-    import stage_release
+    from prismabuild import stage_release
 
     stage = tmp_path / "stage"
     (stage / "model").mkdir(parents=True)

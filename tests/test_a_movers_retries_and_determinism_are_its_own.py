@@ -44,7 +44,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 from prismabuild import movement_actions, pool, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
     CONSUMER, TIER, _seal,
 )
