@@ -732,8 +732,8 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     ``pb_gc`` surveys the CAS, not the generation store, so a generation an
     unreleased consumer froze is still there, receipt and wrapper intact,
     after any number of later publications. The real publisher stages each
-    generation. This fixture moves its private pointer after sealed-byte
-    verification, without claiming installed-reader activation.
+    generation. Its real pointer owner moves only this fixture's mirror after
+    sealed-byte verification, without claiming installed-reader activation.
     """
 
     from test_publish_runtime import _fake_git_and_probe, publish_runtime
@@ -756,14 +756,12 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
             publication.setattr(publish_runtime.subprocess, "run",
                                 _fake_git_and_probe(commit))
             publication.setattr(sys, "argv", [
-                "publish_runtime.py", "--stage-only", "--rollout", "rolling", "--no-canary",
+                "publish_runtime.py", "--stage-only", "--rollout", "rolling",
                 "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
             assert publish_runtime.main() == 0
         [created] = set(store.iterdir()) - before
         generation, _receipt = publish_runtime._sealed_generation(created.name)
-        link = mirror.with_name(".repo.next")
-        link.symlink_to(generation)
-        os.replace(link, mirror)
+        publish_runtime._activate(generation, migrate_directory=False)
         return mirror.resolve()
 
     first = publish("a" * 40)
