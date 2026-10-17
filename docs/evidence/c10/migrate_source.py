@@ -40,6 +40,7 @@ RAW = {
     "retire_held": "retire_duplicate", "holder_census": "holder_observations",
     "_mutation_locked": "mutation_lock", "last_token_shortage": "shortage",
     "_census_glob": "token_paths", "_census_scan": "entry_paths",
+    "census_report_path": "census_report",
 }
 AGGREGATE = {"tier_ids": "ids", "tier_holdings": "for_action",
              "release_tier_rate_reservations": "release_rates_all",
@@ -64,16 +65,46 @@ def caller_aliases(tree):
     for node in ast.walk(tree):
         scopes[node] = scope(node)
     aliases = {n: set() for n in set(scopes.values())}
+    returns, values = {}, {}
     def is_tier(node, enclosing):
         return tier_call(node) or (isinstance(node, ast.Name) and node.id in aliases[enclosing])
+    def shape(node, enclosing):
+        if is_tier(node, enclosing):
+            return True
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return tuple(shape(n, enclosing) for n in node.elts)
+        if isinstance(node, ast.Name):
+            return values.get((enclosing, node.id), returns.get(node.id, False))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return returns.get(node.func.id, False)
+        return False
+    def bind(target, value, enclosing):
+        if isinstance(target, ast.Name):
+            values[enclosing, target.id] = value
+            if value is True:
+                aliases[enclosing].add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, tuple):
+            for name, item in zip(target.elts, value):
+                bind(name, item, enclosing)
     for _ in range(12):
-        before = sum(map(len, aliases.values()))
+        before = (sum(map(len, aliases.values())), repr(returns), repr(values))
+        for function in functions.values():
+            parent = scope(parents[function])
+            local = {arg.arg for arg in function.args.args}
+            local.update(n.id for n in ast.walk(function)
+                         if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+                         and scopes[n] is function)
+            aliases[function].update(aliases[parent] - local)
         for node in ast.walk(tree):
             enclosing = scopes[node]
+            if isinstance(node, ast.Return) and node.value is not None:
+                value = shape(node.value, enclosing)
+                if value and hasattr(enclosing, "name"):
+                    returns[enclosing.name] = value
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                if is_tier(node.value, enclosing):
-                    aliases[enclosing].update(t.id for t in targets if isinstance(t, ast.Name))
+                for target in targets:
+                    bind(target, shape(node.value, enclosing), enclosing)
             if isinstance(node, ast.Call):
                 name = (node.func.id if isinstance(node.func, ast.Name) else
                         node.func.attr if isinstance(node.func, ast.Attribute) else "")
@@ -86,7 +117,7 @@ def caller_aliases(tree):
                 for param, arg in zip(params, node.args):
                     if is_tier(arg, enclosing):
                         aliases[called].add(param.arg)
-        if sum(map(len, aliases.values())) == before:
+        if (sum(map(len, aliases.values())), repr(returns), repr(values)) == before:
             break
     return scopes, aliases
 
@@ -145,6 +176,10 @@ class CallerMove(ast.NodeTransformer):
                 node.keywords.append(self.authority())
         elif old in MOVED and not old.startswith("_") and node.args:
             if old in {"hold_tier_host_memory", "release_tier_host_memory"}:
+                host, *remaining = node.args
+                tier = ast.BinOp(ast.Constant("ram:"), ast.Add(), ast.Call(ast.Name("str", ast.Load()), [host], []))
+                node.func = ast.Attribute(ast.Call(ast.Attribute(receiver, "tier", ast.Load()), [tier], []), MOVED[old], ast.Load())
+                node.args = remaining
                 return node
             tier, *remaining = node.args
             node.func = ast.Attribute(ast.Call(ast.Attribute(receiver, "tier", ast.Load()), [tier], []), MOVED[old], ast.Load())
@@ -155,13 +190,15 @@ class CallerMove(ast.NodeTransformer):
             node.func = ast.Attribute(node.args.pop(0), "holder_state", ast.Load())
         elif old == "held_grants" and node.args and self.is_tier(node.args[0]):
             node.func = ast.Attribute(node.args.pop(0), "held_grants", ast.Load())
-        elif bound and old in {"release", "release_except", "release_kinds"}:
+        elif bound and old in {"release", "release_except", "release_kinds", "release_count"}:
             node.func.attr = "release_rates" if old == "release_kinds" else "release_unspent"
             if old == "release_kinds":
                 node.args = node.args[:1]
             else:
                 if old == "release_except":
                     node.keywords.append(ast.keyword("keep", node.args.pop(1)))
+                if old == "release_count":
+                    node.keywords.append(ast.keyword("counts", node.args.pop(1)))
                 node.keywords.append(self.authority())
         return node
 

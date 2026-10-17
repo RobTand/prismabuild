@@ -330,9 +330,9 @@ def test_aggregate_charge_spans_every_ledger_on_the_filesystem(tmp_path, enforce
     counted = ff.refresh_binding(queue.root, binding)
     assert counted["charge_bytes"] == 3 * GIB
     _leave(queue, binding["key"], 1)
-    assert not stage.acquire("grant-x", {"stage_gib": 2})
-    assert stage.last_token_shortage["resource"] == "filesystem_floor"
-    assert stage.acquire("grant-x", {"stage_gib": 1})
+    assert not stage.take('grant-x', {'stage_gib': 2})
+    assert stage.shortage['resource'] == 'filesystem_floor'
+    assert stage.take('grant-x', {'stage_gib': 1})
     assert ff.floor_status(queue.root)["unbound_byte_ledgers"] == []
 
 

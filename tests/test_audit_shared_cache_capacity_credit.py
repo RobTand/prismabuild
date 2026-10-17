@@ -40,6 +40,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import tier_holdings
 import prismabuild.core as pb  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
@@ -310,7 +311,7 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     _supply(queue, W_MODEL_TIGHT)
     ledger = queue.tier(TIER)
 
-    real_settle = pool.PoolQueue.release_tier_holder_for_egress
+    real_settle = tier_holdings.TierLedger.settle_egress
     calls = {"n": 0}
 
     def _crash_once(self, *args, **kwargs):
@@ -319,7 +320,7 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
             raise RuntimeError("simulated crash before settle")
         return real_settle(self, *args, **kwargs)
 
-    pool.PoolQueue.release_tier_holder_for_egress = _crash_once  # type: ignore[method-assign]
+    tier_holdings.TierLedger.settle_egress = _crash_once  # type: ignore[method-assign]
     try:
         try:
             stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
@@ -329,7 +330,7 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
         else:
             raise AssertionError("expected the simulated crash")
     finally:
-        pool.PoolQueue.release_tier_holder_for_egress = real_settle  # type: ignore[method-assign]
+        tier_holdings.TierLedger.settle_egress = real_settle  # type: ignore[method-assign]
     # Conservative: nothing freed or destroyed; fragment still vouches.
     assert ledger.holdings(MOVER_A).get(KIND) == 1
     assert ledger.free_supply().get(KIND, 0) == 0

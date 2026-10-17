@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_uncharged_dead_owners_give_room_under_pressure as unc  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, storage_tiers  # noqa: E402
+from prismabuild import tier_holdings
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
@@ -108,13 +109,13 @@ class _Sweeps:
         # ``dead_owner`` mints the tier to the new owner's size, which would
         # retire the token an earlier charged owner holds: mint it to all.
         held = self._held
-        real_mint = self.queue.mint_tier_capacity
-        self.queue.mint_tier_capacity = lambda tier, tokens: real_mint(
+        real_mint = tier_holdings.TierLedger.mint
+        tier_holdings.TierLedger.mint = lambda tier, tokens: real_mint(
             tier, {kind: count + held for kind, count in tokens.items()})
         try:
             made = unc.dead_owner(self.fleet, [name], unix=unix, charged=True)
         finally:
-            del self.queue.mint_tier_capacity
+            tier_holdings.TierLedger.mint = real_mint
         self._held += 1
         return made
 
