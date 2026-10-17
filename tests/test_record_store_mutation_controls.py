@@ -3,7 +3,7 @@ import json
 from prismabuild import kept_reads, pool
 from prismabuild import census as fleet_census
 import pbmetrics
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from record_store_trust import ObservedTrust
 
 

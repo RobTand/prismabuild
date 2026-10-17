@@ -98,12 +98,12 @@ def _published_generation(store: Path, name: str, *,
     # resource_exec.main imports the package before entering the broker
     # scope. Keep that real import closure in the retained fixture too.
     for module in ("__init__", "resource_scope", "progress",
-                   "residency_map", "storage_tiers"):
+                   "residency_map", "storage_tiers", "runtime_paths"):
         rel = f"src/prismabuild/{module}.py"
         add(rel, _CHECKOUT / rel)
     fleet_exec = _CHECKOUT / "tools" / "fleet" / "resource_exec.py"
     fleet_broker = _CHECKOUT / "tools" / "fleet" / "resource_broker.py"
-    fleet_paths = _CHECKOUT / "tools" / "fleet" / "runtime_paths.py"
+    fleet_paths = _CHECKOUT / "src" / "prismabuild" / "runtime_paths.py"
     if layout == "published":
         add("tools/resource_exec.py", fleet_exec)
         add("tools/resource_broker.py", fleet_broker)
@@ -171,7 +171,7 @@ def test_self_made_manifest_outside_store_refuses(tmp_path) -> None:
             ("tools/fleet/resource_broker.py",
              _CHECKOUT / "tools" / "fleet" / "resource_broker.py"),
             ("tools/fleet/runtime_paths.py",
-             _CHECKOUT / "tools" / "fleet" / "runtime_paths.py")):
+             _CHECKOUT / "src" / "prismabuild" / "runtime_paths.py")):
         _copy_bytes(fake, rel, source)
         members[rel] = hashlib.sha256((fake / rel).read_bytes()).hexdigest()
     _seal_tree(fake, members)
