@@ -111,7 +111,7 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
                     receipts=tier_loop.ReceiptCache(), discover=discover)
     tier = dict(residency_plan.resolve_stage_tier(queue, None))
     tier["tokens"] = {}
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)

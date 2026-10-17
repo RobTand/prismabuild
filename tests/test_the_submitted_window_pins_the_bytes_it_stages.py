@@ -137,7 +137,7 @@ def fleet(tmp_path: Path):
                     receipts=tier_loop.ReceiptCache(), discover=discover)
     tier = residency_plan.resolve_stage_tier(queue, None)
 
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=True,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         # A mover's own, since #603: the width it copies at and the attempts it

@@ -151,7 +151,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, ram=False, **overrides):
         if monkey_target is not None:
             monkey_target.setattr(residency_plan, "resolve_ram_tier",
                                   lambda queue_, stage_tier, **_context: _ram_tier(tmp_path))
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
