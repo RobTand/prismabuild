@@ -29,6 +29,7 @@ def test_equal_client_bytes_repair_untrusted_proof_and_preserve_trusted_current(
     assert set(blobs) == {
         "resource_broker.py", "resource_payload.py", "gpu_memory.py", "gpu_capacity.py",
         "upgrade_client.py", "park_proof.py",
+        "digest_primitives.py", "generation_receipt.py",
     }
     assert blobs["upgrade_client.py"] == (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
     assert blobs["park_proof.py"] == (ROOT / "src/prismabuild/park_proof.py").read_bytes()

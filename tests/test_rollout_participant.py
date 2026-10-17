@@ -16,6 +16,7 @@ from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256
 from client_proof_bridge_fixture import fixed_source_artifact
 from test_installed_park_proof_loader import installed_leaf
 from prismabuild import park_proof
+from receipt_reader_fixture import bind_current_receipt_reader
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +45,7 @@ def _intent(updater, generation, *, epoch="4" * 32, target="target-generation"):
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
     receipt["files"][member] = updater_sha
     (generation / "RUNTIME_VERSION.json").write_text(json.dumps(receipt))
+    bind_current_receipt_reader((generation, updater.install, None, None, None, None))
     value = {
         "schema": "prismabuild.rollout_barrier.intent.v1",
         "epoch": epoch,
