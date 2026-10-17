@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, adaptive_snapshot, pool, residency_plan, storage_tiers  # noqa: E402,E501
 import test_progress_keeps_a_working_action_alive as progress_fx  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 #: Up to four CPUs, so the adaptive path has a CPU map to decide against, but
 #: never more than this process inherited (#1506).  The claim refuses a CPU
