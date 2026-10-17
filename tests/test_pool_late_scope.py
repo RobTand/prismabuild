@@ -1,3 +1,4 @@
+from prismabuild import claim_identity
 """A replaced finisher releases only its own scope, including after a crash."""
 import json
 
@@ -21,7 +22,7 @@ def _replaced_scope(scoped, monkeypatch):
     newer = queue.claim(owner='newer-attempt', capacity=first['resources'])
     assert newer is not None
     queue._start_resource_scope(newer)
-    assert not pool._same_claim(first, newer)
+    assert not claim_identity.same_claim(first, newer)
     assert first['resource_scope']['nonce'] != newer['resource_scope']['nonce']
     observed = []
     request = resource_scope.ResourceScope._request
