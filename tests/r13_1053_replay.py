@@ -171,10 +171,10 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
         checked = queue.validate_output_funding(record)
         path = queue.records.funding_output_retired_path(mover, str(checked["tier_id"]))
         path.parent.mkdir(parents=True, exist_ok=True)
-        pool.record_store._write_json(path, checked)
+        pool.immutable_files.write_json_atomic(path, checked)
     for state, rows in bundle["queue"].items():
         for key, record in rows.items():
-            pool.record_store._write_json(queue.records.item_path(state, key), record)
+            pool.immutable_files.write_json_atomic(queue.records.item_path(state, key), record)
 
     unretired = sorted(batch_id for batch_id, entry in batches.items()
                        if not po._batch_stage_retired(entry))

@@ -201,8 +201,8 @@ def test_an_unchanged_reason_writes_nothing(tmp_path, monkeypatch):
     path = queue.records.denial_transitions_path(str(item["action_key"]))
     before = path.stat().st_mtime_ns
     writes = []
-    real = pool.record_store._write_json
-    monkeypatch.setattr(pool.record_store, '_write_json',
+    real = pool.immutable_files.write_json_atomic
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic',
                         lambda target, value: (writes.append(Path(target)), real(target, value)))
 
     for _ in range(50):
