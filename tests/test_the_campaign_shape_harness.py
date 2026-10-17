@@ -27,6 +27,7 @@ there, and the harness refuses any other.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -401,3 +402,15 @@ def test_an_unreadable_terminal_record_is_refused_by_name(tmp_path: Path) -> Non
             action_key=key[:12], commit="a" * 40, checkout=tmp_path,
             queue_root=queue, cas_root=tmp_path / "cas")
     assert caught.value.reason == "receipt_refused"
+
+
+@pytest.mark.parametrize("variant", ["unhashed", "hashed"])
+def test_table_encoding_preserves_the_exact_committed_wire(variant: str) -> None:
+    goldens = Path(__file__).parent / "compat" / "goldens-observations.jsonl"
+    record = next(row for line in goldens.read_text().splitlines()
+                  if (row := json.loads(line))["case"] == f"shape-table/{variant}")
+    expected = base64.b64decode(record["raw"], validate=True)
+    assert hashlib.sha256(expected).hexdigest() == record["sha256"]
+    encoded = shape_gate.table_bytes(shape_gate.parse_table(expected))
+    assert encoded[:10] == bytes.fromhex("1f8b08000000000002ff")
+    assert encoded == expected
