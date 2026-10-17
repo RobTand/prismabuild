@@ -260,13 +260,20 @@ def test_an_unguarded_host_read_refuses_instead_of_aborting(
     mirror = "ram-host:" + mover
     directory = queue.ledger(HOST).held_dir / mirror
     real_scandir = os.scandir
+    real_listdir = os.listdir
 
     def failing_scandir(path):
         if not isinstance(path, int) and os.fspath(path) == str(directory):
             raise OSError(errno.EACCES, "boom: host ledger unreadable", str(path))
         return real_scandir(path)
 
+    def failing_listdir(path):
+        if not isinstance(path, int) and os.fspath(path) == str(directory):
+            raise OSError(errno.EACCES, "boom: host ledger unreadable", str(path))
+        return real_listdir(path)
+
     monkeypatch.setattr(os, "scandir", failing_scandir)
+    monkeypatch.setattr(os, "listdir", failing_listdir)
     verdict = queue.tier(RAM_TIER).reconcile_mirror(())  # must not raise
     monkeypatch.undo()
 

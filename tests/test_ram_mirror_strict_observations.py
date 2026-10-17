@@ -35,6 +35,21 @@ def _names(directory: Path) -> set[str]:
         return set()
 
 
+def _deny_scans(patch: pytest.MonkeyPatch, directory: Path) -> list[str]:
+    faults = []
+    for method in ("scandir", "listdir"):
+        real = getattr(os, method)
+
+        def unreadable(path, *, _real=real, _method=method):
+            if not isinstance(path, int) and os.fspath(path) == str(directory):
+                faults.append(_method)
+                raise PermissionError(errno.EACCES, "mirror scan denied", str(path))
+            return _real(path)
+
+        patch.setattr(os, method, unreadable)
+    return faults
+
+
 @pytest.mark.parametrize("release_orphans", [False, True])
 def test_an_unreadable_tier_holder_retains_its_host_token_names(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, release_orphans: bool):
@@ -42,17 +57,8 @@ def test_an_unreadable_tier_holder_retains_its_host_token_names(
     directory = tier.paths.held / MOVER
     tier_names = _names(directory)
     host_names = _names(host.held_dir / MIRROR)
-    real_scandir = os.scandir
-    faults = []
-
-    def unreadable(path):
-        if not isinstance(path, int) and os.fspath(path) == str(directory):
-            faults.append(str(path))
-            raise PermissionError(errno.EACCES, "RAM holder scan denied", str(path))
-        return real_scandir(path)
-
     with monkeypatch.context() as patch:
-        patch.setattr(os, "scandir", unreadable)
+        faults = _deny_scans(patch, directory)
         verdict = tier.reconcile_mirror((), release_orphans=release_orphans)
 
     assert faults, "the real directory scan must reach the injected EACCES"
@@ -97,17 +103,8 @@ def test_an_unreadable_host_mirror_cannot_top_up_an_existing_hold(
     directory = host.held_dir / MIRROR
     tier_names = _names(tier.paths.held / MOVER)
     host_names = _names(directory)
-    real_scandir = os.scandir
-    faults = []
-
-    def unreadable(path):
-        if not isinstance(path, int) and os.fspath(path) == str(directory):
-            faults.append(str(path))
-            raise PermissionError(errno.EACCES, "host mirror scan denied", str(path))
-        return real_scandir(path)
-
     with monkeypatch.context() as patch:
-        patch.setattr(os, "scandir", unreadable)
+        faults = _deny_scans(patch, directory)
         verdict = tier.reconcile_mirror(())
 
     assert faults, "the real host mirror scan must reach the injected EACCES"
@@ -235,17 +232,8 @@ def test_an_unreadable_orphan_mirror_retains_its_token_names(
     assert tier._ledger.release(MOVER) == 2
     directory = host.held_dir / MIRROR
     host_names = _names(directory)
-    real_scandir = os.scandir
-    faults = []
-
-    def unreadable(path):
-        if not isinstance(path, int) and os.fspath(path) == str(directory):
-            faults.append(str(path))
-            raise PermissionError(errno.EACCES, "orphan mirror scan denied", str(path))
-        return real_scandir(path)
-
     with monkeypatch.context() as patch:
-        patch.setattr(os, "scandir", unreadable)
+        faults = _deny_scans(patch, directory)
         verdict = tier.reconcile_mirror(())
 
     assert _names(directory) == host_names
