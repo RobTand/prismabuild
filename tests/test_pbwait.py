@@ -27,6 +27,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 from prismabuild import slurm_lane  # noqa: E402
 
@@ -118,7 +119,7 @@ pbwait.resolve_key(queue, "a", lane_root=Path({str(lane_root)!r}))
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         pytest.fail("prefix resolution exceeded its reader budget; marker="
                     + str(marker.exists()) + "; stdout=" + stdout)
-    assert completed.returncode == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert completed.returncode == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert marker.read_text(encoding="utf-8") == "entered"
     assert "prefix resolution timed out" in completed.stderr
 
@@ -129,7 +130,7 @@ def test_full_key_resolution_never_starts_a_prefix_reader(
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.ensure_layout()
     key = "a" * 64
-    monkeypatch.setattr(pbrun.action_wait, "read_observation", lambda *_args, **_kwargs:
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", lambda *_args, **_kwargs:
                         pytest.fail("a full key must retain its fast path"))
     assert pbwait.resolve_key(queue, key) == key
 
@@ -147,16 +148,16 @@ def test_prefix_resolution_retained_reader_stops_before_another_scan(
     def retain(pid, section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"section": section, "pid": pid,
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid),
+                          "starttime_ticks": submit_core._bounded_reader._starttime_ticks(pid),
                           "since_unix": time.time()})
 
     monkeypatch.setattr(pbwait, "PREFIX_RESOLUTION_READ_TIMEOUT_S", 0.05)
     monkeypatch.setattr(pbwait, "_prefix_candidates", block)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
     try:
         with pytest.raises(SystemExit) as raised:
             pbwait.resolve_key(queue, "a")
-        assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+        assert raised.value.code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
         assert len(retained) == 1
         shown = capsys.readouterr().err
         assert '"pid": ' + str(retained[0]) in shown
@@ -199,7 +200,7 @@ def test_prefix_resolution_filesystem_error_is_exit_seventy_four(
     monkeypatch.setattr(pbwait, "_prefix_candidates", unavailable)
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "a")
-    assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert raised.value.code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert "prefix resolution unavailable" in capsys.readouterr().err
 
 
@@ -212,10 +213,10 @@ def test_prefix_reader_setup_error_is_exit_seventy_four(
     def cannot_fork(*_args, **_kwargs):
         raise OSError(24, "Too many open files")
 
-    monkeypatch.setattr(pbrun.action_wait, "read_observation", cannot_fork)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", cannot_fork)
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, "a")
-    assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert raised.value.code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert "Too many open files" in capsys.readouterr().err
 
 
@@ -273,7 +274,7 @@ def test_prefix_resolution_refuses_an_unavailable_namespace_before_matching_pool
         assert slurm_lane.resolve_recorded(key[:12], root=lane_root) == []
     with pytest.raises(SystemExit) as raised:
         pbwait.resolve_key(queue, key[:12], lane_root=lane_root)
-    assert raised.value.code == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert raised.value.code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
 
 
 # --------------------------------------------------------------------------
@@ -318,7 +319,7 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
     """The whole point of detaching is that the ending is filed later.  A wait
     that answered "nothing is filed" would make the pair useless."""
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -346,7 +347,7 @@ def test_a_wait_on_a_key_with_no_record_yet_blocks_until_it_appears(
 def test_a_failed_action_makes_the_verdict_nonzero_beside_the_ones_that_worked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -378,7 +379,7 @@ def test_the_newest_ending_answers_when_no_generation_is_named(
     case where nobody can, which is why the newest ending has to win.
     """
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -413,7 +414,7 @@ def test_a_terminal_record_nobody_can_read_ends_the_wait(
     can only find the same broken file.
     """
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -439,7 +440,7 @@ def test_patience_running_out_is_reported_as_waiting_not_as_failure(
     """A job that has not ended has not failed, and 75 is what ``pbrun`` says
     for the same thing: the work is still running."""
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -466,14 +467,14 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
     queue.ensure_layout()
     key = str(action["action_key"])
 
-    assert pbrun.slurm_outcome(
+    assert submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[],
         demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1, detach=True,
         queue_root=queue.root,
         worker_python=sys.executable, job_python=sys.executable,
         local_checkout_root=tmp_path / "checkouts",
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render) == 0
     assert not queue.item_path(pool.DONE, key).exists()
 
     rows = pbwait.wait_for_keys(
@@ -501,14 +502,14 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
     second.mkdir()
     other = _runnable_action(second, cas)
     attended_key = str(other["action_key"])
-    assert pbrun.slurm_outcome(
+    assert submit_core.slurm_outcome(
         other, cas=cas, request_path=cas.publish_action_request(other), tags=[],
         demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1,
         queue_root=queue.root,
         worker_python=sys.executable, job_python=sys.executable,
         local_checkout_root=tmp_path / "checkouts",
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render) == 0
     attended = json.loads(
         queue.item_path(pool.DONE, attended_key).read_text(encoding="utf-8"))
     assert set(record) == set(attended)
@@ -538,14 +539,14 @@ def test_the_receipt_outranks_the_controller_when_the_ending_is_missing(
     queue.ensure_layout()
     key = str(action["action_key"])
 
-    assert pbrun.slurm_outcome(
+    assert submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[],
         demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1, detach=True,
         queue_root=queue.root,
         worker_python=sys.executable, job_python=sys.executable,
         local_checkout_root=tmp_path / "checkouts",
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render) == 0
     assert cas.lookup(action) is not None, "the job ran; the receipt is real"
     assert not queue.item_path(pool.DONE, key).exists()
 
@@ -579,12 +580,12 @@ def test_a_detached_slurm_job_that_failed_is_filed_and_reported(
     queue.ensure_layout()
     key = str(action["action_key"])
 
-    assert pbrun.slurm_outcome(
+    assert submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[],
         demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1, detach=True,
         queue_root=queue.root,
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render) == 0
 
     rows = pbwait.wait_for_keys(
         queue, [key], cas=cas, wait_s=30.0, queue_root=queue.root, poll_s=0.0

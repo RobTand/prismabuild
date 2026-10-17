@@ -18,6 +18,7 @@ Two halves:
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import importlib.util
@@ -45,6 +46,7 @@ pbtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import core as pb, pool  # noqa: E402
 
 
@@ -69,7 +71,7 @@ def test_pbrun_names_the_full_key_it_queued(
     assert f"pbrun: queued {key} tags=" in err, err
     generation = json.loads(record.read_text())["published_unix"]
     assert f"published_unix={generation}" in err
-    identity = client.PoolClientIdentity(key, generation, queue.root, pbrun.SH / 'cas',
+    identity = client.PoolClientIdentity(key, generation, queue.root, pbrun.configured_store().root / 'cas',
         record, client.ClientArrival.SUBMITTED)
     events = client_channel.ClientEventResult(identity,
         client.ClientEnding(client.ClientUnavailable(key, generation, action_wait.WaitEnd.FINAL_EMPTY)), None)
@@ -169,7 +171,7 @@ def test_a_shard_record_names_its_receipt_only_when_one_exists(
     """``receipt_path`` is where the CAS keeps the key's receipt; ``null`` when
     there is none there, so a path in the record is a file a reader can open."""
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     # The receipt of whichever shard is launched first; the other has none.
     receipt: list[Path] = []
 
@@ -177,7 +179,7 @@ def test_a_shard_record_names_its_receipt_only_when_one_exists(
         def __init__(self, command):
             super().__init__(command)
             if not receipt:
-                path = pb.PrismaBuildCAS(pbrun.SH / "cas").receipt_path(self.key)
+                path = pb.PrismaBuildCAS(pbrun.configured_store().root / "cas").receipt_path(self.key)
                 path.parent.mkdir(parents=True)
                 path.write_text("{}")
                 receipt.append(path)

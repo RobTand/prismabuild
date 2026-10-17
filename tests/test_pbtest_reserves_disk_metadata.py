@@ -35,6 +35,7 @@ pbtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 class _FinishedProcess(ShardProcess):
@@ -76,7 +77,7 @@ def _demand(command) -> dict[str, int]:
     """The demand ``pbrun`` would seal, exactly as it parses ``--demand``."""
 
     flags = command[:command.index("--")]
-    return pbrun._parse_demand(flags[flags.index("--demand") + 1])
+    return submit_core._parse_demand(flags[flags.index("--demand") + 1])
 
 
 def test_disk_metadata_is_off_by_default(
@@ -112,8 +113,8 @@ def test_disk_metadata_is_a_validated_fleet_demand_kind() -> None:
     flag's own kind must live in the closed vocabulary it validates against.
     """
 
-    assert "disk_metadata" in pbrun._FLEET_DEMAND_KINDS
-    pbrun.validate_fleet_demand({"disk_metadata": 1})
+    assert "disk_metadata" in submit_core._FLEET_DEMAND_KINDS
+    submit_core.validate_fleet_demand({"disk_metadata": 1})
 
 
 # --- SLURM has no GRES for it, so it refuses rather than under-delivering ---
@@ -127,10 +128,10 @@ def test_disk_metadata_is_refused_on_a_transport_that_cannot_enforce_it() -> Non
     ``require_progress_scope`` already applies to the stall watchdog.
     """
 
-    pbrun.require_disk_metadata_scope({"disk_metadata": 1}, transport="pool")
-    pbrun.require_disk_metadata_scope({}, transport="slurm")
+    submit_core.require_disk_metadata_scope({"disk_metadata": 1}, transport="pool")
+    submit_core.require_disk_metadata_scope({}, transport="slurm")
     with pytest.raises(SystemExit, match="pull queue"):
-        pbrun.require_disk_metadata_scope({"disk_metadata": 1}, transport="slurm")
+        submit_core.require_disk_metadata_scope({"disk_metadata": 1}, transport="slurm")
 
 
 def test_a_campaign_row_cannot_carry_disk_metadata_to_slurm() -> None:

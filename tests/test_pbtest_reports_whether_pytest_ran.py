@@ -237,8 +237,8 @@ def test_a_cache_hit_is_read_through_to_the_shards_own_output(
 
     from pbtest_shard_output import ClientReply
     client = pbtest.action_client
-    identity = client.CachedClientIdentity('a' * 64, pbtest.pbrun.SH / 'pb-queue',
-        pbtest.pbrun.SH / 'cas', client.ClientTransport.POOL, 'b' * 64)
+    identity = client.CachedClientIdentity('a' * 64, pbtest.configured_store().root / 'pb-queue',
+        pbtest.configured_store().root / 'cas', client.ClientTransport.POOL, 'b' * 64)
     monkeypatch.setattr(client, 'read_cached_output',
         lambda observed, ending: client.CachedOutput(payload.read_text())
         if observed == identity else pytest.fail('replay used a different typed identity'))
@@ -268,8 +268,8 @@ def test_a_cache_hit_whose_payload_is_gone_is_not_green(
 
     from pbtest_shard_output import ClientReply
     client = pbtest.action_client
-    identity = client.CachedClientIdentity('a' * 64, pbtest.pbrun.SH / 'pb-queue',
-        pbtest.pbrun.SH / 'cas', client.ClientTransport.POOL, 'b' * 64)
+    identity = client.CachedClientIdentity('a' * 64, pbtest.configured_store().root / 'pb-queue',
+        pbtest.configured_store().root / 'cas', client.ClientTransport.POOL, 'b' * 64)
     monkeypatch.setattr(client, 'read_cached_output',
         lambda observed, ending: client.CachedOutputUnavailable('the blob was reaped'))
     exit_code, record = _one_shard(
