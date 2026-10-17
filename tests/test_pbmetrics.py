@@ -539,7 +539,7 @@ class MetricsFixture(unittest.TestCase):
         self.assertNotIn(" Inf", text)
 
     def test_terminal_failure_has_a_separate_failure_gauge(self) -> None:
-        with mock.patch.object(fleet_census, "read_endings", side_effect=OSError("offline")):
+        with mock.patch.object(fleet_census, "endings", side_effect=OSError("offline")):
             text = self.collect()
         self.assertIn('prismabuild_terminal_collection_success 0', text)
         self.assertIn('prismabuild_collection_success 0', text)
@@ -552,7 +552,7 @@ class MetricsFixture(unittest.TestCase):
         self.assertIn('prismabuild_collection_success 0', text)
 
     def test_huge_malformed_number_is_omitted_without_crashing(self) -> None:
-        self.assertIsNone(pbmetrics._number(10 ** 10_000))
+        self.assertIsNone(fleet_census.nonnegative_number(10 ** 10_000))
 
     def test_unhashable_memory_domain_maps_to_unknown(self) -> None:
         record = json.loads((self.queue / "workers" / "sparky.json").read_text())

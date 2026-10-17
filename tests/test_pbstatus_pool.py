@@ -120,7 +120,7 @@ def test_ready_pool_jobs_report_placement_and_admission_passes(live_pool, tmp_pa
                       worker_script=ROOT / "tools/prismabuild_worker.py",
                       resources={"cpu": 2, "mem_gb": 4}, tags=["cpu-box"])
     live_pool.record_pass(key)
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     row = next(j for j in result['jobs'] if j['action_key'] == key)
     assert row['state'] == 'READY' and row['placeable_hosts'] == ['cpu-box']
     assert row['admission_passes'] == 1 and row['admission_wait_s'] >= 0
@@ -142,7 +142,7 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
         "evidence": {"cpu_sample": {"busy_cpus": 3.9, "psi_some": 0.2}},
         "denied_unix": controlled_clock.time(),
     }}}))
-    row = next(job for job in fleet_census.rows(live_pool.root).value["jobs"]
+    row = next(job for job in fleet_census.action_rows(live_pool.root).value["jobs"]
                if job["action_key"] == key)
     assert row["admission_denials"][0]["host"] == "cpu-box"
     assert row["admission_denials"][0]["reason"] == "adaptive_cpu_refused"
@@ -160,7 +160,7 @@ def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool, controlled_c
     record = json.loads(lease.read_text())
     record['heartbeat_unix'] = controlled_clock.time()
     lease.write_text(json.dumps(record))
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     node = next(n for n in result['nodes'] if n['node'] == 'gpu-box')
     job = next(j for j in result['jobs'] if j['action_key'] == 'b' * 64)
     assert node['state'] == 'stale' and not node['healthy']
@@ -200,9 +200,9 @@ def test_pool_freshness_uses_the_completed_census(
             controlled_clock.advance(1000)
         return result
 
-    monkeypatch.setattr(census, "_pool_records", stalled_records)
+    monkeypatch.setattr(fleet_census, "_pool_records", stalled_records)
     monkeypatch.setattr(pool.record_store, '_read_json', stalled_read)
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     assert result["queue"]["sampled_unix"] == started + 1000
     assert result["queue"]["live_workers"] == 0
     for node in result["nodes"]:
@@ -237,7 +237,7 @@ def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
         return original_read(path, **kwargs)
 
     monkeypatch.setattr(pool.record_store, '_read_json', unreadable)
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     if sidecar == "admission":
         node = next(n for n in result["nodes"] if n["node"] == "cpu-box")
         assert node["admission"]["cpu"]["state"] == "unavailable"
@@ -256,9 +256,9 @@ def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monke
     root = tmp_path / 'empty'
     queue = pool.PoolQueue(root)
     queue.records.ensure_layout()
-    assert fleet_census.rows(root).value['queue']['empty'] is True
+    assert fleet_census.action_rows(root).value['queue']['empty'] is True
     missing = tmp_path / 'missing'
-    result = fleet_census.rows(missing).value
+    result = fleet_census.action_rows(missing).value
     assert result['queue']['empty'] is None and result['queue']['ready'] is None
     assert not missing.exists()
     original = pbstatus.os.scandir
@@ -267,14 +267,14 @@ def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monke
             raise PermissionError('permission denied')
         return original(path)
     monkeypatch.setattr(pbstatus.os, 'scandir', denied)
-    result = fleet_census.rows(root).value
+    result = fleet_census.action_rows(root).value
     assert result['queue']['empty'] is None and result['queue']['claimed'] is None
     assert any('permission denied' in note for note in result['notes'])
 
 
 def test_malformed_active_records_remain_visible_without_hiding_valid_jobs(live_pool):
     live_pool.records.item_path(pool.record_store.READY, 'c' * 64).write_text('{')
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     assert result['queue']['ready'] is None and result['queue']['empty'] is None
     assert len(result['jobs']) == 3
     assert next(j for j in result['jobs'] if j['action_key'] == 'c' * 64)['state'] == 'UNREADABLE'
@@ -295,7 +295,7 @@ def test_pool_status_reads_shared_admission_evidence_without_writing(
     controlled_clock.advance(sample_age)
     paths = [p for p in live_pool.root.rglob('*') if p.is_file()]
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     node = next(n for n in result['nodes'] if n['node'] == 'gpu-box')
     assert node['admission']['gpu']['state'] == expected_state
     assert node['admission']['gpu']['age_s'] == sample_age
@@ -347,7 +347,7 @@ def test_bad_worker_offer_does_not_hide_other_workers_or_jobs(live_pool):
     record = json.loads(path.read_text())
     record['capacity']['cpu'] = 'unknown'
     path.write_text(json.dumps(record))
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     assert next(n for n in result['nodes'] if n['node'] == 'cpu-box')['state'] == 'unreadable'
     assert next(n for n in result['nodes'] if n['node'] == 'gpu-box')['healthy']
     assert len(result['jobs']) == 2
@@ -356,6 +356,6 @@ def test_bad_worker_offer_does_not_hide_other_workers_or_jobs(live_pool):
 def test_nonregular_queue_entry_is_unreadable_without_opening(live_pool):
     import os
     os.mkfifo(live_pool.records.item_path(pool.record_store.READY, 'c' * 64))
-    result = fleet_census.rows(live_pool.root).value
+    result = fleet_census.action_rows(live_pool.root).value
     assert result['queue']['ready'] is None
     assert any('not a regular' in note for note in result['notes'])
