@@ -3763,11 +3763,11 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     reading an origin whose timestamps alone moved (below).
 
     The decision is taken from the tick's own read of this scope, under the
-    locks (`_TickReads.batches`, #992): it is re-read there whenever the
+    locks (`bl.LedgerReads.batches`, #992): it is re-read there whenever the
     file's trusted version moved, so a write made before the locks were
     taken answers, and an unchanged document is parsed once per tick rather
     than once per due batch.  Every write of the document first drops the
-    memo (`_TickReads.forget`), so a decision a failed write did not file
+    memo (`bl.LedgerReads.forget`), so a decision a failed write did not file
     can never answer the next batch.
 
     The decision, unless the batch is already ``retiring``:
@@ -3778,7 +3778,7 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
       consumers' states, because a retry of that consumer needs the batch.
     * With none: the batch is an orphan once its producer attempt is dead
       (`_attempt_state` over the tick's one read of the owner key,
-      `_TickReads.generation`, #977). Otherwise it waits, quietly, for a
+      `bl.LedgerReads.generation`, #977). Otherwise it waits, quietly, for a
       consumer. A read-back template's batch (#1034) can have no consumer,
       so it is an orphan once its owner attempt has ended, dead or
       succeeded.
@@ -3806,7 +3806,7 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
 
     Another attempt's claim is read under the same locks first (#1053),
     over every attempt of every template whose prefix overlaps this one's
-    (`_TickReads.path_owners`, with the templates listed again under the
+    (`bl.LedgerReads.path_owners`, with the templates listed again under the
     locks): a path another attempt has committed is that batch's, and is
     left alone as ``superseded`` even when its identity is still the
     recorded one -- a direct commit adopts the file it finds, inode and
@@ -4440,14 +4440,14 @@ def _ended_prewrite_dispositions(
       the rule `abort_prewrite` applies.
     * each present one is committed by another attempt, of this key or of
       any other action whose template's prefix overlaps this one's
-      (`_TickReads.path_owners`): ``reclaim``, reason ``superseded``. A
+      (`bl.LedgerReads.path_owners`): ``reclaim``, reason ``superseded``. A
       retry or a relaunch wrote those files again and committed them, so
       they are that batch's, charged once, there. A prewrite of an attempt
       that succeeded counts as its commit.
     * any present one is still planned by another attempt that can commit,
       and none belongs to nobody: ``hold``, until that attempt commits or
       ends. Its ``unknown`` lists the holders whose state is unknown
-      (`_PathOwners.unknown_holders`), which the sweep reports (#1065).
+      (`bl.RetirementOwners.unknown_holders`), which the sweep reports (#1065).
     * otherwise ``orphaned``: files that belong to no batch. PB never
       deletes a file whose identity no commit recorded, so an operator
       removes them, and then the reservation is reclaimed as ``absent``.
@@ -4556,7 +4556,7 @@ def _prepaid_intent_names(reads: bl.LedgerReads, instance: Mapping[str, object],
 #: ``inputs`` is what it was decided on -- the record's version, the
 #: version of each directory its paths are in (a file created, removed or
 #: renamed there changes it), and the other attempts' claims
-#: (`_PathOwners.fingerprint`). While all of those are unchanged the
+#: (`bl.RetirementOwners.fingerprint`). While all of those are unchanged the
 #: decision is too, and the tick neither takes the lock nor ``lstat``s one
 #: path: R13's 28 orphaned prewrites name 3,584 of them, every 5 s. A hold
 #: for a pool funding intent is decided again each cycle.
@@ -4601,7 +4601,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     """The sweep of one instance's outstanding prewrites (#949, #1053).
 
     Nothing while the attempt can still commit them: the owner key's one
-    read this tick (`_TickReads.generation`) says whether it ended.
+    read this tick (`bl.LedgerReads.generation`) says whether it ended.
     Otherwise under the output-prefix lock, which `require_prewrite` and
     `commit_batch` also take, so no attempt of this template can prewrite
     or commit between the decision and its effect
@@ -5298,7 +5298,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
 
     Called once per `tier_loop.cycle` on the tier host. It scans the same
     produced-output scopes `unheld_window_gib` and `output_scope_tick` scan
-    and reads each instance's commitments once (`_TickReads`); each due
+    and reads each instance's commitments once (`bl.LedgerReads`); each due
     batch's retirement under the output-prefix locks reuses that parse while
     the file's trusted version holds, so an unchanged document is parsed
     once per tick, not once per batch (#992). Then:

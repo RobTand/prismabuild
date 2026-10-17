@@ -259,7 +259,7 @@ def _output_prefix_lock_order(own_prefix: str,
 def path_locks(
         queue, instance: Mapping[str, object], *,
         templates: Mapping[str, Mapping[str, object]] | None = None,
-        reads: "_TickReads | None" = None):
+        reads: "LedgerReads | None" = None):
     """Every ownership lock that guards this instance's origin paths (#1063).
 
     A path is named by each template whose output prefix contains it, and
@@ -283,11 +283,11 @@ def path_locks(
     hold a lock the other waits for.
 
     ``templates`` is a listing the caller took after this instance's
-    template was filed (the retirement tick's, `_TickReads.templates`); by
+    template was filed (the retirement tick's, `LedgerReads.templates`); by
     default the templates are listed now. The listing is taken here, before
     any lock: a failed one raises `ProducedOutputError`, since which locks
     guard the paths is then unknown. With ``reads``, the order is the
-    tick's memoized one for this listing (`_TickReads.lock_order`, #992),
+    tick's memoized one for this listing (`LedgerReads.lock_order`, #992),
     which a newly filed template invalidates. Returns the context manager
     that holds the locks.
     """
@@ -681,7 +681,7 @@ class LedgerReads:
 
     def path_owners(self, instance: Mapping[str, object],
                     template: Mapping[str, object], *,
-                    relist: bool = False) -> "_PathOwners":
+                    relist: bool = False) -> "RetirementOwners":
         """Every other attempt's claim on paths under this template's prefix.
 
         The attempts are those of every template whose output prefix
@@ -874,7 +874,7 @@ def _unknown_attempt_detail(generation: KeyStanding,
 
 
 def _newest_write_ns(version: object) -> int | None:
-    """The newest mtime in a `_TickReads.owned` fingerprint, or None."""
+    """The newest mtime in a `LedgerReads.owned` fingerprint, or None."""
 
     newest: int | None = None
 
