@@ -37,7 +37,7 @@ if __name__ == "__main__":
 
 
 def migrate_imports(text: str) -> str:
-    text = text.replace('import prewarm_loop, stage_move', 'from prismabuild import prewarm_loop, stage_move')
+    text = re.sub(r'(?m)^(\s*)import prewarm_loop, stage_move\b', r'\1from prismabuild import prewarm_loop, stage_move', text)
     for name in MODULES:
         text = re.sub(rf"(?m)^(\s*)import {name}(?=\s*(?:as\b|#|$))",
                       rf"\1from prismabuild import {name}", text)
@@ -107,6 +107,14 @@ def migrate(root: Path) -> list[str]:
         if path in {'tests/test_prewarm_receipt_recovery.py', 'tests/test_prewarm_requires_known_receipts.py'}:
             after = after.replace('repository / "tools" / "fleet" / "prewarm_loop.py"',
                                   'repository / "src" / "prismabuild" / "prewarm_loop.py"')
+        if path == 'tests/test_produced_output_tier_host_egress.py':
+            start = after.index('def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(')
+            end = after.index('\ndef test_', start + 1)
+            case = after[start:end]
+            case = case.replace('here = socket.gethostname()', 'here = ELSEWHERE')
+            case = case.replace('world = restage._World(tmp_path, window_gib=1, gib=4)',
+                                'world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)')
+            after = after[:start] + case + after[end:]
         if path == 'tests/test_prewarm_rollout.py':
             start = after.index('def load(name):') if 'def load(name):' in after else -1
             if start >= 0:

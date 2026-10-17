@@ -361,8 +361,8 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
     an import.
     """
 
-    here = socket.gethostname()
-    world = restage._World(tmp_path, window_gib=1, gib=4)
+    here = ELSEWHERE
+    world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
     assert restage._tier_host(world.q) == here
     payload = b"T" * 700
     _descs, first = _staged_batch(world, "b1", "p1", payload)
