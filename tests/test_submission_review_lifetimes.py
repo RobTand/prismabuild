@@ -1,6 +1,7 @@
 """Private queues and a single growth reservation cover actual publication."""
 from contextlib import contextmanager
 from dataclasses import replace
+import json
 
 import pytest
 
@@ -41,6 +42,30 @@ def test_deferred_release_uses_its_private_queue_for_gates_and_publication(tmp_p
     assert queue.records.item_path(pool.READY, released["action_key"]).exists()
     assert action_edges.read_published(queue.root, record["pending_id"])["action_key"] == released["action_key"]
     assert not default_queue.exists()
+
+
+def test_deferred_release_preserves_the_records_declared_cas(tmp_path, monkeypatch, capsys):
+    import test_deferred_action_edges as deferred
+    queue, work = deferred._env(tmp_path, monkeypatch)
+    template = deferred._template(tmp_path / "canonical")
+    producer = deferred._producer_key(tmp_path, template, "declared-cas")
+    deferred._publish_producer(queue, template, producer)
+    registered = deferred._submit(work, monkeypatch, capsys,
+        "--after", f"{producer}:{template['template_id']}")
+    instance = deferred._start(queue, template, producer)
+    deferred._commit(queue, template, instance, "b1", b"declared CAS release")
+    queue.finish(producer, status="executed")
+    record = action_edges.read_deferred(queue.root, registered["pending_id"])
+    fleet = deferred.dr.store_for(deferred.dr.__file__)
+    trap = tmp_path / "default-cas-trap"
+    monkeypatch.setattr(deferred.dr, "store_for", lambda *args: replace(fleet, cas_root=trap))
+    released, = deferred._released(deferred.dr.release_tick(queue))
+    row = json.loads(queue.records.item_path(pool.READY, released["action_key"]).read_bytes())
+    assert row["cas_root"] == record["cas_root"]
+    cas = submission.pb.PrismaBuildCAS(row["cas_root"])
+    request = cas.root / "requests" / released["action_key"][:2] / (released["action_key"] + ".json")
+    assert request.is_file()
+    assert not trap.exists()
 
 
 @pytest.mark.parametrize("operation", ["copy", "adopt"])
