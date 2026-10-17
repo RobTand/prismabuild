@@ -21,12 +21,12 @@ def _publication(tmp_path, monkeypatch, store, set_id, spec, operation):
 
     template = fixture._template("c" * 64, 7)
     template["cas"] = submission.pb.PrismaBuildCAS(tmp_path / "cas")
+    monkeypatch.setattr(submission, "freeze_resident", lambda *args, **kwargs: template)
     tier = {"tier_id": "local:test-host", "host": "test-host", "mountpoint": spec["root"],
             "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"}
     if operation == "copy":
-        return submission.dispatch_resident(template, store, set_id, [tier], policy_path="/policy.json", store=pbrun.configured_store())["test-host"]["copy"]
+        return submission.dispatch_resident(store, set_id, [tier], policy_path="/policy.json", checkout=tmp_path, store=pbrun.configured_store())["test-host"]["copy"]
     pool.PoolQueue(store.queue_root).announce_tier(tier)
-    monkeypatch.setattr(pbresident, "movement_template", lambda *args: template)
     return pbresident.submit_adoption(store, set_id, host="test-host", source=str(tmp_path / "manual"),
                                      policy_path="/policy.json", checkout=str(tmp_path))
 

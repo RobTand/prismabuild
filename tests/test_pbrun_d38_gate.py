@@ -21,9 +21,6 @@ import sys
 
 import pytest
 
-# The preflight fixture seals live evidence and declares an x86 receipt.
-pytestmark = pytest.mark.pbtest_capability("d38_x86_receipt_fixture")
-
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))

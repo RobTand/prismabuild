@@ -29,7 +29,8 @@ def _dispatch_fixture(tmp_path, monkeypatch):
     queue.announce_tier(tier)
     template = fixture._template("c" * 64, 7)
     template["cas"] = core.PrismaBuildCAS(tmp_path / "cas")
-    monkeypatch.setattr(pbresident, "movement_template", lambda *args: template)
+    patch_store(monkeypatch, root=tmp_path)
+    monkeypatch.setattr(submission, "freeze_resident", lambda *args, **kwargs: template)
     return store, record, spec, queue, tier, template
 
 
@@ -69,11 +70,11 @@ def test_failed_publication_dispatch_can_retry_without_republishing(tmp_path, mo
 
 def test_repeated_movement_dispatch_attaches_to_the_live_generation(tmp_path, monkeypatch):
     store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
-    first = submission.dispatch_resident(template, store, record["set_id"], [tier], policy_path="/policy.json", store=pbrun.configured_store())
+    first = submission.dispatch_resident(store, record["set_id"], [tier], policy_path="/policy.json", checkout=tmp_path, store=pbrun.configured_store())
     key = first["test-host"]["copy"]["action_key"]
     path = queue.records.item_path(pool.record_store.READY, key)
     before = json.loads(path.read_text())
-    second = submission.dispatch_resident(template, store, record["set_id"], [tier], policy_path="/policy.json", store=pbrun.configured_store())
+    second = submission.dispatch_resident(store, record["set_id"], [tier], policy_path="/policy.json", checkout=tmp_path, store=pbrun.configured_store())
     assert second == first
     assert json.loads(path.read_text())["published_unix"] == before["published_unix"]
     assert len(list(queue.root.joinpath(pool.record_store.READY).glob("*.json"))) == 1
@@ -85,7 +86,7 @@ def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypat
     import pbresident
     store, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
     set_id = record["set_id"]
-    first = submission.dispatch_resident(template, store, set_id, [tier], policy_path="/policy.json", store=pbrun.configured_store())
+    first = submission.dispatch_resident(store, set_id, [tier], policy_path="/policy.json", checkout=tmp_path, store=pbrun.configured_store())
     movements = store.set_path(set_id).parent / "movements" / "test-host.json"
     before = movements.read_bytes()
     requests = set(template["cas"].root.rglob("*.json"))
@@ -114,7 +115,7 @@ def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypat
         assert "resident lease expired" in capsys.readouterr().err
     else:
         with pytest.raises(ValueError, match="resident lease expired"):
-            submission.dispatch_resident(template, store, set_id, [tier], policy_path="/changed-policy.json", store=pbrun.configured_store())
+            submission.dispatch_resident(store, set_id, [tier], policy_path="/changed-policy.json", checkout=tmp_path, store=pbrun.configured_store())
     assert movements.read_bytes() == before
     assert store.read_movements(set_id, "test-host") == first["test-host"]
     assert set(template["cas"].root.rglob("*.json")) == requests

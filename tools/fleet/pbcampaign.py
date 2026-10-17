@@ -1261,7 +1261,7 @@ def decompose(
             # every one of their keys.
             published = {"status": "refused", "flags": [],
                          "action_key": str(child["action_key"]),
-                         "error": str(exc.returncode)}
+                         "error": exc.reason or f"exit {exc.returncode}"}
         print(f"pbcampaign: child {ordinal} {published['status']} "
               f"{str(published.get('action_key') or '')[:pbwait.KEY_WIDTH]}",
               file=sys.stderr, flush=True)

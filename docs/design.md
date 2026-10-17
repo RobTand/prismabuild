@@ -18684,24 +18684,39 @@ CLI private descriptors remain outside the request and sealed action.
 capability advice and the publication tail. Callers pass `FleetStore` with
 explicit queue, CAS, runtime, roster and D38 configuration paths. The package
 uses the qualified C03 predicates and C06 `ClientReport`, identities and
-verdicts. Checked refusals carry a client status and display text; interruptions
+verdicts. Checked refusals carry a client status and diagnostic text; interruptions
 outside that model propagate without inventing an ending.
+`ArgumentRefused` identifies invalid submission options, including profile and
+residency choices on both CLI and mapping paths. The CLI renders those refusals
+with its parser's usage. D38 domain refusals also use exit 2, retain their full
+diagnostic for nondisplaying callers, and render once without argument usage.
 
 `_publish_sealed` serves ordinary requests, direct decomposed children, deferred
-releases and compiled producers. Ordinary detached cache and live-attachment
-checks
-precede runnable publication. Native producers and movement rows retain their
-original publication behavior; deferred releases still file a new generation.
-D38 precedes new work on both transports.
+releases, compiled producers and resident movement rows. Ordinary detached
+cache and live-attachment checks precede runnable publication. Consistent floor
+and D38 gates on every publication path are part of C14. Compiled GPU producers
+now evaluate and audit D38 in record-only mode and refuse missing evidence under
+enforcement. They also take the filesystem growth allowance. This changes their
+earlier direct-publication behavior. `fleet_submit` maps checked package refusals
+to `SubmitRefused` with the original reason, including a queue contract refusal.
+Resident movements use the same gates. Deferred releases still file a new
+generation. D38 precedes new work on both transports.
 Deferred release retains its gate-before-CAS order; ordinary submission retains
 its CAS-before-gate order. Supersession remains immediately before publication,
 after other refusals. Origin-consumer declarations and staged plan installation
 retain the consumer transition lock and existing cancellation renewal rules.
 Pre-frozen decomposed plans use that same transaction. Child queue rows retain
 the preparation's tested-repository annotation.
+The package deferred-release entry derives the queue path from its actual queue
+and the CAS path from its immutable record before acquiring the floor allowance.
+D38 and runnable publication use that queue, and the row advertises the CAS
+holding its sealed request. Runtime, roster and D38 settings stay explicit in
+`FleetStore`.
 
 `write_window` holds the filesystem growth allowance during preparation and
-publication. Pool and deferred waits run after release; SLURM retains its
+publication. Resident copy and adoption accept a checkout and freeze inside
+their single package allowance before writing descriptors or publishing rows.
+They acquire one growth holder. Pool and deferred waits run after release; SLURM retains its
 existing no-growth wait behavior. Batch preparation has its own package reader
 and write scope. Each client invocation owns its complete C06 reader history,
 with no history shared between wait threads. Display callbacks and store
@@ -18715,6 +18730,12 @@ bounds.
 snapshot, wait, canary and producer adapters call their package owners without
 importing execution from the CLI. The rollout changes source only; it does not
 activate a runtime generation or D38 enforcement.
+
+The D38 receipt fixtures use portable worker evidence and carry no x86
+capability marker. `pbtest` adds `--anywhere` only when neither requested tags
+nor capability tags constrain the shard. Removing the obsolete markers lets
+the published client collect these portable files without its older
+`--anywhere` and capability-tag conflict. No host pin is required.
 
 ### Exact claim facts and scratch action boundaries
 

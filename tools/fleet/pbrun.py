@@ -15,8 +15,8 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from submission_frontend import render_submission
 from prismabuild import action_edges, submission, action_client, client_channel, core as pb, pool, fleet_roster
-from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, Display
-from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
+from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused
+from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, RESIDENCY_SHARE_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
 
 
 def configured_store() -> FleetStore:
@@ -26,33 +26,8 @@ def configured_store() -> FleetStore:
 def request_from_args(args: argparse.Namespace) -> SubmissionRequest:
     return SubmissionRequest(**{field.name: getattr(args, field.name) for field in fields(SubmissionRequest)})
 
-def _profile_mode(text: str) -> str:
-    """``--profile`` values, validated here so a bad one costs no submission.
-
-    A mode may carry one option after a colon (``nsys:600`` traces the first
-    ten minutes), and the whole string is sealed, so two windows are two
-    actions.
-    """
-
-    try:
-        return pb.parse_profile_mode(text)
-    except pb.ProfileBackendUnavailable as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from exc
-
-
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Read one submission's arguments, and nothing about the world.
-
-    Split out so a caller that is not the command line -- ``pbcampaign``
-    decomposing one logical request into many actions -- can build the same
-    namespace the CLI builds and hand it to ``prepare_submission``.  Every
-    refusal below is a statement about the arguments alone, so it holds
-    wherever they came from.
-
-    ``--progress-phase`` is parsed here rather than at its use: the policy is
-    the normalized form of two flags, a typo in one of them is an argument
-    error, and saying so before ``--withdraw`` is where ``main`` said it.
-    """
+def argument_parser() -> argparse.ArgumentParser:
+    """The CLI owns usage and help; the package owns submission validation."""
 
     store = configured_store()
     ap = argparse.ArgumentParser(
@@ -214,7 +189,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "arm.  A plan already frozen keeps the leg it was frozen with",
     )
     ap.add_argument(
-        "--residency-share", choices=("auto", "off"), default="auto",
+        "--residency-share", choices=RESIDENCY_SHARE_MODES, default="auto",
         help="stage each range once for every consumer that reads it (#1026): "
              "the first submission of a range seals and registers its mover "
              "under the range's identity, and every later submission of the "
@@ -374,7 +349,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     "stored with the submission and shown by pbstatus; not "
                     "part of the action identity or an admission requirement. "
                     "Use single-line printable text, at most 1024 characters")
-    ap.add_argument("--profile", type=_profile_mode, default=None,
+    ap.add_argument("--profile", default=None,
                     metavar="{" + ",".join(pb.PROFILE_MODES) + "}",
                     help="run a profiler around this action's child and store "
                          "the profile as a CAS blob named on the ending. "
@@ -424,6 +399,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("command", nargs=argparse.REMAINDER,
                     help="the command to run, after a bare --; every word "
                          "past it belongs to the command and not to pbrun")
+    return ap
+
+
+def parse_args(argv: Sequence[str] | None = None, *, parser=None) -> argparse.Namespace:
+    ap = parser if parser is not None else argument_parser()
     args = ap.parse_args(argv)
     args.progress_policy = submission.parse_progress_phases(
         args.progress_phase, cycle=args.progress_cycle)
@@ -431,7 +411,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     try:
         submission.validate_request(request_from_args(args))
     except SubmissionRefused as exc:
-        if exc.returncode == 2:
+        if isinstance(exc, ArgumentRefused):
             ap.error(exc.reason)
         raise SystemExit(exc.reason or exc.returncode) from None
     return args
@@ -443,7 +423,8 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
     writer = None
     previous_observer = report.on_event
     try:
-        args = parse_args(argv)
+        parser = argument_parser()
+        args = parse_args(argv, parser=parser)
         if args.client_events_fd is not None:
             try:
                 writer = client_channel.ClientEventWriter(args.client_events_fd)
@@ -459,8 +440,11 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
             authorize_canary=authorize_canary)
         refusal = result if isinstance(result, SubmissionRefused) else None
         if refusal is not None:
+            if isinstance(refusal, ArgumentRefused):
+                parser.error(refusal.reason)
             if refusal.returncode == 2:
-                print(f"pbrun: error: {refusal.reason}", file=sys.stderr)
+                if refusal.reason:
+                    print(refusal.reason, file=sys.stderr)
                 raise SystemExit(2)
             if refusal.reason:
                 raise SystemExit(refusal.reason)

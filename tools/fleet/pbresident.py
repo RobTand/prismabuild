@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core, resident_sets, submission
-from submission_frontend import store_for, render_submission
-from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from submission_frontend import store_for
+from prismabuild.submission_types import SubmissionRefused
 
 
 from prismabuild import data_manifest as manifest_codec
@@ -25,43 +25,22 @@ def timestamp(value):
     return parsed.astimezone(timezone.utc).timestamp()
 
 
-def movement_template(set_id, checkout):
-    return submission.freeze_resident(set_id, checkout, store=store_for(__file__))
-
-
 def submit_copies(store, set_id, *, policy_path, checkout):
     """Freeze through the existing submitter, then use its movement builder."""
-    from prismabuild import local_resident, pool
+    from prismabuild import pool
     queue = pool.PoolQueue(store.queue_root)
-    record = store.read(set_id)
-    tiers = queue.tiers()
-    by_host = {row["host"]: row for row in tiers if row.get("tier_id", "").startswith("local:")}
-    for host in record["hosts"]:
-        if host not in by_host:
-            raise ValueError(f"local tier has not announced its movement tools on {host}")
-    request = SubmissionRequest(cwd=str(checkout), detach=True)
-    fleet = store_for(__file__)
-    from dataclasses import replace
-    fleet = replace(fleet, queue_root=store.queue_root)
-    with submission.write_window(request, store=fleet):
-        template = movement_template(set_id, checkout)
-        return submission.dispatch_resident(template, store, set_id, tiers,
-            policy_path=policy_path, store=fleet)
+    return submission.dispatch_resident(store, set_id, queue.tiers(),
+        checkout=checkout, policy_path=policy_path, store=store_for(__file__))
 
 
 def submit_adoption(store, set_id, *, host, source, policy_path, checkout):
-    from prismabuild import local_resident, pool
+    from prismabuild import pool
     queue = pool.PoolQueue(store.queue_root)
     tiers = {row["host"]: row for row in queue.tiers() if row.get("tier_id", "").startswith("local:")}
     if host not in store.read(set_id)["hosts"] or host not in tiers:
         raise ValueError("adoption host must be declared and announce its local tier")
-    request = SubmissionRequest(cwd=str(checkout), detach=True)
-    from dataclasses import replace
-    fleet = replace(store_for(__file__), queue_root=store.queue_root)
-    with submission.write_window(request, store=fleet):
-        template = movement_template(set_id, checkout)
-        return submission.adopt_resident(template, store, set_id, tiers[host],
-            policy_path=policy_path, source=source, store=fleet)
+    return submission.adopt_resident(store, set_id, tiers[host],
+        checkout=checkout, policy_path=policy_path, source=source, store=store_for(__file__))
 
 
 

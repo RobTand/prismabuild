@@ -47,6 +47,9 @@ RESIDENCY_MODES = ("none", "stage")
 RESIDENCY_RAM_MODES = ("auto", "off")
 
 
+RESIDENCY_SHARE_MODES = ("auto", "off")
+
+
 DEFAULT_MAX_ATTEMPTS = 1
 
 
@@ -7324,7 +7327,7 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
                 return functools.partial(
                     action_client.report_pool_outcome, pool.PoolQueue(store.queue_root), key,
                     wait_s=args.wait_s, generation=live["generation"], report=report)
-        raise d38_gate.refusal_exit(verdict, action, display=display)
+        raise d38_gate.refusal_exit(verdict, action)
 
     if args.transport == "slurm" and producer is not None:
         resources = slurm_lane.LaneResources.from_demand(demand)
@@ -7594,15 +7597,11 @@ def submit_request(request: SubmissionRequest, *, store: FleetStore,
                             by=by, store=store, display=display))
                 report.finish(action_client.ClientCommand(code))
                 return report
-            try:
-                with write_window(request, store=store):
-                    continuation = _prepare_and_publish(request, store=store,
-                        display=display, report=report,
-                        publication_canary_intent=publication_canary_intent,
-                        authorize_canary=authorize_canary)
-            except filesystem_floor.FloorRefused as exc:
-                raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
-                                        f"submitted: {exc}") from None
+            with write_window(request, store=store):
+                continuation = _prepare_and_publish(request, store=store,
+                    display=display, report=report,
+                    publication_canary_intent=publication_canary_intent,
+                    authorize_canary=authorize_canary)
             if callable(continuation):
                 continuation()
             if report.ending is None:
@@ -7640,9 +7639,6 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
                     display=display, report=report, placement_announced=placement_announced)
             if callable(continuation):
                 continuation()
-        except filesystem_floor.FloorRefused as exc:
-            return SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
-                                     f"submitted: {exc}")
         except SubmissionRefused as exc:
             if report.ending is None:
                 identity = report.identity
@@ -7654,6 +7650,21 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
 
 
 def validate_request(request: SubmissionRequest) -> None:
+    if request.profile is not None:
+        try:
+            pb.parse_profile_mode(request.profile)
+        except pb.ProfileBackendUnavailable as exc:
+            request.refuse_argument(f"argument --profile: {exc}")
+    for name, choices in (("residency", RESIDENCY_MODES),
+                          ("residency_ram", RESIDENCY_RAM_MODES),
+                          ("residency_share", RESIDENCY_SHARE_MODES),
+                          ("transport", TRANSPORTS)):
+        value = getattr(request, name)
+        if value not in choices:
+            flag = "--" + name.replace("_", "-")
+            request.refuse_argument(
+                f"argument {flag}: invalid choice: {value!r} "
+                f"(choose from {', '.join(repr(choice) for choice in choices)})")
     if request.release_origin_consumer is not None and (
             request.withdraw or request.after or request.supersedes is not None
             or request.as_sealed_by is not None):
@@ -7697,6 +7708,7 @@ def producer_publication_row(action, *, args: SubmissionRequest,
 
 def release_deferred(q, pending_id, record, *, producers=(), store: FleetStore,
                      display: DisplaySink = discard_display):
+    store = replace(store, queue_root=q.root, cas_root=Path(str(record["cas_root"])))
     with action_wait.client_readers():
         with write_window(SubmissionRequest(), store=store):
             return _release_deferred(q, pending_id, record, producers=producers,
@@ -7935,11 +7947,6 @@ def submit_producer(action, *, cas, request_path, producer: ProducerPublication,
                     placement_announced=True)
             if callable(continuation):
                 continuation()
-        except filesystem_floor.FloorRefused as exc:
-            refusal = SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
-                                        f"submitted: {exc}")
-            report.finish(action_client.ClientRefused(refusal.returncode))
-            return refusal
         except SubmissionRefused as exc:
             if report.ending is None:
                 report.finish(action_client.ClientRefused(exc.returncode))
@@ -7995,18 +8002,22 @@ def _resident_publication(action, template, tier, *, request_path, store: FleetS
         raise RuntimeError("detached resident publication returned a waiter")
 
 
-def dispatch_resident(template, resident, set_id, tiers, *, policy_path,
+def dispatch_resident(resident, set_id, tiers, *, checkout, policy_path,
                       store: FleetStore):
     """Keep pair requests and immutable descriptors ahead of the copy row."""
     from . import local_resident
     record = resident.read(set_id)
     if not local_resident.lease_active(resident, set_id):
         raise ValueError("resident lease expired")
-    request = SubmissionRequest(cwd=str(store.runtime_root), detach=True)
-    store = replace(store, queue_root=resident.queue_root, cas_root=template["cas"].root)
+    request = SubmissionRequest(cwd=str(checkout), detach=True)
+    store = replace(store, queue_root=resident.queue_root)
     by_host = {tier["host"]: tier for tier in tiers if tier.get("tier_id", "").startswith("local:")}
+    for host in record["hosts"]:
+        if host not in by_host:
+            raise ValueError(f"local tier has not announced its movement tools on {host}")
     rows = {}
     with action_wait.client_readers(), write_window(request, store=store):
+        template = freeze_resident(set_id, checkout, store=store)
         for host in record["hosts"]:
             tier = by_host[host]
             pair, actions = {}, {}
@@ -8024,12 +8035,15 @@ def dispatch_resident(template, resident, set_id, tiers, *, policy_path,
     return rows
 
 
-def adopt_resident(template, resident, set_id, tier, *, source, policy_path,
+def adopt_resident(resident, set_id, tier, *, checkout, source, policy_path,
                    store: FleetStore):
     from . import local_resident
-    request = SubmissionRequest(cwd=str(store.runtime_root), detach=True)
-    store = replace(store, queue_root=resident.queue_root, cas_root=template["cas"].root)
+    if tier["host"] not in resident.read(set_id)["hosts"]:
+        raise ValueError("adoption host must be declared and announce its local tier")
+    request = SubmissionRequest(cwd=str(checkout), detach=True)
+    store = replace(store, queue_root=resident.queue_root)
     with action_wait.client_readers(), write_window(request, store=store):
+        template = freeze_resident(set_id, checkout, store=store)
         action = local_resident.movement_action(template, resident, set_id, tier,
             policy_path=policy_path, operation="adopt", source=source)
         request_path = template["cas"].publish_action_request(action)
