@@ -155,7 +155,7 @@ def _seal(tmp_path: Path, monkeypatch, *, measurement: bool = True):
     cas = _Cas(manifest_path, tmp_path / "cas")
     consumer = submit_core.seal(template)
     cas.publish_action_request(consumer)
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)

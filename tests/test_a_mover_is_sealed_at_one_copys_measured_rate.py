@@ -260,7 +260,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
     tier["tokens"] = ({} if offer is None
                       else {**dict(tier.get("tokens") or {}),
                             storage_tiers.FILL_KIND: offer})
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
