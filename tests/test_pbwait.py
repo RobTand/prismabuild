@@ -474,7 +474,7 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
         queue_root=queue.root,
         worker_python=sys.executable, job_python=sys.executable,
         local_checkout_root=tmp_path / "checkouts",
-    store=pbrun.configured_store(), display=submit_core.render_submission) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert not queue.item_path(pool.DONE, key).exists()
 
     rows = pbwait.wait_for_keys(
@@ -509,7 +509,7 @@ def test_a_detached_slurm_action_has_its_ending_filed_by_the_waiter(
         queue_root=queue.root,
         worker_python=sys.executable, job_python=sys.executable,
         local_checkout_root=tmp_path / "checkouts",
-    store=pbrun.configured_store(), display=submit_core.render_submission) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     attended = json.loads(
         queue.item_path(pool.DONE, attended_key).read_text(encoding="utf-8"))
     assert set(record) == set(attended)
@@ -546,7 +546,7 @@ def test_the_receipt_outranks_the_controller_when_the_ending_is_missing(
         queue_root=queue.root,
         worker_python=sys.executable, job_python=sys.executable,
         local_checkout_root=tmp_path / "checkouts",
-    store=pbrun.configured_store(), display=submit_core.render_submission) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert cas.lookup(action) is not None, "the job ran; the receipt is real"
     assert not queue.item_path(pool.DONE, key).exists()
 
@@ -585,7 +585,7 @@ def test_a_detached_slurm_job_that_failed_is_filed_and_reported(
         demand={"cpu": 1, "mem_gb": 1}, exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1, detach=True,
         queue_root=queue.root,
-    store=pbrun.configured_store(), display=submit_core.render_submission) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
     rows = pbwait.wait_for_keys(
         queue, [key], cas=cas, wait_s=30.0, queue_root=queue.root, poll_s=0.0
