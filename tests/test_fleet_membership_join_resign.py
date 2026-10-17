@@ -8,6 +8,7 @@ gates are the real ``worker_loop`` drain shape on tmp paths.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 import os
@@ -50,21 +51,6 @@ def authority(tmp_path: Path):
                                _Backend(), max_memory_bytes=1024**3)
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=kw.pop("resources", dict(CPU)),
-        max_attempts=kw.pop("max_attempts", 1),
-        retry_safe=kw.pop("retry_safe", True),
-        tags=kw.pop("tags", ()),
-        needs_gpu=kw.pop("needs_gpu", False),
-        **kw,
-    )
-
-
 def _offer(q: pool.PoolQueue, host: str, tags, has_gpu=False, capacity=None, **kw):
     q.announce(
         host=host, tags=list(tags), has_gpu=has_gpu,
@@ -80,7 +66,17 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 def test_two_matching_workers_either_may_claim(queue: pool.PoolQueue) -> None:
     key = "a" * 64
-    _publish(queue, key, tags=["gb10"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=True,
+        tags=['gb10'],
+        needs_gpu=False,
+    )
     _offer(queue, "sparky", ["gb10", "sparky"], capacity={"cpu": 4})
     _offer(queue, "sparklina", ["gb10", "sparklina"], capacity={"cpu": 4})
     item = queue.ready_items()[0]
@@ -92,7 +88,17 @@ def test_two_matching_workers_either_may_claim(queue: pool.PoolQueue) -> None:
 
 def test_cpu_x86_vs_cuda_class_conjunction(queue: pool.PoolQueue) -> None:
     gpu_key = "b" * 64
-    _publish(queue, gpu_key, tags=["gb10"], needs_gpu=True, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        gpu_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'gpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['gb10'],
+        needs_gpu=True,
+    )
     _offer(queue, "dl380g10", ["x86", "dl380g10"], has_gpu=False)
     item = queue.ready_items()[0]
     assert queue.placeable(item) is False
@@ -106,7 +112,17 @@ def test_cpu_x86_vs_cuda_class_conjunction(queue: pool.PoolQueue) -> None:
 
 def test_discrete_and_unified_budgets_stay_separate(queue: pool.PoolQueue) -> None:
     key = "c" * 64
-    _publish(queue, key, tags=["x86"], resources={"mem_gb": 8})
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'mem_gb': 8},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     _offer(queue, "wsl-gpu", ["x86", "wsl-gpu", "gfx1201", "rocm", "rdna4"],
            capacity={"cpu": 4, "mem_gb": 16},
            observed_detail={"gpu_memory_domains": ["discrete"]})
@@ -126,20 +142,50 @@ def test_discrete_and_unified_budgets_stay_separate(queue: pool.PoolQueue) -> No
 
 def test_unsupported_backend_is_explicitly_unplaceable(queue: pool.PoolQueue) -> None:
     key = "d" * 64
-    _publish(queue, key, tags=["cuda"], resources={"gpu": 1}, needs_gpu=True)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'gpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['cuda'],
+        needs_gpu=True,
+    )
     _offer(queue, "some-amd-box", ["x86", "rocm"], has_gpu=False,
            capacity={"cpu": 4, "mem_gb": 16})
     item = queue.ready_items()[0]
     assert queue.placeable(item) is False
     # Unknown capacity kinds are unknown, not zero: absence never refuses.
-    _publish(queue, "e" * 64, tags=["x86"], resources={"cpu": 1})
+    ActionRows(queue).publish(
+        'e' * 64,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     _offer(queue, "legacy", ["x86", "legacy"], capacity={"mem_gb": 16})
     assert queue.placeable(queue.ready_items()[1]) is True
 
 
 def test_stale_offer_is_unavailable_not_zero(queue: pool.PoolQueue) -> None:
     key = "f" * 64
-    _publish(queue, key, tags=["x86"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     _offer(queue, "dl380g10", ["x86", "dl380g10"])
     assert queue.placeable(queue.ready_items()[0]) is True
     offer_path = queue.root / "workers" / "dl380g10.json"
@@ -241,7 +287,17 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
     key = "1" * 64
     host = socket.gethostname()
     owner = _incarnation(monkeypatch, host)
-    _publish(queue, key, tags=["x86"], max_attempts=1, retry_safe=False)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=False,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
                            capacity={"cpu": 4})
     assert snapshot is not None
@@ -437,7 +493,17 @@ def test_join_refuses_unknown_membership_rows(
 def test_resign_never_releases_on_heartbeat_loss(queue: pool.PoolQueue, tmp_path: Path) -> None:
     """No broker call, no gate change, no withdraw: nothing is released."""
     key = "2" * 64
-    _publish(queue, key, tags=["x86"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     assert queue.ready_items() != []
     # Resign without a reason refuses before any state changes.
     out = fm.resign("testbox", reason="  ", queue_root=queue.root,
@@ -533,7 +599,17 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
     request = queue_root / "cas" / "requests" / key[:2] / f"{key}.json"
     request.parent.mkdir(parents=True, exist_ok=True)
     request.write_text(json.dumps(action))
-    _publish(queue, key, tags=["x86"], max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
                            capacity={"cpu": 4})
     assert snapshot is not None

@@ -4,6 +4,7 @@ Run only inside an admitted PB action. Synthetic root metadata is serialization
 and refusal coverage, not real privilege, kernel mount or reboot qualification.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import configparser
 import copy
@@ -728,7 +729,7 @@ class _RenderedRamEvidence:
 def ram_integration(tmp_path, monkeypatch, rendered_ram_options):
     clock = [RAM_NOW]
     monkeypatch.setattr(pbstatus.time, "time", lambda: clock[0])
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
     for name in ("LAST_CYCLE", "_VERDICT_CYCLE", "_VERDICT_SINCE", "_EVENT_LINES",
                  "_LOCK_BUSY_COUNT", "_STAGED_WAITS",
                  "_CYCLE_COMMITMENTS", "_CENSUS_COST", "_JOINT_COMMITTED",

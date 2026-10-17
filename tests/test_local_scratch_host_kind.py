@@ -13,6 +13,7 @@ the action and a box it fits does, and two holders cannot jointly exceed one
 box.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 from submission_support import patch_store
 
 import json
@@ -208,13 +209,6 @@ def test_freeze_accepts_the_derived_demand(tmp_path, monkeypatch):
 # -- admission ----------------------------------------------------------------
 
 
-def _publish(queue, key, need_gib):
-    queue.publish(action_key=key, cas_root="/cas",
-                  worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
-                  checkout_root=str(Path(queue.root).parent / "checkout"),
-                  resources={"cpu": 1, "mem_gb": 1, KIND: need_gib})
-
-
 def _denials(queue):
     local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     return {record["action_key"]: record for record in
@@ -232,7 +226,12 @@ def test_scratch_larger_than_a_box_is_never_claimed_there_and_is_claimed_where_i
     key = "a" * 64
     need = ls.scratch_terms({SPILL[0]: "/s", SPILL[1]: str(SPILL_BYTES),
                              PAIRS: ":".join(SPILL)})[KIND]
-    _publish(queue, key, need)
+    ActionRows(queue).publish(
+        key,
+        worker_script=str(REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources={'cpu': 1, 'mem_gb': 1, KIND: need},
+    )
 
     _on(monkeypatch, "small")                       # a box declaring --spool-gb 32
     assert queue.claim(owner="w-small", capacity={"cpu": 2, "mem_gb": 4, KIND: 32}) is None
@@ -253,8 +252,18 @@ def test_two_scratch_holders_cannot_jointly_exceed_one_box(tmp_path, monkeypatch
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
     first, second = "b" * 64, "c" * 64
-    _publish(queue, first, SPILL_GIB)
-    _publish(queue, second, SPILL_GIB)
+    ActionRows(queue).publish(
+        first,
+        worker_script=str(REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources={'cpu': 1, 'mem_gb': 1, KIND: SPILL_GIB},
+    )
+    ActionRows(queue).publish(
+        second,
+        worker_script=str(REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources={'cpu': 1, 'mem_gb': 1, KIND: SPILL_GIB},
+    )
     capacity = {"cpu": 4, "mem_gb": 8, KIND: 200}
     claimed = queue.claim(owner="w1", capacity=capacity)
     assert claimed is not None
@@ -272,8 +281,18 @@ def test_two_holders_that_fit_together_are_both_claimed(tmp_path, monkeypatch):
     _on(monkeypatch, "box")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    _publish(queue, "d" * 64, 100)
-    _publish(queue, "e" * 64, 100)
+    ActionRows(queue).publish(
+        'd' * 64,
+        worker_script=str(REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources={'cpu': 1, 'mem_gb': 1, KIND: 100},
+    )
+    ActionRows(queue).publish(
+        'e' * 64,
+        worker_script=str(REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources={'cpu': 1, 'mem_gb': 1, KIND: 100},
+    )
     capacity = {"cpu": 4, "mem_gb": 8, KIND: 200}
     assert queue.claim(owner="w1", capacity=capacity) is not None
     assert queue.claim(owner="w2", capacity=capacity) is not None

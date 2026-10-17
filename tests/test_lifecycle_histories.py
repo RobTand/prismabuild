@@ -1,4 +1,5 @@
 """A remote live claim keeps its authority until its own conclusion."""
+from fleet_world import Clock as FleetClock
 from prismabuild import pool
 
 
@@ -8,7 +9,7 @@ def test_withdrawal_on_another_host_retains_the_real_claim_and_its_reservation(
     key = "a" * 64
     demand = {"cpu": 1, "mem_gb": 1}
     clock = [100.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path, worker_script="worker.py",
                   resources=demand)
