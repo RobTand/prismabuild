@@ -1,41 +1,47 @@
 """Read-only support-window identity and rollback reachability checks."""
 from __future__ import annotations
 
-import ast
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 
 from .digest_primitives import canonical_sha256, raw_sha256
+from .generation_receipt import GenerationReceipt, SourceDeclarations
 
 
 class WindowError(ValueError):
     pass
 
 
-def client_protocol(root):
+def client_protocol(root, *, receipt=None):
     root = Path(root)
     candidates = (root / "tools/fleet/upgrade_client.py", root / "tools/upgrade_client.py")
     path = next((path for path in candidates if path.is_file()), None)
     if path is None:
         raise WindowError("generation has no updater source")
-    values = {}
-    for node in ast.parse(path.read_bytes()).body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    try:
-                        values[target.id] = ast.literal_eval(node.value)
-                    except (ValueError, TypeError):
-                        pass
-    optional = values.get("OPTIONAL_MEMBERS")
-    if not isinstance(optional, dict):
-        raise WindowError("updater optional-member contract is unknown")
-    present = sorted(name for name, relative in optional.items() if (root / relative).is_file())
-    return {"optional": sorted(optional), "present": present,
-            "optional_protocol": values.get("CLIENT_UPGRADE_PROTOCOL"),
-            "proof_protocol": values.get("CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL"),
-            "updater_sha256": raw_sha256(path.read_bytes())}
+    raw = path.read_bytes()
+    relative = str(path.relative_to(root))
+    try:
+        if receipt is None and (root / "RUNTIME_VERSION.json").is_file():
+            receipt = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_bytes())
+            receipt.require_generation(root.name)
+        if receipt is None:
+            source = SourceDeclarations.capture(raw)
+            digest = raw_sha256(raw)
+        else:
+            source = receipt.source_declarations(relative, raw)
+            digest = receipt.member_digest(relative)
+        optional = source.members("OPTIONAL_MEMBERS")
+        if optional is None:
+            raise WindowError("updater optional-member contract is unknown")
+        present = sorted(name for name, member in optional.items() if (root / member).is_file())
+        return {"optional": sorted(optional), "present": present,
+                "optional_protocol": source.protocol("CLIENT_UPGRADE_PROTOCOL"),
+                "proof_protocol": source.protocol("CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL"),
+                "receipt_member_protocol": source.protocol("CLIENT_UPGRADE_RECEIPT_MEMBER_PROTOCOL"),
+                "receipt_reader_protocol": source.protocol("CLIENT_UPGRADE_RECEIPT_READER_PROTOCOL"),
+                "updater_member": relative, "updater_sha256": digest}
+    except ValueError as exc:
+        raise WindowError(str(exc)) from exc
 
 
 def require_reachable(candidate, rollback):
@@ -86,17 +92,25 @@ def require_generation(directory, designation):
     if str(directory.resolve()) != designation.get("directory"):
         raise WindowError("rollback directory differs from the persistent operator designation")
     raw = (directory / "RUNTIME_VERSION.json").read_bytes()
-    value = json.loads(raw)
+    captured = GenerationReceipt.capture(raw)
+    try:
+        value = captured.require_generation(designation["generation"])
+        captured.require_commit()
+    except ValueError as exc:
+        raise WindowError(str(exc)) from exc
     if (directory.name != designation["generation"] or value["generation"] != designation["generation"]
             or value["commit"] != designation["commit"]
             or raw_sha256(raw) != designation["receipt_sha256"]
             or content_digest(value["files"]) != designation["content_sha256"]):
         raise WindowError("rollback directory, commit or receipt digest changed")
     for relative, expected in value["files"].items():
-        path = Path(relative)
-        if (path.is_absolute() or ".." in path.parts
-                or any((directory / parent).is_symlink() for parent in (path, *path.parents))):
+        try:
+            path = captured.member_path(directory, relative)
+        except ValueError as exc:
+            raise WindowError("unsafe rollback source path") from exc
+        if any(parent.is_symlink() for parent in (path, *path.parents)
+               if parent.is_relative_to(directory)):
             raise WindowError("unsafe rollback source path")
-        if raw_sha256((directory / path).read_bytes()) != expected:
+        if not captured.matches_bytes(relative, path.read_bytes()):
             raise WindowError(f"rollback source content changed: {relative}")
     return value

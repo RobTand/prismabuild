@@ -82,7 +82,7 @@ def operate(request, store, load):
             path = generation / "RUNTIME_VERSION.json"
         else:
             request["_consumer_boundary"]()
-            result = publication._receipt(base64.b64decode(request["raw"]), NAME)
+            result = publication._publication_receipt(base64.b64decode(request["raw"]), NAME).document
             assert result["files"] and result["generation"] == NAME
             return result
     else:
@@ -105,6 +105,6 @@ def operate(request, store, load):
             request["_consumer_boundary"]()
             result = publication._published_root(protected)
             assert result is not None
-            return {"generation": result[0]["generation"], "receipt_sha256": result[1]}
+            return {"generation": result[0].document["generation"], "receipt_sha256": result[1]}
     return {"raw": base64.b64encode(path.read_bytes()).decode(),
             "fixture_facts": ["private manifest, Git and qualification facts; private custody model; no operational publication or root proof"]}
