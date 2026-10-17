@@ -75,14 +75,14 @@ def _plan(queue: pool.PoolQueue) -> dict[str, object]:
         start = end
     return residency_plan.build_plan(
         consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
-        stage_root="/stage/prewarm", manifest_sha256=MANIFEST,
+        stage_root=str(queue.root.parent / "stage"), manifest_sha256=MANIFEST,
         manifest_bytes=start, phases=phases, ram_tier_id=RAM_TIER)
 
 
 def _tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
     return {
         STAGE_TIER: {"tier": "stage", "tier_id": STAGE_TIER,
-                     "host": "dl380g10", "mountpoint": "/stage/prewarm"},
+                     "host": "dl380g10", "mountpoint": str(tmp_path / "stage")},
         RAM_TIER: {"tier": "ram", "tier_id": RAM_TIER, "host": "dl380g10",
                    "mountpoint": str(tmp_path / "ram"), "epoch": EPOCH,
                    "capacity_bytes": 112 * GIB, "window_gib": 112},
@@ -115,9 +115,9 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
         stage_lead = _hexkey(f"mover{ordinal}")
         assert queue.tier(STAGE_TIER).take(stage_lead, {'stage_gib': PHASE_GIB[ordinal]})
         end = start + PHASE_GIB[ordinal] * GIB
-        residency_publication.vouch_landed(
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=CONSUMER, mover_action_key=stage_lead,
-            tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+            tier_id=STAGE_TIER, stage_root=str(queue.root.parent / "stage"),
             manifest_sha256=MANIFEST, range_start_bytes=start,
             range_end_bytes=end, name=f"phase{ordinal}",
             unix=1000.0 + ordinal)

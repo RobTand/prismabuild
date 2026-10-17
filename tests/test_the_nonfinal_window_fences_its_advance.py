@@ -132,7 +132,7 @@ def _plan(queue: pool.PoolQueue, phases: int, *, ram: bool = False,
         built.append(entry)
     return residency_plan.build_plan(
         consumer_action_key=consumer, tier_id=TIER,
-        stage_root="/stage/prewarm", manifest_sha256=digest,
+        stage_root=str(queue.root.parent / "stage"), manifest_sha256=digest,
         manifest_bytes=phases * span, phases=built,
         **({"ram_tier_id": RAM_TIER} if ram else {}))
 
@@ -502,9 +502,9 @@ def test_the_ram_window_fences_its_advance_before_the_promotion_runs(
     # leaves: fragment plus complete receipt, with the booking still held).
     for ordinal, mover in ((0, _movers(plan)[0]), (1, _movers(plan)[1])):
         assert stage_ledger.take(mover, {'stage_gib': 1}) is True
-        residency_publication.vouch_landed(
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=CONSUMER, mover_action_key=mover,
-            tier_id=TIER, stage_root="/stage/prewarm",
+            tier_id=TIER, stage_root=str(queue.root.parent / "stage"),
             manifest_sha256=str(plan["manifest_sha256"]),
             range_start_bytes=ordinal * SPAN,
             range_end_bytes=(ordinal + 1) * SPAN)

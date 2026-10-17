@@ -27,9 +27,9 @@ def blind_window(tmp_path):
 def land_source(queue, plan, ordinal):
     mover = base._movers(plan)[ordinal]
     assert queue.tier(base.TIER).take(mover, {'stage_gib': 1})
-    base.residency_publication.vouch_landed(
+    base.residency_publication.publish_landed_files(
         queue, consumer_action_key=base.CONSUMER, mover_action_key=mover,
-        tier_id=base.TIER, stage_root='/stage/prewarm',
+        tier_id=base.TIER, stage_root=str(queue.root.parent / 'stage'),
         manifest_sha256=str(plan['manifest_sha256']),
         range_start_bytes=ordinal * base.SPAN,
         range_end_bytes=(ordinal + 1) * base.SPAN)

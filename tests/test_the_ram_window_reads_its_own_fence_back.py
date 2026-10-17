@@ -59,9 +59,9 @@ def test_the_ram_window_publishes_into_its_own_fence(tmp_path: Path) -> None:
     stage_ledger = queue.tier(TIER)
     for ordinal, mover in ((0, _movers(plan)[0]), (1, _movers(plan)[1])):
         assert stage_ledger.take(mover, {'stage_gib': 1}) is True
-        residency_publication.vouch_landed(
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=CONSUMER, mover_action_key=mover,
-            tier_id=TIER, stage_root="/stage/prewarm",
+            tier_id=TIER, stage_root=str(queue.root.parent / "stage"),
             manifest_sha256=str(plan["manifest_sha256"]),
             range_start_bytes=ordinal * SPAN,
             range_end_bytes=(ordinal + 1) * SPAN)
