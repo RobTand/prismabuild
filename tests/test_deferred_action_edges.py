@@ -47,8 +47,8 @@ from prismabuild import residency_map as rm, residency_plan, storage_tiers  # no
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
 import pbstatus  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402

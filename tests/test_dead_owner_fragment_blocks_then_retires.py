@@ -29,8 +29,8 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 from fleet_fixture import actions, damage, queue, stages  # noqa: F401
 
 TIER = "prismabuild-stage:dl380g10"
