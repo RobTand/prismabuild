@@ -15,6 +15,7 @@ hide a stage that is only draining.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -50,15 +51,6 @@ def _residency(start: int = 0, end: int = 2 * GIB) -> dict[str, object]:
     }
 
 
-def _publish(fleet: fx.Fleet, key: str) -> None:
-    fleet.queue.publish(
-        action_key=key, tags=["mover"], priority=-10,
-        resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, FILL_KIND: 188},
-        residency=_residency(), max_attempts=1, retry_safe=False,
-        cas_root=fleet.cas_root, checkout_root=str(fleet.checkout),
-        worker_script=str(fleet.base / "worker.py"))
-
-
 @pytest.fixture()
 def fleet(tmp_path: Path) -> fx.Fleet:
     built = fx.build(tmp_path)
@@ -73,11 +65,33 @@ def fleet(tmp_path: Path) -> fx.Fleet:
         "sampled_unix": 1700000000.0,
     })
     # One waiting, one running, one already landed as a sidecar receipt.
-    _publish(built, MOVER_CLAIMED)
+    ActionRows(built.queue).publish(
+        MOVER_CLAIMED,
+        tags=['mover'],
+        priority=-10,
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2, FILL_KIND: 188},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+        cas_root=built.cas_root,
+        checkout_root=str(built.checkout),
+        worker_script=str(built.base / 'worker.py'),
+    )
     claimed = queue.claim(tags=["mover"],
                           capacity={"cpu": 8, "mem_gb": 16})
     assert claimed is not None and claimed["action_key"] == MOVER_CLAIMED
-    _publish(built, MOVER_READY)
+    ActionRows(built.queue).publish(
+        MOVER_READY,
+        tags=['mover'],
+        priority=-10,
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2, FILL_KIND: 188},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+        cas_root=built.cas_root,
+        checkout_root=str(built.checkout),
+        worker_script=str(built.base / 'worker.py'),
+    )
     queue.record_move(MOVER_FILED, {
         "consumer_action_key": fx.CLAIMED_KEY,
         "tier_id": TIER,

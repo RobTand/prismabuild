@@ -97,8 +97,10 @@ def test_pool_attachment_keeps_generation_and_liveness(
     if age is not None:
         queue.records.lease_path(key).write_text(json.dumps({"heartbeat_unix": time.time() - age}))
     if ended:
-        queue.records.item_path(pool.record_store.DONE, key).write_text(json.dumps({
-            **row, "status": "executed", "detail": {"returncode": 0}}))
+        queue.records.replace_record_at(
+            queue.records.item_path(pool.record_store.DONE, key),
+            {**row, 'status': 'executed', 'detail': {'returncode': 0}},
+        )
     result = submit_core.bounded_attachment(queue, key, lane_root=tmp_path / "lane")
     if attaches:
         assert result == {"transport": "pool", "generation": generation,
