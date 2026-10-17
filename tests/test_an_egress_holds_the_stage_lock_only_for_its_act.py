@@ -124,17 +124,15 @@ def _land_range(queue: pool.PoolQueue, stage: Path, root: Path) -> None:
         material[key] = {"stage_path": str(path), "bytes": ENTRY_BYTES,
                          "sha256": DIGEST,
                          "file_id": reader_lease.stat_identity(str(path))}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": LANDED_CONSUMER,
         "mover_action_key": LANDED_MOVER,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": LANDED_MANIFEST, "entries": entries})
-    reader_lease.write_material(
-        root, consumer_action_key=LANDED_CONSUMER,
-        mover_action_key=LANDED_MOVER, tier_id=TIER, stage_root=str(stage),
-        manifest_sha256=LANDED_MANIFEST,
-        generation=reader_lease.mint_generation(), entries=material)
+        "manifest_sha256": LANDED_MANIFEST, "entries": entries},
+        generation=reader_lease.mint_generation(),
+        material_entries=material)
     # The mover that staged it holds its tier token until an egress frees it.
     queue.publish(action_key=LANDED_MOVER, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",

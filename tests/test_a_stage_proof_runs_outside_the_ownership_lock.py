@@ -108,8 +108,8 @@ class _World:
               entries: list[dict[str, object]]) -> None:
         """File the fragment and the sidecar a finished copy leaves.
 
-        The fragment first, then the sidecar dating it, the order
-        ``stage_move.move``'s publication writes them in.
+        The concrete protocol dates material before its fragment, as
+        ``stage_move.move`` publishes it.
         """
 
         named, dated = {}, {}
@@ -123,15 +123,14 @@ class _World:
                           "bytes": int(entry["bytes"]),
                           "sha256": str(entry["sha256"]),
                           "file_id": reader_lease.stat_identity(str(destination))}
-        residency_map.write_fragment(self.root, {
+        staged_path.publish_vouch(
+            self.root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": consumer, "mover_action_key": mover,
             "tier_id": TIER, "stage_root": str(self.stage),
-            "manifest_sha256": "a" * 64, "entries": named})
-        reader_lease.write_material(
-            self.root, consumer_action_key=consumer, mover_action_key=mover,
-            tier_id=TIER, stage_root=str(self.stage), manifest_sha256="a" * 64,
-            generation="b" * 32, entries=dated)
+            "manifest_sha256": "a" * 64, "entries": named},
+            generation="b" * 32,
+            material_entries=dated)
 
     def published(self, names: list[str]) -> list[dict[str, object]]:
         """Entries whose bytes a finished predecessor already staged."""

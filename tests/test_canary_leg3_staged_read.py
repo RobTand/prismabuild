@@ -37,6 +37,7 @@ for _path in (str(SRC), str(FLEET_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+from prismabuild import staged_path
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from pbcanary_legs import leg3  # noqa: E402
 from pbcanary_legs.common import deterministic_bytes, sha256_hex  # noqa: E402
@@ -234,19 +235,16 @@ class _Fleet:
     def publish(self, indices) -> None:
         """Publish the named chunks as that phase's mover, then recompose."""
         for index in indices:
-            residency_map.write_fragment(self.root, {
+            staged_path.publish_vouch(
+                self.root, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": CONSUMER,
                 "mover_action_key": _mover(index),
                 "tier_id": TIER, "stage_root": str(self.stage),
                 "manifest_sha256": MANIFEST_SHA,
-                "entries": {self.keys[index]: self.fragments[index]}})
-            reader_lease.write_material(
-                self.root, consumer_action_key=CONSUMER,
-                mover_action_key=_mover(index), tier_id=TIER,
-                stage_root=str(self.stage), manifest_sha256=MANIFEST_SHA,
+                "entries": {self.keys[index]: self.fragments[index]}},
                 generation=reader_lease.mint_generation(),
-                entries={self.keys[index]: self.materials[index]})
+                material_entries={self.keys[index]: self.materials[index]})
         mapping = residency_map.compose(
             residency_map.read_fragments(self.root, CONSUMER))
         residency_map.write_map(

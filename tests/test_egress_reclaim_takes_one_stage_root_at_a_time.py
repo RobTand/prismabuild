@@ -76,7 +76,11 @@ def _publish(root: Path, stage: Path, consumer: str, mover: str, tier: str,
              source: str, staged: Path) -> str:
     """One mover's published fragment plus the sidecar that dates it."""
 
-    residency_map.write_fragment(root, {
+    generation = reader_lease.mint_generation()
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": tier, "stage_root": str(stage),
@@ -87,15 +91,9 @@ def _publish(root: Path, stage: Path, consumer: str, mover: str, tier: str,
                 "sha256": DIGEST, "offset": 0,
             },
         },
-    })
-    generation = reader_lease.mint_generation()
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=tier, stage_root=str(stage), manifest_sha256="a" * 64,
+    },
         generation=generation,
-        entries={residency_map.residency_map_key(source, 0): {
+        material_entries={residency_map.residency_map_key(source, 0): {
             "stage_path": str(staged), "bytes": SIZE, "sha256": DIGEST,
             "file_id": identity}})
     return generation

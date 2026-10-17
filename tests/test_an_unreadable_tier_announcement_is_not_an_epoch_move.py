@@ -55,22 +55,19 @@ def held(tmp_path: Path):
     staged.write_bytes(b"\x16" * 4096)
     root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key(SOURCE, 0)
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": RAM_TIER, "stage_root": str(stage),
         "manifest_sha256": "a" * 64, "epoch": "epoch-1",
         "entries": {key: {"stage_path": str(staged), "bytes": 4096,
-                          "sha256": "b" * 64, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=RAM_TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+                          "sha256": "b" * 64, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={key: {"stage_path": str(staged), "bytes": 4096,
-                       "sha256": "b" * 64, "file_id": identity}},
-        epoch="epoch-1")
+        material_entries={key: {"stage_path": str(staged), "bytes": 4096,
+                       "sha256": "b" * 64, "file_id": identity}})
     tiers = queue.root / "tiers"
     tiers.mkdir(parents=True, exist_ok=True)
     announcement = tiers / ANNOUNCEMENT
