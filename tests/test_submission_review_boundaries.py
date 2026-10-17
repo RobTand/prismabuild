@@ -1,5 +1,8 @@
 """Exercise the real submission boundaries called out by the C14 review."""
 from pathlib import Path
+import hashlib
+import json
+import os
 import subprocess
 import sys
 
@@ -12,6 +15,16 @@ from prismabuild import core, pool, submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 from submission_support import patch_store
 from test_pbrun_detach import _checkout
+
+
+D38_DIAGNOSTIC = (
+    "pbrun: D38 refuses GPU publication: the job declares no --d38-namespace "
+    "descriptor, so no receipt can bind its namespace.\n"
+    "job={key} images=[] namespace=none\n"
+    "Run the same entry point on CPU through PrismaBuild. "
+    "Supply --d38-receipt <action key>.\n"
+    "Use --d38-exception <decision id> only for an explicit CEO "
+    "exception. No runnable submission was published.")
 
 
 def test_canary_driver_help_under_an_isolated_system_interpreter(tmp_path):
@@ -85,6 +98,8 @@ def test_d38_cli_renders_its_domain_reason_once_without_argument_usage(tmp_path,
     assert "namespace descriptor" in diagnostic
     assert "pbrun: error: \n" not in diagnostic
     assert "usage:" not in diagnostic
+    request, = store.cas_root.glob("requests/*/*.json")
+    assert diagnostic == D38_DIAGNOSTIC.format(key=request.stem) + "\n"
     assert not list((store.queue_root / pool.READY).glob("*.json"))
 
 
@@ -100,6 +115,7 @@ def test_compiled_producer_retains_d38_reason_without_a_display(tmp_path, monkey
             queue_root=store.queue_root)
     assert "D38 refuses GPU publication:" in str(error.value)
     assert "namespace descriptor" in str(error.value)
+    assert str(error.value) == D38_DIAGNOSTIC.format(key=action["action_key"])
     assert not list((store.queue_root / pool.READY).glob("*.json"))
 
 
@@ -115,4 +131,41 @@ def test_decomposed_refusals_retain_each_childs_diagnosis(tmp_path, monkeypatch,
     assert len(records) == len(frozen["children"])
     assert {record["status"] for record in records} == {"refused"}
     assert all("D38 refuses GPU publication:" in record["error"] for record in records)
+    assert all(record["error"] == D38_DIAGNOSTIC.format(key=record["action_key"])
+               for record in records)
     assert not list((store.queue_root / pool.READY).glob("*.json"))
+
+
+def test_compiled_producer_records_d38_before_ordinary_publication(tmp_path, monkeypatch, d38_config):
+    from test_slurm_lane import _runnable_action
+    store = patch_store(monkeypatch, root=tmp_path)
+    d38_config.write_text('{"d38_enforce": false}')
+    cas = core.PrismaBuildCAS(store.cas_root)
+    action = _runnable_action(tmp_path, cas)
+    result = fleet_submit.submit(action, cas=cas, request_path=cas.publish_action_request(action),
+        transport="pool", needs_gpu=True, resources={"cpu": 1, "mem_gb": 1},
+        queue_root=store.queue_root)
+    audit, = (store.queue_root / "d38-audit" / action["action_key"]).glob("*.json")
+    event = json.loads(audit.read_bytes())
+    assert event["mode"] == "record_only" and event["result"] == "failed"
+    assert event["job_identity_hash"] == action["action_key"]
+    assert "namespace descriptor" in event["reason"]
+    assert result.where == store.queue_root / pool.READY / (action["action_key"] + ".json")
+    assert result.where.exists()
+
+
+def test_actual_interpreter_and_submission_source_are_attested(capsys):
+    root = Path(__file__).resolve().parents[1]
+    executable = Path("/proc/self/exe").resolve(strict=True)
+    modules = (submission, sys.modules[SubmissionRequest.__module__], submission.d38_gate)
+    sources = {}
+    for module in modules:
+        path = Path(module.__file__).resolve(strict=True)
+        assert path.is_relative_to(root / "src/prismabuild")
+        sources[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    identity = {"version": list(sys.version_info), "executable": sys.executable,
+        "resolved_executable": str(executable),
+        "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "affinity": sorted(os.sched_getaffinity(0)), "sources": sources}
+    with capsys.disabled():
+        print("c14-interpreter: " + json.dumps(identity, sort_keys=True), flush=True)

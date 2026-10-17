@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections import Counter
 import json
 from pathlib import Path
 import subprocess
@@ -71,7 +72,13 @@ def main():
             assert old.keys() <= new.keys(), (name, "original test removed")
             for key in old:
                 assert old[key] == new[key], (name, key, "assertion or decorator changed")
-            preserved[name] = {"tests": len(old), "assertions": sum(len(row["assertions"]) for row in old.values())}
+            all_old = Counter(ast.dump(node, include_attributes=False) for node in ast.walk(before)
+                              if isinstance(node, ast.Assert))
+            all_new = Counter(ast.dump(node, include_attributes=False) for node in ast.walk(tree)
+                              if isinstance(node, ast.Assert))
+            assert not all_old - all_new, (name, "original assertion removed outside a test body")
+            preserved[name] = {"tests": len(old), "assertions": sum(len(row["assertions"]) for row in old.values()),
+                               "all_assertions": sum(all_old.values())}
         if name in changed or name in {
                 "src/prismabuild/submission.py", "src/prismabuild/submission_types.py",
                 "src/prismabuild/d38_gate.py", "tools/fleet/submission_frontend.py"}:
@@ -86,6 +93,7 @@ def main():
               "parsed_python_files": parsed, "preserved": preserved,
               "original_test_count": sum(row["tests"] for row in preserved.values()),
               "original_assertion_count": sum(row["assertions"] for row in preserved.values()),
+              "all_original_assertions": sum(row["all_assertions"] for row in preserved.values()),
               "inventory": inventory, "changed_paths": sorted(changed)}
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({key: value for key, value in result.items()
