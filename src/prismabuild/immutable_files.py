@@ -1,7 +1,7 @@
 """Descriptor-anchored file custody and immutable first-writer publication."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import errno
 import fnmatch
@@ -15,9 +15,23 @@ from typing import Literal
 import uuid
 
 if __package__:
-    from .digest_primitives import ActionContractError, PrismaBuildError, new_sha256
+    from .digest_primitives import (
+        ActionContractError, PrismaBuildError, new_sha256,
+        _canonical_bytes, _sorted_lf_bytes,
+    )
 else:
-    from digest_primitives import ActionContractError, PrismaBuildError, new_sha256
+    from digest_primitives import (
+        ActionContractError, PrismaBuildError, new_sha256,
+        _canonical_bytes, _sorted_lf_bytes,
+    )
+
+
+class MaterializationError(PrismaBuildError):
+    """A checkout could not be materialized from its sealed snapshot."""
+
+
+class MaterializationContractError(MaterializationError, ValueError):
+    """A record handed to the materializer does not satisfy its schema."""
 
 
 class CASTamperError(PrismaBuildError):
@@ -793,6 +807,39 @@ def prepare_atomic_replacement(
         name = f".{path.name}.{os.getpid()}.tmp"
     return AtomicReplacement(
         path, path.parent / name, temporary_style, fsync, cleanup_rename)
+
+
+def write_json_atomic(
+    path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
+    trailing_newline: bool = False, text: str = "canonical",
+    tmp: str = "pid_uuid", fsync: bool = True,
+) -> None:
+    """Publish JSON with the caller's byte, temporary-name and fsync profile."""
+    if text not in ('canonical', 'canonical_lf', 'sorted_lf'):
+        raise MaterializationContractError(
+            f"atomic record text must be canonical, canonical_lf or "
+            f"sorted_lf, not {text!r}")
+    if tmp not in ('pid_uuid', 'pid'):
+        raise MaterializationContractError(
+            f"atomic record tmp must be pid_uuid or pid, not {tmp!r}")
+    replacement = prepare_atomic_replacement(
+        path, make_parent=make_parent, temporary_style=tmp, fsync=fsync)
+    if text == 'sorted_lf':
+        data = _sorted_lf_bytes(dict(payload))
+    elif text == 'canonical_lf' or trailing_newline:
+        data = _canonical_bytes(dict(payload)) + b"\n"
+    else:
+        data = _canonical_bytes(dict(payload))
+    replacement.write(data)
+
+
+def write_bytes_atomic(
+    path: Path, data: bytes, *, make_parent: bool = True,
+) -> None:
+    """Publish exact bytes with the existing exclusive temporary and rename policy."""
+    replacement = prepare_atomic_replacement(
+        path, make_parent=make_parent, cleanup_rename=False)
+    replacement.write(data)
 
 
 def publish_exact(

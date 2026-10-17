@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from . import immutable_files
 
-from prismabuild import materialize
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -121,7 +120,7 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
     from . import pool
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
-    materialize._write_json_atomic(temporary, payload)
+    immutable_files.write_json_atomic(temporary, payload)
     try:
         os.link(temporary, path)
         return True
@@ -226,7 +225,7 @@ def elect_gang_member(queue, record: Mapping[str, object], entry: Mapping[str, o
 def mark_ready(queue, record: Mapping[str, object], entry: Mapping[str, object],
                host: str, now: float) -> None:
     from . import pool
-    materialize._write_json_atomic(
+    immutable_files.write_json_atomic(
         state_dir(queue, str(record["group"])) / f"ready-{entry['index']}.json",
         {"schema": READY_SCHEMA, "group": record["group"], "index": entry["index"],
          "action_key": entry["action_key"], "host": host, "ready_unix": float(now)})
@@ -354,7 +353,7 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
             and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
             and 0 <= now - float(stamp)):
         return now - float(stamp) >= confirm_s
-    materialize._write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
+    immutable_files.write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
                                    "member": key, "signature": signature,
                                    "first_seen_unix": float(now)})
     return False
@@ -499,7 +498,7 @@ def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
         if standing is None:
             return False
         standing["backfill_reclaiming"] = True
-        materialize._write_json_atomic(path, standing)
+        immutable_files.write_json_atomic(path, standing)
         return True
 
 
@@ -552,7 +551,7 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
         else:
             observations.append(dict(timing))
         standing["backfill_preemptions"] = observations
-        materialize._write_json_atomic(path, standing)
+        immutable_files.write_json_atomic(path, standing)
         return True
 
 

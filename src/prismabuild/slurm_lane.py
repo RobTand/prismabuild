@@ -80,7 +80,6 @@ from . import core as pb
 from . import immutable_files
 from . import posix_lock
 from . import pool, record_store
-from .materialize import _write_json_atomic
 
 SUBMISSION_SCHEMA_V1 = "prismaquant.prismabuild.slurm_lane_submission.v1"
 
@@ -453,7 +452,7 @@ def write_cache_hit(
     which happened, so the node writes it down.
     """
 
-    _write_json_atomic(Path(path), {
+    immutable_files.write_json_atomic(Path(path), {
         "schema": CACHE_HIT_SCHEMA_V1,
         "action_key": str(action_key),
         "job_id": str(job_id),
@@ -995,7 +994,7 @@ def submit(
     # name.  It is not what any job executes and nothing derives a submission
     # from it: ``sbatch`` is handed the immutable path above and the record
     # names it with its digest.  The temp name carries a UUID for the reason
-    # ``materialize._write_json_atomic`` gives: a lane directory is on the
+    # ``immutable_files.write_json_atomic`` gives: a lane directory is on the
     # shared mount and a pid is unique only within a box.
     pointer = directory / "job.sh"
     tmp = directory / f".job.sh.{os.getpid()}.{uuid.uuid4().hex}.tmp"
@@ -1162,7 +1161,7 @@ def submit(
     )
     with _naming_job(job_id):
         _publish_record(record_path, record)
-        _write_json_atomic(
+        immutable_files.write_json_atomic(
             directory / "latest.json", record, trailing_newline=True
         )
     return SubmittedJob(
