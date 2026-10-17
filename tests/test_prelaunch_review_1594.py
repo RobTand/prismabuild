@@ -3,6 +3,7 @@
 Each test drives tier_loop.residency_window through real transitions, in the
 style of test_prelaunch_tier_publish_1594.py.  The integrator runs them.
 """
+
 from prismabuild import submission as submit_core
 from pathlib import Path
 import sys
@@ -48,7 +49,7 @@ def test_a_prefix_only_plan_begins_its_group_and_publishes(tmp_path) -> None:
     assert _published(queue, movers), [
         (event.get("event"), event.get("reason")) for event in seen]
     for mover in movers:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring"
 
 
@@ -122,14 +123,14 @@ def test_a_row_published_before_its_funding_is_funded_on_a_later_cycle(
     _live(queue, plan, consumer, specs)
     unit, movers = _declared_movers(queue, consumer)
     assert unit.demand_gib == 8
-    real = pg.publish_chunk
+    real = queue.funding.bind_chunk
     calls: list[str] = []
 
     def crash(*args, **kwargs):
         calls.append("crash")
         raise OSError("crash between the row and its funding")
 
-    monkeypatch.setattr(pg, "publish_chunk", crash)
+    monkeypatch.setattr(queue.funding, "bind_chunk", crash)
     for _ in range(5):
         try:
             tier_loop.residency_window(queue, tiers=tiers)
@@ -138,13 +139,13 @@ def test_a_row_published_before_its_funding_is_funded_on_a_later_cycle(
         if calls:
             break
     assert calls, "the window never reached the funding step"
-    monkeypatch.setattr(pg, "publish_chunk", real)
+    monkeypatch.setattr(queue.funding, "bind_chunk", real)
     assert any(queue.records.item_path(pool.record_store.READY, mover).exists() for mover in movers)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
     assert _published(queue, movers)
     for mover in movers:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring", mover
 
 
@@ -248,10 +249,10 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
     assert calls, "the window never reached the funding update"
     ledger = queue.tier(TIER)
     assert len(ledger.holder_state(mover)) == 8
-    assert queue.read_funding(mover, TIER)["state"] == "reserved"
+    assert queue.funding.read_window(mover, TIER)["state"] == "reserved"
     monkeypatch.setattr(pg, "_advance_record", real)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert len(queue.tier(TIER).holder_state(mover)) == 8

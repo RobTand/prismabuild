@@ -13,6 +13,7 @@ the claim on another thread while the recovery's own transfer is in progress.
 """
 from __future__ import annotations
 
+
 from pathlib import Path
 import os
 import sys
@@ -45,7 +46,7 @@ def _recovering(tmp_path: Path):
     unit, holder = _group(queue, plan, [first, second], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [first, second])
     row = _publish(queue, plan, first)
-    published = pg.publish_chunk(queue, TIER, unit, holder, plan,
+    published = queue.funding.bind_chunk( TIER, unit, holder, plan,
                                  _leg(plan, first), float(row["published_unix"]))
     assert published.status == "published"
     queue.tier(TIER).release_unspent(first, authority=tier_holdings.Unspent.NEVER_STARTED)       # the fence leaves, the record stays
@@ -60,7 +61,7 @@ def _recovering(tmp_path: Path):
 
 
 def _recover(queue, plan, unit, holder, first, row):
-    return pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, first),
+    return queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, first),
                             float(row["published_unix"]))
 
 
@@ -76,7 +77,7 @@ def test_a_claim_after_an_interrupted_recovery_waits_for_the_fence(
     monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", interrupted)
     stopped = _recover(queue, plan, unit, holder, first, row)
     assert stopped.status == "deferred"
-    record = queue.read_funding(first, TIER)
+    record = queue.funding.read_window(first, TIER)
     assert record is not None and record["state"] == "reserved"
     got = queue.claim(tags=["dl380g10"], owner="w-gap")
     state = {"claimed": None if got is None else str(got["action_key"])[-8:],
@@ -93,7 +94,7 @@ def test_a_claim_after_an_interrupted_recovery_waits_for_the_fence(
     assert got is not None and got["action_key"] == first
     assert _free(queue) == free_mid
     assert _tokens(queue, first) == 2
-    assert queue.read_funding(first, TIER)["state"] == "consumed"
+    assert queue.funding.read_window(first, TIER)["state"] == "consumed"
 
 
 def test_a_claim_while_the_recovery_transfers_is_not_charged_twice(
@@ -145,7 +146,7 @@ def test_a_claim_is_deferred_when_the_fence_custody_cannot_be_read(
 
     monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", part_then_stop)
     assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
-    assert queue.read_funding(first, TIER)["state"] == "reserved"
+    assert queue.funding.read_window(first, TIER)["state"] == "reserved"
     assert _tokens(queue, first) == 1
     monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", real)
 
