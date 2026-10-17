@@ -210,10 +210,14 @@ def table_from_manifest(manifest: Mapping[str, object], *,
 
 
 def table_bytes(table: Mapping[str, object]) -> bytes:
-    """The committed encoding: canonical JSON in one gzip member, mtime 0."""
+    """The committed encoding: canonical JSON, gzip mtime 0 and OS 255.
+
+    Some Python versions let zlib supply its platform-dependent gzip OS byte.
+    """
 
     raw = json.dumps(table, sort_keys=True, separators=(",", ":")).encode()
-    return gzip.compress(raw, compresslevel=9, mtime=0)
+    encoded = gzip.compress(raw, compresslevel=9, mtime=0)
+    return encoded[:9] + b"\xff" + encoded[10:]
 
 
 def read_table(path: str | Path) -> dict[str, object]:
