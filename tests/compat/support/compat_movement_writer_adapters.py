@@ -68,7 +68,9 @@ def operate(request, store, load):
     source = origin / "weights"
     source.write_bytes(b"contents")
     digest = hashlib.sha256(b"contents").hexdigest()
-    manifest = {"schema": load("prismabuild.core").DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+    core = load("prismabuild.core")
+    codec = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["manifest_owner"](core, load)
+    manifest = {"schema": codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
                 "mount_prefix": str(origin), "entries": [{"path": str(source), "offset": 0, "bytes": 8, "sha256": digest}],
                 "entry_count": 1, "total_bytes": 8}
     manifest_path = store / "manifest.json"
