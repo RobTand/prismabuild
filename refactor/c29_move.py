@@ -140,6 +140,17 @@ def migrate(root: Path) -> list[str]:
         if path in {'tests/test_prewarm_receipt_recovery.py', 'tests/test_prewarm_requires_known_receipts.py'}:
             after = after.replace('repository / "tools" / "fleet" / "prewarm_loop.py"',
                                   'repository / "src" / "prismabuild" / "prewarm_loop.py"')
+        if path == 'tests/test_pbtest.py':
+            after = after.replace('    tests.mkdir(parents=True)\n    worker_path =',
+                                  '    tests.mkdir(parents=True)\n    (checkout / "pytest.ini").write_text("[pytest]\\n")\n    worker_path =')
+        if path == 'tests/test_pbtest_sealed_basetemp_1469.py':
+            after = after.replace('    tests.mkdir(parents=True, exist_ok=True)\n    (tests /',
+                                  '    tests.mkdir(parents=True, exist_ok=True)\n    (checkout / "pytest.ini").write_text("[pytest]\\n")\n    (tests /')
+            after = after.replace('    tests.mkdir(parents=True)\n    for name in',
+                                  '    tests.mkdir(parents=True)\n    (checkout / "pytest.ini").write_text("[pytest]\\n")\n    for name in')
+        if path == 'tests/test_a_nested_prefix_successors_adopted_file_survives_retirement.py':
+            after = after.replace('    po._UNFILED_REPORTS.clear()\n    yield\n    po._UNFILED_REPORTS.clear()',
+                                  '    po._UNFILED_REPORTS.clear()\n    po._TEMPLATE_BODIES.clear()\n    yield\n    po._UNFILED_REPORTS.clear()\n    po._TEMPLATE_BODIES.clear()')
         if path == 'tests/test_record_store_reader_controls.py':
             after = after.replace('    native = os.scandir\n    seen = []',
                                   '    native = os.scandir\n    native_listdir = os.listdir\n    seen = []')

@@ -235,6 +235,7 @@ def test_two_shards_have_distinct_tmpdir_children_and_output(
     checkout = tmp_path / "checkout"
     tests = checkout / "tests"
     tests.mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n")
     worker_path = tmp_path / "worker scratch;[literal]"
     worker_path.mkdir()
     for name in ("a", "b"):

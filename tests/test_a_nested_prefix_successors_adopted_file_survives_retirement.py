@@ -66,8 +66,10 @@ MOVER = "e" * 64
 @pytest.fixture(autouse=True)
 def _reports():
     po._UNFILED_REPORTS.clear()
+    po._TEMPLATE_BODIES.clear()
     yield
     po._UNFILED_REPORTS.clear()
+    po._TEMPLATE_BODIES.clear()
 
 
 def _write_only(prefix: Path, template_id: str) -> dict:
