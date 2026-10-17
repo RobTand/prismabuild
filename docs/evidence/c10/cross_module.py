@@ -50,8 +50,10 @@ def exported_shape(shape, fields, seen=frozenset()):
             name = shape["@class"]
             if name in seen:
                 return False
-            return {"@fields": exported_shape(fields.get(name, {}), fields, seen | {name})}
-        return {key: exported_shape(value, fields, seen) for key, value in shape.items()}
+            found = exported_shape(fields.get(name, {}), fields, seen | {name})
+            return {"@fields": found} if found else False
+        found = {key: exported_shape(value, fields, seen) for key, value in shape.items()}
+        return {key: value for key, value in found.items() if value}
     if isinstance(shape, tuple):
         return tuple(exported_shape(value, fields, seen) for value in shape)
     return shape

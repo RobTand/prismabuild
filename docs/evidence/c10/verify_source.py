@@ -83,14 +83,42 @@ def prerequisite_assertions(before, prerequisite):
             for key, value in mapping.items()]
 
 
+def explicit_predicates(tree, current, moves):
+    for move in moves:
+        old = ast.parse(move["original"]).body[0]
+        new = ast.parse(move["current"]).body[0]
+        functions = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                     and node.name == move["function"]]
+        targets = [node for function in functions for node in ast.walk(function)
+                   if isinstance(node, ast.Assert) and ast.dump(node) == ast.dump(old)]
+        if len(targets) != 1:
+            raise ValueError(("missing exact original predicate", move))
+        live = assertion_keys(current)
+        if live[move["function"], ast.dump(new)] != 1:
+            raise ValueError(("missing exact moved-owner predicate", move))
+        targets[0].test, targets[0].msg = new.test, new.msg
+
+
+def restored_shapes(value):
+    if isinstance(value, list):
+        return tuple(restored_shapes(v) for v in value)
+    if isinstance(value, dict):
+        return {k: restored_shapes(v) for k, v in value.items()}
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--prerequisite", help="Concrete imported owner prerequisite commit")
+    parser.add_argument("--closure", type=Path, help="Cross-module source census")
     args = parser.parse_args()
     baseline = json.loads(args.baseline.read_text())
+    closure = json.loads(args.closure.read_text()) if args.closure else {}
+    explicit = json.loads((args.root / "docs/evidence/c10/predicate_moves.json").read_text())
+    assert explicit["base"] == baseline["revision"]
     migration = runpy.run_path(str(args.root / "docs/evidence/c10/migrate_source.py"))
     paths = [path for path in baseline["files"] if path.startswith("tests/")]
     predicate_changes, declaration_changes = {}, {}
@@ -105,10 +133,13 @@ def main():
             if moves:
                 prerequisite_moves[path] = moves
         after = ast.parse((args.root / path).read_text(), filename=path)
+        explicit_predicates(before, after, [move for move in explicit["moves"] if move["path"] == path])
         removed = declarations(before) - declarations(after)
         if removed:
             declaration_changes[path] = [list(key) + [count] for key, count in removed.items()]
-        scopes, aliases = migration["caller_aliases"](before)
+        scopes, aliases = migration["caller_aliases"](
+            before, closure.get("seeds", {}).get(path),
+            restored_shapes(closure.get("external_returns", {}).get(path, {})))
         normalized = migration["CallerMove"](scopes, aliases).visit(before)
         old, new = assertion_keys(normalized), assertion_keys(after)
         original_count += old.total()
@@ -151,8 +182,19 @@ def main():
                                                      name=argument.value, dynamic=True))
             if relative == "src/prismabuild/tier_holdings.py":
                 continue
-            scopes, aliases = migration["caller_aliases"](tree)
+            scopes, aliases = migration["caller_aliases"](
+                tree, closure.get("seeds", {}).get(relative),
+                restored_shapes(closure.get("external_returns", {}).get(relative, {})))
             for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and len(node.args) > 1
+                        and isinstance(node.args[1], ast.Constant)
+                        and node.args[1].value in migration["RAW"]
+                        and migration["bound_tier"](node.args[0], aliases[scopes[node]])):
+                    name = node.func.attr if isinstance(node.func, ast.Attribute) else (
+                        node.func.id if isinstance(node.func, ast.Name) else "")
+                    if name in {"getattr", "setattr", "delattr", "hasattr"}:
+                        residual.append(dict(path=relative, line=node.lineno,
+                                             name=node.args[1].value, dynamic=True))
                 if not isinstance(node, ast.Attribute):
                     continue
                 bound = migration["bound_tier"](node.value, aliases[scopes[node]])
@@ -184,6 +226,7 @@ def main():
                   original_assertions=original_count, automatically_mapped_assertions=retained_count,
                   predicate_changes=predicate_changes, declaration_changes=declaration_changes,
                   prerequisite=args.prerequisite, prerequisite_assertion_moves=prerequisite_moves,
+                  explicit_moved_owner_predicates=explicit["moves"],
                   residual_retired_apis=residual, unknown_tier_attributes=dict(unknown),
                   parse_errors=parse_errors, commits=commits, oversized_commits=oversize)
     args.output.write_text(json.dumps(report, indent=2) + "\n")

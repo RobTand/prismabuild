@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import subprocess
 import textwrap
+import weakref
 
 BASE = "578e54d0788c0f3b138f5dcf217e980322bb7726"
 MOVED = {
@@ -56,8 +57,17 @@ def tier_call(node):
             and node.func.attr in {"tier_ledger", "tier"})
 
 
+_SPELLINGS = weakref.WeakKeyDictionary()
+
+
+def spelling(node):
+    if node not in _SPELLINGS:
+        _SPELLINGS[node] = ast.unparse(node)
+    return _SPELLINGS[node]
+
+
 def bound_tier(node, aliases):
-    return tier_call(node) or (node is not None and ast.unparse(node) in aliases)
+    return tier_call(node) or (node is not None and spelling(node) in aliases)
 
 
 def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
@@ -125,7 +135,7 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 return {"@class": node.func.id}
             if isinstance(node.func, ast.Name) and node.func.id == "type" and node.args:
                 return shape(node.args[0], enclosing)
-            external = (external_returns or {}).get(ast.unparse(node.func), False)
+            external = (external_returns or {}).get(spelling(node.func), False)
             if external:
                 return external
             if isinstance(node.func, ast.Name):
@@ -163,7 +173,7 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                     bind(target, shape(node.value, enclosing), enclosing)
             if (isinstance(node, (ast.Attribute, ast.Subscript, ast.Name, ast.Call))
                     and shape(node, enclosing) is True):
-                aliases[enclosing].add(ast.unparse(node))
+                aliases[enclosing].add(spelling(node))
             if isinstance(node, ast.Call):
                 name = (node.func.id if isinstance(node.func, ast.Name) else
                         node.func.attr if isinstance(node.func, ast.Attribute) else "")
