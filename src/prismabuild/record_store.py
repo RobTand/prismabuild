@@ -2459,8 +2459,9 @@ class RecordStore:
         return heapq.nlargest(max(0, int(limit)), entries, key=_mtime)
 
     def required_diagnostic_records_at(self, directory: Path):
-        return [(path, _diagnostic_queue_record(path))
-                for path in immutable_files.scan_required(directory) if _json_entry(path)]
+        with os.scandir(directory) as entries:
+            paths = sorted(Path(entry.path) for entry in entries if entry.name.endswith('.json'))
+        return [(path, _diagnostic_queue_record(path)) for path in paths]
 
 
     def residency_supersession_keys(self) -> frozenset[str] | None:
