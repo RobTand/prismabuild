@@ -92,7 +92,7 @@ def _planner_row(fleet: Fleet, seed: str, *,
 
     files = [fleet.file(f"{seed}.safetensors", 4 * MIB)]
     key = fleet.action(seed, files, progress_phases=progress_phases)
-    fleet.queue.mint_tier_capacity(TIER, {"stage_gib": 16})
+    fleet.queue.tier(TIER).mint({'stage_gib': 16})
     plan = _plan(fleet.queue, key)
     residency_plan.freeze(fleet.queue, plan)
     item = json.loads(fleet.queue.records.item_path(pool.record_store.READY, key).read_text())

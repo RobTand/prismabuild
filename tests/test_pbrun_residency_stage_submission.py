@@ -485,7 +485,7 @@ def _reaped_window_with_cancelled_children(
     prepared = _prepare(tmp_path, monkeypatch)
     queue = prepared["queue"]
     _announce_ram_tier(queue, tmp_path / "ram")
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     assert pbrun.main() == 0
     consumer_key = _detach_key(capsys)
     stale = residency_plan.read(queue, consumer_key)
@@ -599,7 +599,7 @@ def test_a_resubmission_refuses_an_unreadable_child_cancellation(
 
     prepared = _prepare(tmp_path, monkeypatch)
     queue = prepared["queue"]
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     assert pbrun.main() == 0
     consumer_key = _detach_key(capsys)
     stale = residency_plan.read(queue, consumer_key)
@@ -646,7 +646,7 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
 
     # What the loop's own cycle would have done for this tier: capacity minted
     # so a token can be held, and the stage root registered (#628).
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage.mkdir(parents=True, exist_ok=True)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
 
@@ -671,8 +671,7 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
             f"/mnt/shared/part-{index}", 0)] = {
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": "a" * 64}
-    assert queue.tier_ledger(TIER).acquire(
-        mover, {"stage_gib": (end - start) // GIB})
+    assert queue.tier(TIER).take(mover, {'stage_gib': (end - start) // GIB})
     residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
@@ -709,7 +708,7 @@ def _tier_cycle(queue: pool.PoolQueue, stage: Path) -> None:
     the submitter to have queued one.
     """
 
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage.mkdir(parents=True, exist_ok=True)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     # The loop narrates its cycle on stdout; ``_detach_key`` reads stdout for
@@ -736,7 +735,7 @@ def test_a_cold_lead_is_published_by_the_loop_on_its_next_cycle(
 
     prepared = _prepare(tmp_path, monkeypatch)
     queue = prepared["queue"]
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     (tmp_path / "stage").mkdir(exist_ok=True)
     stage_release.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage")
@@ -779,9 +778,9 @@ def test_a_warm_lead_is_adopted_by_the_loop_and_never_copied(
 
     _tier_cycle(queue, tmp_path / "stage")
 
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(lead) == {"stage_gib": PHASE_BYTES // GIB}
-    assert ledger.holder_tokens(donor) == {}, (
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(lead) == {'stage_gib': PHASE_BYTES // GIB}
+    assert ledger.holdings(donor) == {}, (
         "the donor still holds tokens for bytes the lead now owns")
     receipt = queue.move_record(lead)
     assert isinstance(receipt, dict)
@@ -862,8 +861,7 @@ def test_a_donor_the_reader_could_not_use_is_declined_and_the_copy_runs(
         f"{shape} was adopted: the reader could not prove that range")
     assert queue.records.item_path(pool.record_store.READY, lead).exists(), (
         f"{shape} must fall back to the ordinary copy, not strand the lead")
-    assert queue.tier_ledger(TIER).holder_tokens(donor) == {
-        "stage_gib": PHASE_BYTES // GIB}, "a declined donor lost its tokens"
+    assert queue.tier(TIER).holdings(donor) == {'stage_gib': PHASE_BYTES // GIB}, "a declined donor lost its tokens"
 
 
 def test_a_valid_donor_is_still_taken_when_an_unusable_one_sorts_first(

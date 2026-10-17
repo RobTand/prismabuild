@@ -66,8 +66,8 @@ def starved_queue(tmp_path, monkeypatch):
                         "probe_offer_mb_s": 324,
                         "probe_basis": {"basis": "oldest-ready-sealed-demand",
                                         "demand_mb_s": 74}}})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {"stage_gib": 2})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    assert queue.tier(STAGE_TIER).take(MOVER, {'stage_gib': 2})
     # Claim the mover by filing, not through claim(): these tests read
     # queue files, and admission is not what they exercise.
     queue.publish(**_row(MOVER2, {STAGE_KIND: 1}, queue,
