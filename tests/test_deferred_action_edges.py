@@ -747,20 +747,14 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", fx.REPO)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
 
-    real_run = publish_runtime.subprocess.run
-
     def publish(commit: str) -> Path:
-        # ``subprocess`` is one module: the fake answers publication's Git
-        # questions only while it publishes, never pbrun's.
-        monkeypatch.setattr(publish_runtime.subprocess, "run",
-                            _fake_git_and_probe(commit))
-        monkeypatch.setattr(sys, "argv", [
-            "publish_runtime.py", "--rollout", "rolling", "--no-canary",
-            "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
-        try:
+        with monkeypatch.context() as publication:
+            publication.setattr(publish_runtime.subprocess, "run",
+                                _fake_git_and_probe(commit))
+            publication.setattr(sys, "argv", [
+                "publish_runtime.py", "--rollout", "rolling", "--no-canary",
+                "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
             assert publish_runtime.main() == 0
-        finally:
-            monkeypatch.setattr(publish_runtime.subprocess, "run", real_run)
         return mirror.resolve()
 
     first = publish("a" * 40)
