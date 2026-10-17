@@ -22,6 +22,7 @@ ordinary paced command); the claim is `PoolQueue.claim` directly rather than a
 fleet worker loop.
 """
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -386,7 +387,7 @@ def test_the_existing_api_cannot_restage_a_retired_batch(tmp_path: Path) -> None
     assert again.get("ok") is True, again
     assert again.get("duplicate") is True
     assert str(again["mover_key"]) == mover0
-    record = world.q.read_output_funding(mover0, TIER)
+    record = world.q.funding.read_output(mover0, TIER)
     assert record is not None and str(record["state"]) == "consumed"
     assert (isinstance(mover_row := RecordStore(world.q.root).mover(mover0), Present)
             and mover_row.value.state == pool.record_store.DONE)
@@ -819,7 +820,7 @@ def _assert_funded_once(world: _World, mover: str) -> None:
     assert len(mats) == 1, mats
     assert str(mats[0]["mover_key"]) == mover
     assert int(mats[0]["generation"]) == 1
-    record = world.q.read_output_funding(mover, TIER)
+    record = world.q.funding.read_output(mover, TIER)
     assert record is not None and str(record["state"]) == "transferring"
     assert len(record["tokens"]) == 1
     assert world.ledger.holdings(mover).get(KIND, 0) == 1
@@ -858,8 +859,8 @@ def test_concurrent_ensures_collapse_onto_one_epoch(tmp_path: Path, monkeypatch:
     # is a different safe refusal from the transition race exercised here.
     snapshots = threading.Barrier(2, timeout=10)
     local = threading.local()
-    native_stage = world.q.stage_output_intent
-    native_census = world.q.output_census_for_owner
+    native_stage = world.q.funding.stage_output
+    native_census = world.q.funding.output_census
 
     def stage(**kwargs):
         local.in_stage = True
@@ -876,8 +877,8 @@ def test_concurrent_ensures_collapse_onto_one_epoch(tmp_path: Path, monkeypatch:
             snapshots.wait()
         return answer
 
-    monkeypatch.setattr(world.q, "stage_output_intent", stage)
-    monkeypatch.setattr(world.q, "output_census_for_owner", census)
+    monkeypatch.setattr(world.q.funding, "stage_output", stage)
+    monkeypatch.setattr(world.q.funding, "output_census", census)
     results: list[dict] = []
     lock = threading.Lock()
 
@@ -937,11 +938,11 @@ def test_a_crash_at_every_prefix_resumes_without_double_funding(
     # foreign reader identity -- a test artefact, not a lane defect.
     with pytest.MonkeyPatch.context() as crash:
         if prefix_name == "before-pool-intent":
-            crash.setattr(world.q, "stage_output_intent", _boom)
+            crash.setattr(world.q.funding, "stage_output", _boom)
         elif prefix_name == "before-publish":
             crash.setattr(po, "_publish_output_mover_row", _boom)
         elif prefix_name == "after-ready":
-            crash.setattr(world.q, "fund_output_batch", _boom)
+            crash.setattr(world.q.funding, "fund_output", _boom)
         elif prefix_name == "after-fund":
             crash.setattr(po, "_reconcile_materialization_funding", _boom)
         else:

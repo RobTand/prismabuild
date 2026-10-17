@@ -37,6 +37,8 @@ directly rather than a fleet worker loop; `safe_release_instance` is only
 shown retaining (its full path needs the accepted reader_lease SDK).
 """
 from __future__ import annotations
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -367,7 +369,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     assert claimed["action_key"] == mover
     entry = (claimed.get("tier_funding") or {}).get(TIER)
     assert isinstance(entry, dict) and entry.get("variant") == "output"
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
 
     # The REAL mover: the sealed request's own argv executes; the fleet
@@ -428,8 +430,8 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
         results.append(res)
 
     # Disjoint credit names: the second batch never reused the first's.
-    first = q.read_output_funding(str(results[0]["mover_key"]), TIER)
-    second = q.read_output_funding(str(results[1]["mover_key"]), TIER)
+    first = q.funding.read_output(str(results[0]["mover_key"]), TIER)
+    second = q.funding.read_output(str(results[1]["mover_key"]), TIER)
     assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
 
     # Reclaim after producer-side disposal, then THE THIRD SEQUENTIAL
@@ -523,7 +525,7 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
     cas_root = tmp_path / "cas-restart"
     pb.PrismaBuildCAS(cas_root).publish_action_request(action)
     mover = str(action["action_key"])
-    assert q.stage_output_intent(
+    assert q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)["ok"] is True
     q.publish(action_key=mover, cas_root=str(cas_root),
@@ -532,7 +534,7 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
               residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total})
-    assert q.fund_output_batch(
+    assert q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)["ok"] is True
     assert ledger.holdings(mover).get(KIND, 0) == 1
@@ -570,8 +572,8 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     generation = str(res["generation"])
     # Mover READY, never claimed, no receipt/lease/terminal: every legacy
     # release precondition holds -- only the filed-commit guard protects.
-    assert q.release_output_funding(mover, TIER, generation=generation) is False
-    rec = q.read_output_funding(mover, TIER)
+    assert q.funding.release_output(mover, TIER, generation=generation) is False
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     # The claim still works after the refused release.
     claimed = _claim_mover(q, "w-d1")
@@ -587,7 +589,7 @@ def test_abort_guards_the_precommit_authority(tmp_path: Path) -> None:
     descs = _descriptors(tmp_path, template, inst, "p1", b"e" * 128)
     _prewrite(q, inst, template, "b1", TIER, descs)
     mover = _hexkey("d3-mover")
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -598,7 +600,7 @@ def test_abort_guards_the_precommit_authority(tmp_path: Path) -> None:
     assert refused.get("ok") is False
     assert refused.get("refusal") == "prepaid-intent-exists-retain", refused
     # Retire the never-started intent first, then abort proceeds.
-    assert q.release_output_funding(mover, TIER,
+    assert q.funding.release_output(mover, TIER,
                                     generation=generation) is True
     # Origin files now decide: present files retain (producer disposal).
     again = bl.BatchLedger.abort(q, inst, template, batch_id="b1")
@@ -619,12 +621,12 @@ def test_staged_intents_never_share_credit_names(tmp_path: Path) -> None:
     descs2 = _descriptors(tmp_path, template, inst, "p2", b"f" * 64)
     _prewrite(q, inst, template, "b1", TIER, descs1)
     _prewrite(q, inst, template, "b2", TIER, descs2)
-    first = q.stage_output_intent(
+    first = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m1"),
         instance=inst, template=template, batch_id="b1",
         descriptors=descs1)
     assert first.get("ok") is True, first
-    second = q.stage_output_intent(
+    second = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m2"),
         instance=inst, template=template, batch_id="b2",
         descriptors=descs2)
@@ -634,7 +636,7 @@ def test_staged_intents_never_share_credit_names(tmp_path: Path) -> None:
     # never a wedged third intent over an already-promised credit.
     descs3 = _descriptors(tmp_path, template, inst, "p3x", b"g" * 32)
     _prewrite(q, inst, template, "b3", TIER, descs3)
-    third = q.stage_output_intent(
+    third = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m3"),
         instance=inst, template=template, batch_id="b3", descriptors=descs3)
     assert third.get("ok") is False
@@ -728,7 +730,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
             squatted += free
         claimed = _claim_mover(q, f"w-null-{tag}")
         assert claimed["action_key"] == mover
-        funding = q.read_output_funding(mover, TIER)
+        funding = q.funding.read_output(mover, TIER)
         # The funded claim consumed the prepaid record (the mover's copy
         # runs after consumption; the fence is already fused).
         assert funding is not None and funding["state"] == "consumed"
@@ -751,8 +753,8 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         results.append(res)
 
     # Disjoint prepaid names across the two batches.
-    first = q.read_output_funding(str(results[0]["mover_key"]), TIER)
-    second = q.read_output_funding(str(results[1]["mover_key"]), TIER)
+    first = q.funding.read_output(str(results[0]["mover_key"]), TIER)
+    second = q.funding.read_output(str(results[1]["mover_key"]), TIER)
     assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
 
     # Reclaim after producer-side disposal; the window returns.
@@ -877,7 +879,7 @@ def test_refill_respects_consumed_unretired_holdings(tmp_path: Path) -> None:
     claimed = _claim_mover(q, "w-g1")
     assert claimed["action_key"] == mover
     # consumed, mover's fence still live, batch not retired.
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     mover_live = ledger.holdings(mover).get(KIND, 0)
     assert mover_live == 1
@@ -1117,7 +1119,7 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     assert _staged(stage_root, "*.bin") == []
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 3, "holders": {owner: 1}}
-    funding = q.read_output_funding(mover, TIER)
+    funding = q.funding.read_output(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
     # The row is terminal FAILED -- and cannot be claimed.
@@ -1153,7 +1155,7 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
         command_extra=["--unpaced"])
     assert again.get("ok") is True and again.get("duplicate") is True, again
     assert str(again["mover_key"]) == mover
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
     assert ledger.holdings(mover).get(KIND, 0) == 0
     assert q.claim(owner="probe-b", tags=[_tier_host(q)]) is None
 
@@ -1364,7 +1366,7 @@ def test_a_claimed_mover_holding_nothing_is_never_told_to_retire(
     assert _claim_mover(q, "w-live")["action_key"] == mover
     # The funding record is spent the moment the claim counts it, which is
     # exactly when the row is most alive.
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
     # Model the release-by-mover-key an egress or reaper performs: the row
     # is untouched and still claimed, only its holdings went.
     tier_holdings.egress_all(q, mover)
@@ -1408,8 +1410,8 @@ def test_a_ready_mover_with_an_unreadable_funding_record_stays_unknown(
     mover = str(res["mover_key"])
     # The row stays READY; only the filed intent becomes unreadable.
     q.records.funding_output_path(mover, TIER).write_text("{not json")
-    assert q.output_funding_file_state(mover, TIER)[1] == "corrupt"
-    assert q.read_output_funding(mover, TIER) is None
+    assert q.funding.output_evidence(mover, TIER)[1] == "corrupt"
+    assert q.funding.read_output(mover, TIER) is None
 
     events = po.recover_batches(q, inst, template)
     unknown = [event for event in events
@@ -1613,7 +1615,7 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     q.finish(mover, status="failed")
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
     # Nothing was staged, so the reservation came back; the aggregate
     # ledger is where that is read, not the mover's own holdings.
     assert _staged(stage_root, "*.bin") == []
@@ -1630,7 +1632,7 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
         retry_policy={"max_attempts": 1, "retry_safe": True})
     assert again.get("ok") is True and again.get("duplicate") is True, again
     assert str(again["mover_key"]) == mover
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
     assert q.claim(owner="probe-exhausted", tags=[_tier_host(q)]) is None
@@ -1981,7 +1983,7 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "failed")
     assert not q.records.item_path(pool.record_store.READY, mover).exists()
-    funding = q.read_output_funding(mover, TIER)
+    funding = q.funding.read_output(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
     # The legacy READY row a pre-#848 ladder left behind, rebuilt from the
