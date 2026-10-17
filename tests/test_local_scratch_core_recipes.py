@@ -198,7 +198,7 @@ def _refreeze_changed_private_core(fleet, base):
         "--cwd", str(fleet.work), "--transport", "pool", "--no-default-env", "--tag", "gb10",
         "--cpus", "1", "--demand", "mem_gb=4", "--timeout-s", "30", *extra,
         "--", *base["params"]["command"]])
-    template = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
+    template = submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
     return submit_core.seal(template)
 
 

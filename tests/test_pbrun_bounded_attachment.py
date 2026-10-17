@@ -32,7 +32,7 @@ import contextlib, io, json, os, sys
 from pathlib import Path
 sys.path[:0] = [{str(ROOT / 'tests')!r}, {str(ROOT / 'tools' / 'fleet')!r}, {str(ROOT / 'src')!r}]
 import pytest, pbrun
-from prismabuild import d38_gate
+from prismabuild import d38_gate, submission
 d38_gate.ENFORCE = False  # this test is about the attachment read, not D38
 from test_pbrun_detach import _checkout, _queue, _run_pbrun
 root = Path({str(tmp_path)!r})
@@ -56,8 +56,8 @@ def observed(path, *args, **kwargs):
 Path.read_text = observed
 def no_publish(*args, **kwargs):
     raise AssertionError("unavailable attachment must not publish")
-pbrun.publish_or_refuse = no_publish
-pbrun.ATTACHMENT_READ_TIMEOUT_S = 0.05
+submission.publish_or_refuse = no_publish
+submission.ATTACHMENT_READ_TIMEOUT_S = 0.05
 rc = _run_pbrun(root, patch, work, "--detach", "--transport", "pool")
 assert fifo.is_fifo()
 assert sorted(p.name for p in fifo.parent.iterdir()) == [fifo.name]

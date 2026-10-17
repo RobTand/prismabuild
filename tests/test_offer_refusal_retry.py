@@ -172,7 +172,7 @@ def test_a_retained_offer_reader_is_not_retryable(tmp_path, monkeypatch):
     try:
         with pytest.raises(submit_core.SubmissionRefused, match="retained reader") as caught:
             submit_core.bounded_offer_snapshot(queue)
-        assert type(caught.value) is SystemExit
+        assert type(caught.value) is submit_core.SubmissionRefused
     finally:
         for pid in children:
             try:
