@@ -32,6 +32,8 @@ def sha(raw):
 
 
 def decode_wire(kind, raw):
+    if kind.encoding == "move-pricing-line":
+        return json.loads(raw.split(b"\t", 2)[2])
     if kind.encoding not in ("json", "gzip-json"):
         raise ValueError(f"unqualified record encoding: {kind.encoding}")
     return json.loads(gzip.decompress(raw) if kind.encoding == "gzip-json" else raw)
@@ -39,6 +41,10 @@ def decode_wire(kind, raw):
 
 def probe_wire(kind, body):
     raw = (json.dumps(body, sort_keys=True) + "\n").encode()
+    if kind.encoding == "move-pricing-line":
+        from prismabuild.pool import _move_pricing_line
+        framing = _move_pricing_line("a" * 64 + ".json", {}).split(b"\t", 2)[:2]
+        return b"\t".join([*framing, raw])
     return gzip.compress(raw, mtime=0) if kind.encoding == "gzip-json" else raw
 
 

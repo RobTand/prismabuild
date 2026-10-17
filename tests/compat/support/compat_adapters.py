@@ -71,6 +71,8 @@ def fixture(family, variant, module):
 
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
+    if family in ("host-spool-offer", "q-census-report", "q-pricing-log"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_diagnostic_state_adapters.py")))["operate"](request, store, load)
     if family == "residency-block" and variant.endswith("writer"):
         return runpy.run_path(str(Path(__file__).with_name("compat_residency_writer_adapters.py")))["operate"](request, store, load)
     if family in ("fragment", "move", "landing") and variant.endswith("writer"):

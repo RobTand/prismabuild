@@ -35,6 +35,19 @@ class RecordKind:
 
 
 KINDS = (
+    RecordKind("host-spool-offer", None, "host-private <box>.spool-offer.json", "additive",
+               "prismabuild.local_scratch:read_spool_offer", ("prismabuild.local_scratch:write_spool_offer",),
+               ("zero", "measured", "replay"), ("a missing or invalid counter means unknown, never zero",),
+               negative_field="spool_gb", stable_paths=True),
+    RecordKind("q-census-report", "prismabuild.ledger_census_unreadable.v1", "private ledger/census-unreadable.json", "additive",
+               "prismabuild.pool:ResourceLedger.report_census", ("prismabuild.pool:ResourceLedger.report_census",),
+               ("first", "repeat"), ("durable diagnostic counter; admission uses the actual census, not this report",),
+               negative_field="cycles", stable_paths=True),
+    RecordKind("q-pricing-log", None, "JSON body in movers-pricing/receipts.jsonl tagged rows", "additive",
+               "prismabuild.pool:PoolQueue.move_records", ("prismabuild.pool:PoolQueue.record_move", "prismabuild.pool:PoolQueue.move_records"),
+               ("writer", "read-repair"), ("unknown or torn rows fall back to the original receipt; captured record is one exact complete row",),
+               negative_field=None, encoding="move-pricing-line",
+               variant_writers=(("writer", "prismabuild.pool:PoolQueue.record_move"), ("read-repair", "prismabuild.pool:PoolQueue.move_records"))),
     RecordKind("out-ledger", None, "private produced-output instance/commitments.json envelope", "additive",
                "prismabuild.produced_output:_read_commitments", ("prismabuild.produced_output:_write_commitments",),
                ("staged", "origin", "admission", "empty", "preserved"),
