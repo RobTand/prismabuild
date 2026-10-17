@@ -424,7 +424,8 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
         time.sleep(4.0)
         file_id = reader_lease.stat_identity(str(staged))
         assert file_id is not None
-        residency_map.write_fragment(residency, {
+        staged_path.publish_vouch(
+            residency, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER_A,
             "mover_action_key": MOVER_A,
@@ -432,14 +433,9 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
             "stage_root": str(tmp_path / "stage"),
             "manifest_sha256": manifest_sha,
             "entries": saved_entries,
-        })
-        reader_lease.write_material(
-            residency, consumer_action_key=CONSUMER_A,
-            mover_action_key=MOVER_A, tier_id=STAGE_TIER,
-            stage_root=str(tmp_path / "stage"),
-            manifest_sha256=manifest_sha,
+        },
             generation=reader_lease.mint_generation(),
-            entries={key: {
+            material_entries={key: {
                 "stage_path": str(staged), "bytes": SIZE,
                 "sha256": digest, "file_id": file_id}})
 

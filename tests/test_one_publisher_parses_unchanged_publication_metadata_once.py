@@ -212,8 +212,12 @@ def forest(tmp_path, monkeypatch):
             manifest_sha256=MANIFEST, generation=reader_lease.mint_generation(),
             entries=entries)
 
-    write_fragment(CONSUMER, MOVER, fragment_entries)
-    write_material(CONSUMER, MOVER, material_entries)
+    staged_path.publish_vouch(residency_root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
+        "tier_id": TIER, "stage_root": str(stage_root),
+        "manifest_sha256": MANIFEST, "entries": fragment_entries},
+        generation=reader_lease.mint_generation(), material_entries=material_entries)
 
     # Consumers that name nothing this mover publishes: every lookup pays for
     # them today, which is most of the live 334.6 MB.

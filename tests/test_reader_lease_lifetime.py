@@ -58,7 +58,7 @@ def _fragment(root: Path, stage: Path, consumer: str, mover: str,
 def _material(root: Path, stage: Path, consumer: str, mover: str,
               source: str, staged: Path, size: int,
               digest: str = "b" * 64) -> str:
-    """A publish event: fragment already filed, sidecar dates it. Returns gen."""
+    """Date a deliberately separate fragment input in partial-state tests. Returns gen."""
 
     generation = reader_lease.mint_generation()
     identity = reader_lease.stat_identity(str(staged))
@@ -76,9 +76,19 @@ def _material(root: Path, stage: Path, consumer: str, mover: str,
 def _publish(root: Path, stage: Path, consumer: str, mover: str,
              source: str, staged: Path, size: int,
              digest: str = "b" * 64) -> str:
-    _fragment(root, stage, consumer, mover, source, staged, size, digest)
-    return _material(root, stage, consumer, mover, source, staged, size,
-                     digest)
+    generation = reader_lease.mint_generation()
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    key = residency_map.residency_map_key(source, 0)
+    entry = {"stage_path": str(staged), "bytes": size,
+             "sha256": digest, "offset": 0}
+    staged_path.publish_vouch(root, {
+        "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
+        "consumer_action_key": consumer, "mover_action_key": mover,
+        "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "a" * 64,
+        "entries": {key: entry}}, generation=generation,
+        material_entries={key: {**entry, "file_id": identity}})
+    return generation
 
 
 def _acquire(queue, mover: str, token: str,
@@ -350,21 +360,19 @@ def test_cover_proves_full_window_across_movers(fleet) -> None:
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/pkg/shard.bin", first, 1024, "b" * 64)
     # Second range of the same pool file lives under its staged name.
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(second))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "a" * 64,
         "entries": {"1048576:/mnt/shared/pkg/big.bin": {
             "stage_path": str(second), "bytes": 1024,
-            "sha256": "c" * 64, "offset": 1048576}}})
-    identity = reader_lease.stat_identity(str(second))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+            "sha256": "c" * 64, "offset": 1048576}}},
         generation=reader_lease.mint_generation(),
-        entries={"1048576:/mnt/shared/pkg/big.bin": {
+        material_entries={"1048576:/mnt/shared/pkg/big.bin": {
             "stage_path": str(second), "bytes": 1024, "sha256": "c" * 64,
             "file_id": identity}})
 
@@ -907,7 +915,10 @@ def test_open_revalidates_ram_epoch(fleet) -> None:
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x16" * 4096)
     root = queue.root / pool.record_store.RESIDENCY
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": ram_tier, "stage_root": str(stage),
@@ -915,19 +926,12 @@ def test_open_revalidates_ram_epoch(fleet) -> None:
         "entries": {residency_map.residency_map_key(
             "/mnt/shared/model/p.safetensors", 0): {
                 "stage_path": str(staged), "bytes": 4096,
-                "sha256": "b" * 64, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=ram_tier, stage_root=str(stage),
-        manifest_sha256="a" * 64,
+                "sha256": "b" * 64, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={residency_map.residency_map_key(
+        material_entries={residency_map.residency_map_key(
             "/mnt/shared/model/p.safetensors", 0): {
                 "stage_path": str(staged), "bytes": 4096,
-                "sha256": "b" * 64, "file_id": identity}},
-        epoch="epoch-1")
+                "sha256": "b" * 64, "file_id": identity}})
     tiers = queue.root / "tiers"
     tiers.mkdir(parents=True, exist_ok=True)
     (tiers / f"{ram_tier}.json").write_text(json.dumps({"epoch": "epoch-1"}))
@@ -1402,21 +1406,19 @@ def test_resolve_window_covers_from_published_material(fleet) -> None:
     root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/pkg/shard.bin", first, 1024, "b" * 64)
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(second))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "a" * 64,
         "entries": {"1048576:/mnt/shared/pkg/big.bin": {
             "stage_path": str(second), "bytes": 1024,
-            "sha256": "c" * 64, "offset": 1048576}}})
-    identity = reader_lease.stat_identity(str(second))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+            "sha256": "c" * 64, "offset": 1048576}}},
         generation=reader_lease.mint_generation(),
-        entries={"1048576:/mnt/shared/pkg/big.bin": {
+        material_entries={"1048576:/mnt/shared/pkg/big.bin": {
             "stage_path": str(second), "bytes": 1024, "sha256": "c" * 64,
             "file_id": identity}})
     resolved = reader_lease.resolve_window_covers(
@@ -1468,7 +1470,9 @@ def test_distinct_same_shape_files_never_share_a_pin(fleet) -> None:
     root = queue.root / pool.record_store.RESIDENCY
     key_a = residency_map.residency_map_key("/mnt/shared/model/a.bin", 0)
     key_b = residency_map.residency_map_key("/mnt/shared/model/b.bin", 0)
-    residency_map.write_fragment(root, {
+    generation = reader_lease.mint_generation()
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
@@ -1478,13 +1482,9 @@ def test_distinct_same_shape_files_never_share_a_pin(fleet) -> None:
                     "sha256": "b" * 64, "offset": 0},
             key_b: {"stage_path": str(second), "bytes": 4096,
                     "sha256": "c" * 64, "offset": 0},
-        }})
-    generation = reader_lease.mint_generation()
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+        }},
         generation=generation,
-        entries={
+        material_entries={
             key_a: {"stage_path": str(first), "bytes": 4096,
                     "sha256": "b" * 64,
                     "file_id": reader_lease.stat_identity(str(first))},
@@ -1578,22 +1578,19 @@ def test_covers_for_keys_both_tiers_minimal(fleet) -> None:
     ram_key = residency_map.residency_map_key("/mnt/shared/r.bin", 0)
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/s.bin",
              stage_file, 1024, "b" * 64)
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(ram_file))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
         "tier_id": ram_tier, "stage_root": str(stage),
         "manifest_sha256": "a" * 64, "epoch": "epoch-1",
         "entries": {ram_key: {"stage_path": str(ram_file), "bytes": 1024,
-                              "sha256": "c" * 64, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(ram_file))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
-        tier_id=ram_tier, stage_root=str(stage), manifest_sha256="a" * 64,
+                              "sha256": "c" * 64, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={ram_key: {"stage_path": str(ram_file), "bytes": 1024,
-                           "sha256": "c" * 64, "file_id": identity}},
-        epoch="epoch-1")
+        material_entries={ram_key: {"stage_path": str(ram_file), "bytes": 1024,
+                           "sha256": "c" * 64, "file_id": identity}})
 
     stage_only = reader_lease.covers_for_keys(
         root, CONSUMER, [stage_key], tier_id=TIER,
@@ -1789,20 +1786,18 @@ def test_contradictory_covers_refuse(fleet) -> None:
              staged, 512, "b" * 64)
     other = stage / "model" / "cc2.bin"
     other.write_bytes(b"\x62" * 1024)
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(other))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER2,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "a" * 64,
         "entries": {key: {"stage_path": str(other), "bytes": 1024,
-                          "sha256": "c" * 64, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(other))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER2,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+                          "sha256": "c" * 64, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={key: {"stage_path": str(other), "bytes": 1024,
+        material_entries={key: {"stage_path": str(other), "bytes": 1024,
                        "sha256": "c" * 64, "file_id": identity}})
     refused = reader_lease.covers_for_keys(
         root, CONSUMER, [key], tier_id=TIER, manifest_sha256="a" * 64,
