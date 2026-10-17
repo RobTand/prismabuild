@@ -12,6 +12,7 @@ from prismabuild.compatibility_window import WindowError, client_protocol, requi
 from record_compat_contract import (HISTORY, ROOT, RecordContract, decoded, evidence, generations,
                                     pytest_generate_tests, runtime_observer, writer_sources)
 from record_compat import accepted, archival_runtime, invoke, write
+import record_compat
 
 
 pytestmark = pytest.mark.pbtest_capability("archival-replay")
@@ -54,14 +55,27 @@ def test_archival_executable_identity_mismatch_stops_before_the_writer(generatio
     assert "result" not in observed and not store.exists()
 
 
-@pytest.mark.parametrize("operation", ["current-writer", "historical-reader"])
+def test_malformed_archival_stdout_refuses_a_complete_zero_exit_child(generations, tmp_path, monkeypatch):
+    case = "shape-table/unhashed"
+    generation, old, manifest = historical_shape(generations, case)
+    monkeypatch.setattr(record_compat, "_ARCHIVAL_BOOTSTRAP",
+                        'print("compat-archival-runtime: {}", flush=True)\n' + record_compat._ARCHIVAL_BOOTSTRAP)
+    observed = invoke(old, case, tmp_path / "writer", manifest=manifest, archival_runtime=archival_runtime(),
+                      runtime_observe=runtime_observer("archival-malformed-stdout-control", generation, case))
+    assert observed["returncode"] == 2 and observed["process_returncode"] == 0
+    assert "exactly one leading archival runtime record" in observed["archival_runtime"]["error"]
+    assert observed["stdout"].count("compat-archival-runtime: ") == 2
+    assert "result" not in observed
+
+
+@pytest.mark.parametrize("operation", ["current-writer", "manifested-current-writer", "historical-reader"])
 def test_archival_runtime_cannot_replace_the_gate_writer_or_reader(operation, generations, tmp_path):
     case = "shape-table/unhashed"
     generation, old, manifest = historical_shape(generations, case)
     raw = decoded(HISTORY[generation, case]) if operation == "historical-reader" else None
     with pytest.raises(ValueError, match="only valid for a manifested historical write"):
         invoke(old if raw is not None else ROOT, case, tmp_path / "store", raw=raw,
-               manifest=manifest if raw is not None else None, archival_runtime=archival_runtime())
+               manifest=manifest if operation != "current-writer" else None, archival_runtime=archival_runtime())
 
 
 @pytest.mark.parametrize("variant", ["unhashed", "hashed"])

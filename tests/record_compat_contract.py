@@ -81,11 +81,14 @@ RUNTIME_EVIDENCE = None
 class OperationRuntimeEvidence:
     def __init__(self):
         self.records = []
+        self.outcomes = {}
 
     def observe(self, operation, generation, case, record, *, raw=None):
         fields = ("returncode", "process_returncode", "isolated", "no_site", "python", "machine", "affinity",
                   "interpreter", "archival_runtime", "compiled_source_code_verified", "catalogued_entry_verified",
-                  "catalogued_operation", "imports", "calls", "executing_code_sha256", "driver_sha256",
+                  "catalogued_operation", "consumer_boundary", "request", "imports", "stdlib_imports", "calls",
+                  "executed_lines", "executing_code_sha256", "wire_identity_verified",
+                  "caller_input_constructor_verified", "driver_sha256",
                   "selected_adapter_sha256", "attestation_error", "entry_error", "error", "stdout", "stderr")
         observed = {key: record[key] for key in fields if key in record}
         if raw is None and isinstance(record.get("result"), dict) and "raw" in record["result"]:
@@ -97,8 +100,14 @@ class OperationRuntimeEvidence:
                         wire_sha256=hashlib.sha256(raw).hexdigest() if raw is not None else None)
         self.records.append(observed)
 
+    def pytest_runtest_logreport(self, report):
+        self.outcomes[report.nodeid, report.when] = report.outcome
+
     def pytest_terminal_summary(self, terminalreporter):
         for record in self.records:
+            native = record["native"]
+            record["native_outcome"] = (self.outcomes.get((native[:-7], "call"), "unavailable")
+                                        if native and native.endswith(" (call)") else "unavailable")
             raw = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
             encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode()
             terminalreporter.write_line("compat-operation-runtime-proof: " + encoded)
@@ -176,26 +185,31 @@ class RecordContract:
     def test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs(self, case, generations, writer_sources, tmp_path):
         label = case.replace("/", "-")
         current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"),
-                        observe=WRITER_EVIDENCE.observe)
+                        observe=WRITER_EVIDENCE.observe,
+                        runtime_observe=runtime_observer("current-writer", None, case))
         assert current == decoded(GOLDENS[case]), "current writer changed golden bytes"
         kind = next(kind for kind in KINDS if kind.name == case.split("/")[0])
         readers = {reference.split(":")[1].rsplit(".", 1)[-1].lstrip("_")
                    for reference in (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers}
         for generation, old, manifest in generations:
             if not has_historical_participant(case, generation, old, manifest):
-                accepted(invoke(ROOT, case, tmp_path / generation / "current-input", raw=current))
+                accepted(invoke(ROOT, case, tmp_path / generation / "current-input", raw=current,
+                                runtime_observe=runtime_observer("current-input-reader", generation, case, raw=current)))
                 continue
             historical = HISTORY[generation, case]
             assert historical["receipt_sha256"] == json.loads(manifest.read_bytes())["receipt_sha256"]
             writer_root, writer_manifest, provenance = historical_writer(kind, old, manifest, writer_sources, case=case)
             assert historical.get("writer_source") == provenance
             prior = write(writer_root, case, tmp_path / generation / "old-writer", manifest=writer_manifest,
-                          evidence=evidence(generation + "/" + label + "-old-writer.json"))
+                          evidence=evidence(generation + "/" + label + "-old-writer.json"),
+                          archival_runtime=archival_runtime(),
+                          runtime_observe=runtime_observer("archival-writer", generation, case))
             assert prior == decoded(historical), "historical writer did not reproduce captured bytes"
             for root, raw, direction, attestation in ((ROOT, prior, "forward", None),
                                                       (old, current, "reverse", manifest)):
                 observed = invoke(root, case, tmp_path / generation / direction, raw=raw, manifest=attestation,
-                                  evidence=evidence(generation + "/" + label + "-" + direction + ".json"))
+                                  evidence=evidence(generation + "/" + label + "-" + direction + ".json"),
+                                  runtime_observe=runtime_observer(direction + "-reader", generation, case, raw=raw))
                 accepted(observed)
                 readers = {generation_reference(root, reference).split(":")[1].rsplit(".", 1)[-1].lstrip("_")
                            for reference in (dict(kind.variant_readers).get(case.split("/", 1)[1], kind.reader),) + kind.legacy_readers}

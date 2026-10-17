@@ -118,6 +118,9 @@ def archival_result(process, expected):
         result = json.loads(payload)
         if not isinstance(result, dict):
             raise ValueError("expected exactly one isolation-driver result object")
+        captured = result.get("result")
+        if process.returncode == 0 and (not isinstance(captured, dict) or not isinstance(captured.get("raw"), str)):
+            raise ValueError("successful archival writer must return a result object with raw bytes")
         interpreter = result.get("interpreter", {})
         if not isinstance(interpreter, dict):
             raise ValueError("isolation-driver interpreter must be an object")
@@ -260,7 +263,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
             evidence.chmod(0o444)
         return result
 
-    if archival_runtime is not None and (raw is not None or manifest is None):
+    if archival_runtime is not None and (raw is not None or manifest is None or Path(root).resolve() == ROOT):
         raise ValueError("archival replay runtime is only valid for a manifested historical write")
     kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
     request = {"case": case, "op": "write" if raw is None else "read"}
@@ -320,7 +323,8 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
                 runtime_observe(result)
             raise
         result["archival_runtime"] = {"role": "qualified-archival-replay",
-                                      "selected": expected, "observed": None}
+                                      "selected": expected, "observed": None,
+                                      "error": result["attestation_error"]}
         return finish(result)
     if archival_runtime is not None:
         result = archival_result(process, expected)
@@ -334,6 +338,9 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
             result = {"stdout": process.stdout, "stderr": process.stderr}
     result["returncode"] = process.returncode
     result["process_returncode"] = process.returncode
+    if archival_runtime is not None and result["archival_runtime"]["error"] is not None:
+        result["returncode"] = 2
+        return finish(result)
     if kind.stable_paths and result.get("affinity") != sorted(os.sched_getaffinity(0)):
         result["returncode"] = 2
         result["attestation_error"] = "private namespace did not preserve PB CPU affinity"

@@ -6,6 +6,9 @@ import record_compat_contract as contract
 from record_compat_contract import RecordContract, generations, writer_sources
 
 
+pytestmark = pytest.mark.pbtest_capability("archival-replay")
+
+
 FUNDING_KINDS = tuple(kind for kind in KINDS
                       if kind.name in ("q-funding", "q-output-funding", "out-batch",
                                        "out-descriptor", "out-batch-ref"))
