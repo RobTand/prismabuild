@@ -124,7 +124,10 @@ def test_gpu_children_cannot_skip_enforced_d38(tmp_path, monkeypatch, d38_config
     native = ProducerPublication(worker_script=store.wrapper_dir / "prismabuild_worker.py",
         checkout_root=None, tags=(), needs_gpu=True, resources={"cpu": 1, "mem_gb": 1},
         retry_safe=None, lane_root=None, job_entry=store.wrapper_dir / "slurm_job.py")
-    action = frozen["children"][0]
+    body = {key: value for key, value in frozen["children"][0].items() if key != "action_key"}
+    body["params"] = {**body["params"], "demand": {"cpu": 1, "mem_gb": 1},
+                      "placement": {"required_tags": []}}
+    action = core.seal_action(body)
     cas = core.PrismaBuildCAS(store.cas_root)
     result = submission.submit_producer(action, cas=cas,
         request_path=cas.publish_action_request(action), producer=native,
