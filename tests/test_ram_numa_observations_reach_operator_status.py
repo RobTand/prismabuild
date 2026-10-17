@@ -157,13 +157,13 @@ def _queue(root: Path) -> pool.PoolQueue:
 
 def _publish(queue: pool.PoolQueue, record: dict[str, object]) -> dict[str, object]:
     tokens = storage_tiers.tier_tokens(record)
-    queue.mint_tier_capacity(str(record["tier_id"]), tokens)
+    queue.tier(str(record['tier_id'])).mint(tokens)
     path = queue.announce_tier(record, now=NOW)
     persisted = json.loads(path.read_text())
     # Publish the exact discovered record, not a replacement RAM dictionary.
     assert persisted == dict(record, announced_unix=NOW)
     for kind, count in tokens.items():
-        assert queue.tier_ledger(str(record["tier_id"])).capacity()[kind] == count
+        assert queue.tier(str(record['tier_id'])).mint_supply()[kind] == count
     return persisted
 
 
@@ -472,7 +472,7 @@ def test_old_non_ram_and_unannounced_rows_have_explicit_unknown_observations(
                node_memfree_bytes=DEFAULT_FREE, node_shmem_bytes=DEFAULT_SHMEM)
     _publish(queue, arc)
     unannounced = storage_tiers.tier_id("ram", "unannounced-fixture")
-    queue.mint_tier_capacity(unannounced, {storage_tiers.RAM_CAPACITY_KIND: 1})
+    queue.tier(unannounced).mint({storage_tiers.RAM_CAPACITY_KIND: 1})
     rows = _cli(queue, capsys)
     assert rows[RAM_TIER]["announced"] is True
     assert rows[arc_id]["tier_kind"] == "arc"
@@ -522,7 +522,7 @@ def test_liveness_refresh_keeps_sample_stamp_and_observations_aging(
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record)
     queue = _queue(tmp_path / "pb-queue")
-    queue.mint_tier_capacity(RAM_TIER, storage_tiers.tier_tokens(record))
+    queue.tier(RAM_TIER).mint(storage_tiers.tier_tokens(record))
     liveness = tier_loop.Liveness(interval_s=5)
     liveness.begin_cycle()
     liveness.announce(queue, record)
@@ -572,7 +572,7 @@ def test_real_tier_cycle_mints_and_announces_discovered_observations_to_status(
     record = next(row for row in announced if row["tier_id"] == RAM_TIER)
     _assert_admitted(record)
     assert record["stage_root_owner"] == "registered"
-    assert queue.tier_ledger(RAM_TIER).capacity()[storage_tiers.RAM_CAPACITY_KIND] == 112
+    assert queue.tier(RAM_TIER).mint_supply()[storage_tiers.RAM_CAPACITY_KIND] == 112
     persisted = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     assert persisted == dict(record, announced_unix=NOW)
     assert tier_loop.LAST_CYCLE["completed"] is True
