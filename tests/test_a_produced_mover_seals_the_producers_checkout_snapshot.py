@@ -33,6 +33,7 @@ a fleet worker loop; pbrun's submitter handles (``pbrun.SH``) are redirected
 into the fixture so ``freeze_action_template`` ingests into a temp CAS.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -46,6 +47,7 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.materialize as materialize  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
@@ -176,10 +178,10 @@ class _Producer:
         cwd = source if subdirectory == "." else source / subdirectory
         # ``freeze_action_template`` seals against the submitter's shared
         # handles; redirect them into the fixture, never the live CAS.
-        monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+        patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
         demand = {"cpu": 1, "mem_gb": 1,
                   **po.owner_demand_terms(self.template)}
-        frozen = pbrun.freeze_action_template(
+        frozen = submit_core.freeze(
             command=["/bin/true"], cwd=cwd, logical_cwd=subdirectory,
             demand=demand, placement={"required_tags": []},
             variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -190,9 +192,9 @@ class _Producer:
             checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
             exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
             progress=None, profile=None, container_image_refs=(),
-            wrapper_dir=tmp_path / "wrapper")
+            wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
         self.cas = frozen["cas"]
-        self.action = pbrun.seal_action_from_template(frozen)
+        self.action = submit_core.seal(frozen)
         self.cas.publish_action_request(self.action)
         self.key = str(self.action["action_key"])
         self.snapshot = self.action["params"]["checkout_snapshot"]

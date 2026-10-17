@@ -49,6 +49,7 @@ from prismabuild import adaptive_cpu, pool, produced_output as po  # noqa: E402
 from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from test_consumed_origin_retirement import (  # noqa: E402
     _commit, _queue, _template,
 )
@@ -86,10 +87,10 @@ def _old_submitter(monkeypatch, *argv: str):
         return publish
 
     with monkeypatch.context() as patch:
-        patch.setattr(pbrun, "submission_window",
+        patch.setattr(submit_core, "submission_window",
                       lambda q, key, refs: contextlib.nullcontext(True))
-        patch.setattr(pbrun, "publish_or_refuse", pause("publish_or_refuse"))
-        patch.setattr(pbrun, "publish_or_attach", pause("publish_or_attach"))
+        patch.setattr(submit_core, "publish_or_refuse", pause("publish_or_refuse"))
+        patch.setattr(submit_core, "publish_or_attach", pause("publish_or_attach"))
         assert "paused before its row" in _refused(monkeypatch, *argv)
     [(name, q, publication, kwargs)] = paused
     key = str(publication["action_key"])
