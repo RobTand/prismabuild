@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests/compat/support'))
 from maintenance.compose_compat_tier import REPLACEMENTS, port, transformed
 from record_compat import accepted, invoke, retained
+from record_compat_contract import WriterEvidence
 from prismabuild.record_kinds import KINDS
 
 DATA = ROOT / 'tests/compat'
@@ -34,6 +35,15 @@ def current_driver(tmp_path_factory):
 
 
 @pytest.fixture(scope='module')
+def writer_evidence(pytestconfig):
+    plugin = pytestconfig.pluginmanager.get_plugin('compat-writer-evidence')
+    if plugin is None:
+        plugin = WriterEvidence()
+        pytestconfig.pluginmanager.register(plugin, 'compat-writer-evidence')
+    return plugin
+
+
+@pytest.fixture(scope='module')
 def reader_controls(tmp_path_factory):
     directory = tmp_path_factory.mktemp('retained-tier-controls')
     original = DATA / 'generations'
@@ -49,11 +59,13 @@ def reader_controls(tmp_path_factory):
 
 @pytest.mark.parametrize('case', CASES)
 def test_current_port_preserves_actual_bytes_and_both_retained_read_directions(
-        case, current_driver, reader_controls, tmp_path):
+        case, current_driver, reader_controls, writer_evidence, tmp_path):
     def current(store, raw=None):
         return accepted(invoke(ROOT, case, store, raw=raw, adapter_path=current_driver))
 
-    first = base64.b64decode(current(tmp_path / 'first')['raw'])
+    first_result = invoke(ROOT, case, tmp_path / 'first', adapter_path=current_driver)
+    first = base64.b64decode(accepted(first_result)['raw'])
+    writer_evidence.observe(first_result, first)
     second = base64.b64decode(current(tmp_path / 'second')['raw'])
     assert first == second == base64.b64decode(GOLDENS[case]['raw'])
     for generation, source, manifest in reader_controls:

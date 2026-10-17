@@ -67,7 +67,7 @@ REPLACEMENTS = (
 )
 
 
-def syntax_records(text):
+def syntax_records(text, rules=()):
     records = Counter()
 
     def visit(node, owner=''):
@@ -76,7 +76,10 @@ def syntax_records(text):
             records['definition', owner, ast.dump(node.args) if hasattr(node, 'args') else '',
                     tuple(ast.dump(item) for item in node.decorator_list)] += 1
         if isinstance(node, (ast.Assert, ast.Raise)):
-            records[type(node).__name__, owner, ast.dump(node)] += 1
+            source = ast.get_source_segment(text, node)
+            for rule in rules:
+                source = source.replace(rule.before, rule.after)
+            records[type(node).__name__, owner, ast.dump(ast.parse(source).body[0])] += 1
         for child in ast.iter_child_nodes(node):
             visit(child, owner)
 
@@ -135,10 +138,7 @@ def port(root, *, destination=None):
         rules = [rule for rule in REPLACEMENTS if rule.file == name]
         original = (support / name).read_text()
         updated = transformed(original, rules)
-        expected = original
-        for rule in rules:
-            expected = expected.replace(rule.before, rule.after)
-        if syntax_records(updated) != syntax_records(expected):
+        if syntax_records(updated) != syntax_records(original, rules):
             raise ValueError(f'{name}: definition/assertion/raise occurrences changed')
         prepared[name] = updated
         rows.append(dict(file=name, changed=updated != original,
