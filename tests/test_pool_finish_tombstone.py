@@ -166,7 +166,7 @@ def test_a_finisher_interrupted_mid_publish_is_recovered(
     # fresh claim one grace period. On the fleet the tombstone sat for the
     # lease timeout before the sweep looked, so that clock was long past.
     record["claimed_unix"] = pool._now() - 2 * pool.HEARTBEAT_S
-    pool.record_store._write_json(restored, record)
+    pool.immutable_files.write_json_atomic(restored, record)
     assert queue.reap_stale(timeout_s=-1) == [KEY_A]
     requeued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     assert requeued["attempts"] == 1
