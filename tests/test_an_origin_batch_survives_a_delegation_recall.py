@@ -29,6 +29,8 @@ The recall is simulated on a local file system: a same-mode ``chmod`` moves
 ctime alone, and ``os.utime`` moves mtime and ctime.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -58,8 +60,8 @@ RECALLS = pytest.mark.parametrize("recall", [_recall_ctime, _recall_mtime],
 
 
 def _record_bytes(queue, instance, batch_id: str = "b1") -> bytes:
-    return (Path(queue.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
-            / po.instance_namespace(instance) / f"{batch_id}.json").read_bytes()
+    return (Path(queue.root) / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+            / oc.instance_namespace(instance) / f"{batch_id}.json").read_bytes()
 
 
 def _assert_repinned(repins, path, before, after, sha256):
@@ -106,7 +108,7 @@ def test_a_recalled_handoff_is_declared_again_and_then_retired(
 
     try:
         manifest = po.origin_batch_manifest(queue.root, [committed["ref"]])
-    except po.ProducedOutputError as exc:
+    except oc.ProducedOutputError as exc:
         raise AssertionError(
             f"a batch whose timestamps alone moved could not be declared: {exc}"
         ) from None
@@ -127,7 +129,7 @@ def test_a_recalled_handoff_is_declared_again_and_then_retired(
     events = po.origin_retirement_tick(queue)
 
     assert [(e["event"], e["reason"]) for e in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "orphan")], events
+        (oc.ORIGIN_RETIRED_EVENT, "orphan")], events
     assert events[0]["unlinked"] == [str(path)]
     assert events[0]["origin_identity"] == {str(path): after}
     assert not path.exists()
@@ -151,7 +153,7 @@ def test_a_recalled_orphan_retires_on_its_first_tick(tmp_path: Path,
     events = po.origin_retirement_tick(queue)
 
     assert [(e["event"], e["reason"]) for e in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "orphan")], (
+        (oc.ORIGIN_RETIRED_EVENT, "orphan")], (
         f"a batch whose timestamps alone moved was not retired: {events}")
     assert not path.exists()
     entry = retirement._entry(queue, instance)
@@ -171,7 +173,7 @@ def test_a_same_size_content_change_refuses_the_declaration_and_says_why(
     assert (observed["ino"], observed["size"]) == (recorded["ino"],
                                                    recorded["size"])
 
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-changed") as info:
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-changed") as info:
         po.origin_batch_manifest(queue.root, [committed["ref"]])
 
     assert "sha256" in str(info.value), (
@@ -198,7 +200,7 @@ def test_a_commit_after_a_recall_commits_the_verified_identity(
     landed = {str(path): _identity(path)}
     before, after = recall(path)
 
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, instance, template, [descriptor], batch_id="b1", landed=landed,
         lifetime=retirement.CONSUMED)
 
@@ -227,7 +229,7 @@ def test_a_same_size_content_change_after_the_receipt_still_refuses_the_commit(
     landed = {str(path): _identity(path)}
     _rewrite_same_size(path)
 
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, instance, template, [descriptor], batch_id="b1", landed=landed)
 
     assert committed.get("refusal") == "origin-is-not-the-landed-copy", committed
@@ -306,7 +308,7 @@ def _two_batches(tmp_path: Path):
                          len(payload))["ok"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
-        committed = po.commit_origin_batch(
+        committed = bl.BatchLedger.commit_origin(
             queue, instance, template,
             [_descriptor(instance, template, path, payload)],
             batch_id=batch_id, lifetime=retirement.CONSUMED)
@@ -322,16 +324,17 @@ def test_the_re_pins_of_one_declaration_are_filed_in_one_write(
     for path in paths:
         _recall_ctime(path)
     writes = []
-    original = po._write_commitments
+    original = bl.BatchLedger.file
 
-    def counted(path, record):
+    def counted(ledger, record):
+        path = ledger.path
         writes.append(Path(path))
-        return original(path, record)
+        return original(ledger, record)
 
-    monkeypatch.setattr(po, "_write_commitments", counted)
+    monkeypatch.setattr(bl.BatchLedger, 'file', counted)
     po.origin_batch_manifest(queue.root, refs)
 
-    assert writes == [po._commitments_path(queue.root, instance)], (
+    assert writes == [bl.BatchLedger.for_instance(queue.root, instance).path], (
         f"two re-pinned batches of one instance took {len(writes)} writes")
     for batch_id in ("b1", "b2"):
         assert len(retirement._entry(queue, instance, batch_id)["origin_repins"]) == 1
@@ -356,7 +359,7 @@ def test_a_changed_origin_is_read_once_across_retirement_ticks(
     second = po.origin_retirement_tick(queue)
 
     assert [(e["event"], e["reason"]) for e in first] == [
-        (po.ORIGIN_RETIREMENT_REFUSED_EVENT, "origin-changed")], first
+        (oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "origin-changed")], first
     assert second == []
     assert len(reads) == 1, f"a refused origin was read {len(reads)} times"
     assert path.exists()
@@ -368,11 +371,11 @@ def test_re_pins_that_do_not_chain_are_unknown_state(tmp_path: Path) -> None:
     instance, path, committed = retirement._commit(queue, template, "tampered")
     before, after = _recall_ctime(path)
     po.origin_batch_manifest(queue.root, [committed["ref"]])
-    commitments_path = po._commitments_path(queue.root, instance)
+    commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
     body = json.loads(commitments_path.read_text())
     body["batches"]["b1"]["origin_repins"][0]["from"] = dict(
         before, ctime_ns=before["ctime_ns"] - 1)
     commitments_path.write_text(json.dumps(body))
 
-    with pytest.raises(po.ProducedOutputError, match="unknown-retain"):
+    with pytest.raises(oc.ProducedOutputError, match="unknown-retain"):
         po.origin_batch_manifest(queue.root, [committed["ref"]])

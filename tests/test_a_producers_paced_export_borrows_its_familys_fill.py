@@ -22,6 +22,8 @@ stated as the movers and egresses it names (``residency_plan.read``), and its
 movers' fill is taken on the real tier ledger under their keys.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import json
 import math
@@ -61,7 +63,7 @@ def _paced_producer(tmp_path: Path, monkeypatch):
     queue.publish(action_key=owner, cas_root=str(cas_root),
                   worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
                   checkout_root=str(tmp_path / "mover-checkout"),
-                  resources={**al.PRODUCER_DEMAND, **po.owner_demand_terms(template)},
+                  resources={**al.PRODUCER_DEMAND, **oc.owner_demand_terms(template)},
                   produced_output_template=template)
     cpu_sampler = al._sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=al.CAPACITY,
@@ -73,8 +75,8 @@ def _paced_producer(tmp_path: Path, monkeypatch):
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
             "PRISMABUILD_ACTION_NONCE": control["nonce"],
             "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"]
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"]
     fx._announce_tier(queue, tmp_path / "stage")
     paced.offer_fill(queue, OFFER)
     spool = ps.ProducedSpool(queue, instance, template, cas_root=cas_root,

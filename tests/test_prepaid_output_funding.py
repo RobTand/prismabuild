@@ -15,6 +15,8 @@ Proves (R2):
 * owner-finish race serialized; finish-before-claim via terminal + filed commit.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -47,7 +49,7 @@ def _hexkey(seed: str) -> str:
 
 def _template(prefix: str) -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "prepaid-v1",
         "output_prefix": prefix,
@@ -60,7 +62,7 @@ def _template(prefix: str) -> dict:
         "working_demands": {TIER: {"minimum_gib": 1, "window_gib": 2}},
         "permitted_tiers": [TIER],
     }
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
@@ -84,12 +86,12 @@ def _descriptors(tmp_path: Path, template: dict, inst: dict,
     origin.mkdir(parents=True, exist_ok=True)
     p = origin / name
     p.write_bytes(batch_payload)
-    return [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    return [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(p),
         "bytes": len(batch_payload),
         "sha256": hashlib.sha256(batch_payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)]
@@ -99,7 +101,7 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
     classes = {"payload": sum(int(d["bytes"]) for d in descs),
                "checkpoint": 0, "temp": 0}
     paths = sorted(str(d["path"]) for d in descs)
-    out = po.require_prewrite(q, inst, template, batch_id=batch_id,
+    out = bl.BatchLedger.reserve(q, inst, template, batch_id=batch_id,
                               tier=tier, class_bytes=classes, paths=paths)
     assert out.get("ok") is True, out
     return out
@@ -161,7 +163,7 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
 
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -240,7 +242,7 @@ def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -357,7 +359,7 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker)
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -402,7 +404,7 @@ def test_owner_finish_race_serialized(
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -557,7 +559,7 @@ def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -596,7 +598,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -734,7 +736,7 @@ def test_unfunded_ready_mover_gets_no_free_credit(tmp_path: Path, broker) -> Non
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     free0 = ledger.free_supply().get(KIND)
     _publish_mover(q, mover, manifest, total, gib=1)
@@ -769,7 +771,7 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     # Claim-safe order: stage intent BEFORE publication (no mover row yet).
     staged = q.stage_output_intent(
@@ -818,7 +820,7 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> Non
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -868,7 +870,7 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -900,7 +902,7 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     mover2 = _hexkey("nrel-mover2")
     descs2 = _descriptors(tmp_path, template, inst, name="b.bin")
     _prewrite(q, inst, template, "b2", TIER, descs2)
-    manifest2 = po.output_manifest_sha256(descs2)
+    manifest2 = oc.output_manifest_sha256(descs2)
     total2 = sum(int(d["bytes"]) for d in descs2)
     staged2 = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover2, instance=inst,
@@ -929,7 +931,7 @@ def test_required_absent_intent_gets_no_free_credit(tmp_path: Path, broker) -> N
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -982,7 +984,7 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path, broker) -> None:
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -1020,7 +1022,7 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     # Stage with an explicit stale nonzero publication (simulates a previously
     # published reserved credit for another publication of the same key).
@@ -1084,7 +1086,7 @@ def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path, brok
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "publication")
@@ -1194,7 +1196,7 @@ def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path, broker)
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "derive")
@@ -1225,7 +1227,7 @@ def test_sealed_contradictory_kwarg_refuses(tmp_path: Path, broker) -> None:
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "contra")
@@ -1273,7 +1275,7 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path, broker
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     # Publish via the sealed path (derivation, no kwarg) for a mover key
@@ -1325,7 +1327,7 @@ def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path, brok
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     # Legacy publish: no sealed request, no kwarg, no projection.
     _publish_mover(q, mover, manifest, total, gib=1)
@@ -1353,7 +1355,7 @@ def test_claim_corrupt_projection_refuses(tmp_path: Path, broker) -> None:
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -1407,7 +1409,7 @@ def test_publish_without_staged_intent_refuses(tmp_path: Path, broker) -> None:
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     with pytest.raises(pool.PoolContractError):
@@ -1427,7 +1429,7 @@ def test_publish_mismatched_intent_refuses(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     descs2 = _descriptors(tmp_path, template, inst, name="b.bin")
     _prewrite(q, inst, template, "b2", TIER, descs2)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     staged = q.stage_output_intent(
@@ -1449,7 +1451,7 @@ def test_sealed_request_without_batch_field_rejects_kwarg(tmp_path: Path, broker
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     checkout = tmp_path / "co-sealed-nofield"
@@ -1500,7 +1502,7 @@ def test_ready_reread_failure_defers_at_claim_seam(
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "reread")
@@ -1597,7 +1599,7 @@ def _real_cas_chain(tmp_path: Path, tag: str, broker, *, squatter_seed: str = "r
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, tag)
@@ -1682,7 +1684,7 @@ def test_filed_request_without_ref_invented_projection_never_covers(
     owner = str(inst["owner_action_key"])
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_params(tmp_path, {}, tag)

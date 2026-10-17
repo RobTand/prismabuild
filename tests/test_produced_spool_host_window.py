@@ -14,6 +14,8 @@ the claim unchanged, a claim without enough of it is refused, and a producer
 whose claimed row did not reserve its window refuses to spool.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from pathlib import Path
 import sys
@@ -169,7 +171,7 @@ def _spool(tmp_path, *, env=None, reserved=None, maximum=256):
     cas.publish_action_request(action)
     owner = action["action_key"]
     q = fx._queue(tmp_path)
-    resources = {"cpu": 1, "mem_gb": 1, **po.owner_demand_terms(template)}
+    resources = {"cpu": 1, "mem_gb": 1, **oc.owner_demand_terms(template)}
     capacity = {"cpu": 4, "mem_gb": 8}
     if reserved is not None:
         resources[KIND] = reserved
@@ -186,8 +188,8 @@ def _spool(tmp_path, *, env=None, reserved=None, maximum=256):
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
             "PRISMABUILD_ACTION_NONCE": control["nonce"],
             "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"]
+    bl.declare_instance(q.root, inst)
+    assert bl.BatchLedger.admit(q, inst, template)["ok"]
     fx._announce_tier(q, tmp_path / "stage")
     return lambda: ps.ProducedSpool(q, inst, template, cas_root=cas_root,
                                     root=tmp_path / "local", max_bytes=maximum)

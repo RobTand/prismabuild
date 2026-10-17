@@ -7,6 +7,8 @@ and verified (not shape-only) producer holds in egress attribution.
 """
 
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -46,8 +48,8 @@ BIG = 768 << 10
 
 def _template(output_prefix: str, template_id: str = "r2-v1",
               payload_cap: int = CAP) -> dict:
-    return po.validate_template({
-        "schema": po.TEMPLATE_SCHEMA_V1,
+    return oc.validate_template({
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": template_id,
         "output_prefix": output_prefix,
@@ -117,7 +119,7 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
+    bl.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
             "env": env}
 
@@ -152,7 +154,7 @@ def _producer_request(tmp_path: Path, template: dict, *,
     inputs: list = []
     if declare:
         envelope = tmp_path / f"produced-template-{tag}.json"
-        envelope.write_text(json.dumps(po.validate_template(template),
+        envelope.write_text(json.dumps(oc.validate_template(template),
                                        sort_keys=True))
         template_input, _ = cas.ingest_input(
             envelope, input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID)
@@ -187,7 +189,7 @@ def _bind_live(queue: pool.PoolQueue, tmp_path: Path, template: dict, *,
     read it back off the returned mapping rather than choosing it.
     """
 
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     casdir, owner = _producer_request(
         tmp_path, template, declare=declare,
         tag="declared" if declare else "undeclared")
@@ -204,7 +206,7 @@ def _bind_live(queue: pool.PoolQueue, tmp_path: Path, template: dict, *,
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
+    bl.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
             "env": env, "owner": owner, "cas_root": casdir}
 
@@ -217,12 +219,12 @@ def _write(path: Path, payload: bytes) -> None:
 def _payload_desc(origin: Path, template: dict, instance: dict, name: str,
                   payload: bytes) -> dict:
     _write(origin / name, payload)
-    return po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2,
+    return oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2,
         "slot": "boundary-0",
         "artifact_class": "payload", "path": str(origin / name),
         "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -265,11 +267,11 @@ def test_substituted_template_prewrite_refused(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     # Same prefix/slots, larger durable cap the owner never bought.
     bigger = _template(str(origin), template_id="r2-v1", payload_cap=2 * CAP)
-    assert po.template_sha256(bigger) != po.template_sha256(template)
-    refused = po.require_prewrite(
+    assert oc.template_sha256(bigger) != oc.template_sha256(template)
+    refused = bl.BatchLedger.reserve(
         queue, instance, bigger, batch_id="sub", tier=STAGE_TIER,
         class_bytes={"payload": CAP + 1, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "sub.pt")])
@@ -283,18 +285,18 @@ def test_stale_owner_commit_refused(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
-    assert po.require_prewrite(
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="stale", tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "stale.pt")])["ok"] is True
     payload = b"S" * 64
     _write(origin / "stale.pt", payload)
-    desc = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    desc = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
         "artifact_class": "payload", "path": str(origin / "stale.pt"),
         "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -319,7 +321,7 @@ def test_bare_retire_refused(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     # ...and that path refuses unknown batches rather than filing flags.
     refused = po.retire_batch(queue, instance, template, "nope",
                               stage_root=str(tmp_path),
@@ -334,15 +336,15 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind_live(queue, tmp_path, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     stage = tmp_path / "stage"
     stage.mkdir()
     from prismabuild import stage_release
 
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-    assert po.require_prewrite(
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="w0", tier=STAGE_TIER,
         class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w0.pt")])["ok"] is True
@@ -361,7 +363,7 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     assert retired["staged_paths"] != []
     # Origin files remain: the retired window still charges durable quota,
     # so a second 768KiB write past the 1MiB cap refuses.
-    refused = po.require_prewrite(
+    refused = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="w1", tier=STAGE_TIER,
         class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w1.pt")])
@@ -369,12 +371,12 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     # Actual origin reclamation frees exactly once.
     assert (origin / "w0.pt").is_file()
     (origin / "w0.pt").unlink()
-    claimed = po.reclaim_origin(queue, instance, template, batch_id="w0")
+    claimed = bl.BatchLedger.reclaim(queue, instance, template, batch_id="w0")
     assert claimed == {"ok": True, "batch_id": "w0", "reclaimed": True}
-    assert po.reclaim_origin(queue, instance, template,
+    assert bl.BatchLedger.reclaim(queue, instance, template,
                              batch_id="w0") == {
         "ok": True, "batch_id": "w0", "reclaimed": False}
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="w1", tier=STAGE_TIER,
         class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w1.pt")])["ok"] is True
@@ -387,8 +389,8 @@ def test_damaged_batch_record_retains_quota(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
-    assert po.require_prewrite(
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="dmg", tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "dmg.pt")])["ok"] is True
@@ -400,14 +402,14 @@ def test_damaged_batch_record_retains_quota(tmp_path: Path) -> None:
     # such): the origin file stays, only the metadata entries are
     # emptied. Quota must retain, never prove a vacuous absence. (The
     # filed record is read-only; chmod simulates disk-level damage.)
-    batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                  / po.instance_namespace(instance) / "dmg.json")
+    batch_file = (queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                  / oc.instance_namespace(instance) / "dmg.json")
     os.chmod(batch_file, 0o644)
     record = json.loads(batch_file.read_text())
     record["entries"] = []
     batch_file.write_text(json.dumps(record, sort_keys=True) + "\n")
     assert (origin / "dmg.pt").is_file()
-    refused = po.reclaim_origin(queue, instance, template, batch_id="dmg")
+    refused = bl.BatchLedger.reclaim(queue, instance, template, batch_id="dmg")
     assert refused["ok"] is False
     assert "retain" in str(refused["refusal"])
 
@@ -422,20 +424,20 @@ def _commit_staged(queue: pool.PoolQueue, tmp_path: Path, template: dict,
     stage.mkdir()
     assert stage_release.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-    origin = Path(str(po.validate_template(template)["output_prefix"]))
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    origin = Path(str(oc.validate_template(template)["output_prefix"]))
     name = f"{tag}.pt"
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id=tag, tier=STAGE_TIER,
         class_bytes={"payload": size, "checkpoint": 0, "temp": 0},
         paths=[str(origin / name)])["ok"] is True
     payload = bytes([len(tag) % 251 + 1]) * size
     _write(origin / name, payload)
-    desc = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    desc = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
         "artifact_class": "payload", "path": str(origin / name),
         "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -454,7 +456,7 @@ def test_substituted_claim_ref_taints_egress(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind_live(queue, tmp_path, template)
     instance, owner = bound["instance"], bound["owner"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     batch, stage, out_base = _commit_staged(
         queue, tmp_path, template, instance, owner, "sub")
     # White-box queue-row edit (documented as tampering): the live claim's
@@ -490,7 +492,7 @@ def test_declaration_less_request_taints_egress(tmp_path: Path) -> None:
     # fact, because the action key binds its canonical body.
     bound = _bind_live(queue, tmp_path, template, declare=False)
     instance, owner = bound["instance"], bound["owner"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     batch, stage, out_base = _commit_staged(
         queue, tmp_path, template, instance, owner, "nodecl")
     refused = po.retire_batch(queue, instance, template, "nodecl",
@@ -510,10 +512,10 @@ def test_strict_loader_mutations_refuse_without_side_effects(
     queue = _queue(tmp_path)
     bound = _bind_live(queue, tmp_path, template)
     instance, owner = bound["instance"], bound["owner"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
 
     def _fresh(tag: str, mover: str):
-        assert po.require_prewrite(
+        assert bl.BatchLedger.reserve(
             queue, instance, template, batch_id=tag, tier=STAGE_TIER,
             class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
             paths=[str(origin / f"{tag}.pt")])["ok"] is True
@@ -525,7 +527,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
         return batch
 
     def _state(batch):
-        ns_dir = (po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+        ns_dir = (bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
                   / batch["batch_namespace"])
         return ((origin / f"{batch['batch_id']}.pt").is_file(), _dir_nonempty(ns_dir), dict(queue.tier(STAGE_TIER).holdings(batch['mover_key'])))
 
@@ -556,9 +558,9 @@ def test_strict_loader_mutations_refuse_without_side_effects(
     assert po.retire_batch(
         queue, instance, template, "mut-a",
         stage_root=str(tmp_path / "stage-mut-a"),
-        residency_root=str(po.output_fragment_root(
+        residency_root=str(bl.output_fragment_root(
             queue.root / pool.record_store.RESIDENCY)))["ok"] is False
-    assert po.reclaim_origin(
+    assert bl.BatchLedger.reclaim(
         queue, instance, template, batch_id="mut-a")["ok"] is False
     assert _state(batch_a) == before
     assert calls == []
@@ -571,9 +573,9 @@ def test_strict_loader_mutations_refuse_without_side_effects(
     assert po.retire_batch(
         queue, instance, template, "mut-b",
         stage_root=str(tmp_path / "stage-mut-b"),
-        residency_root=str(po.output_fragment_root(
+        residency_root=str(bl.output_fragment_root(
             queue.root / pool.record_store.RESIDENCY)))["ok"] is False
-    assert po.reclaim_origin(
+    assert bl.BatchLedger.reclaim(
         queue, instance, template, batch_id="mut-b")["ok"] is False
     assert _state(batch_b) == before
     assert calls == []
@@ -586,7 +588,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
     refused = po.retire_batch(
         queue, instance, template, "mut-c",
         stage_root=str(tmp_path / "stage-mut-c"),
-        residency_root=str(po.output_fragment_root(
+        residency_root=str(bl.output_fragment_root(
             queue.root / pool.record_store.RESIDENCY)))
     assert refused["ok"] is False
     assert _state(batch_c) == before
@@ -595,8 +597,8 @@ def test_strict_loader_mutations_refuse_without_side_effects(
 
 def _damage_filed(queue: pool.PoolQueue, instance: dict, batch_id: str,
                   mutate) -> None:
-    path = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-            / po.instance_namespace(instance) / f"{batch_id}.json")
+    path = (queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+            / oc.instance_namespace(instance) / f"{batch_id}.json")
     os.chmod(path, 0o644)
     record = json.loads(path.read_text())
     mutate(record)
@@ -605,7 +607,7 @@ def _damage_filed(queue: pool.PoolQueue, instance: dict, batch_id: str,
 
 def _damage_commitments(queue: pool.PoolQueue, instance: dict, batch_id: str,
                         field: str, value: object) -> None:
-    path = po._commitments_path(queue.root, instance)
+    path = bl.BatchLedger.for_instance(queue.root, instance).path
     record = json.loads(path.read_text())
     record["batches"][batch_id][field] = value
     path.write_text(json.dumps(record, sort_keys=True) + "\n")
@@ -665,7 +667,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         # egress claimed-copy attribution verifies this live hold as a
         # producer reservation instead of tainting it as a mover copy.
         # The owner key is the sealed request's own content address.
-        terms = po.owner_demand_terms(template)
+        terms = oc.owner_demand_terms(template)
         casdir, owner = _producer_request(tmp_path, template, tag="full")
         queue.publish(action_key=owner, cas_root=str(casdir),
                       worker_script="/w.py", checkout_root="/co",
@@ -694,8 +696,8 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         instance = po.bind_instance(
             queue, template, owner_action_key=owner,
             claim_snapshot=claimed, env=env)
-        po.declare_instance(queue.root, instance)
-        assert po.admit_instance(queue, instance, template)["ok"] is True
+        bl.declare_instance(queue.root, instance)
+        assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
 
         stage = tmp_path / "stage"
         stage.mkdir()
@@ -703,9 +705,9 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
 
         assert stage_release.register_stage_root(
             queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
-        out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+        out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
         payload = b"W" * BIG
-        assert po.require_prewrite(
+        assert bl.BatchLedger.reserve(
             queue, instance, template, batch_id="full", tier=STAGE_TIER,
             class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
             paths=[str(origin / "full.pt")])["ok"] is True
@@ -757,16 +759,16 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             default=str)
         assert retired["receipt"]["complete"] is True
         # Durable quota still held with the origin file present.
-        assert po.require_prewrite(
+        assert bl.BatchLedger.reserve(
             queue, instance, template, batch_id="full2", tier=STAGE_TIER,
             class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
             paths=[str(origin / "full2.pt")])["refusal"] == \
             "prewrite-exceeds-payload-maxima"
         (origin / "full.pt").unlink()
-        assert po.reclaim_origin(queue, instance, template,
+        assert bl.BatchLedger.reclaim(queue, instance, template,
                                  batch_id="full") == {
             "ok": True, "batch_id": "full", "reclaimed": True}
-        assert po.require_prewrite(
+        assert bl.BatchLedger.reserve(
             queue, instance, template, batch_id="full2", tier=STAGE_TIER,
             class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
             paths=[str(origin / "full2.pt")])["ok"] is True
@@ -790,6 +792,6 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
 
 
 def _recorded(queue: pool.PoolQueue, instance: dict, batch_id: str) -> dict:
-    path = po._commitments_path(queue.root, instance)
+    path = bl.BatchLedger.for_instance(queue.root, instance).path
     batches = json.loads(path.read_text())["batches"]
     return {batch_id: batches[batch_id]}

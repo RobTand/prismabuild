@@ -89,6 +89,8 @@ or names another queue --- they say why in the receipt and keep the tokens.
 """
 
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import argparse
 from collections.abc import Mapping
@@ -430,14 +432,14 @@ SHARED_WITH_LIMIT = 5
 #: parsed as a fragment would taint -- or, before #798, crash -- every egress
 #: and sweep on a healthy tier.  The produced *fragments* are a real fragment
 #: namespace one level deeper (``OUTPUT_FRAGMENTS_SUBDIR``, reached through
-#: :func:`produced_output.output_fragment_root`) and are traversed by
+#: :func:`bl.output_fragment_root`) and are traversed by
 #: :func:`_fragment_census`, never skipped.
 RESERVED_RESIDENCY_SUBDIRS = frozenset({
     reader_lease.LEASES_SUBDIR,
     reader_lease.MATERIAL_SUBDIR,
-    produced_output.OUTPUT_TEMPLATES_SUBDIR,
-    produced_output.OUTPUT_SCOPES_SUBDIR,
-    produced_output.OUTPUT_BATCHES_SUBDIR,
+    oc.OUTPUT_TEMPLATES_SUBDIR,
+    oc.OUTPUT_SCOPES_SUBDIR,
+    oc.OUTPUT_BATCHES_SUBDIR,
 })
 
 
@@ -723,7 +725,7 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
             continue
         is_directory = kind == "dir"
         if not is_directory:
-            if entry.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+            if entry.name == oc.OUTPUT_FRAGMENTS_SUBDIR:
                 tainted.append(
                     f"{entry.name}: produced namespace is not a directory")
                 continue
@@ -737,7 +739,7 @@ def _census_level(directory: Path, *, direct: bool, allow_nested: bool,
             # (``material/``) live inside the produced store too, because
             # reader_lease resolves them from the supplied residency root.
             continue
-        if namespace == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+        if namespace == oc.OUTPUT_FRAGMENTS_SUBDIR:
             if not allow_nested:
                 tainted.append(
                     f"{namespace}: nested produced namespace is not a "
@@ -786,7 +788,7 @@ def _fragment_census(root: Path, memo: kept_reads.CensusMemo | None = None,
 
     fragments: list[tuple[str, str, dict[str, object], bool]] = []
     tainted: list[str] = []
-    if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+    if root.name == oc.OUTPUT_FRAGMENTS_SUBDIR:
         _census_level(root, direct=True, allow_nested=False,
                       fragments=fragments, tainted=tainted, memo=memo)
         _census_level(root.parent, direct=False, allow_nested=False,
@@ -922,7 +924,7 @@ def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
     ref = item.get("produced_output")
     if not isinstance(ref, Mapping):
         return False
-    from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1
+    from prismabuild.output_contract import PRODUCED_OUTPUT_REF_SCHEMA_V1
     if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
         return False
     params = request.get("params")
@@ -3826,7 +3828,7 @@ def sweep_dead_owner_fragments(
     store = queue.records if store is None else store
     root = Path(residency_root if residency_root is not None
                 else queue.root / pool.record_store.RESIDENCY)
-    if root.name == produced_output.OUTPUT_FRAGMENTS_SUBDIR:
+    if root.name == oc.OUTPUT_FRAGMENTS_SUBDIR:
         if uncharged is not None:
             uncharged.known = False
         return []
@@ -4656,30 +4658,30 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
             or not batch_id):
         return unknown("its output funding record does not name this mover's batch")
     residency = queue.root / pool.record_store.RESIDENCY
-    scope = (residency / produced_output.OUTPUT_SCOPES_SUBDIR / owner
+    scope = (residency / oc.OUTPUT_SCOPES_SUBDIR / owner
              / f"{template_id}.{nonce}")
     try:
-        instance = produced_output.validate_instance(
+        instance = oc.validate_instance(
             json.loads((scope / "instance.json").read_text()))
     except (OSError, ValueError) as exc:
         return unknown(f"its producer's instance is unreadable: {exc}")
     try:
-        template = produced_output.validate_template(json.loads(
-            (residency / produced_output.OUTPUT_TEMPLATES_SUBDIR
+        template = oc.validate_template(json.loads(
+            (residency / oc.OUTPUT_TEMPLATES_SUBDIR
              / f"{template_id}.json").read_text()))
     except (OSError, ValueError) as exc:
         return unknown(f"its producer's template is unreadable: {exc}")
     attempt = instance.get("owner_attempt")
-    if (produced_output.instance_dir(queue.root, instance) != scope
+    if (bl.scope_dir(queue.root, instance) != scope
             or not isinstance(attempt, Mapping)
             or str(attempt.get("nonce")) != nonce
             or str(attempt.get("scope_id")) != str(record.get("owner_scope_id"))
-            or produced_output.template_sha256(template)
+            or oc.template_sha256(template)
             != instance.get("template_sha256")
             or str(record.get("template_sha256")) != instance.get("template_sha256")):
         return unknown("its funding, instance and template disagree")
     try:
-        producer = produced_output._producer_attempt_state(queue, instance)
+        producer = bl.producer_attempt_state(queue, instance)
         match RecordStore(queue.root).standing(mover):
             case Present(QueueRow(mover_state, _row)):
                 pass
@@ -4703,12 +4705,11 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     if str(record.get("state")) not in ("consumed", "released"):
         return unknown(f"its output funding is {record.get('state')}, not a settled end")
     try:
-        commitments = produced_output._read_commitments(
-            scope / "commitments.json")
+        commitments = bl.BatchLedger(scope / "commitments.json").capture()
         entry = commitments["batches"].get(batch_id)   # type: ignore[union-attr]
         if not isinstance(entry, Mapping):
             return unknown(f"its batch {batch_id} is not committed")
-        active = produced_output._active_materialization(entry)
+        active = bl.BatchFacets(entry).active_copy
     except (OSError, ValueError) as exc:
         return unknown(f"its batch's commitments are unreadable: {exc}")
     if str(active.get("mover_key") or "") != mover:
@@ -4746,7 +4747,7 @@ def _retire_produced_orphan(queue: pool.PoolQueue, mover: str,
         result = produced_output.retire_batch(
             queue, verdict["instance"], verdict["template"],  # type: ignore[arg-type]
             str(verdict["batch_id"]), stage_root=str(stage_root),
-            residency_root=produced_output.output_fragment_root(residency_root))
+            residency_root=bl.output_fragment_root(residency_root))
     egress = result.get("receipt") if isinstance(result.get("receipt"), Mapping) else {}
     errors: list[str] = []
     if result.get("ok") is not True:

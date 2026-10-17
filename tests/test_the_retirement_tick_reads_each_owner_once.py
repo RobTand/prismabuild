@@ -25,6 +25,8 @@ Fixture concessions: owners are published, claimed and finished through the
 real ``PoolQueue``; run with the ``nobroker_plugin`` like the #914 tests.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import collections
 from pathlib import Path
@@ -44,8 +46,8 @@ from test_consumed_origin_retirement import _bind_owner  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     _descriptor, _prewrite, _queue, _template)
 
-CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
-RETAIN = po.ORIGIN_LIFETIME_RETAIN
+CONSUMED = oc.ORIGIN_LIFETIME_CONSUMED
+RETAIN = oc.ORIGIN_LIFETIME_RETAIN
 
 
 def _commit(queue, template, instance, batch_id: str, *,
@@ -57,7 +59,7 @@ def _commit(queue, template, instance, batch_id: str, *,
                      len(payload))["ok"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    got = po.commit_origin_batch(
+    got = bl.BatchLedger.commit_origin(
         queue, instance, template,
         [_descriptor(instance, template, path, payload)],
         batch_id=batch_id, lifetime=lifetime)
@@ -71,12 +73,14 @@ class _Reads:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.counts: collections.Counter = collections.Counter()
         for owner, name, which in ((RecordStore, "standing", 1),
-                                   (po, "_read_commitments", 0),
-                                   (po, "_read_prewrite", 0)):
+                                   (bl.BatchLedger, "capture", 0),
+                                   (bl, "read_prewrite", 0)):
             real = getattr(owner, name)
 
             def counted(*args, _real=real, _name=name, _which=which, **kw):
-                self.counts[(_name, str(args[_which]))] += 1
+                subject = args[_which].path if _name == "capture" else args[_which]
+                label = {"capture": "_read_commitments", "read_prewrite": "_read_prewrite"}.get(_name, _name)
+                self.counts[(label, str(subject))] += 1
                 return _real(*args, **kw)
 
             monkeypatch.setattr(owner, name, counted)
@@ -89,7 +93,7 @@ class _Reads:
 
 
 def _scope(queue, instance) -> Path:
-    return po.instance_dir(queue.root, instance)
+    return bl.scope_dir(queue.root, instance)
 
 
 @pytest.fixture(autouse=True)
@@ -157,7 +161,7 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     events = po.origin_retirement_tick(queue)
 
     assert sorted(event["event"] for event in events) == sorted([
-        po.ORIGIN_RETIRED_EVENT, "output-prewrite-orphaned"])
+        oc.ORIGIN_RETIRED_EVENT, "output-prewrite-orphaned"])
     assert not handoff.exists() and planned.exists()
     # Each owner key once.
     assert reads.of("standing", ended["owner_action_key"]) == 1

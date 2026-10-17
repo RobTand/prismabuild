@@ -4,6 +4,8 @@ Repeated metadata is an external observation, not a replacement cache verdict.
 The tests write actual commitments and partial bytes, and call production readers.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import pool as c13_pool
 
 import io
 import json
@@ -43,8 +45,7 @@ def filesystem(monkeypatch):
 def commitments(tmp_path, filesystem):
     scope = tmp_path / "scope"
     path = scope / "commitments.json"
-    produced_output._write_commitments(
-        path, {"batches": {"old": {"state": "filed"}}, "admission": None})
+    bl.BatchLedger(path).file({"batches": {"old": {"state": "filed"}}, "admission": None})
     return scope, path, filesystem(scope, path)
 
 
@@ -64,14 +65,13 @@ def staged(tmp_path, filesystem):
 def test_scoped_batches_read_replaced_bytes_after_current_trust_loss(
         commitments, monkeypatch):
     scope, path, facts = commitments
-    reads = produced_output._TickReads(None)
+    reads = bl.LedgerReads(None, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S)
     with kept_reads.file_version_scope():
         assert reads.batches(scope) == {"old": {"state": "filed"}}
         assert reads.batches(scope) == {"old": {"state": "filed"}}
         assert (reads.commitments_read, reads.commitments_reused) == (1, 1)
         old_observation = os.stat(path)
-        produced_output._write_commitments(
-            path, {"batches": {"new": {"state": "filed"}}, "admission": None})
+        bl.BatchLedger(path).file({"batches": {"new": {"state": "filed"}}, "admission": None})
         assert facts.real_stat(path).st_ino != old_observation.st_ino
         assert facts.real_stat(path).st_size == old_observation.st_size
         facts.objects[str(path)] = facts.identity(facts.real_lstat(path))
@@ -94,7 +94,7 @@ def test_scoped_batches_read_replaced_bytes_after_current_trust_loss(
 
 def test_valid_scoped_batch_hit_keeps_its_parsed_result(commitments, monkeypatch):
     scope, path, _facts = commitments
-    reads = produced_output._TickReads(None)
+    reads = bl.LedgerReads(None, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S)
     with kept_reads.file_version_scope():
         assert reads.batches(scope) == {"old": {"state": "filed"}}
         original_open = io.open

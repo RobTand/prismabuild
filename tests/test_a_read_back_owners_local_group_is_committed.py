@@ -24,6 +24,8 @@ the real spool export action:
     batch by name (``batch-committed-at-origin``) rather than try to stage it.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from pathlib import Path
 
@@ -54,11 +56,11 @@ def _acknowledged(spool):
     spool.queue.finish(handle["export_key"], status="executed")
     assert spool.poll_group("b1")["complete"]
     assert source.read_bytes() == PAYLOAD, "the owner's local copy stays readable"
-    descriptor = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    descriptor = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(destination),
         "bytes": len(PAYLOAD), "sha256": entries[0]["sha256"],
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": spool.owner,
         "owner_attempt": spool.instance["owner_attempt"]},
         spool.template, spool.instance)
@@ -66,19 +68,19 @@ def _acknowledged(spool):
 
 
 def _prewrites(spool) -> list[Path]:
-    return sorted(po._prewrites_dir(spool.queue.root, spool.instance)
+    return sorted(bl.prewrites_dir(spool.queue.root, spool.instance)
                   .glob("*.prewrite.json"))
 
 
 def _charged(spool) -> dict[str, int]:
-    return po._outstanding_sums(spool.queue.root, spool.instance,
+    return bl._outstanding_sums(spool.queue.root, spool.instance,
                                 exclude_batch_id="")
 
 
 def test_the_acknowledged_group_is_committed_and_charged_its_actual_bytes(
         tmp_path: Path) -> None:
     spool = world(tmp_path)
-    assert not po.is_write_only(spool.template)
+    assert not oc.is_write_only(spool.template)
     destination, descriptor = _acknowledged(spool)
     assert _charged(spool)["payload"] == CEILING, "the prewrite charges the ceiling"
 
@@ -95,9 +97,9 @@ def test_the_acknowledged_group_is_committed_and_charged_its_actual_bytes(
     again = spool.commit_origin_group("b1", [descriptor])
     assert again["ok"] is True and again["duplicate"] is True
     # The batch is not a handoff: no consumer can build a manifest over it.
-    with pytest.raises(po.ProducedOutputError, match="not-write-only"):
+    with pytest.raises(oc.ProducedOutputError, match="not-write-only"):
         po.load_origin_batch(spool.queue.root, committed["ref"])
-    with pytest.raises(po.ProducedOutputError, match="not-write-only"):
+    with pytest.raises(oc.ProducedOutputError, match="not-write-only"):
         po.declare_origin_consumer(spool.queue, committed["ref"],
                                    consumer_action_key=fx._hexkey("reader"))
 
@@ -107,7 +109,7 @@ def test_a_read_back_origin_commit_needs_the_landed_identities(
     spool = world(tmp_path)
     _destination, descriptor = _acknowledged(spool)
 
-    refused = po.commit_origin_batch(spool.queue, spool.instance,
+    refused = bl.BatchLedger.commit_origin(spool.queue, spool.instance,
                                      spool.template, [descriptor],
                                      batch_id="b1")
 
@@ -120,7 +122,7 @@ def test_a_consumed_read_back_batch_is_retired_when_its_owner_succeeds(
     spool = world(tmp_path)
     destination, descriptor = _acknowledged(spool)
     committed = spool.commit_origin_group("b1", [descriptor],
-                                          lifetime=po.ORIGIN_LIFETIME_CONSUMED)
+                                          lifetime=oc.ORIGIN_LIFETIME_CONSUMED)
     assert committed["ok"] is True, committed
     assert spool.release_group("b1")["ok"]
 
@@ -132,7 +134,7 @@ def test_a_consumed_read_back_batch_is_retired_when_its_owner_succeeds(
     events = po.origin_retirement_tick(spool.queue)
 
     assert [(event["event"], event["reason"]) for event in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "orphan")]
+        (oc.ORIGIN_RETIRED_EVENT, "orphan")]
     assert not destination.exists()
     assert _charged(spool) == {"payload": 0, "checkpoint": 0, "temp": 0}
 
@@ -146,10 +148,10 @@ def test_a_retained_read_back_batch_is_left_to_its_owner(tmp_path: Path) -> None
     assert po.origin_retirement_tick(spool.queue) == []
     assert destination.exists()
     assert _charged(spool)["payload"] == len(PAYLOAD)
-    assert po.reclaim_origin(spool.queue, spool.instance, spool.template,
+    assert bl.BatchLedger.reclaim(spool.queue, spool.instance, spool.template,
                              batch_id="b1")["refusal"] == "origin-present-retain"
     destination.unlink()
-    assert po.reclaim_origin(spool.queue, spool.instance, spool.template,
+    assert bl.BatchLedger.reclaim(spool.queue, spool.instance, spool.template,
                              batch_id="b1")["reclaimed"] is True
     assert _charged(spool)["payload"] == 0
 

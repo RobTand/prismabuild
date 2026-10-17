@@ -6,6 +6,7 @@ are never discounted. The local lock serializes budget decisions, not queue
 ownership (which still uses NFS rename).
 """
 from __future__ import annotations
+from prismabuild import output_contract as oc
 
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -163,8 +164,8 @@ def export_rate_key(template_sha256, family=None):
         return template_sha256 if _is_key(template_sha256) else None
     from . import produced_output
     try:
-        return EXPORT_RATE_FAMILY_PREFIX + produced_output.validate_export_rate_family(family)
-    except produced_output.ProducedOutputError:
+        return EXPORT_RATE_FAMILY_PREFIX + oc.validate_export_rate_family(family)
+    except oc.ProducedOutputError:
         return None
 
 
@@ -620,7 +621,6 @@ def census_box_origins(directory):
         key = (record['queue_root'], record['hostname'], record['argv0'])
         origins.setdefault(key, []).append(stem)
     return origins, legacy
-
 
 
 def box_identity(base):
@@ -1135,7 +1135,6 @@ def prune_box_state(*, queue_roots=(), older_than_s=PRUNE_IDLE_AFTER_S,
             'candidates': list(survey['candidates']),
             'kept': dict(survey['kept']),
             'queue_evidence': dict(survey['queue_evidence'])}
-
 
 
 def local_telemetry_path(base, action_key):

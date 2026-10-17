@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Occurrence-preserving C13 source inventory. Reads source; imports no product code."""
+"""Occurrence-preserving C13 source c13_inventory. Reads source; imports no product code."""
 from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
 import gzip
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -13,17 +12,17 @@ import subprocess
 BASE = 'd2f92f5ff533489182dddaf286feb54afde6f34a'
 
 
-def git(*args):
+def c13_git(*args):
     return subprocess.check_output(['git', *args])
 
 
-def inventory(revision):
-    paths = git('ls-tree', '-r', '--name-only', revision).decode().splitlines()
+def c13_inventory(revision):
+    paths = c13_git('ls-tree', '-r', '--name-only', revision).decode().splitlines()
     result = {'revision': revision, 'files': {}}
     for path in paths:
         if not path.endswith('.py'):
             continue
-        raw = git('show', f'{revision}:{path}')
+        raw = c13_git('show', f'{revision}:{path}')
         try:
             source = raw.decode()
             tree = ast.parse(source)
@@ -60,7 +59,7 @@ def inventory(revision):
                         rows.append({'kind':'quoted','line':node.lineno,'scope':'.'.join(self.scope),'value':node.value})
                 super().generic_visit(node)
         Visit().visit(tree)
-        result['files'][path] = {'sha256':hashlib.sha256(raw).hexdigest(),'occurrences':rows}
+        result['files'][path] = {'git_blob':subprocess.check_output(['git','hash-object','--stdin'],input=raw).decode().strip(),'occurrences':rows}
     return result
 
 
@@ -69,11 +68,11 @@ def main():
     p.add_argument('--revision',default=BASE)
     p.add_argument('--out',type=Path,required=True)
     args = p.parse_args()
-    data = inventory(args.revision)
+    data = c13_inventory(args.revision)
     with gzip.open(args.out,'wt') as handle:
         json.dump(data,handle,separators=(',',':'))
     counts = Counter(row['kind'] for file in data['files'].values() for row in file['occurrences'])
-    print(json.dumps({'revision':args.revision,'files':len(data['files']),'counts':counts,'out':str(args.out)},sort_keys=True))
+    print(json.dumps({'revision':args.revision,'files':len(data['files']),'counts':counts,'out':str(args.out)}))
 
 if __name__ == '__main__':
     main()

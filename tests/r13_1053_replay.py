@@ -24,6 +24,8 @@ The batch classes the replay asserts on:
 * ``reclaimed``: the 36 whose origin was already reclaimed, with no files.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from dataclasses import dataclass, field
 import gzip
@@ -66,8 +68,7 @@ class Replay:
                 f"{self.instance['owner_attempt']['nonce']}/{batch_id}")
 
     def entry(self, queue_root: Path, batch_id: str) -> dict:
-        return po._read_commitments(
-            po._commitments_path(queue_root, self.instance))["batches"][batch_id]
+        return bl.BatchLedger.for_instance(queue_root, self.instance).capture()["batches"][batch_id]
 
 
 def load_bundle() -> dict:
@@ -120,13 +121,13 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
     raw = raw.replace(f'"{LIVE_STAGE}/', f'"{stage}/')
     bundle = json.loads(raw)
 
-    template = po.validate_template(bundle["template"])
+    template = oc.validate_template(bundle["template"])
     po.declare_template(queue.root, template)
-    tsha = po.template_sha256(template)
+    tsha = oc.template_sha256(template)
     instance = dict(bundle["instance"])
     instance["template_sha256"] = tsha
-    instance = po.validate_instance(instance)
-    scope = po.instance_dir(queue.root, instance)
+    instance = oc.validate_instance(instance)
+    scope = bl.scope_dir(queue.root, instance)
     assert scope.name == bundle["scope_name"], scope
     (scope / "prewrites").mkdir(parents=True, exist_ok=True)
     # Filed as the live one was: by a producer that predates any index.
@@ -137,8 +138,8 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
     commitments = bundle["commitments"]
     batches: dict[str, dict] = commitments["batches"]
     records: dict[str, dict] = bundle["batch_records"]
-    batch_root = (Path(queue.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                  / po.instance_namespace(instance))
+    batch_root = (Path(queue.root) / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                  / oc.instance_namespace(instance))
     batch_root.mkdir(parents=True, exist_ok=True)
     for batch_id in sorted(batches):
         entry = batches[batch_id]
@@ -146,12 +147,12 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
         record = records.get(batch_id)
         if record is not None:
             record["template_sha256"] = tsha
-            sealed = [po.validate_descriptor(item, template, instance)
+            sealed = [oc.validate_descriptor(item, template, instance)
                       for item in record["entries"]]
-            manifest = po.output_manifest_sha256(sealed)
+            manifest = oc.output_manifest_sha256(sealed)
             record["manifest_digest"] = manifest
         old = str(entry["batch_namespace"])
-        new = po.batch_namespace(instance, batch_id, manifest)
+        new = oc.batch_namespace(instance, batch_id, manifest)
         entry = json.loads(json.dumps(entry).replace(old, new))
         entry["manifest_digest"] = manifest
         batches[batch_id] = entry
@@ -160,7 +161,7 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
             record["batch_namespace"] = new
             (batch_root / f"{batch_id}.json").write_text(json.dumps(
                 record, sort_keys=True, separators=(",", ":")) + "\n")
-    po._write_commitments(scope / "commitments.json", commitments)
+    bl.BatchLedger(scope / "commitments.json").file(commitments)
 
     for name, record in bundle["prewrites"].items():
         (scope / "prewrites" / name).write_text(json.dumps(
@@ -177,7 +178,7 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
             pool.immutable_files.write_json_atomic(queue.records.item_path(state, key), record)
 
     unretired = sorted(batch_id for batch_id, entry in batches.items()
-                       if not po._batch_stage_retired(entry))
+                       if not bl.BatchFacets(entry).stage_retired)
     colliding = sorted(batch_id for batch_id in unretired
                        if "-cotangent-" in batch_id)
     reclaimed = sorted(batch_id for batch_id, entry in batches.items()
@@ -194,7 +195,7 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
                for batch_id, entry in batches.items()},
         prewrite_paths={name[:-len(".prewrite.json")]: list(record["paths"])
                         for name, record in bundle["prewrites"].items()},
-        movers={batch_id: str(po._active_materialization(batches[batch_id])
+        movers={batch_id: str(bl.BatchFacets(batches[batch_id]).active_copy
                               ["mover_key"]) for batch_id in unretired})
     if origin_files:
         wanted = {path for batch_id, paths in replay.paths.items()

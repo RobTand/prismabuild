@@ -18,6 +18,7 @@ counted twice.  The tier loop counts it only when
 every decision is the one it made before.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 
 from pathlib import Path
 import sys
@@ -56,7 +57,7 @@ def owner(tmp_path: Path):
     queue = produced._queue(tmp_path)
     template = produced._template(str(origin))
     bound = produced._bind_live(queue, tmp_path, template)
-    assert po.admit_instance(queue, bound["instance"], template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, bound["instance"], template)["ok"] is True
     key = bound["owner"]
     assert queue.tier(TIER).holdings(key) == {KIND: 2}
     return queue, key, bound, template
@@ -95,7 +96,7 @@ def test_a_dead_owners_torn_records_are_never_read(owner) -> None:
     queue.tier(TIER).release_unspent(key, authority=tier_holdings.Unspent.NEVER_STARTED)
     queue.finish(key, status="executed")
     _tear(po.template_path(queue.root, template))
-    _tear(po.instance_dir(queue.root, bound["instance"]) / "instance.json")
+    _tear(bl.scope_dir(queue.root, bound["instance"]) / "instance.json")
     assert po.unheld_window_gib(queue, TIER)["gib"] == 0
 
 

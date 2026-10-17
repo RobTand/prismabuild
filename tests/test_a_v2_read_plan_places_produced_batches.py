@@ -24,6 +24,8 @@ published generation this checkout does not have, so it is replaced by a
 recorder; its own tests are ``test_pbrun_read_plan_storage_gate.py``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -118,7 +120,7 @@ def _static(tmp_path: Path, *slots: dict, layout=PLAN,
                         "sha256": None})
     notes = dict(annotations or {})
     if slots:
-        notes[po.ORIGIN_SLOTS_ANNOTATION] = list(slots)
+        notes[oc.ORIGIN_SLOTS_ANNOTATION] = list(slots)
     return manifest_codec.validate_data_manifest({
         "schema": V2, "produced_by": {"tool": "tests/946"},
         "mount_prefix": str(root), "entries": entries,
@@ -250,15 +252,15 @@ def test_a_deferred_plan_reads_the_batch_at_the_phase_it_names(
         pb.PrismaBuildCAS(tmp_path / "cas").input_path(
             _request(tmp_path, key)["params"]["data_manifest"]["input"]))
     assert _reads(manifest) == _expected_reads(tmp_path, path)
-    assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [committed["ref"]]
-    assert manifest["annotations"][po.ORIGIN_SLOTS_ANNOTATION] == [
+    assert manifest["annotations"][oc.ORIGIN_BATCHES_ANNOTATION] == [committed["ref"]]
+    assert manifest["annotations"][oc.ORIGIN_SLOTS_ANNOTATION] == [
         {"phase": "handoff", "refs": [committed["ref"]]}]
     # One mechanism: the release built what an ordinary submitter builds, and
     # what pbrun accepts from one.
     assert manifest == _placed(tmp_path, queue, committed["ref"])
     submit_core.require_declared_origin_batches(
         manifest, transport="pool", queue_root=queue.root)
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists(), "declared against the batch (#914)"
 
     # Residency follows the plan: the batch second, the head again after it.
@@ -333,7 +335,7 @@ def test_an_ordinary_submission_declares_the_same_plan(
     manifest = _sealed_manifest(tmp_path, key)
     assert manifest == placed
     assert _reads(manifest) == _expected_reads(tmp_path, path)
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists(), "declared against the batch (#914)"
 
     _tier_cycle(queue, tmp_path / "stage")
@@ -364,7 +366,7 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
     assert "outside its slot" in refused(reread)
 
     elsewhere = {**placed, "annotations": {
-        **notes, po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "replay-0", "refs": [ref]}]}}
+        **notes, oc.ORIGIN_SLOTS_ANNOTATION: [{"phase": "replay-0", "refs": [ref]}]}}
     assert "outside its slot" in refused(elsewhere)
 
     moved = _rephased(placed, (("head", [0, 1]), ("handoff", []),
@@ -381,12 +383,12 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
 
     unplaced = {**placed, "annotations": {
         key: value for key, value in notes.items()
-        if key != po.ORIGIN_SLOTS_ANNOTATION}}
-    assert po.ORIGIN_SLOTS_ANNOTATION in refused(unplaced)
+        if key != oc.ORIGIN_SLOTS_ANNOTATION}}
+    assert oc.ORIGIN_SLOTS_ANNOTATION in refused(unplaced)
 
     edge = f"{producer}:{_t['template_id']}"
     deferred_slot = {**placed, "annotations": {
-        **notes, po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "handoff", "after": edge}]}}
+        **notes, oc.ORIGIN_SLOTS_ANNOTATION: [{"phase": "handoff", "after": edge}]}}
     assert "placed by the release" in refused(deferred_slot)
 
     assert not queue.records.dir(pool.record_store.READY).exists() or not [
@@ -440,9 +442,9 @@ def test_a_deferred_plan_names_one_slot_per_edge(
     assert "exactly phase and after" in refused(
         _static(tmp_path, {"phase": "handoff", "after": edge, "refs": []}),
         *PROGRESS)
-    assert po.ORIGIN_BATCHES_ANNOTATION in refused(
+    assert oc.ORIGIN_BATCHES_ANNOTATION in refused(
         _static(tmp_path, {"phase": "handoff", "after": edge},
-                annotations={po.ORIGIN_BATCHES_ANNOTATION: []}), *PROGRESS)
+                annotations={oc.ORIGIN_BATCHES_ANNOTATION: []}), *PROGRESS)
     assert "linear progress reporting" in refused(
         _static(tmp_path, {"phase": "handoff", "after": edge}),
         *PROGRESS[:-2])
@@ -509,7 +511,7 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     # A v1 manifest has no read plan to place a batch in.
     slotted = {**static, "annotations": {
         **static["annotations"],
-        po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "head", "refs": [committed["ref"]]}]}}
+        oc.ORIGIN_SLOTS_ANNOTATION: [{"phase": "head", "refs": [committed["ref"]]}]}}
     with pytest.raises(submit_core.SubmissionRefused, match="only a data_manifest.v2 has"):
         submit_core.require_declared_origin_batches(
             slotted, transport="pool", queue_root=queue.root)

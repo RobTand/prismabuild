@@ -12,6 +12,8 @@ tests use truncate (no pages). No capability is announced. General-window
 admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from collections import Counter
 import errno
@@ -61,7 +63,7 @@ PIN_DEPENDENCY = ("coherent prismabuild.reader_lease (PB730 a9bb83e9, "
 
 def _template(output_prefix: str, **overrides) -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "r5-fixture-v1",
         "output_prefix": output_prefix,
@@ -83,7 +85,7 @@ def _template(output_prefix: str, **overrides) -> dict:
         "permitted_tiers": [STAGE_TIER],
     }
     body.update(overrides)
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
@@ -147,7 +149,7 @@ def _bind(queue: pool.PoolQueue, template: dict, owner: str = OWNER):
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
+    bl.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
             "env": env}
 
@@ -239,7 +241,7 @@ def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
+    bl.declare_instance(queue.root, instance)
     return {"instance": instance, "claimed": claimed, "control": control,
             "env": env, "nonce": nonce}
 
@@ -252,14 +254,14 @@ def _write(path: Path, payload: bytes) -> None:
 def _desc(origin: Path, template: dict, slot: str, cls: str, name: str,
           payload: bytes, instance: dict, gen: str | None = None) -> dict:
     _write(origin / name, payload)
-    return po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2,
+    return oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2,
         "slot": slot,
         "artifact_class": cls,
         "path": str(origin / name),
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": gen or po.mint_generation(),
+        "producer_generation": gen or oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -345,10 +347,10 @@ def test_binding_both_halves_declared_and_refusals(tmp_path: Path) -> None:
     claimed = bound["claimed"]
     # Undeclared template binds nothing, even with a real claim+control.
     other_template = _template(str(origin), template_id="undeclared-v1")
-    with pytest.raises(po.ProducedOutputError, match="undeclared-template"):
+    with pytest.raises(oc.ProducedOutputError, match="undeclared-template"):
         po.bind_instance(queue, other_template, owner_action_key=OWNER,
                          claim_snapshot=claimed, env=bound["env"])
-    with pytest.raises(po.ProducedOutputError, match="no-launch-context"):
+    with pytest.raises(oc.ProducedOutputError, match="no-launch-context"):
         po.bind_instance(queue, template, owner_action_key=OWNER,
                          claim_snapshot=claimed, env={})
     other = "b" * 64
@@ -356,21 +358,21 @@ def test_binding_both_halves_declared_and_refusals(tmp_path: Path) -> None:
     env_other = {"PRISMABUILD_ACTION_KEY": other,
                  "PRISMABUILD_ACTION_NONCE": "0" * 32,
                  "PRISMABUILD_ACTION_SCOPE": "prismabuild-job" + "0" * 32 + ".slice"}
-    with pytest.raises(po.ProducedOutputError, match="no-control-context"):
+    with pytest.raises(oc.ProducedOutputError, match="no-control-context"):
         po.bind_instance(queue, template, owner_action_key=other,
                          claim_snapshot=claimed_other, env=env_other)
     control = bound["control"]
     bad_env = dict(bound["env"], PRISMABUILD_ACTION_NONCE="f" * 32)
     assert bad_env["PRISMABUILD_ACTION_NONCE"] != control["nonce"]
-    with pytest.raises(po.ProducedOutputError, match="attempt-superseded"):
+    with pytest.raises(oc.ProducedOutputError, match="attempt-superseded"):
         po.bind_instance(queue, template, owner_action_key=OWNER,
                          claim_snapshot=claimed, env=bad_env)
-    with pytest.raises(po.ProducedOutputError, match="foreign"):
+    with pytest.raises(oc.ProducedOutputError, match="foreign"):
         po.bind_instance(queue, template, owner_action_key=other,
                          claim_snapshot=claimed, env=env_other)
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    with pytest.raises(po.ProducedOutputError, match="[Ss]tale"):
+    with pytest.raises(oc.ProducedOutputError, match="[Ss]tale"):
         po.bind_instance(queue, template, owner_action_key=OWNER,
                          claim_snapshot=claimed, env=bound["env"])
 
@@ -415,7 +417,7 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    ok = po.admit_instance(queue, instance, template)
+    ok = bl.BatchLedger.admit(queue, instance, template)
     assert ok["ok"] is True
     assert ok["admission"]["minimum_gib"][STAGE_TIER] == 1
     assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
@@ -430,7 +432,7 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     assert declared["declaration_only"] is True
     assert declared["authority"] == "per-batch-funding"
     assert declared["owner_action_key"] == OWNER
-    assert declared["owner_demand_terms"] == po.owner_demand_terms(template)
+    assert declared["owner_demand_terms"] == oc.owner_demand_terms(template)
     assert declared["window_gib"] == {STAGE_TIER: 2}
     assert declared["batch_ref_schema"] == \
         pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
@@ -452,7 +454,7 @@ def test_owner_demand_derivation_and_publish_rule(tmp_path: Path) -> None:
     origin = tmp_path / "pool-origin" / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    assert po.owner_demand_terms(template) == {f"stage_gib@{STAGE_TIER}": 2}
+    assert oc.owner_demand_terms(template) == {f"stage_gib@{STAGE_TIER}": 2}
     queue = _queue(tmp_path)
     # Today's publish rule refuses tier demand without an attributing
     # residency block (#595) — the exact rule the hook proposal extends.
@@ -470,10 +472,10 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     files = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
              str(origin / "scratch-0.pt")]
-    pre = po.require_prewrite(queue, instance, template,
+    pre = bl.BatchLedger.reserve(queue, instance, template,
                               batch_id="batch-0000", tier=STAGE_TIER,
                               class_bytes={"payload": 12288, "checkpoint": 0,
                                            "temp": 2048},
@@ -501,12 +503,12 @@ def _prewrite_scope(tmp_path: Path):
     template = _template(str(origin))
     queue = _queue(tmp_path)
     instance = _bind(queue, template)["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     return origin, queue, instance, template
 
 
 def _prewrite(queue, instance, template, paths, batch_id="group"):
-    return po.require_prewrite(
+    return bl.BatchLedger.reserve(
         queue, instance, template, batch_id=batch_id, tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=paths)
@@ -542,9 +544,9 @@ def test_prewrite_containment_walks_shared_ancestors_once(
         path.write_bytes(b"data")
     paths = [str(path) for path in files]
     with monkeypatch.context() as scoped:
-        scoped.setitem(po._PREFIX_REALPATHS, str(origin), str(tmp_path / "stale"))
+        scoped.setitem(bl._PREFIX_REALPATHS, str(origin), str(tmp_path / "stale"))
         resolved, inspected = _containment_calls(scoped, origin)
-        assert po._prewrite_paths(str(origin), paths) == paths
+        assert bl._prewrite_paths(str(origin), paths) == paths
     assert resolved == [str(origin)]
     assert inspected == Counter({str(path): 1 for path in [shared, deep, *files]})
     _, queue, instance, template = _prewrite_scope(tmp_path)
@@ -563,7 +565,7 @@ def test_prewrite_containment_accepts_missing_suffixes(
              str(absent / "other" / "b.pt"), str(absent)]
     with monkeypatch.context() as scoped:
         resolved, inspected = _containment_calls(scoped, origin)
-        assert po._prewrite_paths(str(origin), paths) == paths
+        assert bl._prewrite_paths(str(origin), paths) == paths
     assert resolved == [str(origin)]
     assert inspected == Counter({str(shared): 1, str(absent): 1,
                                  str(shared / "leaf.pt"): 1})
@@ -648,11 +650,11 @@ def test_prewrite_containment_fallback_matches_realpath(
     with monkeypatch.context() as scoped:
         resolved, _ = _containment_calls(scoped, origin)
         if accepted:
-            assert po._prewrite_paths(prefix, [path]) == [path]
+            assert bl._prewrite_paths(prefix, [path]) == [path]
         else:
-            with pytest.raises(po.ProducedOutputError,
+            with pytest.raises(oc.ProducedOutputError,
                                match="prewrite paths\\[\\] escapes the scope prefix"):
-                po._prewrite_paths(prefix, [path])
+                bl._prewrite_paths(prefix, [path])
     assert resolved == ([prefix, path] if fallback else [prefix])
 
 
@@ -689,10 +691,10 @@ def test_prewrite_containment_metadata_errors_use_fallback(
         resolved, _ = _containment_calls(scoped, origin)
         scoped.setattr(os, syscall, fail_once)
         if escapes:
-            with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
-                po._prewrite_paths(str(origin), [str(path)])
+            with pytest.raises(oc.ProducedOutputError, match="escapes the scope prefix"):
+                bl._prewrite_paths(str(origin), [str(path)])
         else:
-            assert po._prewrite_paths(str(origin), [str(path)]) == [str(path)]
+            assert bl._prewrite_paths(str(origin), [str(path)]) == [str(path)]
     assert failures == [str(failing)]
     assert resolved == [str(origin), str(path)]
 
@@ -708,31 +710,31 @@ def test_prewrite_containment_observations_do_not_survive_calls(tmp_path: Path) 
     shared.rmdir()
     shared.symlink_to(outside, target_is_directory=True)
     for batch_id in ("first", "second"):
-        with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+        with pytest.raises(oc.ProducedOutputError, match="escapes the scope prefix"):
             _prewrite(queue, instance, template, paths, batch_id)
-    records = po._prewrites_dir(queue.root, instance)
+    records = bl.prewrites_dir(queue.root, instance)
     assert sorted(path.name for path in records.iterdir()) == ["first.prewrite.json"]
 
 
 def test_prewrite_containment_preserves_validation_and_replay(tmp_path: Path) -> None:
     origin, queue, instance, template = _prewrite_scope(tmp_path)
-    records = po._prewrites_dir(queue.root, instance)
+    records = bl.prewrites_dir(queue.root, instance)
     paths = [str(origin / "z.pt"), str(origin / "a.pt"),
              "/" + str(origin / "double.pt")]
     for invalid, message in [
             ("relative.pt", "must be an absolute path"),
             (str(origin) + "/nested/../a.pt", "must be normalized")]:
-        with pytest.raises(po.ProducedOutputError, match=message):
+        with pytest.raises(oc.ProducedOutputError, match=message):
             _prewrite(queue, instance, template, [invalid], "invalid")
     for invalid in ([], tuple(paths), None):
         assert _prewrite(queue, instance, template, invalid, "empty") == {
             "ok": False, "refusal": "prewrite-paths-required"}
     assert _prewrite(queue, instance, template, [paths[0], paths[0]], "duplicate") == {
         "ok": False, "refusal": "prewrite-paths-must-be-distinct"}
-    with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+    with pytest.raises(oc.ProducedOutputError, match="escapes the scope prefix"):
         _prewrite(queue, instance, template,
                   [paths[0], str(tmp_path / "outside.pt")], "mixed")
-    with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
+    with pytest.raises(oc.ProducedOutputError, match="escapes the scope prefix"):
         _prewrite(queue, instance, template,
                   [str(tmp_path / "outside.pt"), "relative.pt"], "order")
     assert not records.exists()
@@ -766,15 +768,15 @@ def test_prewrite_containment_rechecks_changed_prefix(tmp_path: Path, monkeypatc
     prefix.symlink_to(first, target_is_directory=True)
     paths = [str(prefix / "shared" / "planned.pt")]
     with monkeypatch.context() as scoped:
-        scoped.setitem(po._PREFIX_REALPATHS, str(prefix), str(first))
+        scoped.setitem(bl._PREFIX_REALPATHS, str(prefix), str(first))
         resolved, _ = _containment_calls(scoped, first)
-        assert po._prewrite_paths(str(prefix), paths) == paths
+        assert bl._prewrite_paths(str(prefix), paths) == paths
         prefix.unlink()
         prefix.symlink_to(second, target_is_directory=True)
-        with pytest.raises(po.ProducedOutputError, match="escapes the scope prefix"):
-            po._prewrite_paths(str(prefix), paths)
+        with pytest.raises(oc.ProducedOutputError, match="escapes the scope prefix"):
+            bl._prewrite_paths(str(prefix), paths)
         (second / "shared").unlink()
-        assert po._prewrite_paths(str(prefix), paths) == paths
+        assert bl._prewrite_paths(str(prefix), paths) == paths
     assert resolved == [str(prefix), str(prefix), paths[0], str(prefix)]
 
 
@@ -785,51 +787,51 @@ def test_prewrite_counts_outstanding_abort_proves_absence(tmp_path: Path) -> Non
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     fa = [str(origin / "a.pt")]
     fb = [str(origin / "b.pt")]
     # Two outstanding 768 KiB reservations under a 1 MiB cap: the second
     # refuses while the first is outstanding.
-    first = po.require_prewrite(
+    first = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
         class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
         paths=fa)
     assert first["ok"] is True
-    second = po.require_prewrite(
+    second = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
         class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
         paths=fb)
     assert second["ok"] is False
     assert second["refusal"] == "prewrite-exceeds-payload-maxima"
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
         class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
         paths=fa)["ok"] is True
     # Abort with a present file refuses: uncommitted is not unwritten.
     _write(origin / "a.pt", b"A" * 64)
-    refused_abort = po.abort_prewrite(queue, instance, template, batch_id="batch-a")
+    refused_abort = bl.BatchLedger.abort(queue, instance, template, batch_id="batch-a")
     assert refused_abort["ok"] is False
     assert refused_abort["refusal"] == "abort-files-present-retain"
     # Safe disposal is the producer's job; absence unblocks the abort.
     (origin / "a.pt").unlink()
-    assert po.abort_prewrite(queue, instance, template,
+    assert bl.BatchLedger.abort(queue, instance, template,
                              batch_id="batch-a") == {
         "ok": True, "batch_id": "batch-a", "aborted": True}
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
         class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
         paths=fb)["ok"] is True
-    assert po.abort_prewrite(queue, instance, template,
+    assert bl.BatchLedger.abort(queue, instance, template,
                              batch_id="missing") == {
         "ok": True, "batch_id": "missing", "aborted": False}
     # Checkpoint over maxima refuses before any write; zeros stay valid.
-    refused = po.require_prewrite(
+    refused = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="big-ckpt", tier=STAGE_TIER,
         class_bytes={"payload": 0, "checkpoint": (1 << 20) + 1, "temp": 0},
         paths=[str(origin / "ckpt.pt")])
     assert refused["ok"] is False
     assert "checkpoint" in str(refused["refusal"])
-    zeros = po.require_prewrite(
+    zeros = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="zeros", tier=STAGE_TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "z.pt")])
@@ -837,11 +839,11 @@ def test_prewrite_counts_outstanding_abort_proves_absence(tmp_path: Path) -> Non
     # Commit with no prewrite record refuses.
     a = b"A" * 64
     _write(origin / "boundary-0.pt", a)
-    desc = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    desc = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
         "artifact_class": "payload", "path": str(origin / "boundary-0.pt"),
         "bytes": len(a), "sha256": hashlib.sha256(a).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -859,7 +861,7 @@ def test_prewrite_counts_outstanding_abort_proves_absence(tmp_path: Path) -> Non
         env={"PRISMABUILD_ACTION_KEY": "b" * 64,
              "PRISMABUILD_ACTION_NONCE": control2["nonce"],
              "PRISMABUILD_ACTION_SCOPE": control2["scope_id"]})
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, other, template, batch_id="x", tier=STAGE_TIER,
         class_bytes={"payload": 1, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "x.pt")]) == {
@@ -873,13 +875,13 @@ def test_concurrent_prewrites_admit_exactly_one(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     results: dict[str, bool] = {}
     barrier = threading.Barrier(2)
 
     def attempt(suffix: str) -> None:
         barrier.wait(timeout=30)
-        outcome = po.require_prewrite(
+        outcome = bl.BatchLedger.reserve(
             queue, instance, template, batch_id=f"race-{suffix}",
             tier=STAGE_TIER,
             class_bytes={"payload": 768 << 10, "checkpoint": 0, "temp": 0},
@@ -906,20 +908,20 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     payload_bytes = 3 * GIB // 2
     sparse = origin / "boundary-0.pt"
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="big", tier=STAGE_TIER,
         class_bytes={"payload": payload_bytes, "checkpoint": 0, "temp": 0},
         paths=[str(sparse)])["ok"] is True
     with open(sparse, "wb") as handle:
         handle.truncate(payload_bytes)
-    desc = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    desc = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
         "artifact_class": "payload", "path": str(sparse),
         "bytes": payload_bytes, "sha256": "0" * 64,
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -928,11 +930,11 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     # filed exactly as commit would file it (white-box crash instant;
     # every transition below it runs through the real APIs).
     mover = "a" * 64
-    manifest = po.output_manifest_sha256([desc])
-    batch_ns = po.batch_namespace(instance, "big", manifest)
+    manifest = oc.output_manifest_sha256([desc])
+    batch_ns = oc.batch_namespace(instance, "big", manifest)
     ledger = queue.tier(STAGE_TIER)
     assert ledger.take(batch_ns, {STAGE_BARE: 2}) is True
-    po._write_funding(po._funding_dir(queue.root, instance) / "big.funding.json", {
+    bl._write_funding(bl._funding_dir(queue.root, instance) / "big.funding.json", {
         "batch_id": "big", "tier": STAGE_TIER, "mover_key": mover,
         "batch_gib": 2, "manifest_digest": manifest})
     held = ledger.paths.held
@@ -962,18 +964,18 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
 
     # Window 0: boundary-0 + cotangent genA + scratch temp.
     files0 = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
               str(origin / "scratch-0.pt")]
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-0000",
         tier=STAGE_TIER,
         class_bytes={"payload": 12288, "checkpoint": 0, "temp": 2048},
         paths=files0)["ok"] is True
-    gen_a = po.mint_generation()
+    gen_a = oc.mint_output_generation()
     descs0 = [
         _desc(origin, template, "boundary-0", "payload", "boundary-0.pt", b"A" * 4096, instance),
         _desc(origin, template, "cotangent-0", "payload", "cotangent-0.pt", b"B" * 8192,
@@ -991,12 +993,12 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     # file; regenerating one path is exercised separately below.
     files1 = [str(origin / "boundary-1.pt"), str(origin / "cotangent-1.pt"),
               str(origin / "checkpoint-0.pt")]
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-0001",
         tier=STAGE_TIER,
         class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0},
         paths=files1)["ok"] is True
-    gen_b = po.mint_generation()
+    gen_b = oc.mint_output_generation()
     assert gen_b != gen_a
     descs1 = [
         _desc(origin, template, "boundary-1", "payload", "boundary-1.pt", b"D" * 4096, instance),
@@ -1023,7 +1025,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     staged = {e["batch_id"] for e in events if e["event"] == "output-batch-staged"}
     assert {"batch-0000", "batch-0001"} <= staged
     # Due rows are empty once staged (no second scheduler here).
-    assert po.due_mover_rows(queue, instance, template) == []
+    assert bl.BatchLedger.due_mover_rows(queue, instance, template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
     recovered = {e["batch_id"]: e["event"]
                  for e in po.recover_batches(queue, instance, template)
                  if "batch_id" in e}
@@ -1112,7 +1114,7 @@ def test_owner_superseded_retain(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     # Owner finishes, then the SAME key is resubmitted and claimed: the old
     # terminal never frees scope bound to the old attempt.
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
@@ -1135,20 +1137,20 @@ def test_funding_mover_live_retain(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     payload = b"A" * 4096
     paths = [str(origin / "boundary-0.pt")]
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-w", tier=STAGE_TIER,
         class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
         paths=paths)["ok"] is True
     # Crash-prefix funding with a LIVE mover: tokens acquired under the
     # batch holder, one share moved, intent filed; the mover row is live
     # (claimed) so the remainder must not be reclaimed blindly.
-    ns = po.batch_namespace(
+    ns = oc.batch_namespace(
         instance, "batch-w",
-        po.output_manifest_sha256([{
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+        oc.output_manifest_sha256([{
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
             "artifact_class": "payload", "path": paths[0],
             "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest(),
@@ -1158,7 +1160,7 @@ def test_funding_mover_live_retain(tmp_path: Path) -> None:
     ledger = queue.tier(STAGE_TIER)
     assert ledger.take(ns, {STAGE_BARE: 1}) is True
     mover = "a" * 64
-    po._write_funding(po._funding_dir(queue.root, instance) / "batch-w.funding.json", {
+    bl._write_funding(bl._funding_dir(queue.root, instance) / "batch-w.funding.json", {
         "batch_id": "batch-w", "tier": STAGE_TIER, "mover_key": mover,
         "batch_gib": 1, "manifest_digest": "0" * 64})
     queue.publish(action_key=mover, cas_root="/cas", worker_script="/w.py",
@@ -1180,9 +1182,9 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     paths = [str(origin / "boundary-0.pt")]
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-0000", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=paths)["ok"] is True
@@ -1196,7 +1198,7 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     # residency block passes the REAL pool validator. Sealer plumbing
     # (cas/worker/checkout) is the submitter lane's (pbrun hunk); this lane
     # owns identity/demand/residency only.
-    rows = po.due_mover_rows(queue, instance, template)
+    rows = bl.BatchLedger.due_mover_rows(queue, instance, template, residency_schema=pool.RESIDENCY_SCHEMA_V1)
     assert [(r["batch_id"], r["reason"]) for r in rows] == [
         ("batch-0000", "needs-publish")]
     assert rows[0]["action_key"] == MOVER0
@@ -1211,7 +1213,7 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     assert pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.READY, MOVER0),
     ) is not None
-    assert po.due_mover_rows(queue, instance, template) == []
+    assert bl.BatchLedger.due_mover_rows(queue, instance, template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
     assert [(e["batch_id"], e["event"]) for e in
             po.recover_batches(queue, instance, template)] == [
         ("batch-0000", "output-mover-live-wait")]
@@ -1219,7 +1221,7 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
     assert mover_claim is not None and mover_claim["action_key"] == MOVER0
     queue.finish(MOVER0, status="failed", detail={"status": "failed"},
                  claim_snapshot=mover_claim)
-    rows = po.due_mover_rows(queue, instance, template)
+    rows = bl.BatchLedger.due_mover_rows(queue, instance, template, residency_schema=pool.RESIDENCY_SCHEMA_V1)
     assert [(r["batch_id"], r["reason"]) for r in rows] == [
         ("batch-0000", "retry-failed-mover")]
     recovered = po.recover_batches(queue, instance, template)
@@ -1242,11 +1244,11 @@ def test_pin_lifecycle_owner_split(tmp_path: Path) -> None:
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind(queue, template)
     instance = bound["instance"]
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     files = [str(origin / "boundary-0.pt"), str(origin / "cotangent-0.pt"),
              str(origin / "checkpoint-0.pt")]
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-0000", tier=STAGE_TIER,
         class_bytes={"payload": 12288, "checkpoint": 2048, "temp": 0},
         paths=files)["ok"] is True
@@ -1363,8 +1365,8 @@ def test_crash_unknown_retains_and_taint_fails_closed(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
-    commitments = po._commitments_path(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+    commitments = bl.BatchLedger.for_instance(queue.root, instance).path
     commitments.parent.mkdir(parents=True, exist_ok=True)
     commitments.write_text("{corrupt")
     retained = po.safe_release_instance(queue, instance, template)
@@ -1384,28 +1386,28 @@ def test_prefix_escape_and_bool_rejection(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
             "artifact_class": "payload",
             "path": str(origin / "link" / "evil.pt"),
             "bytes": 64, "sha256": hashlib.sha256(b"X" * 64).hexdigest(),
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": instance["owner_action_key"],
             "owner_attempt": dict(instance["owner_attempt"]),
         }, template, instance)
-    bad = dict(po.validate_template(template))
+    bad = dict(oc.validate_template(template))
     bad["version"] = True
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_template(bad)
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_template(bad)
     _write(origin / "boundary-0.pt", b"A" * 64)
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
             "artifact_class": "checkpoint",
             "path": str(origin / "boundary-0.pt"),
             "bytes": 64, "sha256": hashlib.sha256(b"A" * 64).hexdigest(),
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": instance["owner_action_key"],
             "owner_attempt": dict(instance["owner_attempt"]),
         }, template, instance)
@@ -1422,9 +1424,9 @@ def test_sparse_window_refusal_without_bulk_io(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     sparse = origin / "boundary-0.pt"
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="sparse",
         tier=STAGE_TIER,
         class_bytes={"payload": 3 * GIB, "checkpoint": 0, "temp": 0},
@@ -1432,11 +1434,11 @@ def test_sparse_window_refusal_without_bulk_io(tmp_path: Path) -> None:
     with open(sparse, "wb") as handle:
         handle.truncate(3 * GIB)
     assert sparse.lstat().st_size == 3 * GIB
-    desc = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
+    desc = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "boundary-0",
         "artifact_class": "payload", "path": str(sparse),
         "bytes": 3 * GIB, "sha256": "0" * 64,
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -1448,9 +1450,9 @@ def test_sparse_window_refusal_without_bulk_io(tmp_path: Path) -> None:
 
 
 def test_lease_sdk_dependency_named_not_stubbed(tmp_path: Path) -> None:
-    assert "PB730" in po.SDK_DEPENDENCY and "pin_id_for" in po.SDK_DEPENDENCY
-    assert "LIVENESS" in po.SDK_DEPENDENCY and "funded" in po.SDK_DEPENDENCY
-    assert po.READER_HELPER_ROOT_ENV == "PRISMABUILD_READER_HELPER_ROOT"
+    assert "PB730" in oc.SDK_DEPENDENCY and "pin_id_for" in oc.SDK_DEPENDENCY
+    assert "LIVENESS" in oc.SDK_DEPENDENCY and "funded" in oc.SDK_DEPENDENCY
+    assert oc.READER_HELPER_ROOT_ENV == "PRISMABUILD_READER_HELPER_ROOT"
 
 
 def test_owner_namespace_separation_and_object_set(tmp_path: Path) -> None:
@@ -1460,15 +1462,15 @@ def test_owner_namespace_separation_and_object_set(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     bound = _bind(queue, template)
     instance = bound["instance"]
-    namespace = po.instance_namespace(instance)
+    namespace = oc.instance_namespace(instance)
     assert namespace != OWNER and len(namespace) == 64
     assert po.reservation_holder(instance) == namespace
-    path = po.declare_instance(queue.root, instance)
+    path = bl.declare_instance(queue.root, instance)
     assert OWNER in str(path) and namespace not in str(path)
     twin_a = {"0:/src/alpha.pt": {"bytes": 4096, "sha256": "a" * 64}}
     twin_b = {"0:/src/beta.pt": {"bytes": 4096, "sha256": "b" * 64}}
-    assert po.manifest_object_set_id(twin_a) != po.manifest_object_set_id(twin_b)
-    assert po.label_span_for_manifest(14336) == {
+    assert oc.manifest_object_set_id(twin_a) != oc.manifest_object_set_id(twin_b)
+    assert oc.label_span_for_manifest(14336) == {
         "coordinate_space": "output-manifest",
         "start_bytes": 0, "end_bytes": 14336}
 
@@ -1482,8 +1484,8 @@ def test_pin_census_taint_retains(tmp_path: Path, broker_endpoint) -> None:
     queue = _queue(tmp_path)
     bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     queue.finish(OWNER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
     junk_dir = out_base / "leases" / OWNER
@@ -1531,11 +1533,11 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind(queue, template)
     instance = bound["instance"]
-    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     shared = str(origin / "cotangent-0.pt")
 
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[shared])["ok"] is True
@@ -1549,7 +1551,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
 
     # 1. The committed, unretired owner refuses the second planner
     #    BEFORE it is authorized to write a byte.
-    refused = po.require_prewrite(
+    refused = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-b", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[shared])
@@ -1558,21 +1560,21 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
     assert refused["path"] == shared
     assert refused["owner_batch_id"] == "batch-a"
     # No side effect: a refused planner holds no reservation.
-    assert not (po._prewrites_dir(queue.root, instance)
+    assert not (bl.prewrites_dir(queue.root, instance)
                 / "batch-b.prewrite.json").exists()
     # The owner's own replay is unaffected -- it is not its own rival.
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-a", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[shared])["ok"] is True
 
     # 2. A planner that has not committed yet already owns its paths.
     second = str(origin / "boundary-0.pt")
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-c", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[second])["ok"] is True
-    rival = po.require_prewrite(
+    rival = bl.BatchLedger.reserve(
         queue, instance, template, batch_id="batch-d", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[second])
@@ -1584,7 +1586,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
     # refuses to invalidate the live owner. The reservation is filed
     # directly here (white-box, the only way past the gate above) so the
     # late refusal stays pinned rather than becoming unreachable.
-    po._publish_prewrite_record(
+    bl.publish_prewrite(
         queue, instance, batch_id="batch-b", tier=STAGE_TIER,
         class_bytes={"payload": 4096, "checkpoint": 0, "temp": 0},
         paths=[shared])

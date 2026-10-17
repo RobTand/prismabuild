@@ -34,6 +34,8 @@ writes its row and resumed with the same publication; a publish is the
 fleet's ``repo`` link moving to another generation.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import contextlib
 from pathlib import Path
@@ -65,7 +67,7 @@ from test_superseded_origin_consumers import (  # noqa: E402
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
-RETIRED = po.ORIGIN_RETIRED_EVENT
+RETIRED = oc.ORIGIN_RETIRED_EVENT
 
 
 # -- fixtures ------------------------------------------------------------------
@@ -119,7 +121,7 @@ def _declared_by_old_code(tmp_path: Path, monkeypatch, *options: str,
     argv = _consumer_argv(work, manifest, "true")
     argv = (*argv[:argv.index("--")], *options, *argv[argv.index("--"):])
     key, resume = _old_submitter(monkeypatch, *argv)
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists(), "declared before it paused"
     return queue, instance, path, committed, key, resume
 
@@ -233,7 +235,7 @@ def test_the_index_entry_precedes_the_record_and_a_rerun_completes_it(
     queue, instance, path, committed, key, resume = _declared_by_old_code(
         tmp_path, monkeypatch)
     _publish(tmp_path, "g-next")
-    released_dir = po._released_consumers_dir(queue.root, instance, "b1")
+    released_dir = bl._released_consumers_dir(queue.root, instance, "b1")
 
     # The entry cannot be filed: nothing is released.
     real = pool.immutable_files.publish_exact
@@ -286,7 +288,7 @@ def test_an_entry_without_its_record_leaves_the_row_to_run(
 
     queue, instance, path, committed, key, resume = _declared_by_old_code(
         tmp_path, monkeypatch)
-    po._index_release(queue, key, po._checked_origin_ref(committed["ref"]))
+    po._index_release(queue, key, oc._checked_origin_ref(committed["ref"]))
     assert len(_index_entries(queue, key)) == 1
 
     resume()

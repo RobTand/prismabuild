@@ -18790,3 +18790,37 @@ winning attempt's generation and disposition. A legacy prior terminal without a
 generation stamp requires the same complete archived-byte match; its missing
 stamp supplies no absence or ordering proof. Live successors and unknown proof
 retain their authority.
+
+
+### Produced-batch ownership after C13
+
+`output_contract` owns the produced-output schemas, validators, identity recipes
+and `ProducedOutputError`. `batch_ledger.BatchLedger` owns commitments intake
+and filing, immutable batch validation and publication, prewrites, origin charge,
+and sequential materialization bookkeeping. `BatchFacets` derives kind,
+lifetime, copy history and origin reclamation from one captured entry. These
+facts are independent. No derived phase is filed in `commitments.json`.
+
+`BatchLedger(path)` performs no I/O and preserves the supplied path object.
+`capture()` reads at the caller's existing read point. `file()` uses the existing
+commitments replacement recipe and admission-preservation rule. Captures are
+independent mutable documents. The caller keeps the existing ownership locks
+and cache invalidation before writes. `produced_output` orchestrates funding,
+sealing, publication of movement work and physical retirement.
+
+Path capture and addressing live in `batch_ledger`, with four named policies.
+`own_write_owner` considers the active staged copy, unreclaimed origin-only
+batches and other prewrites. `foreign_write_owner` first checks foreign claims
+and skips dead or superseded attempts before reading their records.
+`LedgerReads.path_owners` retains all committed supersessions, counts succeeded
+prewrites as commitments, retains live or unknown pending writes and their
+unknown fingerprints, and ignores dead prewrites. `spool_claims` captures
+foreign export claims only when the spool meets an existing file. The spool
+still checks byte identity and proves failed groups' exports have ended before
+adopting or retiring their files. These policies share captured path facts and
+the legacy immutable-record fallback without sharing one authority boolean.
+
+The schemas, JSON byte recipes, namespace grammar, immutable writer,
+materialization generations, locks and origin-retirement protocol are unchanged.
+The observability adapter reads the same batch questions through these owners;
+a retained historical source closure keeps its own original module APIs.

@@ -58,6 +58,7 @@ import upgrade_client  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import output_contract as oc
 from prismabuild import (  # noqa: E402
     _bounded_reader as _reader, core as pb, pool, slurm_lane as sl,
 )
@@ -2101,7 +2102,7 @@ def blocked_origin_remedies(ref: Mapping[str, object], key: str) -> dict[str, st
 #: What frees an orphaned prewrite (#949, #1053): the one remedy the tier
 #: cycle's event names too. PB never deletes a file whose identity no commit
 #: recorded, so the operator does.
-ORPHANED_PREWRITE_REMEDY = produced_output.ORPHANED_PREWRITE_REMEDY
+ORPHANED_PREWRITE_REMEDY = oc.ORPHANED_PREWRITE_REMEDY
 
 
 @read_cache.file_version_scope()
@@ -2270,7 +2271,6 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None, reader=
             "host_events": host_events,
             "census_unreadable": census_unreadable,
             "not_observable": _starvation_gaps()}
-
 
 
 def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
@@ -3119,7 +3119,6 @@ def read_resident_sets(queue_root, *, now=None):
         except (ValueError, OSError) as exc:
             unreadable.append(f"{path}: {exc}")
     return {"sets": sets, "capacity": capacity, "complete": not unreadable, "unreadable": unreadable}
-
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -50,6 +50,8 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from prismabuild import role_session as runtime_gate  # noqa: E402
 
 from prismabuild import generation_receipt, kept_reads
@@ -7963,27 +7965,27 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
         return ("unknown", owner)
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
+        scope = (residency / oc.OUTPUT_SCOPES_SUBDIR / owner
                  / f"{template_id}.{nonce}")
-        instance = _po.validate_instance(
+        instance = oc.validate_instance(
             json.loads((scope / "instance.json").read_text()))
-        template = _po.validate_template(json.loads(
-            (residency / _po.OUTPUT_TEMPLATES_SUBDIR
+        template = oc.validate_template(json.loads(
+            (residency / oc.OUTPUT_TEMPLATES_SUBDIR
              / f"{template_id}.json").read_text()))
     except (OSError, ValueError):
         return ("unknown", owner)
     attempt = instance.get("owner_attempt")
     if (not isinstance(attempt, Mapping)
-            or _po.instance_dir(queue.root, instance) != scope
+            or bl.scope_dir(queue.root, instance) != scope
             or str(attempt.get("nonce")) != nonce
             or str(attempt.get("scope_id")) != owner_scope
-            or _po.template_sha256(template)
+            or oc.template_sha256(template)
             != instance.get("template_sha256")
             or str(record.get("template_sha256"))
             != instance.get("template_sha256")):
         return ("unknown", owner)
     try:
-        return (str(_po._producer_attempt_state(queue, instance)), owner)
+        return (str(bl.producer_attempt_state(queue, instance)), owner)
     except (OSError, ValueError, pool.PoolContractError):
         return ("unknown", owner)
 
@@ -8015,23 +8017,23 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
         return (False, "funding binding unreadable")
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
+        scope = (residency / oc.OUTPUT_SCOPES_SUBDIR / owner
                  / f"{template_id}.{nonce}")
-        instance = _po.validate_instance(
+        instance = oc.validate_instance(
             json.loads((scope / "instance.json").read_text()))
     except (OSError, ValueError):
         return (False, "producer instance unreadable")
     attempt = instance.get("owner_attempt")
     if (not isinstance(attempt, Mapping)
-            or _po.instance_dir(queue.root, instance) != scope
+            or bl.scope_dir(queue.root, instance) != scope
             or str(attempt.get("nonce")) != nonce
             or str(attempt.get("scope_id")) != owner_scope):
         return (False, "funding, instance and attempt disagree")
     try:
-        prewrite = _po._read_prewrite(
-            _po._prewrites_dir(queue.root, instance)
+        prewrite = bl.read_prewrite(
+            bl.prewrites_dir(queue.root, instance)
             / f"{batch_id}.prewrite.json")
-    except _po.ProducedOutputError as exc:
+    except oc.ProducedOutputError as exc:
         return (False, f"prewrite unreadable: {exc}")
     if prewrite is None:
         return (False, "prewrite record absent")

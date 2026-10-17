@@ -34,6 +34,7 @@ Everything runs on a synthetic stage under ``tmp_path`` registered to a
 queue under ``tmp_path``; nothing reads or writes a real stage.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 
 import json
 from pathlib import Path
@@ -283,7 +284,7 @@ def test_a_produced_output_holder_is_left_to_its_batch_lifecycle(fleet) -> None:
     consumer = _done_consumer(queue)
     mover = _held_mover(queue, stage, consumer)
     namespace = dead._key()
-    root = produced_output.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
+    root = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     for name in NAMES:
         dead._stage_marked(stage, name)
     residency_map.write_fragment(root, {

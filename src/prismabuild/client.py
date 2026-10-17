@@ -69,6 +69,8 @@ it.
 """
 
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from . import scratch_lifetime
 
@@ -135,33 +137,33 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
 
 # -- produced output ---------------------------------------------------------
 
-TEMPLATE_SCHEMA_V1 = _produced_output.TEMPLATE_SCHEMA_V1
-DESCRIPTOR_SCHEMA_V2 = _produced_output.DESCRIPTOR_SCHEMA_V2
+TEMPLATE_SCHEMA_V1 = oc.TEMPLATE_SCHEMA_V1
+DESCRIPTOR_SCHEMA_V2 = oc.DESCRIPTOR_SCHEMA_V2
 declared_template = _produced_output.declared_template
-validate_template = _produced_output.validate_template
+validate_template = oc.validate_template
 bind_declared_instance = _produced_output.bind_declared_instance
-declare_instance = _produced_output.declare_instance
-admit_instance = _produced_output.admit_instance
-validate_instance = _produced_output.validate_instance
-instance_dir = _produced_output.instance_dir
-checked_instance_maxima = _produced_output.checked_instance_maxima
-owner_demand_terms = _produced_output.owner_demand_terms
+declare_instance = bl.declare_instance
+admit_instance = bl.BatchLedger.admit
+validate_instance = oc.validate_instance
+instance_dir = bl.scope_dir
+checked_instance_maxima = oc.checked_instance_maxima
+owner_demand_terms = oc.owner_demand_terms
 admit_funded_window = _produced_output.admit_funded_window
 refill_window = _produced_output.refill_window
-require_prewrite = _produced_output.require_prewrite
-abort_prewrite = _produced_output.abort_prewrite
-validate_descriptor = _produced_output.validate_descriptor
-output_manifest_sha256 = _produced_output.output_manifest_sha256
-batch_namespace = _produced_output.batch_namespace
-output_fragment_root = _produced_output.output_fragment_root
+require_prewrite = bl.BatchLedger.reserve
+abort_prewrite = bl.BatchLedger.abort
+validate_descriptor = oc.validate_descriptor
+output_manifest_sha256 = oc.output_manifest_sha256
+batch_namespace = oc.batch_namespace
+output_fragment_root = _bl.output_fragment_root
 publish_prepaid_batch = _produced_output.publish_prepaid_batch
 commit_batch = _produced_output.commit_batch
-commit_origin_batch = _produced_output.commit_origin_batch
+commit_origin_batch = bl.BatchLedger.commit_origin
 retire_batch = _produced_output.retire_batch
-reclaim_origin = _produced_output.reclaim_origin
+reclaim_origin = bl.BatchLedger.reclaim
 recover_batches = _produced_output.recover_batches
 due_mover_rows = _produced_output.due_mover_rows
-materialization_state = _produced_output.materialization_state
+materialization_state = bl.BatchLedger.materialization
 ensure_batch_materialized = _produced_output.ensure_batch_materialized
 safe_release_instance = _produced_output.safe_release_instance
 

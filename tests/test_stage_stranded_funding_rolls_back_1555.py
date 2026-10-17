@@ -6,6 +6,8 @@ tokens back in free through the existing rollback. Token files are
 not removed by any other path. A live consumer intent is untouched.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import sys
@@ -33,7 +35,7 @@ def _hexkey(seed: str) -> str:
 
 def _template(prefix: str) -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "prepaid-v1",
         "output_prefix": prefix,
@@ -46,7 +48,7 @@ def _template(prefix: str) -> dict:
         "working_demands": {TIER: {"minimum_gib": 1, "window_gib": 2}},
         "permitted_tiers": [TIER],
     }
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path, gib: int = 6) -> pool.PoolQueue:
@@ -59,7 +61,7 @@ def _queue(tmp_path: Path, gib: int = 6) -> pool.PoolQueue:
 
 
 def _publish_claim_owner(q, owner, template):
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     q.publish(action_key=owner, cas_root="/cas", worker_script="/w.py",
               checkout_root="/co", resources={"cpu": 1, "mem_gb": 1, **terms},
               produced_output_template=template, max_attempts=1)
@@ -95,8 +97,8 @@ def _bind(q, template, owner):
     po.declare_template(q.root, template)
     inst = po.bind_instance(q, template, owner_action_key=owner,
                             claim_snapshot=claimed, env=env)
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"] is True
+    bl.declare_instance(q.root, inst)
+    assert bl.BatchLedger.admit(q, inst, template)["ok"] is True
     return inst
 
 
@@ -105,12 +107,12 @@ def _descriptors(tmp_path, template, inst, name="a.bin", payload=b"x" * 1024):
     origin.mkdir(parents=True, exist_ok=True)
     p = origin / name
     p.write_bytes(payload)
-    return [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    return [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(p),
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)], p
@@ -120,7 +122,7 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
     classes = {"payload": sum(int(d["bytes"]) for d in descs),
                "checkpoint": 0, "temp": 0}
     paths = sorted(str(d["path"]) for d in descs)
-    out = po.require_prewrite(q, inst, template, batch_id=batch_id,
+    out = bl.BatchLedger.reserve(q, inst, template, batch_id=batch_id,
                               tier=TIER, class_bytes=classes, paths=paths)
     assert out.get("ok") is True, out
     return out
@@ -131,7 +133,7 @@ def _one_batch(q, tmp_path, template, inst, owner, mover, batch_id, name):
     ledger = q.tier(TIER)
     descs, path = _descriptors(tmp_path, template, inst, name=name)
     _prewrite(q, inst, template, batch_id, TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -201,7 +203,7 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
     # The producer fails, the dead mover leaves READY before any claim,
     # and its prewrite paths are absent: the mover never laid bytes.
     q.finish(owner, status="failed", detail={"returncode": 1})
-    assert po._producer_attempt_state(q, inst) == "dead"
+    assert bl.producer_attempt_state(q, inst) == "dead"
     assert q.withdraw(dead_mover, by="test",
                       reason="producer failed") is not None
     assert not q.records.item_path(pool.record_store.READY, dead_mover).exists()
@@ -249,7 +251,7 @@ def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
     path, descs = _one_batch(q, tmp_path, template, inst, owner, mover,
                              "repub", "repub.bin")
     q.finish(owner, status="failed", detail={"returncode": 1})
-    assert po._producer_attempt_state(q, inst) == "dead"
+    assert bl.producer_attempt_state(q, inst) == "dead"
     assert q.withdraw(mover, by="test", reason="producer failed") is not None
     path.unlink()
 
@@ -257,7 +259,7 @@ def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
     # batch and manifest keep the publication gate open, the fresh
     # READY census refuses the repair, and the new row keeps its
     # reservation.
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     _publish_mover(q, mover, manifest, total, gib=1,
                    batch_ref=_ref(inst, template, "repub", descs))
@@ -290,7 +292,7 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
         q.records.item(pool.record_store.CLAIMED, mover),
     ) is not None
     q.finish(owner, status="failed", detail={"returncode": 1})
-    assert po._producer_attempt_state(q, inst) == "dead"
+    assert bl.producer_attempt_state(q, inst) == "dead"
     # The repair reads a CLAIMED row and refuses, even with the prewrite
     # paths absent: the mover may still hold the key.
     path.unlink()
@@ -313,7 +315,7 @@ def test_present_prewrite_path_keeps_its_charge(tmp_path: Path) -> None:
     path, _ = _one_batch(q, tmp_path, template, inst, owner, mover,
                          "present", "present.bin")
     q.finish(owner, status="failed", detail={"returncode": 1})
-    assert po._producer_attempt_state(q, inst) == "dead"
+    assert bl.producer_attempt_state(q, inst) == "dead"
     assert q.withdraw(mover, by="test", reason="producer failed") is not None
     assert path.exists()
     events = _settle(q)
@@ -334,7 +336,7 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
 
     descs, _ = _descriptors(tmp_path, template, inst, name="partial.bin")
     _prewrite(q, inst, template, "partial", TIER, descs)
-    manifest = po.output_manifest_sha256(descs)
+    manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
@@ -468,7 +470,7 @@ def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeyp
     """Keep the old release's proof until its tokens return to free."""
     q, mover, live_mover, receipts, inst, *_ = _stranded_with_live_intent(tmp_path)
     assert q.release_output_funding(mover, TIER)
-    prewrite = po._prewrites_dir(q.root, inst) / "fault.prewrite.json"
+    prewrite = bl.prewrites_dir(q.root, inst) / "fault.prewrite.json"
     release = pool.ResourceLedger.release
 
     def fail_release(self, key):
@@ -534,7 +536,7 @@ def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, rac
         if key == mover and not raced:
             raced = True
             row = _publish_mover(
-                q, mover, po.output_manifest_sha256(descs),
+                q, mover, oc.output_manifest_sha256(descs),
                 sum(int(d["bytes"]) for d in descs),
                 batch_ref=_ref(inst, template, "fault", descs))
             if race == "claim":

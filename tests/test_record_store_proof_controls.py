@@ -1,4 +1,6 @@
 """Explicit Store/C11 owners must honor acquire, hit and commit proof loss."""
+from prismabuild import batch_ledger as bl
+from prismabuild import pool as c13_pool
 import json
 import os
 from pathlib import Path
@@ -113,9 +115,9 @@ def test_receipt_cache_shares_its_supplied_trust_across_native_readers(tmp_path)
 def test_output_tick_uses_its_supplied_trust_for_hit_and_proof_loss(tmp_path):
     scope = tmp_path / 'scope'
     path = scope / 'commitments.json'
-    po._write_commitments(path, {'batches': {'b': {'state': 'filed'}}, 'admission': None})
+    bl.BatchLedger(path).file({'batches': {'b': {'state': 'filed'}}, 'admission': None})
     trust = ObservedTrust()
-    reads = po._TickReads(None, trust=trust)
+    reads = bl.LedgerReads(None, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S, trust=trust)
     with kept_reads.file_version_scope():
         assert reads.batches(scope) == {'b': {'state': 'filed'}}
         assert reads.batches(scope) == {'b': {'state': 'filed'}}

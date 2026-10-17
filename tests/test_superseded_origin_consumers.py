@@ -21,6 +21,8 @@ published, claimed and finished through the real ``PoolQueue``; submissions,
 supersessions and releases go through the real ``pbrun.main``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from submission_support import patch_store
 
 import json
@@ -52,8 +54,8 @@ import test_deferred_action_edges as edges  # noqa: E402
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
 TAGS = ("sparky", "gb10")
-STALLED = po.ORIGIN_RETIREMENT_STALLED_EVENT
-RETIRED = po.ORIGIN_RETIRED_EVENT
+STALLED = oc.ORIGIN_RETIREMENT_STALLED_EVENT
+RETIRED = oc.ORIGIN_RETIRED_EVENT
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +129,7 @@ def test_a_superseding_resubmission_takes_over_the_failed_declaration(
                               "--supersedes", first, word="true # retry")
     assert second != first
     assert ae.read_supersession(queue.root, first)["new"] == second
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{second}.json").exists(), "the successor declared the batch"
 
     # Queued successor: the old declaration is resolved, the new one holds.
@@ -260,7 +262,7 @@ def test_the_operator_release_refuses_a_live_consumer_and_releases_a_failed_one(
     assert "origin-consumer-undeclared" in _refused(
         monkeypatch, "--release-origin-consumer", ref, fx._hexkey("stranger"))
     assert "takes no command" in _refused(monkeypatch, *release, "--", "true")
-    assert not po._released_consumers_dir(queue.root, instance, "b1").exists()
+    assert not bl._released_consumers_dir(queue.root, instance, "b1").exists()
 
     queue.finish(consumer, status="failed")
     [stall] = _events(queue, STALLED)
@@ -271,13 +273,13 @@ def test_the_operator_release_refuses_a_live_consumer_and_releases_a_failed_one(
     answer = _pbrun(monkeypatch, capsys, "--release-origin-consumer",
                     str(ref_file), consumer, "--reason", "dead")
     assert (answer["released"], answer["state"]) == (True, "failed")
-    record = json.loads((po._released_consumers_dir(queue.root, instance, "b1")
+    record = json.loads((bl._released_consumers_dir(queue.root, instance, "b1")
                          / f"{consumer}.json").read_text())
     assert record["reason"] == "dead" and record["by"].endswith("@sparky")
     assert record["state"] == "failed" and record["ref"] == committed["ref"]
     assert _pbrun(monkeypatch, capsys, *release)["released"] is False, (
         "a second release finds the first")
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{consumer}.json").exists(), "the declaration itself stays"
 
     [retired] = _events(queue, RETIRED)
@@ -300,7 +302,7 @@ def test_a_release_leaves_the_other_consumers_holding_the_batch(
     _publish_consumer(queue, dead)
     _run_consumer(queue, dead, "failed")
     _publish_consumer(queue, live)
-    with pytest.raises(po.ProducedOutputError, match="origin-consumer-live"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-consumer-live"):
         po.release_origin_consumer(queue, committed["ref"],
                                    consumer_action_key=live, by="op")
     assert po.release_origin_consumer(queue, committed["ref"],
@@ -318,8 +320,8 @@ def test_a_retained_batch_has_nothing_to_release(tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
     instance, path, committed = _commit(
-        queue, template, "kept", lifetime=po.ORIGIN_LIFETIME_RETAIN)
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-retained"):
+        queue, template, "kept", lifetime=oc.ORIGIN_LIFETIME_RETAIN)
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-retained"):
         po.release_origin_consumer(queue, committed["ref"],
                                    consumer_action_key=fx._hexkey("any"), by="op")
     assert path.exists()
@@ -404,7 +406,7 @@ def test_the_blocked_listing_names_each_dead_holder_and_its_exact_remedy(
     assert retired["ref"] == ref and not path.exists()
 
     # A declaration it cannot read is named, and the listing says it is partial.
-    broken = po._consumers_dir(queue.root, batches["mixed"][0], "b1") / f"{live}.json"
+    broken = bl._consumers_dir(queue.root, batches["mixed"][0], "b1") / f"{live}.json"
     broken.chmod(0o644)
     broken.write_text("{")
     code, partial = listing()

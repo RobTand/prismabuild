@@ -80,6 +80,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 sys.path.insert(0, str(HERE.parents[1] / "tests"))
 
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from prismabuild import pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import bench_stage_adopt  # noqa: E402
@@ -95,10 +97,10 @@ _COUNTED = {
     "fsync": [(os, "fsync")],
     # The whole-document reads and writes of an instance's commitments, the
     # retirement's cost that does not depend on the box (#1072).
-    "commitments_read": [(po, "_read_commitments")],
-    "commitments_write": [(po, "_write_commitments")],
+    "commitments_read": [(bl.BatchLedger, "capture")],
+    "commitments_write": [(bl.BatchLedger, "file")],
     # The output-prefix lock order the retirement derived (#992).
-    "lock_order": [(po, "_output_prefix_lock_order")],
+    "lock_order": [(bl, "_output_prefix_lock_order")],
 }
 
 #: The admission state binding this bench owns, under its work directory.
@@ -276,10 +278,10 @@ def _unretired(queue: pool.PoolQueue, scopes: list[str]) -> int:
 
     count = 0
     for scope in scopes:
-        batches = po._read_commitments(Path(scope) / "commitments.json")["batches"]
+        batches = bl.BatchLedger(Path(scope) / "commitments.json").capture()["batches"]
         count += sum(1 for entry in batches.values()
                      if isinstance(entry, dict) and not entry.get("origin_only")
-                     and not po._batch_stage_retired(entry))
+                     and not bl.BatchFacets(entry).stage_retired)
     return count
 
 
@@ -300,8 +302,8 @@ WRITE_ONLY_TEMPLATE_ID = "bench-write-only-handoff-v1"
 
 
 def _write_only_template(prefix: Path) -> dict:
-    return po.validate_template({
-        "schema": po.TEMPLATE_SCHEMA_V1, "version": 1,
+    return oc.validate_template({
+        "schema": oc.TEMPLATE_SCHEMA_V1, "version": 1,
         "template_id": WRITE_ONLY_TEMPLATE_ID,
         "output_prefix": str(prefix),
         "slots": {"s0": {"class": "payload"}},
@@ -345,8 +347,8 @@ def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     return instance
 
 
@@ -392,14 +394,14 @@ def build_write_only_scopes(queue: pool.PoolQueue, root: Path, *,
                 "retired": False,
                 "origin_reclaimed": False,
                 "origin_only": True,
-                "lifetime": po.ORIGIN_LIFETIME_CONSUMED,
+                "lifetime": oc.ORIGIN_LIFETIME_CONSUMED,
             }
-        path = po._commitments_path(queue.root, instance)
-        admission = po._read_commitments(path)["admission"]
-        po._write_commitments(path, {"batches": entries,
+        path = bl.BatchLedger.for_instance(queue.root, instance).path
+        admission = bl.BatchLedger(path).capture()["admission"]
+        bl.BatchLedger(path).file({"batches": entries,
                                      "admission": admission})
         queue.finish(owner, status="executed")
-        found.append(str(po.instance_dir(queue.root, instance)))
+        found.append(str(bl.scope_dir(queue.root, instance)))
     return found
 
 
@@ -457,7 +459,7 @@ def run_cycles(args) -> int:
                         receipts=receipts, discover=discover, **kwargs)
         wall = time.perf_counter() - started
         tick_events = _delta_events(events)
-        retired = int(tick_events.get(po.DEAD_PRODUCER_BATCH_RETIRED_EVENT, 0))
+        retired = int(tick_events.get(oc.DEAD_PRODUCER_BATCH_RETIRED_EVENT, 0))
         row: dict[str, object] = {
             "kind": "cold" if index == 0 else "steady",
             "wall_s": round(wall, 4),

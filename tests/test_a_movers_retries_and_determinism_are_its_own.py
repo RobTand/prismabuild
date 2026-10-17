@@ -28,6 +28,7 @@ re-stage fixture is the prepaid writer integration's real mover run through
 row is outside what is under test.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 from prismabuild import submission as submit_core
 
 import json
@@ -234,7 +235,7 @@ def test_under_a_deterministic_consumer_a_restage_copies_again(tmp_path) -> None
     q.finish(mover, status="executed")
     retired = po.retire_batch(q, inst, template, "b1",
                               stage_root=str(stage_root),
-                              residency_root=po.output_fragment_root(
+                              residency_root=bl.output_fragment_root(
                                   q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, json.dumps(retired, default=str)
     assert not staged.exists(), "the egress evicted the staged bytes"
