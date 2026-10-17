@@ -38,7 +38,7 @@ def test_a_prelaunch_gang_with_a_dead_member_is_torn_down(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "dead-prelaunch",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     first, second = keys
@@ -77,7 +77,7 @@ def test_a_shape_refused_member_is_never_a_terminal_reading(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-dead",
                    declare_manifest=True, declare_plan=False)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     first, second = keys
     _fail_lead(queue, clock, monkeypatch, leads[0], _consumer_sha(queue, first))
 

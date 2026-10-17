@@ -129,7 +129,7 @@ def test_pending_leads_refuse_the_member_before_its_gang_code(gang_fleet,
     lead = _hexkey("pending-lead")
     group, (first, second) = members(
         "pending", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
 
     # The member is refused, not committed: the denial names the pending lead.
     assert gclaim("sparklina") is None
@@ -186,7 +186,7 @@ def test_a_resident_member_claims_with_its_verdict_and_map(gang_fleet,
     lead = _hexkey("launched-lead")
     group, (first, second) = members(
         "launched", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     _stage_lead(queue, clock, monkeypatch, lead, first, stage)
     _compose_map(monkeypatch, queue, first, [lead])
 
@@ -252,15 +252,15 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     lead = _hexkey("torn-lead")
     group, (first, second) = members(
         "torn", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     plan = _frozen_plan(queue, first, lead)
     _stage_lead(queue, clock, monkeypatch, lead, first, stage)
     _compose_map(monkeypatch, queue, first, [lead])
     assert gclaim("sparklina") is None
     assert gclaim("sparky") == second
     assert gclaim("sparklina") == first
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(lead) == {"stage_gib": 2}
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(lead) == {'stage_gib': 2}
 
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     queue.finish(second, status="failed", detail={"returncode": 1})
@@ -273,7 +273,7 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # The lead is nobody's gang member: the teardown neither withdraws it nor
     # releases its pins. The tokens stand for bytes still on the stage.
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, lead).exists()
-    assert ledger.holder_tokens(lead) == {"stage_gib": 2}
+    assert ledger.holdings(lead) == {'stage_gib': 2}
     # The withdrawn member's row is covered, and until its worker reaches the
     # withdrawal checkpoint a covered claimed row is still a live consumer:
     # the sweep retains the lead, because live_claims still names it. This
@@ -290,7 +290,7 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     tier_loop.withdraw_dead_consumer_movers(queue)
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
-    assert ledger.holder_tokens(lead) == {}, {
+    assert ledger.holdings(lead) == {}, {
         "swept": swept,
         "wanted_owners": stage_release.live_claims(queue),
         "plan_still_filed": residency_plan.read(queue, first) is not None,
@@ -310,7 +310,7 @@ def test_a_withdrawn_member_tears_down_the_same_way(gang_fleet, monkeypatch, tmp
     lead = _hexkey("withdrawn-lead")
     group, (first, second) = members(
         "withdrawn-member", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     plan = _frozen_plan(queue, first, lead)
     _stage_lead(queue, clock, monkeypatch, lead, first, stage)
     _compose_map(monkeypatch, queue, first, [lead])
@@ -322,7 +322,7 @@ def test_a_withdrawn_member_tears_down_the_same_way(gang_fleet, monkeypatch, tmp
     assert _gang.teardown(queue, group) is not None
     assert queue.records.item_path(pool.record_store.WITHDRAWN, second).exists()
     assert not queue.records.item_path(pool.record_store.WITHDRAWN, lead).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(lead) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(lead) == {'stage_gib': 2}
 
 
 def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypatch,
@@ -352,9 +352,9 @@ def test_two_members_sharing_one_lead_go_resident_together(gang_fleet, monkeypat
     assert rows[second]["residency"]["leads"] == [lead]
 
     # One registered shared mover: published once, executed and pinned once.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     _stage_lead(queue, clock, monkeypatch, lead, first, stage)
-    assert queue.tier_ledger(TIER).holder_tokens(lead) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(lead) == {'stage_gib': 2}
     for key in (first, second):
         item = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
         assert queue.residency_verdict(item)["state"] == "map_not_composed", (key,)
@@ -386,7 +386,7 @@ def test_a_planner_row_member_is_gated_like_an_explicit_one(gang_fleet,
     stage = tmp_path / "stage"
     stage.mkdir()
     group, (first, second) = members("planned", declares_manifest=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 16})
+    queue.tier(TIER).mint({'stage_gib': 16})
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         queue, tmp_path / "cas", _stage_tier(tmp_path),
         ready=queue.ready_items(), limit=2)
@@ -465,7 +465,7 @@ def test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down(
     stage.mkdir()
     lead = _hexkey("dead-lead")
     group, (first, second) = members("dead-gang", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     _publish_lead(queue, clock, lead, stage)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["sparklina"])
@@ -510,7 +510,7 @@ def test_a_member_whose_leads_are_merely_pending_does_not_tear_the_gang_down(
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     lead = _hexkey("slow-lead")
     group, (first, second) = members("slow-gang", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert _gang.teardown(queue, group) is None
@@ -526,7 +526,7 @@ def _fail_lead_and_mark(gang_fleet, monkeypatch, tmp_path, name):
     stage.mkdir()
     lead = _hexkey(name + "-lead")
     group, (first, second) = members(name, residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     _publish_lead(queue, clock, lead, stage)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     claimed = queue.claim(capacity={"cpu": 8, "mem_gb": 16}, tags=["sparklina"])
@@ -1078,7 +1078,7 @@ def test_fresh_pin_proof_preserves_a_resident_gang(
     stage.mkdir()
     lead = _hexkey("pinned-proof-lead")
     group, (first, second) = members("pinned-proof", residency=_consumer_block([lead]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     _stage_lead(queue, clock, monkeypatch, lead, first, stage)
     _compose_map(monkeypatch, queue, first, [lead])
     real_pin = queue._lead_is_pinned
@@ -1094,9 +1094,7 @@ def test_fresh_pin_proof_preserves_a_resident_gang(
         assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
         clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
         real_listdir = os.listdir
-        target = (queue.tier_ledger(TIER).held_dir if fault_directory == "holder"
-                  else queue.records.move_path(lead).parent if fault_directory == "receipt"
-                  else None)
+        target = (queue.tier(TIER).paths.held if fault_directory == 'holder' else queue.records.move_path(lead).parent if fault_directory == 'receipt' else None)
 
         def list_directory(path):
             if target is not None and Path(path) == target:

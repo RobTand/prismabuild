@@ -544,7 +544,7 @@ def _whole_cpu_gang(gang_fleet, monkeypatch, tmp_path, mover_tool, *, isolated=T
     incumbents = _busy_both(publish, gclaim)
     group, (first, second) = members("whole-cpu", priority=-10, member_cpu=20,
                                      residency=_consumer_block([mover]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     for host in HOSTS:
         assert gclaim(host) is None
     assert _gang.elections(queue, group, 2)[1]["host"] == "sparky"
