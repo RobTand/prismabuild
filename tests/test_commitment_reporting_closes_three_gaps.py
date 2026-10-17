@@ -99,7 +99,7 @@ def test_announcing_a_tier_makes_no_directory_per_call(
 def test_a_retired_tier_marks_its_commitment_record_in_the_same_cycle(
         tmp_path: Path) -> None:
     queue, stage = _fixture_queue(tmp_path, 20)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     _reader(queue, stage, landed=(0,))
     _cycle(queue, {TIER: _tier_record(stage, gib=20)})
     live = queue.tier_commitment(TIER)
@@ -144,7 +144,7 @@ def test_the_tier_cycle_line_carries_each_tiers_commitment_totals(
 
 def test_a_waiting_newcomer_is_counted_on_the_line(tmp_path: Path) -> None:
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     _reader(queue, stage)
     newcomer = Consumer(queue, stage, "n")
     tier_loop._CYCLE_COMMITMENTS.clear()

@@ -70,8 +70,8 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-crash")
     generation = _reserve_and_transfer(
         queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
-    stage = queue.tier_ledger(TIER)
-    ram = queue.tier_ledger(RAM_TIER)
+    stage = queue.tier(TIER)
+    ram = queue.tier(RAM_TIER)
     context = multiprocessing.get_context("fork")
     parent, child = context.Pipe()
 
@@ -105,8 +105,8 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
         assert persisted["tier_funding"][TIER]["generation"] == generation
         assert queue.records.lease_path(mover).exists() is lease_written
         assert queue.read_funding(mover, TIER)["state"] == "transferring"
-        assert stage.holder_tokens(mover) == {"stage_gib": 2}
-        assert ram.holder_tokens(mover) == {"ram_gib": 2}
+        assert stage.holdings(mover) == {'stage_gib': 2}
+        assert ram.holdings(mover) == {'ram_gib': 2}
         assert queue.ledger().holder_tokens(mover) == {"cpu": 1, "mem_gb": 1}
         assert not queue.records.attempt_path(persisted, 1).exists()
         parent.send("exit")
@@ -127,10 +127,10 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     assert "claimed_by" not in restored and "tier_funding" not in restored
     assert not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
     assert not queue.records.lease_path(mover).exists()
-    assert stage.holder_tokens(mover) == {}
-    assert ram.holder_tokens(mover) == {}
-    assert stage.available()["stage_gib"] == 4
-    assert ram.available()["ram_gib"] == 4
+    assert stage.holdings(mover) == {}
+    assert ram.holdings(mover) == {}
+    assert stage.free_supply()['stage_gib'] == 4
+    assert ram.free_supply()['ram_gib'] == 4
     assert queue.ledger().holder_tokens(mover) == {}
     assert queue.read_funding(mover, TIER)["state"] == "transferring"
     assert queue.funded_cover(TIER, restored, "stage_gib", 2) == (0, None)

@@ -165,9 +165,7 @@ def _bound(queue: pool.PoolQueue, stage: Path, plan, *, gib: int
 
 
 def _published(queue: pool.PoolQueue, mover: str) -> bool:
-    return (queue.records.item_path(pool.record_store.READY, mover).exists()
-            or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
-            or bool(queue.tier_ledger(TIER).holder_tokens(mover)))
+    return (queue.records.item_path(pool.record_store.READY, mover).exists() or queue.records.item_path(pool.record_store.CLAIMED, mover).exists() or bool(queue.tier(TIER).holdings(mover)))
 
 
 def _events(capsys: pytest.CaptureFixture[str]) -> list[dict[str, object]]:
@@ -192,16 +190,8 @@ def _diagnosis(queue: pool.PoolQueue, events, count: int) -> str:
         told.append({field: value for field, value in event.items()
                      if field not in ("terms", "commitment", "unix", "host")})
     record = queue.tier_commitment(TIER) or {}
-    ledger = queue.tier_ledger(TIER)
-    return json.dumps({
-        "events": told[-40:],
-        "commitment": {field: record.get(field) for field in (
-            "capacity_gib", "committed_gib", "over_committed_gib",
-            "held_gib", "evictable_gib", "claim_order")},
-        "free_gib": ledger.available().get(storage_tiers.STAGE_CAPACITY_KIND),
-        "reading_published": {n: _published(queue, _mover(n, READING))
-                              for n in range(count)},
-    }, indent=1, default=str)
+    ledger = queue.tier(TIER)
+    return json.dumps({'events': told[-40:], 'commitment': {field: record.get(field) for field in ('capacity_gib', 'committed_gib', 'over_committed_gib', 'held_gib', 'evictable_gib', 'claim_order')}, 'free_gib': ledger.free_supply().get(storage_tiers.STAGE_CAPACITY_KIND), 'reading_published': {n: _published(queue, _mover(n, READING)) for n in range(count)}}, indent=1, default=str)
 
 
 @pytest.mark.parametrize("count,holding", [(2, TWO_HOLD), (8, EIGHT_HOLD)],
@@ -314,7 +304,7 @@ def _run_movers(queue: pool.PoolQueue, stage: Path, count: int, *,
 
     landed: list[str] = []
     slowest = min(RATES.values())
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     for n in range(count):
         key, manifest = _key(n), _manifest(n)
         plan = residency_plan.read(queue, key)
@@ -335,17 +325,16 @@ def _run_movers(queue: pool.PoolQueue, stage: Path, count: int, *,
                 need = storage_tiers.stage_tokens_for_bytes(end - start)
                 own = (mover, window_credit.grant_key(
                     key, TIER, "mover_row", name, chunk))
-                funded = sum(int(ledger.holder_tokens(holder).get("stage_gib", 0))
-                             for holder in own)
-                if int(ledger.available().get("stage_gib", 0)) + funded < need:
+                funded = sum((int(ledger.holdings(holder).get('stage_gib', 0)) for holder in own))
+                if int(ledger.free_supply().get('stage_gib', 0)) + funded < need:
                     if unfit is not None:
                         unfit.append(f"{n}:{label}")
                     continue
                 item = json.loads(ready.read_text())
                 ready.unlink()
                 for holder in own:
-                    if ledger.holder_tokens(holder):
-                        ledger.release(holder)
+                    if ledger.holdings(holder):
+                        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
                 done = queue.records.item_path(pool.record_store.DONE, mover)
                 done.parent.mkdir(parents=True, exist_ok=True)
                 done.write_text(json.dumps({**item, "status": "done"}))
@@ -528,10 +517,10 @@ def test_a_range_two_claimed_consumers_read_is_charged_once(
     for key in (first, second):
         _claim(queue, key, phase="phase-0", claimed_unix=now - 1000.0,
                reported_unix=now - 10.0)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     # One range of PHASE_GIB bytes, charged once, and staged for both.
-    assert int(ledger.held().get("stage_gib", 0)) == PHASE_GIB
+    assert int(ledger.holdings().get('stage_gib', 0)) == PHASE_GIB
     for key in (first, second):
         _published, staged = tier_loop._mover_state(queue, plans[key], TIER)
         assert mover in staged
@@ -552,6 +541,7 @@ def test_a_range_two_claimed_consumers_read_is_charged_once(
 from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
     TOKEN, _finish, _judge, _verdict, _verdict_fixture)
 from test_a_resident_range_is_adopted_rather_than_recopied import STAGE_KIND  # noqa: E402
+from prismabuild import tier_holdings
 
 AHEAD = _hexkey("verdictahead")
 GRACE_S = 600.0
@@ -708,8 +698,8 @@ def test_a_stalled_consumer_ahead_whose_range_landed_is_still_killed(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=161)
     key = _finish(queue, row, pool.record_store.DONE)
-    queue.mint_tier_capacity(TIER, {STAGE_KIND: 21})
-    assert queue.tier_ledger(TIER).acquire(key, {STAGE_KIND: 21})
+    queue.tier(TIER).mint({STAGE_KIND: 21})
+    assert queue.tier(TIER).take(key, {STAGE_KIND: 21})
     _file_order(queue, str(item["action_key"]), standing=window_credit.CLAIM_HEAD)
 
     verdict = _verdict(queue, item, progress_path)
@@ -884,7 +874,7 @@ def test_a_granted_readers_next_range_is_kept_for_a_head_that_lands_later(
                 for entry in order.get("entries") or ()}
     assert standing == {_key(0): window_credit.CLAIM_GRANTED,
                         _key(1): window_credit.CLAIM_HEAD}, order
-    assert queue.tier_ledger(TIER).holder_tokens(kept), _diagnosis(queue, events, 2)
+    assert queue.tier(TIER).holdings(kept), _diagnosis(queue, events, 2)
     assert not [event for event in events
                 if event.get("event") == "claim-order-evicted"
                 and event.get("mover") == kept], events
@@ -1030,7 +1020,7 @@ def test_chunked_consumers_holding_part_of_their_reading_phase_do_not_deadlock(
     events = _events(capsys)
 
     assert _published(queue, head_chunk), _diagnosis(queue, events, 2)
-    assert not queue.tier_ledger(TIER).holder_tokens(preempted), events
+    assert not queue.tier(TIER).holdings(preempted), events
     evicted = [event for event in events
                if event.get("event") == "claim-order-evicted"]
     assert [(event["mover"], event.get("basis")) for event in evicted] == [
@@ -1070,7 +1060,7 @@ def test_a_reader_waiting_again_for_a_chunk_it_lost_keeps_the_one_it_holds(
     evicted = [event for event in events
                if event.get("event") == "claim-order-evicted"]
     assert evicted == [], evicted
-    assert queue.tier_ledger(TIER).holder_tokens(kept), events
+    assert queue.tier(TIER).holdings(kept), events
     order = (queue.tier_commitment(TIER) or {}).get("claim_order") or {}
     assert order.get("head") == _key(0), order
     assert order.get("relief") == "futile", order

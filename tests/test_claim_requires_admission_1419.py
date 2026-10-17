@@ -67,7 +67,7 @@ def test_explicit_controlled_admission_retains_normal_claim(tmp_path):
 def test_tier_funding_without_host_demand_never_grants_execution(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     tier = "prismabuild-stage:fixture"
-    queue.mint_tier_capacity(tier, {"stage_gib": 1})
+    queue.tier(tier).mint({'stage_gib': 1})
     resources = {f"stage_gib@{tier}": 1}
     queue.publish(action_key=KEY, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
@@ -82,4 +82,4 @@ def test_tier_funding_without_host_demand_never_grants_execution(tmp_path, monke
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert not queue.ledger().held_keys()
-    assert not queue.tier_ledger(tier).held_keys()
+    assert not queue.tier(tier).holders()
