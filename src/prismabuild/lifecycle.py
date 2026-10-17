@@ -35,7 +35,7 @@ class ClaimRelation(Enum):
     ABSENT = "absent"
     HELD = "held"
     EXACT = "exact"
-    SUCCESSOR = "successor"
+    DIFFERENT = "different"
 
 
 class ReservationPhase(Enum):
@@ -85,7 +85,7 @@ class ActionFacts:
         return tuple(fact for fact in self.records if fact.generation == generation)
 
 
-def classify(capture: ActionCapture) -> ActionFacts:
+def classify_action(capture: ActionCapture) -> ActionFacts:
     """Classify supplied facts without reading or deciding a terminal twice."""
     records = list(capture.artifacts)
     unknown, uncaptured = [], []
@@ -103,7 +103,7 @@ def classify(capture: ActionCapture) -> ActionFacts:
             if kind == "claim":
                 relation = (ClaimRelation.HELD if capture.expected_claim is None else
                             ClaimRelation.EXACT if claim_identity.same_claim(
-                                observed.value, capture.expected_claim) else ClaimRelation.SUCCESSOR)
+                                observed.value, capture.expected_claim) else ClaimRelation.DIFFERENT)
         elif kind == "claim":
             relation = ClaimRelation.ABSENT
     terminal = NotCaptured.INPUT
@@ -429,7 +429,7 @@ def _worker_finish(
     succeeded = status in {"executed", "cache_hit"}
     src = queue.records.item_path(CLAIMED, action_key)
     record = record_store.read_document(src)
-    facts = classify(ActionCapture(
+    facts = classify_action(ActionCapture(
         claim=Absent() if record is None else Present(record), expected_claim=claim_snapshot))
     if not succeeded and (record or claim_snapshot or {}).get("gang") is not None:
         # One member ending unsuccessfully ends the gang (#1517).
@@ -447,7 +447,7 @@ def _worker_finish(
                 action_key, status=status, detail=detail,
                 snapshot=claim_snapshot, live=ready,
             )
-    if facts.claim is ClaimRelation.SUCCESSOR:
+    if facts.claim is ClaimRelation.DIFFERENT:
         # Whatever is at ``claimed/<key>.json`` now is not the claim this
         # worker executed, so none of the code below may touch it.
         return _finish_late(queue, 
@@ -698,7 +698,10 @@ def _worker_finish(
         str(disposition), attempts, adopted))
 
 
-def conclude(queue, policy: WorkerFinish | ExpiredClaim) -> Path | None:
+def conclude(
+    queue, policy: WorkerFinish | ExpiredClaim | FinishRecovery | OrphanQuarantine
+    | ReadyRecovery | WidowedLeaseRecovery | DeferredLaunch | TerminalReclaim,
+) -> Path | list[str] | dict[str, object] | None:
     """Run the complete conclusion selected by a named policy over this queue."""
     if isinstance(policy, WorkerFinish):
         return _worker_finish(queue, policy.action_key, status=policy.status,
