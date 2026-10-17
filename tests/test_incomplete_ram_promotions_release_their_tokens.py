@@ -44,15 +44,16 @@ ENTRY_KEY = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
 ENTRY_SHA = "b" * 64
 
 
+from fleet_world import FleetWorld
+
+
 def _hexkey(seed: str) -> str:
     return (seed.encode().hex() * 64)[:64]
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _ram_root(tmp_path: Path, queue: pool.PoolQueue) -> Path:

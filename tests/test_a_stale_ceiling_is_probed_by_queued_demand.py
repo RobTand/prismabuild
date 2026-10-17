@@ -67,6 +67,9 @@ PROBE = 259
 HOST = {"cpu": 32, "mem_gb": 48}
 
 
+from fleet_world import FleetWorld
+
+
 def _poisoned_receipt(ceiling: float = ARCHIVED_CEILING, *,
                       sharers: int | None = 1) -> dict[str, object]:
     """The shortfall receipt whose delivery became the measured ceiling.
@@ -121,9 +124,7 @@ def _receipt(*, unix: float, action_key: str, delivered: float,
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 def _cycle(queue: pool.PoolQueue, receipts=None) -> dict[str, object]:
