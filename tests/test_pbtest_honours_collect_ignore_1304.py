@@ -32,6 +32,7 @@ def run_shard(root: Path, *named: str) -> tuple[int, dict]:
 
 
 def make_suite(root: Path, conftest: str) -> None:
+    (root / "pytest.ini").write_text("[pytest]\n")
     tests = root / "tests"
     tests.mkdir()
     (tests / "conftest.py").write_text(conftest)
