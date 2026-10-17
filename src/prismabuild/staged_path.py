@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 from prismabuild import core as pb, kept_reads, manifest_layout, movement_actions, pool
-from prismabuild import prewarm_loop, reader_lease, residency_map, residency_plan, storage_tiers, tier_holdings
+from prismabuild import reader_lease, residency_map, residency_plan, storage_tiers, tier_holdings
 from prismabuild import output_vocabulary
 from prismabuild import progress as pb_progress
 from . import data_manifest as manifest_codec
@@ -1067,8 +1067,7 @@ def shared_interest(
                         or not isinstance(claimed_unix, (int, float))):
                     unknown.append(key)
                     continue
-                observation = prewarm_loop.progress_phase(
-                    queue, key, float(claimed_unix))
+                observation = queue.records.accepted_progress_phase(key, float(claimed_unix))
                 if observation is not None:
                     accepted = residency_plan.accepted_plan_phase(
                         queue, item, str(observation["phase"]))
@@ -5932,7 +5931,7 @@ class StagedPublisher:
                 if (not statmod.S_ISREG(info.st_mode)
                         or info.st_ino != int(before["ino"])):
                     return None
-                buffer = bytearray(prewarm_loop.BLOCK)
+                buffer = bytearray(reader_lease.CONTENT_BLOCK_BYTES)
                 view = memoryview(buffer)
                 while seen < want:
                     got = os.readv(fd, [view[:min(len(buffer), want - seen)]])

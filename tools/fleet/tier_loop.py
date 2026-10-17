@@ -751,8 +751,7 @@ def live_consumers(queue: pool.PoolQueue, *, store=None) -> list[dict[str, objec
             if state == pool.record_store.CLAIMED:
                 claimed_unix = item.get("claimed_unix")
                 if isinstance(claimed_unix, (int, float)):
-                    observation = prewarm_loop.progress_phase(
-                        queue, key, float(claimed_unix))
+                    observation = queue.records.accepted_progress_phase(key, float(claimed_unix))
                     if observation is not None:
                         reported = str(observation["phase"])
                         # Placed in the plan through the row's sealed
@@ -999,7 +998,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
     if blind:
         accepted = None
         if live == pool.record_store.CLAIMED:
-            observed = prewarm_loop.progress_phase(queue, consumer, float(item["claimed_unix"]))
+            observed = queue.records.accepted_progress_phase(consumer, float(item['claimed_unix']))
             if observed is None:
                 # The tolerant progress reader also returns None for a
                 # corrupt/missing lease. Destruction must not mistake that

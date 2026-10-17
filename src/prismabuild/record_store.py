@@ -430,6 +430,54 @@ class RecordStore:
             return Unknown("record-unreadable", path, exc)
         return Absent() if record is None else Present(record)
 
+    def accepted_progress_phase(self, action_key: str,
+                       claimed_unix: float) -> dict | None:
+        """The matching worker's accepted progress observation, if it has one.
+
+        The action-writable channel is not authority for the storage role: its
+        launch token is intentionally known only to the worker.  The claim lease
+        carries the worker's already authenticated ``ProgressWatch`` observation,
+        keyed to this exact claim and refreshed at heartbeat cadence.
+        """
+
+        # The raw channel is owned by the running action and requires a launch
+        # token only its worker knows.  The storage role cannot authenticate that
+        # token.  Its authority is therefore the matching lease's accepted
+        # ProgressWatch observation, which has already checked token, policy,
+        # counter monotonicity and regular-file identity at heartbeat cadence.
+        from . import core as pb, progress as progress_v1
+
+        path = self.lease_path(action_key)
+        try:
+            raw = pb.immutable_files.read_stable_file(
+                path,
+                where="prewarm progress lease",
+                max_bytes=progress_v1.MAX_ACTION_PROGRESS_BYTES,
+            )
+            record = pb.digest_primitives.decode_strict_json(raw, where="prewarm progress lease")
+        except (OSError, pb.ActionContractError, pb.CASTamperError,
+                pb.CASUnavailableError, RecursionError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        if record.get("action_key") != action_key:
+            return None
+        lease_claimed = record.get("claimed_unix")
+        if not isinstance(lease_claimed, (int, float)) or lease_claimed != claimed_unix:
+            return None
+        observed = record.get("progress_observation")
+        if not isinstance(observed, dict) or observed.get("source") != "action-progress":
+            return None
+        accepted = observed.get("last_accepted")
+        if not isinstance(accepted, dict):
+            return None
+        phase = accepted.get("phase")
+        if not isinstance(phase, str) or not phase:
+            return None
+        return {"phase": phase, "reported_unix": accepted.get("reported_unix"),
+                "units_completed": accepted.get("units_completed")}
+
+
     def scratch_owner(self, record: Mapping[str, object], *, scope_only=False,
                       owner_path: Path | None = None) -> tuple[Path, JsonRecord | None]:
         """Read one live, late, tombstone or widowed-lease scratch owner."""

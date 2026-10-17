@@ -181,6 +181,67 @@ def staged_extract(source, module):
     return "".join(remaining), "".join(moved)
 
 
+def staged_lower_progress(root):
+    """Move the exact accepted-lease read below both role orchestrators."""
+    path = root / "src/prismabuild/prewarm_loop.py"
+    source = path.read_text()
+    node = next((n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                 and n.name == "progress_phase"), None)
+    if node is None:
+        return
+    lines = source.splitlines(keepends=True)
+    method = "".join(lines[node.lineno - 1:node.end_lineno])
+    method = method.replace("def progress_phase(queue: pool.PoolQueue,", "def accepted_progress_phase(self,")
+    method = method.replace("queue.records.lease_path", "self.lease_path")
+    method = method.replace("    path = self.lease_path", "    from . import core as pb, progress as progress_v1\n\n    path = self.lease_path")
+    store = root / "src/prismabuild/record_store.py"
+    store_source = store.read_text()
+    at = next(n for n in ast.walk(ast.parse(store_source)) if isinstance(n, ast.FunctionDef) and n.name == "scratch_owner").lineno - 1
+    store_lines = store_source.splitlines(keepends=True)
+    store_lines.insert(at, "".join("    " + line if line.strip() else line for line in method.splitlines(keepends=True)) + "\n\n")
+    store.write_text("".join(store_lines))
+    path.write_text("".join(lines[:node.lineno - 1] + lines[node.end_lineno:]))
+    files = list((root / "src/prismabuild").glob("*.py")) + list((root / "tools/fleet").glob("*.py")) + list((root / "tests").glob("*.py"))
+    for path in files:
+        source = path.read_text()
+        if "progress_phase" not in source:
+            continue
+        lines = source.splitlines(keepends=True)
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line))
+        edits = []
+        for call in ast.walk(ast.parse(source)):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            phase_call = (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                          and func.value.id == "prewarm_loop" and func.attr == "progress_phase")
+            local_call = (path.name == "prewarm_loop.py" and isinstance(func, ast.Name)
+                          and func.id == "progress_phase")
+            new = None
+            if (phase_call or local_call) and len(call.args) >= 3:
+                receiver = ast.unparse(call.args[0])
+                new = f"{receiver}.records.accepted_progress_phase({', '.join(ast.unparse(a) for a in call.args[1:])})"
+            elif (isinstance(func, ast.Attribute) and func.attr == "setattr" and len(call.args) >= 2
+                  and isinstance(call.args[0], ast.Name) and call.args[0].id == "prewarm_loop"
+                  and isinstance(call.args[1], ast.Constant) and call.args[1].value == "progress_phase"):
+                call.args[0] = ast.parse("pool.record_store.RecordStore", mode="eval").body
+                call.args[1] = ast.Constant("accepted_progress_phase")
+                new = ast.unparse(call)
+            if new is not None:
+                edits.append((offsets[call.lineno - 1] + call.col_offset,
+                              offsets[call.end_lineno - 1] + call.end_col_offset, new))
+        for a, b, new in sorted(edits, reverse=True):
+            source = source[:a] + new + source[b:]
+        if edits:
+            path.write_text(source)
+    owner = root / STAGED_OWNER
+    source = owner.read_text().replace("import prewarm_loop, reader_lease", "import reader_lease")
+    source = source.replace("prewarm_loop.BLOCK", "reader_lease.CONTENT_BLOCK_BYTES")
+    owner.write_text(source)
+
+
 def staged_inventory(path, source):
     tree = ast.parse(source, filename=path)
     rows = []
@@ -228,10 +289,14 @@ def staged_population(sources):
 
 def staged_cli():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("freeze", "apply", "audit"))
+    parser.add_argument("mode", choices=("freeze", "apply", "audit", "lower-progress"))
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.mode == "lower-progress":
+        staged_lower_progress(args.root)
+        args.output.write_text(json.dumps({"owner": "RecordStore.accepted_progress_phase", "retired": "prewarm_loop.progress_phase"}) + "\n")
+        return
     sources = staged_sources(args.root, STAGED_BASE)
     selected = staged_symbols(sources)
     members = staged_population(sources)
