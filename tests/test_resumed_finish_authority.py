@@ -153,6 +153,8 @@ def test_restoration_before_mark_capture_retains_the_recovered_claim(tmp_path, m
 
 @pytest.mark.parametrize("observation", ["replacement", "unknown"])
 def test_publication_retains_an_unverified_finishing_mark(tmp_path, monkeypatch, observation):
+    clock = Clock(now=time.time())
+    monkeypatch.setattr(pool, "_now", lambda: clock.now)
     queue, item = _new_claim(tmp_path)
     release = queue._release_reservation
     identity = queue.records.finishing_mark_identity
@@ -184,6 +186,7 @@ def test_publication_retains_an_unverified_finishing_mark(tmp_path, monkeypatch,
     assert released_mark[0].exists()
     assert queue.ledger().held() == {}
     assert queue.sweep_finish_tombstones(grace_s=-1) == [KEY]
+    clock.advance(pool.HEARTBEAT_S + 1)
     assert queue.reap_stale(timeout_s=-1) == [KEY]
     assert record_store.read_document(queue.records.item_path(record_store.DONE, KEY))["published_unix"] == item["published_unix"]
     assert not queue.records.finishing_paths()
