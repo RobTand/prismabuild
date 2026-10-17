@@ -1365,7 +1365,7 @@ def test_a_claimed_mover_holding_nothing_is_never_told_to_retire(
     assert q.read_output_funding(mover, TIER)["state"] == "consumed"
     # Model the release-by-mover-key an egress or reaper performs: the row
     # is untouched and still claimed, only its holdings went.
-    tier_holdings.release_unspent_all(q, mover, authority=tier_holdings.Unspent.NEVER_STARTED)
+    tier_holdings.egress_all(q, mover)
     assert ledger.holdings(mover).get(KIND, 0) == 0
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "claimed")

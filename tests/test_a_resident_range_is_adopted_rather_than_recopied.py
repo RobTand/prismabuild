@@ -449,7 +449,7 @@ def test_an_adopted_lead_whose_bytes_went_is_refused_again(queue, stage) -> None
     _publish_consumer(queue, SECOND, _plan(queue, SECOND, label="second"))
     _cycle(queue, stage)
 
-    tier_holdings.release_unspent_all(queue, _hexkey('secondmover0'), authority=tier_holdings.Unspent.NEVER_STARTED)
+    tier_holdings.egress_all(queue, _hexkey('secondmover0'))
 
     verdict = queue.residency_verdict(
         pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, SECOND)))

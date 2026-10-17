@@ -24593,7 +24593,7 @@ class PoolQueue:
             # No box holds it; a tier still may (a mover's stage tokens), and
             # an operator asking for a terminal key's reservation back means
             # those too.
-            return {'action_key': key, 'released': tier_holdings.release_unspent_all(self, key, authority=tier_holdings.Unspent.NEVER_STARTED), 'hosts': []}
+            return {'action_key': key, 'released': tier_holdings.egress_all(self, key), 'hosts': []}
 
         released = self._release_reservation(key, host=hosts[0])
         return {"action_key": key, "released": released, "hosts": hosts}

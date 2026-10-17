@@ -341,7 +341,7 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
              residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
                         "leads": [MOVER]})
-    tier_holdings.release_unspent_all(queue, MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)
+    tier_holdings.egress_all(queue, MOVER)
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
     # Terminal too: the bytes are gone and only a republished mover brings
@@ -355,7 +355,7 @@ def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
     _claim_mover(queue)
     _receipt(queue)
     queue.finish(MOVER, status="executed")
-    tier_holdings.release_unspent_all(queue, MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)
+    tier_holdings.egress_all(queue, MOVER)
     _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
              residency={"schema": pool.RESIDENCY_SCHEMA_V1,
                         "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
