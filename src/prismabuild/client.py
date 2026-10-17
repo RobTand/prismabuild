@@ -70,6 +70,8 @@ it.
 
 from __future__ import annotations
 
+from . import scratch_lifetime
+
 from collections.abc import Mapping
 
 from . import manifest_layout
@@ -231,15 +233,15 @@ record_ephemeral_scratch_declarations = _local_scratch.record_ephemeral_scratch_
 SCRATCH_LIFETIME_TAG = _contracts.SCRATCH_LIFETIME_TAG
 #: The schema of the sealed selection :func:`build_scratch_lifetime_selection`
 #: returns for ``PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS``.
-SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1
+SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = scratch_lifetime.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1
 #: The schema of the durable registration the pool files in the claim/lease.
-SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1
+SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = scratch_lifetime.SCRATCH_LIFETIME_RECORD_SCHEMA_V1
 #: The claim field that carries the durable registration.
-SCRATCH_LIFETIME_FIELD = _local_scratch.SCRATCH_LIFETIME_FIELD
+SCRATCH_LIFETIME_FIELD = scratch_lifetime.SCRATCH_LIFETIME_FIELD
 #: The sealed variable that carries the versioned selection.
 SCRATCH_LIFETIME_DECLARATIONS_ENV = _local_scratch.DECLARATIONS_ENV
 #: Build one versioned scratch-lifetime selection for the sealed environment.
-build_scratch_lifetime_selection = _local_scratch.build_scratch_lifetime_selection
+build_scratch_lifetime_selection = scratch_lifetime.build_scratch_lifetime_selection
 
 # -- receipts ----------------------------------------------------------------
 

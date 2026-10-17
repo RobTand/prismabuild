@@ -1,4 +1,4 @@
-"""Read-only questions about records filed under a queue key.
+"""Queue-key record observations and scratch owner commits.
 
 The leaf JSON readers remain in pool until the wider queue-I/O caller
 migration. Standing, mover polling, and claim questions own their layout and
@@ -49,6 +49,10 @@ class Moving:
 
 
 type KeyStanding = ReadResult[QueueRow | Moving]
+
+
+class ScratchOwnerConflict(ValueError):
+    """A recovery path cannot address the active lifetime owner."""
 
 
 class RecordStore:
@@ -164,3 +168,55 @@ class RecordStore:
             return Unknown("latest-generation-tied")
         _stamp, state, record = terminals[-1]
         return Present(QueueRow(state, record))
+
+    def lease(self, key: str) -> ReadResult[JsonRecord]:
+        """Read the existing lease once, without renewal or missing-name retry."""
+        from . import pool
+
+        path = self.root / "claimed" / f"{key}.lease"
+        try:
+            record = pool.read_queue_record(path)
+        except Exception as exc:
+            return Unknown("record-unreadable", path, exc)
+        return Absent() if record is None else Present(record)
+
+    def is_scratch_lease(self, path: Path, key: str) -> bool:
+        return path == self.root / "claimed" / f"{key}.lease"
+
+    def scratch_owner(self, record: Mapping[str, object], *, scope_only=False,
+                      owner_path: Path | None = None) -> tuple[Path, JsonRecord | None]:
+        """Locate one live, late, tombstone or widowed-lease owner without refresh.
+
+        The lifetime owner validates the record's authority and monotone audit.
+        The existing key transition lock must cover mutations that use this read.
+        """
+        from . import core, pool
+
+        key = str(record["action_key"])
+        claimed = self.root / "claimed"
+        live_path = claimed / f"{key}.json"
+        path = live_path
+        if scope_only:
+            identity = core.canonical_sha256({field: record.get(field) for field in pool._CLAIM_IDENTITY})
+            path = claimed / f"{key}.{identity}{pool.LATE_FINISH_SUFFIX}"
+        if owner_path is not None:
+            if (scope_only or owner_path.parent != claimed
+                    or not (self.is_scratch_lease(owner_path, key)
+                            or (owner_path.name.startswith(key + ".")
+                                and owner_path.name.endswith(pool.TOMBSTONE_SUFFIX)))
+                    or live_path.exists()):
+                raise ScratchOwnerConflict("scratch recovery owner conflicts with a live claim")
+            path = owner_path
+        return path, pool.read_queue_record(path)
+
+    def write_scratch_owner(self, path: Path, record: Mapping[str, object]) -> None:
+        """Publish an already validated owner through the existing atomic writer."""
+        from . import pool
+
+        pool._write_json_atomic(path, record)
+
+    def write_scratch_lease(self, key: str, record: Mapping[str, object]) -> None:
+        """Mirror audit fields only; the caller preserves heartbeat authority."""
+        from . import pool
+
+        pool._write_json_atomic(self.root / "claimed" / f"{key}.lease", record)

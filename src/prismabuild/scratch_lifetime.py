@@ -482,3 +482,213 @@ def _clean_scratch_directory(declaration: Mapping[str, object], identity: object
             os.close(fd)
 
 
+def register(
+    store: RecordStore, queue, action_key: str, *, claim_snapshot: Mapping[str, object], env: Mapping[str, str],
+) -> dict[str, object] | None:
+    """Commit ownership through the existing claim/lease owner before launch."""
+    from .pool import _check_claim_lease_identity
+
+    with queue._transition_locked(str(action_key)):
+        selected = selections(
+            naming._sealed_scratch_variables(claim_snapshot))
+        if not selected:
+            return None
+        expected = naming._scratch_claim_envelope(claim_snapshot)
+        live = _scratch_record_value(store.claimed(action_key))
+        if expected["action_key"] != action_key or naming._scratch_claim_envelope(live) != expected:
+            raise naming.LocalScratchError("scratch lifetime claim envelope changed")
+        _check_claim_lease_identity(action_key, live, _scratch_record_value(store.lease(action_key)))
+        if _scratch_record_value(store.lease(action_key)) is None:
+            raise naming.LocalScratchError("scratch registration requires the worker lease")
+        if (queue.resolve_claim_holder(action_key, live) != socket.gethostname()
+                or expected["claimed_host"] != socket.gethostname()
+                or contracts.SCRATCH_LIFETIME_TAG not in live.get("tags", [])):
+            raise naming.LocalScratchError("scratch lifetime writer lacks owner/capability")
+        field = SCRATCH_LIFETIME_FIELD
+        if field in live:
+            evidence = validate_record(live[field])
+            if (evidence["claim_envelope"] != expected
+                    or _intent(evidence) != selected):
+                raise naming.LocalScratchError("conflicting scratch lifetime intent")
+            if any(entry["cleaned"] for entry in evidence["entries"] if entry["lifetime"] == "ephemeral"):
+                raise naming.LocalScratchError("scratch lifetime already consumed")
+        else:
+            entries = []
+            for selection in selected:
+                persistent = selection["lifetime"] == "persistent"
+                entries.append({**selection, "declaration": None if persistent else
+                    naming.bind_ephemeral_scratch(
+                        queue, root_env=selection["root_env"], name=selection["name"],
+                        claim_snapshot=live, env=env),
+                    "parent_identity": None, "identity": None, "cleaned": persistent})
+            evidence = {"schema": SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
+                        "claim_envelope": expected, "entries": entries,
+                        "registration_complete": False}
+        # Intent is durable before ANY creation. Mirrors may lag after a
+        # process failure; replay accepts only monotone ownership evidence.
+        _persist(store, claim_snapshot, evidence)
+        for entry in evidence["entries"]:
+            if entry["lifetime"] == "persistent":
+                continue
+            if entry["parent_identity"] is None:
+                entry["parent_identity"] = _prepare_scratch_directory(entry["declaration"])
+                _persist(store, claim_snapshot, evidence)
+            if entry["identity"] is None:
+                entry["identity"] = _create_scratch_directory(
+                    entry["declaration"], entry["parent_identity"])
+                _persist(store, claim_snapshot, evidence)
+            _check_registered_scratch_directory(entry["declaration"], entry["identity"])
+        evidence["registration_complete"] = True
+        _persist(store, claim_snapshot, evidence)
+        return validate_record(evidence)
+
+
+def durable_owner(store: RecordStore, record: Mapping[str, object], *, scope_only=False,
+                            owner_path: Path | None = None) -> tuple[Path, dict[str, object] | None]:
+    """Read the exact existing recovery owner, never a caller-only snapshot."""
+    key = str(record["action_key"])
+    try:
+        path, live = store.scratch_owner(record, scope_only=scope_only, owner_path=owner_path)
+    except ScratchOwnerConflict as exc:
+        raise naming.LocalScratchError(str(exc)) from exc
+    field = SCRATCH_LIFETIME_FIELD
+    if store.is_scratch_lease(path, key) and live is not None and field in live:
+        envelope = validate_record(live[field])["claim_envelope"]
+        for claim_field, lease_field in (("action_key", "action_key"),
+                                        ("claimed_by", "owner"), ("claimed_host", "host"),
+                                        ("claimed_unix", "claimed_unix"),
+                                        ("published_unix", "published_unix")):
+            if live.get(lease_field) != envelope[claim_field]:
+                raise naming.LocalScratchError("scratch lease contradicts its lifetime owner")
+        live = {**live, **{k: v for k, v in envelope.items() if k != "owner_attempt"}}
+        if naming._scratch_claim_envelope(live) != envelope:
+            raise naming.LocalScratchError("scratch lease scope contradicts its lifetime owner")
+    if owner_path is not None and live is not None and field in live:
+        envelope = validate_record(live[field])["claim_envelope"]
+        if (envelope["action_key"] != key
+                or naming._scratch_claim_envelope(live) != envelope):
+            raise naming.LocalScratchError("scratch recovery record contradicts its lifetime owner")
+    return path, live
+
+
+def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping[str, object],
+                              *, scope_only=False, owner_path: Path | None = None) -> None:
+    """Existing key lock held; preserve live/late ownership and heartbeat."""
+    from .pool import _check_claim_lease_identity
+
+    field = SCRATCH_LIFETIME_FIELD
+    checked = validate_record(evidence)
+    if checked["claim_envelope"] != naming._scratch_claim_envelope(record):
+        raise naming.LocalScratchError("scratch lifetime owner changed before persistence")
+    key = str(record["action_key"])
+    path, live = durable_owner(store,
+        record, scope_only=scope_only, owner_path=owner_path)
+    if live is None or naming._scratch_claim_envelope(live) != checked["claim_envelope"]:
+        raise naming.LocalScratchError("scratch lifetime durable owner unavailable")
+    lease = None if scope_only or store.is_scratch_lease(path, key) else _scratch_record_value(store.lease(key))
+    if not scope_only:
+        _check_claim_lease_identity(key, live, lease)
+    if lease is not None:
+        for field_name, identities in (
+            ("resource_scope", ("action_key", "nonce", "scope_id")),
+            ("resource_scope_intent", ("action_key", "nonce")),
+        ):
+            if field_name in lease:
+                previous, current = lease[field_name], record.get(field_name)
+                if (not isinstance(previous, Mapping) or not isinstance(current, Mapping)
+                        or any(previous.get(k) != current.get(k) for k in identities)):
+                    raise naming.LocalScratchError("contradictory scratch lease scope authority")
+    previous_records = [owner[field] for owner in (live, lease)
+                        if owner is not None and field in owner]
+    for previous_record in previous_records:
+        previous = validate_record(previous_record)
+        if (previous["claim_envelope"] != checked["claim_envelope"]
+                or _intent(previous) !=
+                _intent(checked)
+                or previous["registration_complete"] and not checked["registration_complete"]):
+            raise naming.LocalScratchError("contradictory scratch lifetime lease")
+        for before, after in zip(previous["entries"], checked["entries"]):
+            if (any(before[k] is not None and before[k] != after[k]
+                    for k in ("parent_identity", "identity"))
+                    or before["cleaned"] and not after["cleaned"]):
+                raise naming.LocalScratchError("scratch lifetime mirror regressed")
+    if live.get(field) != checked:
+        store.write_scratch_owner(path, {**live, field: checked})
+    if isinstance(record, dict):
+        record[field] = checked
+    if lease is not None and lease.get(field) != checked:
+        store.write_scratch_lease(key, {**lease, field: checked})
+
+
+def finalize(store: RecordStore, queue, action_key: str, record: Mapping[str, object],
+                                 *, export: object, scope_only=False,
+                                 owner_path: Path | None = None) -> dict[str, object]:
+    """Only stopped attempt descendants permit consuming owned scratch."""
+    from .pool import _same_claim
+
+    with queue._transition_locked(str(action_key)):
+        field = SCRATCH_LIFETIME_FIELD
+        _, durable = durable_owner(store,
+            record, scope_only=scope_only, owner_path=owner_path)
+        if durable is not None and _same_claim(durable, record):
+            if field in durable:
+                authoritative = validate_record(durable[field])
+                if isinstance(record, dict):
+                    record[field] = authoritative
+                else:
+                    record = {**record, field: authoritative}
+            elif field in record:
+                raise naming.LocalScratchError("scratch cleanup lacks durable registration")
+        if field not in record:
+            return {"complete": True, "used": False}
+        if durable is None or not _same_claim(durable, record):
+            raise naming.LocalScratchError("scratch cleanup durable owner unavailable")
+        evidence = validate_record(record[field])
+        if (evidence["claim_envelope"] != naming._scratch_claim_envelope(record)
+                or action_key != record["action_key"]
+                or record["claimed_host"] != socket.gethostname()
+                or _intent(evidence) !=
+                selections(naming._sealed_scratch_variables(record))):
+            raise naming.LocalScratchError("scratch cleanup has a foreign owner or sealed intent")
+        if all(entry["cleaned"] for entry in evidence["entries"]):
+            _persist(store, record, evidence, scope_only=scope_only, owner_path=owner_path)
+            return {"complete": True, "used": True}
+        from . import reader_lease
+        valid, reason = reader_lease.export_verdict_proves_empty(
+            export, scope_id=record["resource_scope"]["scope_id"])
+        if not valid:
+            # Legacy payload cleanup can complete without a reader export.
+            # A later scratch retry must re-query this exact stopped scope,
+            # not permanently trust that legacy shortcut or infer emptiness.
+            scope = queue._scope_from_record(record)
+            export = scope.export_stopped_verdict()
+            valid, reason = reader_lease.export_verdict_proves_empty(export, scope_id=scope.unit)
+        if not valid:
+            raise naming.LocalScratchError(f"scratch containment unproven: {reason}")
+        # Verify durable owner/mirror BEFORE deletion, including late attempts.
+        _persist(store, record, evidence, scope_only=scope_only, owner_path=owner_path)
+        for entry in evidence["entries"]:
+            if entry["cleaned"]:
+                continue
+            if entry["identity"] is None:
+                _uncreated_scratch_directory(
+                    entry["declaration"], entry["parent_identity"])
+            else:
+                _clean_scratch_directory(entry["declaration"], entry["identity"])
+            entry["cleaned"] = True
+            # Crash before this commit re-proves absence through held parent
+            # identities. Crash after it never revisits the consumed path.
+            _persist(store, record, evidence, scope_only=scope_only, owner_path=owner_path)
+        return {"complete": True, "used": True}
+
+
+def _scratch_record_value(result):
+    match result:
+        case Present(value):
+            return value
+        case Absent():
+            return None
+        case Unknown(error=error) if error is not None:
+            raise error
+        case Unknown(reason=reason):
+            raise naming.LocalScratchError(reason)
