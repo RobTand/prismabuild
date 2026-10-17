@@ -79,12 +79,16 @@ def operate(request, store, load):
             assert variant == "settled", "container-bearing evidence granted settlement"
             return result
     else:
-        current = authority(broker, store, durable=family == "broker-evidence" or variant == "migrated")
+        current = authority(broker, store, durable=family == "broker-evidence" or variant in ("migrated", "boot-fence"))
         path = current.maintenance_evidence_path if family == "broker-evidence" else (
-            current.maintenance_state_path if variant == "migrated" else current.maintenance_path)
+            current.maintenance_state_path if variant in ("migrated", "boot-fence") else current.maintenance_path)
         if write:
             if family == "broker-evidence":
                 current._write_maintenance_evidence()
+            elif variant == "boot-fence":
+                current.maintenance_path.unlink()
+                current._restore_maintenance()
+                assert current.maintenance["owner"] == broker.MAINTENANCE_BOOT_OWNER
             elif variant == "fenced":
                 assert current._force_volatile_gate_closed() is None
             elif variant not in ("bootstrap", "migrated"):
