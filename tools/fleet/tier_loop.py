@@ -1071,7 +1071,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
                         for name in record["tokens"])):
             return "live", "bound grant before transfer"
     else:
-        covered, _generation = queue.funding.cover_window(tier_id, row, "ram_gib", demand)
+        covered, _generation = queue.funding.cover_window(tier_id, row, "ram_gib", demand).credit
         if covered == demand:
             return "live", "bound mover before claim"
     return "unknown", "unconsumed funding has incomplete token evidence"
@@ -3954,7 +3954,7 @@ def _commitment_census(queue: pool.PoolQueue,
             if need <= 0 or not isinstance(action, str):
                 continue
             try:
-                covered, _generation = queue.funding.cover_window(tier_id, item, kind, need)
+                covered, _generation = queue.funding.cover_window(tier_id, item, kind, need).credit
             except (OSError, pool.PoolContractError, ValueError, KeyError):
                 covered = 0
             if covered < need:
@@ -6053,7 +6053,7 @@ def window_pressure(
                     # than free, so it commits no new capacity (#1594).
                     try:
                         covered, _generation = queue.funding.cover_window(
-                            tier_id, item, kind, row_gib)
+                            tier_id, item, kind, row_gib).credit
                     except (OSError, pool.PoolContractError, ValueError,
                             KeyError):
                         covered = 0
@@ -6448,7 +6448,7 @@ def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
               "kind": str(kind), "published_unix": published_unix}
     try:
         return bool(queue.funding.reserve_window(
-            str(tier_id), grant, fields, int(demand)))
+            str(tier_id), grant, fields, int(demand)).bound)
     except (OSError, pool.PoolContractError, ValueError, KeyError, TypeError):
         return False
 
@@ -6801,7 +6801,7 @@ def _protect_tier_advances(
         for row_key, row_need in ready_rows:
             try:
                 covered, _generation = queue.funding.cover_window(
-                    tier_id, ready_by_key[row_key], kind, row_need)
+                    tier_id, ready_by_key[row_key], kind, row_need).credit
             except (OSError, pool.PoolContractError, ValueError, KeyError):
                 continue
             if covered >= row_need:
@@ -6847,7 +6847,7 @@ def _protect_tier_advances(
                 else:
                     try:
                         covered, _generation = queue.funding.cover_window(
-                            tier_id, row_item, kind, need_gib)
+                            tier_id, row_item, kind, need_gib).credit
                     except (OSError, pool.PoolContractError, ValueError, KeyError):
                         covered = 0
                 if covered < need_gib and (

@@ -877,7 +877,7 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
               "mover_action_key": mover, "range_start_bytes": 0,
               "range_end_bytes": SPAN, "kind": "stage_gib",
               "published_unix": float(live["published_unix"])}
-    assert queue.funding.reserve_window(TIER, grant, fields, 1) is True
+    assert queue.funding.reserve_window(TIER, grant, fields, 1).bound is True
     old = queue.funding.read_window(mover, TIER)
     old_gen = str(old["generation"])
     assert queue.funding._transfer_window(TIER, grant, mover) == 1
@@ -897,7 +897,7 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
     live2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert float(live2["published_unix"]) != float(live["published_unix"])
     fields["published_unix"] = float(live2["published_unix"])
-    assert queue.funding.reserve_window(TIER, grant, fields, 1) is True
+    assert queue.funding.reserve_window(TIER, grant, fields, 1).bound is True
     new = queue.funding.read_window(mover, TIER)
     assert new is not None and new["state"] == "reserved"
     assert str(new["generation"]) != old_gen
