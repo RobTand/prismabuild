@@ -1370,8 +1370,9 @@ class _TickReads:
     changes the listing and so the key.
     """
 
-    def __init__(self, queue) -> None:
+    def __init__(self, queue, *, trust=None) -> None:
         self.queue = queue
+        self.trust = kept_reads.filesystem_trust if trust is None else trust
         self._commitments: dict[str, tuple[tuple[int, ...], dict[str, object]]] = {}
         self._owned: dict[str, tuple[object, dict[str, str], dict[str, str]]] = {}
         self._generations: dict[str, KeyStanding] = {}
@@ -1388,11 +1389,11 @@ class _TickReads:
 
     def batches(self, scope: Path) -> dict[str, object]:
         path = scope / "commitments.json"
-        fence = (kept_reads.filesystem_trust.file_fence()
+        fence = (self.trust.file_fence()
                  if kept_reads.file_versions_enabled() else None)
         info = _file_stat(path)
         version = (None if info is None else
-                   kept_reads.filesystem_trust.file_version(info, fence, path=path))
+                   self.trust.file_version(info, fence, path=path))
         kept = self._commitments.get(str(path))
         if (fence is not None and version is not None
                 and kept is not None and kept[0] == version):
@@ -1411,7 +1412,7 @@ class _TickReads:
         # Kept only at a version no later write can reproduce (#1045): the
         # fence was read before the stat, so a change after it moved ctime
         # to or past the fence, and a refused version is read again.
-        keepable = kept_reads.filesystem_trust.file_version(info, fence, path=path)
+        keepable = self.trust.file_version(info, fence, path=path)
         if keepable is None:
             self._commitments.pop(str(path), None)
         else:
@@ -9691,7 +9692,7 @@ class _ScopeBudget:
         self._budget.done(kind)
 
 
-def origin_retirement_tick(queue, *, budget=None) -> list[dict[str, object]]:
+def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, object]]:
     """Retire what the produced-output lane's ended attempts left (#914, #1053).
 
     Called once per `tier_loop.cycle` on the tier host. It scans the same
@@ -9744,7 +9745,7 @@ def origin_retirement_tick(queue, *, budget=None) -> list[dict[str, object]]:
     except OSError:
         return events
     templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
-    reads = _TickReads(queue)
+    reads = _TickReads(queue, trust=trust)
     indexed = True
     # What unreleased deferred consumers will read (#913), read once and only
     # when some batch is due.  A queue that cannot say keeps every batch for

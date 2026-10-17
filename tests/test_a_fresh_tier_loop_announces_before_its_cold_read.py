@@ -519,15 +519,17 @@ def test_a_bad_record_raises_first_in_name_order_either_way(tmp_path):
     for readers in (1, 2, 8):
         records = kept_reads.DirectoryRecords()
         with pytest.raises(Exception) as caught:
-            records.read(directory, select=tier_loop._receipt_name,
-                         parse=pool.record_store.read_document, readers=readers)
+            pool.record_store.RecordStore.kept(
+                directory.parent, records=records).receipt_records_at(
+                    directory, readers=readers)
         raised[readers] = (type(caught.value), str(caught.value),
                            records.generation(directory), records.parsed)
         # The directory is not remembered: the next read lists it again.
         (directory / "r-012.json").write_text(json.dumps({"i": 12}))
         with pytest.raises(IsADirectoryError):
-            records.read(directory, select=tier_loop._receipt_name,
-                         parse=pool.record_store.read_document, readers=readers)
+            pool.record_store.RecordStore.kept(
+                directory.parent, records=records).receipt_records_at(
+                    directory, readers=readers)
         (directory / "r-012.json").write_text("{\"schema\": ")
     assert raised[1] == raised[2] == raised[8], raised
     assert raised[1][0] is pool.PoolContractError
@@ -543,7 +545,9 @@ def test_the_parallel_reader_hands_stat_parse_the_stat_it_versioned(tmp_path):
         records = kept_reads.DirectoryRecords()
         results[readers] = [
             (path.name, record) for path, record in records.read(
-                directory, select=tier_loop._receipt_name,
+                directory, select=lambda entry: (
+                    entry.name.endswith(".json")
+                    and not entry.name.startswith(".")),
                 parse=lambda path, info: (info.st_size, info.st_ino),
                 stat_parse=True, readers=readers)]
     assert results[1] == results[4]

@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import errno
+import re
+import heapq
 import fnmatch
 import json
 import math
@@ -19,7 +21,7 @@ import stat as statmod
 import uuid
 from pathlib import Path
 
-from . import digest_primitives, immutable_files
+from . import digest_primitives, immutable_files, kept_reads
 from typing import Literal
 
 
@@ -142,8 +144,7 @@ def residency_action_key(value: object) -> str:
     somewhere else under the shared mount.
     """
 
-    if (not isinstance(value, str) or len(value) != 64
-            or any(character not in "0123456789abcdef" for character in value)):
+    if not key_shaped(value):
         raise PoolContractError("a residency file is named by a 64-character action key")
     return value
 
@@ -209,15 +210,7 @@ def _read_json(
         if tolerate_stale and exc.errno == errno.ESTALE:
             return None
         raise
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
-    if not isinstance(value, dict):
-        raise PoolContractError(f"queue record is not an object: {path}")
-    return value
+    return _document_from_bytes(path, raw)
 
 
 def _read_json_fresh(path: Path) -> dict[str, object] | None:
@@ -406,6 +399,11 @@ class RecordStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self._layout_ensured = False
+        self._records: kept_reads.DirectoryRecords | None = None
+        self._history: kept_reads.DirectoryCaptures | None = None
+        self._history_once: dict[str, tuple[object, object]] | None = None
+        self.history_listed = 0
+        self.history_kept = 0
 
     def claimed(self, key: str) -> ReadResult[JsonRecord]:
         """Read one claimed record without refreshing a missing name."""
@@ -1732,7 +1730,7 @@ class RecordStore:
                 raise
         return sorted(found)
 
-    def recent_ending_paths(self, limit: int) -> list[os.DirEntry]:
+    def recent_ending_paths(self, limit: int) -> list[os.DirEntry | HistoryEntry]:
         """The ``limit`` newest terminal records by modification time.
 
         Only the directory entries are stat'ed here.  Reading every record on the
@@ -1741,6 +1739,8 @@ class RecordStore:
         rather than an error.
         """
 
+        if self._history is not None:
+            return self._kept_recent_ending_paths(limit)
         entries: list[tuple[float, os.DirEntry]] = []
         withdrawal_mtimes: dict[str, float] = {}
         for state in (DONE, FAILED, WITHDRAWN):
@@ -2234,6 +2234,232 @@ class RecordStore:
             return None
 
 
+    @classmethod
+    def kept(cls, root: str | Path, *, records: kept_reads.DirectoryRecords,
+             history: kept_reads.DirectoryCaptures | None = None):
+        store = cls(root)
+        store._records = records
+        store._history = (kept_reads.DirectoryCaptures(records.trust)
+                          if history is None else history)
+        return store
+
+    def state_records(self, state: str) -> list[tuple[Path, JsonRecord | None]]:
+        """Every state entry in name order, with independent mutable records."""
+        directory = self.dir(state)
+        if self._records is None:
+            return [(path, read_document(path))
+                    for path in immutable_files.scan_optional(directory)]
+        return self._records.read(directory, select=_all_entries,
+                                  parse=_document_bytes, thaw=_document_from_bytes)
+
+    def receipt_records_at(self, directory: Path, *, checkpoint=None,
+                           readers: int = 1) -> list[tuple[Path, JsonRecord | None]]:
+        """Visible receipt names at a domain-held receipt directory."""
+        if self._records is None:
+            return [(path, read_document(path))
+                    for path in immutable_files.scan_optional(directory)
+                    if _visible_json_entry(path)]
+        return self._records.read(
+            directory, select=_visible_json_entry, parse=_frozen_document,
+            thaw=_thawed_document, checkpoint=checkpoint, readers=readers)
+
+    def retirement_documents(self) -> list[tuple[Path, JsonRecord | None]]:
+        directory = self.root / MOVERS_RETIRED
+        if self._records is None:
+            return [(path, read_document(path))
+                    for path in immutable_files.scan_optional(directory)
+                    if _retirement_entry(path)]
+        return self._records.read(directory, select=_retirement_entry,
+                                  parse=_frozen_document, thaw=_thawed_document)
+
+    def diagnostic_records_at(self, directory: Path
+                              ) -> list[tuple[Path, DiagnosticRecord]]:
+        """Every .json slot, retaining each original read failure."""
+        if self._records is None:
+            return [(path, _diagnostic_queue_record(path))
+                    for path in immutable_files.scan_optional(directory)
+                    if _json_entry(path)]
+        return self._records.read(
+            directory, select=_json_entry, parse=_diagnostic_queue_record,
+            keep=_diagnostic_kept)
+
+    def diagnostic_json_at(self, directory: Path
+                           ) -> list[tuple[Path, DiagnosticRecord]]:
+        """Visible queue metadata objects, retaining original read failures."""
+        if self._records is None:
+            return [(path, _diagnostic_json_record(path))
+                    for path in immutable_files.scan_optional(directory)
+                    if _visible_json_entry(path)]
+        return self._records.read(
+            directory, select=_visible_json_entry, parse=_diagnostic_json_record,
+            keep=_diagnostic_kept)
+
+    def _residency_supersession_names(self) -> frozenset[str]:
+        directory = self.root / RESIDENCY_PLANS / "superseded"
+        if self._records is None:
+            return frozenset(os.listdir(directory))
+        return self._records.names(directory, select=_all_entries)
+
+
+    def withdrawn_keys(self) -> frozenset[str]:
+        directory = self.dir(WITHDRAWN)
+        if self._records is None:
+            try:
+                names = os.listdir(directory)
+            except FileNotFoundError:
+                return frozenset()
+        else:
+            names = self._records.names(directory, select=_json_name)
+        return frozenset(name[:-5] for name in names if name.endswith(".json"))
+
+
+    def _take_history(self, directory: Path, select, *, absent_ok: bool = True):
+        history = (kept_reads.DirectoryCaptures() if self._history is None
+                   else self._history)
+        with history.acquire_files(directory) as capture:
+            if capture.hit:
+                self.history_kept += 1
+                return capture.value.values()
+            previous = capture.previous
+            previous = {} if previous is kept_reads.NoCapture else previous
+            complete = True
+            entries: dict[str, HistoryEntry] = {}
+            stat = os.stat
+            try:
+                with os.scandir(directory) as scan:
+                    for entry in scan:
+                        if not select(entry):
+                            continue
+                        info = stat(entry.path)
+                        version = capture.file_version(info, path=entry.path)
+                        prior = previous.get(entry.name)
+                        if version is None or prior is None or prior.version != version:
+                            prior = HistoryEntry.observed(entry.path, entry.name, info, version)
+                            complete = complete and version is not None
+                        entries[entry.name] = prior
+            except FileNotFoundError:
+                try:
+                    os.stat(directory)
+                except FileNotFoundError:
+                    if absent_ok:
+                        return ()
+                raise
+            self.history_listed += 1
+            capture.commit(entries, complete=complete)
+            return entries.values()
+
+    def ending_entries(self, state: str):
+        return self._history_at(self.dir(state), _json_file_entry)
+
+    def withdrawal_directories(self):
+        return self._history_at(self.dir(WITHDRAWN) / 'decisions', _directory_entry)
+
+    def withdrawal_entries(self, directory: HistoryEntry):
+        return self._history_at(Path(directory.path), _json_entry, absent_ok=False)
+
+    def mover_entries(self):
+        return self._history_at(self.root / MOVERS, _json_entry)
+
+    def plan_entries(self):
+        records = (kept_reads.DirectoryRecords() if self._records is None
+                   else self._records)
+        return records.read(
+            self.root / RESIDENCY_PLANS, select=_json_entry, parse=_history_entry,
+            keep=_history_entry_kept, stat_parse=True)
+
+    def tier_directories(self):
+        records = (kept_reads.DirectoryRecords() if self._records is None
+                   else self._records)
+        return [path for path, _ in records.read(
+            self.root / TIER_RESERVATIONS, select=_visible_directory_entry,
+            parse=_listed)]
+
+    @staticmethod
+    def diagnostic_sidecar_at(path: Path) -> DiagnosticRecord:
+        return _diagnostic_json_record(path)
+
+    def released_claim_filings(self) -> list[tuple[float, str]]:
+        directory = self.superseded_dir()
+        records = (kept_reads.DirectoryRecords() if self._records is None
+                   else self._records)
+        names = records.names(directory, select=_RELEASE_FILING.match)
+        return [(float(_RELEASE_FILING.match(name).group('when')),
+                 os.path.join(directory, name)) for name in names]
+
+
+    def begin_read(self) -> None:
+        self._history_once = {}
+
+    def end_read(self) -> None:
+        self._history_once = None
+
+    def history_directories(self) -> set[str]:
+        return set(self._history_once or ())
+
+    def _history_at(self, directory: Path, select, *, absent_ok: bool = True):
+        name = os.fspath(directory)
+        done = None if self._history_once is None else self._history_once.get(name)
+        if done is not None:
+            if done[0] is not select:
+                raise AssertionError(f"{name} read under two meanings")
+            return done[1]
+        out = self._take_history(directory, select, absent_ok=absent_ok)
+        if self._history_once is not None:
+            self._history_once[name] = (select, out)
+        return out
+
+    def ending_fences(self) -> kept_reads.EvidenceSet | None:
+        directories = [self.dir(state) for state in (DONE, FAILED, WITHDRAWN)]
+        decisions = self.dir(WITHDRAWN) / 'decisions'
+        trust = kept_reads.filesystem_trust if self._records is None else self._records.trust
+        taken = tuple(trust.ancestor_evidence(path) for path in [*directories, decisions])
+        if any(fence is None for fence in taken):
+            return None
+        subdirectories = tuple(trust.ancestor_evidence(Path(entry.path))
+                               for entry in self.withdrawal_directories())
+        if any(fence is None for fence in subdirectories):
+            return None
+        return kept_reads.EvidenceSet((*taken, *subdirectories))
+
+    def _kept_recent_ending_paths(self, limit: int) -> list[HistoryEntry]:
+        entries: list[HistoryEntry] = []
+        withdrawal_mtimes: dict[str, float] = {}
+        for state in (DONE, FAILED, WITHDRAWN):
+            listed = self.ending_entries(state)
+            entries.extend(listed)
+            if state == WITHDRAWN:
+                for entry in listed:
+                    withdrawal_mtimes[entry.name[:-5]] = entry.mtime
+        for directory in list(self.withdrawal_directories()):
+            candidates = list(self.withdrawal_entries(directory))
+            if candidates:
+                newest = max(candidates, key=_mtime)
+                if newest.mtime > withdrawal_mtimes.get(directory.name, float('-inf')):
+                    entries.append(newest)
+        return heapq.nlargest(max(0, int(limit)), entries, key=_mtime)
+
+    def required_diagnostic_records_at(self, directory: Path):
+        return [(path, _diagnostic_queue_record(path))
+                for path in immutable_files.scan_required(directory) if _json_entry(path)]
+
+
+    def residency_supersession_keys(self) -> frozenset[str] | None:
+        try:
+            names = self._residency_supersession_names()
+        except FileNotFoundError:
+            return frozenset()
+        except OSError:
+            return None
+        keys: set[str] = set()
+        for name in names:
+            key = _active_marker_key(name)
+            if key is not None:
+                keys.add(key)
+            elif not _archived_supersession_name(name):
+                return None
+        return frozenset(keys)
+
+
 
 
 def _write_json(
@@ -2397,3 +2623,270 @@ def _inspection_json_keys_at(directory: Path) -> list[str]:
         if isinstance(error, (FileNotFoundError, NotADirectoryError)):
             return []
         raise
+
+
+# Source proposal. No product imports or runtime execution on coordinator.
+@dataclass(frozen=True)
+class _JsonObject:
+    members: tuple[tuple[str, object], ...]
+
+
+@dataclass(frozen=True)
+class _JsonArray:
+    members: tuple[object, ...]
+
+
+def _freeze_json(value: object) -> object:
+    """Freeze parsed JSON without adding a lower recursion limit."""
+    frozen: dict[int, object] = {}
+    pending = [(value, False)]
+    while pending:
+        current, ready = pending.pop()
+        if not isinstance(current, (dict, list)):
+            continue
+        if ready:
+            if isinstance(current, dict):
+                frozen[id(current)] = _JsonObject(tuple(
+                    (key, frozen.get(id(child), child))
+                    for key, child in current.items()))
+            else:
+                frozen[id(current)] = _JsonArray(tuple(
+                    frozen.get(id(child), child) for child in current))
+        else:
+            pending.append((current, True))
+            children = current.values() if isinstance(current, dict) else current
+            pending.extend((child, False) for child in reversed(list(children)))
+    return frozen.get(id(value), value)
+
+
+def _thaw_json(value: object) -> object:
+    """Give each caller all of its own mutable containers."""
+    if not isinstance(value, (_JsonObject, _JsonArray)):
+        return value
+    root = {} if isinstance(value, _JsonObject) else []
+    pending = [(value, root)]
+    while pending:
+        current, result = pending.pop()
+        children = (current.members if isinstance(current, _JsonObject)
+                    else enumerate(current.members))
+        for key, child in children:
+            out = ({} if isinstance(child, _JsonObject)
+                   else [] if isinstance(child, _JsonArray) else child)
+            if isinstance(result, list):
+                result.append(out)
+            else:
+                result[key] = out
+            if isinstance(child, (_JsonObject, _JsonArray)):
+                pending.append((child, out))
+    return root
+
+
+def independent_document(record: JsonRecord) -> JsonRecord:
+    """Detach every JSON container without imposing a lower recursion limit."""
+    return _thaw_json(_freeze_json(record))
+
+
+@dataclass(frozen=True)
+class DiagnosticRecord:
+    _value: object
+    error: Exception | None = None
+
+    @property
+    def record(self) -> JsonRecord | None:
+        return _thaw_json(self._value)
+
+
+def _diagnostic_queue_record(path: Path) -> DiagnosticRecord:
+    try:
+        if not statmod.S_ISREG(path.lstat().st_mode):
+            raise ValueError("not a regular queue record")
+        record = read_document(path)
+        if record is None:
+            raise ValueError("record disappeared or is empty")
+        return DiagnosticRecord(_freeze_json(record))
+    except (OSError, ValueError) as exc:
+        return DiagnosticRecord(None, exc)
+
+
+def _diagnostic_json_record(path: Path) -> DiagnosticRecord:
+    try:
+        return DiagnosticRecord(_freeze_json(read_document(path)))
+    except (OSError, ValueError) as exc:
+        return DiagnosticRecord(None, exc)
+
+
+def _diagnostic_kept(parsed: DiagnosticRecord) -> bool:
+    return parsed.error is None
+
+
+def _document_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _document_from_bytes(path: Path, raw: bytes | None) -> JsonRecord | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
+    if not isinstance(value, dict):
+        raise PoolContractError(f"queue record is not an object: {path}")
+    return value
+
+
+def _frozen_document(path: Path) -> object:
+    return _freeze_json(read_document(path))
+
+
+def _thawed_document(_path: Path, value: object) -> JsonRecord | None:
+    return _thaw_json(value)
+
+
+def _all_entries(_entry) -> bool:
+    return True
+
+
+def _json_entry(entry) -> bool:
+    return entry.name.endswith(".json")
+
+
+def _visible_json_entry(entry) -> bool:
+    return entry.name.endswith(".json") and not entry.name.startswith(".")
+
+
+def _retirement_entry(entry) -> bool:
+    return entry.name in (MOVERS_RETIREMENT_CHECKPOINT, MOVERS_RETIREMENT_STATE)
+
+
+
+def _json_name(name: str) -> bool:
+    return name.endswith(".json")
+
+
+@dataclass(frozen=True)
+class _EntryStat:
+    st_mtime: float
+    st_size: int
+
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    path: str
+    name: str
+    mtime: float
+    version: tuple | None
+    _stat: _EntryStat
+
+    @classmethod
+    def observed(cls, path: str, name: str, info: os.stat_result, version: tuple | None):
+        return cls(path, name, info.st_mtime, version,
+                   _EntryStat(info.st_mtime, info.st_size))
+
+    def stat(self) -> _EntryStat:
+        return self._stat
+
+
+def _history_entry(path: Path, info: os.stat_result | None) -> HistoryEntry | None:
+    if info is None:
+        return None
+    return HistoryEntry.observed(str(path), path.name, info,
+                                 kept_reads.metadata_version(info))
+
+
+def _history_entry_kept(entry: HistoryEntry | None) -> bool:
+    return entry is not None
+
+
+def _json_file_entry(entry) -> bool:
+    return entry.name.endswith('.json') and entry.is_file()
+
+
+def _directory_entry(entry) -> bool:
+    return entry.is_dir()
+
+
+def _visible_directory_entry(entry) -> bool:
+    return entry.is_dir() and not entry.name.startswith('.')
+
+
+def _mtime(entry: HistoryEntry) -> float:
+    return entry.mtime
+
+
+def _listed(_path: Path) -> bool:
+    return True
+
+
+_RELEASE_FILING = re.compile(
+    r'\A(?P<key>[0-9a-f]{64})\.(?P<when>[0-9]+\.[0-9]{6})\.unstarted-claim\.json\Z')
+
+
+
+_SUPERSEDED_MARKER_SUFFIX = ".superseded.json"
+
+#: The characters a reaped plan body's reason slug is built from
+#: (``residency_plan._retired_slug``).
+_SLUG_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+
+
+
+
+
+
+
+
+
+
+def _active_marker_key(name: str) -> str | None:
+    """The consumer key an active supersession marker name carries, or ``None``.
+
+    The address is ``{key}.{plan_sha256}.superseded.json``, both 64 lowercase
+    hex characters.  Any other name is not an active marker; the caller tells
+    a known archive name from an unrecognized one.
+    """
+
+    if not name.endswith(_SUPERSEDED_MARKER_SUFFIX):
+        return None
+    stem = name[:-len(_SUPERSEDED_MARKER_SUFFIX)]
+    key, separator, digest = stem.partition(".")
+    if not separator or "." in digest:
+        return None
+    if not key_shaped(key) or not key_shaped(digest):
+        return None
+    return key
+
+
+def _archived_supersession_name(name: str) -> bool:
+    """Whether one marker-directory name is a known archive entry.
+
+    ``residency_plan`` archives a reaped plan body as
+    ``{key}.{seconds}.{micros}.{reason-slug}.json`` and retires an active
+    marker beside it as
+    ``{key}.{digest}.{filing}.{seconds}.{micros}.marker.json``; a
+    publication temporary is ``.{name}.{random}.tmp``.  None of these can be
+    the address an active marker is read at, so a directory holding them
+    still answers which keys have one.  Anything else is unrecognized, and
+    the caller treats the whole listing as unknown.
+    """
+
+    if name.startswith("."):
+        return True
+    if name.endswith(".marker.json"):
+        parts = name[:-len(".marker.json")].split(".")
+        return (len(parts) == 5 and key_shaped(parts[0]) and key_shaped(parts[1])
+                and all(part.isdigit() for part in parts[2:]))
+    if name.endswith(".json"):
+        parts = name[:-len(".json")].split(".")
+        return (len(parts) == 4 and key_shaped(parts[0])
+                and parts[1].isdigit() and parts[2].isdigit()
+                and bool(parts[3])
+                and all(character in _SLUG_CHARACTERS
+                        for character in parts[3]))
+    return False

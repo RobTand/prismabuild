@@ -45,7 +45,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from . import storage_tiers, record_store
+from . import storage_tiers, record_store, kept_reads
 
 #: The environment variable naming the composed map, injected by the launcher.
 RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
@@ -859,3 +859,60 @@ __all__ = [
     "write_landing",
     "write_map",
 ]
+
+
+def _fragment_tier_epoch(path: Path) -> tuple[str, str] | None:
+    """A fragment's raw ``(tier_id, epoch)``, or ``None`` when unreadable.
+
+    Read raw, never validated, for :func:`drop_prior_ram_epochs`.
+    """
+
+    try:
+        with open(path) as stream:
+            raw = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, Mapping):
+        return ("", "")
+    return (str(raw.get("tier_id") or ""), str(raw.get("epoch") or ""))
+
+
+def _fragment_json(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_file() and entry.name.endswith(".json")
+    except OSError:
+        return False
+
+
+def _fragment_dir(entry: os.DirEntry) -> bool:
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
+class EpochRecords:
+    """Raw fragment tier/epoch observations over the supplied C11 reader.
+
+    Epoch cleanup deliberately observes raw headers, including invalid ones.
+    Its decision about deletion and live tokens remains with the tier loop.
+    """
+
+    def __init__(self, records: kept_reads.DirectoryRecords | None = None):
+        self.records = kept_reads.DirectoryRecords() if records is None else records
+
+    def consumers(self, root: Path) -> list[str]:
+        return [path.name for path, _ in self.records.read(
+            root, select=_fragment_dir, parse=_fragment_listing)]
+
+    def epochs(self, directory: Path):
+        return self.records.read(directory, select=_fragment_json,
+                                 parse=_fragment_tier_epoch, keep=_fragment_epoch_kept)
+
+
+def _fragment_listing(_path: Path):
+    return None
+
+
+def _fragment_epoch_kept(found) -> bool:
+    return found is not None

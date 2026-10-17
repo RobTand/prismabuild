@@ -47,6 +47,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
 from kept_read_clock import after_paths
+from record_store_trust import ObservedTrust
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
@@ -244,7 +245,7 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-def _adoption_world(fleet, count: int, monkeypatch):
+def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
     """A campaign range of already-correct names nothing vouches for.
 
     The #1081 shape -- a promotion killed before it filed its records
@@ -267,7 +268,7 @@ def _adoption_world(fleet, count: int, monkeypatch):
     queue.records.dir(pool.record_store.CLAIMED).mkdir(parents=True, exist_ok=True)
     after_paths(monkeypatch, *destinations, destinations[0].parent, queue.records.dir(pool.record_store.CLAIMED))
     successor, copier = base._key(), base._key()
-    publisher = base._publisher(fleet, copier, successor)
+    publisher = base._publisher(fleet, copier, successor, trust=trust)
     return publisher, destinations
 
 
@@ -436,9 +437,9 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
     """
 
     queue, stage, cas = fleet
-    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_current',
-                        lambda path: None)
+    trust = ObservedTrust()
+    trust.directory_available = False
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch, trust=trust)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None

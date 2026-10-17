@@ -25505,15 +25505,7 @@ class PoolQueue:
         anything but absence, for the reason :meth:`terminal_keys` records.
         """
 
-        try:
-            names = os.listdir(self.records.dir(WITHDRAWN))
-        except FileNotFoundError:
-            # Absence only, for the reason ``terminal_keys`` gives: a queue
-            # whose layout has not been created yet has no ``withdrawn``.
-            return frozenset()
-        return frozenset(
-            name[: -len(".json")] for name in names if name.endswith(".json")
-        )
+        return self.records.withdrawn_keys()
 
 
     def released_origin_consumer_keys(self) -> frozenset[str]:
