@@ -162,13 +162,12 @@ def _capture(queue: pool.PoolQueue) -> dict[str, object]:
 
 
 def _r12_held(queue: pool.PoolQueue) -> dict[str, int]:
-    ledger = queue.tier_ledger(TIER)
-    return {name: int(ledger.holder_tokens(_mover("r12", name)).get("stage_gib", 0))
-            for name in LANDED}
+    ledger = queue.tier(TIER)
+    return {name: int(ledger.holdings(_mover('r12', name)).get('stage_gib', 0)) for name in LANDED}
 
 
 def _free(queue: pool.PoolQueue) -> int:
-    return int(queue.tier_ledger(TIER).available().get("stage_gib", 0))
+    return int(queue.tier(TIER).free_supply().get('stage_gib', 0))
 
 
 def test_r12s_horizon_is_the_docstring_arithmetic(tmp_path: Path) -> None:
@@ -456,7 +455,7 @@ def test_a_finished_copy_that_is_not_resident_is_labelled_as_such(
     queue.records.item_path(pool.record_store.DONE, finished).write_text(json.dumps(
         {**dict(row), "status": "done"}))
     if holds:
-        assert queue.tier_ledger(TIER).acquire(finished, {"stage_gib": 22})
+        assert queue.tier(TIER).take(finished, {'stage_gib': 22})
 
     _cycle(queue, stage, gib=capacity)
 
