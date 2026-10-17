@@ -18,6 +18,7 @@ outside its scope.
 Issues #227, #262.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 from pathlib import Path
@@ -129,9 +130,11 @@ def test_the_two_readers_agree_with_pbrun(lost_claim) -> None:
 
     q, path, record = lost_claim
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    summary = pbrun.action_client.outcome_summary(q, path, record)
-    assert f"held by {HELD_BY}" in pbrun.action_client.outcome_headline(summary)
+    summary = submit_core.action_client.outcome_summary(q, path, record)
+    assert f"held by {HELD_BY}" in submit_core.action_client.outcome_headline(summary)
 
     status_row = next(row for row in pbstatus.read_endings(q.root, limit=10)
                       if row["action_key"] == KEY)

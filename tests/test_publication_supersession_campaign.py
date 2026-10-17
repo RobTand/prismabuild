@@ -1,5 +1,6 @@
 """A publication ending stops a campaign while real queue occupancy remains."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import errno
 import json
@@ -10,6 +11,7 @@ import pytest
 from prismabuild import pool
 import pbcampaign
 import pbrun
+from prismabuild import submission as submit_core
 
 from test_pool_requeue_preserves_newer_generation import (
     DEMAND, KEY, _end_claim, _publish, clock,
@@ -19,7 +21,7 @@ from test_publication_supersession import _ready
 
 def _campaign(tmp_path, monkeypatch, clock, successor_state):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     _publish(queue)
     original = queue.claim(owner="original", capacity=DEMAND)
     assert original is not None
