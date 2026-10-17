@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from submission_frontend import render_submission
 from prismabuild import action_edges, submission, action_client, client_channel, core as pb, pool, fleet_roster
 from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, Display
 from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES
@@ -20,11 +21,6 @@ from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MO
 
 def configured_store() -> FleetStore:
     return FleetStore(Path("/mnt/shared/prismabuild-fleet"), RUNTIME_ROOT, fleet_roster.Roster.beside(__file__))
-
-
-def render(event: Display) -> None:
-    print(event.text, file=sys.stderr if event.channel == "stderr" else sys.stdout,
-          end=event.end, flush=event.flush)
 
 
 def request_from_args(args: argparse.Namespace) -> SubmissionRequest:
@@ -420,7 +416,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "batch once every other declared consumer has succeeded")
     ap.add_argument(
         "--transport", choices=TRANSPORTS,
-        default=submission.default_transport(store=store),
+        default=submission.transport_default(store=store),
         help="which dispatcher carries this submission (env "
              "PRISMABUILD_TRANSPORT, else the published runtime generation's "
              "default_transport); the pull queue stays the default until the "
@@ -458,7 +454,7 @@ def main(argv=None, *, publication_canary_intent=None, authorize_canary=None, re
                 if previous_observer is not None:
                     previous_observer(event)
             report.on_event = send
-        result = submission.submit(request_from_args(args), store=configured_store(), display=render,
+        result = submission.submit_request(request_from_args(args), store=configured_store(), display=render_submission,
             report=report, publication_canary_intent=publication_canary_intent,
             authorize_canary=authorize_canary)
         refusal = result if isinstance(result, SubmissionRefused) else None

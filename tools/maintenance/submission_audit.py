@@ -14,15 +14,15 @@ BASE = "f0bcb21e195378e7fb6e85e1bbfde24c45672e6b"
 PROTECTED = ("action_client", "action_wait", "client_channel", "client_recovery",
              "capability_eligibility", "contracts", "record_store")
 NEW_OWNERS = {"submission", "submission_types", "d38_gate", "target_evidence"}
-CLI = {"main", "parse_args", "configured_store", "render", "__file__",
+CLI = {"main", "parse_args", "configured_store", "render_submission", "__file__",
        "RUNTIME_ROOT", "fleet_roster", "request_from_args", "_profile_mode"}
-RENAMES = {"build_git_checkout_snapshot": "snapshot_checkout", "freeze_action_template": "freeze",
+RENAMES = {"build_git_checkout_snapshot": "snapshot_checkout", "freeze_action_template": "freeze_template",
     "prepare_submission": "prepare", "seal_action_from_template": "seal",
     "seal_decomposed_child": "seal_child", "submit_and_publish": "_prepare_and_publish",
     "submit_deferred": "register_deferred", "template_from_record": "restore_template",
     "template_record": "record_template", "seal_movement_action": "seal_movement",
     "check_supersession_or_exit": "validate_supersession_request",
-    "file_supersession_or_exit": "file_supersession", "release_origin_consumer_cli": "release_origin_consumer"}
+    "file_supersession_or_exit": "record_supersession_request", "release_origin_consumer_cli": "release_declared_consumer"}
 ROOTS = {"SH": "root", "FLEET_ROSTER_PATH": "roster_path",
          "CONTAINER_WRAPPER_DIR": "wrapper_dir", "RUNTIME_VERSION": "runtime_version"}
 

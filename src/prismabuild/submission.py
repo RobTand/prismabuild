@@ -4076,7 +4076,7 @@ def gang_declaration(args) -> dict | None:
         raise SubmissionRefused(f"pbrun: {exc}") from None
 
 
-def freeze(
+def freeze_template(
     *,
     command: Sequence[str],
     cwd: Path,
@@ -6088,7 +6088,7 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
                 "slot), or drop the variable.")
         variables["CUDA_VISIBLE_DEVICES"] = ""
 
-    template = freeze(
+    template = freeze_template(
         command=command,
         cwd=cwd,
         logical_cwd=logical_cwd,
@@ -6598,7 +6598,7 @@ def validate_supersession_request(q, old: str, *, new: str, new_kind: str) -> No
         raise SubmissionRefused(f"pbrun: --supersedes: {exc}") from None
 
 
-def file_supersession(q, old: str, *, new: str, new_kind: str, display: DisplaySink = discard_display) -> None:
+def record_supersession_request(q, old: str, *, new: str, new_kind: str, display: DisplaySink = discard_display) -> None:
     """File that ``new`` replaces ``old``, or refuse the submission (#913)."""
 
     try:
@@ -6733,7 +6733,7 @@ def register_deferred(prepared: Mapping[str, object],
     except action_edges.ActionEdgeError as exc:
         raise SubmissionRefused(f"pbrun: cannot file the deferred submission: {exc}") from None
     if args.supersedes is not None:
-        file_supersession(q, args.supersedes, new=pending_id,
+        record_supersession_request(q, args.supersedes, new=pending_id,
                                   new_kind=action_edges.PRODUCER_PENDING, display=display)
     producers = ", ".join(f"{edge['producer'][:12]}:{edge['template_id']}"
                           for edge in edges)
@@ -6995,7 +6995,7 @@ def _release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                   "inputs": [*template["inputs"], manifest_input],
                   _ORIGIN_BATCHES_TEMPLATE_KEY: all_refs}
         report = action_client.ClientReport()
-        publish(action, {"template": sealed, "cwd": Path(options.cwd),
+        _publish_sealed(action, {"template": sealed, "cwd": Path(options.cwd),
             "portable_checkout": True,
             "offer_queue": lambda: bounded_offer_snapshot(q), "attach": True}, args=options, store=store,
             display=display, report=report, gate_before_request=True,
@@ -7156,7 +7156,7 @@ def publish_consumer_row(q, action: Mapping[str, object],
     return queued_path, generation
 
 
-def release_origin_consumer(batch_ref: str, consumer_key: str, *,
+def release_declared_consumer(batch_ref: str, consumer_key: str, *,
                                 reason: str, by: str, store: FleetStore, display: DisplaySink = discard_display) -> int:
     """``--release-origin-consumer``: release one declaration (#926, #945)."""
 
@@ -7209,12 +7209,12 @@ def _prepare_and_publish(args, *, publication_canary_intent=None,
         if publication_canary_intent is not None else seal(template))
     key = str(action["action_key"])
 
-    return publish(action, prepared, args=args, store=store, display=display,
+    return _publish_sealed(action, prepared, args=args, store=store, display=display,
         report=report, publication_canary_intent=publication_canary_intent,
         authorize_canary=authorize_canary)
 
 
-def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
+def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetStore,
             display: DisplaySink = discard_display, report=None,
             publication_canary_intent=None, authorize_canary=None,
             placement_announced: bool = False, gate_before_request: bool = False):
@@ -7320,7 +7320,8 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
     verdict = None if gate_before_request else d38_gate.judge_publication(
         args, action, cas=cas, queue_root=store.queue_root,
         transport=args.transport, store=store, display=display,
-        demand=demand, required_tags=tags)
+        demand=({**demand, "gpu": max(1, int(demand.get("gpu", 0)))}
+                if producer is not None and producer.needs_gpu else demand), required_tags=tags)
     if verdict is not None:
         if not args.detach:
             try:
@@ -7436,7 +7437,7 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
                                        new_kind=action_edges.PRODUCER_KEY)
 
             def supersede() -> None:
-                file_supersession(q, args.supersedes, new=key,
+                record_supersession_request(q, args.supersedes, new=key,
                                           new_kind=action_edges.PRODUCER_KEY, display=display)
 
         queued_path, generation = publish_consumer_row(
@@ -7500,7 +7501,7 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
 
 
 
-def default_transport(*, store: FleetStore) -> str:
+def transport_default(*, store: FleetStore) -> str:
     configured = os.environ.get(DEFAULT_TRANSPORT_ENV)
     if configured:
         if configured not in TRANSPORTS:
@@ -7583,7 +7584,7 @@ def _request_value_matches(value, expected) -> bool:
     return type(value) is expected
 
 
-def submit(request: SubmissionRequest, *, store: FleetStore,
+def submit_request(request: SubmissionRequest, *, store: FleetStore,
            display: DisplaySink = discard_display, report=None,
            publication_canary_intent=None, authorize_canary=None
            ) -> action_client.ClientReport | SubmissionRefused:
@@ -7608,7 +7609,7 @@ def submit(request: SubmissionRequest, *, store: FleetStore,
                 by = f"{who}@{socket.gethostname()}"
                 code = (withdraw_routed(request.withdraw, transport=request.transport,
                             reason=request.reason, by=by, store=store, display=display)
-                        if request.withdraw else release_origin_consumer(
+                        if request.withdraw else release_declared_consumer(
                             *request.release_origin_consumer, reason=request.reason,
                             by=by, store=store, display=display))
                 report.finish(action_client.ClientCommand(code))
@@ -7654,7 +7655,7 @@ def submit_action(action: Mapping[str, object], *, template: Mapping[str, object
     with action_wait.client_readers():
         try:
             with write_window(request, store=store):
-                continuation = publish(action, prepared, args=request, store=store,
+                continuation = _publish_sealed(action, prepared, args=request, store=store,
                     display=display, report=report, placement_announced=placement_announced)
             if callable(continuation):
                 continuation()
@@ -7945,7 +7946,7 @@ def submit_producer(action, *, cas, request_path, producer: ProducerPublication,
                 action, request_path = _prepare_producer(action, cas=cas,
                     request_path=request_path, producer=producer, request=request, store=store,
                     checkout_snapshot_max_bytes=checkout_snapshot_max_bytes)
-                continuation = publish(action, {"template": {"cas": cas},
+                continuation = _publish_sealed(action, {"template": {"cas": cas},
                     "cwd": Path(request.cwd), "portable_checkout": True,
                     "producer": producer, "request_path": request_path},
                     args=request, store=store, display=display, report=report,
@@ -7989,7 +7990,7 @@ def write_window(request: SubmissionRequest, *, store: FleetStore):
 
 def freeze_resident(set_id: str, checkout: str | Path, *, store: FleetStore):
     cwd = Path(checkout).resolve()
-    return freeze(command=["pbresident", "publish", set_id], cwd=cwd,
+    return freeze_template(command=["pbresident", "publish", set_id], cwd=cwd,
         logical_cwd=str(cwd), demand={"cpu": 1, "mem_gb": 1},
         placement={"required_tags": []}, variables={"PATH": "/usr/bin:/bin"},
         determinism="stochastic", retry_policy={"max_attempts": 3, "retry_safe": True},
@@ -8004,7 +8005,7 @@ def _resident_publication(action, template, tier, *, request_path, store: FleetS
         detach=True, retry_safe=True, max_attempts=3)
     sealed = {**template, "params": action["params"]}
     report = action_client.ClientReport()
-    result = publish(action, {"template": sealed, "cwd": Path(request.cwd),
+    result = _publish_sealed(action, {"template": sealed, "cwd": Path(request.cwd),
         "portable_checkout": True, "movement": MovementPublication(tier),
         "request_path": request_path},
         args=request, store=store, report=report, placement_announced=True)

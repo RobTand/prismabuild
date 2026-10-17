@@ -130,7 +130,7 @@ def default_transport() -> str:
     """
 
     try:
-        return submission.default_transport(store=store_for(__file__, root=SH))
+        return submission.transport_default(store=store_for(__file__, root=SH))
     except SubmissionRefused as exc:
         raise SystemExit(exc.reason or exc.returncode) from None
 
@@ -270,7 +270,7 @@ def submit(
     if identity is None:
         raise SubmitRefused(f"submission ended with {type(report.ending.verdict).__name__}")
     where = (identity.submission if not isinstance(identity, action_client.CachedClientIdentity)
-             else cas.receipt_path(identity.action_key))
+             else cas._receipt_path(identity.action_key))
     return Submission(transport=transport, where=where,
         job_id=identity.job_id if isinstance(identity, action_client.SlurmClientIdentity) else None,
         action_key=identity.action_key)

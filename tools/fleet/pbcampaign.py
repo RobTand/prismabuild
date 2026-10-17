@@ -782,7 +782,7 @@ def submit_row(row, *, transport: str = "") -> dict:
     try:
         request = submission.request_from_mapping(row, detach=True,
             transport=transport or fleet_submit.default_transport())
-        result = submission.submit(request, store=store_for(__file__),
+        result = submission.submit_request(request, store=store_for(__file__),
             display=lambda event: render_submission(event) if event.channel == "stderr" else None,
             report=report)
         if isinstance(result, SubmissionRefused):

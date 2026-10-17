@@ -123,7 +123,7 @@ def _freeze_template(
 
     work = _checkout(root)
     patch_store(monkeypatch, client=pbrun, root=root)
-    return submit_core.freeze(
+    return submit_core.freeze_template(
         command=request["common"]["argv"],
         cwd=work,
         logical_cwd=".",
