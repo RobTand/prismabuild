@@ -51,7 +51,7 @@ def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 3
                                         "gpu_power_fraction": power,
                                         "gpu_power_sampled_unix": time.time() - age})
     if observation == "map_mismatch":
-        pool.record_store._write_json(queue.ledger(PEER).base / "cpu-map.json",
+        pool.immutable_files.write_json_atomic(queue.ledger(PEER).base / "cpu-map.json",
                                 {"preferred": [4, 5, 6, 7], "fallback": []})
     if observation == "ledger_failure":
         original = pool.ResourceLedger.available
@@ -143,7 +143,7 @@ def _scratch_history(root, monkeypatch, observation):
             offer["observed_capacity"]["mem_gb"] = 0
         else:
             offer["observed_detail"]["observed_unix"] -= 10
-        pool.record_store._write_json(peer_path, offer)
+        pool.immutable_files.write_json_atomic(peer_path, offer)
     if observation == "map_mismatch":
         offer = pool.record_store.read_document(peer_path)
         fleet.queue.announce(
@@ -168,7 +168,7 @@ def _scratch_history(root, monkeypatch, observation):
             if ledger.base == fleet.queue.ledger(FAST).base and not replacements:
                 offer = pool.record_store.read_document(peer_path)
                 offer["observed_capacity"]["mem_gb"] = 0
-                pool.record_store._write_json(peer_path, offer)
+                pool.immutable_files.write_json_atomic(peer_path, offer)
                 replacements.append(True)
             return available
 

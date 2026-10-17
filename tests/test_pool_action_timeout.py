@@ -83,7 +83,7 @@ def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
     queue, item = _claimed(tmp_path, 5)
     item['published_unix'] = 1
     item['claimed_unix'] = 1
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, item['action_key']),
         item,
     )
@@ -92,7 +92,7 @@ def test_old_queue_timestamp_does_not_consume_execution_budget(tmp_path):
     lease_path = queue.records.lease_path(item['action_key'])
     lease = json.loads(lease_path.read_text())
     lease.update(published_unix=1, claimed_unix=1)
-    pool.record_store._write_json(lease_path, lease)
+    pool.immutable_files.write_json_atomic(lease_path, lease)
     outcome = queue.execute(item, heartbeat_s=30)
     assert outcome['status'] == 'executed'
     assert outcome['returncode'] == 0
