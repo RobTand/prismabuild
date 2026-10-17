@@ -112,7 +112,7 @@ class Stage:
             tier=self.tier, stage=self.root, consumer=consumer, mover=mover,
             names=names, size=size)
         assert self.queue.move_record(mover) is None, "dead mover must file no receipt"
-        assert mover not in self.queue.tier_ledger(self.tier).held_keys()
+        assert mover not in self.queue.tier(self.tier).holders()
         assert not self.queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
         return consumer, mover
 
