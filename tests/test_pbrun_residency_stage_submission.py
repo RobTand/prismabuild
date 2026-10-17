@@ -92,7 +92,7 @@ def _announce_tier(queue: pool.PoolQueue, *, fill: int | None = None,
         "mountpoint": str(mountpoint if mountpoint is not None
                           else queue.root / "stage"),
         "mover_python": sys.executable,
-        "mover_tools_root": str(Path(submission.__file__).resolve().parent),
+        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
     }
     if fill is not None:
         record["tokens"] = {storage_tiers.FILL_KIND: fill}
@@ -458,7 +458,7 @@ def _announce_ram_tier(queue: pool.PoolQueue, mountpoint: Path) -> None:
         "tier_id": RAM_TIER, "host": "sparky", "tier": "ram",
         "mountpoint": str(mountpoint),
         "mover_python": sys.executable,
-        "mover_tools_root": str(Path(submission.__file__).resolve().parent),
+        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
     })
 
 

@@ -42,12 +42,12 @@ def test_v2_requires_published_and_verified_core_and_storage_reader(
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
     submit_core.require_deployed_read_plan_storage(**roots, store=pbrun.configured_store())
     (published / changed_member).write_text("old storage owner")
-    with pytest.raises(SystemExit, match="compatible published storage"):
+    with pytest.raises(submit_core.SubmissionRefused, match="compatible published storage"):
         submit_core.require_deployed_read_plan_storage(**roots, store=pbrun.configured_store())
     (published / changed_member).write_bytes((source / changed_member).read_bytes())
     files[changed_member] = "0" * 64
     (published / "RUNTIME_VERSION.json").write_text(json.dumps({"files": files}))
-    with pytest.raises(SystemExit, match="compatible published storage"):
+    with pytest.raises(submit_core.SubmissionRefused, match="compatible published storage"):
         submit_core.require_deployed_read_plan_storage(**roots, store=pbrun.configured_store())
 
 
@@ -59,5 +59,5 @@ def test_v2_progress_phases_must_follow_the_read_timeline() -> None:
     for wrong in (None, {**valid, "cycle": True},
                   {"phases": [{"name": "a"}]},
                   {"phases": [{"name": "b"}, {"name": "a"}]}):
-        with pytest.raises(SystemExit):
+        with pytest.raises(submit_core.SubmissionRefused):
             submit_core.require_linear_read_plan_progress(manifest, wrong)

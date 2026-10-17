@@ -101,7 +101,7 @@ def test_pbrun_accepts_every_resource_the_live_fleet_ledgers(monkeypatch, tmp_pa
     ("cpu=many", "resource 'cpu' needs an integer count"),
 ])
 def test_pbrun_names_malformed_demand(text, message):
-    with pytest.raises(SystemExit, match=message):
+    with pytest.raises(submit_core.SubmissionRefused, match=message):
         submit_core._parse_demand(text)
 
 

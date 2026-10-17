@@ -1,6 +1,8 @@
 """Where an action may run is derived from the checkout, not asked of the caller."""
 
 from __future__ import annotations
+from submission_support import refusal_value
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -170,7 +172,7 @@ def test_portable_snapshot_refuses_an_unplaced_missing_executable(
 ) -> None:
     checkout = _git_checkout(tmp_path)
 
-    with pytest.raises(SystemExit, match="--tag"):
+    with pytest.raises(submit_core.SubmissionRefused, match="--tag"):
         submit_core.placement_contract(checkout,
         explicit=[],
         here=False,
@@ -589,7 +591,7 @@ def test_pbrun_reports_an_unsupported_identity_without_a_traceback(
         raise core_module.ActionContractError("unsupported file type: 'socket'")
 
     monkeypatch.setattr(core_module, "git_checkout_identity", refuse)
-    with pytest.raises(SystemExit, match="unsupported file type"):
+    with pytest.raises(submit_core.SubmissionRefused, match="unsupported file type"):
         submit_core._git_identity(checkout)
 
 
@@ -658,7 +660,7 @@ def test_pbrun_identity_scans_the_repository_above_requested_cwd(
     requested.mkdir()
     os.mkfifo(checkout / "outside-requested-cwd.pipe")
 
-    with pytest.raises(SystemExit, match="unsupported file type"):
+    with pytest.raises(submit_core.SubmissionRefused, match="unsupported file type"):
         submit_core._git_identity(requested)
 
 
@@ -678,7 +680,7 @@ def test_pbrun_identity_refuses_an_unreadable_untracked_file(
         return real_open(candidate, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", unreadable)
-    with pytest.raises(SystemExit, match="cannot hash untracked path"):
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot hash untracked path"):
         submit_core._git_identity(checkout)
 
 
@@ -704,7 +706,7 @@ def test_pbrun_identity_fails_closed_after_git_repository_detection(
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(core_module.subprocess, "run", fail_one_git_read)
-    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot compute pbrun checkout identity"):
         submit_core._git_identity(checkout)
 
 
@@ -727,7 +729,7 @@ def test_pbrun_identity_refuses_failed_initial_git_detection(
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(core_module.subprocess, "run", fail_toplevel)
-    with pytest.raises(SystemExit, match="cannot compute pbrun checkout identity"):
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot compute pbrun checkout identity"):
         submit_core._git_identity(checkout)
 def test_git_snapshot_moves_with_nested_untracked_bytes(tmp_path) -> None:
     """The portable tree is the submitted dirty tree, not merely ``HEAD``."""
@@ -841,7 +843,7 @@ def test_git_snapshot_limits_logical_tree_bytes_after_indexing(
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
     monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_kw: 0)
-    with pytest.raises(SystemExit, match="logical checkout tree"):
+    with pytest.raises(submit_core.SubmissionRefused, match="logical checkout tree"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=32 * 1024
         )
@@ -865,7 +867,7 @@ def test_git_snapshot_refuses_oversize_before_git_add_hashes_it(
         return real_snapshot_git(cwd, argv, **kwargs)
 
     monkeypatch.setattr(pbrun, "_snapshot_git", observed_snapshot_git)
-    with pytest.raises(SystemExit, match="logical working tree"):
+    with pytest.raises(submit_core.SubmissionRefused, match="logical working tree"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=32 * 1024
         )
@@ -879,7 +881,7 @@ def test_git_snapshot_limit_cannot_exceed_the_hard_fleet_ceiling(
     checkout = _git_checkout(tmp_path)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="hard fleet ceiling"):
+    with pytest.raises(submit_core.SubmissionRefused, match="hard fleet ceiling"):
         submit_core.snapshot_checkout(
             checkout,
             cas=cas,
@@ -897,7 +899,7 @@ def test_git_snapshot_refuses_a_symlink_that_escapes_the_repository(
     (checkout / "data").symlink_to(target, target_is_directory=True)
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="symlink.*outside"):
+    with pytest.raises(submit_core.SubmissionRefused, match="symlink.*outside"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
@@ -964,7 +966,7 @@ def test_git_snapshot_refuses_a_gitlink_whose_working_bytes_are_not_bundled(
     assert _git(checkout, "commit", "-qam", "add submodule").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="gitlink"):
+    with pytest.raises(submit_core.SubmissionRefused, match="gitlink"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
@@ -985,7 +987,7 @@ def test_git_snapshot_refuses_an_active_clean_filter(
     assert _git(checkout, "config", "filter.rewrite.required", "true").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="content transform"):
+    with pytest.raises(submit_core.SubmissionRefused, match="content transform"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
@@ -1139,7 +1141,7 @@ def test_git_snapshot_bounds_a_bundle_its_history_made_large(
     monkeypatch.setattr(
         pbrun, "require_supported_snapshot_tree", lambda *_a, **_k: None
     )
-    with pytest.raises(SystemExit, match="above the .* safety limit"):
+    with pytest.raises(submit_core.SubmissionRefused, match="above the .* safety limit"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=64 * 1024
         )
@@ -1171,7 +1173,7 @@ def test_git_snapshot_refuses_a_shallow_source_by_name(tmp_path: Path) -> None:
     ).returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="shallow clone"):
+    with pytest.raises(submit_core.SubmissionRefused, match="shallow clone"):
         submit_core.snapshot_checkout(
             shallow, cas=cas, max_bytes=16 * 1024 * 1024
         )
@@ -1197,7 +1199,7 @@ def test_snapshot_names_legacy_and_modern_partial_source_before_pack(
     def cannot_pack(*args, **kwargs):
         raise AssertionError("partial source must refuse before bundle packing")
     monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
-    with pytest.raises(SystemExit, match="partial clone") as refused:
+    with pytest.raises(submit_core.SubmissionRefused, match="partial clone") as refused:
         submit_core.snapshot_checkout(
             checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
             max_bytes=16 * 1024 * 1024)
@@ -1237,7 +1239,7 @@ def test_real_modern_filtered_clone_without_legacy_extension_refuses_early(
     def cannot_pack(*args, **kwargs):
         raise AssertionError("modern partial source must not reach pack-objects")
     monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
-    with pytest.raises(SystemExit, match="partial clone"):
+    with pytest.raises(submit_core.SubmissionRefused, match="partial clone"):
         submit_core.snapshot_checkout(
             partial, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
             max_bytes=16 * 1024 * 1024)
@@ -1265,7 +1267,7 @@ def test_git_snapshot_refuses_a_repository_with_no_commits(
     ).returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    with pytest.raises(SystemExit, match="cannot identify checkout"):
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot identify checkout"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=16 * 1024 * 1024
         )
@@ -1276,7 +1278,7 @@ def test_portable_checkout_refuses_a_submitter_local_path_in_argv(tmp_path) -> N
 
     checkout = _git_checkout(tmp_path)
 
-    with pytest.raises(SystemExit, match="submitter checkout path"):
+    with pytest.raises(submit_core.SubmissionRefused, match="submitter checkout path"):
         submit_core.require_relocatable_checkout(
             ["/bin/bash", "-lc", f"python {checkout}/task.py"],
             {"PYTHONPATH": str(checkout / "src")},
@@ -1311,7 +1313,7 @@ def test_portable_checkout_refuses_embedded_exact_and_descendant_paths(
 ):
     checkout = tmp_path / "repo"
     value = form.format(path=str(checkout) + suffix)
-    with pytest.raises(SystemExit, match="submitter repository path"):
+    with pytest.raises(submit_core.SubmissionRefused, match="submitter repository path"):
         submit_core.require_relocatable_checkout(
             ["true", value] if field == "argv" else ["true"],
             {"OUTPUT": value} if field == "environment" else {},
@@ -1321,7 +1323,7 @@ def test_portable_checkout_refuses_embedded_exact_and_descendant_paths(
 
 def test_portable_checkout_checks_every_path_list_component(tmp_path):
     checkout = tmp_path / "repo"
-    with pytest.raises(SystemExit, match="environment PYTHONPATH"):
+    with pytest.raises(submit_core.SubmissionRefused, match="environment PYTHONPATH"):
         submit_core.require_relocatable_checkout(
             ["true"], {"PYTHONPATH": f"{checkout}-results:{checkout}/src"},
             checkout, repository_root=checkout,
@@ -1340,7 +1342,7 @@ def test_portable_subdirectory_refuses_an_absolute_repository_sibling(
     sibling.parent.mkdir()
     sibling.write_text("print('helper')\n")
 
-    with pytest.raises(SystemExit, match="submitter repository path"):
+    with pytest.raises(submit_core.SubmissionRefused, match="submitter repository path"):
         submit_core.require_relocatable_checkout(
             ["python", str(sibling)], {}, requested, repository_root=checkout
         )
@@ -1371,7 +1373,7 @@ def test_portable_subdirectory_allows_a_relative_repository_sibling_script(
     outside = tmp_path / "outside" / "helper.py"
     outside.parent.mkdir()
     outside.write_text("print('helper')\n")
-    with pytest.raises(SystemExit, match="outside the snapshotted repository"):
+    with pytest.raises(submit_core.SubmissionRefused, match="outside the snapshotted repository"):
         submit_core.require_checkout_owned_scripts(
             ["python", "../../outside/helper.py"],
             requested,
@@ -1412,7 +1414,7 @@ def test_an_external_script_argument_is_refused_before_submission(tmp_path) -> N
     helper = tmp_path / "run-campaign.sh"
     helper.write_text("#!/bin/sh\nexit 0\n")
 
-    with pytest.raises(SystemExit) as caught:
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
         submit_core.require_checkout_owned_scripts([str(helper)], checkout)
 
     message = str(caught.value)
@@ -1522,7 +1524,7 @@ def test_exclusive_refuses_rather_than_guesses_when_nothing_offers(tmp_path):
     queue = pool_module.PoolQueue(tmp_path / "q")
     queue.announce(host="dl380g10", tags=["cpu", "x86"], has_gpu=False,
                    capacity={"gpu": 0, "mem_gb": 60})
-    with pytest.raises(SystemExit) as caught:
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
         submit_core.exclusive_gpu_demand(queue, [])
     assert "--gpu-capacity" in str(caught.value)
 
@@ -1553,7 +1555,7 @@ def test_bounded_offer_snapshot_refuses_a_reader_error(tmp_path, monkeypatch):
         raise OSError("offer mount unavailable")
 
     monkeypatch.setattr(queue, "_offer_records", broken)
-    with pytest.raises(SystemExit, match="worker-offer discovery failed"):
+    with pytest.raises(submit_core.SubmissionRefused, match="worker-offer discovery failed"):
         submit_core.bounded_offer_snapshot(queue)
 
 
@@ -1652,7 +1654,7 @@ def test_retained_offer_reader_reports_identity_and_releases_parent_flock(
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
-        with pytest.raises(SystemExit) as refused:
+        with pytest.raises(submit_core.SubmissionRefused) as refused:
             submit_core.bounded_offer_snapshot(queue)
         assert len(children) == 1
         assert '"pid": ' + str(children[0]) in str(refused.value)
@@ -2631,7 +2633,7 @@ def test_symlink_parent_traversal_refuses_actual_missing_input(symlink_parent_in
                  else "../external-links/link/../input.bin")
     command = ["/usr/bin/cat", requested] if source == "argv" else ["/usr/bin/cat"]
     caller = {"INPUT": requested} if source == "environment" else {}
-    with pytest.raises(SystemExit):
+    with pytest.raises(submit_core.SubmissionRefused):
         submit_core.command_dependency_contract(
             checkout, command, repository_root=checkout,
             environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
@@ -3077,7 +3079,7 @@ def test_raw_file_suffix_is_invalid_at_capture(tmp_path, source, suffix):
     command = ["/bin/cat", raw, invalid] if source == "argv" else ["/bin/cat"]
     caller = {"INPUTS": raw + ":" + invalid} if source == "environment" else {}
     before = dict(caller)
-    with pytest.raises(SystemExit):
+    with pytest.raises(submit_core.SubmissionRefused):
         submit_core.command_dependency_contract(work, command, repository_root=work,
                                          environment={"PATH": "/usr/bin:/bin"}, caller_environment=caller)
     assert caller == before
@@ -3091,7 +3093,7 @@ def test_explicit_executable_suffix_cannot_name_a_regular_file(tmp_path, suffix)
     executable.chmod(0o755)
     requested = str(executable) + suffix
     assert not os.path.isfile(requested)
-    with pytest.raises(SystemExit):
+    with pytest.raises(submit_core.SubmissionRefused):
         submit_core.command_dependency_contract(work, [requested], repository_root=work,
                                          environment={"PATH": "/usr/bin:/bin"}, caller_environment={})
 

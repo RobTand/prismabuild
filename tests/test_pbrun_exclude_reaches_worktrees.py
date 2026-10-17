@@ -150,7 +150,7 @@ def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
         return real_replace(source, destination)
 
     monkeypatch.setattr(pbrun.os, "replace", refuse_replace)
-    with pytest.raises(SystemExit, match="cannot update pbrun Git excludes"):
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot update pbrun Git excludes"):
         submit_core.keep_droppings_out_of_git(root)
 
 
@@ -173,7 +173,7 @@ def test_git_exclude_setup_refuses_failed_initial_repository_detection(
         return real_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(pbrun.subprocess, "run", fail_common_dir)
-    with pytest.raises(SystemExit, match="cannot inspect local Git excludes"):
+    with pytest.raises(submit_core.SubmissionRefused, match="cannot inspect local Git excludes"):
         submit_core.keep_droppings_out_of_git(root)
 
 
