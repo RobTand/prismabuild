@@ -15,7 +15,13 @@ PREFIX = 'a' * 12
 @pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
 @pytest.mark.parametrize('location', ['state', 'decision-parent', 'decision-leaf'])
 @pytest.mark.parametrize('visible', [False, True])
-def test_cancel_never_certifies_a_partial_prefix_census(tmp_path, monkeypatch, error, location, visible):
+def test_cancel_never_certifies_a_partial_prefix_census(
+    tmp_path,
+    monkeypatch,
+    error,
+    location,
+    visible,
+):
     queue = pool.PoolQueue(tmp_path / 'queue')
     for key in [KEY, OTHER]:
         queue.publish(action_key=key, cas_root=tmp_path / 'cas',

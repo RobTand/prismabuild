@@ -62,6 +62,8 @@ def test_explicit_resident_declaration_is_sealed_and_projected_not_a_gate(tmp_pa
     assert row["resident_set"] == set_id
     queue.publish(**row)
     # An absent set cannot turn the optional accelerator into admission gating.
-    item = json.loads(queue.records.item_path(pool.record_store.READY, action["action_key"]).read_text())
+    item = json.loads(
+        queue.records.item_path(pool.record_store.READY, action["action_key"]).read_text(),
+    )
     assert item["resident_set"] == set_id
     assert item.get("residency") is None

@@ -49,7 +49,9 @@ def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
     gpu = publish("measurement-on-sky", measurement=True, priority=0,
                   cpu=8, gpu=1, mem_gb=48, tags=["gb10"])
     assert claim("sparky") is None
-    selected = reservation.selection(pool.record_store.read_document(queue.records.passes_path(gpu)) or {})
+    selected = reservation.selection(
+        pool.record_store.read_document(queue.records.passes_path(gpu)) or {},
+    )
     assert selected is not None and selected["host"] == "sparky"
     assert claim("sparklina") is None
     refused = denial(gpu, "sparklina")

@@ -55,7 +55,9 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
     assert queue.read_funding(target, base.RAM_TIER)['state'] == 'transferring'
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert ledger.holder_tokens(target) == {'ram_gib': 1}, 'epoch sweep erased bound advance'
-    row = base.pool.record_store.value_or_raise(queue.records.item(base.pool.record_store.READY, target))
+    row = base.pool.record_store.value_or_raise(
+        queue.records.item(base.pool.record_store.READY, target),
+    )
     claim = queue.claim(ready=[row], tags=['dl380g10'], owner='ram-advance-proof',
                         capacity={'cpu': 4, 'mem_gb': 8})
     assert claim and claim['action_key'] == target

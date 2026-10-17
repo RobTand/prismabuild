@@ -49,10 +49,16 @@ def test_prelaunch_unknown_claim_keeps_exact_reserved_chunk(tmp_path, monkeypatc
     assert before == {'stage_gib': 2}
     funding_before = queue.read_funding(mover, TIER)
     assert funding_before['state'] == 'transferring'
-    seen = _unreadable_stat(monkeypatch, queue.records.item_path(pool.record_store.CLAIMED, mover), error)
+    seen = _unreadable_stat(
+        monkeypatch,
+        queue.records.item_path(pool.record_store.CLAIMED, mover),
+        error,
+    )
     events = pg.release_unit(queue, TIER, unit, holder, [mover], terminal=True)
     assert seen, 'the underlying native metadata failure was never exercised'
-    assert ledger.holder_tokens(mover) == before, 'unknown claimed evidence released the actual chunk tokens'
+    assert ledger.holder_tokens(
+        mover,
+    ) == before, 'unknown claimed evidence released the actual chunk tokens'
     assert queue.read_funding(mover, TIER) == funding_before
     assert 'prelaunch-unknown-evidence' in events
 
@@ -73,7 +79,12 @@ def test_uncertain_reclaim_keeps_actual_reservation(tmp_path, monkeypatch, state
         queue.records.lease_path(key).unlink()
     if state == 'ready':
         queue.records.item_path(pool.record_store.READY, key).write_text(json.dumps(claim))
-    target = queue.records.lease_path(key) if state == 'lease' else queue.records.item_path(state, key)
+    target = queue.records.lease_path(
+        key,
+    ) if state == 'lease' else queue.records.item_path(
+        state,
+        key,
+    )
     ledger = queue.ledger()
     before = ledger.holder_tokens(key)
     assert before == {'cpu': 1, 'mem_gb': 3}
@@ -93,7 +104,11 @@ def test_unreadable_claim_keeps_the_actual_output_window_obligation(owner, monke
     queue, key, _bound, _template = owner
     queue.tier_ledger('prismabuild-stage:dl380g10').release(key)
     assert po.unheld_window_gib(queue, 'prismabuild-stage:dl380g10')['gib'] == 2
-    seen = _unreadable_stat(monkeypatch, queue.records.item_path(pool.record_store.CLAIMED, key), error)
+    seen = _unreadable_stat(
+        monkeypatch,
+        queue.records.item_path(pool.record_store.CLAIMED, key),
+        error,
+    )
     owed = po.unheld_window_gib(queue, 'prismabuild-stage:dl380g10')
     assert seen
     assert owed['gib'] is None, 'an unreadable owner erased its real refill obligation'
@@ -106,7 +121,13 @@ def test_uncertain_claim_keeps_incomplete_ram_promotion(tmp_path, monkeypatch, e
     queue.records.ensure_layout()
     ram = incomplete._ram_root(tmp_path, queue)
     incomplete._hold(queue, incomplete.MOVER, 2)
-    incomplete._receipt(queue, incomplete.MOVER, staged_gib=0, complete=False, errors=['interrupted'])
+    incomplete._receipt(
+        queue,
+        incomplete.MOVER,
+        staged_gib=0,
+        complete=False,
+        errors=['interrupted'],
+    )
     target = queue.records.item_path(pool.record_store.CLAIMED, incomplete.MOVER)
     target.write_text('{}')
     before = queue.tier_ledger(incomplete.RAM_TIER).holder_tokens(incomplete.MOVER)
@@ -126,14 +147,21 @@ def test_uncertain_claim_keeps_prior_epoch_tokens(tmp_path, monkeypatch, error):
     target.write_text('{}')
     before = queue.tier_ledger(epochs.RAM_TIER).holder_tokens(epochs.RAM_MOVER)
     seen = _unreadable_stat(monkeypatch, target, error)
-    events = tier_loop.drop_prior_ram_epochs(queue, {epochs.RAM_TIER: epochs._ram_record(tmp_path, epoch=epochs.NEW_EPOCH)})
+    events = tier_loop.drop_prior_ram_epochs(
+        queue,
+        {epochs.RAM_TIER: epochs._ram_record(tmp_path, epoch=epochs.NEW_EPOCH)},
+    )
     assert seen
     assert queue.tier_ledger(epochs.RAM_TIER).holder_tokens(epochs.RAM_MOVER) == before
     assert any('deferred' in str(row['event']) for row in events)
 
 
 @pytest.mark.parametrize('generation', [10**400, float('nan'), float('inf'), -float('inf'), True])
-def test_unorderable_generation_keeps_real_origin_and_foreign_prewrite(tmp_path, monkeypatch, generation):
+def test_unorderable_generation_keeps_real_origin_and_foreign_prewrite(
+    tmp_path,
+    monkeypatch,
+    generation,
+):
     for name in ('PRISMABUILD_ACTION_NONCE', 'PRISMABUILD_ACTION_SCOPE',
                  'PRISMABUILD_READER_HELPER_ROOT', 'PRISMABUILD_ACTION_KEY'):
         monkeypatch.delenv(name, raising=False)
@@ -155,7 +183,11 @@ def test_unorderable_generation_keeps_real_origin_and_foreign_prewrite(tmp_path,
 
 
 @pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
-def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(tmp_path, monkeypatch, error):
+def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(
+    tmp_path,
+    monkeypatch,
+    error,
+):
     queue = _queue(tmp_path, stage_gib=8)
     mover = _hexkey('unreadable-funding-census')
     path = queue.records.funding_path(mover, TIER)
@@ -169,7 +201,10 @@ def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(tmp_
     assert 'census unreadable' in reason
 
 
-def test_unreadable_publication_metadata_is_not_reused_when_coarse_ctime_repeats(forest, monkeypatch):
+def test_unreadable_publication_metadata_is_not_reused_when_coarse_ctime_repeats(
+    forest,
+    monkeypatch,
+):
     fragment = residency_map.fragment_path(
         forest['residency_root'], PUBLICATION_CONSUMER, PUBLICATION_MOVER)
     assert all(row[1] == 'proof' for row in publication_sweep(forest))
@@ -206,7 +241,11 @@ def test_unreadable_publication_metadata_is_not_reused_when_coarse_ctime_repeats
 
 
 @pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
-def test_claim_owner_census_never_certifies_idle_from_unknown_claim_metadata(tmp_path, monkeypatch, error):
+def test_claim_owner_census_never_certifies_idle_from_unknown_claim_metadata(
+    tmp_path,
+    monkeypatch,
+    error,
+):
     queue = pool.PoolQueue(tmp_path / 'queue')
     queue.records.ensure_layout()
     key = _hexkey('uncertain-claim-owner')
@@ -243,7 +282,8 @@ def test_finish_never_rewrites_an_ending_when_its_presence_is_unknown(tmp_path, 
     except (OSError, pool.PoolContractError) as exc:
         refused = exc
     assert seen
-    assert path.read_bytes() == b'', 'unknown presence authorized replacement of the real prior ending'
+    assert path.read_bytes(
+    ) == b'', 'unknown presence authorized replacement of the real prior ending'
     assert refused is not None
     # The missing-claim branch releases capacity before reading the ending.
     assert queue.ledger().holder_tokens(key) == {}

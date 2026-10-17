@@ -230,7 +230,12 @@ def test_one_gc_leaves_exactly_the_live_lock_files(tmp_path):
     for index, key in enumerate(live):
         # Five queued again after an ending, five running: both are live.
         _file(queue, pool.record_store.DONE, key, age_s=old)
-        _file(queue, pool.record_store.READY if index < 5 else pool.record_store.CLAIMED, key, age_s=old)
+        _file(
+            queue,
+            pool.record_store.READY if index < 5 else pool.record_store.CLAIMED,
+            key,
+            age_s=old,
+        )
     for key in terminal + live:
         with queue._transition_locked(key):
             pass
@@ -343,7 +348,9 @@ def test_a_tombstone_after_the_survey_keeps_the_namespace_as_the_survey_would(tm
     plan = pb_gc.survey_queue(Path(queue.root))
     assert len(plan["remove"]) == 1
     # A finisher moved a claim of the key aside after the survey.
-    tombstone = queue.records.dir(pool.record_store.CLAIMED) / f"{key}.1.host.1.abcdef01{pool.record_store.TOMBSTONE_SUFFIX}"
+    tombstone = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{key}.1.host.1.abcdef01{pool.record_store.TOMBSTONE_SUFFIX}"
     tombstone.write_text("{}")
     outcome = pb_gc.sweep_queue(plan, lock_takers_verify=True)
     assert outcome["removed"] == []
