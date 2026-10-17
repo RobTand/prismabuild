@@ -58,7 +58,7 @@ def _queue(tmp_path: Path, stage_gib: int = 8) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: stage_gib})
+    queue.tier(STAGE_TIER).mint({STAGE_BARE: stage_gib})
     return queue
 
 
@@ -137,7 +137,7 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
         pool.PoolQueue(small / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     q2.records.ensure_layout()
-    q2.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 1})
+    q2.tier(STAGE_TIER).mint({STAGE_BARE: 1})
     key2 = "9" * 64
     q2.publish(action_key=key2, cas_root="/cas", worker_script="/w.py",
                checkout_root="/co",

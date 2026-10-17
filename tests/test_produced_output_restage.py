@@ -101,7 +101,7 @@ def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {KIND: gib})
+    q.tier(TIER).mint({KIND: gib})
     return q
 
 
@@ -281,7 +281,7 @@ class _World:
         self.inst = _bind(self.q, self.template, self.owner, self.cas_root)
         self.stage_root = tmp_path / "stage"
         _announce_tier(self.q, self.stage_root)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         self.out_base = po.output_fragment_root(self.q.root / pool.record_store.RESIDENCY)
         self.publish_kwargs = dict(producer_action_key=self.owner,
                                    command_extra=["--unpaced"])

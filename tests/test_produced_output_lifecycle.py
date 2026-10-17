@@ -69,7 +69,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 8})
+    queue.tier(STAGE_TIER).mint({STAGE_BARE: 8})
     return queue
 
 
@@ -431,7 +431,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
                           "window_gib": {STAGE_TIER: 2},
                           "bound_unix": 0.0}}
         po._write_commitments(commitments_path, record)
-        assert queue.tier_ledger(STAGE_TIER).acquire(ns, {STAGE_BARE: 1})
+        assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
         third = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)
         assert third["ok"] is True and third["released"] == 1
@@ -439,8 +439,8 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
             queue, instance, template, lease_sdk=rlc)
         assert fourth["ok"] is True and fourth["released"] == 0
         # A ledger failure retains instead of reporting ok True.
-        assert queue.tier_ledger(STAGE_TIER).acquire(ns, {STAGE_BARE: 1})
-        real_ledger = queue.tier_ledger
+        assert queue.tier(STAGE_TIER).take(ns, {STAGE_BARE: 1})
+        real_ledger = queue.tier
 
         def boom(tier_id):
             ledger = real_ledger(tier_id)
@@ -451,7 +451,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
                 ledger.release = failing  # type: ignore[method-assign]
             return ledger
 
-        monkeypatch.setattr(queue, "tier_ledger", boom)
+        monkeypatch.setattr(queue, 'tier', boom)
         failing = po.safe_release_instance(
             queue, instance, template, lease_sdk=rlc)
         assert failing["ok"] is False

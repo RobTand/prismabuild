@@ -72,7 +72,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 8})
+    queue.tier(STAGE_TIER).mint({STAGE_BARE: 8})
     return queue
 
 
@@ -475,8 +475,7 @@ def test_substituted_claim_ref_taints_egress(tmp_path: Path) -> None:
                or "invalid range" in str(err)
                for err in refused["receipt"]["errors"])
     # Nothing destructive ran: staged bytes, fragment, and tokens stand.
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(
-        batch["mover_key"]) == {STAGE_BARE: 1}
+    assert queue.tier(STAGE_TIER).holdings(batch['mover_key']) == {STAGE_BARE: 1}
     assert any((out_base / batch["batch_namespace"]).iterdir())
 
 
@@ -528,12 +527,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
     def _state(batch):
         ns_dir = (po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
                   / batch["batch_namespace"])
-        return (
-            (origin / f"{batch['batch_id']}.pt").is_file(),
-            _dir_nonempty(ns_dir),
-            dict(queue.tier_ledger(STAGE_TIER).holder_tokens(
-                batch["mover_key"])),
-        )
+        return ((origin / f"{batch['batch_id']}.pt").is_file(), _dir_nonempty(ns_dir), dict(queue.tier(STAGE_TIER).holdings(batch['mover_key'])))
 
     def _dir_nonempty(path: Path) -> bool:
         try:

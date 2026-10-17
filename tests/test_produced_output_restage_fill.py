@@ -41,7 +41,7 @@ ENV = "PRISMABUILD_PRODUCED_OUTPUT_RESTAGE_FILL"
 def _offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     """Mint ``mb_s`` fill tokens and announce them, as the tier loop does."""
 
-    queue.mint_tier_capacity(TIER, {KIND: 4, FILL: mb_s})
+    queue.tier(TIER).mint({KIND: 4, FILL: mb_s})
     path = Path(queue.root) / "tiers" / f"{TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {KIND: 4, FILL: mb_s}
