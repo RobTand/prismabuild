@@ -2046,3 +2046,543 @@ def require_declared_origin_batches(
                 f"pbrun: a data_manifest.v2 declares its batches where it reads "
                 f"them, under {_ORIGIN_SLOTS_ANNOTATION}; build it with "
                 "produced_output.place_origin_batches")
+        try:
+            produced_mod.verify_placed_origin_batches(queue_root, manifest)
+        except produced_mod.ProducedOutputError as exc:
+            raise SubmissionRefused(
+                f"pbrun: declared produced-output batch: {exc}") from None
+        return
+    if slots is not None:
+        raise SubmissionRefused(
+            f"pbrun: {_ORIGIN_SLOTS_ANNOTATION} places batches in a read plan, "
+            "which only a data_manifest.v2 has")
+    try:
+        derived = produced_mod.origin_batch_manifest(queue_root, declared)
+    except produced_mod.ProducedOutputError as exc:
+        raise SubmissionRefused(f"pbrun: declared produced-output batch: {exc}") from None
+    for field in ("mount_prefix", "entries"):
+        if manifest.get(field) != derived[field]:
+            raise SubmissionRefused(
+                f"pbrun: the data manifest's {field} is not what its declared "
+                f"{_ORIGIN_BATCHES_ANNOTATION} commit; build it with "
+                "produced_output.origin_batch_manifest")
+    if list(declared) != derived["annotations"][_ORIGIN_BATCHES_ANNOTATION]:
+        raise SubmissionRefused(
+            f"pbrun: the data manifest's {_ORIGIN_BATCHES_ANNOTATION} are not "
+            "in canonical form")
+
+
+def declare_origin_consumers(queue, refs: Sequence[Mapping[str, object]], *,
+                             consumer_action_key: str) -> None:
+    """File this consumer against each consumed batch it declares (#914).
+
+    Called with the sealed key, before the consumer's row is published, so
+    the retirement tick never sees a queued consumer it has no declaration
+    for.  One batch at a time: each declaration takes that batch's
+    output-prefix lock, and no caller may hold two of those at once.  A batch
+    that has started to retire, or is gone, refuses the submission; a
+    ``retain`` batch files nothing.
+    """
+
+    from prismabuild import produced_output as produced_mod
+
+    for ref in refs:
+        try:
+            produced_mod.declare_origin_consumer(
+                queue, ref, consumer_action_key=consumer_action_key)
+        except produced_mod.ProducedOutputError as exc:
+            raise SubmissionRefused(
+                f"pbrun: cannot declare {consumer_action_key[:12]} as a consumer "
+                f"of a produced-output batch: {exc}") from None
+
+
+def submission_window(q, key: str, refs: Sequence[Mapping[str, object]]):
+    """Hold ``key``'s transition lock from its declarations through its row (#945).
+
+    A consumer declares its consumed batches before its row exists, so for a
+    moment it holds a batch with no queue record at all. An operator's
+    release of such an ``unpublished`` declaration
+    (`produced_output.release_origin_consumer`) takes the same lock without
+    waiting and refuses while it is held, so it can never release a key whose
+    row is about to land. A consumer that declares nothing takes no lock.
+    ``publish_consumer_row`` and ``PoolQueue.publish`` take the same lock
+    again, which nests, and the declarations take their output-prefix locks
+    inside it: transition, then ownership, as everywhere.
+    """
+
+    if not refs:
+        return contextlib.nullcontext(True)
+    return q._transition_locked(key)
+
+
+def require_deployed_read_plan_storage(*, source_root: Path | None = None,
+                                       published_root: Path | None = None, store: FleetStore) -> None:
+    """Refuse a v2 row until the published storage reader has the same bytes.
+
+    A source checkout can seal v2 before the fleet's storage role knows it.
+    The old role would skip the manifest and the row would claim cold; compare
+    the contract owners to the published, hashed generation first.
+    The operator also verifies the DL380 role has reloaded that generation.
+    """
+
+    source_root = store.runtime_root if source_root is None else source_root
+    published_root = store.root / "repo" if published_root is None else published_root
+    try:
+        receipt = json.loads((published_root / "RUNTIME_VERSION.json").read_text())
+        files = receipt["files"]
+        for member in ("src/prismabuild/core.py", "src/prismabuild/manifest_layout.py",
+                       "tools/fleet/prewarm_loop.py"):
+            expected = hashlib.sha256((source_root / member).read_bytes()).hexdigest()
+            if (files.get(member) != expected or
+                    hashlib.sha256((published_root / member).read_bytes()).hexdigest()
+                    != expected):
+                raise ValueError(f"{member} is not the compatible published bytecode")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SubmissionRefused(
+            f"pbrun: v2 read plan requires the compatible published storage "
+            f"generation: {exc}") from None
+
+
+def require_linear_read_plan_progress(manifest: Mapping[str, object],
+                                      progress: Mapping[str, object] | None) -> None:
+    """A read phase boundary matters only when the worker accepts that phase."""
+
+    names = [phase["name"] for phase in manifest["read_plan"]["phases"]]
+    reported = ([phase["name"] for phase in progress["phases"]]
+                if isinstance(progress, dict) and not progress.get("cycle")
+                else [])
+    # One rule for both paths (#1332): the tier loop places a planner row's
+    # progress in its read plan with the same contract.
+    contract = residency_plan.progress_contract(names, reported)
+    if contract in ("undeclared", "unnamed"):
+        raise SubmissionRefused(
+            "pbrun: v2 read plan requires linear progress reporting "
+            "with every read phase named")
+    if contract == "misordered":
+        raise SubmissionRefused("pbrun: read plan phases must follow progress order")
+
+
+def progress_contract_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    policy: Mapping[str, object] | None,
+    requested_timeout_s: float | None = None,
+    awaited_batch: Mapping[str, object] | None = None,
+) -> str:
+    """Say what this action's stall allowance is, and who cannot honour it.
+
+    Refused rather than warned when no eligible box announces the contract,
+    and that asymmetry with ``timeout_ceiling_notice`` is the point.  A
+    ceiling that cuts a request short is a smaller budget than asked for; a
+    box that does not know the contract applies its whole-run ceiling to an
+    action submitted *without* a total-duration limit, which is the exact
+    silent kill of a progressing run that #480 is about.  Submitting into that
+    would hand back the defect wearing the fix's name.
+
+    On a mixed fleet this only *reports*.  What stops an old box claiming the
+    work is the required watchdog and helper tags -- a message cannot decline
+    a claim, and during a rolling upgrade both generations are polling the
+    same queue.  Read this as the census behind those requirements: which boxes
+    it admits, and which it is now waiting past.
+    """
+
+    if policy is None:
+        return ""
+    phases = policy["phases"]
+    assert isinstance(phases, Sequence)
+    total = sum(float(phase["grace_s"]) for phase in phases)
+    lines = [
+        "pbrun: progress contract: "
+        + ", ".join(f"{phase['name']} {float(phase['grace_s']):g}s"
+                    for phase in phases)
+        + f"; at most {total:g}s of quiet in total if it never commits work, "
+        + ("and no total-duration limit while it does."
+           if requested_timeout_s is None else
+           f"with an explicit payload execution budget of {requested_timeout_s:g}s, "
+           "not a wall-clock stop or resource-release guarantee."),
+        # The half of the contract the submitter still owes, said at the moment
+        # they are declaring it.  An action that declares phases and reports
+        # nothing is not bounded by its work; it just ends at the sum above.
+        "pbrun: the action must report committed units, or this is only a "
+        f"{total:g}s stall budget: prismabuild.progress.commit(units, "
+        f'"{phases[0]["name"]}") after each unit is durable, or '
+        'python3 "$PRISMABUILD_ACTION_PROGRESS_HELPER" --phase '
+        f'{phases[0]["name"]} --units N from a shell.',
+    ]
+    announced = queue.placement_progress_contracts(intent)
+    if not announced:
+        if policy.get("cycle"):
+            raise SubmissionRefused(
+                f"pbrun: no eligible worker offers {contracts.PROGRESS_CYCLE_TAG}; "
+                "cyclic progress support is unknown. Update the fleet's "
+                "published generation and wait for worker adoption.\n"
+                + "\n".join(contracts.contract_remedies([contracts.PROGRESS_CYCLE_TAG])))
+        lines.append(
+            "pbrun: no worker offers on record; whether any box honours the "
+            "contract is unknown.")
+        return "\n".join(lines)
+    unsupported = sorted(
+        host for host, contracts in announced.items()
+        if contracts is None or pb.PROGRESS_RECORD_SCHEMA_V1 not in contracts)
+    if len(unsupported) == len(announced):
+        raise SubmissionRefused(
+            "pbrun: no eligible worker announces "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} ({', '.join(unsupported)}), so "
+            "this action would be admitted under the progress contract and "
+            "then killed by a whole-run ceiling it never asked for.  Update "
+            "the fleet's published generation, or submit with --timeout-s.\n"
+            + "\n".join(contracts.contract_remedies([contracts.PROGRESS_TAG])))
+    if unsupported:
+        lines.append(
+            "pbrun: " + ", ".join(unsupported) + " do not announce "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1}, so this action is not offered "
+            f"to them: it requires the {contracts.PROGRESS_TAG} tag they do not "
+            "publish.  It waits for a box that does rather than being killed "
+            "by a ceiling it never asked for.")
+    watchdog_hosts = set(announced) - set(unsupported)
+    helper_intent = {
+        **intent,
+        "tags": [*list(intent.get("tags") or []), contracts.PROGRESS_TAG,
+                 contracts.PROGRESS_HELPER_TAG],
+    }
+    helper_hosts = set(queue.placeable_hosts(helper_intent) or [])
+    eligible = watchdog_hosts & helper_hosts
+    helper_missing = sorted(watchdog_hosts - helper_hosts)
+    if not eligible:
+        raise SubmissionRefused(
+            "pbrun: no eligible worker both announces "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} and offers "
+            f"{contracts.PROGRESS_HELPER_TAG}"
+            + (f" ({', '.join(helper_missing)} announce the watchdog but do not "
+               "offer the helper)" if helper_missing else "")
+            + "; this action uses the helper environment. Update the fleet's "
+            "published generation, or submit an action that does not declare "
+            "progress phases.\n"
+            + "\n".join(contracts.contract_remedies([contracts.PROGRESS_HELPER_TAG])))
+    if helper_missing:
+        lines.append(
+            "pbrun: " + ", ".join(helper_missing) + " announce "
+            f"{pb.PROGRESS_RECORD_SCHEMA_V1} but do not offer "
+            f"{contracts.PROGRESS_HELPER_TAG}, so this action is not offered to them: "
+            f"it requires {contracts.PROGRESS_TAG} and {contracts.PROGRESS_HELPER_TAG}. "
+            "It waits for a helper-capable box rather than starting without "
+            "the documented reporting path.")
+    if policy.get("cycle"):
+        cycle_intent = {**helper_intent, "tags": [
+            *helper_intent["tags"], contracts.PROGRESS_CYCLE_TAG]}
+        cycle_hosts = set(queue.placeable_hosts(cycle_intent) or [])
+        cycle_missing = sorted(eligible - cycle_hosts)
+        eligible &= cycle_hosts
+        if not eligible:
+            raise SubmissionRefused(
+                f"pbrun: no eligible worker offers {contracts.PROGRESS_CYCLE_TAG} "
+                f"({', '.join(cycle_missing)}); update the fleet's published "
+                "generation before submitting cyclic progress.\n"
+                + "\n".join(contracts.contract_remedies([contracts.PROGRESS_CYCLE_TAG])))
+        if cycle_missing:
+            lines.append("pbrun: " + ", ".join(cycle_missing)
+                         + f" do not offer {contracts.PROGRESS_CYCLE_TAG}; "
+                         "this cyclic action waits for a capable worker.")
+        lines.append(
+            "pbrun: cyclic phases: each phase grants its allowance once "
+            "between increases in cumulative committed units; "
+            f"at most {total:g}s of quiet after the count stops increasing.")
+        helper_intent = cycle_intent
+    if awaited_batch is not None:
+        awaited_intent = {**helper_intent, "tags": [
+            *helper_intent["tags"], contracts.QUEUED_CHILD_TAG]}
+        awaited_hosts = set(queue.placeable_hosts(awaited_intent) or [])
+        awaited_missing = sorted(eligible - awaited_hosts)
+        eligible &= awaited_hosts
+        if not eligible:
+            raise SubmissionRefused(
+                f"pbrun: no eligible worker offers {contracts.QUEUED_CHILD_TAG} "
+                f"({', '.join(awaited_missing)}); update the fleet's published "
+                "generation before submitting a coordinator that awaits "
+                "queued children.\n"
+                + "\n".join(contracts.contract_remedies([contracts.QUEUED_CHILD_TAG])))
+        if awaited_missing:
+            lines.append("pbrun: " + ", ".join(awaited_missing)
+                         + f" do not offer {contracts.QUEUED_CHILD_TAG}; "
+                         "this coordinator waits for a capable worker.")
+        lines.append(
+            "pbrun: queued-child wait: the worker credits quiet while a "
+            "verified awaited child is ready or claimed at both ends of "
+            "the interval; a first sighting is a baseline and earns no "
+            "credit.")
+        helper_intent = awaited_intent
+    ceilings = queue.placement_timeout_ceilings(helper_intent)
+    for host in sorted(eligible):
+        ceiling = ceilings.get(host)
+        if ceiling is None:
+            lines.append(f"pbrun: {host} announces no phase-grace ceiling; "
+                         "its effective allowances are unknown until execution.")
+            continue
+        for phase in phases:
+            requested_grace = float(phase["grace_s"])
+            if ceiling < requested_grace:
+                lines.append(
+                    f"pbrun: {host} limits {phase['name']} grace to {ceiling:g}s "
+                    f"(requested {requested_grace:g}s); an explicit payload "
+                    "execution budget is unchanged.")
+    return "\n".join(lines)
+
+
+def timeout_ceiling_notice(
+    queue,
+    intent: Mapping[str, object],
+    *,
+    requested: float | None,
+) -> str:
+    """Report eligible workers whose payload budgets cut ``--timeout-s`` short.
+
+    Every worker loop enforces a safety ceiling of its own (7200 s by
+    default) and ``pool._execution_timeout`` applies it as a silent ``min``.
+    Nothing said so: the PrismaQuant #275 campaign asked for 13000 s, was
+    admitted without a word, and was killed at 7200 s -- its own
+    ``--deadline-seconds`` never fired, so the attempt ended rc=1 with no
+    sealed payload, and 554 anchor rows survived only because the job
+    checkpoints every ten (#293).
+
+    Warned rather than refused, deliberately.  An action that asks for more
+    than it needs and finishes inside the ceiling is not wrong, and refusing
+    it would break every long submission on a fleet whose loops all default to
+    7200. What was wrong was being told nothing. The smallest announced budget
+    need not be the budget an unannounced eligible worker would enforce.
+    Checkout, credited waits and settlement are not bounded by this notice.
+
+    A box that announces no ceiling is named as unknown rather than assumed
+    unbounded -- the loops that starved #275 announced nothing, and reading
+    silence as "no limit" is the same false confidence one layer up.
+    """
+
+    if requested is None:
+        return ""
+    ceilings = queue.placement_timeout_ceilings(intent)
+    if not ceilings:
+        return ""
+    bounded = {host: value for host, value in ceilings.items() if value is not None}
+    silent = sorted(host for host, value in ceilings.items() if value is None)
+    cutting = {host: value for host, value in bounded.items() if value < requested}
+    if not cutting and not silent:
+        return ""
+    lines = []
+    if cutting:
+        lowest = min(cutting.values())
+        named = ", ".join(f"{host} {value:g}s" for host, value in sorted(cutting.items()))
+        certain = len(cutting) == len(ceilings)
+        lines.append(
+            f"pbrun: --timeout-s {requested:g} exceeds the payload execution ceiling "
+            f"{'every' if certain else 'some'} eligible worker announces "
+            f"({named}); the lowest announced payload execution budget is {lowest:g}s, "
+            "not a wall-clock stop or resource-release guarantee."
+        )
+    if silent:
+        lines.append(
+            "pbrun: " + ", ".join(silent) + " announce no execution ceiling "
+            "(offers predating the field), so what they would enforce is "
+            "unknown rather than unlimited."
+        )
+    return "\n".join(lines)
+
+
+def pin_notice(
+    queue,
+    intent,
+    *,
+    cwd: Path,
+    hostname: str,
+    here: bool,
+    portable_checkout: bool = False,
+    unknown_census: str = UNANNOUNCED_CENSUS,
+) -> str:
+    """What the submitter is not otherwise told: this action is one box wide.
+
+    The pin is a silent consequence of a path.  ``pbrun`` printed
+    ``tags=['sparky']`` and nothing else, so the submitter -- usually an agent
+    that just made itself a worktree under ``/home/rob/tmp`` -- had no way to
+    know it had narrowed the fleet to one box.  Measured on the live queue,
+    2026-09-04: 131 of 391 items carried a hostname tag, and 129 of those were
+    a consequence of a path -- 114 pinned to ``sparky`` by a
+    ``/home/rob/tmp/ts*`` worktree -- while sparky's queue backed up and the
+    other two boxes idled.
+
+    **Everything below is read off the tags that LANDED, never off the flags
+    that asked for them.**  A first version asked the ``here`` flag instead,
+    and so announced "PINNED to sparky by --here, so no other box can claim
+    this action" for a submission whose tags were ``['x86']`` -- naming, as
+    the *other* box, the only box that could actually run it.  A notice about
+    a pin has one job and that was it. ``placement_contract`` no longer drops the
+    host pin that way, but the reading rule is what keeps this correct
+    whatever it returns.
+
+    Exclusivity is claimed only where it is provable.  A tag naming this host
+    cannot be claimed elsewhere; a tag that merely happens to match one live
+    box today -- ``gb10``, ``sparklina`` -- is a fact about the fleet as
+    announced at this instant, and the second box offering it can claim an
+    action whose tree it does not have.  So that case is reported as the
+    contingency it is rather than as "match only this box".
+
+    The explicit ``--tag`` list is deliberately NOT a parameter here.  The
+    only thing it decides is what ``placement_contract`` returned, and that is
+    already in ``intent``; taking it as well would leave a second way to ask
+    the flags what the tags already answer, which is the bug this function
+    was rewritten to close.  ``here`` stays, because ``--here`` on a shared
+    checkout is indistinguishable from ``--tag <this host>`` by tags alone,
+    and the override needs to know it was asked for.
+
+    Returns "" when there is nothing to say -- an immutable snapshot that was
+    already free to run anywhere.
+    """
+
+    tags = [str(t) for t in (intent.get("tags") or [])]
+    local = is_box_local(cwd) and not portable_checkout
+    pinned = hostname in tags               # the pin as it landed, not as asked
+    claimants = queue.placeable_hosts(intent)
+    others = None if claimants is None else sorted(
+        h for h in claimants if h != hostname)
+
+    if pinned:
+        if others:
+            # A host tag should be this box's alone; a worker started
+            # elsewhere with ``--tag sparky`` makes it not.  Ask the placer
+            # rather than assert the construction.
+            return (f"pbrun: WARNING -- tags {tags} name {hostname}, but "
+                    f"{', '.join(others)} offer that tag too, so this action "
+                    f"is not exclusive to this box.  Check what those workers "
+                    f"were started with.")
+        if here and not local:
+            head = (f"pbrun: PINNED to {hostname} by --here, so no other box "
+                    f"can claim this action.")
+        elif local:
+            head = (f"pbrun: PINNED to {hostname} -- the checkout {cwd} is "
+                    f"box-local, so no other box can claim this action.")
+        else:
+            head = (f"pbrun: PINNED to {hostname} by --tag {hostname}, so no "
+                    f"other box can claim this action.")
+        tail = ("" if not local else
+                f"  Move the checkout under {SHARED_ROOT} to let any box claim "
+                f"it, or accept the pin knowingly.")
+        width = _width_of_the_pin(
+            queue, intent, tags, hostname, unknown=unknown_census)
+        return f"{head}  {width}{tail}"
+
+    # No host tag landed.  Say what did, and what it costs.
+    notes: list[str] = []
+    if local:
+        if others is None:
+            notes.append(f"WARNING -- the checkout {cwd} exists only on "
+                         f"{hostname}, and {unknown_census}, so tags "
+                         f"{tags} may let another box claim this action and "
+                         f"fail on the missing tree.")
+        elif others:
+            notes.append(f"WARNING -- the checkout {cwd} exists only on "
+                         f"{hostname}, but tags {tags} let {', '.join(others)} "
+                         f"claim this action.  It will fail there rather than "
+                         f"run on the wrong tree.")
+        else:
+            # True of the fleet as announced, and only of that.  Nothing
+            # reserves ``gb10`` or ``sparklina`` for one box, so the second
+            # box offering it can claim a tree it does not have -- which is
+            # the case the WARNING above exists to catch, arriving later.
+            notes.append(f"the checkout {cwd} exists only on {hostname}, and "
+                         f"no other live box offers tags {tags} -- but nothing "
+                         f"reserves those tags for this box, so a box that "
+                         f"starts offering them can claim this action and fail "
+                         f"on the missing tree.")
+        notes.append(f"Add --tag {hostname} if you meant this box, or move the "
+                     f"checkout under {SHARED_ROOT}.")
+    elif here:
+        if claimants is None:
+            notes.append(f"Which box claims it is unknown: {unknown_census}.")
+        elif claimants:
+            notes.append(f"{len(claimants)} live "
+                         f"box{'es' if len(claimants) > 1 else ''} can claim "
+                         f"it: {', '.join(claimants)}.")
+        else:
+            notes.append("No live box offers these tags.")
+        notes.append(f"Add --tag {hostname} if you meant this box.")
+    if not notes:
+        return ""
+    return "pbrun: " + "  ".join(notes)
+
+
+def published_generation(q, key: str, path) -> float | None:
+    """The generation the pull queue stamped on this submission, or ``None``.
+
+    Read back rather than assumed: ``PoolQueue.publish`` stamps
+    ``published_unix`` itself, and a worker may have renamed the item into
+    ``claimed`` -- or run it to completion -- before this looks.  ``None`` is
+    the honest answer when none of those places has it, and it tells a later
+    wait to accept any record for the key rather than to pretend it knows which
+    run the record belongs to.
+    """
+
+    candidates = [Path(path)]
+    for state in (pool.CLAIMED, pool.DONE, pool.FAILED):
+        candidates.append(q.item_path(state, key))
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        stamped = value.get("published_unix") if isinstance(value, dict) else None
+        if isinstance(stamped, (int, float)) and not isinstance(stamped, bool):
+            return float(stamped)
+    return None
+
+
+def outstanding_submission(q, key: str, *, lane_root=None):
+    """The newest submission of this key anybody recorded, or ``None``.
+
+    Returns ``(transport, generation, submission)``.  Newest wins because a key
+    can legitimately have been carried by both transports -- the pull queue
+    last week, SLURM today -- and the run being asked about is the one somebody
+    just asked for.
+    """
+
+    candidates = []
+    lane = slurm_lane.recorded_submission(key, root=lane_root)
+    if isinstance(lane, dict):
+        generation = lane.get("published_unix")
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("slurm", float(generation), lane))
+    for state in (pool.READY, pool.CLAIMED):
+        try:
+            item = json.loads(
+                q.item_path(state, key).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        generation = item.get("published_unix") if isinstance(item, dict) else None
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("pool", float(generation), item))
+    # A claim whose finish is in flight.  ``PoolQueue.finish`` moves
+    # ``claimed/<key>.json`` aside to a finish tombstone before it releases
+    # capacity and files ``done/``; the receipt is already in the CAS by then.
+    # Reading only the two names above made that window look like nothing
+    # outstanding, so ``pbwait`` answered ``cache_hit`` before the ending
+    # existed and a caller reading ``done/`` found nothing (the 6d88c0b15b18
+    # canary's leg 3).  The pool's own claim gate treats both suffixes as a
+    # live claim (``already_claimed``); agree with it.
+    suffixes = (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX)
+    try:
+        names = os.listdir(q.dir(pool.CLAIMED))
+    except OSError:
+        names = []
+    for name in names:
+        if not (name.startswith(f"{key}.") and name.endswith(suffixes)):
+            continue
+        try:
+            item = json.loads(
+                (q.dir(pool.CLAIMED) / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # Gone because the finish just filed its ending, or not a record:
+            # either way the terminal read that follows answers.
+            continue
+        if not isinstance(item, dict) or item.get("action_key") != key:
+            continue
+        generation = item.get("published_unix")
+        if isinstance(generation, (int, float)) and not isinstance(generation, bool):
+            candidates.append(("pool", float(generation), item))
+    if not candidates:
