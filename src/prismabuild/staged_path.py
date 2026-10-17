@@ -7875,6 +7875,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                         or completed_receipt.get("complete") is not True
                         or completed_receipt.get("refusal")
                         or any(isinstance(completed_receipt.get(field), bool)
+                               or not isinstance(completed_receipt.get(field), int)
                                for field in ("range_start_bytes", "range_end_bytes",
                                    "range_bytes", "bytes_staged", "bytes_copied",
                                    "entries_declared", "entries_staged"))
