@@ -8,6 +8,8 @@ from pathlib import Path
 import runpy
 import socket
 import threading
+import sys
+import stat
 from types import SimpleNamespace
 
 
@@ -24,10 +26,35 @@ def authority(module, store, *, durable=False):
                             maintenance_state=store / "var/maintenance.json")
 
 
+def initial_installation(broker, store):
+    state = store / "initialize/maintenance.json"
+    old_uid, old_stat, old_argv = os.geteuid, Path.lstat, sys.argv
+    def observed_stat(path, *args, **kwargs):
+        info = old_stat(path, *args, **kwargs)
+        if path == state.parent:
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+        return info
+    os.geteuid = lambda: 0
+    Path.lstat = observed_stat
+    sys.argv = ["resource_broker.py", "--initialize-maintenance-state", "--maintenance-state", str(state),
+                "--state-dir", str(store / "run/jobs")]
+    try:
+        broker.main()
+    finally:
+        os.geteuid, Path.lstat, sys.argv = old_uid, old_stat, old_argv
+    return state
+
+
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     broker = load("resource_broker")
     write = request["op"] == "write"
+    if write and variant == "explicit-initialize":
+        path = initial_installation(broker, store)
+        if family == "broker-evidence":
+            path = path.with_name(path.name + ".initialized")
+        return {"raw": base64.b64encode(path.read_bytes()).decode(),
+                "fixture_facts": ["supplied privileged identity and parent-ownership observations; actual private writes only; no root installation or deployment proof"]}
     if family == "broker-settlement":
         if write:
             pool, scope = load("prismabuild.pool"), load("prismabuild.resource_scope")
@@ -111,6 +138,6 @@ def operate(request, store, load):
             if family == "broker-evidence":
                 return current._maintenance_evidence()
             result = current._maintenance_value(path)
-            assert result["draining"] == (variant not in ("bootstrap", "migrated", "released", "forced"))
+            assert result["draining"] == (variant not in ("bootstrap", "migrated", "released", "forced", "explicit-initialize"))
             return result
     return {"raw": base64.b64encode(raw).decode()}
