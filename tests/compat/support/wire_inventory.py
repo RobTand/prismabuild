@@ -439,6 +439,20 @@ def main():
     args = parser.parse_args()
     observations = {}
     rows, policies = audit(args.root, observations)
+    dynamic = [row for row in observations["unresolved_schema_builders"] if row["scope"] == "production"]
+    review_path = args.root / "tests/compat/dynamic_schema_dispositions.jsonl"
+    reviews = [json.loads(line) for line in review_path.read_text().splitlines()] if review_path.exists() else []
+    reviewed = set()
+    for review in reviews:
+        assert hashlib.sha256((args.root / review["path"]).read_bytes()).hexdigest() == review["source_sha256"], review
+        matches = [row for row in dynamic if all(row[key] == review[key] for key in ("path", "owner", "line", "schema", "fields"))]
+        assert len(matches) == 1 and review["reason"], "stale or ambiguous dynamic-schema review"
+        identity = review["path"], review["owner"], review["line"]
+        assert identity not in reviewed
+        reviewed.add(identity)
+    observations["dynamic_schema_reviews"] = reviews
+    observations["unreviewed_dynamic_schema_builders"] = [row for row in dynamic
+        if (row["path"], row["owner"], row["line"]) not in reviewed]
     args.out.mkdir(parents=True, exist_ok=False)
     (args.out / "inventory.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
     (args.out / "field_sets.json").write_text(json.dumps(policies, sort_keys=True) + "\n")
@@ -460,6 +474,7 @@ def main():
         path.chmod(0o444)
     print(json.dumps(summary, sort_keys=True))
     if args.require_complete and (any("requires" in row["disposition"] for row in rows)
+                                  or observations["unreviewed_dynamic_schema_builders"]
                                   or any(row["python_suffix"] or row["contains_wire_schema"]
                                          for row in observations["unparsed_sources"])):
         raise SystemExit(2)
