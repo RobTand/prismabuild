@@ -22423,7 +22423,8 @@ class PoolQueue:
             lease = claim.with_suffix(".lease")
             record = record_store.read_document(lease)
             if record is None:
-                if not claim.exists():
+                if not record_store.value_or_raise(
+                        self.records.item_presence(CLAIMED, claim.stem)):
                     continue  # Finished while the directory was being read.
                 raise PoolContractError(f"claim ownership is unknown: {claim}")
             pid = record.get("pid")
@@ -25061,7 +25062,8 @@ class PoolQueue:
                 return self.records.item_path(str(covered[0]), action_key)
             lost = self.records.item_path(
                 DONE if succeeded else FAILED, action_key)
-            if not lost.exists():
+            if not record_store.value_or_raise(self.records.item_presence(
+                    DONE if succeeded else FAILED, action_key)):
                 filed = {
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": action_key,
