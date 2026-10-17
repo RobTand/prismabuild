@@ -172,7 +172,7 @@ KINDS = (
                "prismabuild.core:validate_pbrun_checkout_snapshot", ("shape_gate:ShapeGate._template",), ("shape-gate-input",),
                ("a174 has no v1 runtime writer; this is an accepted caller input, not a pre-1018 supported-generation claim",), caller_input=True),
     RecordKind("runtime-receipt", "prismaquant.prismabuild.runtime_version.v1", "private staged generation/RUNTIME_VERSION.json", "additive",
-               "prismabuild.runtime_publication:_receipt", ("publish_runtime:_run_publication", "qualify_rollout:build_generation"), ("implicit", "pool", "slurm", "qualification"),
+               "prismabuild.runtime_publication:_publication_receipt", ("publish_runtime:_run_publication", "qualify_rollout:build_generation"), ("implicit", "pool", "slurm", "qualification"),
                ("absent default_transport is pool; source/qualification facts are explicit fixture inputs",),
                variant_writers=(("implicit", "publish_runtime:_run_publication"), ("pool", "publish_runtime:_run_publication"),
                                 ("slurm", "publish_runtime:_run_publication"), ("qualification", "qualify_rollout:build_generation")),

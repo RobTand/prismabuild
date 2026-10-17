@@ -1,4 +1,5 @@
 """Concrete source locations for the modules selected by the isolated loader."""
+import ast
 
 
 def module_paths(module):
@@ -15,6 +16,13 @@ def module_paths(module):
 C13_PRIOR_ENTRIES = {'prismabuild.batch_ledger:BatchLedger.capture': 'prismabuild.produced_output:_read_commitments', 'prismabuild.batch_ledger:declared_consumers': 'prismabuild.produced_output:_declared_consumers', 'prismabuild.batch_ledger:read_consumer_release': 'prismabuild.produced_output:_consumer_release', 'prismabuild.batch_ledger:BatchLedger.record': 'prismabuild.produced_output:batch_record', 'prismabuild.output_contract:validate_descriptor': 'prismabuild.produced_output:validate_descriptor', 'prismabuild.output_contract:checked_origin_ref': 'prismabuild.produced_output:_checked_origin_ref', 'prismabuild.output_contract:validate_template': 'prismabuild.produced_output:validate_template', 'prismabuild.output_contract:validate_instance': 'prismabuild.produced_output:validate_instance', 'prismabuild.batch_ledger:BatchLedger.file': 'prismabuild.produced_output:_write_commitments', 'prismabuild.batch_ledger:BatchLedger.commit_origin': 'prismabuild.produced_output:commit_origin_batch', 'prismabuild.output_contract:origin_batch_ref': 'prismabuild.produced_output:origin_batch_ref', 'prismabuild.batch_ledger:declare_instance': 'prismabuild.produced_output:declare_instance', 'prismabuild.batch_ledger:BatchLedger.due_mover_rows': 'prismabuild.produced_output:due_mover_rows'}
 
 def generation_reference(root, reference):
+    if reference == "prismabuild.runtime_publication:_publication_receipt":
+        tree = ast.parse((root / "src/prismabuild/runtime_publication.py").read_bytes())
+        names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        if "_publication_receipt" not in names:
+            if "_receipt" not in names:
+                raise ValueError("generation has no known publication receipt owner")
+            return "prismabuild.runtime_publication:_receipt"
     if not (root / "src/prismabuild/funding.py").is_file():
         reference = C12_PRIOR_ENTRIES.get(reference, reference)
     if not (root / "src/prismabuild/batch_ledger.py").is_file():
