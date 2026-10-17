@@ -66,7 +66,7 @@ def test_retired_receipt_mutation_cannot_change_the_next_public_fold(tmp_path):
                         unix=history.T0)
     history._sweep(history._survey(queue))
     assert not queue.records.move_path(key).exists()
-    expected = queue.read_mover_retirements()[key]['projection']
+    expected = queue.read_mover_retirements()[key]
     expected_supply = storage_tiers.fill_supply_from_records(
         [expected], pool_identity=history.IDENTITY_A)
     trust = ObservedTrust()
@@ -80,4 +80,4 @@ def test_retired_receipt_mutation_cannot_change_the_next_public_fold(tmp_path):
         'a returned projection changed the cache-owned pricing input')
     assert receipts.read([queue.records.move_path(key).parent], queue=queue) == [expected]
     assert receipts.records.parsed == 2, 'both checkpoint records must retain native parse reuse'
-    assert queue.read_mover_retirements()[key]['projection'] == expected
+    assert queue.read_mover_retirements()[key] == expected
