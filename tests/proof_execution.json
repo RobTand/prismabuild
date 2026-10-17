@@ -17,7 +17,7 @@
     "memory_gib": 4,
     "container_memory_gib": 3,
     "native_threads": 1,
-    "image": "sha256:6342d5bda18883c72de0a5641079bce6bc5844525dbdbec83dc9e4cb1cd2ea32",
+    "image": "sha256:a7c262743b2fff76c3cf4710ba07b1bef26be0dc1568a777b120388bcae1e8e9",
     "entrypoint": "/usr/local/bin/python",
     "python": "/home/rob/venvs/pb-cpu/bin/python",
     "tooling": {

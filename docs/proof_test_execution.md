@@ -1,9 +1,9 @@
 # Physical proof test execution
 
 `tests/proof_execution.json` declares the actual-root proof population and its
-resources. Ten root files contain 145 cases. Five relevant native files
-contain 104 cases, including the 40 pure identity predicates and native role and
-census controls. Their declared family union is 249 cases. The six process-identity cases live in the root real-writer module;
+resources. Ten root files contain 157 cases. Five relevant native files
+contain 105 cases, including the 40 pure identity predicates and native role and
+census controls. Their declared family union is 262 cases. The six process-identity cases live in the root real-writer module;
 their function, parametrization and assertion syntax is pinned in the metadata.
 
 Rollout participant and host drain actors require the actual trusted installed
@@ -76,7 +76,7 @@ container-private filesystem. Source, tooling and artifacts are read-only.
 ```sh
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py \
   --cwd "$proof_checkout" --cpus 1 --demand mem_gb=4 \
-  --container-image sha256:df18428df8a0f9189c84e7424d214b4c50092af1f9dca5842a00c41c39bda316 \
+  --container-image sha256:a7c262743b2fff76c3cf4710ba07b1bef26be0dc1568a777b120388bcae1e8e9 \
   --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 -- \
   /home/rob/venvs/pb-cpu/bin/python tests/run_proof_container.py
 ```
@@ -85,7 +85,11 @@ The image and absolute outer interpreter are explicit placement dependencies.
 The adapter uses Python 3.12, native threads one, a 3 GiB Docker memory limit
 within the aggregate 4 GiB admission, no network and standard container
 CHOWN/SETUID/SETGID. It does not use privileged mode or writable host mounts.
-Keep portable eligible placement and the PB-assigned affinity.
+Keep portable eligible placement and the PB-assigned affinity. The image is
+the tagged Python 3.12 and procps image produced by admitted action
+`3142f690087183bf2a4219ea4f29738ca40961a54df54230d077f8fa754d03a5`.
+The earlier untagged `6342d5bd` image is no longer available. Its submission
+refusal grants no execution credit.
 
 ## Submit the ordinary native suite
 
@@ -109,7 +113,7 @@ python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py \
 ```
 
 The file-list command must succeed before submission. An empty list must never
-fall back to `pbtest`'s default full-suite selection. For the bounded 104-case native family
+fall back to `pbtest`'s default full-suite selection. For the bounded 105-case native family
 qualification use `--paths native-family` in the formatter; the PB command stays
 the same. The complete native suite contains additional unrelated cases.
 Each action declares its actual resources, and PB chooses partition and eligible
@@ -148,7 +152,7 @@ the author's complete Git history alone does not establish this closure.
 
 Record exact unique selected node IDs and call outcomes for both contexts. The
 sets must be disjoint and their union must cover the declared family. The root
-104 and native 78 subtotal must reconcile to 182. The full ordinary suite's
+157 and native 105 subtotal must reconcile to 262. The full ordinary suite's
 additional count comes from admitted collection. Record every setup/collection
 failure, skip, unavailable tool and missing input. None counts as a passing call.
 Check source snapshot identity, terminal return codes, log hashes, and actual
