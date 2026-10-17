@@ -113,7 +113,9 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
         if isinstance(node, ast.Attribute):
             container = shape(node.value, enclosing)
             if isinstance(container, dict) and "@class" in container:
-                return fields[container["@class"]].get(node.attr, False)
+                return fields.get(container["@class"], {}).get(node.attr, False)
+            if isinstance(container, dict) and "@fields" in container:
+                return container["@fields"].get(node.attr, False)
         if isinstance(node, ast.Name):
             if node.id in {"self", "cls"} and owning_class(enclosing):
                 return {"@class": owning_class(enclosing)}
@@ -176,7 +178,7 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                         aliases[called].add(param.arg)
         if (sum(map(len, aliases.values())), repr(returns), repr(values), repr(fields)) == before:
             break
-    return (scopes, aliases, returns) if details else (scopes, aliases)
+    return (scopes, aliases, returns, fields) if details else (scopes, aliases)
 
 
 class CallerMove(ast.NodeTransformer):

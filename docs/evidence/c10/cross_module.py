@@ -44,6 +44,19 @@ def resolve(node, names, module):
     return None
 
 
+def exported_shape(shape, fields, seen=frozenset()):
+    if isinstance(shape, dict):
+        if "@class" in shape:
+            name = shape["@class"]
+            if name in seen:
+                return False
+            return {"@fields": exported_shape(fields.get(name, {}), fields, seen | {name})}
+        return {key: exported_shape(value, fields, seen) for key, value in shape.items()}
+    if isinstance(shape, tuple):
+        return tuple(exported_shape(value, fields, seen) for value in shape)
+    return shape
+
+
 def analyze(root):
     move = runpy.run_path(str(root / "docs/evidence/c10/migrate_source.py"))
     paths = subprocess.check_output(
@@ -59,11 +72,13 @@ def analyze(root):
         units[path] = unit
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                targets[module + "." + node.name] = (path, node)
+                targets[module + "." + node.name] = (path, node, None)
             elif isinstance(node, ast.ClassDef):
                 for method in node.body:
                     if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        targets[module + "." + node.name + "." + method.name] = (path, method)
+                        targets[module + "." + node.name + "." + method.name] = (path, method, None)
+                        if method.name == "__init__":
+                            targets[module + "." + node.name] = (path, method, node.name)
     bindings, passes = {}, 0
     changed = True
     while changed:
@@ -75,7 +90,7 @@ def analyze(root):
                      repr(unit["external_returns"]))
             if unit.get("stamp") == stamp:
                 continue
-            unit["scopes"], unit["aliases"], unit["returns"] = move["caller_aliases"](
+            unit["scopes"], unit["aliases"], unit["returns"], unit["fields"] = move["caller_aliases"](
                 unit["tree"], unit["seeds"], unit["external_returns"], details=True)
             unit["stamp"] = stamp
         for path, unit in units.items():
@@ -87,9 +102,11 @@ def analyze(root):
                 target = targets.get(target_name)
                 if target is None:
                     continue
-                target_path, function = target
+                target_path, function, constructed = target
                 target_unit = units[target_path]
-                returned = target_unit["returns"].get(function.name, False)
+                returned = ({"@class": constructed} if constructed else
+                            target_unit["returns"].get(function.name, False))
+                returned = exported_shape(returned, target_unit["fields"])
                 spelling = ast.unparse(call.func)
                 if returned and unit["external_returns"].get(spelling) != returned:
                     unit["external_returns"][spelling] = returned

@@ -7080,7 +7080,8 @@ already-moved names still count in its integer result, without moving the RAM
 mirror a second time. Both collectors use the existing per-token walk.
 
 `release_unspent` requires an `Unspent` authority from the consumer's existing
-proof. Funding and batch decisions remain with their owners. `settle_egress`
+proof. Funding and batch decisions remain with their owners. Whole physical
+egress uses `egress`; `settle_egress`
 destroys duplicate charges before returning counts backed by physical egress.
 A failed or partial return retains the RAM mirror for its still-held
 occupancy. An unreadable remainder releases no host memory. Idle-rate

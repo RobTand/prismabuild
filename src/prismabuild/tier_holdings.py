@@ -246,7 +246,7 @@ class TierLedger:
     def unparsed_takes(self, holder: str) -> list[str]:
         return self._ledger.unparsed_acquisitions_of(holder)
 
-    def reap_pending_takes(self, *, grace_s: float):
+    def reap_pending_takes(self, *, grace_s: float = 300.0):
         return self._ledger.sweep_stale_acquisitions(grace_s=grace_s)
 
     def handover_named(self, source: str, target: str, names: Sequence[str], *,
