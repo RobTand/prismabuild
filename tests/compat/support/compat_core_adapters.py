@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
+import runpy
 
 
 def code_files(store, variant):
@@ -98,7 +100,8 @@ def operate(request, store, load):
                 "enclosing_raw": base64.b64encode(enclosing).decode(), "enclosing_path": str(path)}
     if family == "core-action":
         if write:
-            value = core.seal_action(action_body(core, store))
+            value = (runpy.run_path(str(Path(__file__).with_name("compat_builder_adapters.py")))["action"](
+                core, store, load, variant) if variant.endswith("builder") else core.seal_action(action_body(core, store)))
             path = cas.publish_action_request(value)
         else:
             raw = base64.b64decode(request["raw"])
@@ -109,15 +112,27 @@ def operate(request, store, load):
             path.write_bytes(raw)
             request["_consumer_boundary"]()
             result = cas.read_action_request(key)
-            assert result and result["params"]["unicode"] == "caf\u00e9 \u03bb", "request consumer refused the action"
+            assert result and result["task"]["definition_id"] == (
+                "fleet/first-dispatch" if variant == "smoke-builder" else "compat/record"), "request consumer refused the action"
+            if variant != "smoke-builder":
+                assert result["params"]["unicode"] == "caf\u00e9 \u03bb"
             return result
     else:
         if family == "core-closure":
             names = code_files(store, variant)
-            value = core.build_code_closure(store, names) if write else None
+            if variant == "stamp-builder":
+                (store / "stamp.py").write_text("compat stamp\n")
+                value = load("pbrun").build_stamp_closure("stamp.py", "compat stamp\n") if write else None
+            else:
+                value = core.build_code_closure(store, names) if write else None
             reader = lambda value: core.verify_code_closure(value, store)
         elif family in ("core-manifest-v1", "core-manifest-v2"):
-            value = core.validate_data_manifest(manifest(core, variant, family.endswith("v2"))) if write else None
+            if write:
+                value = (runpy.run_path(str(Path(__file__).with_name("compat_builder_adapters.py")))["manifest"](
+                    core, store, load, variant) if variant.endswith("builder") else
+                    core.validate_data_manifest(manifest(core, variant, family.endswith("v2"))))
+            else:
+                value = None
             reader = core.validate_data_manifest
         else:
             raise ValueError(f"unknown core adapter: {family}")
