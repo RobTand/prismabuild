@@ -57,7 +57,7 @@ from runtime_paths import (  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import action_client  # noqa: E402
+from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
@@ -82,62 +82,11 @@ CLIENT_RSS_MB = 80
 #: shard.
 DEFAULT_MAX_CLIENTS = 8
 
-#: The line ``pbrun`` prints, with exit 74, when it could not read an action's
-#: ending: at zero patience, when a reader could not be reaped, or when a
-#: patient wait ended while the last read was unavailable.
-UNOBSERVED_OUTCOME = re.compile(r"^pbrun: unavailable pool outcome for ([0-9a-f]{12})\b")
-
-
-def unobserved_outcome(lines: list[str]) -> str | None:
-    """The 12-character key whose ending ``pbrun`` could not read, or ``None``."""
-
-    for line in reversed(lines):
-        match = UNOBSERVED_OUTCOME.match(pbtest_outcomes.ANSI.sub("", line).strip())
-        if match:
-            return match.group(1)
-    return None
-
-
-#: The last line ``pbrun`` prints, with exit 1, when it refused a submission
-#: because its worker-offer scan timed out and the reader was reaped
-#: (``pbrun.OfferDiscoveryTimedOut``, raised by ``bounded_offer_snapshot``).
-#: Nothing was published, so submitting the same shard again is safe, and it
-#: is the one refusal a resubmission can clear.  The ``$`` matters: the same
-#: timeout with a reader that survived cleanup appends `` retained reader=``,
-#: and that one stays a plain refusal, because a retry would race the reader.
-OFFER_DISCOVERY_TIMED_OUT = re.compile(
-    r"^pbrun: worker-offer discovery timed out after [^;]*; refusing submission; "
-    r"no runnable submission was published\.$")
-
-
-def offer_discovery_timed_out(lines: list[str], returncode: int | None) -> bool:
-    """Whether a shard's ``pbrun`` ended in the refusal a resubmission can clear.
-
-    ``pbtest`` runs ``pbrun`` as a subprocess, so it cannot catch the class the
-    way ``pbcampaign`` does (#560).  What it sees is the interpreter printing
-    the ``SystemExit`` text last and exiting 1.  Only pbrun's LAST line counts:
-    a shard whose tests quote the message, and fail, ran and is not retried.
-    """
-
-    if returncode != 1:
-        return False
-    for line in reversed(lines):
-        text = pbtest_outcomes.ANSI.sub("", line).strip()
-        if text:
-            return bool(OFFER_DISCOVERY_TIMED_OUT.match(text))
-    return False
-
-
 #: The prefixes of the lines a shard's submitter prints about its own wait.
 #: They are streamed as they arrive (#1048): a patient ``pbrun`` can wait out a
 #: reader stuck in the kernel for all of ``--wait-s``, and says so every
 #: minute, but a line that sits in a pipe until the shard ends says nothing.
 STREAMED_PREFIXES = ("pbrun:", "pbstatus:")
-
-#: The line ``pbrun`` prints when it publishes a shard to the pull queue, or
-#: attaches to the run already carrying its key.  It is the one line naming
-#: the full action key (#1012); SLURM's submission line names a prefix only.
-SUBMITTED = re.compile(r"^pbrun: (queued|attached to) ([0-9a-f]{64})(?![0-9a-f])")
 
 _PRINT_LOCK = threading.Lock()
 
@@ -149,134 +98,78 @@ def _say(text: str) -> None:
         print(text, flush=True)
 
 
-def drain_shard(index: int, stream, lines: list[str], *, submitted=None) -> None:
-    """Read one shard's output as it arrives, keeping all of it in ``lines``.
-
-    Every shard gets its own thread, started as soon as the shard is, so no
-    pipe fills while ``pbtest`` is still reading an earlier shard: a full pipe
-    blocks ``pbrun`` in ``write(2)``, in the middle of its own wait (#1048).
-    Lines that start with a ``STREAMED_PREFIXES`` word are printed at once,
-    prefixed with the shard; pytest's own output stays in the shard's result.
-    ``submitted(key, verb)`` is called for ``pbrun``'s ``SUBMITTED`` line.
-    """
-
+def drain_shard(index: int, stream, lines: list[str]) -> None:
+    """Stream human diagnostics while retaining the shard's complete output."""
     for line in iter(stream.readline, ""):
         lines.append(line)
         if line.startswith(STREAMED_PREFIXES):
             _say(f"shard {index:>3} {line.rstrip()}")
-            match = SUBMITTED.match(line) if submitted is not None else None
-            if match is not None:
-                submitted(match.group(2), match.group(1))
 
 
-# Read-only recovery uses the same pinned pbrun renderer as the submitter.
-# Pass an absolute monotonic deadline, so interpreter startup cannot renew it.
-_RECOVER_OUTCOME = """\
-import runpy, sys, time
-from pathlib import Path
-reader = runpy.run_path(sys.argv[1])
-remaining = float(sys.argv[4]) - time.monotonic()
-if remaining <= 0:
-    sys.exit(reader['action_client'].GAVE_UP_EXIT)
-queue = reader['pool'].PoolQueue(reader['SH'] / 'pb-queue')
-sys.exit(reader['action_client'].await_outcome(queue, sys.argv[2], wait_s=remaining,
-                               generation=float(sys.argv[3])))
-"""
+def start_shard(index: int, command: list[str], *, result: dict,
+                files=(), progress=None, expected_identity=None) -> client_channel.ClientProcess:
+    result.setdefault('lines', [])
+    result.setdefault('attempts', 1)
+    result.setdefault('returncode', None)
+    result.setdefault('action_key', None)
 
+    def submitted(identity):
+        if result['action_key'] is not None:
+            return
+        result['action_key'] = identity.action_key
+        if progress is not None:
+            progress.observe(index, result)
+        if isinstance(identity, action_client.CachedClientIdentity):
+            verb = 'cached'
+        else:
+            verb = ('queued' if identity.arrival is action_client.ClientArrival.SUBMITTED
+                    else 'attached')
+        _say(f"shard {index:>3} action {identity.action_key} ({verb}): " + " ".join(files))
 
-def recovery_command(lines: list[str], key: str | None, deadline: float) -> list[str] | None:
-    """Recover only a named generation with no possibly retained reader.
-
-    A 74 at the original deadline remains unobserved. Old clients without a
-    generation stamp, and a client naming any retained reader, also refuse
-    recovery rather than read another attempt or race a kernel-blocked read.
-    """
-    if key is None or time.monotonic() >= deadline:
-        return None
-    if any("retained reader=" in line for line in lines):
-        return None
-    for line in lines:
-        submitted = SUBMITTED.match(line)
-        if submitted is None:
-            continue
-        if submitted.group(2) != key:
-            return None
-        stamp = re.search(r" published_unix=([0-9]+(?:\.[0-9]+)?)(?: |$)", line)
-        if stamp is None:
-            return None
-        return [sys.executable, "-c", _RECOVER_OUTCOME, str(PBRUN), key,
-                stamp.group(1), str(deadline)]
-    return None
+    environment = _client_environment()
+    if expected_identity is not None:
+        inherited = environment.get('PYTHONPATH')
+        environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
+            os.pathsep + inherited if inherited else '')
+    return client_channel.ClientProcess.launch(command, queue_root=pbrun.SH / 'pb-queue',
+        cas_root=pbrun.SH / 'cas', env=environment, expected_identity=expected_identity,
+        on_identity=submitted)
 
 
 def run_shard(index: int, command: list[str], first, *, wait_s: float,
               deadline: float, result: dict, files: list[str] = (), progress=None) -> None:
-    """Drain one shard's ``pbrun`` and resubmit it after an offer-read timeout.
-
-    ``first`` is the attempt the caller already launched, so shards start in
-    order as before.  An attempt whose ``pbrun`` ended in
-    ``OFFER_DISCOVERY_TIMED_OUT`` published nothing and holds nothing, so the
-    same command is run again after ``action_wait.POLL_S``, while the shard's own
-    ``--wait-s`` lasts -- the rule ``pbcampaign --max-inflight`` applies to a
-    row (#560). An unobserved outcome (74) may instead start one read-only
-    recovery of the same stamped generation inside the original deadline.
-    It never repeats the submission or starts beside a retained reader.
-    Every attempt's output stays in ``result["lines"]``, so the receipt
-    shows each refusal.
-
-    When ``pbrun`` says which key it queued or attached to, the key goes in
-    ``result["action_key"]`` and is printed with the shard's ``files`` at
-    once, so a run's keys can be cited while it is still running (#1012).
-    """
-
-    lines: list[str] = []
-    result.update(lines=lines, attempts=1, returncode=None, action_key=None)
-
-    def submitted(key: str, verb: str) -> None:
-        # The first such line is this shard's: pbrun prints it before the
-        # action runs and relays the action's own output only at the end,
-        # where a failing test that drove pbrun can print one of its own.
-        if result["action_key"] is not None:
-            return
-        result["action_key"] = key
-        if progress is not None:
-            progress.observe(index, result)
-        _say(f"shard {index:>3} action {key} "
-             f"({'queued' if verb == 'queued' else 'attached'}): "
-             + " ".join(files))
-
-    proc = first
+    """Retry only a typed unpublished offer timeout or recover one exact pool run."""
+    lines = result['lines']
+    running = first
     while True:
-        drain_shard(index, proc.stdout, lines, submitted=submitted)
-        proc.wait()
-        result["returncode"] = proc.returncode
-        if proc.returncode == action_client.RECORD_WRITE_FAILED_EXIT:
-            recovery = recovery_command(lines, result["action_key"], deadline)
-            if recovery is not None:
-                _say(f"shard {index:>3} pbtest: recovering the same generation's "
-                     "unobserved outcome inside the original deadline; not resubmitting")
-                try:
-                    observer = subprocess.Popen(
-                        recovery, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, errors="replace", env=_client_environment())
-                except OSError as exc:
-                    _say(f"shard {index:>3} pbtest: cannot start outcome recovery: {exc}")
-                    return
-                drain_shard(index, observer.stdout, lines)
-                observer.wait()
-                result["returncode"] = observer.returncode
+        drain_shard(index, running.process.stdout, lines)
+        events = running.wait()
+        result['returncode'] = running.process.returncode
+        result['client_events'] = events
+        recovery = client_recovery.command(events, deadline=deadline)
+        if recovery is not None:
+            _say(f"shard {index:>3} pbtest: recovering the same generation's "
+                 "unobserved outcome inside the original deadline; not resubmitting")
+            try:
+                observer = start_shard(index, recovery, result=result, files=files,
+                    progress=progress, expected_identity=events.identity)
+            except OSError as exc:
+                _say(f"shard {index:>3} pbtest: cannot start outcome recovery: {exc}")
+                return
+            drain_shard(index, observer.process.stdout, lines)
+            result['client_events'] = observer.wait()
+            result['returncode'] = observer.process.returncode
             return
-        if not offer_discovery_timed_out(lines, proc.returncode):
+        if (events.problem is not None or events.ending is None
+                or not isinstance(events.ending.verdict, action_client.ClientOfferTimeout)):
             return
         remaining = deadline - time.monotonic()
         if remaining <= action_wait.POLL_S:
-            # The pause would reach the deadline; pbcampaign would stop there
-            # too.  The shard keeps pbrun's refusal as its ending.
             _say(f"shard {index:>3} pbtest: worker-offer discovery timed out on "
                  f"attempt {result['attempts']}; {max(remaining, 0.0):.0f}s of "
                  f"--wait-s {wait_s:g} left, not resubmitting")
             return
-        result["attempts"] += 1
+        result['attempts'] += 1
         if progress is not None:
             progress.observe(index, result)
         _say(f"shard {index:>3} pbtest: worker-offer discovery timed out and "
@@ -284,46 +177,12 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
              f"{action_wait.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
         time.sleep(action_wait.POLL_S)
         try:
-            proc = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, errors="replace", env=_client_environment())
+            running = start_shard(index, command, result=result, files=files, progress=progress)
         except OSError as exc:
-            # The first attempt launched this same command, so this is the
-            # box, not the shard.  The refusal already recorded stands.
             _say(f"shard {index:>3} pbtest: could not start attempt "
                  f"{result['attempts']}: {exc}")
-            result["attempts"] -= 1
+            result['attempts'] -= 1
             return
-
-
-def replayed_output(out: str) -> str:
-    """The shard's own stdout, when ``pbrun`` printed a receipt instead of it.
-
-    A submission whose action is already in the CAS comes back as
-    ``"status": "cache_hit"``, and what ``pbrun`` prints then is the receipt --
-    not the shard's stdout, which sits in the result payload the receipt names.
-    Scanning the receipt for a pytest summary finds none, so a cached run of a
-    clean suite read as four shards that never started a test.  A re-run of an
-    unchanged control arm is precisely the case that hits the cache, which made
-    the baseline half of every comparison the half most likely to report
-    nothing.
-
-    Returns "" when there is nothing to recover, so the caller keeps what it
-    already had.
-    """
-
-    if '"status": "cache_hit"' not in out:
-        return ""
-    match = re.search(r'"payload_path": "([^"]+)"', out)
-    if match is None:
-        return ""
-    try:
-        return Path(match.group(1)).read_text(errors="replace")
-    except OSError:
-        # The blob is gone or unreadable.  Recovering nothing is the honest
-        # answer: the caller then reports a shard whose result it cannot read,
-        # which is true, rather than a green one.
-        return ""
 
 
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
@@ -2055,10 +1914,8 @@ def main() -> int:
         deadline = time.monotonic() + args.wait_s
         # ``errors="replace"``: a stray byte must not end the drain thread,
         # which would leave the pipe to fill and the shard's wait blocked.
-        proc = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            errors="replace", env=_client_environment())
         shard_result: dict = {}
+        proc = start_shard(index, command, result=shard_result, files=bucket, progress=progress)
         drain = threading.Thread(
             target=run_client, args=(index, command, proc),
             kwargs={"wait_s": args.wait_s, "deadline": deadline,
@@ -2068,6 +1925,7 @@ def main() -> int:
         procs.append((index, bucket, drain, shard_result))
 
     observations = []
+    events_by_shard = {}
     for index, bucket, drain, shard_result in procs:
         # EOF comes when the shard's last pbrun exits, so the join is the wait.
         drain.join()
@@ -2075,13 +1933,20 @@ def main() -> int:
         attempts = shard_result["attempts"]
         returncode = shard_result["returncode"]
         out = "".join(lines)
-        # A cache hit prints the receipt where the shard's stdout would be, so
-        # look through it to the payload before asking whether pytest reported.
-        out = replayed_output(out or "") or (out or "")
-        tail = [line for line in out.strip().splitlines() if line.strip()]
-        timed_out = returncode != 0 and any(re.match(
-            r"^pbrun: (?:[0-9a-f]{12} )?timeout (?:on|--)",
-            pbtest_outcomes.ANSI.sub("", line)) for line in tail)
+        events = shard_result['client_events']
+        events_by_shard[index] = events
+        if events.problem is not None:
+            _say(f"shard {index:>3} pbtest: client report unusable: {events.problem}")
+        ending = events.ending if events.problem is None else None
+        if ending is not None:
+            replay = action_client.read_cached_output(events.identity, ending)
+            if isinstance(replay, action_client.CachedOutput):
+                out = replay.text or out
+            elif isinstance(replay, action_client.CachedOutputUnavailable):
+                _say(f"shard {index:>3} pbtest: cached output unavailable: {replay.reason}")
+        timed_out = (returncode != 0 and ending is not None
+                     and isinstance(ending.verdict, action_client.ClientExecution)
+                     and ending.verdict.execution_timeout)
         observations.append({"shard": index, "files": bucket, "returncode": returncode,
             "output": out, "timed_out": timed_out, "attempts": attempts,
             "action_key": shard_result.get("action_key")})
@@ -2108,7 +1973,11 @@ def main() -> int:
             # their return codes distinguish endings, not executed cases.
             rc = returncode
             how = f"signal {-rc}" if rc < 0 else f"rc={rc}"
-            unobserved = unobserved_outcome(tail) if rc == 74 else None
+            events = events_by_shard[index]
+            ending = events.ending if events.problem is None else None
+            unobserved = (ending.verdict.action_key[:12]
+                          if ending is not None and isinstance(ending.verdict, action_client.ClientUnavailable)
+                          and ending.verdict.action_key is not None else None)
             if unobserved is not None:
                 # pbrun could not read the shard's ending. The action may have
                 # run to completion or may still be running, so "did not run"
@@ -2167,7 +2036,7 @@ def main() -> int:
                    "refused by a worker-offer discovery timeout]"
                    if attempts > 1 else "")
         keyed = (f" [action {action_key}]" if action_key else
-                 " [no action key: pbrun printed no queued or attached line]")
+                 " [no action key: the client reported no submission identity]")
         timed = ""
         if predicted:
             have = f"{actual_s:.1f}s" if actual_s is not None else "unknown"

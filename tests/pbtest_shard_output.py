@@ -13,8 +13,62 @@ from __future__ import annotations
 import io
 import json
 import os
+from dataclasses import dataclass
+from pathlib import Path
 
 import pbtest_outcomes
+from prismabuild import action_client as client, action_wait, client_channel
+
+
+@dataclass(frozen=True)
+class ClientReply:
+    output: str
+    verdict: client.ClientVerdict
+    identity: client.ClientIdentity | None = None
+    readers: action_wait.ReaderHistory = action_wait.ReaderHistory()
+
+
+def emit_client_events(process, kwargs, reply: ClientReply, *, expected_identity=None):
+    writer = client_channel.ClientEventWriter(os.dup(kwargs['pass_fds'][0]),
+        expected_identity=expected_identity)
+    try:
+        if reply.identity is not None and expected_identity is None:
+            writer.send(reply.identity)
+        writer.send(client.ClientEnding(reply.verdict, reply.readers))
+    finally:
+        writer.close()
+    return process
+
+
+def pool_identity(key: str, generation: float | None = 1234.5):
+    return client.PoolClientIdentity(key, generation, Path('/configured/queue'),
+        Path('/configured/cas'), None, client.ClientArrival.SUBMITTED)
+
+
+def finish_submission(report: client.ClientReport, *, key='a' * 64, generation=1234.5,
+                      transport='pool') -> int:
+    identity = (pool_identity(key, generation) if transport == 'pool'
+                else client.SlurmClientIdentity(key, generation, Path('/configured/queue'),
+                    Path('/configured/cas'), None, '123', client.ClientArrival.SUBMITTED))
+    report.publish_identity(identity)
+    return report.finish(client.ClientSubmitted(identity))
+
+
+def execution_reply(output: str, returncode: int, *, timed_out=False, key='a' * 64):
+    identity = pool_identity(key)
+    return ClientReply(output, client.ClientExecution(key, identity.published_unix,
+        'timeout' if timed_out else 'executed' if returncode == 0 else 'failed',
+        returncode, None, None, timed_out, returncode), identity)
+
+
+def submission_command(command):
+    """Keep logical arguments after the process's private descriptor closes."""
+    words = list(command)
+    end = words.index('--') if '--' in words else len(words)
+    if '--client-events-fd' in words[:end]:
+        position = words.index('--client-events-fd')
+        del words[position:position + 2]
+    return words
 
 
 def shard_environment(command):

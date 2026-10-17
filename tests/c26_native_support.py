@@ -17,7 +17,15 @@ PREFLIGHT = 'pbtest-preflight: '
 
 RELAY = r'''
 import json, os, select, signal, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, os.environ['C26_CLIENT_SOURCE'])
+from prismabuild import action_client, action_wait, client_channel
 mode, evidence = sys.argv[1:3]
+writer = client_channel.ClientEventWriter(int(os.environ['C26_CLIENT_EVENTS_FD']))
+identity = action_client.PoolClientIdentity('a' * 64, 1234.5,
+    Path('/configured/queue'), Path('/configured/cas'), None,
+    action_client.ClientArrival.SUBMITTED)
+writer.send(identity)
 read_fd, write_fd = os.pipe()
 env = dict(os.environ, C26_READY_FD=str(write_fd), PYTHONUNBUFFERED='1')
 child = subprocess.Popen(sys.argv[3:], stdout=subprocess.PIPE,
@@ -58,10 +66,17 @@ print('c26-relay-child-exit: ' + str(child.returncode), flush=True)
 if mode == 'timeout':
     assert child.returncode == -signal.SIGKILL
     print('pbrun: timeout on controlled-c26-child', flush=True)
-    sys.exit(1)
-expected = {'failure': 1, 'crash': 7}.get(mode, 0)
-assert child.returncode == expected, 'native payload exit differed from the control'
-sys.exit(1 if mode == 'nonzero' else child.returncode)
+    code = 1
+else:
+    expected = {'failure': 1, 'crash': 7}.get(mode, 0)
+    assert child.returncode == expected, 'native payload exit differed from the control'
+    code = 1 if mode == 'nonzero' else child.returncode
+writer.send(action_client.ClientEnding(action_client.ClientExecution(
+    identity.action_key, identity.published_unix,
+    'timeout' if mode == 'timeout' else 'executed' if code == 0 else 'failed',
+    code, child.returncode, None, mode == 'timeout', code), action_wait.ReaderHistory()))
+writer.close()
+sys.exit(code)
 '''
 
 EXIT_BLOCK = '''
@@ -102,12 +117,15 @@ def dispatch(checkout: Path, monkeypatch, *, mode: str = 'normal', shards: int =
         if str(pbtest.PBRUN) not in [str(part) for part in command]:
             return REAL_POPEN(command, **kwargs)
         argv, environment = admitted_child(command)
+        event_fd = command[command.index('--client-events-fd') + 1]
         evidence = checkout.parent / f'native-{len(launched)}.log'
         launched.append(evidence)
         # The relay changes a real process ending, not the policy result.
         inherited = kwargs.pop('env', None)
         if inherited is not None:
             environment = {**inherited, **shard_environment(command)}
+        environment['C26_CLIENT_EVENTS_FD'] = str(event_fd)
+        environment['C26_CLIENT_SOURCE'] = str(ROOT / 'src')
         return REAL_POPEN([sys.executable, '-c', RELAY, mode, str(evidence), *argv],
                           cwd=checkout, env=environment, **kwargs)
 
