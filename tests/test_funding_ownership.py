@@ -119,3 +119,27 @@ def test_funding_construction_is_lazy_and_binding_is_immutable():
     bound = funding.WindowBinding(**value)
     with pytest.raises(FrozenInstanceError):
         bound.generation = "f" * 32
+
+
+def test_the_owned_zero_credit_branch_does_not_acquire(tmp_path):
+    from prismabuild import batch_ledger, output_contract
+    from test_commit_requires_existing_funding import _world
+    from test_produced_output_scope import STAGE_TIER, STAGE_BARE
+    world = _world(tmp_path)
+    queue, template, instance, _, _, _, funding = world
+    ledger = queue.tier(STAGE_TIER)
+    free = ledger.free_supply()
+    manifest = output_contract.output_manifest_sha256([])
+    namespace = output_contract.batch_namespace(instance, 'batch', manifest)
+    with batch_ledger.path_locks(queue, instance):
+        result = queue.funding.commit_stage(
+            instance, template, batch_id='batch', manifest_digest=manifest,
+            batch_ns=namespace, tier=STAGE_TIER, mover='a' * 64,
+            kind=STAGE_BARE, batch_total=0, batch_gib=0)
+    assert result.refusal is None
+    assert result.prepaid is None
+    assert result.path == funding
+    assert ledger.free_supply() == free
+    assert ledger.holdings(namespace) == {}
+    assert ledger.holdings('a' * 64) == {}
+    assert not funding.exists()
