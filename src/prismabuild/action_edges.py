@@ -827,7 +827,8 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
         except (OSError, ValueError) as exc:
             raise ActionEdgeUnreadable(
                 f"producer instance {name} unreadable: {exc}") from None
-        if any((isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (not entry.origin_reclaimed) for entry in batches.values())):
+        if any(isinstance(entry, bl.BatchFacets) and entry.kind == "origin"
+               and not entry.origin_reclaimed for entry in batches.values()):
             attempt = instance["owner_attempt"]
             assert isinstance(attempt, dict)
             found.append(str(attempt["nonce"]))

@@ -139,7 +139,8 @@ def _index_attempt(queue_root: str | Path, owner_action_key: str,
     try:
         directory.mkdir(parents=True, exist_ok=True)
         immutable_files.publish_exact(directory / f"{owner}.{attempt}", raw,
-                                    where="produced-output attempt index", conflict_error=record_store.PoolContractError)
+                                    where="produced-output attempt index",
+                                    conflict_error=record_store.PoolContractError)
     except (OSError, record_store.PoolContractError) as exc:
         raise oc.ProducedOutputError(
             f"unknown-retain: attempt index: {exc}") from None
@@ -152,7 +153,8 @@ def _mark_attempt_index_complete(queue_root: str | Path) -> None:
     try:
         root.mkdir(parents=True, exist_ok=True)
         immutable_files.publish_exact(root / oc.ATTEMPT_INDEX_COMPLETE, b"1\n",
-                                    where="produced-output attempt index", conflict_error=record_store.PoolContractError)
+                                    where="produced-output attempt index",
+                                    conflict_error=record_store.PoolContractError)
     except (OSError, record_store.PoolContractError) as exc:
         raise oc.ProducedOutputError(
             f"unknown-retain: attempt index: {exc}") from None
