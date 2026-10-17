@@ -1,24 +1,89 @@
-"""Rerunnable owner, native test and assertion census for C14."""
+"""Audit C14 ownership and preserve the exact base's tests and assertions."""
 from __future__ import annotations
 import argparse
 import ast
+from collections import Counter
 import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 
 BASE = "f0bcb21e195378e7fb6e85e1bbfde24c45672e6b"
-PROTECTED = ("src/prismabuild/action_client.py", "src/prismabuild/action_wait.py",
-    "src/prismabuild/client_channel.py", "src/prismabuild/client_recovery.py",
-    "src/prismabuild/capability_eligibility.py", "src/prismabuild/contracts.py")
+PROTECTED = ("action_client", "action_wait", "client_channel", "client_recovery",
+             "capability_eligibility", "contracts", "record_store")
+NEW_OWNERS = {"submission", "submission_types", "d38_gate", "target_evidence"}
+CLI = {"main", "parse_args", "configured_store", "render", "__file__",
+       "RUNTIME_ROOT", "fleet_roster", "request_from_args", "_profile_mode"}
+RENAMES = {"build_git_checkout_snapshot": "snapshot_checkout", "freeze_action_template": "freeze",
+    "prepare_submission": "prepare", "seal_action_from_template": "seal",
+    "seal_decomposed_child": "seal_child", "submit_and_publish": "_prepare_and_publish",
+    "submit_deferred": "register_deferred", "template_from_record": "restore_template",
+    "template_record": "record_template", "seal_movement_action": "seal_movement",
+    "check_supersession_or_exit": "validate_supersession_request",
+    "file_supersession_or_exit": "file_supersession", "release_origin_consumer_cli": "release_origin_consumer"}
+ROOTS = {"SH": "root", "FLEET_ROSTER_PATH": "roster_path",
+         "CONTAINER_WRAPPER_DIR": "wrapper_dir", "RUNTIME_VERSION": "runtime_version"}
+
+
+def sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def base_sources(root: Path) -> dict[str, str]:
+    raw = subprocess.check_output(["git", "archive", BASE, "tests", "tools/fleet/pbrun.py"], cwd=root)
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        return {member.name: archive.extractfile(member).read().decode()
+                for member in archive.getmembers() if member.isfile() and member.name.endswith(".py")}
+
+
+class Owner(ast.NodeTransformer):
+    """Ignore owner, explicit context and checked-refusal representation changes."""
+    def visit_Attribute(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id == "pbrun" and node.attr not in CLI:
+            if node.attr in ROOTS:
+                return ast.Name("store_" + ROOTS[node.attr], ast.Load())
+            node = ast.Attribute(ast.Name("submit_core", ast.Load()), RENAMES.get(node.attr, node.attr), ast.Load())
+        if isinstance(node.value, ast.Call) and ast.unparse(node.value).endswith("configured_store()"):
+            return ast.Name("store_" + node.attr, ast.Load())
+        node = self.generic_visit(node)
+        if node.attr in {"reason", "returncode"} and isinstance(node.value, ast.Attribute) and node.value.attr == "value":
+            node.attr = "code"
+        return node
+
+    def visit_Name(self, node):
+        if node.id == "submission":
+            node.id = "submit_core"
+        return node
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name) and node.func.id == "refusal_value":
+            return ast.Attribute(self.visit(node.args[0]), "code", ast.Load())
+        node = self.generic_visit(node)
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == "submit_core":
+            node.keywords = [key for key in node.keywords if key.arg not in {"store", "display"}]
+        return node
+
+
+def canonical(node) -> str:
+    return ast.dump(Owner().visit(ast.parse(ast.unparse(node))), include_attributes=False)
+
+
+def test_facts(source: str):
+    tree = ast.parse(source)
+    definitions = Counter(node.name for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"))
+    assertions = [node for node in ast.walk(tree) if isinstance(node, ast.Assert)]
+    return definitions, assertions
 
 
 def inspect(root: Path) -> dict:
-    errors = []
-    assertions = {}
-    tests = {}
-    legacy = []
-    forbidden = []
+    errors, legacy, forbidden, embedded = [], [], [], []
+    tests, assertions, changed = {}, {}, {}
+    baseline = base_sources(root)
+    missing_definitions, missing_assertions = {}, {}
+    base_assertions = base_definitions = 0
     for folder in ("src", "tools", "tests"):
         for path in sorted((root / folder).rglob("*.py")):
             relative = path.relative_to(root).as_posix()
@@ -29,33 +94,63 @@ def inspect(root: Path) -> dict:
                 errors.append({"path": relative, "error": str(exc)})
                 continue
             if folder == "tests":
-                tests[relative] = [node.name for node in ast.walk(tree)
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and node.name.startswith("test")]
-                assertions[relative] = [ast.dump(node, include_attributes=False)
-                    for node in ast.walk(tree) if isinstance(node, ast.Assert)]
+                definitions, conditions = test_facts(source)
+                tests[relative], assertions[relative] = sum(definitions.values()), len(conditions)
+                if relative in baseline:
+                    old_definitions, old_conditions = test_facts(baseline[relative])
+                    base_definitions += sum(old_definitions.values())
+                    base_assertions += len(old_conditions)
+                    if missing := old_definitions - definitions:
+                        missing_definitions[relative] = dict(missing)
+                    if len(conditions) < len(old_conditions):
+                        missing_assertions[relative] = [len(old_conditions), len(conditions)]
+                    old = Counter(canonical(node) for node in old_conditions)
+                    new = Counter(canonical(node) for node in conditions)
+                    removed = old - new
+                    if removed:
+                        changed[relative] = {
+                            "old": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(canonical(node).encode())}
+                                    for node in old_conditions if canonical(node) in removed],
+                            "new": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(canonical(node).encode())}
+                                    for node in conditions if canonical(node) in new - old]}
             for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                    if node.value.id == "pbrun" and node.attr not in {
-                            "main", "parse_args", "configured_store", "render", "__file__",
-                            "RUNTIME_ROOT", "fleet_roster", "request_from_args"}:
-                        legacy.append([relative, node.lineno, node.attr])
-                if relative in {"src/prismabuild/submission.py", "src/prismabuild/submission_types.py",
-                                "src/prismabuild/d38_gate.py", "src/prismabuild/target_evidence.py"}:
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "pbrun" and node.attr not in CLI:
+                    legacy.append([relative, node.lineno, node.attr])
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"setattr", "object"} and len(node.args) > 1:
+                    if isinstance(node.args[0], ast.Name) and node.args[0].id == "pbrun" and isinstance(node.args[1], ast.Constant) and node.args[1].value not in CLI:
+                        legacy.append([relative, node.lineno, "patch:" + str(node.args[1].value)])
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and "pbrun." in node.value and "import " in node.value:
+                    try:
+                        child = ast.parse(node.value)
+                    except SyntaxError:
+                        continue
+                    refs = [n.attr for n in ast.walk(child) if isinstance(n, ast.Attribute)
+                            and isinstance(n.value, ast.Name) and n.value.id == "pbrun" and n.attr not in CLI]
+                    if refs:
+                        embedded.append([relative, node.lineno, refs])
+                if folder == "src" and path.stem in NEW_OWNERS:
                     if isinstance(node, (ast.Import, ast.ImportFrom)):
                         names = [alias.name for alias in node.names]
-                        if getattr(node, "module", "") in {"pbrun", "argparse", "runpy"} or any(
-                                name in {"pbrun", "argparse", "runpy"} for name in names):
+                        if getattr(node, "module", "") in {"pbrun", "argparse", "runpy"} or any(name in {"pbrun", "argparse", "runpy"} for name in names):
                             forbidden.append([relative, node.lineno, ast.unparse(node)])
                     if isinstance(node, ast.Attribute) and ast.unparse(node) == "sys.argv":
                         forbidden.append([relative, node.lineno, "sys.argv"])
     protected = {}
-    for relative in PROTECTED:
+    for name in PROTECTED:
+        relative = f"src/prismabuild/{name}.py"
         actual = (root / relative).read_bytes()
-        baseline = subprocess.check_output(["git", "show", f"{BASE}:{relative}"], cwd=root)
-        protected[relative] = {"sha256": hashlib.sha256(actual).hexdigest(), "unchanged": actual == baseline}
-    return {"syntax_errors": errors, "legacy_references": legacy, "forbidden": forbidden,
-        "protected": protected, "tests": tests, "assertions": assertions}
+        old = subprocess.check_output(["git", "show", f"{BASE}:{relative}"], cwd=root)
+        protected[relative] = {"sha256": sha(actual), "unchanged": actual == old}
+    old_api = {node.name for node in ast.parse(baseline["tools/fleet/pbrun.py"]).body
+               if isinstance(node, (ast.FunctionDef, ast.ClassDef))} - CLI
+    current_api = {node.name for node in ast.parse((root / "tools/fleet/pbrun.py").read_text()).body
+                   if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+    return {"base": BASE, "syntax_errors": errors, "legacy_references": legacy,
+        "embedded_legacy": embedded, "forbidden": forbidden, "protected": protected,
+        "deleted_pbrun_api": sorted(old_api), "retained_legacy_api": sorted(old_api & current_api),
+        "missing_definitions": missing_definitions, "missing_assertions": missing_assertions,
+        "changed_assertions": changed, "tests": tests, "assertions": assertions,
+        "base_test_definitions": base_definitions, "base_assertions": base_assertions}
 
 
 def main():
@@ -64,18 +159,17 @@ def main():
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = inspect(args.root)
-    raw = json.dumps(result, indent=2) + "\n"
     if args.output:
-        args.output.write_text(raw)
-    print(json.dumps({"syntax_errors": result["syntax_errors"],
-        "legacy_references": len(result["legacy_references"]),
-        "forbidden": result["forbidden"],
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps({key: result[key] for key in ("syntax_errors", "legacy_references", "embedded_legacy",
+        "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions")} | {
         "protected": all(row["unchanged"] for row in result["protected"].values()),
-        "test_files": len(result["tests"]),
-        "test_functions": sum(map(len, result["tests"].values())),
-        "assertions": sum(map(len, result["assertions"].values()))}))
-    return bool(result["syntax_errors"] or result["forbidden"] or not all(
-        row["unchanged"] for row in result["protected"].values()))
+        "deleted_api_count": len(result["deleted_pbrun_api"]), "test_files": len(result["tests"]),
+        "test_definitions": sum(result["tests"].values()), "assertions": sum(result["assertions"].values()),
+        "changed_assertion_files": len(result["changed_assertions"])}))
+    return bool(any(result[key] for key in ("syntax_errors", "legacy_references", "embedded_legacy",
+        "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions")) or
+        not all(row["unchanged"] for row in result["protected"].values()))
 
 
 if __name__ == "__main__":
