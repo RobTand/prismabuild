@@ -2422,9 +2422,8 @@ def withdraw_dead_consumer_movers(queue: pool.PoolQueue) -> list[dict[str, objec
         for key in sorted(filed_keys):
             path = queue.records.item_path(state, key)
             try:
-                os.lstat(path)
-            except FileNotFoundError:
-                continue
+                if not queue.records.item_entry_present(state, key):
+                    continue
             except OSError:
                 break
             _sweep_dead_consumer(queue, key=key, state=state, path=path,
@@ -3133,7 +3132,7 @@ def _landing_rate(queue: pool.PoolQueue, mover_action_key: str) -> float | None:
 
     cache_key = (str(queue.root), str(mover_action_key))
     try:
-        status = os.stat(queue.records.move_path(str(mover_action_key)))
+        status = queue.records.movement_metadata(str(mover_action_key))
     except (OSError, pool.PoolContractError, ValueError):
         status = None
     identity = ((int(status.st_ino), int(status.st_mtime_ns),
@@ -4402,7 +4401,7 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
         return ""
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
-            item = json.loads(queue.records.item_path(state, key).read_text())
+            item = queue.records.text_item(state, key)
         except FileNotFoundError:
             continue
         except (OSError, ValueError, pool.PoolContractError):
@@ -8600,7 +8599,7 @@ def _queued_mover(queue: pool.PoolQueue, mover: str
     for state in (pool.record_store.CLAIMED, pool.record_store.READY):
         path = queue.records.item_path(state, mover)
         try:
-            record = json.loads(path.read_text())
+            record = queue.records.text_document_at(path)
         except FileNotFoundError:
             continue
         except (OSError, ValueError):
