@@ -17,21 +17,20 @@ import pytest
 
 from test_publish_runtime import ROOT, _fake_git_and_probe, publish_runtime
 
-#: The publisher fixture replaces ``subprocess.run`` for the whole process, so
-#: the commands below start through the function bound before any fixture runs.
 _RUN = subprocess.run
 
 
 def _published(tmp_path, monkeypatch) -> Path:
     mirror = tmp_path / "fleet" / "repo"
-    monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
-    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
-    monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    monkeypatch.setattr(sys, "argv", [
-        "publish_runtime.py", "--rollout", "rolling", "--no-canary",
-        "--rollout-reason", "fixture publication",
-        "--shape-gate-waiver", "fixture publication"])
-    assert publish_runtime.main() == 0
+    with monkeypatch.context() as publication:
+        publication.setattr(publish_runtime, "CHECKOUT", ROOT)
+        publication.setattr(publish_runtime, "MIRROR", mirror)
+        publication.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
+        publication.setattr(sys, "argv", [
+            "publish_runtime.py", "--rollout", "rolling", "--no-canary",
+            "--rollout-reason", "fixture publication",
+            "--shape-gate-waiver", "fixture publication"])
+        assert publish_runtime.main() == 0
     return mirror.resolve()
 
 

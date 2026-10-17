@@ -89,16 +89,17 @@ def _write_roster(checkout: Path, shape: list[str]) -> None:
 
 
 def _publish(checkout: Path, fleet: Path, monkeypatch, *, remove: bool = False) -> Path:
-    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
-    monkeypatch.setattr(publish_runtime, "MIRROR", fleet / "repo")
     argv = ["publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
             "private CPU adoption test", "--shape-gate-waiver",
             "private CPU adoption test", "--no-canary"]
     if remove:
         argv += ["--drop-roster-option-by", "PB private test",
                  "--drop-roster-option-reason", "exercise the removal control"]
-    monkeypatch.setattr(sys, "argv", argv)
-    assert publish_runtime.main() == 0
+    with monkeypatch.context() as publication:
+        publication.setattr(publish_runtime, "CHECKOUT", checkout)
+        publication.setattr(publish_runtime, "MIRROR", fleet / "repo")
+        publication.setattr(sys, "argv", argv)
+        assert publish_runtime.main() == 0
     return (fleet / "repo").resolve(strict=True)
 
 
