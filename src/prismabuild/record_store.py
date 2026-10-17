@@ -1806,7 +1806,7 @@ class RecordStore:
     def inspection_slot(self, state: str, key: str) -> JsonRecord | None:
         return inspection_document(self.item_path(state, key))
 
-    def inspection_tier_records(self) -> Iterator[RecordObservation]:
+    def inspection_tier_records(self) -> Iterator[tuple[str, ReadResult[JsonRecord]]]:
         directory = self.tier_directory()
         for key in _inspection_json_keys_at(directory):
             path = directory / f"{key}.json"
@@ -1816,7 +1816,7 @@ class RecordStore:
                 result = Unknown("record-unreadable", path, exc)
             else:
                 result = Absent() if record is None else Present(record)
-            yield RecordObservation(QueueAddress(path, TIERS, None), result)
+            yield key, result
 
     def inspection_live_records(self, key: str) -> dict[str, JsonRecord]:
         records: dict[str, JsonRecord] = {}
