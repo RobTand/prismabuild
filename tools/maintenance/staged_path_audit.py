@@ -24,6 +24,8 @@ class StagedBodyForm(ast.NodeTransformer):
     def visit_Name(self, node):
         if node.id == "PRODUCED_OUTPUT_REF_SCHEMA_V1":
             return ast.Name("output_ref_schema", ast.Load())
+        if node.id in ("stage_release", "staged_path"):
+            return ast.Name("staged_authority", ast.Load())
         node.id = STAGED_PUBLIC.get(node.id, node.id)
         return node
 
@@ -193,14 +195,43 @@ def staged_audit_cli():
                 module = (node.module or "").split(".")[-1]
                 if module in selected:
                     retired.extend([path, node.lineno, f"import {a.name}"] for a in node.names if a.name in selected[module])
+    current_paths = subprocess.check_output(
+        ["git", "ls-files", "*.py"], cwd=args.root, text=True).splitlines()
+    all_sources = {p: (args.root / p).read_text() for p in current_paths}
+    all_parse_errors, remaining_rewrites = [], []
+    for path, source in all_sources.items():
+        try:
+            ast.parse(source, filename=path)
+        except SyntaxError as exc:
+            all_parse_errors.append([path, str(exc)])
+        if path.startswith(("tests/compat/", "tools/maintenance/")):
+            continue
+        if staged_references(source, selected, exports=current_exports) != source:
+            remaining_rewrites.append(path)
+    original_assertions, current_assertions = Counter(), Counter()
+    for population, counter in ((sources, original_assertions), (all_sources, current_assertions)):
+        for path, source in population.items():
+            if path.startswith(("src/", "tools/")):
+                counter.update(staged_body(node, selected) for node in ast.walk(ast.parse(source))
+                               if isinstance(node, ast.Assert))
+    preserved_captures = subprocess.check_output(
+        ["git", "diff", "--name-only", STAGED_BASE, "--", "tests/compat"],
+        cwd=args.root, text=True).splitlines()
     result = {"base": STAGED_BASE, "root": str(args.root), "moves": moves,
               "body_changes": [r for r in moves if not r["ast_equal"]], "changed": changed,
               "missing_checks": missing_checks, "retired_executable_references": retired,
               "parse_errors": parse_errors, "original_test_definition_occurrences": expected_tests,
               "current_test_definition_occurrences": current_tests,
+              "tracked_python_files": len(all_sources), "all_parse_errors": all_parse_errors,
+              "remaining_migration_rewrites": remaining_rewrites,
+              "original_production_assertions": original_assertions.total(),
+              "current_production_assertions": current_assertions.total(),
+              "missing_production_assertions": dict(original_assertions - current_assertions),
+              "assertion_binding_migration": "produced_output's existing in-process module-availability assert now names staged_path; all original assertion conditions remain.",
+              "changed_historical_captures": preserved_captures,
               "limit": "Source comparison, not runtime proof. Deliberate later protocol changes are reported, never hidden."}
     args.output.write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps({k: len(result[k]) for k in ("moves", "body_changes", "changed", "missing_checks", "retired_executable_references", "parse_errors")}))
+    print(json.dumps({k: len(result[k]) for k in ("moves", "body_changes", "changed", "missing_checks", "retired_executable_references", "parse_errors", "remaining_migration_rewrites", "missing_production_assertions", "changed_historical_captures")}))
 
 
 if __name__ == "__main__":
