@@ -117,7 +117,8 @@ KIND_MOVEMENT_RECEIPT = "movement receipt"
 #: rolling publish alone must never start retiring receipts.
 MISSING_RETIREMENT_OPT_IN = (
     "movement-receipt retirement is explicit operator work; pass "
-    "--retire-movement-receipts once every reader generation can see "
+    "--retire-movement-receipts once every live reader generation and the "
+    "designated rollback target can see "
     "movers-retired/")
 #: In removal order: the residency kinds take their consumer's transition
 #: lock, so they go before the lock files are retired.  So does a retired
@@ -1694,7 +1695,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="explicitly enable the movement-receipt kind: an old "
                          "reader generation cannot see movers-retired/, so a "
                          "rolling publish alone must never start retiring "
-                         "receipts; require every reader to be on a "
+                         "receipts; require every live reader and the "
+                         "designated rollback target to be on a "
                          "generation that merges the retirement store first")
     ap.add_argument("--receipt", default=None,
                     help="where to write the queue sweep's JSON receipt "

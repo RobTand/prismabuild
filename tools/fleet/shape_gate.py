@@ -80,6 +80,7 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import box_capacity  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 
@@ -172,8 +173,8 @@ def table_from_manifest(manifest: Mapping[str, object], *,
     anything but identity.
     """
 
-    normalized = pb.validate_data_manifest(manifest)
-    if normalized["schema"] != pb.DATA_MANIFEST_SCHEMA_V2:
+    normalized = manifest_codec.validate_data_manifest(manifest)
+    if normalized["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         raise ValueError("a shape table is taken from a v2 manifest's read plan")
     files: dict[str, int] = {}
     rows: list[list[int]] = []
@@ -368,7 +369,7 @@ def build_manifest(shape: Mapping[str, object], paths: Sequence[str],
                        "entry_indices": list(phase["entry_indices"]),
                        "bytes": size, "cumulative_bytes": cumulative})
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
         "produced_by": {"tool": "shape_gate",
                         "table_manifest_sha256":
                             str(shape["source"]["manifest_sha256"])},  # type: ignore[index]
@@ -379,7 +380,7 @@ def build_manifest(shape: Mapping[str, object], paths: Sequence[str],
         "total_bytes": sum(int(entry["bytes"]) for entry in entries),
         "read_plan": {"phases": phases, "read_bytes": cumulative},
     }
-    pb.validate_data_manifest(manifest)
+    manifest_codec.validate_data_manifest(manifest)
     return manifest
 
 
@@ -752,13 +753,13 @@ class ShapeGate:
 
         raw = gzip.compress(pb._canonical_file_bytes(manifest), mtime=0)
         manifest_input, _ = self.cas.ingest_bytes(
-            raw, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+            raw, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
         self.manifest_sha256 = str(manifest_input["sha256"])
         summary = {"input": dict(manifest_input),
                    "mount_prefix": manifest["mount_prefix"],
                    "entry_count": manifest["entry_count"],
                    "total_bytes": manifest["total_bytes"],
-                   "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+                   "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
                    "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
                    "content_encoding": "gzip"}
         template = self._template()

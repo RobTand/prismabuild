@@ -51,6 +51,7 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
     import os
     from prismabuild import stage_move
     from prismabuild import core as pb
+    from prismabuild import data_manifest as manifest_codec
 
     monkeypatch.setattr(base, 'PHASE_GIB', 14)
     queue.mint_tier_capacity(base.TIER, {'stage_gib': 69})
@@ -65,10 +66,10 @@ def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, mo
         source.write_bytes(payload)
         entries.append({'path': str(source), 'offset': 0, 'bytes': size,
                         'sha256': hashlib.sha256(payload).hexdigest()})
-    manifest = {'schema': pb.DATA_MANIFEST_SCHEMA_V1, 'produced_by': {},
+    manifest = {'schema': manifest_codec.DATA_MANIFEST_SCHEMA_V1, 'produced_by': {},
                 'annotations': {}, 'mount_prefix': str(mount), 'entries': entries,
                 'entry_count': len(entries), 'total_bytes': size * len(entries)}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(manifest))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(manifest))
     digest = hashlib.sha256(raw).hexdigest()
     manifest_path = tmp_path / 'manifest.json'
     manifest_path.write_bytes(raw)

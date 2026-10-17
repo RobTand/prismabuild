@@ -44,6 +44,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import (  # noqa: E402
     pool, progress as pb_progress, residency_map, residency_plan, storage_tiers)
 from prismabuild import prewarm_loop  # noqa: E402
@@ -213,7 +214,7 @@ def _window(tmp_path: Path, entries: int) -> tuple[Path, str, int]:
         listed.append({"path": str(source), "offset": 0, "bytes": MIB,
                        "sha256": hashlib.sha256(payload).hexdigest()})
     total = entries * MIB
-    manifest = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
                 "annotations": {"phases": [{"name": "all", "bytes": total,
                                             "cumulative_bytes": total}]},
                 "mount_prefix": str(mount), "entries": listed,

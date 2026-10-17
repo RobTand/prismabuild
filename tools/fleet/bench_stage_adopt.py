@@ -62,6 +62,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
@@ -170,11 +171,11 @@ def make_window(work: Path, name: str, entries: int,
                            "bytes": ENTRY_BYTES,
                            "sha256": hashlib.sha256(chunk).hexdigest()})
         made += ranges
-    body = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    body = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
             "annotations": {}, "mount_prefix": str(mount),
             "entries": listed, "entry_count": len(listed),
             "total_bytes": len(listed) * ENTRY_BYTES}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(body))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(body))
     path = work / f"manifest-{name}.json"
     path.write_bytes(raw)
     return {"name": name, "path": path, "sha256": hashlib.sha256(raw).hexdigest(),

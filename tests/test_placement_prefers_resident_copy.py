@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from prismabuild import _gang, core as pb, pool, resident_sets as rs
+from prismabuild import data_manifest as manifest_codec
 from admitted_queue_fixture import AdmittedQueueFixture
 from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_resident_sets_records import source as resident_source
@@ -213,7 +214,7 @@ def test_digest_matching_bad_manifest_allows_fallback(tmp_path, monkeypatch, dam
         body["canonical_root"] = prefix
         manifest["mount_prefix"] = prefix + "canonical"
         entry["path"] = prefix + "canonical/weights"
-        pb.validate_data_manifest(manifest)
+        manifest_codec.validate_data_manifest(manifest)
         assert Path(entry["path"]).is_relative_to(Path(prefix))
     set_id = _rewrite_body(store, set_id, body, rehash=True)
     _assert_fallback(queue, set_id, monkeypatch)
@@ -223,8 +224,8 @@ def test_digest_matching_bad_manifest_allows_fallback(tmp_path, monkeypatch, dam
 def test_root_spelling_never_confers_preference(tmp_path, root):
     queue = pool.PoolQueue(tmp_path / "queue")
     store = rs.ResidentSets(queue.root)
-    manifest = pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+    manifest = manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
         "mount_prefix": root + "canonical", "entry_count": 1, "total_bytes": 7,
         "entries": [{"path": root + "canonical/weights", "offset": 0,
                      "bytes": 7, "sha256": "a" * 64}],

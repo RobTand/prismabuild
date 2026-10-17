@@ -9,6 +9,7 @@ import pytest
 import test_pbrun_residency_stage_submission as staging
 import test_a_decomposed_campaign_closes_on_an_exact_cover as closing
 from prismabuild import core as pb, decomposition as dc, pool, residency_plan
+from prismabuild import data_manifest as manifest_codec
 import pbrun
 import pbcampaign
 
@@ -73,7 +74,7 @@ def test_children_have_only_their_declared_reads_and_all_graphs_freeze_first(tmp
         if not expected:
             assert manifest_ref is None and 'residency' not in row
             continue
-        manifest, _ = pb.read_data_manifest(cas.input_path(manifest_ref['input']))
+        manifest, _ = manifest_codec.read_data_manifest(cas.input_path(manifest_ref['input']))
         assert manifest['entries'] == expected
         all_reads.extend(manifest['entries'])
         plan = residency_plan.read(fixture['queue'], child['action_key'])

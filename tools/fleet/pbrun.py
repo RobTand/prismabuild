@@ -94,6 +94,7 @@ from prismabuild import (  # noqa: E402
     decomposition as dc, dependency_digest, filesystem_floor, fleet_roster, materialize,
     movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
+from prismabuild import data_manifest as manifest_codec
 import d38_gate  # noqa: E402
 import pbevidence  # noqa: E402
 import pbstatus  # noqa: E402
@@ -2209,7 +2210,7 @@ def require_declared_origin_batches(
             f"{transport} has none")
     from prismabuild import produced_output as produced_mod
 
-    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
+    if manifest.get("schema") == manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         if slots is None:
             raise SystemExit(
                 f"pbrun: a data_manifest.v2 declares its batches where it reads "
@@ -4423,12 +4424,12 @@ def freeze_action_template(
         # summary from verified CAS bytes. The source can be replaced between
         # these reads; its earlier totals/encoding must not describe a later
         # blob. Discard the preliminary parse before allocating another one.
-        pb.load_data_manifest(data_manifest_path)
+        manifest_codec.load_data_manifest(data_manifest_path)
         manifest_input, _ = cas.ingest_input(
             data_manifest_path,
-            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+            input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
         )
-        manifest, manifest_encoding = pb.read_data_manifest(cas.input_path(manifest_input))
+        manifest, manifest_encoding = manifest_codec.read_data_manifest(cas.input_path(manifest_input))
         require_declared_origin_batches(
             manifest, transport=transport, queue_root=SH / "pb-queue")
         annotations = manifest.get("annotations")
@@ -4441,10 +4442,10 @@ def freeze_action_template(
             "entry_count": manifest["entry_count"],
             "total_bytes": manifest["total_bytes"],
         }
-        if manifest["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+        if manifest["schema"] == manifest_codec.DATA_MANIFEST_SCHEMA_V2:
             require_deployed_read_plan_storage()
             require_linear_read_plan_progress(manifest, progress)
-            data_manifest_summary["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+            data_manifest_summary["schema"] = manifest_codec.DATA_MANIFEST_SCHEMA_V2
             data_manifest_summary["read_bytes"] = manifest["read_plan"]["read_bytes"]
         # Preserve ordinary v1 action identity; only compressed inputs need
         # the encoding declaration. The CAS digest still covers wire bytes.
@@ -5138,7 +5139,7 @@ def residency_stage_rows(
             "mover stages are read-order offsets into that list, and there is "
             "no other way to say which bytes a range means")
     entry = manifest_input["input"]
-    manifest, _ = pb.read_data_manifest(cas.input_path(entry))
+    manifest, _ = manifest_codec.read_data_manifest(cas.input_path(entry))
     ranges = manifest_layout.manifest_phase_ranges(manifest)
     if not ranges:
         raise SystemExit(
@@ -5922,9 +5923,9 @@ def seal_decomposed_child(
     if data_manifest is not None:
         if template["params"].get("data_manifest") is not None:
             raise SystemExit("a projected child cannot also inherit a shared data manifest")
-        manifest = pb.validate_data_manifest(data_manifest)
+        manifest = manifest_codec.validate_data_manifest(data_manifest)
         entry, _ = cas.ingest_bytes(
-            pb._canonical_file_bytes(manifest), input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+            pb._canonical_file_bytes(manifest), input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
         inputs.append(entry)
         params["data_manifest"] = {"input": entry, "mount_prefix": manifest["mount_prefix"],
                                    "entry_count": manifest["entry_count"],
@@ -7344,15 +7345,15 @@ def submit_deferred(prepared: Mapping[str, object],
     require_releasable_template(template)
     static_input = None
     if args.data_manifest is not None:
-        pb.load_data_manifest(args.data_manifest)
+        manifest_codec.load_data_manifest(args.data_manifest)
         static_input, _ = cas.ingest_input(
-            args.data_manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
-        static, encoding = pb.read_data_manifest(cas.input_path(static_input))
+            args.data_manifest, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        static, encoding = manifest_codec.read_data_manifest(cas.input_path(static_input))
         if encoding != "identity":
             raise SystemExit(
                 "pbrun: a deferred submission's --data-manifest must be plain "
                 "JSON: the release rewrites it with the committed batches")
-        if static["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+        if static["schema"] == manifest_codec.DATA_MANIFEST_SCHEMA_V2:
             require_deferred_read_plan(static, edges, args=args)
         else:
             require_declared_origin_batches(
@@ -7559,9 +7560,9 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
     if pinned is None:
         static = None
         if record["static_manifest"] is not None:
-            static, _ = pb.read_data_manifest(
+            static, _ = manifest_codec.read_data_manifest(
                 cas.input_path(record["static_manifest"]))
-        if static is not None and static["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+        if static is not None and static["schema"] == manifest_codec.DATA_MANIFEST_SCHEMA_V2:
             # Each edge's batches go where the plan reads them (#946).
             manifest = action_edges.place_after_slots(q.root, static, producers)
         else:
@@ -7579,16 +7580,16 @@ def release_deferred(q, pending_id: str, record: Mapping[str, object], *,
         runtime = sealing_runtime(template)
         manifest_input, _ = cas.ingest_bytes(
             pb._canonical_file_bytes(manifest),
-            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+            input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     else:
         manifest_input = dict(pinned["manifest_input"])
-        manifest, _ = pb.read_data_manifest(cas.input_path(manifest_input))
+        manifest, _ = manifest_codec.read_data_manifest(cas.input_path(manifest_input))
     summary = {"input": manifest_input, "mount_prefix": manifest["mount_prefix"],
                "entry_count": manifest["entry_count"],
                "total_bytes": manifest["total_bytes"]}
-    if manifest["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+    if manifest["schema"] == manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         # As ``freeze_action_template`` seals a submitted v2 plan.
-        summary["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+        summary["schema"] = manifest_codec.DATA_MANIFEST_SCHEMA_V2
         summary["read_bytes"] = manifest["read_plan"]["read_bytes"]
     command = action_edges.resolve_command(
         template["params"]["command"], cas.input_path(manifest_input),

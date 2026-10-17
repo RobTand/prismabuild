@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan, storage_tiers  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
@@ -252,7 +253,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     # /bin at /usr/bin; the leaf may itself be a link, as with Rust coreutils).
     assert request["params"]["command"][0] == os.path.join(
         os.path.realpath("/bin"), "cat")
-    manifest, _ = pb.read_data_manifest(manifest_path)
+    manifest, _ = manifest_codec.read_data_manifest(manifest_path)
     assert [(entry["path"], entry["sha256"]) for entry in manifest["entries"]] == [
         (str(path), hashlib.sha256(payload).hexdigest())]
     assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [

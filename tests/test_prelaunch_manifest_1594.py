@@ -14,10 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import storage_tiers  # noqa: E402
 
-V1 = pb.DATA_MANIFEST_SCHEMA_V1
-V2 = pb.DATA_MANIFEST_SCHEMA_V2
+V1 = manifest_codec.DATA_MANIFEST_SCHEMA_V1
+V2 = manifest_codec.DATA_MANIFEST_SCHEMA_V2
 GIB = storage_tiers.GIB
 
 
@@ -104,13 +105,13 @@ def test_v1_gap_declaration_refuses() -> None:
 def test_v1_manifest_validates_and_declares() -> None:
     # v1 annotations stay free-form in ``core``.  The normalized manifest
     # keeps the declaration for the reader.
-    normalized = pb.validate_data_manifest(
+    normalized = manifest_codec.validate_data_manifest(
         _v1_manifest([10 * GIB, 20 * GIB], [True, None]))
     assert manifest_layout.manifest_prelaunch_phases(normalized) == ["phase-0"]
 
 
 def test_v2_declared_phase_normalizes_and_reads() -> None:
-    normalized = pb.validate_data_manifest(
+    normalized = manifest_codec.validate_data_manifest(
         _v2_manifest([10 * GIB, 20 * GIB], [True, None]))
     assert normalized["read_plan"]["phases"][0][
         "resident_before_launch"] is True
@@ -119,7 +120,7 @@ def test_v2_declared_phase_normalizes_and_reads() -> None:
 
 
 def test_v2_undeclared_manifest_normalizes_byte_identically() -> None:
-    normalized = pb.validate_data_manifest(
+    normalized = manifest_codec.validate_data_manifest(
         _v2_manifest([10 * GIB, 20 * GIB], [None, None]))
     for phase in normalized["read_plan"]["phases"]:
         assert "resident_before_launch" not in phase
@@ -128,13 +129,13 @@ def test_v2_undeclared_manifest_normalizes_byte_identically() -> None:
 
 def test_v2_false_declaration_refuses() -> None:
     with pytest.raises(pb.ActionContractError, match="must be true"):
-        pb.validate_data_manifest(
+        manifest_codec.validate_data_manifest(
             _v2_manifest([10 * GIB, 20 * GIB], [False, None]))
 
 
 def test_v2_truthy_non_boolean_declaration_refuses() -> None:
     with pytest.raises(pb.ActionContractError, match="must be true"):
-        pb.validate_data_manifest(
+        manifest_codec.validate_data_manifest(
             _v2_manifest([10 * GIB, 20 * GIB], [1, None]))
 
 
@@ -142,13 +143,13 @@ def test_v2_unknown_phase_key_still_refused() -> None:
     manifest = _v2_manifest([10 * GIB, 20 * GIB], [None, None])
     manifest["read_plan"]["phases"][0]["bogus"] = 1
     with pytest.raises(pb.ActionContractError, match="fields differ"):
-        pb.validate_data_manifest(manifest)
+        manifest_codec.validate_data_manifest(manifest)
 
 
 def test_v2_non_prefix_declaration_refuses_at_read() -> None:
     # ``core`` checks shape, not order.  The prefix reader refuses.  pbrun
     # turns that refusal into SystemExit.
-    normalized = pb.validate_data_manifest(
+    normalized = manifest_codec.validate_data_manifest(
         _v2_manifest([10 * GIB, 20 * GIB, 30 * GIB], [None, True, None]))
     with pytest.raises(ValueError, match="contiguous prefix"):
         manifest_layout.manifest_prelaunch_phases(normalized)

@@ -50,6 +50,7 @@ from kept_read_clock import after_paths
 from record_store_trust import ObservedTrust
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 
@@ -175,7 +176,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
         "params": {"command": ["python3", "stage_move.py",
                                "--range-start-bytes", str(start),
                                "--range-end-bytes", str(end)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": digest, "bytes": len(blob)}],
     }
     shard = cas / "requests" / key[:2]
@@ -563,6 +564,11 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
                             changed.st_nlink, changed.st_size, changed.st_mtime_ns) == (
                                 published.st_dev, published.st_ino, published.st_mode,
                                 published.st_nlink, published.st_size, published.st_mtime_ns)
+                before = previous
+                after = os.stat(target)
+                os.utime(target, ns=(after.st_atime_ns,
+                                    max(after.st_mtime_ns, before.st_mtime_ns + 1)))
+                assert os.stat(target).st_mtime_ns != before.st_mtime_ns
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", scan)

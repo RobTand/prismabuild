@@ -16,6 +16,7 @@ import tempfile
 import time
 
 from . import core, posix_lock
+from . import data_manifest as manifest_codec
 from . import immutable_files
 
 SET_SCHEMA = "prismabuild.resident_set.v1"
@@ -100,7 +101,7 @@ def directory_files(root):
 
 
 def validate_set_manifest(manifest, canonical_root):
-    normalized = core.validate_data_manifest(manifest)
+    normalized = manifest_codec.validate_data_manifest(manifest)
     root = Path(canonical_root)
     if not root.is_absolute() or str(root) != canonical_root or root == Path("/"):
         raise ValueError("canonical_root must be a normalized absolute directory")

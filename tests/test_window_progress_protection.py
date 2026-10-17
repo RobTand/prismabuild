@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import window_credit  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
@@ -93,7 +94,7 @@ def _manifest(mount: Path, payloads: dict[str, bytes]) -> dict[str, object]:
                 "sha256": hashlib.sha256(payload).hexdigest()}
                for name, payload in sorted(payloads.items())]
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "window-policy-fixture"},
         "mount_prefix": str(mount),
         "entries": entries,

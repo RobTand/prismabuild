@@ -57,6 +57,7 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 
 from prismabuild import adaptive_cpu, pool, reader_lease  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map, residency_plan  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
@@ -392,7 +393,7 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
                          _payload(index, size)).hexdigest()})
     phase_bytes = shared * size
     indices = list(range(shared))
-    body = {"schema": pb.DATA_MANIFEST_SCHEMA_V2,
+    body = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
             "produced_by": {"tool": "bench-1151"}, "annotations": {},
             "mount_prefix": str(origin), "entries": rows,
             "entry_count": shared, "total_bytes": phase_bytes,
@@ -420,7 +421,7 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
                        "python3", "stage_move.py",
                        "--range-start-bytes", str(start),
                        "--range-end-bytes", str(end)]},
-                   "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+                   "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                                "sha256": digest}]}
         path = cas / "requests" / movers[ordinal][:2] / f"{movers[ordinal]}.json"
         path.parent.mkdir(parents=True, exist_ok=True)

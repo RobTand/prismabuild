@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import manifest_layout
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
@@ -32,7 +33,7 @@ def _manifest(pool_root: Path) -> dict[str, object]:
     (pool_root / "model" / "shard-1.bin").write_bytes(split)
     (pool_root / "model" / "head.bin").write_bytes(head)
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "fullstack-harness"},
         "mount_prefix": str(pool_root),
         "entries": [

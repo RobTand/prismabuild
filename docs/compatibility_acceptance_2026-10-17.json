@@ -1,0 +1,45 @@
+{
+  "complete": {
+    "application_gates": [
+      "22 whole files, 1,419 native nodes: 1,401 passes and 18 existing capability skips, no deselection; complete-unit-04-native-summary.json",
+      "20 actual successful source/request/log/runtime/input/CAS/native outcome/call/teardown chains; verified-complete-unit-04.json",
+      "All eight actual current-source architecture cases pass; unit-04-root-gate-check.json",
+      "All 475 current golden wire hashes match actual native writer/input/source proofs; 936 historical records and 14 explicit absence observations; no absence earns codec credit",
+      "All 358 source constructor sites reconciled: 227 executed and 131 reviewed nonwriter/control sites; zero uncovered; writer-reconciliation-final-04.json",
+      "Original 514 actual consumer nodes map to unique passing current owners; original-node-mapping-final-04.json",
+      "Fresh complete three-host source-window validation and all 1,299 target bytes; verified-predeploy-09.json",
+      "Production-writer mutation rejected by unchanged old reader; genuine closed-runtime12RED followed by12green with historical bytes unchanged",
+      "All 131 prior raw fixture blobs preserved unchanged; historical-immutability-audit-04.json"
+    ],
+    "open_unknowns": [
+      "Root integration and full final caller qualification remain separate.",
+      "Future predeploy must recapture live generations and recheck the exact designated rollback bytes; this snapshot grants no permanent support.",
+      "B09 bridge is prepared source only. Publication needs separate authority, fleet convergence and actual immutable designation; physical G-to-bridge rollback and first deployment remain Root gates.",
+      "18 recovery controls lack CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN for map_files identity. No physical abandonment or broader staged-workload proof is claimed.",
+      "No power-loss durability qualification. Existing staged-read targets, unknown ledger axes and strict policy remain unchanged."
+    ]
+  },
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "evidence_root": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/compatibility-corpus/",
+  "exceptions": [],
+  "ledger_commit": "c0abffbd46bf21d455c52f7fa016b89b21eec506",
+  "merge": {
+    "status": "not-this-step"
+  },
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "schema": "pb.staged_read_acceptance.v1",
+  "scope": [
+    "ID-03",
+    "ID-08",
+    "ID-09",
+    "SC-03"
+  ],
+  "scope_note": "Only the wire identity, generation provenance and evidence distinctions used by local C31/B11/D10. This completes the assigned local implementation unit; it does not satisfy these whole staged-read requirements or the 31-card refactor.",
+  "source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
+  "step": "complete"
+}

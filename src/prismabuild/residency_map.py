@@ -10,7 +10,7 @@ Its path arrives in the consumer's environment as
 already injects, and a consumer falls back to the declared path for anything
 the map does not name.
 
-**The key is ``(path, offset)``, not ``path``.**  ``core.validate_data_manifest``
+**The key is ``(path, offset)``, not ``path``.**  ``data_manifest.validate_data_manifest``
 refuses a manifest that repeats a ``(path, offset)`` pair and permits the same
 path at several offsets -- the live campaign manifest carries 46 byte-range
 entries inside 43 model shards -- so a path on its own is not an entry's
@@ -46,13 +46,14 @@ import re
 import tempfile
 
 from . import storage_tiers, record_store, kept_reads
+from .record_kinds import wire_id
 
 #: The environment variable naming the composed map, injected by the launcher.
 RESIDENCY_MAP_ENV = "PRISMABUILD_RESIDENCY_MAP"
 #: What one mover writes about the range it staged.
-RESIDENCY_MAP_FRAGMENT_SCHEMA_V1 = "prismaquant.prismabuild.residency_map_fragment.v1"
+RESIDENCY_MAP_FRAGMENT_SCHEMA_V1 = wire_id("fragment")
 #: What a consumer reads.
-RESIDENCY_MAP_SCHEMA_V1 = "prismaquant.prismabuild.residency_map.v1"
+RESIDENCY_MAP_SCHEMA_V1 = wire_id("map")
 
 _HEX = frozenset("0123456789abcdef")
 #: ``_HEX`` checked at C speed: ``[0-9a-f]`` is a literal ASCII range, so a
@@ -84,7 +85,7 @@ class ResidencyMapError(ValueError):
 #: (#989).  A document of its own beside the map, never a field in the map's
 #: header: every map reader refuses unknown header fields, so a header field
 #: would stop every reader that predates it.
-RESIDENCY_LANDING_SCHEMA_V1 = "prismaquant.prismabuild.residency_landing.v1"
+RESIDENCY_LANDING_SCHEMA_V1 = wire_id("landing")
 #: The states a pending range can be in.  ``ready`` and ``claimed`` name the
 #: mover's queue state.  ``unpublished`` is a leg the window has not
 #: published: inside the refill horizon a stall or a failed copy awaiting its

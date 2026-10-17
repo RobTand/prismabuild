@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 
@@ -57,10 +58,10 @@ def _manifest(tmp_path: Path, label: str, source: Path, size: int):
     payload = source.read_bytes()[:size]
     entries = [{"path": str(source), "offset": 0, "bytes": size,
                 "sha256": hashlib.sha256(payload).hexdigest()}]
-    body = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    body = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
             "annotations": {}, "mount_prefix": str(source.parent),
             "entries": entries, "entry_count": 1, "total_bytes": size}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(body))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(body))
     path = tmp_path / f"manifest-{label}.json"
     path.write_bytes(raw)
     return path, hashlib.sha256(raw).hexdigest()

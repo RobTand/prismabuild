@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, storage_tiers  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import stage_move  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -302,7 +303,7 @@ def _manifest(tmp_path: Path, name: str = "manifest.json") -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
         "mount_prefix": str(mount),
         "entries": [{"path": str(target), "offset": 0, "bytes": len(payload),

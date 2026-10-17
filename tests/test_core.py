@@ -30,8 +30,6 @@ def test_standalone_immutable_owner_is_its_sibling_and_rechecked_before_link(tmp
         bundle.mkdir()
         for name in ("core.py", "digest_primitives.py", "immutable_files.py"):
             raw = (source / name).read_bytes()
-            if name == "immutable_files.py":
-                raw += f"\n# {generation} generation\n".encode()
             (bundle / name).write_bytes(raw)
         bundles.append(bundle)
     checkout = tmp_path / "checkout"
@@ -40,7 +38,6 @@ def test_standalone_immutable_owner_is_its_sibling_and_rechecked_before_link(tmp
     action_file = tmp_path / "action.json"
     action_file.write_text(json.dumps(action))
     program = r'''
-import copy
 import json
 from pathlib import Path
 import runpy
@@ -87,31 +84,23 @@ cas_root, checkout = Path(sys.argv[4]), Path(sys.argv[5])
 cas = second["PrismaBuildCAS"](cas_root)
 attestation = second["preflight_action"](
     action, cas_root=cas_root, checkout_root=checkout)
-assert attestation["runtime"]["immutable_files"]["path"] == str(expected)
+assert "immutable_files" not in attestation["runtime"]
+assert second["_LOADED_WORKER_IMMUTABLE_IDENTITY"]["path"] == str(expected)
 result = Path(sys.argv[4]).parent / "candidate.bin"
 result.write_bytes(b"candidate")
-omitted = copy.deepcopy(attestation)
-omitted["runtime"].pop("immutable_files")
-omitted["runtime"]["runtime_sha256"] = second["canonical_sha256"](
-    {k: v for k, v in omitted["runtime"].items() if k != "runtime_sha256"})
-omitted["attestation_sha256"] = second["canonical_sha256"](
-    {k: v for k, v in omitted.items() if k != "attestation_sha256"})
-try:
-    cas.publish_result(action, result, attestation=omitted)
-except second["LocalActionError"] as exc:
-    assert "immutable files differs from module import identity" in str(exc)
-else:
-    raise AssertionError("current Core published without its immutable member")
+receipt, won = cas.publish_result(action, result, attestation=attestation)
+assert won and cas.lookup(action) == receipt
+changed = second["PrismaBuildCAS"](cas_root / "changed")
 def change_owner():
     expected.write_bytes(expected.read_bytes() + b"\n# changed at precommit\n")
 try:
-    cas.publish_result(action, result, attestation=attestation,
-                       precommit_verify=change_owner)
+    changed.publish_result(action, result, attestation=attestation,
+                           precommit_verify=change_owner)
 except second["LocalActionError"] as exc:
     assert "immutable files changed after module import" in str(exc)
 else:
     raise AssertionError("changed executed source reached the receipt link")
-assert cas.lookup(action) is None
+assert changed.lookup(action) is None
 '''
     done = subprocess.run(
         [sys.executable, "-I", "-S", "-c", program,
@@ -819,6 +808,19 @@ def test_worker_core_has_no_unattested_repository_imports():
     runtime = pb._worker_runtime_identity(None)
     attested = {Path(value["resolved_path"]) for value in runtime.values()
                 if isinstance(value, dict) and "resolved_path" in value}
+    core_source = Path(runtime["core"]["resolved_path"]).read_bytes()
+    assert hashlib.sha256(core_source).hexdigest() == runtime["core"]["sha256"]
+    pins = [ast.literal_eval(node.value) for node in ast.parse(core_source).body
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                and target.id == "_IMMUTABLE_FILES_SOURCE" for target in node.targets)]
+    assert len(pins) == 1
+    helper = pb._LOADED_WORKER_IMMUTABLE_IDENTITY
+    assert {key: helper[key] for key in pins[0]} == pins[0]
+    helper_path = Path(helper["resolved_path"])
+    assert helper_path == Path(pb.immutable_files.__file__).resolve()
+    assert hashlib.sha256(helper_path.read_bytes()).hexdigest() == pins[0]["sha256"]
+    assert helper_path.stat().st_size == pins[0]["bytes"]
+    attested.add(helper_path)
     repository_imports = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level:

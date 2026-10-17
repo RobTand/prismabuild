@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 
 from prismabuild import ram_promote  # noqa: E402
@@ -54,7 +55,7 @@ def _staged(tmp_path: Path) -> tuple[Path, Path, bytes]:
     (stage / SHARD).parent.mkdir(parents=True)
     (stage / SHARD).write_bytes(payload)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
         "mount_prefix": "/mnt/shared",
         "entries": [{"path": "/mnt/shared/model/shard-0.bin", "offset": 0,

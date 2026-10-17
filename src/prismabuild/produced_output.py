@@ -4655,13 +4655,14 @@ def _producer_movement_template(queue, request: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
+    from . import data_manifest as manifest_codec
     from prismabuild import pool as pool_mod
 
     parent_inputs = [dict(entry) for entry in request.get("inputs") or ()
                      if isinstance(entry, Mapping)]
     child_inputs = [entry for entry in parent_inputs
                     if str(entry.get("id"))
-                    != core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID]
+                    != manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID]
     # The producer's OWN sealed checkout addressing, carried into the child.
     # The row already materializes the producer's snapshot; a sealed request
     # that does not say so is proved against the producer's pre-snapshot
@@ -4802,6 +4803,7 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
+    from . import data_manifest as manifest_codec
     from prismabuild import movement_actions
     from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod
@@ -4847,10 +4849,10 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
         with os.fdopen(handle, "w") as stream:
             json.dump(manifest_body, stream, sort_keys=True)
         try:
-            core_mod.load_data_manifest(manifest_tmp)
+            manifest_codec.load_data_manifest(manifest_tmp)
             manifest_input, _ = cas.ingest_input(
                 manifest_tmp,
-                input_id=core_mod.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
         finally:
             os.unlink(manifest_tmp)
     except Exception as exc:
@@ -6112,9 +6114,10 @@ def place_origin_batches(queue_root: str | Path, static: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
+    from . import data_manifest as manifest_codec
 
-    checked = core_mod.validate_data_manifest(static)
-    if checked["schema"] != core_mod.DATA_MANIFEST_SCHEMA_V2:
+    checked = manifest_codec.validate_data_manifest(static)
+    if checked["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         raise ProducedOutputError(
             "placing batches in a read plan needs a data_manifest.v2")
     notes = dict(checked["annotations"])
@@ -6169,8 +6172,8 @@ def place_origin_batches(queue_root: str | Path, static: Mapping[str, object],
     notes[ORIGIN_BATCHES_ANNOTATION] = all_refs
     notes[ORIGIN_SLOTS_ANNOTATION] = placed_slots
     try:
-        return core_mod.validate_data_manifest({
-            "schema": core_mod.DATA_MANIFEST_SCHEMA_V2,
+        return manifest_codec.validate_data_manifest({
+            "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
             "produced_by": dict(checked["produced_by"]),
             "mount_prefix": mount_prefix,
             "entries": entries,
@@ -6198,8 +6201,9 @@ def verify_placed_origin_batches(queue_root: str | Path,
     """
 
     from prismabuild import core as core_mod
+    from . import data_manifest as manifest_codec
 
-    checked = core_mod.validate_data_manifest(manifest)
+    checked = manifest_codec.validate_data_manifest(manifest)
     notes = dict(checked["annotations"])
     slots = notes.get(ORIGIN_SLOTS_ANNOTATION)
     wanted = _slot_phases(checked, slots, where=ORIGIN_SLOTS_ANNOTATION)
@@ -6238,8 +6242,8 @@ def verify_placed_origin_batches(queue_root: str | Path,
                       if key not in (ORIGIN_BATCHES_ANNOTATION,
                                      ORIGIN_SLOTS_ANNOTATION)}
     try:
-        skeleton = core_mod.validate_data_manifest({
-            "schema": core_mod.DATA_MANIFEST_SCHEMA_V2,
+        skeleton = manifest_codec.validate_data_manifest({
+            "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
             "produced_by": dict(checked["produced_by"]),
             "mount_prefix": checked["mount_prefix"],
             "entries": static_entries,

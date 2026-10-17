@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import (  # noqa: E402
     pool, progress, residency_map, residency_plan, storage_tiers)
 import tier_loop  # noqa: E402
@@ -326,7 +327,7 @@ def _real_window(tmp_path: Path, entries: int = 3) -> dict[str, object]:
         listed.append({"path": str(source), "offset": 0, "bytes": MIB,
                        "sha256": hashlib.sha256(payload).hexdigest()})
     total = entries * MIB
-    return {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    return {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
             "annotations": {"phases": [{"name": "layer-0", "bytes": total,
                                         "cumulative_bytes": total}]},
             "mount_prefix": str(mount), "entries": listed,

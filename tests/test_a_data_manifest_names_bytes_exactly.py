@@ -17,13 +17,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 
 from test_core import _body  # noqa: E402
 
 
 def _manifest(**overrides) -> dict:
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "tests"},
         "annotations": {"row_id": "row-0079"},
         "mount_prefix": "/mnt/shared",
@@ -41,7 +42,7 @@ def _manifest(**overrides) -> dict:
 
 
 def test_a_well_formed_manifest_normalizes_to_its_own_entries() -> None:
-    out = pb.validate_data_manifest(_manifest())
+    out = manifest_codec.validate_data_manifest(_manifest())
     assert out["total_bytes"] == 30
     assert out["entry_count"] == 2
     # Order is the consumption order and is never re-sorted: a partial warm
@@ -85,14 +86,14 @@ def test_a_well_formed_manifest_normalizes_to_its_own_entries() -> None:
 )
 def test_the_validator_refuses(overrides: dict, because: str) -> None:
     with pytest.raises(pb.ActionContractError):
-        pb.validate_data_manifest(_manifest(**overrides))
+        manifest_codec.validate_data_manifest(_manifest(**overrides))
 
 
 def test_an_unknown_field_is_refused_rather_than_ignored() -> None:
     # Closed key sets, like every other action contract in this module: a
     # field the reader silently drops is a field the submitter believes in.
     with pytest.raises(pb.ActionContractError):
-        pb.validate_data_manifest({**_manifest(), "row_id": "row-0079"})
+        manifest_codec.validate_data_manifest({**_manifest(), "row_id": "row-0079"})
 
 
 def test_attaching_a_manifest_changes_the_action_key(tmp_path: Path) -> None:
@@ -106,7 +107,7 @@ def test_attaching_a_manifest_changes_the_action_key(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     body = _body(checkout)
-    manifest_row = {"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+    manifest_row = {"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": "2" * 64, "bytes": 211663}
     without = pb.seal_action(body)["action_key"]
     with_manifest = pb.seal_action(

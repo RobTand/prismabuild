@@ -17,6 +17,7 @@ from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 from prismabuild import _gang, candidate_policy, core as pb, pool, residency_map, residency_plan
+from prismabuild import data_manifest as manifest_codec
 
 TIER = "prismabuild-stage:sparklina"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -40,7 +41,7 @@ def _manifest_doc(*, declare: bool, tag: str) -> dict[str, object]:
             phase["resident_before_launch"] = True
         phases.append(phase)
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": f"tests-1594-{tag}"},
         "annotations": {"phases": phases},
         "mount_prefix": "/data",
@@ -59,12 +60,12 @@ def _seal_member(cas, checkout: Path, queue, group: str, index: int,
     The row carries no residency block: the plan is filed, never rewritten
     onto the row. Returns the member key and its lead key.
     """
-    manifest = pb.validate_data_manifest(
+    manifest = manifest_codec.validate_data_manifest(
         _manifest_doc(declare=declare_manifest, tag=f"{tag}-{index}"))
     blob = checkout.parent / f"{name}-{index}-manifest.json"
     blob.write_text(json.dumps(manifest))
     entry, _ = cas.ingest_input(
-        blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     snap_blob = checkout.parent / f"{name}-{index}-snapshot.json"
     snap_blob.write_text("{}")
     snap_entry, _ = cas.ingest_input(
@@ -231,7 +232,7 @@ def _delete_manifest_blob(row: dict[str, object], key: str) -> None:
          / f"{key}.json").read_bytes())
     manifest_entry = next(
         entry for entry in request["inputs"]
-        if entry["id"] == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        if entry["id"] == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     cas.input_path(manifest_entry).unlink()
 
 
@@ -294,13 +295,13 @@ def test_manifest_parses_once_per_blob(gang_fleet, tmp_path, monkeypatch):
                    declare_manifest=True, declare_plan=True)
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, keys[0]))
     calls = []
-    original = pb.read_data_manifest
+    original = manifest_codec.read_data_manifest
 
     def counting(path):
         calls.append(str(path))
         return original(path)
 
-    monkeypatch.setattr(pb, "read_data_manifest", counting)
+    monkeypatch.setattr(manifest_codec, "read_data_manifest", counting)
     assert queue.residency_verdict(row)["state"] == "lead_not_resident"
     assert queue.residency_verdict(row)["state"] == "lead_not_resident"
     assert len(calls) == 1, calls
@@ -396,7 +397,7 @@ def test_undeclared_gang_reads_no_manifest_and_no_sibling_verdict(
     assert record is not None
 
     manifest_calls: list[str] = []
-    original_manifest = pb.read_data_manifest
+    original_manifest = manifest_codec.read_data_manifest
 
     def counting_manifest(path):
         manifest_calls.append(str(path))
@@ -409,7 +410,7 @@ def test_undeclared_gang_reads_no_manifest_and_no_sibling_verdict(
         verdict_calls.append(str(item.get("action_key")))
         return original_verdict(item)
 
-    monkeypatch.setattr(pb, "read_data_manifest", counting_manifest)
+    monkeypatch.setattr(manifest_codec, "read_data_manifest", counting_manifest)
     monkeypatch.setattr(queue, "residency_verdict", counting_verdict)
     assert queue._gang_prelaunch_blocker(
         record, record["members"][0]) is None

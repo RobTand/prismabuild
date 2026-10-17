@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from . import immutable_files
 
+import ast
 import math
 import re
 from collections.abc import Mapping
@@ -480,6 +481,30 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
                             max_bytes=evidence_cap, require_readonly=True)
         if len(raw) != source["bytes"] or pb.raw_sha256(raw) != source["sha256"]:
             raise ActionResultError("native producer runtime source differs from receipt")
+        if source is core:
+            # New Core bytes bind the extracted owner without extending the
+            # closed worker_runtime.v1 field set. Older Core has no such pin.
+            try:
+                pins = [node.value for node in ast.parse(raw).body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "_IMMUTABLE_FILES_SOURCE"
+                                for target in node.targets)]
+                if len(pins) > 1:
+                    raise ValueError("ambiguous Core owner pin")
+                if pins:
+                    pin = ast.literal_eval(pins[0])
+                    if (not isinstance(pin, dict) or set(pin) != {"sha256", "bytes"}
+                            or not isinstance(pin["sha256"], str) or not _ACTION_KEY_RE.fullmatch(pin["sha256"])
+                            or type(pin["bytes"]) is not int or pin["bytes"] < 0):
+                        raise ValueError("malformed Core owner pin")
+                    owner_path = str(root / "src/prismabuild/immutable_files.py")
+                    expected = {"path": owner_path, "resolved_path": owner_path, **pin}
+                    if "immutable_files" in runtime:
+                        if runtime["immutable_files"] != expected:
+                            raise ValueError("runtime owner differs from Core pin")
+                    else:
+                        runtime_sources.append(expected)
+            except (SyntaxError, ValueError, TypeError) as exc:
+                raise ActionResultError("native producer Core source pin is invalid") from exc
     return {
         "schema": NATIVE_PRODUCER_CONTEXT_SCHEMA_V1,
         "queue_root": str(Path(queue.root).resolve()),

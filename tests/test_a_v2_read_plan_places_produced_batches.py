@@ -40,6 +40,7 @@ from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
@@ -57,7 +58,7 @@ from test_write_only_produced_output import _template  # noqa: E402
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
-V2 = pb.DATA_MANIFEST_SCHEMA_V2
+V2 = manifest_codec.DATA_MANIFEST_SCHEMA_V2
 HEAD = (b"head entry zero", b"head entry one, a little longer")
 PAYLOAD = b"band L handoff bytes"
 #: The consumer's read timeline: its head, the handoff, then a replay that
@@ -117,7 +118,7 @@ def _static(tmp_path: Path, *slots: dict, layout=PLAN,
     notes = dict(annotations or {})
     if slots:
         notes[po.ORIGIN_SLOTS_ANNOTATION] = list(slots)
-    return pb.validate_data_manifest({
+    return manifest_codec.validate_data_manifest({
         "schema": V2, "produced_by": {"tool": "tests/946"},
         "mount_prefix": str(root), "entries": entries,
         "entry_count": len(entries),
@@ -150,7 +151,7 @@ def _placed(tmp_path: Path, queue: pool.PoolQueue, ref: dict) -> dict:
 def _sealed_manifest(tmp_path: Path, key: str) -> dict:
     summary = _request(tmp_path, key)["params"]["data_manifest"]
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    manifest, _ = pb.read_data_manifest(cas.input_path(summary["input"]))
+    manifest, _ = manifest_codec.read_data_manifest(cas.input_path(summary["input"]))
     assert summary["schema"] == V2
     assert summary["read_bytes"] == manifest["read_plan"]["read_bytes"]
     return manifest
@@ -478,8 +479,8 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     root.mkdir()
     head = root / "h0.bin"
     head.write_bytes(HEAD[0])
-    static = pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {"tool": "tests/946"},
+    static = manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {"tool": "tests/946"},
         "mount_prefix": str(root),
         "entries": [{"path": str(head), "offset": 0, "bytes": len(HEAD[0]),
                      "sha256": None}],
@@ -498,7 +499,7 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     request = _request(tmp_path, released["action_key"])
     summary = request["params"]["data_manifest"]
     assert set(summary) == {"input", "mount_prefix", "entry_count", "total_bytes"}
-    manifest, _ = pb.read_data_manifest(
+    manifest, _ = manifest_codec.read_data_manifest(
         pb.PrismaBuildCAS(tmp_path / "cas").input_path(summary["input"]))
     assert manifest == ae.merged_manifest(
         static, po.origin_batch_manifest(queue.root, [committed["ref"]]))

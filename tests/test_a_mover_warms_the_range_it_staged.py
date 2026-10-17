@@ -23,6 +23,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, storage_tiers  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 
@@ -43,7 +44,7 @@ def _write(path: Path, payload: bytes) -> dict[str, object]:
 
 def _manifest(mount: Path, entries: list[dict[str, object]]) -> dict[str, object]:
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
         "mount_prefix": str(mount),
         "entries": entries,

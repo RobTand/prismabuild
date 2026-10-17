@@ -1,0 +1,30 @@
+{
+  "capture_name": "out-ledger-capture-01",
+  "capture_report_sha256": "1667ee7d4eac79d78067e1a5d763129aedb0ba311cfd01d5a88d3034ab95893e",
+  "excluded_cases": [],
+  "files": {
+    "goldens-output-ledger.jsonl": "4459f860cb71470d4837774b4fc53593884669c21e2fb5093d5a72565ff6c4ea",
+    "historical-output-ledger.jsonl": "20d97864c411ace2642530c9f34c356c4b8ac8eb0dfad1d44d3e19fd21dc0e5e"
+  },
+  "finished_at": "2026-10-17T00:26:07.626194+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "out-ledger/admission",
+    "out-ledger/empty",
+    "out-ledger/origin",
+    "out-ledger/preserved",
+    "out-ledger/staged"
+  ],
+  "source_git": {
+    "parents": [
+      "ab12fa7447e57afae595c0293e6ee5237c75fec2"
+    ],
+    "snapshot": "31adcbcd5bfc2b9afbc0d92275af79319ded3082",
+    "tree": "00de0caf9316071436e0afb4c5a9adc04b8ac968"
+  },
+  "started_at": "2026-10-17T00:24:44.911666+00:00"
+}

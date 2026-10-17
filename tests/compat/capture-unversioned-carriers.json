@@ -1,0 +1,36 @@
+{
+  "capture_name": "unversioned-carriers-capture-02",
+  "capture_report_sha256": "13406102aa0118cfd2beed610f1f86d85969569742c46a4f7bb9b5dd6b9edfcd",
+  "excluded_cases": [],
+  "files": {
+    "goldens-unversioned-carriers.jsonl": "0407ebecd090b2a1304994a3dd649a1ae1ebacbabe1634eec75937d8c8db1d8d",
+    "historical-unversioned-carriers.jsonl": "8b0f6fd5ed0a20d5e9c6713c417d3bd569604b61c13d5db55e771a3cec31309e"
+  },
+  "finished_at": "2026-10-17T00:21:17.006625+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "host-cpu-map/initial",
+    "host-cpu-map/replay",
+    "host-cpu-metadata/allowance",
+    "host-cpu-metadata/borrowed",
+    "host-cpu-metadata/measurement",
+    "host-gpu-metadata/exclusive",
+    "host-gpu-metadata/measurement",
+    "q-passes/first",
+    "q-passes/measurement",
+    "q-passes/ordinary",
+    "q-passes/replay"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "954a919b6a4d26d3b239ccf11e134139c0247a38",
+    "tree": "6b9c0bc98068a45e9f6a230022abc35e3802f1b2"
+  },
+  "started_at": "2026-10-17T00:18:54.665353+00:00"
+}

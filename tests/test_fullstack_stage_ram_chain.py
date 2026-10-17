@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
@@ -58,7 +59,7 @@ def _pool_fixture(tmp_path: Path) -> tuple[Path, dict[str, object], str]:
              files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]).hexdigest()},
     ]
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "fullstack-harness"},
         "mount_prefix": str(mount),
         "entries": entries,

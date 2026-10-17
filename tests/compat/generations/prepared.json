@@ -1,0 +1,9 @@
+[
+  {
+    "archive_sha256": "4b5f6032d8535ba95568003a1643249e20e704019c37dd1363342fa647b87f8c",
+    "commit": "6fa9b780304df7b24bad5ea3bb0fde540ff95153",
+    "generation": "unpublished-bridge-6fa9b780304d",
+    "provenance_file": "COMPAT_SOURCE.json",
+    "receipt_sha256": "6c4af5e3b41426188058c41f7fcd344635619a3a1eac2479906fe1c924ee8c60"
+  }
+]

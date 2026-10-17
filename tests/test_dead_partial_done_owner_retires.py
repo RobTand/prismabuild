@@ -10,6 +10,7 @@ import pytest
 import test_dead_owner_fragment_blocks_then_retires as base
 from test_dead_owner_fragment_blocks_then_retires import fleet
 from prismabuild import core as pb, reader_lease
+from prismabuild import data_manifest as manifest_codec
 
 
 def dead_done_owner(fleet):
@@ -63,10 +64,10 @@ def test_housekeeping_retires_partial_done_and_successor_copies_and_pins(fleet, 
         source = mount / name
         source.write_bytes(payload)
         entries.append({'path': str(source), 'offset': 0, 'bytes': base.SIZE, 'sha256': digest})
-    manifest = {'schema': pb.DATA_MANIFEST_SCHEMA_V1, 'produced_by': {}, 'annotations': {},
+    manifest = {'schema': manifest_codec.DATA_MANIFEST_SCHEMA_V1, 'produced_by': {}, 'annotations': {},
                 'mount_prefix': str(mount), 'entries': entries, 'entry_count': len(entries),
                 'total_bytes': len(entries) * base.SIZE}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(manifest))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(manifest))
     manifest_digest = hashlib.sha256(raw).hexdigest()
     path = tmp_path / 'manifest.json'
     path.write_bytes(raw)

@@ -1907,6 +1907,13 @@ names the generation root, never `src`; the client appends `src` itself.
 | Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
+`prismabuild.data_manifest` owns manifest parsing, validation, format limits and
+the declared-input identifier. The SDK keeps its existing manifest names and
+version 6. The parser uses Core's existing validation helpers; Core does not
+import the manifest module. Manifest changes therefore stay outside the
+attested run-local and profiling implementation. `manifest_layout` retains
+the pure read-order operations.
+
 Most names are the internal objects, re-exported unchanged. The SDK defines
 five functions of its own, each because the behaviour a client needed had no
 public name:
@@ -6855,7 +6862,7 @@ It still returns `None` when there are no live offers. Rows without a nonempty s
 read no resident metadata and retain ordinary ordering and claim behavior.
 Preference requires a 64-character lowercase hexadecimal set ID and a JSON-object body
 with matching `SET_SCHEMA`, ID and literal `immutable: true`. Its manifest must pass
-`core.validate_data_manifest` and its normalized form must hash to the ID using the
+`data_manifest.validate_data_manifest` and its normalized form must hash to the ID using the
 existing digest serialization. The canonical root must be normalized, absolute and
 non-root, including alternate root spellings such as `//`. Entries must lie under it,
 have zero offsets and real SHA-256 digests, and have unique paths. `hosts` must be a
@@ -11071,7 +11078,7 @@ committed, and seals and publishes the consumer.
 
 **Why the consumer is sealed at release, not at submission.** A key covers
 the action's data manifest, and a manifest entry names a path and a positive
-byte count (`core.validate_data_manifest`). A handoff's paths and sizes exist
+byte count (`data_manifest.validate_data_manifest`). A handoff's paths and sizes exist
 only after the producer commits. A consumer keyed at submission would have a
 key that does not cover the bytes it reads, and it could have no residency
 plan, because its mover ranges index into that manifest. An edge carries
@@ -18563,3 +18570,54 @@ longer selects a different route. Storage formats, stage marker refusal,
 claim identity, retention rules, lock order and C05 record/trust ownership are
 unchanged. [The movement ownership note](c29_movement_package.md) records the
 boundary comparison and the remaining broader C29 integration work.
+
+## Supported-generation record compatibility (C31/B11, 2026-10-16)
+
+The local compatibility implementation uses `prismabuild.record_kinds` as pure
+wire ownership metadata. It records location, field policy, accepted historical
+shapes and concrete reader/writer references without eagerly importing their
+modules. The selected production adapters and native protocol populations use
+that catalogue. Validators remain with their domain owners. IDs never change;
+residency-map and lease constants use the catalogue's semantic ID lookup.
+Source inventory accounts separately for retired APIs, identities, operator
+reports, qualification fixtures and actual records. It pins closed field sets
+and leaves unresolved symbolic expressions and uncovered constructors visible.
+
+The supported window is the union of live worker generations and an explicitly
+designated rollback target. Retained directories alone grant no support. The
+persistent local designation in `compatibility_rollback_designation.json` pins
+a17477b2b206-1791745175-65dffa700dfb by directory, commit, raw receipt digest and
+complete content-map digest, only for candidates without B09's proof member.
+A fresh complete status capture and every actual rollback byte must be checked
+again before rollout. A changed live generation expands the observed window;
+it never silently replaces the designated rollback target. Offline WSL is not
+live. GC's every-reader preconditions include the designated target.
+
+Once either installed or candidate source contains optional `park_proof.py`,
+both updaters require optional-member protocol 2 and proof-member protocol 2.
+a174 is then unreachable as rollback. The unpublished 6fa9b780304d bridge has a
+capable updater, the deployed broker/behavior and no proof source. Its captured
+reader closure is a prepared source control. Publication, fleet convergence,
+actual immutable generation designation and physical G-to-bridge rollback
+remain root deployment gates. This local designation changes no deployed
+pointer or setting and promises no permanent support for a pinned snapshot.
+
+Retained operations run in fresh `python -I -S` processes with closure/stdlib-only
+paths. Complete source closures, raw receipts, imported module paths/hashes and
+executing source/code are attested. Current and historical production writers
+must each reproduce golden bytes in two independent isolated processes before
+both reader directions pass. Corpus adoption requires the verified successful
+PB producer chain, exact request/source binding and reproduction flag. Absent old
+participants are source-bound absence observations, never codec passes.
+Coordinator writer sources not shipped with a deployed reader have separate
+provenance and separate processes. Private fixture facts confer no physical
+custody, drain, performance or RootGO credit.
+
+Core's closed `worker_runtime.v1` cannot grow an `immutable_files` field while
+retained readers reject additions. Instead attested Core source pins the helper
+SHA-256, checks the loaded helper and rechecks its bytes before receipt
+publication. `action_result` reads that pin from the attested Core and verifies
+the helper; old Core without the pin retains its actual historical contract.
+Helper changes require regenerating the source pin and current runtime goldens.
+See `compatibility_corpus_2026-10-16.md` and the C31 requirement-status record for
+source pins, actual qualification and remaining integration/deployment gates.

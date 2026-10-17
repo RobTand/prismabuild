@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
@@ -62,7 +63,7 @@ def _manifest(tmp_path: Path) -> tuple[dict, Path]:
     payload = hashlib.sha256(b"promotion-handoff-source").digest() * (MIB // 32)
     (pool_dir / SOURCE_NAME).write_bytes(payload)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "promotion-handoff-regression"},
         "mount_prefix": str(pool_dir),
         "entries": [{"path": str(pool_dir / SOURCE_NAME), "offset": 0,
@@ -162,7 +163,7 @@ def _promotion_claim(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
                    "--range-end-bytes", str(size)]
     cas = pb.PrismaBuildCAS(queue.root / "cas")
     manifest_input, _ = cas.ingest_input(
-        manifest_path, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        manifest_path, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     checkout = manifest_path.parent / "promotion-checkout"
     checkout.mkdir(parents=True, exist_ok=True)
     (checkout / "task_code.py").write_text(

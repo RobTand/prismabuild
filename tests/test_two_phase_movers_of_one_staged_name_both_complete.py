@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 
@@ -78,7 +79,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, list[Path]]:
                         "sha256": hashlib.sha256(_payload(index)).hexdigest()})
     indices = list(range(N))
     body = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
         "produced_by": {"tool": "two-phase-movers-fixture"},
         "annotations": {},
         "mount_prefix": str(origin),
@@ -116,7 +117,7 @@ def _seal_claim(queue: pool.PoolQueue, cas: Path, mover: str, digest: str,
             "python3", "stage_move.py",
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": digest}],
     }
     path = cas / "requests" / mover[:2] / f"{mover}.json"

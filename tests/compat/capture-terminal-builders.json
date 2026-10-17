@@ -1,0 +1,29 @@
+{
+  "capture_name": "terminal-builders-01-capture",
+  "capture_report_sha256": "440b842a46ff4ff4fb104408f0e30e09880b8d22c07ce124e15ff4fb354e552e",
+  "excluded_cases": [],
+  "files": {
+    "goldens-terminal-builders.jsonl": "4579d011055a0f7d5b35ee13a7d8a49fe19674168706d006d5c141936eb69e3d",
+    "historical-terminal-builders.jsonl": "7387cf5d518baad787e35c337a7443a366fb893e8729a7ec6c9a6d07e14e72cf"
+  },
+  "finished_at": "2026-10-17T00:43:07.382100+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "q-outcome/lost-claim-writer",
+    "q-outcome/orphan-writer",
+    "q-outcome/slurm-withdrawal-writer",
+    "q-outcome/unreadable-writer"
+  ],
+  "source_git": {
+    "parents": [
+      "5e8b24ecebfcde748d620bf32ba5df9bd263fafa"
+    ],
+    "snapshot": "04d21470971158cd34c7260dc73825c6bda73b64",
+    "tree": "96fe44d701768e6977c8b4f0404882fb59960b92"
+  },
+  "started_at": "2026-10-17T00:42:03.914189+00:00"
+}
