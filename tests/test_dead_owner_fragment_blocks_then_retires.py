@@ -131,13 +131,13 @@ def _dead_owner(fleet) -> tuple[str, str]:
     return consumer, mover
 
 
-def _publisher(fleet, mover: str, consumer: str) -> stage_move._StagedPublisher:
+def _publisher(fleet, mover: str, consumer: str, *, trust=None) -> stage_move._StagedPublisher:
     queue, stage, cas = fleet
     return stage_move._StagedPublisher(
         queue=queue, stage_root=stage,
         residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
-        tier_id=TIER, cas_root=cas, consumer_action_key=consumer)
+        tier_id=TIER, cas_root=cas, consumer_action_key=consumer, trust=trust)
 
 
 def test_dead_owner_fragment_blocks_a_same_path_mover(queue, stages, actions) -> None:

@@ -365,7 +365,7 @@ def test_history_requalifies_detached_entries_without_persisting_candidates(
     import pbmetrics
     from test_btrfs_subvolume_records_are_retained import _ObservedStat
 
-    directory = tmp_path / "history"
+    directory = tmp_path / "movers"
     directory.mkdir()
     record = directory / "one.json"
     record.write_text('{"value":"history-row"}')
@@ -374,7 +374,7 @@ def test_history_requalifies_detached_entries_without_persisting_candidates(
 
     def entries():
         reader.begin()
-        found = list(reader.history(directory))
+        found = list(reader.queue_store(tmp_path).mover_entries())
         assert len(found) == 1
         value = reader.derive("row", found[0], lambda: json.loads(Path(found[0].path).read_text()))
         reader.end()

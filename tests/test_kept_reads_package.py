@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from prismabuild import kept_reads, produced_output
-from kept_read_clock import after_paths
+from record_store_trust import ObservedTrust
 
 
 def test_package_owner_imports_without_fleet_tools():
@@ -29,9 +29,7 @@ def test_output_memo_defaults_to_fresh_reads_and_scope_resets(tmp_path, monkeypa
     scope.mkdir()
     commitments = scope / "commitments.json"
     commitments.write_text(json.dumps({"batches": {"b": {"state": "filed"}}}))
-    after_paths(monkeypatch, commitments, scope)
-    monkeypatch.setattr(kept_reads, "_object_filesystem_type", lambda *a, **kw: "tmpfs")
-    memo = produced_output._TickReads(None)
+    memo = produced_output._TickReads(None, trust=ObservedTrust())
     memo.batches(scope)
     memo.batches(scope)
     assert (memo.commitments_read, memo.commitments_reused) == (2, 0)
