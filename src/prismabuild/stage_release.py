@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Take a staged range off the tier and give its tokens back (#583).
 
 The egress node.  It is the only thing that may return a mover's tier tokens,
@@ -105,10 +104,6 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
-
-sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import kept_reads, manifest_layout
 from prismabuild.stage_marks import (  # noqa: E402
@@ -129,8 +124,8 @@ from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
-import prewarm_loop  # noqa: E402
-from stage_move import (  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild.stage_move import (  # noqa: E402
     RANGE_SUFFIX, _is_action_key, paths_named_once,
     pre_range_stage_relative, stage_relative,
 )
