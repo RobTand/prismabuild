@@ -41,3 +41,26 @@ whole file, shared-fixture importer and all eight architecture controls.
 The initial source is `b26d6bc94abb3c977bbf04650ac27d0d6535277a`. C10's final
 composition will change the world's single tier mint call to the tier owner.
 No unfinished C10 source is imported here.
+
+## Measurement clock ownership
+
+The measurement fixture creates the clock before constructing its queue. It
+installs the time and hostname observations first, then constructs
+`FleetWorld(tmp_path, clock=clock)`. Its samplers, action publication and gang
+fixture consumers all retain that exact clock object. Two independent foreign
+load fixtures also use `Clock`, while retaining their existing patch targets.
+The private world does not install observations implicitly.
+
+One candidate kept the mutable one-element lists and taught `Clock` to expose
+list indexing. That would keep two interfaces for the same state and obscure
+which consumers had migrated. The chosen design replaces every access in this
+fixture family with `clock.now`, including stores and augmented assignments.
+`Clock.advance` remains available for callers that want an explicit operation.
+`FleetWorld.use_host` is static because it owns no world state, so the existing
+hostname-before-queue order can stay explicit.
+
+The source lever follows the current fixture import closure, identifies all
+three old clock constructors, and restores every changed module AST to its
+original form after reversing the exact clock and setup bindings. This retains
+all existing assertions, decorators, callback ordering and native IDs. The
+whole affected importer closure must execute before this wave is accepted.

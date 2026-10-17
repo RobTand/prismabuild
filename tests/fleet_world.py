@@ -52,12 +52,12 @@ class ActionRows:
 
 class FleetWorld:
     def __init__(self, root: Path, *, queue_name: str = "pb-queue",
-                 admission: Admission | None = None) -> None:
+                 admission: Admission | None = None, clock: Clock | None = None) -> None:
         self.root = Path(root)
         raw_queue = pool.PoolQueue(self.root / queue_name)
         self.queue = raw_queue if admission is None else admission.bind(raw_queue)
         self.queue.records.ensure_layout()
-        self.clock = Clock()
+        self.clock = Clock() if clock is None else clock
         self.actions = ActionRows(self.queue)
 
     def host(self, name: str, *, capacity: Mapping[str, int], tags=(),
@@ -65,7 +65,8 @@ class FleetWorld:
         self.queue.announce(host=name, capacity=capacity, tags=tags,
                             has_gpu=has_gpu, **observations)
 
-    def use_host(self, monkeypatch, name: str) -> None:
+    @staticmethod
+    def use_host(monkeypatch, name: str) -> None:
         monkeypatch.setattr(pool.socket, "gethostname", lambda: name)
 
     def stage_root(self, name: str) -> Path:
