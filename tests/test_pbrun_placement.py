@@ -1697,7 +1697,8 @@ from unittest import mock
 sys.path.insert(0, 'tools/fleet')
 import pbrun
 from prismabuild import submission as submit_core
-pbrun.configured_store = lambda: submit_core.FleetStore(Path(Path(sys.argv[1])), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+pbrun_store = submit_core.FleetStore(Path(sys.argv[1]), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+pbrun.configured_store = lambda: pbrun_store
 pbrun.RUNTIME_ROOT = Path(sys.argv[2])
 submit_core.SUBMISSION_OFFER_READ_TIMEOUT_S = 0.1
 options = ['--exclusive'] if sys.argv[4] == 'exclusive' else []

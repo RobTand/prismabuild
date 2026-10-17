@@ -823,7 +823,7 @@ class ShapeGate:
                 stack.enter_context(contextlib.redirect_stdout(buffer))
                 try:
                     code = module.main(argv)
-                except SubmissionRefused as exc:
+                except SystemExit as exc:
                     code = exc.code
                     print(f"SystemExit: {exc}")
         finally:

@@ -117,7 +117,8 @@ from prismabuild import d38_gate
 from prismabuild import submission as submit_core
 d38_gate.ENFORCE = False  # this test is about stamp names, not D38
 socket.gethostname = lambda: 'sparky'
-pbrun.configured_store = lambda: submit_core.FleetStore(Path(Path(sys.argv[1])), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+pbrun_store = submit_core.FleetStore(Path(sys.argv[1]), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
+pbrun.configured_store = lambda: pbrun_store
 sys.argv = ['pbrun', '--cwd', sys.argv[2], '--detach', '--transport', 'pool',
             '--', '/bin/true']
 raise SystemExit(pbrun.main())
