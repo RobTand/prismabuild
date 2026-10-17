@@ -142,7 +142,7 @@ def _seal(tmp_path, monkeypatch, work, *options, command=COMMAND):
 
     _prepare(tmp_path, monkeypatch)
     args = pbrun.parse_args(_argv(work, *options, command=command)[1:])
-    prepared = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
+    prepared = submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)
     action = submit_core.seal(prepared["template"])
     _register(monkeypatch, action)
     return action, prepared["template"]["cas"]

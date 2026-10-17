@@ -58,7 +58,7 @@ class _Recorder:
 def _campaign(argv, recorder, monkeypatch: pytest.MonkeyPatch):
     """Run ``main`` with ``pbrun`` replaced, and return what it printed."""
 
-    monkeypatch.setattr(submission, "submit", recorder)
+    monkeypatch.setattr(submission, 'submit_request', recorder)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:

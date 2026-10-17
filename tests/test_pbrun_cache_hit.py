@@ -45,7 +45,7 @@ def _outcome(monkeypatch, tmp_path, *, receipt):
         tags=["gb10"], demand={"cpu": 2, "mem_gb": 8}, exclusive=False,
         timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
         queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
     # A lookup verifies the result blob, gigabytes over NFS for a rendered
     # model, so the attached path asks exactly once.
     assert cas.lookups == 1
@@ -107,5 +107,5 @@ def test_unreceipted_work_still_reaches_the_scheduler(
             tags=[], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
             queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
-        store=pbrun.configured_store(), display=pbrun.render)
+        store=pbrun.configured_store(), display=submit_core.render_submission)
     assert reached == {"called": True}

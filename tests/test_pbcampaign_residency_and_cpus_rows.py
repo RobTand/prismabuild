@@ -111,7 +111,7 @@ def test_the_argv_pbrun_is_given_is_the_hand_typed_submission(
         finish_submission(report)
         return report
 
-    monkeypatch.setattr(submission, "submit", fake_submit)
+    monkeypatch.setattr(submission, 'submit_request', fake_submit)
     row = {"argv": ["./reader.sh"], "cwd": "/home/rob/tree",
            "data_manifest": "/home/rob/manifest.json",
            **{field: value for field, (value, _) in FIELDS.items()}}

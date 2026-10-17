@@ -368,7 +368,7 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
         finish_submission(report)
         return report
 
-    monkeypatch.setattr(submit_core, "submit", fake_submit)
+    monkeypatch.setattr(submit_core, 'submit_request', fake_submit)
     published = pbcampaign.submit_row(
         {
             "argv": ["/bin/bash", "-lc", "./probe.sh"],
