@@ -360,8 +360,7 @@ def test_a_pin_owner_never_moves(fleet) -> None:
         holder={"host": "test-host", "pid": 4242}, acquire_token="test-pin",
         covers=[{"mover_action_key": mover, "manifest_sha256": "e" * 64}])
     assert pin["ok"]
-    residency_map.fragment_path(root, consumer, mover).unlink()
-    reader_lease.material_path(root, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
 
     got = _reclaim(fleet, apply=True, run_id="run-pin")
 

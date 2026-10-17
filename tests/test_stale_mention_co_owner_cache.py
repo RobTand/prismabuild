@@ -116,8 +116,7 @@ def _drop_owner(queue, consumer, mover) -> None:
     """What an owner's egress leaves: no fragment and no material."""
 
     root = queue.records.residency_fragment_root()
-    residency_map.fragment_path(root, consumer, mover).unlink()
-    reader_lease.material_path(root, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
 
 
 def _pass(queue, stage, index=None):

@@ -415,10 +415,7 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
         residency_map.compose(
             residency_map.read_fragments(residency, CONSUMER_A))["entries"])
     assert len(saved_entries) == 1
-    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
-    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
+    staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
 
     def _refile() -> None:
         time.sleep(4.0)
@@ -478,10 +475,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     residency = queue.root / pool.record_store.RESIDENCY
     # Unpublish the bytes without touching them, then fake an in-flight
     # sibling copy that never finishes.
-    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
-    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
+    staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
     sibling = staged.with_name(f".{staged.name}.{'f' * 16}.partial")
     sibling.write_bytes(b"partial-prefix")
 

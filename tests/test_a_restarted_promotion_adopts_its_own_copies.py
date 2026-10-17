@@ -175,8 +175,7 @@ def _forget(queue: pool.PoolQueue, consumer: str = CONSUMER,
     """What a kill before the end-of-range records leaves: no records."""
 
     residence = queue.root / pool.record_store.RESIDENCY
-    residency_map.fragment_path(residence, consumer, mover).unlink()
-    reader_lease.material_path(residence, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, residence, consumer, mover, missing_ok=False)
 
 
 def _timings(receipt: dict) -> dict:
