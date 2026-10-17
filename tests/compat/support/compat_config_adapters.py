@@ -31,4 +31,6 @@ def operate(request, store, load):
     request["_consumer_boundary"]()
     result = reader(path)
     assert result, "configuration consumer refused its policy"
+    if family == "config-fleet" and not isinstance(result, dict):
+        return result.entry
     return result
