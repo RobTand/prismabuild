@@ -1,5 +1,6 @@
 """A cancellation keeps its decision and the worker's authenticated ending."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import os
 import signal
@@ -19,6 +20,7 @@ from prismabuild import pool, resource_scope
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun
+from prismabuild import submission as submit_core
 import pbmcp
 import pbstatus
 import pbwait
@@ -210,7 +212,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
     queue, live, path, record = _conclude(queue, item, monkeypatch)
     key = live["action_key"]
     if reader == "outcome_summary":
-        summary = pbrun.action_client.outcome_summary(queue, path, record)
+        summary = submit_core.action_client.outcome_summary(queue, path, record)
         assert summary["status"] == "withdrawn" and summary["adopted"] is None
         assert summary["returncode"] is None
     elif reader == "attempt_ending":
@@ -229,7 +231,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
         rows = [row for row in pbstatus.read_endings(queue.root, limit=10) if row["action_key"] == key]
         assert rows and all(row["status"] == "withdrawn" and row["unreadable"] is None for row in rows)
     elif reader == "pbrun":
-        assert pbrun.action_client.report_pool_outcome(queue, key, wait_s=1) == pbrun.action_client.WITHDRAWN_EXIT
+        assert submit_core.action_client.report_pool_outcome(queue, key, wait_s=1) == submit_core.action_client.WITHDRAWN_EXIT
     else:
         assert pbwait._from_ending(queue, (path, record))["status"] == "withdrawn"
 
@@ -355,7 +357,7 @@ def test_public_views_expose_a_stopped_withdrawn_attempt(scoped, monkeypatch, ca
     key = live["action_key"]
     session = pbmcp.Session(queue_root=queue.root, cas_root=Path(item["cas_root"]), repo_link=queue.root / "repo")
     if view == "pbwait_json":
-        monkeypatch.setattr(pbrun, "SH", queue.root.parent)
+        patch_store(monkeypatch, client=pbrun, root=queue.root.parent)
         root = queue.root.parent / "pb-queue"
         queue.root.rename(root)
         queue.root = root

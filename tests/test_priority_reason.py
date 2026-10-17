@@ -1,5 +1,6 @@
 """Priority explanations follow submissions without changing sealed work."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -12,6 +13,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import pool  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line  # noqa: E402
 
@@ -21,8 +23,8 @@ REASON = "G2 re-plan gate, coordinator-approved"
 
 def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monkeypatch, capsys):
     work, queue = _checkout(tmp_path), _queue(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.socket, "gethostname", lambda: "sparky")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.socket, "gethostname", lambda: "sparky")
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([{
         "argv": ["/bin/bash", "-lc", "printf ok"], "cwd": str(work),
@@ -84,7 +86,7 @@ def test_bad_reason_is_refused_before_queue_evidence_changes(tmp_path, value):
 def test_campaign_rejects_invalid_reason_before_publishing_any_row(tmp_path, monkeypatch):
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([
         {"argv": ["/bin/true"], "cwd": str(work)},
@@ -104,11 +106,11 @@ def test_reason_is_refused_clearly_by_an_older_queue_runtime():
         "action_key": KEY,
         "params": {"demand": {"cpu": 1}, "placement": {"required_tags": []},
                    "checkout_snapshot": {}},
-        "environment": {"variables": {pbrun.CONTAINER_OWNER_ENV: "fixture"}},
+        "environment": {"variables": {submit_core.CONTAINER_OWNER_ENV: "fixture"}},
     }
     args = pbrun.parse_args(["--priority-reason", REASON, "--", "/bin/true"])
     with pytest.raises(pool.PoolContractError, match="loaded queue runtime.*priority_reason"):
-        pbrun.publication_row(action, args=args, queue=OldQueue())
+        submit_core.publication_row(action, args=args, queue=OldQueue(), store=pbrun.configured_store())
 
 
 def test_an_argument_shaped_campaign_reason_is_only_a_value():

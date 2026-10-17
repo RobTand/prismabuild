@@ -1,4 +1,5 @@
 """Independent #365 review: private queues, logical tokens, no GPU work."""
+from prismabuild import submission as submit_core
 import json
 import uuid
 import pytest
@@ -145,7 +146,9 @@ def test_repeated_preemptions_and_failure_share_the_original_attempt_budget(tmp_
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
     import pbrun
-    landed = pbrun.action_wait.await_ending(q, bg, wait_s=0, generation=generations[0])
+    from prismabuild import submission
+    from submission_support import patch_store
+    landed = submit_core.action_wait.await_ending(q, bg, wait_s=0, generation=generations[0])
     assert landed is not None and landed[1]['status'] == 'failed'
     assert landed[1]['published_unix'] == holder['published_unix']
 
