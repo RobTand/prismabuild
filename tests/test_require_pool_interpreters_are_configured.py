@@ -9,6 +9,7 @@ refuse the old venv and pass the new one.
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -42,10 +43,27 @@ def test_the_published_configuration_declares_the_fleet_interpreters() -> None:
     declared = document["gpu_interpreters"]
 
     assert declared and all(Path(path).is_absolute() for path in declared)
-    assert hook.CONTENDS.pattern == hook.contends_pattern(tuple(declared)).pattern
+    assert hook.configured_contends_pattern().pattern == hook.contends_pattern(tuple(declared)).pattern
 
 
 def test_the_hook_names_no_client_venv_in_code() -> None:
     source = (ROOT / "tools" / "fleet" / "require_pool.py").read_text()
 
     assert "prismaquant-" + "cu130" not in source
+
+
+def test_importing_the_hook_defers_the_roster_read_until_classification(monkeypatch):
+    reads = []
+
+    def unavailable(*args):
+        reads.append(args)
+        raise OSError("controlled unavailable roster")
+
+    monkeypatch.setattr(hook.Roster, "at", unavailable)
+    spec = importlib.util.spec_from_file_location("isolated_require_pool", hook.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert reads == []
+    assert module.contends("flock /home/rob/.gpu.lock python train.py")
+    assert len(reads) == 1

@@ -124,13 +124,12 @@ def contends_pattern(declared: tuple[str, ...]) -> re.Pattern[str]:
     return re.compile(f"{interpreters}|{LOCK_WRAPPERS}" if interpreters else LOCK_WRAPPERS)
 
 
-try:
-    _interpreters = Roster.at(_RUNTIME_ROOT).gpu_interpreters
-except (OSError, ValueError):
-    _interpreters = ()
-CONTENDS = contends_pattern(_interpreters)
-
-
+def configured_contends_pattern() -> re.Pattern[str]:
+    try:
+        interpreters = Roster.at(_RUNTIME_ROOT).gpu_interpreters
+    except (OSError, ValueError):
+        interpreters = ()
+    return contends_pattern(interpreters)
 
 #: Commands that never start GPU work, whatever their text contains.  A commit
 #: message quoting the refused pattern is prose ABOUT the rule, not an instance
@@ -1218,8 +1217,9 @@ def _segments(command: str) -> list[str]:
 def contends(command: str) -> bool:
     """True when any segment of this command starts GPU work off-pool."""
 
+    pattern = configured_contends_pattern()
     for segment in _segments(command):
-        if not CONTENDS.search(_mentions_elided(segment)):
+        if not pattern.search(_mentions_elided(segment)):
             continue
         if _inspects_only(segment):
             continue
