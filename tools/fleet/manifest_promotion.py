@@ -50,6 +50,7 @@ from prismabuild import core as pb
 from prismabuild import data_manifest as manifest_codec
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from prismabuild.queue_publication import RowPublication
 
 
 from prismabuild import movement_actions
@@ -61,7 +62,6 @@ from prismabuild import storage_tiers
 # inserted once and unconditionally (REVIEW-1252 item 8), and the import is
 # never conditional on a package context that a caller may or may not give.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import submission
 from prismabuild import submission
 
 
@@ -85,32 +85,6 @@ MANIFEST_ROWS_EXAMINED_PER_CYCLE = 64
 TIER_RECEIPT_DESTINATION = "ram-tier"
 
 
-def planner_args(**overrides: object) -> SubmissionRequest:
-    """The submitter's own ``--residency`` defaults, spelled once.
-
-    Everything ``residency_plan.prepare_window`` reads off ``args`` is here with
-    the CLI's defaults: the ram leg ``auto`` (``resolve_ram_tier`` inside the
-    sealing path decides from the announced tiers), sharing ``auto`` (#1026,
-    so two consumers of one range share its mover), and the mover sizing the
-    fleet already runs.  The planner passes no reader declaration: it is not
-    the consumer's submitter and will not guess how the row reads.
-    """
-
-    args = SubmissionRequest(
-        residency_ram="auto",
-        residency_share="auto",
-        residency_mover_max_attempts=3,
-        residency_mover_mem_gb=1,
-        residency_mover_readers=4,
-        # The publication row's own fields: a movement node's priority is the
-        # submitter's ordinary priority and its attempts are the mover
-        # policy's, both of which ``publication_row`` reads off the namespace
-        # exactly as it reads them off the CLI's.
-        priority=-10,
-        max_attempts=3,
-        retry_safe=True,
-    )
-    return replace(args, **overrides)
 
 
 def row_request(cas_root: Path, action_key: str) -> dict | None:
@@ -350,8 +324,7 @@ def promote_ready_manifest_rows(
             # item 4): a priority-1 consumer's staging waits behind the -10
             # band otherwise.  Zero is a band, not a missing value (item C).
             raw_priority = item.get("priority")
-            args = planner_args(
-                priority=-10 if raw_priority is None else int(raw_priority))
+            priority = -10 if raw_priority is None else int(raw_priority)
             template = movement_template_of(queue, request, key)
             if template is None:
                 outcome["outcome"] = "refused"
@@ -370,11 +343,14 @@ def promote_ready_manifest_rows(
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
             store = replace(store_for(__file__), queue_root=Path(queue.root), cas_root=Path(row_cas))
-            with submission.write_window(args, store=store):
+            with submission.write_window(SubmissionRequest(), store=store):
                 staged = residency_plan.file_manifest_row(
                     queue, key, template=template, tier=dict(stage_tier),
-                    options=submission.filing_options(args),
-                    publication=submission.row_publication(args, store), cas=cas)
+                    options=residency_plan.FilingOptions(),
+                    publication=RowPublication(
+                        queue_root=store.queue_root, cas_root=store.cas_root,
+                        worker_script=store.runtime_root / "tools" / "prismabuild_worker.py",
+                        priority=priority, max_attempts=3, retry_safe=True), cas=cas)
         except SubmissionRefused as exc:
             # pbrun's refusal vocabulary: the sealing path says no with a
             # SystemExit, which ``except Exception`` does not see.  A sealing

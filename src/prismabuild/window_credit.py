@@ -528,18 +528,3 @@ def cancel_due(*, consumer_live: bool, superseded: bool,
     if mover_holds_need:
         return "need-landed"
     return None
-
-
-def decision_needs(plan: Mapping[str, object], accepted_phase: str | None,
-                   published: object, *, mover_role: str = "mover_row",
-                   ) -> dict[str, object]:
-    """Thin pure wrapper so the loops share one needs spelling.
-
-    Lives here (not on the plan module) to keep the plan module's surface to
-    range/window truth; the import runs one way only.
-    """
-
-    from prismabuild import residency_plan as plan_mod
-
-    return plan_mod.advance_needs(plan, accepted_phase, published=published,
-                                  mover_role=mover_role)

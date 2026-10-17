@@ -1628,7 +1628,7 @@ def ram_residency_window(
                             step="ram-window-publish"))
                             for lock_key in (key, str(row["action_key"]))):
                         break
-                    owned, why = residency_plan.window_owned(
+                    owned, why = residency_plan.ConsumerWindow.decision_owned(
                         queue, key, filing=incarnation, generation=generation)
                     if not owned:
                         events.append({
@@ -3376,7 +3376,7 @@ def _is_newcomer(consumer: Mapping[str, object], needs: Mapping[str, object],
 
     A newcomer is a consumer that has not been admitted: it is in ``ready``
     and its lead is unpublished.  The lead is the plan's first range
-    (:func:`residency_plan.advance_needs`), and an egressed range holds no
+    (:func:`residency_plan.ConsumerWindow.advance`), and an egressed range holds no
     tokens, so it reads as unpublished again once the consumer has passed
     it.  A claimed consumer passed the claim's residency gate on those
     leads, so its window is admitted for the rest of its run: its next range
@@ -4498,7 +4498,7 @@ def _claim_of(key: str, consumer: Mapping[str, object],
     from free when it claims, but the window publishes nothing more for it.
     ``blocked_since`` (:func:`_blocked_since`) ranks a blocked window among
     the blocked ones.  ``further`` is every leg beyond ``leg``, in read
-    order, that :func:`residency_plan.window` already decided this window
+    order, that :func:`residency_plan.ConsumerWindow.decision` already decided this window
     would publish given the room -- the same shape as ``leg``.  Kept on the
     claim as ``further_legs`` for :func:`_rank_claims` to spend against the
     tier's measured landing rate (#1038): a granted window's cap is one leg
@@ -4567,7 +4567,7 @@ def _granted_extra_legs_gib(
     a window's legs are sequential, so a leg that does not fit stops that
     window's share rather than skipping ahead to a smaller later one, and
     moves on to the next window's turn at what is left.  Nothing here
-    invents a leg :func:`residency_plan.window` did not already decide a
+    invents a leg :func:`residency_plan.ConsumerWindow.decision` did not already decide a
     window would publish given the room.
     """
 
@@ -8510,34 +8510,6 @@ def _deferred_waiting_for(deferred: str | None, *, end: int | None,
             "tier's room allow")
 
 
-def _pre_progress_reach(plan: Mapping[str, object],
-                        accepted_phase: object) -> set[str]:
-    """The later stage legs the window publishes before first progress (F1).
-
-    What :func:`residency_window`'s stage ``residency_plan.window`` call,
-    which passes no run-ahead cap, publishes past the phase a consumer with
-    no accepted progress reads: in read order, the legs whose run-ahead fits its
-    budget, the largest later leg (``_budget_from_step`` with
-    ``has_accepted=False``).  Nothing past them is published until it
-    reports.  A withdrawn leg is counted here and skipped by the window, so
-    this can only name fewer legs than the window publishes, never more.
-    """
-
-    ahead = [str(phase["name"]) for phase in residency_plan.remaining(
-        plan, accepted_phase)][1:]                               # type: ignore[arg-type]
-    later = [leg for leg in residency_plan.legs_over(
-        plan, 0, 1 << 62, mover_role="mover_row") if leg["phase"] in ahead]
-    budget = residency_plan._budget_from_step(
-        max((int(leg["stage_gib"]) for leg in later), default=0),
-        has_accepted=False, capacity_gib=None)
-    reach: set[str] = set()
-    spent = 0
-    for leg in later:
-        spent += int(leg["stage_gib"])
-        if budget is not None and spent > budget:
-            break
-        reach.add(str(leg["mover_row"]["action_key"]))          # type: ignore[index]
-    return reach
 
 
 def _landing_horizon(horizon: Mapping[str, object] | None, *, end: int | None,
@@ -8598,7 +8570,7 @@ def publish_landing_expectations(
     With no horizon (no accepted progress yet, or no rate to price one),
     nothing can extend it, so only the legs the window publishes regardless
     are listed: the phase being read and, before first progress, its one
-    step of run-ahead (:func:`_pre_progress_reach`).  A later leg keeps no
+    step of run-ahead (:attr:`residency_plan.ConsumerWindow.pre_progress_stage_reach`).  A later leg keeps no
     row and the reader's clock refuses it, as before #1018 (review F1).
 
     On a tier the claim order ranks (#1011), the range a held-back consumer
@@ -8704,10 +8676,11 @@ def publish_landing_expectations(
             progressed = residency_plan.accepted(plan, accepted_phase)  # type: ignore[arg-type]
             # Before its first accepted progress a consumer has no horizon,
             # and the window publishes the phase it reads plus one step of
-            # run-ahead (``residency_plan.window``: ``no_accepted_progress``).
+            # run-ahead (``residency_plan.ConsumerWindow.decision``: ``no_accepted_progress``).
             # Those legs, and only those, are coming without a report.
             first_step = (set() if horizon is not None or progressed else
-                          _pre_progress_reach(plan, accepted_phase))
+                          residency_plan.ConsumerWindow(plan, accepted_phase,
+                              residency_plan.LegObservation()).pre_progress_stage_reach)
             ranges: list[dict[str, object]] = []
             for leg in residency_plan.legs_over(plan, 0, 1 << 62,
                                                 mover_role="mover_row"):
@@ -9390,7 +9363,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                             step="window-publish"))
                             for lock_key in (key, str(row["action_key"]))):
                         break
-                    owned, why = residency_plan.window_owned(
+                    owned, why = residency_plan.ConsumerWindow.decision_owned(
                         queue, key, filing=incarnation, generation=generation)
                     if not owned:
                         published.append({

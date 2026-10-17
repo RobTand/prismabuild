@@ -6921,10 +6921,10 @@ def row_publication(args: SubmissionRequest, store: FleetStore) -> RowPublicatio
 
 def filing_options(args: SubmissionRequest) -> residency_plan.FilingOptions:
     return residency_plan.FilingOptions(
-        ram=getattr(args, "residency_ram", "auto"),
-        share=getattr(args, "residency_share", "auto"),
+        ram=args.residency_ram,
+        share=args.residency_share,
         mover_readers=args.residency_mover_readers,
         mover_mem_gb=args.residency_mover_mem_gb,
         mover_max_attempts=args.residency_mover_max_attempts,
-        prefetch_depth_gib=getattr(args, "residency_prefetch_depth_gib", None),
-        read_mb_s=getattr(args, "residency_read_mb_s", None))
+        prefetch_depth_gib=args.residency_prefetch_depth_gib,
+        read_mb_s=args.residency_read_mb_s)
