@@ -756,7 +756,10 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
     for key in ledger.held_keys():
         if not ledger.holder_tokens(key).get("stage_gib", 0):
             continue
-        receipt = pool.record_store.read_bounded_document(queue.records.move_path(key), max_bytes=128 << 20)
+        receipt = pool.record_store.read_bounded_document(
+            queue.records.move_path(key),
+            max_bytes=128 << 20,
+        )
         if isinstance(receipt, dict):
             direct(receipt)
             manifests(receipt, str(cas_root or queue.root.parent / "cas"))

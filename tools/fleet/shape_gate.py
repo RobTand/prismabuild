@@ -879,7 +879,9 @@ class ShapeGate:
         return dict(got)
 
     def _report(self, phase: str, units: int) -> None:
-        claimed = pool.record_store.value_or_raise(self.queue.records.item(pool.record_store.CLAIMED, self.consumer))
+        claimed = pool.record_store.value_or_raise(
+            self.queue.records.item(pool.record_store.CLAIMED, self.consumer),
+        )
         self.queue.write_lease(
             self.consumer, owner=self.reader_owner,
             claim_snapshot=claimed if isinstance(claimed, dict) else None,

@@ -4156,7 +4156,11 @@ def announced_pool_identity(pool_root: str | Path,
     return None
 
 
-def _parse_own_document(path: Path, validate: Callable[[object], object], trust) -> tuple[kept_reads.FileVersion, object] | None:
+def _parse_own_document(
+    path: Path,
+    validate: Callable[[object], object],
+    trust,
+) -> tuple[kept_reads.FileVersion, object] | None:
     """One resume document, parsed before the stage ownership lock (#1008).
 
     Read under the existing #1045 coarse-clock and local-filesystem fence
@@ -4216,15 +4220,22 @@ def _reread_own_document(path: Path,
         return validate(json.load(stream))
 
 
-def _resume_own_coverage(queue, *, consumer_action_key: str,
-                         mover_action_key: str, tier_id: str,
-                         stage_root: Path, manifest_sha256: str,
-                         residency_root: Path,
-                         window: list[dict[str, object]],
-                         mount_prefix: str,
-                         namespace: str | None = None,
-                         named_once: frozenset[str] = frozenset(),
-                         timings: dict[str, float] | None = None, trust=None) -> tuple[dict[str, dict[str, object]],
+def _resume_own_coverage(
+    queue,
+    *,
+    consumer_action_key: str,
+    mover_action_key: str,
+    tier_id: str,
+    stage_root: Path,
+    manifest_sha256: str,
+    residency_root: Path,
+    window: list[dict[str, object]],
+    mount_prefix: str,
+    namespace: str | None = None,
+    named_once: frozenset[str] = frozenset(),
+    timings: dict[str, float] | None = None,
+    trust=None,
+) -> tuple[dict[str, dict[str, object]],
                                     dict[str, dict[str, object]], str | None]:
     """This mover's own prior coverage, qualified for a same-key retry.
 

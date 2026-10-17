@@ -1027,7 +1027,9 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
-            item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
+            item = pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.CLAIMED, key),
+            )
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -1202,8 +1204,13 @@ def _drop_vouch(queue: pool.PoolQueue, root: Path, namespace: str,
         consumer_action_key=namespace, mover_action_key=mover_action_key)
 
 
-def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
-                    exclude: frozenset[str] | set[str] = frozenset(), store=None) -> dict[str, list[str]]:
+def shared_interest(
+    queue: pool.PoolQueue,
+    mover_action_key: str,
+    *,
+    exclude: frozenset[str] | set[str] = frozenset(),
+    store=None,
+) -> dict[str, list[str]]:
     """The live consumers that will still read a shared range (#1026).
 
     A consumer is interested while it is ready or claimed, its frozen plan
@@ -1267,8 +1274,12 @@ def shared_interest(queue: pool.PoolQueue, mover_action_key: str, *,
 def _range_live_or_landed(queue: pool.PoolQueue, mover_action_key: str) -> bool:
     """Whether a mover is queued, running, or filed a complete receipt."""
 
-    if (pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover_action_key))
-            or pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover_action_key))):
+    if (pool.record_store.value_or_raise(
+        queue.records.item_presence(pool.record_store.READY, mover_action_key),
+    )
+            or pool.record_store.value_or_raise(
+                queue.records.item_presence(pool.record_store.CLAIMED, mover_action_key),
+            )):
         return True
     receipt = queue.move_record(mover_action_key)
     return isinstance(receipt, Mapping) and receipt.get("complete") is True
@@ -1885,7 +1896,9 @@ def _claimed_source_paths(queue: pool.PoolQueue, stage: Path,
     records: list[tuple[str, dict[str, object]]] = []
     for key in keys:
         try:
-            item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
+            item = pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.CLAIMED, key),
+            )
         except (OSError, pool.PoolContractError) as exc:
             tainted.append(f"{key[:12]}: {exc}")
             continue
@@ -2536,7 +2549,12 @@ def _path_version(path: Path | str) -> kept_reads.FileVersion | None:
     return kept_reads.metadata_version(info)
 
 
-def _fenced_path_version(path: Path | str, fence: int | None, *, trust) -> tuple[kept_reads.FileVersion | None,
+def _fenced_path_version(
+    path: Path | str,
+    fence: int | None,
+    *,
+    trust,
+) -> tuple[kept_reads.FileVersion | None,
                                     kept_reads.FileVersion | None]:
     """``(version, trusted)`` for one regular metadata file, from one ``lstat``.
 
@@ -2807,9 +2825,17 @@ def _containment_state(stage: Path, target: Path) -> str:
     return "unknown"
 
 
-def prune_stale_mentions(queue: pool.PoolQueue, mover_action_key: str, *,
-                         consumer_action_key: str, stage: Path, tier_id: str,
-                         root: Path, observed: Mapping[str, object], trust=None) -> dict[str, object]:
+def prune_stale_mentions(
+    queue: pool.PoolQueue,
+    mover_action_key: str,
+    *,
+    consumer_action_key: str,
+    stage: Path,
+    tier_id: str,
+    root: Path,
+    observed: Mapping[str, object],
+    trust=None,
+) -> dict[str, object]:
     """Prune positively stale paths from one terminal owner's documents (#853).
 
     A FAILED consumer's executed DONE mover can leave a material sidecar
@@ -3449,8 +3475,6 @@ def live_claims(queue: pool.PoolQueue, *, store=None) -> tuple[set[str], dict[st
     return wanted, owners
 
 
-
-
 def _owner_record(queue: pool.PoolQueue, state: str, key: str) -> dict:
     """Read a regular, identity-bound queue outcome; filenames are not proof."""
     record = queue.records.retirement_candidate(state, key)
@@ -3641,9 +3665,16 @@ def _fragment_bytes(fragment: Mapping[str, object]) -> int:
                if isinstance(entry, Mapping))
 
 
-def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
-                           tier_id: str, stage_root: str,
-                           residency_root: str | Path | None, store=None) -> dict[str, object] | None:
+def _evict_uncharged_owner(
+    queue: pool.PoolQueue,
+    mover: str,
+    consumer: str,
+    *,
+    tier_id: str,
+    stage_root: str,
+    residency_root: str | Path | None,
+    store=None,
+) -> dict[str, object] | None:
     """Give back one uncharged dead owner's bytes, or ``None`` if it revived.
 
     The death proof is taken again here, under the consumer's transition
@@ -3663,11 +3694,19 @@ def _evict_uncharged_owner(queue: pool.PoolQueue, mover: str, consumer: str, *,
                 live, why = residency_plan.live_state(queue, key)
                 if live or why:
                     return None
-            if (not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.lease_path(consumer))))
-                    or not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.residency_plan_path(consumer))))):
+            if (not (not pool.record_store.value_or_raise(
+                queue.records.retirement_presence_at(queue.records.lease_path(consumer)),
+            ))
+                    or not (not pool.record_store.value_or_raise(
+                        queue.records.retirement_presence_at(
+                            queue.records.residency_plan_path(consumer),
+                        ),
+                    ))):
                 return None
             with queue.mover_transition_lock(mover):
-                if not pb.immutable_files.confirmed_metadata_absence(queue.tier_ledger(tier_id).held_dir / mover):
+                if not pb.immutable_files.confirmed_metadata_absence(
+                    queue.tier_ledger(tier_id).held_dir / mover,
+                ):
                     return None
                 return evict(queue, mover, consumer_action_key=consumer,
                              stage_root=stage_root,
@@ -3925,14 +3964,32 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                 return
             # Exactly one terminal record: failed or withdrawn.  Two is
             # not a death but a question, and done is not a death at all.
-            if not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(pool.record_store.DONE, consumer)))):
+            if not (not pool.record_store.value_or_raise(
+                queue.records.retirement_presence_at(
+                    queue.records.item_path(pool.record_store.DONE, consumer),
+                ),
+            )):
                 return
-            consumer_failed = not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(pool.record_store.FAILED, consumer))))
-            consumer_withdrawn = not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(pool.record_store.WITHDRAWN, consumer))))
+            consumer_failed = not (not pool.record_store.value_or_raise(
+                queue.records.retirement_presence_at(
+                    queue.records.item_path(pool.record_store.FAILED, consumer),
+                ),
+            ))
+            consumer_withdrawn = not (not pool.record_store.value_or_raise(
+                queue.records.retirement_presence_at(
+                    queue.records.item_path(pool.record_store.WITHDRAWN, consumer),
+                ),
+            ))
             if consumer_failed == consumer_withdrawn:
                 return
-            if (not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.lease_path(consumer))))
-                    or not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.residency_plan_path(consumer))))):
+            if (not (not pool.record_store.value_or_raise(
+                queue.records.retirement_presence_at(queue.records.lease_path(consumer)),
+            ))
+                    or not (not pool.record_store.value_or_raise(
+                        queue.records.retirement_presence_at(
+                            queue.records.residency_plan_path(consumer),
+                        ),
+                    ))):
                 return
             if consumer_failed:
                 failed = _owner_record(queue, pool.record_store.FAILED, consumer)
@@ -3958,11 +4015,23 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                             refuse(f"ownership uncertain: {why}", consumer, mover)
                         if live or why:
                             continue
-                        if not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(pool.record_store.FAILED, mover)))):
+                        if not (not pool.record_store.value_or_raise(
+                            queue.records.retirement_presence_at(
+                                queue.records.item_path(pool.record_store.FAILED, mover),
+                            ),
+                        )):
                             continue
-                        done = not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(pool.record_store.DONE, mover))))
+                        done = not (not pool.record_store.value_or_raise(
+                            queue.records.retirement_presence_at(
+                                queue.records.item_path(pool.record_store.DONE, mover),
+                            ),
+                        ))
                         if done:
-                            if not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(pool.record_store.WITHDRAWN, mover)))):
+                            if not (not pool.record_store.value_or_raise(
+                                queue.records.retirement_presence_at(
+                                    queue.records.item_path(pool.record_store.WITHDRAWN, mover),
+                                ),
+                            )):
                                 continue
                             terminal = _owner_record(queue, pool.record_store.DONE, mover)
                             ending = queue.adopted_attempt_summary(terminal)
@@ -3973,9 +4042,13 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                         else:
                             _require_exact_withdrawal(queue, mover)
                         tier = str(observed["tier_id"])
-                        if not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.lease_path(mover)))):
+                        if not (not pool.record_store.value_or_raise(
+                            queue.records.retirement_presence_at(queue.records.lease_path(mover)),
+                        )):
                             continue
-                        material_present = not pb.immutable_files.confirmed_metadata_absence(reader_lease.material_path(root, consumer, mover))
+                        material_present = not pb.immutable_files.confirmed_metadata_absence(
+                            reader_lease.material_path(root, consumer, mover),
+                        )
                         if material_present:
                             # #853: a material-bearing DONE owner, charged
                             # or not.  A withdrawn one keeps whatever its
@@ -4018,9 +4091,13 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                     and mover not in held_by_tier.get(tier, ())):
                                 uncharged.add(tier, mover, consumer, observed)
                             continue
-                        if not pb.immutable_files.confirmed_metadata_absence(queue.tier_ledger(tier).held_dir / mover):
+                        if not pb.immutable_files.confirmed_metadata_absence(
+                            queue.tier_ledger(tier).held_dir / mover,
+                        ):
                             continue
-                        if not done and not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.move_path(mover)))):
+                        if not done and not (not pool.record_store.value_or_raise(
+                            queue.records.retirement_presence_at(queue.records.move_path(mover)),
+                        )):
                             continue
                         current = residency_map.validate_fragment(
                             json.loads(
@@ -4448,7 +4525,9 @@ def _unended_owner(queue: pool.PoolQueue, consumer: str) -> str:
         if live:
             return f"its consumer {consumer[:12]} is still queued ({live})"
         ended = [state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
-                 if not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(state, consumer))))]
+                 if not (not pool.record_store.value_or_raise(
+                     queue.records.retirement_presence_at(queue.records.item_path(state, consumer)),
+                 ))]
         if not ended:
             return f"its consumer {consumer[:12]} has no outcome record"
         if len(ended) > 1:
@@ -4530,7 +4609,9 @@ def _held_by_a_live_item(queue: pool.PoolQueue, key: str,
     if not _is_action_key(key):
         return False
     try:
-        return any(not (not pool.record_store.value_or_raise(queue.records.retirement_presence_at(queue.records.item_path(state, key))))
+        return any(not (not pool.record_store.value_or_raise(
+            queue.records.retirement_presence_at(queue.records.item_path(state, key)),
+        ))
                    for state in (pool.record_store.READY, pool.record_store.CLAIMED))
     except OSError:
         return False
