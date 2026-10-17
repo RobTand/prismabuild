@@ -1,3 +1,4 @@
+from submission_support import patch_store
 from prismabuild import submission
 """Retry failed publication dispatch without rewriting the immutable set."""
 import pbrun

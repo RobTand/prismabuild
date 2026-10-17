@@ -13,6 +13,7 @@ The sweep here holds every fleet tool to the rule; the second test drives the
 call that leaked.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import importlib
 import inspect

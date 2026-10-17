@@ -12,6 +12,7 @@ refused before anything is submitted rather than after the scheduler has
 placed it.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 from pathlib import Path

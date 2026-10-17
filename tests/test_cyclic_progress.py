@@ -1,4 +1,5 @@
 """Repeated long phases retain their allowance without granting endless quiet."""
+from prismabuild import submission
 from prismabuild import submission as submit_core
 import itertools
 import json
