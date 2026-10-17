@@ -6,7 +6,7 @@ One loop per file-serving box, spawned by ``supervise.py`` under the
 ``arcstats``, stage pools by the ``prismabuild-stage`` name prefix, the
 ram tier by the tmpfs mounted at the policy's mountpoint (#640) -- learns
 the pool's fill bandwidth from the receipts of reads off it, and makes each
-tier's ledger say exactly that: ``mint_tier_capacity`` grows and shrinks the
+tier's ledger say exactly that: ``TierLedger.mint`` grows and shrinks the
 token supply to the discovered number, so adding a device to the stage pool
 offers more on the next cycle and exporting the pool offers nothing.  Rob,
 2026-09-17: *"as the topology of my drives changes, prismabuild will be able
@@ -8070,7 +8070,7 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
     Present or unreadable paths retain the reservation.
     The pool's nonexecution proof refuses committed batches, terminal
     or claimed movers, staged bytes, and live leases.
-    Release tokens through ``release_tier_holder`` first.
+    Release tokens through ``TierLedger.release_unspent_best_effort`` first.
     Verify that no tokens remain before the ordinary funding rollback.
     A fault can leave ``transferring`` with no tokens; the next pass
     completes the rollback under the same lock and fresh checks.

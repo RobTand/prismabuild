@@ -50,19 +50,60 @@ def original_sources(root, base, paths):
         yield path, source
 
 
+def prerequisite_assertions(before, prerequisite):
+    """Derive exact assertion-owner moves from the concrete imported source."""
+    old, new = assertion_keys(before), assertion_keys(prerequisite)
+    removed, added = old - new, new - old
+    mapping = {}
+    for key, count in removed.items():
+        candidates = [(replacement, number) for replacement, number in added.items()
+                      if replacement[0] == key[0]]
+        if count != 1 or len(candidates) != 1 or candidates[0][1] != 1:
+            raise ValueError(("ambiguous prerequisite assertion move", key, candidates))
+        mapping[key] = candidates[0][0]
+    parents = {}
+    for node in ast.walk(before):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    for node in ast.walk(before):
+        if not isinstance(node, ast.Assert):
+            continue
+        names, parent = [], parents.get(node)
+        while parent is not None:
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.append(parent.name)
+            parent = parents.get(parent)
+        key = ".".join(reversed(names)), ast.dump(node, include_attributes=False)
+        if key in mapping:
+            replacement = next(n for n in ast.walk(prerequisite)
+                               if isinstance(n, ast.Assert)
+                               and ast.dump(n, include_attributes=False) == mapping[key][1])
+            node.test, node.msg = replacement.test, replacement.msg
+    return [dict(function=key[0], original=key[1], prerequisite=value[1])
+            for key, value in mapping.items()]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--prerequisite", help="Concrete imported owner prerequisite commit")
     args = parser.parse_args()
     baseline = json.loads(args.baseline.read_text())
     migration = runpy.run_path(str(args.root / "docs/evidence/c10/migrate_source.py"))
     paths = [path for path in baseline["files"] if path.startswith("tests/")]
     predicate_changes, declaration_changes = {}, {}
     original_count = retained_count = 0
+    prerequisite_moves = {}
+    imported = (dict(original_sources(args.root, args.prerequisite, paths))
+                if args.prerequisite else {})
     for path, source in original_sources(args.root, baseline["revision"], paths):
         before = ast.parse(source, filename=path)
+        if imported:
+            moves = prerequisite_assertions(before, ast.parse(imported[path], filename=path))
+            if moves:
+                prerequisite_moves[path] = moves
         after = ast.parse((args.root / path).read_text(), filename=path)
         removed = declarations(before) - declarations(after)
         if removed:
@@ -120,11 +161,20 @@ def main():
     for commit in subprocess.check_output(
             ["git", "rev-list", "--reverse", f"{baseline['revision']}..HEAD"],
             cwd=args.root, text=True).splitlines():
-        lines = subprocess.check_output(["git", "show", "--format=", "--numstat", commit],
+        parents = subprocess.check_output(["git", "rev-list", "--parents", "-n", "1", commit],
+                                          cwd=args.root, text=True).split()[1:]
+        flags = []
+        if len(parents) > 1:
+            if len(parents) != 2 or parents[1] != args.prerequisite:
+                raise ValueError(("undeclared integration merge", commit, parents))
+            flags = ["--remerge-diff"]
+        lines = subprocess.check_output(["git", "show", *flags, "--format=", "--numstat", commit],
                                         cwd=args.root, text=True).splitlines()
         changed = sum(int(a) + int(b) for a, b, _ in (line.split("\t") for line in lines)
                       if a != "-" and b != "-")
         row = dict(commit=commit, paths=len(lines), changed_lines=changed)
+        if flags:
+            row.update(imported_prerequisite=parents[1], scope="actual merge resolutions")
         commits.append(row)
         if len(lines) > 6 or changed > 900:
             oversize.append(row)
@@ -132,6 +182,7 @@ def main():
                   head=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.root, text=True).strip(),
                   original_assertions=original_count, automatically_mapped_assertions=retained_count,
                   predicate_changes=predicate_changes, declaration_changes=declaration_changes,
+                  prerequisite=args.prerequisite, prerequisite_assertion_moves=prerequisite_moves,
                   residual_retired_apis=residual, unknown_tier_attributes=dict(unknown),
                   parse_errors=parse_errors, commits=commits, oversized_commits=oversize)
     args.output.write_text(json.dumps(report, indent=2) + "\n")

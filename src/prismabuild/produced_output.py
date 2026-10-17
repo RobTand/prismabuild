@@ -70,7 +70,7 @@ CREDIT vs TOKENS (liveness R2 direction, binding here): the admission
 record (`admit_instance`) is binding metadata, NOT funding and NOT
 capacity. Physical tokens are held ONLY by batch movers, exact per range,
 acquired under the batch holder and TRANSFERRED whole to mover ownership
-with no free interval (existing `transfer_tier_reservation`). No standing
+with no free interval (existing `TierLedger.handover`). No standing
 ledger pool is held beside movers. The funded-claim primitive family
 (`reserve_fence` / `ResourceLedger.transfer_tokens` / `funded_cover`) is
 delivered by the prepaid-output lane, so `admit_funded_window` reports the

@@ -94,7 +94,7 @@ def capture(root, revision):
             continue
         source = subprocess.check_output(["git", "show", f"{revision}:{path}"],
                                          cwd=root, text=True)
-        if (path.startswith("tests/") or "tier_ledger" in source
+        if (path.startswith("tests/") or path == "src/prismabuild/tier_holdings.py" or "tier_ledger" in source
                 or any(name in source for name in DOMAIN)):
             files[path] = inspect_file(path, source)
     return {"revision": subprocess.check_output(

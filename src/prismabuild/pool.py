@@ -3500,7 +3500,7 @@ def _guarded_mutation(*, blocking: bool):
     Tier ledgers built by :meth:`PoolQueue.tier` carry the tier's
     mint lock as that exclusion, so every token rename on the ledger
     serializes against the reclaim headroom scan (see
-    :meth:`PoolQueue._reclaim_dead_markers`): a held/private token renamed
+    :meth:`TierLedger._reclaim_mint`): a held/private token renamed
     to free between the free listing and the holder listing is missed by
     both, and the overstated headroom reissues a dead name with no backing
     -- then a claimant takes the phantom before the same apply's retire
@@ -4111,7 +4111,7 @@ class ResourceLedger:
         the disposition itself.  The mint marker is never touched, so the
         name can never be re-minted into free while the bytes remain;
         honest regrowth reissues exactly these filed names when backing
-        exists (see :meth:`PoolQueue._reclaim_dead_markers`).  A second
+        exists (see :meth:`TierLedger._reclaim_mint`).  A second
         destroy of the same name finds it already dead and counts it
         without moving anything; a name live elsewhere is never taken.
         There is no second ledger: the dead namespace lives in the same
@@ -4249,7 +4249,7 @@ class ResourceLedger:
         are never counted as free (:meth:`available` reads ``free/`` only).
         A caller that decides a shrink from the total must not trust a lower
         bound to say the ledger is already small enough (see
-        ``_apply_tier_capacity``).
+        ``TierLedger._apply_mint``).
         """
 
         counts: dict[str, int] = {}
