@@ -47,7 +47,10 @@ class StagedBodyForm(ast.NodeTransformer):
         if isinstance(node.value, ast.Name):
             if node.value.id == "output_vocabulary" and node.attr == "PRODUCED_OUTPUT_REF_SCHEMA_V1":
                 return ast.Name("output_ref_schema", ast.Load())
-            if node.value.id == "staged_path":
+            if node.value.id == "staged_path" or (
+                    node.value.id in self.selected
+                    and node.attr in self.selected[node.value.id]
+                    and node.value.id != "produced_output"):
                 return ast.Name(STAGED_PUBLIC.get(node.attr, node.attr), ast.Load())
             if node.value.id == "produced_output" and node.attr in self.selected["produced_output"]:
                 node.value.id = "output_vocabulary"
