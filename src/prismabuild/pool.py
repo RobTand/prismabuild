@@ -22776,7 +22776,7 @@ class PoolQueue:
         self.sweep_stale_acquisitions()
         lifecycle.sweep_finish_tombstones(self, )
         self.sweep_ready_transitions()
-        self.quarantine_orphans()
+        lifecycle.quarantine_orphans(self, )
         return requeued
 
     def _sweep_orphan_requeue_staging(self, claimed: Path, *, grace_s: float) -> None:
@@ -22914,71 +22914,6 @@ class PoolQueue:
                 swept.append(key)
         return swept
 
-    def _file_unreadable(self, path: Path, *, reason: str) -> str | None:
-        """Take one unparseable queue record out of the live queue, loudly.
-
-        The original bytes and a bounded diagnostic go to ``superseded/``
-        so whoever has to find the writer still can; a
-        record with the file's own name goes to ``failed/`` because that is
-        what ``pbstatus`` and ``pbwait`` read, and a defect nobody counts is
-        the silence this sweep exists to end.
-
-        Never over a terminal record.  A corrupt ready file says nothing about
-        an ending already filed for that key, and a key with two terminals is
-        a worse defect than the one being cleaned up.
-        """
-
-        key = path.stem
-        # Take the bytes out of the live namespace before diagnosing or filing
-        # them. A later publish must not be unlinked by this sweep. Preserve the
-        # complete original alongside the bounded inline diagnostic.
-        evidence = self.records.unreadable_capture_path(key)
-        evidence.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.rename(path, evidence)
-        except FileNotFoundError:
-            return None
-        try:
-            repaired = record_store.read_document(evidence)
-        except PoolContractError:
-            repaired = None
-        else:
-            if repaired is not None:
-                # The producer repaired/replaced the record after the scan.
-                # Restore without overwriting another concurrent publication.
-                try:
-                    os.link(evidence, path)
-                except FileExistsError:
-                    pass  # the replacement remains available as evidence
-                else:
-                    evidence.unlink()
-                return None
-        raw = self.records.raw_record_at(evidence)
-        self.records.file_superseded(
-            None, key=key, kind="unreadable", state=READY,
-            status="unreadable_record",
-            filed_unix=_now(), filed_host=socket.gethostname(),
-            reason=reason, raw_bytes=len(raw),
-            raw_path=str(evidence.relative_to(self.root)),
-            raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"), when=_now(),
-        )
-        if not any(bool(record_store.value_or_raise(self.records.item_presence(state, key)))
-                   for state in (DONE, FAILED)):
-            self.records.file_record_if_absent_at(self.records.item_path(FAILED, key), {
-                    "schema": POOL_OUTCOME_SCHEMA_V1,
-                    "action_key": key,
-                    "status": "unreadable_record",
-                    "finished_unix": _now(),
-                    "finished_host": socket.gethostname(),
-                    "detail": {
-                        "reason": "the ready record could not be parsed, so no "
-                                  "worker could ever claim it; its bytes are "
-                                  "kept under withdrawn/superseded/",
-                        "parse_error": reason,
-                        "bytes": len(raw),
-                    },
-                })
-        return key
 
     @staticmethod
     def _ready_record_usable(record: Mapping[str, object], key: str) -> bool:
@@ -23108,120 +23043,10 @@ class PoolQueue:
         self._restore_ready_transition(captured, path.stem)
         return None
 
+
     def quarantine_orphans(self) -> list[str]:
-        """File ready records that no consumer can address.
-
-        ``claim()`` addresses an item by ``action_key`` and skips a record that
-        has none, so such a record never runs, never fails, and never leaves
-        ``ready``: the queue reports work it will not do, and the work it
-        stands for is lost in silence.  The reaper race above is one way to
-        make one, and a worker still running the pre-fix code is another, so
-        the sweep stays whether or not that race can still fire.  Filing them
-        is the point -- a countable ``orphaned_stub`` in ``failed`` is a
-        defect someone can see; a permanent resident of ``ready`` is not.
-
-        A record whose bytes will not parse is the same defect one step
-        earlier, so it takes the same route.  It used to take the whole fleet
-        instead: ``record_store.read_document`` refuses a malformed record, and that refusal
-        reached ``claim``, ``ready_items``, ``reap_stale`` and this sweep, so
-        one foreign writer's truncated file stopped every consumer on every
-        box until somebody deleted it by hand.
-        """
-
-        filed: list[str] = []
-        ready = self.records.dir(READY)
-        if not self.records.state_directory_present(READY):
-            return filed
-        for path in self.records.json_slot_paths(READY):
-            with self.action_transition_lock(path.stem, blocking=False) as acquired:
-                if not acquired:
-                    continue
-                try:
-                    record = record_store.read_document(path)
-                except PoolContractError as exc:
-                    key = self._file_unreadable(path, reason=str(exc))
-                    if key is not None:
-                        filed.append(key)
-                    continue
-                except OSError as exc:
-                    if exc.errno != errno.ESTALE:
-                        raise
-                    # The same race the branch below calls ordinary, arriving
-                    # through a directory handle the client had cached (#208).
-                    # It is caught here rather than through ``record_store.read_document``'s
-                    # ``tolerate_stale`` because this sweep *discriminates*
-                    # ``None``, and the flag would throw away the errno that tells
-                    # the two cases apart: a record still on disk answers
-                    # ``path.exists()`` with ``True`` and would be filed as a torn
-                    # write and unlinked -- a live queue item destroyed on the
-                    # evidence of a read that never reached it.  (``Path.exists``
-                    # would not even survive the attempt: ``pathlib._ignore_error``
-                    # covers ``ENOENT/ENOTDIR/EBADF/ELOOP``, so ``ESTALE`` comes
-                    # straight back out of it.)  Filing is this sweep's only
-                    # verb, and it may not be exercised on bytes it has not read.
-                    continue
-                if record is None:
-                    # ``None`` covers two different things.  The file vanishing
-                    # under the glob is an ordinary race with a concurrent claim
-                    # and is not this sweep's business.  A file that is still
-                    # there and holds zero bytes is a torn write no consumer will
-                    # ever address, which is exactly what this sweep is for.
-                    if path.exists():
-                        key = self._file_unreadable(path, reason="queue record is empty")
-                        if key is not None:
-                            filed.append(key)
-                    continue
-                # Two ways to be unaddressable, and both belong here.  A record
-                # with the wrong (or no) ``action_key`` is skipped by ``claim()``
-                # and never runs.  A record that *has* the key but lacks the
-                # fields a worker executes with -- ``worker_script``, ``cas_root``,
-                # checkout addressing -- is worse: it is claimed, it kills the
-                # worker process before execution, and retries before it is filed.
-                if self._ready_record_usable(record, path.stem):
-                    continue
-                taken = self._take_orphan_stub(path)
-                if taken is None:
-                    continue
-                record, captured = taken
-                detail: dict[str, object] = {
-                    "reason": "ready record is not executable: it lacks a "
-                    "matching action_key, the worker_script/cas_root/"
-                    "checkout addressing a worker runs from, or a place in "
-                    "the queue's own order; see the reap_stale and finish() "
-                    "requeue races",
-                }
-                unorderable = self._unorderable_queue_field(record)
-                if unorderable is not None:
-                    # Named, not merely counted: whoever has to find the
-                    # writer needs the field and the value it stated, and the
-                    # original bytes are already beside this in superseded/.
-                    field, value = unorderable
-                    detail["unorderable_field"] = field
-                    detail["unorderable_value"] = repr(value)
-                record.update(
-                    {
-                        "schema": POOL_OUTCOME_SCHEMA_V1,
-                        "action_key": path.stem,
-                        "status": "orphaned_stub",
-                        "finished_unix": _now(),
-                        "finished_host": socket.gethostname(),
-                        "detail": detail,
-                    }
-                )
-                # The moved bytes remain evidence. Neither a terminal ending nor
-                # a new live record under the same key belongs to this stub.
-                if not any(bool(
-                    record_store.value_or_raise(self.records.item_presence(state, path.stem)),
-                )
-                           for state in (READY, CLAIMED, DONE, FAILED)):
-                    self.records.file_record_if_absent_at(
-                        self.records.item_path(FAILED, path.stem),
-                        record,
-                    )
-                # A ready stub supplies no authority over committed reservations.
-                self._finish_ready_transition(captured)
-                filed.append(path.stem)
-        return filed
+        """Conclude unusable READY captures while preserving concurrent owners."""
+        return lifecycle.conclude(self, lifecycle.OrphanQuarantine())
 
     # -- attempt evidence and terminal states ----------------------------
 
