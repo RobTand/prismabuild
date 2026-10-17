@@ -131,7 +131,7 @@ def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatc
     its running sibling must be withdrawn and the fences released."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members)
-    clock[0] += pool.LEASE_TIMEOUT_S + 10
+    clock.now += pool.LEASE_TIMEOUT_S + 10
     record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, first))
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
     queue.write_lease(first, owner=str(record.get("claimed_by") or ""), claim_snapshot=record)
