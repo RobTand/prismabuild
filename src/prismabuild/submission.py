@@ -32,7 +32,7 @@ from .digest_primitives import sorted_json
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
 SHARED_ROOT = Path("/mnt/shared")
 from .submission_types import (FleetStore, SubmissionRequest, SubmissionRefused,
-    OfferDiscoveryTimedOut, DisplaySink, discard_display, notice as emit_display, ProducerPublication)
+    OfferDiscoveryTimedOut, DisplaySink, discard_display, notice as emit_display, ProducerPublication, ROW_NAMES)
 
 TRANSPORTS = ("pool", "slurm")
 
@@ -7510,8 +7510,8 @@ def default_transport(*, store: FleetStore) -> str:
 def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRequest:
     """Normalize an external row once into the shared submission vocabulary."""
     from dataclasses import fields
-    aliases = {"argv": "command", "tags": "tag", "container_images": "container_image",
-               "snapshot_refs": "snapshot_ref"}
+    aliases = {name: field for field, name in ROW_NAMES.items()}
+    aliases["snapshot_refs"] = "snapshot_ref"
     values = {aliases.get(name, name): value for name, value in row.items()}
     phases = values.pop("progress_phases", None)
     cycle = values.pop("progress_cycle", False)
@@ -7530,7 +7530,7 @@ def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRe
     unknown = values.keys() - known
     if unknown:
         raise SubmissionRefused(f"unknown submission fields: {', '.join(sorted(unknown))}", returncode=2)
-    from typing import get_type_hints
+    from typing import get_args, get_type_hints
     types = get_type_hints(SubmissionRequest)
     for name, value in list(values.items()):
         if value is not None and name in {"gpu_memory_gb", "timeout_s", "wait_s"}:
@@ -7539,6 +7539,11 @@ def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRe
             try:
                 value = values[name] = float(value)
             except (ValueError, TypeError):
+                raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2) from None
+        if isinstance(value, str) and (types[name] is int or int in get_args(types[name])):
+            try:
+                value = values[name] = int(value)
+            except ValueError:
                 raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2) from None
         if not _request_value_matches(value, types[name]):
             raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2)

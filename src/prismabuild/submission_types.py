@@ -137,3 +137,66 @@ class ProducerPublication:
     lane_root: str | Path | None
     job_entry: Path
     sbatch: str = "sbatch"
+
+
+ROW_NAMES = {"command": "argv", "tag": "tags", "container_image": "container_images"}
+_ROW_CONTROL_FIELDS = frozenset({"withdraw", "release_origin_consumer", "reason", "detach",
+    "transport", "progress_policy", "gang_group", "gang_size", "gang_index"})
+_COMMON_CONTROL_FIELDS = _ROW_CONTROL_FIELDS | {
+    "priority", "priority_reason", "as_sealed_by", "after", "supersedes", "produced_output_template"}
+
+
+@dataclass(frozen=True)
+class RequestOption:
+    field: str
+    name: str
+    flag: str
+    kind: Literal["value", "switch", "repeat", "json", "special"]
+
+
+def request_options() -> tuple[RequestOption, ...]:
+    from dataclasses import fields
+    from typing import get_origin, get_type_hints
+    hints = get_type_hints(SubmissionRequest)
+    result = []
+    for item in fields(SubmissionRequest):
+        if item.name in _ROW_CONTROL_FIELDS:
+            continue
+        name = ROW_NAMES.get(item.name, item.name)
+        if item.name in {"command", "demand", "env"}:
+            kind = "special"
+        elif hints[item.name] is bool:
+            kind = "switch"
+        elif get_origin(hints[item.name]) is Sequence:
+            kind = "repeat"
+        elif item.name == "requires_files":
+            kind = "json"
+        else:
+            kind = "value"
+        result.append(RequestOption(item.name, name, "--" + item.name.replace("_", "-"), kind))
+    result.extend((RequestOption("progress_policy", "progress_phases", "--progress-phase", "repeat"),
+                   RequestOption("progress_policy", "progress_cycle", "--progress-cycle", "switch")))
+    return tuple(result)
+
+
+def row_fields() -> frozenset[str]:
+    return frozenset(option.name for option in request_options())
+
+
+def common_fields() -> frozenset[str]:
+    return frozenset(option.name for option in request_options() if option.field not in _COMMON_CONTROL_FIELDS
+                     or option.name in {"progress_phases", "progress_cycle"})
+
+
+def option_fields(kind: str) -> tuple[tuple[str, str], ...]:
+    # Keep the existing human reproduction order; new fields follow declaration order.
+    order = {name: index for index, name in enumerate((
+        "cwd", "as_sealed_by", "timeout_s", "gpu_capacity", "gpu_memory_gb", "priority",
+        "priority_reason", "profile", "host_class", "max_attempts", "data_manifest",
+        "produced_output_template", "residency", "residency_ram", "residency_prefetch_depth_gib",
+        "residency_read_mb_s", "cpus", "deterministic", "anywhere", "here", "no_default_env",
+        "exclusive", "measurement", "retry_safe", "progress_cycle", "tags", "snapshot_ref",
+        "progress_phases", "container_images"))}
+    selected = [option for option in request_options() if option.kind == kind]
+    selected.sort(key=lambda option: order.get(option.name, len(order)))
+    return tuple((option.name, option.flag) for option in selected)

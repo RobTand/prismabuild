@@ -101,26 +101,9 @@ MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "pr
 #: stays the only judge of each value; this table forwards, it never reinterprets.
 #: The gang flags, ``--tag``, ``--priority``, ``--detach`` and ``--cwd`` are
 #: deliberately not here: the driver owns them.
-FLAG_FIELDS: dict[str, tuple[str, str]] = {
-    "gpu_memory_gb": ("--gpu-memory-gb", "value"),
-    "exclusive": ("--exclusive", "switch"),
-    "measurement": ("--measurement", "switch"),
-    "host_class": ("--host-class", "value"),
-    "container_images": ("--container-image", "repeat"),
-    "priority_reason": ("--priority-reason", "value"),
-    "max_attempts": ("--max-attempts", "value"),
-    "data_manifest": ("--data-manifest", "value"),
-    "resident_set": ("--resident-set", "value"),
-    "residency": ("--residency", "value"),
-    "residency_tier": ("--residency-tier", "value"),
-    "residency_ram": ("--residency-ram", "value"),
-    "residency_share": ("--residency-share", "value"),
-    "residency_mover_mem_gb": ("--residency-mover-mem-gb", "value"),
-    "residency_mover_readers": ("--residency-mover-readers", "value"),
-    "residency_prefetch_depth_gib": ("--residency-prefetch-depth-gib", "value"),
-    "residency_read_mb_s": ("--residency-read-mb-s", "value"),
-    "residency_mover_max_attempts": ("--residency-mover-max-attempts", "value"),
-}
+from prismabuild.submission_types import request_options
+FLAG_FIELDS = {option.name: (option.flag, option.kind) for option in request_options()
+               if option.name not in MEMBER_FIELDS and option.kind != "special"}
 MEMBER_FIELDS = MEMBER_FIELDS | set(FLAG_FIELDS)
 
 
@@ -135,6 +118,8 @@ def _field_problem(name: str, value: object) -> str | None:
                 and all(isinstance(item, str) and item for item in value)):
             return None
         return "must be a nonempty list of nonempty strings"
+    if kind == "json":
+        return None if isinstance(value, (str, list)) else "must be JSON text or an array"
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return "must be one string or number"
     if name == "max_attempts":

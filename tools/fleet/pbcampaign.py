@@ -259,50 +259,12 @@ import pbwait  # noqa: E402
 #: Row field to ``pbrun`` flag, and how the value is spelled.  A table rather
 #: than a chain of ifs, because the property that matters is that the mapping
 #: is mechanical: a row is a ``pbrun`` command line and nothing else.
-_VALUE_FIELDS = (
-    ("cwd", "--cwd"),
-    ("as_sealed_by", "--as-sealed-by"),
-    ("timeout_s", "--timeout-s"),
-    ("gpu_capacity", "--gpu-capacity"),
-    ("gpu_memory_gb", "--gpu-memory-gb"),
-    ("priority", "--priority"),
-    ("priority_reason", "--priority-reason"),
-    ("profile", "--profile"),
-    ("host_class", "--host-class"),
-    ("max_attempts", "--max-attempts"),
-    ("data_manifest", "--data-manifest"),
-    ("produced_output_template", "--produced-output-template"),
-    # The staged read path and the core count (#1082).  Residency is a
-    # publication choice rather than part of the key, so a row that could
-    # not carry it reproduced the action but not the IO path it reads by.
-    ("residency", "--residency"),
-    ("residency_ram", "--residency-ram"),
-    ("residency_prefetch_depth_gib", "--residency-prefetch-depth-gib"),
-    ("residency_read_mb_s", "--residency-read-mb-s"),
-    ("cpus", "--cpus"),
-)
-_SWITCH_FIELDS = (
-    ("deterministic", "--deterministic"),
-    ("anywhere", "--anywhere"),
-    ("here", "--here"),
-    ("no_default_env", "--no-default-env"),
-    ("exclusive", "--exclusive"),
-    ("measurement", "--measurement"),
-    ("retry_safe", "--retry-safe"),
-    ("progress_cycle", "--progress-cycle"),
-)
-_REPEATED_FIELDS = (
-    ("tags", "--tag"),
-    ("snapshot_ref", "--snapshot-ref"),
-    ("progress_phases", "--progress-phase"),
-    ("container_images", "--container-image"),
-)
-KNOWN_FIELDS = frozenset(
-    {"argv", "demand", "env"}
-    | {name for name, _ in _VALUE_FIELDS}
-    | {name for name, _ in _SWITCH_FIELDS}
-    | {name for name, _ in _REPEATED_FIELDS}
-)
+from prismabuild.submission_types import option_fields, row_fields
+_VALUE_FIELDS = option_fields("value")
+_SWITCH_FIELDS = option_fields("switch")
+_REPEATED_FIELDS = option_fields("repeat")
+KNOWN_FIELDS = row_fields()
+
 
 
 class ManifestError(Exception):
@@ -765,6 +727,9 @@ def pbrun_argv(row) -> list[str]:
                 flags.append(f"{flag}={row[field]}")
             else:
                 flags += [flag, str(row[field])]
+    for field, flag in option_fields("json"):
+        if row.get(field) is not None:
+            flags += [flag, row[field] if isinstance(row[field], str) else json.dumps(row[field])]
     demand = row.get("demand") or {}
     if not isinstance(demand, dict):
         raise ManifestError("demand must be an object of name to count")

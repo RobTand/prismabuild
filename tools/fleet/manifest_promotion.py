@@ -395,14 +395,16 @@ def promote_ready_manifest_rows(
             # dead-consumer pass cannot reap a plan between its filing and
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
-            with queue._transition_locked(key):
-                staged = submission.residency_stage_rows(
-                    template, consumer_action_key=key,
-                    tier=dict(stage_tier), args=args,
-                    queue=queue, cas=cas, store=configured_store())
-                if not staged.get("reused_frozen_plan"):
-                    residency_plan.seal_window(
-                        queue, staged["plan"], renew=True)
+            store = replace(configured_store(), queue_root=Path(queue.root), cas_root=Path(row_cas))
+            with submission.write_window(args, store=store):
+                with queue._transition_locked(key):
+                    staged = submission.residency_stage_rows(
+                        template, consumer_action_key=key,
+                        tier=dict(stage_tier), args=args,
+                        queue=queue, cas=cas, store=store)
+                    if not staged.get("reused_frozen_plan"):
+                        residency_plan.seal_window(
+                            queue, staged["plan"], renew=True)
         except SubmissionRefused as exc:
             # pbrun's refusal vocabulary: the sealing path says no with a
             # SystemExit, which ``except Exception`` does not see.  A sealing
