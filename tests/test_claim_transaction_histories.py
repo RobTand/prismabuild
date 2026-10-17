@@ -47,7 +47,9 @@ def test_uncertain_error_after_spending_probe_returns_tokens_but_keeps_sample_sp
     assert set(queue.ledger().held_keys()) == {holder}
     assert queue.records.item_path(pool.record_store.READY, candidate).read_bytes() == ready_bytes
     assert not queue.records.item_path(pool.record_store.CLAIMED, candidate).exists()
-    assert pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, holder)) == first
+    assert pool.read_queue_record(
+        queue.records.item_path(pool.record_store.CLAIMED, holder),
+    ) == first
     assert claim() is None, "an uncertain claim refunded a spent GPU sample"
     tick()
     resumed = claim()
@@ -95,7 +97,9 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     try:
         assert parent.poll(10), "claimant never reached the real persistence boundary"
         assert parent.recv() == "persisted"
-        persisted = pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, mover))
+        persisted = pool.read_queue_record(
+            queue.records.item_path(pool.record_store.CLAIMED, mover),
+        )
         assert persisted["attempts"] == 0
         assert persisted["published_unix"] == row["published_unix"]
         assert persisted["tier_funding"][TIER]["generation"] == generation

@@ -45,13 +45,19 @@ def test_claimed_advanced_high_priority_does_not_block_independent_small_lead(tm
                for e in events), events
     assert queue.records.item_path(base.pool.record_store.READY, low).exists(), (
         'CLAIMED rolling window with retired original lead established a new-admission barrier', events)
-    row = base.pool.record_store.value_or_raise(queue.records.item(base.pool.record_store.READY, low))
+    row = base.pool.record_store.value_or_raise(
+        queue.records.item(base.pool.record_store.READY, low),
+    )
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='small-qualifier',
                           capacity={'cpu': 4, 'mem_gb': 4})
     assert claimed and claimed['action_key'] == low
     assert queue.tier_ledger(base.TIER).holder_tokens(low) == {'stage_gib': 3}
     # Existing larger-window credit gate was not bypassed to make this pass.
-    assert all(not queue.records.item_path(base.pool.record_store.READY, phase['mover_row']['action_key']).exists()
+    assert all(not queue.records.item_path(
+        base.pool.record_store.READY,
+        phase['mover_row']['action_key'],
+    ).exists(
+    )
                for phase in plan['phases'])
 
 

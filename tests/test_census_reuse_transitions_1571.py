@@ -82,7 +82,9 @@ def test_a_replacement_election_between_candidates_still_fences_lower_priority(
     republished = publish("priority-zero-measurement", measurement=True,
                           priority=0, cpu=8, gpu=1, mem_gb=48)
     assert republished == measurement
-    successor = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, republished))
+    successor = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, republished),
+    )
     assert isinstance(successor, dict)
     assert queue.records.attempt_generation(successor) != first["generation"]
     tick(11)
@@ -113,7 +115,9 @@ def test_a_slow_refresh_refuses_reuse_and_releases_host_admission(
     assert claim() == holder
     keys = [publish(f"slow-refresh-{index}", priority=-10, timeout_s=600,
                     cpu=2, gpu=0, mem_gb=16) for index in range(3)]
-    rows = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)) for key in keys]
+    rows = [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) for key in keys]
     fifo = tmpfs_state / "refresh.fifo"
     reached = tmpfs_state / "refresh-entered"
     os.mkfifo(fifo)

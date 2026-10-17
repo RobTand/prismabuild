@@ -49,7 +49,9 @@ def test_a_busy_fence_is_waited_for_once_per_pass_not_once_per_candidate(
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.05)
     keys = [publish(f"census-candidate-{index}", priority=-10)
             for index in range(CANDIDATES)]
-    records = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)) for key in keys]
+    records = [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) for key in keys]
 
     attempts: list[int] = []
     real_held = reservation.CensusReader.held

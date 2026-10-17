@@ -120,8 +120,13 @@ def test_a_landed_export_is_accepted_and_nothing_moves(
 
 @pytest.mark.parametrize("recall", [_recall_ctime, _recall_mtime],
                          ids=["ctime", "mtime-and-ctime"])
-def test_a_timestamp_only_mismatch_is_a_public_refusal_not_a_repin(tmp_path, monkeypatch,
-                                                                    request, recall, settle_publishers):
+def test_a_timestamp_only_mismatch_is_a_public_refusal_not_a_repin(
+    tmp_path,
+    monkeypatch,
+    request,
+    recall,
+    settle_publishers,
+):
     spool = world(tmp_path)
     _, destination, _ = _landed(spool)
     recorded, observed = recall(destination)
