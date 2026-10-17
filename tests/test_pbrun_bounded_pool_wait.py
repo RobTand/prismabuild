@@ -5,9 +5,6 @@ listing succeeds, then opening the named record blocks.  These tests exercise
 the actual forked reader boundary; they never point at a fleet queue.
 """
 from __future__ import annotations
-import pbstatus
-import pbrun
-
 import fcntl
 import json
 import os
@@ -20,8 +17,10 @@ import time
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-from prismabuild import action_client, action_wait  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
+import pbstatus
+from prismabuild import action_client, action_wait, record_store  # noqa: E402
 
 
 KEY = "b" * 64
@@ -30,7 +29,7 @@ KEY = "b" * 64
 class Queue:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.records = pbrun.pool.record_store.RecordStore(root)
+        self.records = record_store.RecordStore(root)
         for state in ("done", "failed", "withdrawn"):
             (root / state).mkdir(parents=True)
 
@@ -86,14 +85,14 @@ def test_fifo_terminal_read_is_bounded_and_is_not_a_wait_timeout(
     code = f'''\
 import os, sys
 from pathlib import Path
-sys.path.insert(0, {str(source / "tools" / "fleet")!r})
-from prismabuild import action_client, action_wait
+sys.path[:0] = [{str(source / "src")!r}, {str(source / "tools" / "fleet")!r}]
+from prismabuild import action_client, action_wait, record_store
 action_wait.OUTCOME_READ_TIMEOUT_S = 0.05
 root = Path({str(root)!r})
 for state in ("done", "failed", "withdrawn"):
     (root / state).mkdir(parents=True)
 class Queue:
-    records = pbrun.pool.record_store.RecordStore(root)
+    records = record_store.RecordStore(root)
 key = {KEY!r}
 os.mkfifo(Queue().records.item_path("done", key))
 print("entered report_pool_outcome", flush=True)
