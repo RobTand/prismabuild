@@ -77,13 +77,36 @@ def main():
         rows.append(dict(kind=kind, role=role, reference=reference, path=path,
                          definition_present=name in names, historical=role.startswith('legacy_')))
     missing = [row for row in rows if not row['historical'] and not row['definition_present']]
+    inline = []
+    for adapter in sorted((args.root / 'tests/compat/support').glob('*.py')):
+        for node in ast.walk(ast.parse(adapter.read_text())):
+            if not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call)
+                    and isinstance(node.value.func, ast.Name) and node.value.func.id == 'load'
+                    and len(node.value.args) == 1 and isinstance(node.value.args[0], ast.Constant)
+                    and isinstance(node.value.args[0].value, str) and not node.attr.startswith('__')):
+                continue
+            module = node.value.args[0].value
+            path, names = definitions(module)
+            bindings = set(names)
+            if path is not None:
+                for statement in ast.parse((args.root / path).read_text()).body:
+                    if isinstance(statement, (ast.Import, ast.ImportFrom)):
+                        bindings.update(alias.asname or alias.name.split('.')[0]
+                                        for alias in statement.names)
+                    elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                        bindings.update(target.id for target in targets if isinstance(target, ast.Name))
+            inline.append(dict(adapter=str(adapter.relative_to(args.root)), line=node.lineno,
+                               module=module, attribute=node.attr, present=node.attr in bindings))
+    missing_inline = [row for row in inline if not row['present']]
     report = dict(current_refs=len(required), historical_refs=len(historical),
-                  missing_current=missing, references=rows,
+                  missing_current=missing, references=rows, inline_attributes=inline,
+                  missing_inline_attributes=missing_inline,
                   scope='Source ownership only; retained execution, source attestation and byte compatibility require PB evidence')
     args.report.write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(dict(current_refs=len(required), historical_refs=len(historical),
-                          missing_current=missing)))
-    raise SystemExit(bool(missing))
+                          missing_current=missing, missing_inline_attributes=missing_inline)))
+    raise SystemExit(bool(missing or missing_inline))
 
 
 if __name__ == '__main__':
