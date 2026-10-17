@@ -58,7 +58,7 @@ capability.
 
 from __future__ import annotations
 
-from . import immutable_files
+from . import digest_primitives, immutable_files
 
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -2987,7 +2987,7 @@ def _file_release_failure(queue, failure: ReleaseFailure) -> None:
     host = socket.gethostname()
     record = failure.record()
     consumer = record.pop("consumer_action_key")
-    line = pool_mod.record_store.reader_release_line({
+    line = digest_primitives.sorted_diagnostic_json({
         "unix": time.time(), "event": RELEASE_FAILED_EVENT,
         "consumer": consumer, "host": host, "pid": os.getpid(), **record,
     })
@@ -3002,7 +3002,7 @@ def _file_release_failure(queue, failure: ReleaseFailure) -> None:
     try:
         lines = queue.records.append_reader_release_line_at(path, line)
         if len(lines) >= 2 * keep:
-            queue.records.replace_reader_release_lines_at(path, lines[-keep:])
+            pool_mod.record_store.replace_event_lines(path, lines[-keep:])
     except OSError as exc:
         print(f"PrismaBuild: {RELEASE_FAILED_EVENT} event unwritten: "
               f"{exc!r}", file=sys.stderr, flush=True)

@@ -44,6 +44,11 @@ def sorted_json(value: object, *, allow_nan: bool = True) -> str:
     return json.dumps(value, sort_keys=True, allow_nan=allow_nan)
 
 
+def sorted_diagnostic_json(value: object) -> str:
+    """Sorted default JSON text, rendering diagnostic objects with str."""
+    return json.dumps(value, sort_keys=True, default=str)
+
+
 def _sorted_json_bytes(value: object, *, allow_nan: bool = True) -> bytes:
     """Sorted default JSON without a terminator, retaining its wire spelling."""
     return sorted_json(value, allow_nan=allow_nan).encode("utf-8")

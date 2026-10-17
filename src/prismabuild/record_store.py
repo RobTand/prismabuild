@@ -1636,12 +1636,6 @@ class RecordStore:
         with open(path) as stream:
             return stream.readlines()
 
-    @staticmethod
-    def replace_reader_release_lines_at(path: Path, lines: list[str]) -> None:
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        with open(temporary, "w") as stream:
-            stream.writelines(lines)
-        os.replace(temporary, path)
 
 
 def _write_json(
@@ -1722,13 +1716,17 @@ def append_event_record(path: Path, record: Mapping[str, object]) -> None:
         stream.write(json.dumps(record, default=str) + "\n")
 
 
+def replace_event_lines(path: Path, lines: list[str]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(temporary, "w") as stream:
+        stream.writelines(lines)
+    os.replace(temporary, path)
+
+
 def replace_event_tail(path: Path, limit: int) -> int:
     with open(path) as stream:
         kept = stream.readlines()[-limit:]
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(temporary, "w") as stream:
-        stream.writelines(kept)
-    os.replace(temporary, path)
+    replace_event_lines(path, kept)
     return len(kept)
 
 
@@ -1749,7 +1747,3 @@ def key_shaped(value: object) -> bool:
 #: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
 #: one writer, the host's tier loop, and a reader is not it.
 RELEASE_EVENTS_SUFFIX = "-reader-release.jsonl"
-
-
-def reader_release_line(record: Mapping[str, object]) -> str:
-    return json.dumps(record, sort_keys=True, default=str)
