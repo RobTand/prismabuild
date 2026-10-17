@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -11,9 +10,8 @@ import subprocess
 import sys
 import tempfile
 
-
-def sha(raw):
-    return hashlib.sha256(raw).hexdigest()
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from prismabuild.digest_primitives import raw_sha256 as sha, sorted_json
 
 
 def rows(path):
@@ -106,7 +104,7 @@ def refresh(args):
         old_manifest = data / "capture-receipt.json"
         if old_manifest.exists():
             shutil.copyfile(old_manifest, archive / old_manifest.name)
-        (archive / "provenance.json").write_text(json.dumps(provenance, sort_keys=True, indent=2) + "\n")
+        (archive / "provenance.json").write_text(sorted_json(provenance) + "\n")
         for path in archive.iterdir():
             path.chmod(0o444)
         for name in ("goldens-receipt.jsonl", "capture-receipt.json"):
@@ -119,7 +117,7 @@ def refresh(args):
                   archive=str(archive.relative_to(root)), capture_source_parent=producer,
                   current_goldens_sha256=sha(prior.read_bytes()), differences=changes)
     with args.report.open("x") as stream:
-        stream.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
+        stream.write(sorted_json(result) + "\n")
     print(json.dumps({key: result[key] for key in ("cases", "historical_rows_byte_exact", "archive", "current_goldens_sha256")}))
 
 
