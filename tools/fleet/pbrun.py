@@ -2281,7 +2281,7 @@ def submission_window(q, key: str, refs: Sequence[Mapping[str, object]]):
 
     if not refs:
         return contextlib.nullcontext(True)
-    return q._transition_locked(key)
+    return q.action_transition_lock(key)
 
 
 def require_deployed_read_plan_storage(*, source_root: Path | None = None,
@@ -7702,7 +7702,7 @@ def publish_consumer_row(q, action: Mapping[str, object],
         # consumer's own row it would see a filed plan nobody owns and reap
         # it.  ``residency_stage_rows``, ``freeze``, ``reap`` and ``publish``
         # all take this same lock and nest inside it (#708 review).
-        with q._transition_locked(key):
+        with q.action_transition_lock(key):
             staged = residency_stage_rows(
                 template, consumer_action_key=key,
                 tier=resolve_stage_tier(q, args.residency_tier),

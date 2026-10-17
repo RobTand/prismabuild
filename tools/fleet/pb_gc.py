@@ -997,7 +997,7 @@ def sweep(
 def transition_lock_name(action_key: str) -> str:
     """The ``transition-locks`` file one key's transitions take.
 
-    Mirrors ``pool.PoolQueue._transition_locked``; ``test_pb_gc_queue``
+    Mirrors ``pool.PoolQueue.action_transition_lock``; ``test_pb_gc_queue``
     takes the real lock and compares the file it created with this name.
     """
 
@@ -1292,7 +1292,7 @@ def _remove_residency_row(queue: pool.PoolQueue, row: Mapping[str, object]) -> s
     """
 
     key = str(row["key"])
-    with queue._transition_locked(key, blocking=False) as acquired:
+    with queue.action_transition_lock(key, blocking=False) as acquired:
         if not acquired:
             return "its consumer's transition lock is held"
         # The survey's rule, re-read under the lock: a lease, tombstone or
@@ -1325,12 +1325,12 @@ def _movement_prepare(queue: pool.PoolQueue,
     consumer = str(row.get("consumer") or "")
     if not consumer:
         return None, "the receipt names no consumer"
-    with queue._transition_locked(consumer, blocking=False) as got:
+    with queue.action_transition_lock(consumer, blocking=False) as got:
         if not got:
             return None, "its consumer's transition lock is held"
         if _key_live_now(Path(queue.root), consumer):
             return None, "its consumer was queued again"
-        with queue._transition_locked(key, blocking=False) as owned:
+        with queue.action_transition_lock(key, blocking=False) as owned:
             if not owned:
                 return None, "its mover's transition lock is held"
             if _key_live_now(Path(queue.root), key):
@@ -1352,12 +1352,12 @@ def _movement_unlink(queue: pool.PoolQueue, row: Mapping[str, object],
 
     key = str(row["key"])
     consumer = str(row.get("consumer") or "")
-    with queue._transition_locked(consumer, blocking=False) as got:
+    with queue.action_transition_lock(consumer, blocking=False) as got:
         if not got:
             return "its consumer's transition lock is held"
         if _key_live_now(Path(queue.root), consumer):
             return "its consumer was queued again"
-        with queue._transition_locked(key, blocking=False) as owned:
+        with queue.action_transition_lock(key, blocking=False) as owned:
             if not owned:
                 return "its mover's transition lock is held"
             if _key_live_now(Path(queue.root), key):

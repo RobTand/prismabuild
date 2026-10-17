@@ -1135,7 +1135,7 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
         # The same consumer ownership transaction as pbrun's staged lane.
         # Every graph was sealed/frozen in the parent before this first row;
         # only registry installation and publication happen here.
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             if residency_plan.superseded(queue, staged_plan) is not None:
                 raise SystemExit("decomposed child's immutable data plan was superseded; refusing automatic revival")
             # Filed, then renewed on the same boundary as pbrun's lane: a
