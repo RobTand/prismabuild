@@ -848,8 +848,8 @@ def _recover_cancelled_claim(queue, policy: ExpiredClaim, container_cleanup) -> 
 
     key, record, read_claim = policy.action_key, policy.record, policy.original
     holder = policy.holder
-    # Only an already filed worker result grants adoption. A cancellation
-    # alone cannot invent an execution or take a late worker's archive slot.
+    # Verify any existing winner before release. A cancellation alone cannot
+    # invent an execution or take a late worker's archive slot.
     try:
         prior = int(record.get("attempts", 0))
         present = record_store.value_or_raise(queue.records.attempt_presence(record, prior + 1))
@@ -1276,7 +1276,9 @@ def _sweep_finish_tombstones(
                 try:
                     if not _retire_recorded_terminal(queue, terminal[1]):
                         continue
-                except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError):
+                except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError) as exc:
+                    print(f"pool historical retirement {key} retained: {type(exc).__name__}: {exc}",
+                          file=sys.stderr)
                     continue
             if successor is not None:
                 try:
@@ -1887,26 +1889,31 @@ def _retire_recorded_terminal(queue, outcome: Mapping[str, object]) -> bool:
     if not isinstance(summary, Mapping):
         return True
     state, key = summary.get("state"), str(outcome["action_key"])
-    if state not in {DONE, FAILED}:
+
+    def retain(reason):
+        print(f"pool historical retirement {key} retained: {reason}", file=sys.stderr)
         return False
+
+    if state not in {DONE, FAILED}:
+        return retain("invalid prior terminal state")
     listed = queue.records.listed_item_present(state, key)
     prior = record_store.value_or_raise(queue.records.confirmed_item(state, key))
     if prior is None:
-        return not listed
+        return retain("listed prior terminal unavailable") if listed else True
     earlier = endings.publication_generation(prior.get("published_unix"))
     current = endings.publication_generation(outcome.get("published_unix"))
     if current is None:
-        return False
+        return retain("filed ending generation unavailable")
     if earlier is not None:
         if earlier > current:
             return True
         if earlier == current:
-            return False
+            return retain("prior terminal has the filed ending's generation")
     # Interpretation stays in C06. A mutable summary does not verify history.
     adopted = queue.attempt_ending(outcome)
     if any(outcome.get(field) != adopted[field]
            for field in ("status", "finished_unix", "finished_host", "detail")):
-        return False
+        return retain("filed ending differs from verified attempt")
     for path, archived in queue.records.superseded_records(key, fresh=True):
         if str(path) != summary.get("superseded_path"):
             continue
@@ -1917,7 +1924,7 @@ def _retire_recorded_terminal(queue, outcome: Mapping[str, object]) -> bool:
                 or any(field not in archived or archived[field] != value for field, value in prior.items())
                 or any(archived.get(field) != value for field, value in summary.items()
                        if field not in {"state", "superseded_path"})):
-            return False
+            return retain("superseded archive does not match")
         queue.records.item_path(state, key).unlink(missing_ok=True)
         return True
-    return False
+    return retain("superseded archive unavailable")

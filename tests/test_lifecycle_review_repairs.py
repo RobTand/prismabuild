@@ -113,6 +113,7 @@ def test_withdrawn_recovery_preserves_real_containment_and_live_successor(
         scope, process, _ = _owned_scope(queue, item, stack)
         assert process.poll() is None
         saved = _cancel_after_archive(queue, item, tmp_path, ending)
+        stopped_claim = record_store.read_document(queue.records.item_path(record_store.CLAIMED, KEY))
         release = queue._release_reservation
 
         def checked_release(*args, **kwargs):
@@ -130,7 +131,7 @@ def test_withdrawn_recovery_preserves_real_containment_and_live_successor(
         assert not queue.records.item_path(record_store.CLAIMED, KEY).exists()
         assert queue.ledger().held() == {}
         assert {p: p.read_bytes() for p in saved} == saved
-        process.communicate(timeout=10)
+        _closed(stopped_claim, scope, process, queue, request, capsys)
         assert process.returncode != 0 and not scope.cgroup_path.exists()
         _publication(queue, tmp_path)
         successor = queue.claim(owner="live successor", capacity={"cpu": 1})
@@ -144,6 +145,7 @@ def test_withdrawn_recovery_preserves_real_containment_and_live_successor(
         assert [p.read_bytes() for p in paths] == before
         assert queue.ledger().held() == {"cpu": 1}
         assert new_process.poll() is None
+        assert queue.records.attempt_path(item, 1).read_bytes() == saved[queue.records.attempt_path(item, 1)]
         with capsys.disabled():
             print("review-recovery-scope-proof: " + json.dumps({
                 "nodeid": request.node.nodeid, "old_scope_id": scope.unit,
@@ -161,6 +163,12 @@ def test_claim_recovery_starts_with_documented_interpreter_and_no_pythonpath():
                             cwd=root, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert "--late-status" in result.stdout and "--real-scope" in result.stdout
+    refused = subprocess.run([
+        "/usr/bin/python3", "tools/fleet/qualify_claim_recovery.py", "peer",
+        "--root", "/tmp/c07-refused-control", "--late-status", "executed",
+    ], cwd=root, env=env, capture_output=True, text=True, timeout=30)
+    assert refused.returncode == 2
+    assert "--root must be a fresh directory beneath /mnt/shared/pb-qualification" in refused.stderr
 
 
 @pytest.mark.parametrize("fault,reason", [
