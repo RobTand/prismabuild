@@ -136,16 +136,22 @@ def c21_audit(root, out, base):
         old_groups, new_groups = grouped(old), grouped(new)
         for scope, entries in old_groups.items():
             candidates = new_groups.get(scope, [])
-            if len(entries) != len(candidates):
-                raise ValueError(f"assertion occurrence count changed at {path}::{scope}")
-            for index, (left, right) in enumerate(zip(entries, candidates)):
+            if len(entries) > len(candidates):
+                raise ValueError(f"an assertion occurrence disappeared at {path}::{scope}")
+            previous = -1
+            for index, left in enumerate(entries):
+                bound = bindings.get((path, scope, index))
+                position = bound.get("current_occurrence", index) if bound else index
+                if not previous < position < len(candidates):
+                    raise ValueError(f"assertion order changed at {path}::{scope}#{index}")
+                previous = position
+                right = candidates[position]
                 exact = left["ast"] == right["ast"]
                 if not exact:
-                    bound = bindings.get((path, scope, index))
                     if (bound is None or bound["original_ast_blob"] != c21_blob(root, left["ast"])
                             or bound["current_ast_blob"] != c21_blob(root, right["ast"])):
                         raise ValueError(f"unreviewed assertion binding at {path}::{scope}#{index}")
-                locators.append(dict(path=path, scope=scope, occurrence=index,
+                locators.append(dict(path=path, scope=scope, occurrence=index, current_occurrence=position,
                     original=left, current=right, exact_ast=exact))
         old_defs = {tuple(row["scope"]): row for row in before.get(path, {}).get("definitions", [])}
         new_defs = {tuple(row["scope"]): row for row in after.get(path, {}).get("definitions", [])}

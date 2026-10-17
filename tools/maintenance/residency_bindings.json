@@ -260,6 +260,17 @@
       "original_ast_blob": "36bbc22894a1c435f3dad8dda46886bef4d59571",
       "current_ast_blob": "58da95ef99e85226c6e8770e98f3c6a983768a85",
       "reason": "Exact owner binding with original operands, expected values and messages retained; reader and window values project the original named fields."
+    },
+    {
+      "path": "tests/test_census_sections.py",
+      "scope": [
+        "test_original_fact_values_and_observable_capture_order_match#1"
+      ],
+      "occurrence": 2,
+      "current_occurrence": 3,
+      "original_ast_blob": "9b2f3cb763dd9460c2e64e0264577d97acf19ea9",
+      "current_ast_blob": "cc7e0d94f3ab874a37a087dc8c737a79a3f78858",
+      "reason": "Exact Root fb1f43e10625d4897877e323528ea207c6451c0d fixture migration: preserve complete schedule equality against the qualified strict C27 reference; both original value equality and strict-reference value equality remain. No schedule event is discarded, reordered or deduplicated."
     }
   ]
 }
