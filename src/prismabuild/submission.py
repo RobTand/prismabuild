@@ -3666,3 +3666,543 @@ store: FleetStore, display: DisplaySink = discard_display) -> int:
     rc = 0
     for prefix in prefixes:
         found = slurm_lane.resolve_recorded(str(prefix), root=lane_root)
+        if not found:
+            emit_display(display, f"pbrun: no slurm submission matches {prefix!r}",
+                  channel="stderr")
+            rc = rc or 2
+            continue
+        if len(found) > 1:
+            keys = ", ".join(sorted(str(r["action_key"])[:12] for r in found))
+            emit_display(display, f"pbrun: {prefix!r} matches {len(found)} submissions "
+                  f"({keys}); name more characters", channel="stderr")
+            rc = rc or 2
+            continue
+        record = found[0]
+        key = str(record["action_key"])
+        job_id = str(record["job_id"])
+        queue = store.queue_root if queue_root is None else Path(queue_root)
+        try:
+            marker = _file_slurm_withdrawal(
+                queue, record, reason=reason, by=by, scancel_command=scancel)
+        except (OSError, slurm_lane.SlurmLaneError) as exc:
+            _withdrawal_write_failure(exc, key=key, job_id=job_id, accepted=[], display=display)
+            rc = action_client.RECORD_WRITE_FAILED_EXIT
+            continue
+        if marker is None:
+            emit_display(display, f"pbrun: {key[:12]} already has an outcome filed; "
+                  f"nothing to withdraw", channel="stderr")
+            continue
+        accepted, refused = [], []
+        for target in _jobs_to_cancel(key, job_id, squeue=squeue):
+            if slurm_lane.cancel(target, scancel=scancel):
+                accepted.append(target)
+            else:
+                refused.append(target)
+        if accepted:
+            try:
+                _stamp_scancel_accepted(queue, record)
+            except (OSError, slurm_lane.SlurmLaneError) as exc:
+                _withdrawal_write_failure(
+                    exc, key=key, job_id=job_id, accepted=accepted, display=display)
+                rc = action_client.RECORD_WRITE_FAILED_EXIT
+            why = f" -- {reason}" if reason else ""
+            jobs = ", ".join(accepted)
+            plural = "s" if len(accepted) > 1 else ""
+            emit_display(display, f"pbrun: cancelled slurm job{plural} {jobs} for {key[:12]}"
+                  f" by {by or 'an operator'}{why}", channel="stderr")
+        for target in refused:
+            emit_display(display, f"pbrun: scancel refused slurm job {target} for {key[:12]}; "
+                  f"it may already have finished", channel="stderr")
+        if refused and not accepted:
+            rc = rc or 2
+    return rc
+
+
+def _withdrawal_write_failure(exc, *, key: str, job_id: str, accepted, display: DisplaySink = discard_display) -> None:
+    stage = (f"scancel accepted cancellation for job(s) {', '.join(accepted)}, "
+             "but its acceptance stamp could not be written"
+             if accepted else
+             "the withdrawal record could not be written; no cancellation was sent")
+    emit_display(display, 
+        f"pbrun: {stage}.\n"
+        f"  slurm job: {job_id}\n"
+        f"  record:    {getattr(exc, 'filename', '') or '(see reason)'}\n"
+        f"  reason:    {getattr(exc, 'strerror', '') or exc}\n"
+        "Restore record writes, then retry "
+        f"`tools/fleet/pbrun.py --transport slurm --withdraw {key[:12]}`.",
+        channel="stderr", flush=True,
+    )
+
+
+def _jobs_to_cancel(action_key: str, job_id: str, *, squeue: str) -> list[str]:
+    """The recorded job and every sibling the controller still holds for it.
+
+    The recorded id leads and is never dropped: it is the one fact that does
+    not depend on the controller answering.  A ``squeue`` that fails costs the
+    siblings, not the cancellation.
+    """
+
+    targets = [job_id] if job_id else []
+    try:
+        siblings = slurm_lane.sibling_jobs(action_key, squeue=squeue)
+    except slurm_lane.SlurmLaneError:
+        return targets
+    for sibling, _state in siblings:
+        if sibling not in targets:
+            targets.append(sibling)
+    return targets
+
+
+def _file_slurm_withdrawal(
+    queue_root: Path, submission, *, reason: str, by: str, scancel_command: str,
+):
+    """File the marker and the terminal record for one cancellation.
+
+    Returns ``None`` when this generation already has an outcome filed -- the
+    action finished a moment before the operator asked, which is them getting
+    what they wanted rather than them mistyping, and is what
+    ``PoolQueue.withdraw`` reports as ``already_finished``.
+
+    Each directory is listed before the name in it is read.  These are the same
+    NFS directories ``read_withdrawal_marker`` was written for: a lookup of a
+    name that did not exist yet is negatively cached, so ``exists()`` keeps
+    answering False after the ending has landed.  On a stale answer this verb
+    filed a withdrawal over a run already in ``done/`` and reported work that
+    succeeded as cancelled.  ``slurm_lane._read_json_object`` is the general
+    form of that revalidation; ``read_withdrawal_marker`` itself is pinned to
+    ``withdrawn/`` and this loop reads all three terminal directories.
+    """
+
+    key = str(submission["action_key"])
+    published_unix = _submission_generation(submission)
+    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+        filed = queue_root / state / f"{key}.json"
+        filed_record = slurm_lane._read_json_object(filed)
+        if filed_record is None:
+            continue
+        theirs = slurm_lane._record_generation(filed_record)
+        if theirs is None or theirs != published_unix:
+            continue
+        if state == pool.WITHDRAWN:
+            # A bare marker is a withdrawal still in flight (or one whose
+            # scancel never landed); only a record carrying the job's ending
+            # says this generation is over.
+            if "detail" not in filed_record:
+                continue
+            # The record this verb writes below carries ``detail`` too, and it
+            # is written before ``scancel`` runs.  Until ``scancel`` accepts,
+            # that record is a decision the scheduler has not honoured, not an
+            # ending; a second ask must reach ``scancel`` again rather than
+            # read its own first attempt as "already finished".
+            if _withdrawal_still_in_flight(filed_record):
+                continue
+        return None
+
+    _, marker = slurm_lane.publish_withdrawal(
+        queue_root=queue_root, action_key=key, reason=reason, by=by,
+        submission=submission,
+    )
+    job_id = str(submission["job_id"])
+    directory = Path(str(submission.get("directory") or "."))
+    slurm_lane.publish_outcome(
+        queue_root=queue_root,
+        action_key=key,
+        published_unix=published_unix,
+        published_by=str(submission.get("published_by") or ""),
+        status="withdrawn",
+        attempts=int(submission.get("attempt") or 1),
+        max_attempts=int(submission.get("max_attempts") or 1),
+        retry_safe=submission.get("retry_safe"),
+        addressing={},
+        resources=submission.get("resources") or {},
+        tags=submission.get("constraint") or [],
+        detail={
+            "slurm": {
+                "job_id": job_id,
+                "state": "CANCELLED",
+                "partition": None,
+                # Derived, not spelled: the record is named by generation and
+                # attempt together, because one action key is submitted again
+                # every time somebody asks for the same work again.
+                "submission_record_path": str(
+                    slurm_lane.submission_record_path(
+                        directory,
+                        published_unix=published_unix,
+                        attempt=int(submission.get("attempt") or 1),
+                    )),
+                "stdout_path": str(submission.get("stdout") or ""),
+                "stderr_path": str(submission.get("stderr") or ""),
+            },
+            "cancelled_with": scancel_command,
+            # The last sample the submitter's wait recorded, so the record of
+            # a withdrawal says what the job was (not) doing when the operator
+            # decided.  None when no wait ever sampled it.
+            "liveness": slurm_lane.read_liveness(
+                key, root=directory.parent if directory.name == key else None),
+        },
+        # No ``SubmittedJob`` here -- this runs from the operator's box, off the
+        # recorded submission -- so the job id the readers use as ``claimed_by``
+        # is passed rather than derived.
+        claimed_by=job_id,
+        withdrawn_by=marker.get("withdrawn_by"),
+        withdrawn_unix=marker.get("withdrawn_unix"),
+        reason=str(marker.get("reason") or ""),
+    )
+    return marker
+
+
+def _submission_generation(submission) -> float:
+    """The ``published_unix`` a submission record belongs to."""
+
+    published_unix = submission.get("published_unix")
+    if isinstance(published_unix, (int, float)):
+        return float(published_unix)
+    # A submission record from before the generation stamp. Withdraw it, but
+    # do not claim to know which request it belonged to.
+    return float(submission.get("submitted_unix") or 0.0)
+
+
+def _withdrawal_still_in_flight(record) -> bool:
+    """Whether a ``withdrawn/`` record is one ``--withdraw`` wrote and has not
+    yet seen ``scancel`` accept.
+
+    ``cancelled_with`` is stamped by ``_file_slurm_withdrawal`` before the
+    cancel is attempted; ``scancel_accepted_unix`` only after ``scancel``
+    returned 0.  The submitter's own ending never writes the first, so a record
+    with the first and without the second is a withdrawal whose ``scancel``
+    was refused or never ran.
+    """
+
+    detail = record.get("detail")
+    return (
+        isinstance(detail, dict)
+        and "cancelled_with" in detail
+        and "scancel_accepted_unix" not in detail
+    )
+
+
+def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
+    """Record on the withdrawal that ``scancel`` took the job.
+
+    Rewrites only a record of this generation that ``_file_slurm_withdrawal``
+    wrote; the submitter's ending for the same generation is refused by
+    ``publish_outcome`` while that record exists, so nothing else writes this
+    file in between.
+    """
+
+    key = str(submission["action_key"])
+    filed = queue_root / pool.WITHDRAWN / f"{key}.json"
+    try:
+        record = json.loads(filed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(record, dict):
+        return
+    if not slurm_lane._same_generation(filed, _submission_generation(submission)):
+        return
+    detail = record.get("detail")
+    if not isinstance(detail, dict) or "cancelled_with" not in detail:
+        return
+    detail["scancel_accepted_unix"] = time.time()
+    materialize._write_json_atomic(filed, record, trailing_newline=True)
+
+
+def withdraw_main(q, prefixes, *, reason: str = "", by: str = "", store: FleetStore, display: DisplaySink = discard_display) -> int:
+    """Withdraw each named action and say what happened to it.
+
+    Takes the queue rather than building one, for the same reason
+    ``report_pool_outcome`` does: the part worth testing is the reporting and the
+    prefix resolution, and neither should need a live fleet to exercise.
+
+    Keys are accepted as prefixes because a prefix is what an operator has --
+    ``pbrun`` prints ``queued 8fc86da0e13f`` and the worker loop logs the same
+    twelve characters.  One bad name does not stop the rest: withdrawing four
+    suites at once is the case this exists for, and three of four is a better
+    outcome than none of four.
+    """
+
+    rc = 0
+    published = published_commit(store=store)
+    for prefix in prefixes:
+        try:
+            key = q.find_key(str(prefix))
+            result = q.withdraw(key, reason=reason, by=by)
+        except Exception as exc:                                  # noqa: BLE001
+            emit_display(display, f"pbrun: {exc}", channel="stderr")
+            rc = 2
+            continue
+        status = str(result.get("status"))
+        if status == "already_finished":
+            emit_display(display, f"pbrun: {key[:12]} had already finished "
+                  f"({result.get('state')}); nothing to withdraw",
+                  channel="stderr")
+            continue
+        where = result.get("state") or "nowhere"
+        note = [f"released {result.get('released', 0)} token(s)"]
+        container_cleanup = result.get("container_cleanup") or {}
+        if not container_cleanup.get("complete", True) and not container_cleanup.get("deferred"):
+            note.append("container cleanup unverified; claim and tokens retained")
+            error = str(container_cleanup.get("error") or "").strip()
+            if error:
+                note.append(error)
+            rc = 2
+        stop_pending = result.get("stop_pending")
+        if stop_pending:
+            # Say that the reservation is still out, and whose it is to return.
+            # A caller told "withdrawn, released 0" without this would read the
+            # zero as "there was nothing to release".
+            note.append(
+                "release pending on "
+                f"{stop_pending.get('holder_host') or result.get('host') or 'the holder'}"
+                "; its worker returns the tokens when it stops the action")
+            detail = str(stop_pending.get("reason") or "").strip()
+            if detail:
+                note.append(detail)
+        signalled = result.get("signalled") or {}
+        if signalled.get("signals"):
+            note.append("signalled " + ", ".join(signalled["signals"]))
+        elif where == "claimed":
+            # Say so rather than imply the work stopped.  Cross-box that is the
+            # normal case and the remote worker stops within a heartbeat, but a
+            # caller who reads "withdrawn" and assumes "already dead" would be
+            # wrong for those seconds.
+            note.append("stop requested through the generation marker; "
+                        "its worker checks it at the next heartbeat")
+        if status == "already_withdrawn":
+            note.insert(0, "already withdrawn")
+        if result.get("residency_plan_superseded"):
+            # The window this consumer froze is stopped with it (#708): say so
+            # where the operator reads the outcome, because the remedy -- a
+            # resubmission that seals a fresh plan at today's price -- is only
+            # available after this one's work ends.
+            note.append("marked its residency plan superseded; a resubmission "
+                        "seals a fresh one at the current price once the old "
+                        "work has ended")
+        emit_display(display, f"pbrun: withdrew {key[:12]} from {where}; " + "; ".join(note),
+              channel="stderr")
+        # An older loop may not understand durable generation decisions.
+        # Its reservation remains held; upgrade through the drained rollout.
+        if where == "claimed":
+            runtime = result.get("holder_runtime")
+            host = result.get("host") or "the holder"
+            if runtime is None:
+                emit_display(display, f"pbrun: WARNING no live offer from {host}; cannot tell "
+                      f"whether its worker can see this withdrawal",
+                      channel="stderr")
+            elif not runtime:
+                emit_display(display, f"pbrun: WARNING {host} announces no runtime commit; "
+                      f"cannot tell whether its worker can see this withdrawal",
+                      channel="stderr")
+            elif published and runtime != published:
+                emit_display(display, f"pbrun: WARNING {host} is running runtime "
+                      f"{runtime[:12]}, not the published {published[:12]}: "
+                      f"its support for durable cancellation is unverified; "
+                      f"the reservation stays held until its worker or reaper "
+                      f"completes cleanup. Upgrade through the drained fleet rollout.",
+                      channel="stderr")
+    return rc
+
+
+def require_reseal_key(key: object) -> None:
+    if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+        raise ValueError("--as-sealed-by requires a full lowercase 64-hex action key")
+
+
+def reseal_wrapper(key: str, *, store: FleetStore) -> Path:
+    """Recover only the wrapper location; the complete new seal must still match.
+
+    Never run an old submitter or copy its command, inputs or environment into
+    a new request. The caller's current work is sealed by this submitter, with
+    the original immutable Docker wrapper, and checked before publication.
+    """
+    require_reseal_key(key)
+    where = f"--as-sealed-by {key}"
+    prefix = action_edges.request_wrapper(store.cas_root, key, where=where)
+    return verify_retained_wrapper(prefix, where=where, store=store)
+
+
+def verify_retained_wrapper(prefix: str, *, where: str, store: FleetStore) -> Path:
+    """The Docker wrapper at ``prefix``, proved to be a retained generation's.
+
+    The wrapper must sit in a published generation under the store, beside a
+    receipt naming that generation, and hash to what the receipt recorded.
+    ``--as-sealed-by`` reads an old action's wrapper back this way, and a
+    deferred release (#913) seals into its template's generation only after
+    this check.  Raises ``ValueError`` (or ``OSError``) naming what failed.
+    """
+
+    wrapper = Path(prefix)
+    generation = wrapper.parent
+    if (str(wrapper) != prefix or wrapper.name != "tools"
+            or generation.parent != store.root / "runtime-generations"
+            or generation.name.startswith(".")):
+        raise ValueError(f"{where}: wrapper is not in a retained fleet generation")
+    raw_version = pb._read_regular_file_nofollow(
+        generation / "RUNTIME_VERSION.json", where=where,
+        require_readonly=True, max_bytes=1024 * 1024)
+    version = pb._decode_strict_json(raw_version, where=where)
+    if (not isinstance(version, dict)
+            or version.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
+            or version.get("generation") != generation.name
+            or not isinstance(version.get("files"), dict)):
+        raise ValueError(f"{where}: invalid retained generation receipt")
+    shim = pb._read_regular_file_nofollow(
+        wrapper / "docker", where=where, require_readonly=True,
+        max_bytes=16 * 1024 * 1024)
+    if hashlib.sha256(shim).hexdigest() != version["files"].get("tools/docker"):
+        raise ValueError(f"{where}: retained Docker wrapper differs from its receipt")
+    return wrapper
+
+
+def gang_declaration(args) -> dict | None:
+    """``--gang-*`` as a sealed declaration, refusing what a gang cannot be (#1517)."""
+    fields = (args.gang_group, args.gang_size, args.gang_index)
+    if all(field is None for field in fields):
+        return None
+    if any(field is None for field in fields):
+        raise SubmissionRefused("pbrun: --gang-group, --gang-size and --gang-index go together")
+    if args.transport != "pool":
+        raise SubmissionRefused("pbrun: a gang member needs --transport pool")
+    if args.max_attempts != 1 or args.retry_safe:
+        raise SubmissionRefused("pbrun: a gang member gets one attempt: an unsuccessful one "
+                         "ends the whole gang (drop --max-attempts/--retry-safe)")
+    if getattr(args, "after", None):
+        raise SubmissionRefused("pbrun: a gang member cannot be deferred with --after")
+    from prismabuild import _gang
+    try:
+        return _gang.declaration({"group": args.gang_group, "size": args.gang_size,
+                                  "index": args.gang_index})
+    except _gang.GangContractError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+
+
+def freeze(
+    *,
+    command: Sequence[str],
+    cwd: Path,
+    logical_cwd: str,
+    demand: Mapping[str, int],
+    placement: Mapping[str, object],
+    variables: Mapping[str, str],
+    determinism: str,
+    retry_policy: Mapping[str, object],
+    host_class: str | None,
+    measurement: bool,
+    transport: str,
+    pool_measurement_class: bool,
+    data_manifest_path: str | None,
+    produced_output_template_path: str | None = None,
+    checkout_snapshot_max_bytes: int,
+    snapshot_refs: Sequence[str],
+    exclusive: bool,
+    gpu_memory_gb: float | None,
+    execution_timeout_s: float | None,
+    progress: Mapping[str, object] | None,
+    awaited_batch: Mapping[str, object] | None = None,
+    profile: object | None,
+    container_image_refs: Sequence[str] = (),
+    d38_namespace: str | None = None,
+    wrapper_dir: Path | None = None,
+    dependency_queries: Mapping[str, str] | None = None,
+    gang: Mapping[str, object] | None = None,
+    requires_files: list[dict] | None = None,
+    resident_set: str | None = None,
+    target_evidence: Mapping[str, object] | None = None,
+store: FleetStore) -> dict[str, object]:
+    """Read the tree and the environment once, and freeze what they say.
+
+    Everything in here is a measurement of the submitter's box at one instant
+    -- the checkout's commit and its dirty digest, the bytes of the data
+    manifest, the local toolchain -- so taking it a second time for a second
+    action can produce a different answer but never a better one.  What comes
+    back is the half of an action body that every action sealed from this
+    template shares, plus the CAS the ingestion went into.
+
+    Placement and demand are resolved against the live fleet by the caller, so
+    they arrive already decided; this reads nothing about who might run the
+    work.
+
+    ``measurement`` spells the task class and the scope at once, deliberately:
+    they are the same statement, and a caller that could set them separately
+    could seal a measurement with no platform to measure on.
+    """
+
+    wrapper_dir = store.wrapper_dir if wrapper_dir is None else wrapper_dir
+    variables = dict(variables)
+    scratch_io = scratch_io_intent(variables, transport=transport)
+    recorder = None
+    if scratch_io is not None:
+        from prismabuild import local_scratch
+        if contracts.SCRATCH_IO_TAG not in placement.get("required_tags", []):
+            raise SubmissionRefused("pbrun: sealed scratch I/O declaration requires local-scratch-io-v1")
+    if "tools/fleet/local_scratch_profile.py" in command:
+        from prismabuild import local_scratch
+        try:
+            recorder = local_scratch.check_profile_request(
+                command, variables, demand, cwd=logical_cwd, determinism=determinism)
+            if transport != "pool":
+                raise local_scratch.LocalScratchError("scratch recorder requires pool admission")
+            if profile is not None or container_image_refs:
+                raise local_scratch.LocalScratchError("scratch recorder does not support injected profiler/image runtime")
+        except local_scratch.LocalScratchError as exc:
+            raise SubmissionRefused(f"pbrun: {exc}") from None
+    # A declared spool bound is accounted by default (#905), and this must
+    # precede the ownership and stamp fingerprints below: they hash this
+    # environment, and the sealed action re-derives its owner from it, so both
+    # must see the same effective contract.
+    normalize_spool_declaration(variables)
+    # Docker's payload is reparented to containerd-shim and therefore survives
+    # a kill of every process group below the action launcher.  Put the fleet's
+    # Docker shim first even under --no-default-env; it records a durable marker
+    # and adds the derived ownership label which withdrawal/finish query before
+    # returning capacity.  This is control-plane state, not an optional action
+    # convenience, so a caller cannot override either identity variable.
+    #
+    # Normalize every other environment value first.  The owner then hashes
+    # the exact action-defining state available before its own two recursive
+    # variables are injected, including the deployed wrapper path.
+    prior_path = variables.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    variables["PATH"] = (local_scratch.PROFILE_PATH if recorder is not None
+                         else f"{wrapper_dir}:{prior_path}")
+    identity = _git_identity(cwd)
+    # Which repository this template's tree belongs to (#1565): the owning
+    # repository's name -- a linked worktree resolves to its main repo --
+    # ``"unknown"`` when Git cannot place the checkout.  A submitter's
+    # handle, never sealed -- the queue row carries it, so the action key
+    # is byte-identical with and without it.
+    tested_repository = tested_repository_name(cwd)
+    marker_root = store.queue_root / pool.CONTAINER_OWNERS
+    # This owner belongs to the template's own command, and its only job here
+    # is to be part of what the stamp name is fingerprinted over.  Ownership
+    # itself is settled per action in ``seal_action_from_template``, because
+    # two actions sealed off one template run as two lifecycles: the Docker
+    # label a shared owner would give them makes one child's cleanup remove
+    # the other's live payload, and one child's ``<owner>.used`` marker blocks
+    # the other's reclaim.  An unmodified command re-derives this exact digest
+    # there, so an ordinary submission is unchanged.
+    owner = container_owner(
+        command,
+        cwd,
+        demand,
+        variables,
+        determinism=determinism,
+        retry_policy=retry_policy,
+        marker_root=marker_root,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+        container_images=container_image_refs,
+    )
+    marker = marker_root / f"{owner}.used"
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker)
+
+    # Migrate the former broad prefix globs before identity asks Git for its
+    # untracked roster; otherwise a legitimate prefix-bearing payload remains
+    # hidden for this submission even though the new grammar is exact.
+    keep_droppings_out_of_git(cwd)
+    log_name, stamp_name = result_and_stamp_names(
+        command,
+        cwd,
+        demand,
+        variables,
