@@ -258,7 +258,7 @@ def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
             # Damage only the live attempt identity; retain the real scope.
             assert control["nonce"] != "0" * 32
             live["resource_scope"] = dict(control, nonce="0" * 32)
-            pool.record_store._write_json(live_path, live)
+            pool.immutable_files.write_json_atomic(live_path, live)
         elif defect == "publication":
             candidate_mover = _hexkey("rej-other")
             _publish_mover(q, candidate_mover, "1" * 64, total)
@@ -294,7 +294,7 @@ def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
     finally:
         if defect == "nonce":
             live["resource_scope"] = control
-            pool.record_store._write_json(live_path, live)
+            pool.immutable_files.write_json_atomic(live_path, live)
 
     # Each defect has its own real successful control with the bound owner,
     # template and published mover. Lost intent is rebuilt by normal funding.
@@ -610,7 +610,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     # Remove the staged intent first so fund must file a fresh one (which the
     # injection then breaks); nothing may be recorded or moved.
     q.records.funding_output_path(mover, TIER).unlink()
-    real_write = pool.record_store._write_json
+    real_write = pool.immutable_files.write_json_atomic
     observed_faults = []
 
     def fail_intent(path, *a, **k):
@@ -619,7 +619,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
             raise OSError("injected intent failure")
         return real_write(path, *a, **k)
 
-    monkeypatch.setattr(pool.record_store, '_write_json', fail_intent)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_intent)
     out = q.fund_output_batch(tier_id=TIER, owner_key=owner,
                               mover_key=mover, instance=inst,
                               template=template, batch_id="b1",
@@ -629,7 +629,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert q.read_output_funding(mover, TIER) is None
     assert ledger.holder_tokens(owner).get(KIND, 0) == 2
     assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    monkeypatch.setattr(pool.record_store, '_write_json', real_write)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', real_write)
 
     # 2) Transfer short (partial rename) -> split preserved, drive completes.
     real_transfer = ledger.transfer_tokens if hasattr(ledger, "transfer_tokens") else None
@@ -685,7 +685,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert committed.get("ok") is True, committed
 
     # 3) Claim record write fails -> unwind keeps fence, retry consumes once.
-    real_claim_write = pool.record_store._write_json
+    real_claim_write = pool.immutable_files.write_json_atomic
 
     def fail_claim_record(path, *a, **k):
         if str(path).endswith(
@@ -697,14 +697,14 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
             raise OSError("injected claim-record failure")
         return real_claim_write(path, *a, **k)
 
-    monkeypatch.setattr(pool.record_store, '_write_json', fail_claim_record)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_claim_record)
     assert q.claim(owner="w-flt-1") is None
     assert "claim-record" in observed_faults, "claim never reached the claim-record fault"
     assert q.records.item_path(pool.record_store.READY, mover).exists()
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     assert ledger.holder_tokens(mover).get(KIND, 0) == 1
-    monkeypatch.setattr(pool.record_store, '_write_json', real_claim_write)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', real_claim_write)
 
     got = q.claim(owner="w-flt-2")
     assert got is not None and got["action_key"] == mover, got
@@ -1312,7 +1312,7 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path, broker
     ready = pool.record_store.read_document(ready_path)
     assert isinstance(ready, dict) and "produced_output_batch" in ready
     del ready["produced_output_batch"]
-    pool.record_store._write_json(ready_path, ready)
+    pool.immutable_files.write_json_atomic(ready_path, ready)
     q.records.funding_output_path(mover, TIER).unlink()
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-sq-crash") is None
@@ -1389,7 +1389,7 @@ def test_claim_corrupt_projection_refuses(tmp_path: Path, broker) -> None:
     row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict)
     row["produced_output_batch"] = {"schema": "garbage"}
-    pool.record_store._write_json(ready_path, row)
+    pool.immutable_files.write_json_atomic(ready_path, row)
     free_before = ledger.available().get(KIND)
     assert q.claim(owner="w-cp") is None
     assert pool.record_store.value_or_raise(
@@ -1716,7 +1716,7 @@ def test_filed_request_without_ref_invented_projection_never_covers(
     assert isinstance(row, dict) and "produced_output_batch" not in row
     # Invent the mutable projection the immutable request never declared.
     row["produced_output_batch"] = dict(ref)
-    pool.record_store._write_json(ready_path, row)
+    pool.immutable_files.write_json_atomic(ready_path, row)
     staged = q.stage_output_intent(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
@@ -1777,7 +1777,7 @@ def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path, broker) -
     row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict)
     row["produced_output_batch"] = other
-    pool.record_store._write_json(ready_path, row)
+    pool.immutable_files.write_json_atomic(ready_path, row)
     _exhaust_free(ledger, chain["squatter"])
     free0 = ledger.available().get(KIND, 0)
     assert q.claim(owner="w-cx7-mover") is None
@@ -1798,7 +1798,7 @@ def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) ->
     row = pool.record_store.read_document(ready_path)
     assert isinstance(row, dict) and "produced_output_batch" in row
     del row["produced_output_batch"]
-    pool.record_store._write_json(ready_path, row)
+    pool.immutable_files.write_json_atomic(ready_path, row)
     _exhaust_free(ledger, chain["squatter"])
     free0 = ledger.available().get(KIND, 0)
     assert q.claim(owner="w-pl7-mover") is None
@@ -1859,7 +1859,7 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
     # its terminal still filed under the same generation.
     done = pool.record_store.value_or_raise(q.records.item(pool.record_store.DONE, owner))
     assert isinstance(done, dict), done
-    pool.record_store._write_json(q.records.item_path(pool.record_store.READY, owner), done)
+    pool.immutable_files.write_json_atomic(q.records.item_path(pool.record_store.READY, owner), done)
 
     blanket: list[str] = []
     released = pool.PoolQueue.release_tier_reservations

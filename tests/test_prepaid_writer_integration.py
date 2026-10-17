@@ -132,7 +132,7 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool.record_store._write_json(path, live)
+    pool.immutable_files.write_json_atomic(path, live)
     return control
 
 
@@ -217,7 +217,7 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     }
     path = Path(q.root) / "tiers" / f"{TIER}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
 
 
 def _tier_host(q: pool.PoolQueue) -> str:
@@ -1815,7 +1815,7 @@ def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
     q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
     lease = pool.record_store.read_document(q.records.lease_path(mover)) or {}
     lease["heartbeat_unix"] = pool._now() - 10_000
-    pool.record_store._write_json(q.records.lease_path(mover), lease)
+    pool.immutable_files.write_json_atomic(q.records.lease_path(mover), lease)
     assert pool.record_store.value_or_raise(q.records.item(pool.record_store.DONE, mover)) is None
     assert pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover)) is None
 
@@ -1992,7 +1992,7 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     terminal = pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(terminal, dict), terminal
     legacy = dict(terminal)
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         q._shape_as_ready_item(legacy, action_key=mover), legacy)
     assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
             and mover_row.value.state == "ready")
