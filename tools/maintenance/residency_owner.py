@@ -97,9 +97,10 @@ def c21_sources(root, pin):
 def c21_audit(root, out, base):
     out.mkdir(parents=True, exist_ok=True)
     original = c21_sources(root, base)
-    current = {path: (root / path).read_text() for path in original if (root / path).exists()}
-    for path in c21_git(root, "ls-files", "--others", "--exclude-standard", "*.py").decode().splitlines():
-        current[path] = (root / path).read_text()
+    tracked = c21_git(root, "ls-files", "*.py").decode().splitlines()
+    untracked = c21_git(root, "ls-files", "--others", "--exclude-standard", "*.py").decode().splitlines()
+    current = {path: (root / path).read_text()
+               for path in dict.fromkeys([*tracked, *untracked]) if (root / path).exists()}
     for path in C21_OWNERS:
         if (root / path).exists():
             current[path] = (root / path).read_text()
