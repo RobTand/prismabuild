@@ -184,18 +184,18 @@ def test_adoption_reconciles_a_crash_after_the_complete_handover(
     ledger_type = type(queue.tier(ranges.TIER))
     actual_handover = ledger_type.handover
 
-    class PowerLost(BaseException):
+    class ProcessInterrupted(BaseException):
         pass
 
     def handover(ledger, old_key, new_key):
         actual_handover(ledger, old_key, new_key)
-        raise PowerLost("after token renames, before donor withdrawal and receipt")
+        raise ProcessInterrupted("after token renames, before donor withdrawal and receipt")
 
     arguments = dict(old_key=donor, new_key=successor, consumer_action_key=ranges.SECOND,
                      tier_id=ranges.TIER, phase="phase-0", range_start_bytes=0,
                      range_end_bytes=ranges.PHASE_GIB * ranges.GIB, residency_root=root)
     monkeypatch.setattr(ledger_type, "handover", handover)
-    with pytest.raises(PowerLost):
+    with pytest.raises(ProcessInterrupted):
         staged_path.adopt(queue, **arguments)
     monkeypatch.undo()
     successor_path = residency_map.fragment_path(root, ranges.SECOND, successor)

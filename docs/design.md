@@ -8092,7 +8092,7 @@ donor pair again under the existing stage ownership lock before mutation,
 compares every dated file identity there, and retains an unknown or distinct
 successor pair. A successor miss is confirmed through the existing strict
 metadata-absence reader, including its NFS parent revalidation. Same-pair
-reissue after an interrupted adoption remains valid. After a crash following
+reissue after an interrupted adoption remains valid. After process interruption following
 the full token handover, the unchanged donor and successor pairs, live file
 identities and a successor occupancy charge covering the whole range let a
 retry finish withdrawal and the receipt. That retry moves no additional

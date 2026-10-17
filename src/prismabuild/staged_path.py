@@ -7550,7 +7550,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
     retains its authority. The donor pair is read again under ownership;
     an unknown or different successor pair is retained there as well.
     The existing stage lock still orders publication against egress.
-    After a crash following the full handover, both unchanged pairs and a
+    After process interruption following the full handover, both unchanged pairs and a
     successor charge covering the whole range let a retry finish withdrawal
     and file the receipt. It moves no token a second time.
     Declining costs a copy; proceeding against an egress mid-delete would cost
