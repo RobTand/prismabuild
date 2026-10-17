@@ -1222,7 +1222,7 @@ def _loop_commit(pid: int, roots: list[Path],
         if not script.is_relative_to(root):
             continue
         try:
-            receipt = GenerationReceipt.read(root / "RUNTIME_VERSION.json").document
+            receipt = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text()).document
         except (OSError, ValueError):
             return ""
         commit = receipt.get("commit") if isinstance(receipt, dict) else None
@@ -1257,7 +1257,7 @@ def _published_receipt() -> dict:
     """The active generation's receipt, or ``{}`` when it cannot be read."""
 
     try:
-        value = GenerationReceipt.read(_current_root() / "RUNTIME_VERSION.json").document
+        value = GenerationReceipt.capture((_current_root() / "RUNTIME_VERSION.json").read_text()).document
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -1344,7 +1344,7 @@ def _record_role_restart(host: str, role: str, entry: dict,
             if not script.is_relative_to(root):
                 continue
             try:
-                value = GenerationReceipt.read(root / "RUNTIME_VERSION.json").document
+                value = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text()).document
                 if isinstance(value, dict):
                     loaded_commit = str(value.get("commit") or "")
                     loaded_generation = str(value.get("generation") or "")
@@ -2078,8 +2078,8 @@ def _run_supervisor(stop_requested) -> int:
         # precisely when a supervisor is present -- which is always.
         published = ""
         try:
-            published = str(GenerationReceipt.read(
-                _current_root() / "RUNTIME_VERSION.json").document.get("commit") or "")
+            published = str(GenerationReceipt.capture(
+                (_current_root() / "RUNTIME_VERSION.json").read_text()).document.get("commit") or "")
         except (OSError, ValueError):
             pass
         stopped = cycle_stale(published)
@@ -2112,8 +2112,8 @@ def _run_supervisor(stop_requested) -> int:
     if args.cycle_stale:
         published = ""
         try:
-            published = str(GenerationReceipt.read(
-                _current_root() / "RUNTIME_VERSION.json").document.get("commit") or "")
+            published = str(GenerationReceipt.capture(
+                (_current_root() / "RUNTIME_VERSION.json").read_text()).document.get("commit") or "")
         except (OSError, ValueError):
             pass
         stopped = cycle_stale(published)

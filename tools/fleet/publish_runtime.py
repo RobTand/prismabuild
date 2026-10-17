@@ -1451,7 +1451,7 @@ def _sealed_generation(name):
     if root.resolve(strict=True) != root or root.stat().st_mode & 0o222:
         raise SystemExit(f"barrier generation is not sealed: {name}")
     try:
-        captured = GenerationReceipt.read(root / "RUNTIME_VERSION.json")
+        captured = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text())
         receipt = captured.require_generation(name)
         captured.require_commit()
         for member in captured.files:
@@ -1793,7 +1793,7 @@ def _activate_existing_locked(
     # Rollback is the command that runs when everything else has failed, so a
     # short or damaged receipt has to be a sentence rather than a traceback.
     try:
-        receipt = GenerationReceipt.read(generation / "RUNTIME_VERSION.json").document
+        receipt = GenerationReceipt.capture((generation / "RUNTIME_VERSION.json").read_text()).document
     except (OSError, ValueError) as exc:
         raise SystemExit(
             f"{generation}: receipt is not readable ({exc}); this is not a "

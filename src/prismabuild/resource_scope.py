@@ -547,7 +547,7 @@ class ResourceScope:
         try:
             if root.stat().st_mode & 0o222:
                 raise OSError(f"generation {root.name} is not sealed")
-            receipt = GenerationReceipt.read(root / "RUNTIME_VERSION.json")
+            receipt = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text())
         except (OSError, ValueError) as exc:
             raise OSError(f"generation {root.name} receipt is not readable; "
                           "this is not a generation to launch from") from exc
