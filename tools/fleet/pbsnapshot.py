@@ -44,13 +44,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
 
 from prismabuild import submission
-from prismabuild.submission_frontend import store_for, render_submission
-from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
-
-
-from prismabuild import submission
+from prismabuild.submission_frontend import store_for
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
