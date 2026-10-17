@@ -34,6 +34,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import _paper_action, fleet  # noqa: E402,F401
 
@@ -75,9 +76,9 @@ def test_a_launcher_killed_by_a_stray_term_does_not_read_as_a_withdrawal(
 
     queue = _failed_record(tmp_path / "pb-queue", returncode=143)
 
-    code = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0)
+    code = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0)
 
-    assert code != pbrun.action_client.WITHDRAWN_EXIT
+    assert code != submit_core.action_client.WITHDRAWN_EXIT
     assert code == 1
     assert "143" in capsys.readouterr().err
 
@@ -89,9 +90,9 @@ def test_a_run_that_exits_seventy_five_is_not_no_verdict_yet(
 
     queue = _failed_record(tmp_path / "pb-queue", returncode=75)
 
-    code = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0)
+    code = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0)
 
-    assert code != pbrun.action_client.GAVE_UP_EXIT
+    assert code != submit_core.action_client.GAVE_UP_EXIT
     assert code == 1
     assert "75" in capsys.readouterr().err
 
@@ -110,7 +111,7 @@ def test_every_reserved_code_is_reported_as_a_failure(
     queue = _failed_record(tmp_path / f"pb-queue-{returncode}",
                            returncode=returncode)
 
-    assert pbrun.action_client.report_pool_outcome(
+    assert submit_core.action_client.report_pool_outcome(
         queue, KEY, wait_s=0.0, generation=100.0) == 1
     assert str(returncode) in capsys.readouterr().err
 
@@ -122,7 +123,7 @@ def test_a_status_pbrun_does_not_reserve_still_reaches_the_caller(
 
     queue = _failed_record(tmp_path / "pb-queue", returncode=7)
 
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0) == 7
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0) == 7
 
 
 def test_the_lane_reports_a_job_that_exited_143_as_a_failure(
@@ -140,13 +141,13 @@ def test_the_lane_reports_a_job_that_exited_143_as_a_failure(
     action = _paper_action(tmp_path, "signalled")
     request = cas.publish_action_request(action)
 
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
-    assert code != pbrun.action_client.WITHDRAWN_EXIT
+    assert code != submit_core.action_client.WITHDRAWN_EXIT
     assert code == 1
     assert "143" in capsys.readouterr().err
 
@@ -154,7 +155,7 @@ def test_the_lane_reports_a_job_that_exited_143_as_a_failure(
 def test_the_reserved_set_is_exactly_pbruns_own_words() -> None:
     """2, 74, 75, 76 and 143 are the codes ``pbrun`` decides for itself."""
 
-    assert sorted(pbrun.action_client.RESERVED_EXITS) == sorted(RESERVED)
-    assert pbrun.action_client.GAVE_UP_EXIT in pbrun.action_client.RESERVED_EXITS
-    assert pbrun.action_client.WITHDRAWN_EXIT in pbrun.action_client.RESERVED_EXITS
-    assert pbrun.action_client.RECORD_WRITE_FAILED_EXIT in pbrun.action_client.RESERVED_EXITS
+    assert sorted(submit_core.action_client.RESERVED_EXITS) == sorted(RESERVED)
+    assert submit_core.action_client.GAVE_UP_EXIT in submit_core.action_client.RESERVED_EXITS
+    assert submit_core.action_client.WITHDRAWN_EXIT in submit_core.action_client.RESERVED_EXITS
+    assert submit_core.action_client.RECORD_WRITE_FAILED_EXIT in submit_core.action_client.RESERVED_EXITS

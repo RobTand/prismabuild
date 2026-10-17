@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import fleet_submit  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_pbrun_detach import _checkout, _one_json_line, _queue, _run_pbrun  # noqa: E402
 
@@ -64,7 +65,7 @@ def _item(tmp_path: Path, key: str) -> dict:
 
 
 def _owner(action: dict) -> str:
-    return action["environment"]["variables"][pbrun.CONTAINER_OWNER_ENV]
+    return action["environment"]["variables"][submit_core.CONTAINER_OWNER_ENV]
 
 
 # --------------------------------------------------------------------------
@@ -151,7 +152,7 @@ def test_the_notice_names_the_capability_the_boxes_lack(tmp_path, capsys):
     )
     queue.announce(host="old-box", tags=["gb10"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 16})
-    notice = pbrun.container_image_notice(queue, {
+    notice = submit_core.container_image_notice(queue, {
         "tags": ["gb10", CAPABILITY], "needs_gpu": False,
         "resources": {"cpu": 1, "mem_gb": 1}, "container_images": [REF_A],
     })
@@ -216,7 +217,7 @@ def test_capacity_notice_does_not_invent_an_announcement_time(tmp_path):
                   if record.get("host") == "sparky")
     record["announced_unix"] = "not a stamp"
 
-    notice = pbrun.placement_capacity_notice(
+    notice = submit_core.placement_capacity_notice(
         _OneOfferQueue(record),
         {"tags": ["sparky"], "needs_gpu": False,
          "resources": {"spool_gb": 250}},
@@ -278,10 +279,10 @@ def test_container_owner_includes_images_only_when_declared(tmp_path):
         marker_root=tmp_path / "markers", identity="checkout",
         logical_cwd=".", placement={"required_tags": []},
     )
-    legacy = pbrun.container_owner(**common)
-    empty = pbrun.container_owner(**common, container_images=[])
-    with_a = pbrun.container_owner(**common, container_images=[REF_A])
-    with_b = pbrun.container_owner(**common, container_images=[REF_B])
+    legacy = submit_core.container_owner(**common)
+    empty = submit_core.container_owner(**common, container_images=[])
+    with_a = submit_core.container_owner(**common, container_images=[REF_A])
+    with_b = submit_core.container_owner(**common, container_images=[REF_B])
     assert legacy == empty
     assert with_a != with_b != legacy
 

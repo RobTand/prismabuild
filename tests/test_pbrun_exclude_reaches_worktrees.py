@@ -15,6 +15,7 @@ under a ``git add -A``.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 from pathlib import Path
@@ -56,15 +57,15 @@ def test_a_linked_worktree_is_taught_to_ignore_the_stamp(tmp_path: Path) -> None
     root = _repo(tmp_path)
     tree = tmp_path / "wt"
     _git(root, "worktree", "add", "-q", str(tree), "-b", "probe")
-    stamp = f"{pbrun.STAMP_PREFIX}{'a' * 16}.json"
+    stamp = f"{submit_core.STAMP_PREFIX}{'a' * 16}.json"
     (tree / stamp).write_text("{}\n")
     assert not _ignored(tree, stamp)              # the state that let it be committed
 
-    written = pbrun.keep_droppings_out_of_git(tree)
+    written = submit_core.keep_droppings_out_of_git(tree)
 
     assert written is not None
     assert _ignored(tree, stamp)
-    assert _ignored(tree, f"{pbrun.RESULT_PREFIX}{'a' * 16}.txt")
+    assert _ignored(tree, f"{submit_core.RESULT_PREFIX}{'a' * 16}.txt")
 
 
 def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
@@ -79,7 +80,7 @@ def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     tree = tmp_path / "wt"
     _git(root, "worktree", "add", "-q", str(tree), "-b", "probe")
-    stamp = f"{pbrun.STAMP_PREFIX}{'a' * 16}.json"
+    stamp = f"{submit_core.STAMP_PREFIX}{'a' * 16}.json"
     (tree / stamp).write_text("{}\n")
 
     # The measurement itself, staged rather than reasoned about: the same
@@ -93,25 +94,25 @@ def test_it_writes_the_exclude_git_actually_reads(tmp_path: Path) -> None:
     per_worktree.write_text(f"{stamp}\n")
     assert not _ignored(tree, stamp)
 
-    written = pbrun.keep_droppings_out_of_git(tree)
+    written = submit_core.keep_droppings_out_of_git(tree)
 
     assert written == root / ".git" / "info" / "exclude"
-    assert pbrun.STAMP_PREFIX in written.read_text()   # named, and written
+    assert submit_core.STAMP_PREFIX in written.read_text()   # named, and written
     assert _ignored(tree, stamp)                       # and read back by git
     assert per_worktree.read_text() == f"{stamp}\n"
 
 
 def test_a_repository_root_still_works_and_is_not_written_twice(tmp_path: Path) -> None:
     root = _repo(tmp_path)
-    stamp = f"{pbrun.STAMP_PREFIX}{'a' * 16}.json"
+    stamp = f"{submit_core.STAMP_PREFIX}{'a' * 16}.json"
     (root / stamp).write_text("{}\n")
 
-    first = pbrun.keep_droppings_out_of_git(root)
+    first = submit_core.keep_droppings_out_of_git(root)
     assert first == root / ".git" / "info" / "exclude"
     assert _ignored(root, stamp)
     once = first.read_text()
 
-    assert pbrun.keep_droppings_out_of_git(root) == first
+    assert submit_core.keep_droppings_out_of_git(root) == first
     assert first.read_text() == once           # appending on every submit grows a file
 
 
@@ -121,15 +122,15 @@ def test_only_the_exact_generated_basename_grammar_is_ignored(tmp_path: Path) ->
     root = _repo(tmp_path)
     exclude = root / ".git" / "info" / "exclude"
     with exclude.open("a", encoding="utf-8") as handle:
-        handle.write(f"{pbrun.STAMP_PREFIX}*\n")
-        handle.write(f"{pbrun.RESULT_PREFIX}*\n")
+        handle.write(f"{submit_core.STAMP_PREFIX}*\n")
+        handle.write(f"{submit_core.RESULT_PREFIX}*\n")
 
-    assert pbrun.keep_droppings_out_of_git(root) == exclude
+    assert submit_core.keep_droppings_out_of_git(root) == exclude
 
-    assert _ignored(root, f"{pbrun.STAMP_PREFIX}{'0' * 16}.json")
-    assert _ignored(root, f"{pbrun.RESULT_PREFIX}{'f' * 16}.txt")
-    assert not _ignored(root, f"{pbrun.STAMP_PREFIX}notes.json")
-    assert not _ignored(root, f"{pbrun.RESULT_PREFIX}notes.py")
+    assert _ignored(root, f"{submit_core.STAMP_PREFIX}{'0' * 16}.json")
+    assert _ignored(root, f"{submit_core.RESULT_PREFIX}{'f' * 16}.txt")
+    assert not _ignored(root, f"{submit_core.STAMP_PREFIX}notes.json")
+    assert not _ignored(root, f"{submit_core.RESULT_PREFIX}notes.py")
 
 
 def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
@@ -140,7 +141,7 @@ def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
     root = _repo(tmp_path)
     exclude = root / ".git" / "info" / "exclude"
     with exclude.open("a", encoding="utf-8") as handle:
-        handle.write(f"{pbrun.RESULT_PREFIX}*\n")
+        handle.write(f"{submit_core.RESULT_PREFIX}*\n")
     real_replace = pbrun.os.replace
 
     def refuse_replace(source, destination):
@@ -150,7 +151,7 @@ def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
 
     monkeypatch.setattr(pbrun.os, "replace", refuse_replace)
     with pytest.raises(SystemExit, match="cannot update pbrun Git excludes"):
-        pbrun.keep_droppings_out_of_git(root)
+        submit_core.keep_droppings_out_of_git(root)
 
 
 def test_git_exclude_setup_refuses_failed_initial_repository_detection(
@@ -173,7 +174,7 @@ def test_git_exclude_setup_refuses_failed_initial_repository_detection(
 
     monkeypatch.setattr(pbrun.subprocess, "run", fail_common_dir)
     with pytest.raises(SystemExit, match="cannot inspect local Git excludes"):
-        pbrun.keep_droppings_out_of_git(root)
+        submit_core.keep_droppings_out_of_git(root)
 
 
 def test_a_checkout_that_is_not_a_git_repository_is_not_an_error(tmp_path: Path) -> None:
@@ -182,4 +183,4 @@ def test_a_checkout_that_is_not_a_git_repository_is_not_an_error(tmp_path: Path)
     plain = tmp_path / "plain"
     plain.mkdir()
 
-    assert pbrun.keep_droppings_out_of_git(plain) is None
+    assert submit_core.keep_droppings_out_of_git(plain) is None
