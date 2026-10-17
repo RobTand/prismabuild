@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 
 from prismabuild import pool, storage_tiers  # noqa: E402
 import pbmcp  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmcp_fixture as fx  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
@@ -144,7 +145,7 @@ def test_a_mover_scan_that_does_not_answer_is_null_not_empty(
     def never(*_args, **_kwargs):
         time.sleep(600)
 
-    monkeypatch.setattr(pbmcp, "_mover_live_rows", never)
+    monkeypatch.setattr(fleet_census, "_mover_live_rows", never)
     session = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link, deadline_s=1.0)

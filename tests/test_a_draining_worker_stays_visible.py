@@ -10,7 +10,7 @@ the loop stopped.
 
 These tests drive the real ``worker_loop._run_loop`` against a ``tmp_path``
 queue and a private gate, and read the result back through ``pbstatus``' own
-census.  Nothing touches ``/run``, a live queue or a real broker; the reopened
+fleet_census.  Nothing touches ``/run``, a live queue or a real broker; the reopened
 poll only ever serves an already-empty queue.
 """
 
@@ -32,6 +32,7 @@ WORKER_LOOP = REPO / "tools" / "fleet" / "worker_loop.py"
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 HOST = socket.gethostname()
@@ -127,7 +128,7 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     # drain stays queueable instead of being refused for want of a worker.
     assert queue.placeable({"resources": {"cpu": 1}, "tags": ["x86"]}) is True
 
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.action_rows(queue.root).value
     node = next(n for n in census["nodes"] if n["node"] == HOST)
     assert node["state"] == "draining" and node["healthy"] is True
     assert node["draining"] is True
@@ -155,7 +156,7 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     assert "drain_owner" not in reopened and "drain_reason" not in reopened
     assert reopened["observed_capacity"] == {
         "gpu": 0, "cpu": 1, "mem_gb": 2, "disk_metadata": 0}
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"]
                 if n["node"] == HOST)
     assert node["state"] == "live" and node["healthy"] is True
     assert node["draining"] is False and node["drain_owner"] is None
@@ -186,7 +187,7 @@ def test_missing_or_malformed_gates_still_announce_draining(tmp_path, monkeypatc
     assert offer["state"] == "draining"
     assert all(value == 0 for value in offer["observed_capacity"].values())
     assert offer.get("drain_reason") == reason
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"]
                 if n["node"] == HOST)
     assert node["state"] == "draining" and node["healthy"] is True
 
@@ -210,7 +211,7 @@ def test_a_stale_draining_offer_reads_as_a_stopped_loop(tmp_path):
     record["announced_unix"] = time.time() - pool.OFFER_TIMEOUT_S - 1
     path.write_text(json.dumps(record))
 
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"]
                 if n["node"] == "parkedbox")
     assert node["state"] == "stale" and node["healthy"] is False
     assert node["draining"] is False
@@ -285,7 +286,7 @@ def test_live_and_foreign_malformed_offers_stay_readable(tmp_path):
         "drain_changed_unix": "soon",
     }))
 
-    nodes = {n["node"]: n for n in pbstatus.read_pool(queue.root)["nodes"]}
+    nodes = {n["node"]: n for n in fleet_census.action_rows(queue.root).value["nodes"]}
     assert nodes["openbox"]["state"] == "live"
     assert nodes["openbox"]["draining"] is False
     assert nodes["foreign"]["state"] == "draining"

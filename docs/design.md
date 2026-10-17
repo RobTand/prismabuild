@@ -16211,6 +16211,67 @@ the remaining deadline plus cleanup grace. Failure retains unknown values and
 `abandoned_children`. Explicit `--timeout-s 0` disables the bound. The helper
 loader creates no bytecode, and runtime publication installs no host unit.
 
+### Census ownership, C27
+
+`prismabuild.census` owns the fixed questions `offers`, `action_rows`, `denials`,
+`tiers`, `movers`, `plans`, `waits` and `blocked_origins`. Each returns a
+`Section` with its value, declared inputs, selection bounds and independent
+`complete`, `partial` or `unavailable` coverage. Known observations survive
+beside failed inputs. A partial census grants no absence or idle-capacity proof.
+The CLI and protocol compositions preserve their read order and caller-owned
+deadlines. They do not eagerly request other sections.
+
+Plain reads and `census.KeptReads` use the same fact derivation. `RecordStore`
+owns records, paths and captures. Retained values keep their directory/file
+evidence and explicit per-scrape lifetime. C06 owns ending selection and
+generation authority; a kept terminal projection never answers a fresh
+current-key claim. Tier, lifecycle and residency owners retain their decisions.
+Census observes their facts without admitting, publishing, locking or resolving
+lifecycle transitions.
+
+Tier observation uses Store's strict directory capture. `Queue.tier_ids` retains
+its release/reaper policy of tolerating failed scans; that fallback cannot prove
+an empty observed tier population. A failed census scan retains partial coverage
+and marks the existing starvation/scrape completeness false.
+
+Partial active populations and unreadable holdings remain unknown in plan
+state, reservation and publication facts. Known positive observations survive.
+The mover protocol keeps readable rows, reports incomplete coverage through its
+existing envelope and leaves full depth null. Prometheus count maps receive
+zero defaults only from complete sections; incomplete population counts are
+withheld. Raw observed counts remain available inside their independent section.
+Holder presence uses the ledger owner's strict `holder_state` observation;
+the legacy tolerant token-count query is insufficient evidence of absence.
+Plan state coverage is independent of C21's phase-residency facts. The receipt
+cap bounds a selected observation; its existing window-completeness flag still
+states whether that selection covered the whole requested time window.
+Selected denial-read errors and unreadable filed receipts retain partial
+coverage. An unreadable fragment population yields null fragment presence.
+Optional offer-sample errors make the section partial while the legacy queue
+population count keeps its own, narrower completeness meaning.
+Fragment error coverage follows C21's declared mover names: invalid foreign
+files remain tolerated, while a failed directory or named mover stays unknown.
+Negative residency projections require known holder input. A cursor gap with
+unknown phases withholds that leg's full metric counts; known positive facts
+and other legs remain available.
+Stage and RAM residency coverage are independent: a later RAM failure retains
+the stage result already captured, without starting any read previously skipped.
+
+The denial profiles deliberately differ. Active rows select each host's latest
+denial for the exact publication generation, excluding future observations.
+Starvation uses retained latest observations without a time gate and joins them
+to live mover shape. MCP hours exclude future samples; zero hours mean all
+history. Prometheus uses nonnegative age within its configured seconds; zero
+seconds mean age zero and a future age fails its observation. These are
+explicit inputs, not a policy change.
+
+`pbstatus`, `pbmcp` and `pbmetrics` render these facts with their existing schemas,
+ordering and metric labels. Rollout observation stays with `upgrade_client`;
+HTTP lifecycle, scheduler discovery and protocol envelopes stay in the tools.
+`tools/maintenance/census_audit.py` reproduces the source, assertion and embedded
+program inventory. `census_migrate.py` replays a pinned final patch and verifies
+its exact tree on an idempotent rerun.
+
 ### Structured status for agent consumers
 
 `pbmcp` serves the same census to a program instead of a person, over MCP's
@@ -16229,8 +16290,7 @@ arguments are checked against the advertised types, required fields, property
 names, array items, minima and enums before any tool read. Invalid arguments
 return JSON-RPC `-32602`; operational tool refusals retain `isError` results.
 
-`pb_starvation` serves the starvation census through `pbstatus`'s own reader
-rather than a second one, so the tool, the `--starvation` command and the
+`pb_starvation` serves the package census, so the tool, the `--starvation` command and the
 pbmetrics gauges cannot disagree about who is waiting; `pb_cursors` serves
 the per-plan cursor join from the same census, adding the full consumer key
 and the progress record's own timestamp for the accepted phase. Both keep

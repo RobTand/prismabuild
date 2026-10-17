@@ -34,6 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import (  # noqa: E402
     pool, reader_lease, residency_map, residency_plan, storage_tiers)
 
+from prismabuild import census as fleet_census
+
 import pbstatus  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
@@ -214,7 +216,7 @@ def _cursor(queue: pool.PoolQueue) -> dict:
     claimed = {path.stem for path in queue.records.dir(pool.record_store.CLAIMED).glob("*.json")}
     notes: list[str] = []
     unreadable: list[str] = []
-    entry = pbstatus._starvation_plan_entry(
+    entry = fleet_census._starvation_plan_entry(
         queue, CONSUMER, _filed(queue), ready=ready, claimed=claimed,
         notes=notes, unreadable=unreadable, now=1700000000.0)
     assert entry["valid"] is True, notes

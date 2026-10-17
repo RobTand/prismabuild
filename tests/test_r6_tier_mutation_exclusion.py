@@ -66,6 +66,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from prismabuild import tier_holdings
 
@@ -155,7 +156,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         return _observe_free_scan(path, pattern, real_glob(path, pattern))
 
     monkeypatch.setattr(pool.immutable_files, 'match_optional', _hooked_glob)
-    # The fixed minter uses the strict census. Interrupt the same actual
+    # The fixed minter uses the strict fleet_census. Interrupt the same actual
     # headroom scan on both revisions, before either scans held tokens.
     real_visible = pool.immutable_files.match_required
 
@@ -359,7 +360,7 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
             reports.append(queue.tier(TIER).mint(dict(WANTED))['census_unreadable'])
         row = queue.claim(owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
                           tags=["dl380g10"])
-        starvation = pbstatus.read_starvation(queue.root)
+        starvation = fleet_census.starvation(queue.root)
     assert [report["cycles"] for report in reports] == [1, 2, 3]
     for report in reports:
         assert report['ledger'] == str(ledger.paths.base)

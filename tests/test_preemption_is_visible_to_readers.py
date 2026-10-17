@@ -28,6 +28,7 @@ from prismabuild import pool  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 
@@ -126,14 +127,14 @@ def test_pbstatus_names_the_preemption_on_the_ending_and_on_the_requeue(
 
     q, _, _ = preempted
 
-    endings = pbstatus.read_endings(q.root)
+    endings = fleet_census.endings(q.root)
     withdrawn = [row for row in endings if row["status"] == "withdrawn"]
     assert len(withdrawn) == 1
     assert withdrawn[0]["preempted_by"] == FOREGROUND
     assert f"preempted by {FOREGROUND[:12]}" in "\n".join(
         pbstatus.ending_lines(endings))
 
-    pool_state = pbstatus.read_pool(q.root)
+    pool_state = fleet_census.action_rows(q.root).value
     rows = [row for row in pool_state["jobs"]
             if row["action_key"] == BACKGROUND and row["state"] == "READY"]
     assert len(rows) == 1

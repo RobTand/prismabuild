@@ -40,6 +40,7 @@ sys.path.insert(0, str(ROOT / "tools/fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbstatus  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -94,7 +95,7 @@ def released(tmp_path, monkeypatch):
 
 
 def _row(queue, key):
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.action_rows(queue.root).value
     return next(job for job in census["jobs"] if job["action_key"] == key)
 
 
@@ -117,7 +118,7 @@ def test_pbstatus_says_it_in_the_reason_an_operator_reads(released):
 
 def test_the_job_table_has_a_releases_column(released):
     queue, _ = released
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.action_rows(queue.root).value
     lines = pbstatus.pool_job_lines(census["jobs"], census["queue"])
     assert "RELEASES" in lines[0]
     column = lines[0].index("RELEASES")

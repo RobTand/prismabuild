@@ -5127,6 +5127,7 @@ class ResourceLedger:
 
         return self.holder_census().token_counts(action_key)
 
+
     def holds_gpu(self, action_key: str) -> bool:
         """Whether one holder reserves this box's GPU (#1085).
 

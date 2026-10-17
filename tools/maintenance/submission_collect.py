@@ -22,7 +22,7 @@ def main():
     roster = Roster()
     output = io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-        code = pytest.main(["--collect-only", "-q", "tests"], plugins=[roster])
+        code = pytest.main(["--collect-only", "-q", *(sys.argv[1:] or ["tests"])], plugins=[roster])
     raw = json.dumps(roster.nodes, separators=(",", ":")).encode()
     print(json.dumps({"returncode": int(code), "native": len(roster.nodes),
         "whole_files": len({node.split("::")[0] for node in roster.nodes}),

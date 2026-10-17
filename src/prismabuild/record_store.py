@@ -2210,6 +2210,68 @@ class RecordStore:
             return sorted(Path(entry.path) for entry in entries
                           if entry.name.endswith(".json"))
 
+    @staticmethod
+    def inspection_fragment_records_at(directory: Path):
+        try:
+            with os.scandir(directory) as entries:
+                paths = sorted(Path(entry.path) for entry in entries
+                               if entry.is_file() and entry.name.endswith(".json"))
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+        captured = []
+        for path in paths:
+            try:
+                with open(path) as stream:
+                    value = json.load(stream)
+                if not isinstance(value, dict):
+                    raise ValueError("not a JSON object")
+                record = DiagnosticRecord(_freeze_json(value))
+            except (OSError, ValueError) as exc:
+                record = DiagnosticRecord(None, exc)
+            captured.append((path, record))
+        return captured
+
+    def inspection_plan_names(self) -> list[str]:
+        try:
+            with os.scandir(self.root / RESIDENCY_PLANS) as entries:
+                return sorted(entry.name for entry in entries
+                              if entry.name.endswith(".json") and entry.is_file())
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+
+    def inspection_mover_window(self, limit: int) -> tuple[list[tuple[float, str]], int]:
+        directory = self.root / MOVERS
+        try:
+            names = [entry.name for entry in os.scandir(directory)
+                     if entry.name.endswith(".json") and entry.is_file()]
+        except (FileNotFoundError, NotADirectoryError):
+            return [], 0
+        stamped = []
+        for name in names:
+            try:
+                stamped.append(((directory / name).stat().st_mtime, name))
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+        stamped.sort(reverse=True)
+        return stamped[:max(0, int(limit))], len(stamped)
+
+    @staticmethod
+    def diagnostic_directories_at(directory: Path) -> tuple[list[Path], list[tuple[str, OSError]]]:
+        paths, errors = [], []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_dir():
+                        paths.append(Path(entry.path))
+                except OSError as exc:
+                    errors.append((entry.name, exc))
+        return paths, errors
+
+    @staticmethod
+    def required_directory_names_at(directory: Path) -> list[str]:
+        with os.scandir(directory) as entries:
+            return sorted(entry.name for entry in entries if entry.is_dir())
+
     def terminal_keys(self) -> frozenset[str]:
         """Every action key with a worker-filed outcome.
 

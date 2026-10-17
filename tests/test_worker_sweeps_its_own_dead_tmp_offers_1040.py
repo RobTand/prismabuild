@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
 
 WORKER = ROOT / "tools/fleet/worker_loop.py"
@@ -89,7 +90,7 @@ def test_day_old_offer_is_marked_retired_and_kept(tmp_path, monkeypatch):
     queue.announce(host="gone", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8})
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0 + 2 * 86400.0)
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     node = next(node for node in result["nodes"] if node["node"] == "gone")
     assert node["state"] == "retired"
     assert (queue.root / pool.record_store.WORKERS / "gone.json").exists()
@@ -104,5 +105,5 @@ def test_an_hour_old_offer_is_stale_not_retired(tmp_path, monkeypatch):
     queue.announce(host="slow", tags=[], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8})
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0 + 3600.0)
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"] if n["node"] == "slow")
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"] if n["node"] == "slow")
     assert node["state"] == "stale"

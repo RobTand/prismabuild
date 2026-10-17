@@ -17,6 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 import tier_loop  # noqa: E402
 from prismabuild import pool, storage_tiers  # noqa: E402
@@ -170,7 +171,7 @@ def _publish(queue: pool.PoolQueue, record: dict[str, object]) -> dict[str, obje
 def _cli(queue: pool.PoolQueue, capsys: pytest.CaptureFixture[str]) -> dict:
     assert pbstatus.main(["--starvation", "--queue-root", str(queue.root)]) == 0
     blob = json.loads(capsys.readouterr().out)
-    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert blob["schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert blob["complete"] is True
     return {row["tier_id"]: row for row in blob["tiers"]}
 

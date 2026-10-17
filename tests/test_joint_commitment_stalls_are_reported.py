@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, window_credit  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 import tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -49,7 +50,7 @@ def _record(queue: pool.PoolQueue) -> dict[str, object]:
 
 
 def _starvation_tier(queue: pool.PoolQueue) -> dict[str, object]:
-    blob = pbstatus.read_starvation(queue.root)
+    blob = fleet_census.starvation(queue.root)
     tiers = [tier for tier in blob["tiers"] if tier["tier_id"] == TIER]
     assert len(tiers) == 1, blob["tiers"]
     return tiers[0]
@@ -101,7 +102,7 @@ def test_a_newcomer_behind_a_holder_nothing_can_evict_names_it(
     legs = _term(waiting["terms"], consumer=reader.key, basis="in-horizon-leg")
     assert legs["gib"] == READER_FOOTPRINT and legs["evictable"] is False
 
-    blob = pbstatus.read_starvation(queue.root)
+    blob = fleet_census.starvation(queue.root)
     named = [entry for entry in blob["joint_commitment_waits"]
              if entry["consumer"] == newcomer.key]
     assert len(named) == 1
@@ -141,7 +142,7 @@ def test_a_newcomer_behind_a_waiting_window_is_named_with_it(
     [gate] = [event for event in events if event.get("event") == "window-gated"
               and event.get("consumer") == second.key]
     assert gate["waiting_on"] == on
-    blob = pbstatus.read_starvation(queue.root)
+    blob = fleet_census.starvation(queue.root)
     assert {entry["consumer"] for entry in blob["joint_commitment_waits"]} == {
         first.key, second.key}
 

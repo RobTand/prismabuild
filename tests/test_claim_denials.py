@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools/fleet")]
 from prismabuild import adaptive_cpu, adaptive_gpu, adaptive_snapshot, pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -138,7 +139,7 @@ def test_status_keeps_two_hosts_and_rejects_old_or_future_evidence(tmp_path):
         path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {host: {
             "action_key": KEY_A, "published_unix": generation, "host": host,
             "reason": "fixture", "evidence": {}, "denied_unix": stamp}}}))
-    row = next(row for row in pbstatus.read_pool(queue.root)["jobs"] if row["action_key"] == KEY_A)
+    row = next(row for row in fleet_census.action_rows(queue.root).value["jobs"] if row["action_key"] == KEY_A)
     assert [record["host"] for record in row["admission_denials"]] == ["one", "two"]
 
 

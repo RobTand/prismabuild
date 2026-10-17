@@ -44,6 +44,7 @@ from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from test_pool_action_timeout import _claimed  # noqa: E402
@@ -256,7 +257,7 @@ def test_pbstatus_carries_the_ceiling_from_the_offer_it_read(tmp_path):
     # the field ever leaves the offer.
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "old": None})
     nodes = {node["node"]: node
-             for node in pbstatus.read_pool(queue.root)["nodes"]}
+             for node in fleet_census.action_rows(queue.root).value["nodes"]}
 
     assert nodes["dl380g10"]["timeout_ceiling_s"] == 7200.0
     assert nodes["old"]["timeout_ceiling_s"] is None

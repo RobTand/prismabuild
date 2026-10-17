@@ -37,6 +37,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 
 from prismabuild import endings, pool, progress, residency_plan  # noqa: E402
 import pbstatus  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmcp  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
@@ -160,7 +161,7 @@ def test_pbstatus_endings_name_the_current_generation(
     queue.records.ensure_layout()
     pair = _coexisting_pair(queue, first=first, second=second)
 
-    rows = [row for row in pbstatus.read_endings(queue.root, limit=10)
+    rows = [row for row in fleet_census.endings(queue.root, limit=10)
             if row["action_key"] == KEY]
     assert len(rows) == 2, "the retained records must both stay in the table"
     current = [row for row in rows if row.get("current") is True]
@@ -557,7 +558,7 @@ def test_pbstatus_marks_current_only_when_path_and_generation_match(
                                 "published_unix": 5.0, "finished_unix": 5.0}))
     replaced = []
 
-    real = pbstatus.ending_row
+    real = fleet_census.ending_row
 
     def racing(entry, queue_root):
         row = real(entry, queue_root)
@@ -568,9 +569,9 @@ def test_pbstatus_marks_current_only_when_path_and_generation_match(
                 "published_unix": 10.0, "finished_unix": 10.0}))
         return row
 
-    monkeypatch.setattr(pbstatus, "ending_row", racing)
+    monkeypatch.setattr(fleet_census, "ending_row", racing)
 
-    rows = pbstatus.read_endings(queue.root, limit=10)
+    rows = fleet_census.endings(queue.root, limit=10)
     row = next(one for one in rows if one["action_key"] == KEY)
 
     assert replaced, "the fixture did not replace the slot"
@@ -621,7 +622,7 @@ def test_a_failed_terminal_capture_is_unavailable_not_an_absent_key(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Astra review item 2: a capture that cannot read the slots at all must
     reach ``call.read``'s unavailable accounting, never be swallowed as an
-    empty census."""
+    empty fleet_census."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()

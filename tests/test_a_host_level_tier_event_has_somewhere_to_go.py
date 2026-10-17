@@ -8,6 +8,7 @@ stage's ARC ``primarycache`` refusal among them -- still had nowhere to go
 but that host's own stdout.
 """
 from __future__ import annotations
+from prismabuild import census as fleet_census
 import pbstatus
 
 import json
@@ -69,6 +70,8 @@ def test_the_arc_refusal_still_prints_to_stdout(tmp_path, capsys):
 def test_pbstatus_starvation_shows_the_newest_host_event(tmp_path):
     """``pbstatus --starvation`` reads the host sink pool.py just gained."""
 
+    from prismabuild import census as fleet_census
+
     import pbstatus
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
@@ -76,7 +79,7 @@ def test_pbstatus_starvation_shows_the_newest_host_event(tmp_path):
     tier_loop._emit(queue, HOST, {"event": "ram-admission-refused", "tier_id": TIER})
     tier_loop._emit(queue, HOST, {"event": "ram-epoch-changed", "tier_id": TIER})
 
-    blob = pbstatus.read_starvation(tmp_path / "pb-queue")
+    blob = fleet_census.starvation(tmp_path / "pb-queue")
 
     [entry] = [row for row in blob["host_events"] if row["host"] == HOST]
     assert entry["newest"]["event"] == "ram-epoch-changed"

@@ -8,6 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools/fleet'))
+from prismabuild import census as fleet_census
 import pbstatus
 
 
@@ -26,9 +27,9 @@ def test_queue_root_stat_permission_failure_remains_unavailable(
         (queue / 'done').symlink_to(terminal, target_is_directory=True)
     # Keep the test on the real queue-root helper: previous sections answered
     # before permissions changed, and this last read must report its own error.
-    monkeypatch.setattr(pbstatus, 'read_pool', lambda root, *, reader=None: {
-        'nodes': [], 'jobs': [], 'notes': [], 'queue': {'complete': True}})
-    monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit, *, reader=None: [])
+    monkeypatch.setattr(fleet_census, 'action_rows', lambda root, *, reader=None: fleet_census.Section({
+        'nodes': [], 'jobs': [], 'notes': [], 'queue': {'complete': True}}, 'complete', {}, {}))
+    monkeypatch.setattr(fleet_census, 'endings', lambda root, limit, *, reader=None: [])
     private.chmod(0)
     try:
         code = pbstatus.main(['--transport', 'pool', '--json', '--queue-root', str(queue)])
@@ -64,4 +65,4 @@ def test_missing_terminal_directory_recheck_does_not_hide_a_second_error(
     # demonstrate why its False answer is insufficient for this distinction.
     monkeypatch.setattr(os, 'stat', unreadable)
     with pytest.raises(PermissionError):
-        pbstatus.read_endings(queue)
+        fleet_census.endings(queue)

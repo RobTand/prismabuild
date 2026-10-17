@@ -373,6 +373,8 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
     ("pbstatus", "SHARED_ROOT", "fleet"),
+    ("prismabuild.census", "SHARED_ROOT", "fleet"),
+    ("prismabuild.census", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pbsweep", "SH", "fleet"),
     ("gate_1730_probe", "CANONICAL_DIR", "gate-1730-canonical"),
     ("gate_1730_probe", "STAGE_DIR", "gate-1730-stage"),

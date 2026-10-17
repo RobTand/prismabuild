@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
+from prismabuild import census as fleet_census
+
 import pbmetrics  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
@@ -640,7 +642,7 @@ def test_fragment_memo_keeps_live_fd_evidence_and_rechecks_trust(kernel):
 
 
 def test_metrics_history_retains_exact_file_evidence_after_relisting(kernel):
-    reader = pbmetrics.KeptReads()
+    reader = fleet_census.KeptReads()
 
     def scrape():
         reader.begin()

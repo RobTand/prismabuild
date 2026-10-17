@@ -35,6 +35,8 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool, slurm_lane as sl  # noqa: E402
 
+from prismabuild import census as fleet_census
+
 import pbstatus  # noqa: E402
 
 
@@ -548,9 +550,9 @@ def test_an_oversized_ending_is_reported_without_reading_its_payload(
         "status": "executed",
         "detail": {"stdout": "x" * 1024},
     }))
-    monkeypatch.setattr(pbstatus, "MAX_ENDING_RECORD_BYTES", 512)
+    monkeypatch.setattr(fleet_census, "MAX_ENDING_RECORD_BYTES", 512)
 
-    row = pbstatus.read_endings(fleet["queue"], limit=1)[0]
+    row = fleet_census.endings(fleet["queue"], limit=1)[0]
 
     assert row["status"] == "unreadable"
     assert row["unreadable"] == "record exceeds 512-byte reader limit"

@@ -24,6 +24,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from test_pbrun_detach import (  # noqa: E402
@@ -239,7 +240,7 @@ def test_repository_visible_in_status_reads(tmp_path):
                   worker_script="/worker.py", checkout_root="/co",
                   tested_repository="atlas")
     assert queue.claim() is not None
-    live = pbstatus.read_pool(queue.root)
+    live = fleet_census.action_rows(queue.root).value
     assert live["jobs"][0]["tested_repository"] == "atlas"
     claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text(
         encoding="utf-8"))
@@ -248,7 +249,7 @@ def test_repository_visible_in_status_reads(tmp_path):
     entries = [entry for entry in os.scandir(queue.records.dir(pool.record_store.DONE))
                if entry.name == f"{key}.json"]
     assert len(entries) == 1
-    assert pbstatus.ending_row(entries[0], queue.root)[
+    assert fleet_census.ending_row(entries[0], queue.root)[
         "tested_repository"] == "atlas"
 
 

@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from prismabuild import census as fleet_census
 import pbstatus
 import tier_loop
 from prismabuild import pool, storage_tiers
@@ -812,7 +813,7 @@ def _rendered_ram_status(obj, capsys, monkeypatch):
         assert pbstatus.main(["--starvation", "--queue-root", str(obj.queue.root),
                               "--timeout-s", "0"]) == 0
     blob = json.loads(capsys.readouterr().out)
-    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert blob["schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert blob["complete"] is True
     assert _snapshot(obj.evidence.root.parent) == before
     operator = next(row for row in blob["tiers"] if row["tier_id"] == RAM_ID)

@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
 
 #: What the run must exit with when the queue root did not answer.  Spelled
@@ -56,8 +57,8 @@ def blocked_queue_root(tmp_path, monkeypatch):
                           "complete": True, "live_workers": 0,
                           "sampled_unix": time.time()}}
 
-    monkeypatch.setattr(pbstatus, "read_pool", never)
-    monkeypatch.setattr(pbstatus, "read_endings", never)
+    monkeypatch.setattr(fleet_census, "action_rows", never)
+    monkeypatch.setattr(fleet_census, "endings", never)
     return queue
 
 
@@ -217,12 +218,12 @@ def test_timeout_zero_restores_the_unbounded_in_process_read(tmp_path, monkeypat
 
     def census(*args, **kwargs):
         ran.append("pool")
-        return {"nodes": [], "jobs": [], "notes": [],
+        return fleet_census.Section({"nodes": [], "jobs": [], "notes": [],
                 "queue": {"ready": 0, "claimed": 0, "empty": True,
                           "complete": True, "live_workers": 0,
-                          "sampled_unix": time.time()}}
+                          "sampled_unix": time.time()}}, "complete", {}, {})
 
-    monkeypatch.setattr(pbstatus, "read_pool", census)
+    monkeypatch.setattr(fleet_census, "action_rows", census)
     code = pbstatus.main(["--json", "--timeout-s", "0", "--recent", "0",
                           "--queue-root", str(queue.root)])
     assert code == 0
@@ -266,7 +267,7 @@ def test_a_prompt_error_is_not_a_complete_read(tmp_path, monkeypatch, capsys):
     def refuse(root, *, reader=None):
         raise PermissionError("queue unavailable")
 
-    monkeypatch.setattr(pbstatus, "read_pool", refuse)
+    monkeypatch.setattr(fleet_census, "action_rows", refuse)
     code = pbstatus.main(["--json", "--recent", "0",
                           "--queue-root", str(queue.root)])
     assert code == EXIT_INCOMPLETE
@@ -292,7 +293,7 @@ def test_an_ending_read_that_raises_is_not_a_complete_read(
     def refuse(root, limit, *, reader=None):
         raise PermissionError("done/ unavailable")
 
-    monkeypatch.setattr(pbstatus, "read_endings", refuse)
+    monkeypatch.setattr(fleet_census, "endings", refuse)
     code = pbstatus.main(["--json", "--queue-root", str(queue.root)])
     assert code == EXIT_INCOMPLETE
     result = json.loads(capsys.readouterr().out)

@@ -1769,5 +1769,55 @@ def main():
             return 1
 
 
+def read_rollout_summary(repo_link: str | Path, epoch: str | None = None) -> dict:
+    """Read an active barrier, with no epoch as the normal idle state."""
+    runtime = Path(repo_link)
+    snapshot = read_rollout({
+        "runtime": str(runtime),
+        "generation_store": str(runtime.parent / "runtime-generations"),
+        "rollout_root": str(runtime.parent / "rollout"),
+    }, epoch=epoch)
+    if snapshot is None:
+        return {"state": "idle", "epoch": None, "pending_phase": None,
+                "outstanding_hosts": [], "failed_hosts": []}
+    intent, markers = snapshot["intent"], snapshot["markers"]
+    roster = list(intent["roster"])
+    def missing(phase):
+        return [host for host in roster
+                if marker_name(host, phase) not in markers]
+    def decision(phase):
+        return marker_name(None, phase) in markers
+    failed = [host for host in roster
+              if marker_name(host, "failed") in markers]
+    if decision("terminal"):
+        pending, outstanding = "terminal", []
+    elif decision("rollback"):
+        outstanding = missing("rolled-back")
+        if outstanding: pending = "rolled-back"
+        elif not decision("reverted"): pending = "reverted"
+        elif not decision("resume"): pending = "resume"
+        else:
+            outstanding = missing("resumed")
+            pending = "resumed" if outstanding else "terminal"
+    else:
+        outstanding = missing("drained")
+        if outstanding: pending = "drained"
+        elif not decision("activated"): pending = "activated"
+        else:
+            outstanding = missing("rotated")
+            if outstanding: pending = "rotated"
+            elif not decision("resume"): pending = "resume"
+            else:
+                outstanding = missing("resumed")
+                pending = "resumed" if outstanding else "terminal"
+    return {"state": "active", "epoch": intent["epoch"],
+            "from_generation": intent["from_generation"],
+            "to_generation": intent["to_generation"],
+            "live_generation": snapshot["live_generation"],
+            "intent_sha256": snapshot["intent_sha256"], "roster": roster,
+            "pending_phase": pending, "outstanding_hosts": outstanding,
+            "failed_hosts": failed}
+
+
 if __name__ == '__main__':
     raise SystemExit(main())

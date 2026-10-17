@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from prismabuild import pool  # noqa: E402
 from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 import test_prepaid_writer_integration as fx  # noqa: E402
@@ -124,7 +125,7 @@ def test_a_consumed_batch_held_by_an_attempt_with_no_row_is_named(
 
     assert po.origin_retirement_tick(queue) == [], "once per change"
 
-    listed = pbstatus.read_blocked_origins(queue.root)["held_by_unknown"]
+    listed = fleet_census.blocked_origins(queue.root).value["held_by_unknown"]
     assert [(item["ref"]["batch_id"], item["reason"],
              [holder["why"] for holder in item["holders"]])
             for item in listed] == [
@@ -141,14 +142,14 @@ def test_a_consumed_batch_held_by_an_attempt_with_no_row_is_named(
     assert held[0]["holders"][0]["orphaned"] is True
     assert path.exists()
     assert po.origin_retirement_tick(queue) == [], "once per change"
-    listed = pbstatus.read_blocked_origins(queue.root)["held_by_unknown"]
+    listed = fleet_census.blocked_origins(queue.root).value["held_by_unknown"]
     assert [item["reason"] for item in listed] == ["held-by-orphaned-attempt"]
 
     # The remedy frees it: the prewrite record removed, the batch retires.
     Path(held[0]["holders"][0]["prewrite_record"]).unlink()
     retired = _events(po.origin_retirement_tick(queue), po.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1 and retired[0]["unlinked"] == [str(path)], retired
-    assert pbstatus.read_blocked_origins(queue.root)["held_by_unknown"] == []
+    assert fleet_census.blocked_origins(queue.root).value["held_by_unknown"] == []
 
 
 def test_a_queued_holder_is_named_with_why(tmp_path: Path) -> None:
@@ -169,7 +170,7 @@ def test_a_live_holder_stays_quiet_in_the_listing(tmp_path: Path) -> None:
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
     _foreign_holder(tmp_path, queue, template, path)
     assert po.origin_retirement_tick(queue) == []
-    assert pbstatus.read_blocked_origins(queue.root)["held_by_unknown"] == []
+    assert fleet_census.blocked_origins(queue.root).value["held_by_unknown"] == []
 
 
 def test_an_ended_prewrite_held_by_an_attempt_with_no_row_is_named(
@@ -200,7 +201,7 @@ def test_an_ended_prewrite_held_by_an_attempt_with_no_row_is_named(
     assert _events(po.origin_retirement_tick(queue), HELD) == [], (
         "once per change")
 
-    listed = pbstatus.read_blocked_origins(queue.root)["held_by_unknown"]
+    listed = fleet_census.blocked_origins(queue.root).value["held_by_unknown"]
     assert [item["prewrite"] for item in listed] == [
         po._batch_report_key(dead, "b43")], listed
 

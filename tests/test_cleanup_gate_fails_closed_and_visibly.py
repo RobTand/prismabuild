@@ -52,7 +52,9 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool, resource_scope  # noqa: E402
 
+
 import pbmetrics  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from test_pool_resource_scope import _process, scoped  # noqa: E402,F401
@@ -223,7 +225,7 @@ def _pinned_status(scoped_fixture, monkeypatch):
 def test_pbstatus_says_how_hard_and_for_how_long(scoped, monkeypatch):
     queue, key = _pinned_status(scoped, monkeypatch)
 
-    rows = {job["action_key"]: job for job in pbstatus.read_pool(queue.root)["jobs"]}
+    rows = {job["action_key"]: job for job in fleet_census.action_rows(queue.root).value["jobs"]}
     row = rows[key]
 
     assert row["cleanup_pending"] is True

@@ -1,4 +1,5 @@
 """A heartbeat and observed output answer different liveness questions."""
+from prismabuild import census as fleet_census
 import json
 import time
 import uuid
@@ -124,7 +125,7 @@ def _observed_claim(tmp_path, monkeypatch):
 
 def _row(queue, key, lease):
     queue.records.lease_path(key).write_text(json.dumps(lease))
-    return next(row for row in pbstatus.read_pool(queue.root)['jobs'] if row['action_key'] == key)
+    return next(row for row in fleet_census.action_rows(queue.root).value['jobs'] if row['action_key'] == key)
 
 
 def test_status_shows_lease_and_output_ages_separately(tmp_path, monkeypatch):

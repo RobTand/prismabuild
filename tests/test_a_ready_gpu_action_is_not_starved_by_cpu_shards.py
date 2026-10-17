@@ -29,6 +29,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from prismabuild import drain_policy
 from gpu_capacity_fixture import idle_gpu_sample
@@ -842,7 +843,7 @@ def test_pbstatus_lists_starved_ready_items_with_the_holders_they_named() -> Non
         {"state": "CLAIMED", "action_key_prefix": "cccccccccccc", "admission_denials": [
             {"host": "sparky", "reason": "reservation_unavailable_starved", "evidence": {}}]},
     ]
-    rows = pbstatus._starvation_starved(jobs)
+    rows = fleet_census._starvation_starved(jobs)
     assert [(row["action_key_prefix"], row["host"], row["why"]) for row in rows] == [
         ("aaaaaaaaaaaa", "sparky", "holder_does_not_drain_soon"),
         ("bbbbbbbbbbbb", "sparky", "refilled_past_ceiling")]

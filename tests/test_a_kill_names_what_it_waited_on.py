@@ -17,6 +17,7 @@ denial cache, and timestamps (#983 pattern 4):
 The fixtures below are those three shapes at test size.
 """
 from __future__ import annotations
+from prismabuild import census as fleet_census
 import pbstatus
 
 import fcntl
@@ -302,6 +303,8 @@ def test_a_retired_consumers_event_directory_is_swept_and_a_planned_ones_is_kept
 def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, monkeypatch):
     """The runbook's one command: the producer, its export, why, and since when."""
 
+    from prismabuild import census as fleet_census
+
     import pbstatus
 
     queue, consumer = progress_fx._claimed(tmp_path, mode="silent", seconds=1,
@@ -321,7 +324,7 @@ def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, mon
     adaptive_snapshot.copy_snapshot(adaptive_cpu.local_state_base(ledger.base),
                                     ledger.base / "adaptive")
 
-    blob = pbstatus.read_starvation(queue.root)
+    blob = fleet_census.starvation(queue.root)
 
     [entry] = [row for row in blob["claimed_dependents"] if row["action_key"] == owner]
     [row] = entry["dependents"]
