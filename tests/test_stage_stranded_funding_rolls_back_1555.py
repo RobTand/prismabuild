@@ -6,6 +6,7 @@ tokens back in free through the existing rollback. Token files are
 not removed by any other path. A live consumer intent is untouched.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 
 from prismabuild import funding
 from prismabuild import batch_ledger as bl
@@ -54,10 +55,7 @@ def _template(prefix: str) -> dict:
 
 
 def _queue(tmp_path: Path, gib: int = 6) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
+    q = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     q.tier(TIER).mint({KIND: gib})
     return q
 

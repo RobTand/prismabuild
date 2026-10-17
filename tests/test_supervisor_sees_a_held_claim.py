@@ -18,6 +18,7 @@ therefore exact, where the process tree is a guess.
 """
 
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 import json
 from pathlib import Path
@@ -56,8 +57,7 @@ def _queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
     """A queue at the root the supervisor asks about, which is its mirror's."""
 
     monkeypatch.setattr(supervise, "MIRROR", tmp_path / "fleet")
-    queue = pool.PoolQueue(tmp_path / "fleet" / "pb-queue")
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path / 'fleet').queue
     return queue
 
 
