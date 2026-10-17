@@ -6,6 +6,7 @@ existing ledger channel, and runtime binding from the sealed queue item.
 No prewrite/commit/retire/release/funding bodies, no mover copy, no GPU.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
 from prismabuild import output_contract as oc
 from submission_support import patch_store
 import pbrun
@@ -58,10 +59,7 @@ def _template(output_prefix: str, template_id: str = "admit-v1") -> dict:
 
 
 def _queue(tmp_path: Path, stage_gib: int = 8) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.tier(STAGE_TIER).mint({STAGE_BARE: stage_gib})
     return queue
 

@@ -1,4 +1,5 @@
 """A released non-attempt cannot occupy the successor's execution history (#234)."""
+from fleet_world import Clock as FleetClock
 import json
 from pathlib import Path
 import sys
@@ -29,7 +30,7 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     queue.records.lease_path(key).unlink()
     later = pool._now() + pool.LEASE_TIMEOUT_S
     with monkeypatch.context() as patch:
-        patch.setattr(pool, '_now', lambda: later)
+        FleetClock(source=lambda: later).install(patch, scope="pool")
         assert queue.reap_stale() == [key]
     if successor_state == pool.record_store.CLAIMED:
         successor = queue.claim(owner='successor', capacity={'cpu': 1})
@@ -87,7 +88,7 @@ def test_uncharged_late_scope_cleanup_refusal_keeps_the_successors_slot_free(sco
     queue.records.lease_path(key).unlink()
     later = pool._now() + pool.LEASE_TIMEOUT_S
     with monkeypatch.context() as patch:
-        patch.setattr(pool, '_now', lambda: later)
+        FleetClock(source=lambda: later).install(patch, scope="pool")
         assert queue.reap_stale() == [key]
     successor = queue.claim(owner='successor', capacity=first['resources'])
     assert successor is not None
