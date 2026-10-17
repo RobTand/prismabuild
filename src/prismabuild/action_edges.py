@@ -827,8 +827,8 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
         except (OSError, ValueError) as exc:
             raise ActionEdgeUnreadable(
                 f"producer instance {name} unreadable: {exc}") from None
-        if any(isinstance(entry, Mapping) and entry.get("origin_only") is True
-               and not entry.get("origin_reclaimed")
+        if any(isinstance(entry, Mapping) and bl.BatchFacets(entry).kind == "origin"
+               and not bl.BatchFacets(entry).origin_reclaimed
                for entry in batches.values()):
             attempt = instance["owner_attempt"]
             assert isinstance(attempt, dict)
@@ -930,7 +930,7 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
         raise ActionEdgeError(f"producer commitments unreadable: {exc}") from None
     refs: list[dict[str, object]] = []
     for batch_id, entry in sorted(commitments["batches"].items()):
-        if not isinstance(entry, Mapping) or entry.get("origin_only") is not True:
+        if not isinstance(entry, Mapping) or bl.BatchFacets(entry).kind != "origin":
             continue
         refs.append(oc.origin_batch_ref(
             instance, batch_id=batch_id,

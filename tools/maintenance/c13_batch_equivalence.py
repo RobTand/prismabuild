@@ -27,7 +27,7 @@ def c13_dotted(node):
     return None
 
 
-def c13_canonical_tree(tree,manifest):
+def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
     aliases={}
     loader_aliases=set()
     for n in ast.walk(tree):
@@ -45,6 +45,12 @@ def c13_canonical_tree(tree,manifest):
             name=n.targets[0].id
             aliases[name]=n.value.args[0].value
             loader_aliases.add(name)
+    if fixture_modules:
+        # These fixture variables are the actual modules returned by load or
+        # the committed fixture context, never modeled records or facades.
+        aliases.update(po='prismabuild.produced_output',
+                       oc='prismabuild.output_contract', bl='prismabuild.batch_ledger')
+        loader_aliases.update(('po','oc','bl'))
     top_names={n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.ClassDef))}
     if 'BatchLedger' in top_names:
         aliases['BatchLedger']='prismabuild.batch_ledger.BatchLedger'
@@ -141,7 +147,7 @@ def c13_occurrences(source,manifest,path):
         for n in ast.walk(tree):
             if isinstance(n,ast.Assert) and ast.unparse(n.test)=='name in vars(owner)':
                 n.test=ast.parse('name in po.__all__',mode='eval').body
-    tree=c13_canonical_tree(tree,manifest)
+    tree=c13_canonical_tree(tree,manifest,fixture_modules=path.startswith('tests/compat/support/compat_'))
     assertions=[];decorators=[]
     for n in ast.walk(tree):
         if isinstance(n,ast.Assert):
