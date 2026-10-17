@@ -8057,14 +8057,63 @@ claimed movers -- claims first, then fragments, because a claim exists before it
 copy starts (each mover passes a start gate before its first rename, holding
 nothing during the copy) and a fragment exists before its claim is gone. Shared
 paths are kept with `entries_shared`/`shared_with` on the receipt while the
-mover's own tokens come back and its own fragment is dropped; the last owner to
-leave deletes the file. Anything unreadable fails the pass closed with the reason
+mover's duplicate occupancy is decharged and its own fragment is dropped; the
+last owner to leave deletes the file. Anything unreadable fails the pass closed with the reason
 on the receipt. Limits, stated: the ownership scan parses every consumer's
 fragments once per egress (measured 2.9 s over 50 consumers / 140 fragments on the
 live corpus -- JSON parsing, linear in corpus size, no global map by design;
 since #988 that parse runs before the lock, and the census under it parses
 again only the fragments whose file version changed); a
 worker killed between rename and fragment publication leaves a recovery interval.
+
+`prismabuild.staged_path` owns staged-copy publication, vouch pair operations,
+ownership censuses and the acts that use them. `stage_move` and `ram_promote`
+retain copying and command orchestration. `stage_release` retains the sweep
+orchestration, including produced-batch retirement, and calls the concrete
+staged-path owner. No retired helper is re-exported from those modules.
+
+The pair operations keep these orders:
+
+* `publish_vouch` dates new coverage in its material sidecar before publishing
+  its fragment. Reissue preserves the source generation and uses the same
+  material-before-fragment order. A date without a fragment is inert.
+* `shrink_vouch` writes the surviving fragment before trimming its material.
+  Its result distinguishes a failed fragment write from a material failure
+  after the fragment committed. A partial prune keeps its whole charge and
+  remains `complete=False`, even when its document pair completed.
+* `withdraw_vouch` removes fragment, material, then retiring mark. A committed
+  withdrawal keeps the existing best-effort material removal. An overrun
+  mover discards its own unpublished pair with strict material errors and
+  touches no retiring mark. Neither operation deletes payload bytes.
+
+Adoption takes the donor and successor's existing mover transition locks
+without waiting. A live or unreadable mover state declines. It reads the
+donor pair again under the existing stage ownership lock before mutation,
+compares every dated file identity there, and retains an unknown or distinct
+successor pair. A successor miss is confirmed through the existing strict
+metadata-absence reader, including its NFS parent revalidation. Same-pair
+reissue after an interrupted adoption remains valid. After a crash following
+the full token handover, the unchanged donor and successor pairs, live file
+identities and a successor occupancy charge covering the whole range let a
+retry finish withdrawal and the receipt. That retry moves no additional
+token. There is no adoption journal or new durable state.
+
+The egress still reads claims, fragments, pins and promotion sources in its
+existing order. Source-mark reclamation asks the same owner for one
+`RetainedPaths` verdict. Its hint primes the existing memo. The owner then
+takes the existing ownership lock, repeats the conditional census and holds
+the lock through the act. Each refusal keeps its previous short circuit and
+error precedence. Neither a hint nor an incomplete census grants authority.
+The parse counters and timing include that locked re-census.
+
+These readers continue to use `kept_reads.CensusMemo`, `CensusIndex`, captured
+directory listings and their filesystem-trust rules. Adoption's action-side
+reads keep no trusted version cache. `RecordStore.accepted_progress_phase`
+owns the existing bounded strict lease observation used to determine shared
+interest. Physical produced-output namespace constants live in the lower
+`output_vocabulary` module. Batch lifecycle and its intent-specific path
+policies remain with the batch owner. Fragment, material, lease and lock path
+grammars, schema bytes, generations and epochs are unchanged.
 
 Stage and RAM movers also use this ownership lock when publishing a copied
 file (#751/#752). Copying stays outside the lock. Publication adopts an

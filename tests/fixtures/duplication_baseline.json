@@ -371,10 +371,6 @@
    "src/prismabuild/produced_spool.py",
    "tools/fleet/pb_gc.py"
   ],
-  "_is_action_key": [
-   "src/prismabuild/stage_release.py",
-   "src/prismabuild/staged_path.py"
-  ],
   "_key": [
    "tools/fleet/bench_failed_mover_reclaim.py",
    "tools/fleet/bench_ram_promote_restart.py",
