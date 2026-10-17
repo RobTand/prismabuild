@@ -40,7 +40,7 @@ def resident_set(rs, codec, pool, store, variant):
                 "offset": 0, "bytes": 7, "sha256": hashlib.sha256(b"weights").hexdigest()}],
                 "entry_count": 1, "total_bytes": 7}
     queue = pool.PoolQueue(store / "queue")
-    queue.mint_tier_capacity("local:compat-host", {"local_gib": 1})
+    queue.tier("local:compat-host").mint({"local_gib": 1})
     lease = {"until": 150, "hard_max": 200}
     if variant == "campaign":
         lease = {"campaign": "compat", "hard_max": 200}

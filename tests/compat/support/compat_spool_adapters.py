@@ -28,7 +28,7 @@ def context(store, load):
     cas.publish_action_request(action)
     owner = action["action_key"]
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.tier(TIER).mint({"stage_gib": 2})
     published = queue.publish(action_key=owner, cas_root=cas.root, checkout_root="/compat/checkout",
         worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, **oc.owner_demand_terms(template)}, produced_output_template=template)

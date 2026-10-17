@@ -22,7 +22,7 @@ def operate(request, store, load):
             pool, loop = load("prismabuild.pool"), load("tier_loop")
             queue = pool.PoolQueue(store / "queue")
             name = "prismabuild-stage:compat"
-            queue.mint_tier_capacity(name, {"stage_gib": 1})
+            queue.tier(name).mint({"stage_gib": 1})
             queue.announce_tier({"schema": tiers.TIER_RECORD_SCHEMA_V1, "tier_id": name, "tier": "stage", "host": "compat",
                                 "mountpoint": str(store / "stage"), "capacity_bytes": tiers.GIB})
             original = time.monotonic
