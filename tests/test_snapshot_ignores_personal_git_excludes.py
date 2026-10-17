@@ -9,6 +9,7 @@ part of the tree and still applies.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -67,13 +68,13 @@ def _checkout(tmp_path: Path) -> tuple[Path, str]:
     (checkout / "notes.txt").write_text("untracked but not ignored\n")
     # Untracked and dropped: the repository's own .gitignore matches it.
     (checkout / "ignored.txt").write_text("generated\n")
-    stamp_name = f"{pbrun.STAMP_PREFIX}excludes.json"
+    stamp_name = f"{submit_core.STAMP_PREFIX}excludes.json"
     return checkout, stamp_name
 
 
 def _seal(checkout: Path, stamp_name: str, store: Path) -> tuple[str, list[str]]:
     cas = core_module.PrismaBuildCAS(store)
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, stamp_name=stamp_name, stamp_payload=STAMP_PAYLOAD,
         cas=cas, max_bytes=MAX_BYTES
     )
@@ -112,7 +113,7 @@ def test_a_global_exclude_file_does_not_change_the_sealed_tree(
     assert "notes.txt" in plain_roster
     assert "notes.txt" in excluded_roster
     assert excluded_tree == plain_tree
-    assert "notes.txt" in pbrun.snapshot_path_roster(checkout)
+    assert "notes.txt" in submit_core.snapshot_path_roster(checkout)
 
 
 def test_the_repositorys_own_gitignore_still_keeps_a_path_out(

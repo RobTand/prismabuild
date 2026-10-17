@@ -8,6 +8,7 @@ could not read, review, or change.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 from pathlib import Path
@@ -54,7 +55,7 @@ def _checkout(tmp_path: Path) -> Path:
 
 
 def _seal(checkout: Path, store: Path) -> dict[str, object]:
-    return pbrun.build_git_checkout_snapshot(
+    return submit_core.snapshot_checkout(
         checkout,
         cas=core_module.PrismaBuildCAS(store),
         max_bytes=MAX_BYTES,
@@ -99,4 +100,4 @@ def test_an_ordinary_dense_checkout_still_seals(tmp_path: Path) -> None:
 
     snapshot = _seal(checkout, tmp_path / "cas")
 
-    assert snapshot["parent"] == pbrun._git_identity(checkout)["head"]
+    assert snapshot["parent"] == submit_core._git_identity(checkout)["head"]
