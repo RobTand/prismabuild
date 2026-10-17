@@ -1,0 +1,28 @@
+{
+  "capture_name": "state-gpu-capture-02",
+  "capture_report_sha256": "4ec9763eb3f46b6794bc0edebe77915ce7e8fdd26d83fef3412fcff7e03c3752",
+  "excluded_cases": [],
+  "files": {
+    "goldens-adaptive-power.jsonl": "97e1b640d32f21522c9826ca6524537e18857a0feecf43eff6d290627c5608da",
+    "historical-adaptive-power.jsonl": "d6e5613d58ba7a01cdbffe3535658c483044dfcead6d34d9b8cc0078d60f0d35"
+  },
+  "finished_at": "2026-10-17T00:21:55.234322+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "state-gpu/power",
+    "state-gpu/probe",
+    "state-gpu/returned"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "c468d1669a0916bac5c382b0f2b49dd167a69fdd",
+    "tree": "4acb98ceaffc323499714b7ea8a5dfe953e09ed4"
+  },
+  "started_at": "2026-10-17T00:21:14.285399+00:00"
+}
