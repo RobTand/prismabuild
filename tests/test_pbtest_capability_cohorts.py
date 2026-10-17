@@ -94,6 +94,7 @@ def _stub_queue(tmp_path: Path, monkeypatch, *, answers=(), absent=(),
 def _checkout(tmp_path: Path, *, marked=2, plain=2):
     checkout = tmp_path / "checkout"
     (checkout / "tests").mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     for index in range(plain):
         (checkout / "tests" / f"test_plain_{index}.py").write_text(
             PLAIN, encoding="utf-8")
