@@ -47,6 +47,7 @@ reaper concludes.
 """
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock, FleetWorld
 
 import json
 from pathlib import Path
@@ -70,14 +71,8 @@ def clock(monkeypatch: pytest.MonkeyPatch):
     """
 
     at = [1_788_700_000.0]
-    monkeypatch.setattr(pool, "_now", lambda: at[0])
+    FleetClock(source=lambda: at[0]).install(monkeypatch, scope="pool")
     return at
-
-
-def _queue(tmp_path: Path, name: str) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / name)
-    queue.records.ensure_layout()
-    return queue
 
 
 def _sweeps(queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -103,7 +98,7 @@ def test_the_first_poll_sweeps_and_the_rest_of_the_heartbeat_does_not(
     that was twenty-nine full passes over ``claimed/`` and every lease in it.
     """
 
-    queue = _queue(tmp_path, "q")
+    queue = FleetWorld(tmp_path, queue_name='q').queue
     calls = _sweeps(queue, monkeypatch)
 
     for _ in range(30):
@@ -128,7 +123,7 @@ def test_the_throttle_is_shared_by_every_loop_on_the_box(
     real loops share.
     """
 
-    first = _queue(tmp_path, "q")
+    first = FleetWorld(tmp_path, queue_name='q').queue
     second = pool.PoolQueue(first.root)
     a = _sweeps(first, monkeypatch)
     b = _sweeps(second, monkeypatch)
@@ -151,7 +146,7 @@ def test_a_second_box_serving_the_same_pool_sweeps_on_its_own_clock(
     well as fragile.
     """
 
-    queue = _queue(tmp_path, "q")
+    queue = FleetWorld(tmp_path, queue_name='q').queue
     calls = _sweeps(queue, monkeypatch)
     queue.serve_once()
     assert calls[0] == 1
@@ -171,7 +166,7 @@ def test_an_expired_lease_is_still_requeued_within_one_heartbeat(
     sweep it skipped had nothing to find.
     """
 
-    queue = _queue(tmp_path, "q")
+    queue = FleetWorld(tmp_path, queue_name='q').queue
     key = "d" * 64
     # Tagged for a box this poll is not, so the requeue is observable: without
     # that, ``serve_once`` reaps the claim and then immediately claims and runs

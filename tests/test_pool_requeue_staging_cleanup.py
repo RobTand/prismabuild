@@ -1,5 +1,6 @@
 """Recover staging files left when a requeue publisher dies after linking."""
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 from concurrent.futures import ThreadPoolExecutor
 import errno
@@ -61,7 +62,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 @pytest.fixture()
 def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     now = [time.time()]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     return now
 
 

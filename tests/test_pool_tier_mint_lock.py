@@ -19,6 +19,7 @@ Nothing here touches a real pool, a real device, or another box.
 """
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import threading
 from pathlib import Path
@@ -42,17 +43,13 @@ GIB = storage_tiers.GIB
 from fleet_world import FleetWorld
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 # -- the mint lock -----------------------------------------------------------
 
 
 def test_a_second_minter_waits_for_the_first(tmp_path: Path) -> None:
     """One tier, one minter at a time; different tiers mint independently."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     held: list[bool] = []
 
     with queue.tier(TIER).mutation_lock():
@@ -73,7 +70,7 @@ def test_a_second_minter_waits_for_the_first(tmp_path: Path) -> None:
 def test_concurrent_mints_converge_on_the_minted_capacity(tmp_path: Path) -> None:
     """Eight threads minting at once leave exactly what discovery measured."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     errors: list[BaseException] = []
 
     def mint() -> None:
@@ -96,7 +93,7 @@ def test_concurrent_mints_converge_on_the_minted_capacity(tmp_path: Path) -> Non
 def test_minting_down_retires_only_free_tokens(tmp_path: Path) -> None:
     """The lock serializes the retire half too: a holder keeps its tokens."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.tier(TIER).mint({KIND: 4})
     ledger = queue.tier(TIER)
     handle = ledger.begin_take('a' * 64, {KIND: 3})
@@ -159,9 +156,9 @@ def test_the_probe_is_sized_for_the_oldest_ready_mover(
     the window publisher still owns (see #593).
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     clock = iter(range(1_700_000_000, 1_700_000_100))
-    monkeypatch.setattr(pool, "_now", lambda: next(clock))
+    FleetClock(source=lambda: next(clock)).install(monkeypatch, scope="pool")
     _mover(queue, "a", 100)
     _cycle(queue)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])

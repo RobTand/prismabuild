@@ -11,6 +11,7 @@ already has.
 """
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 import socket
@@ -193,7 +194,7 @@ def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
     """
 
     at = [1_788_700_000.0]
-    monkeypatch.setattr(pool, "_now", lambda: at[0])
+    FleetClock(source=lambda: at[0]).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
 
