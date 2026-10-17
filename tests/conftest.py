@@ -63,21 +63,30 @@ from threading import local
 import pytest
 
 
+TEST_RUNTIME_EVIDENCE_PREFIX = "prismabuild-test-runtime: "
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Bind each shard's qualification to the interpreter that actually ran."""
+    """Keep unavailable runtime observations separate from test outcomes."""
     import json
 
-    executable = Path(sys.executable).resolve()
-    running = Path("/proc/self/exe").read_bytes()
-    record = dict(version=list(sys.version_info[:3]), description=sys.version,
-        executable=dict(path=sys.executable, resolved_path=str(executable),
-            bytes=len(running), sha256=pb_core.raw_sha256(running)),
-        executable_path_matches_running=executable.read_bytes() == running,
-        files=list(config.args), affinity=sorted(os.sched_getaffinity(0)),
-        native_threads={name: os.environ.get(name) for name in (
-            "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
-        conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()))
-    terminalreporter.write_line("pbtest-runtime: " + json.dumps(record))
+    record = dict(complete=False, version=list(sys.version_info[:3]),
+                  description=sys.version, files=list(config.args))
+    try:
+        executable = Path(sys.executable).resolve()
+        running = Path("/proc/self/exe").read_bytes()
+        record.update(complete=True,
+            executable=dict(path=sys.executable, resolved_path=str(executable),
+                bytes=len(running), sha256=pb_core.raw_sha256(running)),
+            executable_path_matches_running=executable.read_bytes() == running,
+            affinity=sorted(os.sched_getaffinity(0)),
+            native_threads={name: os.environ.get(name) for name in (
+                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
+            conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()))
+    except (OSError, RuntimeError, AttributeError) as exc:
+        record["complete"] = False
+        record["reason"] = f"{type(exc).__name__}: {exc}"
+    terminalreporter.write_line(TEST_RUNTIME_EVIDENCE_PREFIX + json.dumps(record))
 
 # The status reader already owns the fleet's bounded fork-and-abandon contract.
 # Reuse it here rather than adding a second timeout shape for a hard-mounted

@@ -2096,9 +2096,6 @@ def fan_out_shared_ranges(queue: pool.PoolQueue,
     return events
 
 
-#: The suffix a supersession marker's address ends with: the marker is
-#: ``{consumer_action_key}.{plan_sha256}.superseded.json`` beside the filed
-#: plan (``residency_plan._superseded_path``).
 
 
 def withdraw_dead_consumer_movers(queue: pool.PoolQueue, *, store=None) -> list[dict[str, object]]:
