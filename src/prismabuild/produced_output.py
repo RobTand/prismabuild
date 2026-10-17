@@ -66,19 +66,19 @@ realistic broker control through the existing `ResourceScope` verification
 (`_adopt_created_scope` over a canned broker response); production accepts
 only broker-issued controls.
 
-CREDIT vs TOKENS (liveness R2 direction, binding here): the admission
-record (`admit_instance`) is binding metadata, NOT funding and NOT
-capacity. Physical tokens are held ONLY by batch movers, exact per range,
-acquired under the batch holder and TRANSFERRED whole to mover ownership
-with no free interval (existing `TierLedger.handover`). No standing
-ledger pool is held beside movers. The funded-claim primitive family
-(`reserve_fence` / `ResourceLedger.transfer_tokens` / `funded_cover`) is
-delivered by the prepaid-output lane, so `admit_funded_window` reports the
-delivered `prepaid-per-batch` binding (declaration-only: the owner action's
-own tier demand, reserved once at its claim; per-batch funding is the
-authority). The `funding-primitive-pending` refusal remains only for a
-pool missing one of those primitives. No second ledger here, never
-subtracts unrelated holders' tokens.
+CREDIT vs TOKENS: the admission record is binding metadata, not capacity.
+The producer's action reserves its tier window at claim. Per-batch funding
+transfers exact names from that window to the mover, with no free interval.
+The mover's claim consumes the funding record. `commit_batch` reconciles
+previously allocated funding; it never acquires from free. A positive-byte
+first commit with neither prepaid funding nor an existing legacy intent
+refuses with `prepaid-funding-required`. Direct SDK6 callers must fund first
+or use `publish_prepaid_batch`. Zero-token commits retain their contract.
+Existing legacy intents still recover allocated tokens under the batch
+holder or mover, and publication retains their exact cleanup order. Older
+or rollback writers may still create them; no drain or writer exclusion is
+implied. `admit_funded_window` reports the delivered `prepaid-per-batch`
+declaration. No second ledger subtracts unrelated holders' tokens.
 
 MATERIALIZATION (bounded-window restage): a committed BATCH is immutable and
 carries ONE durable origin charge; the stage copy under it is a window the
@@ -863,9 +863,12 @@ def commit_batch(queue, instance: Mapping[str, object],
                  template: Mapping[str, object],
                  descriptors: list[Mapping[str, object]], *, batch_id: str,
                  tier: str, mover_key: str) -> dict[str, object]:
-    """Commit one immutable batch: check, prewrite-match, acquire exact under
-    the batch holder, TRANSFER whole to mover ownership (no free interval),
-    file the batch record. All-or-nothing with typed refusals."""
+    """Check, reconcile allocated funding, then file one immutable batch.
+
+    An unfunded positive-byte first commit refuses with
+    ``prepaid-funding-required``. Existing legacy intents still recover;
+    zero-token commits and the public SDK6 signature are unchanged.
+    """
 
     from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod

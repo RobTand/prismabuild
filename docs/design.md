@@ -18838,3 +18838,12 @@ only an explicit permitted entry outside every unknown/gated set can publish.
 inside those locks before `BatchLedger.publish_stage` publishes and cleans up.
 Wire schemas, token names, publication bindings, native observations and the
 legacy in-flight recovery lane retain their existing contracts.
+
+C12 changes the current positive-byte first-commit protocol: without prepaid
+pool funding or an existing legacy intent, `commit_batch` returns
+`{"ok": false, "refusal": "prepaid-funding-required"}` and acquires no tokens.
+Direct SDK6 callers must fund first or call `publish_prepaid_batch`.
+Zero-token commits, corrupt/mismatched/unknown-holdings diagnostics, positive
+existing legacy recovery and publication cleanup order are unchanged.
+Old and rollback writers can still create legacy intents, whose readers remain;
+this source change establishes no writer exclusion, drain or deployment fact.

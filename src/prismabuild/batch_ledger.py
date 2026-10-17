@@ -2760,9 +2760,9 @@ class BatchLedger:
         Copies the template's per-tier minimum/window demands into commitments
         as the scope side of the funding contract. This record is BINDING
         metadata only: it authorizes no bytes and funds nothing. Physical
-        funding happens per batch at `commit_batch` (exact ledger acquire +
-        whole transfer); general window admission is `admit_funded_window`
-        (pending on the liveness primitive). Returns {"ok": True, ...}.
+        funding transfers the producer's claimed window per batch before
+        `commit_batch` reconciles it. Existing legacy intents retain their
+        allocated-token recovery. Returns {"ok": True, ...}.
         """
 
         try:
@@ -2819,10 +2819,10 @@ class BatchLedger:
         prewritten refuses `prewrite-path-owned-by-live-action`, naming that
         owner (`_foreign_live_path_owner`); a dead or finished action's paths
         are free to regenerate, which is how a relaunch resumes. Then files an immutable
-        prewrite record the later commit must present. Physical funding happens
-        only at `commit_batch` (exact ledger acquire) and in the liveness
-        window primitive (pending). Zero-byte classes are valid (explicit
-        zeros, never missing keys).
+        prewrite record the later commit must present. Funding is a separate
+        prepaid transfer before commit, or recovery of an existing allocated
+        legacy intent. Zero-byte classes are valid (explicit zeros, never
+        missing keys).
         """
 
         try:

@@ -4155,16 +4155,8 @@ class FundingLedger:
                     # A previous attempt moved some tokens and crashed before
                     # filing the batch; the remainder is gone to unknown hands.
                     return CommitFunding(funding_path, prepaid, {"ok": False, "refusal": "unknown-retain: funded tokens lost"})
-                if not ledger.take(batch_ns, {kind: batch_gib}):
-                    return CommitFunding(funding_path, prepaid, {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()})
-                # Intent names allocated tokens only: nothing is recorded
-                # before the ledger holds it, so a crash before this line
-                # retries clean and a crash after it resumes from the record.
-                LegacyFunding(funding_path).file({
-                    "batch_id": batch_id, "tier": tier,
-                    "mover_key": mover, "batch_gib": batch_gib,
-                    "manifest_digest": manifest_digest})
-                holder_now = batch_gib
+                return CommitFunding(funding_path, prepaid, {
+                    "ok": False, "refusal": "prepaid-funding-required"})
             if holder_now > 0:
                 self.queue.tier(tier).handover(batch_ns, mover)
                 mover_now = ledger.holdings(mover).get(kind, 0)
