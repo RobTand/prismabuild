@@ -36,7 +36,7 @@ def scoped(tmp_path, monkeypatch, request):
     queue.publish(action_key=action['action_key'], cas_root=cas.root,
                   checkout_root=checkout, worker_script='/worker.py',
                   resources=demand, max_attempts=2, retry_safe=True)
-    item = queue.claim(capacity=demand)
+    item = queue.claim(has_gpu='gpu' in demand, capacity=demand)
     calls = []
 
     def request(scope, op, **extra):

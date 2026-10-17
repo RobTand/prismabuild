@@ -1219,9 +1219,9 @@ def test_admission_refuses_when_the_box_is_full(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_A, resources={"gpu": 1})
     _publish(queue, KEY_B, resources={"gpu": 1})
     capacity = {"gpu": 1}
-    assert queue.claim(capacity=capacity) is not None
+    assert queue.claim(has_gpu=True, capacity=capacity) is not None
     # One token, one running action: the second is denied, and stays ready.
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
     assert queue.item_path(pool.READY, KEY_B).exists()
 
 
@@ -1231,19 +1231,19 @@ def test_finishing_an_action_returns_its_capacity(queue: pool.PoolQueue) -> None
     _publish(queue, KEY_A, resources={"gpu": 1})
     _publish(queue, KEY_B, resources={"gpu": 1})
     capacity = {"gpu": 1}
-    first = queue.claim(capacity=capacity)
+    first = queue.claim(has_gpu=True, capacity=capacity)
     assert first is not None
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
     queue.finish(KEY_A, status="executed")
     assert queue.ledger().available().get("gpu", 0) == 1
-    assert queue.claim(capacity=capacity) is not None
+    assert queue.claim(has_gpu=True, capacity=capacity) is not None
 
 
 def test_reaping_a_dead_claimant_returns_its_capacity(queue: pool.PoolQueue) -> None:
     """A reservation must not outlive its holder, or the box never recovers."""
 
     _publish(queue, KEY_A, resources={"gpu": 1})
-    assert queue.claim(capacity={"gpu": 1}) is not None
+    assert queue.claim(has_gpu=True, capacity={"gpu": 1}) is not None
     assert queue.ledger().available().get("gpu", 0) == 0
     queue.reap_stale(timeout_s=-1.0)
     assert queue.ledger().available().get("gpu", 0) == 1
@@ -1320,7 +1320,7 @@ def test_a_starved_background_item_cannot_withhold_the_host_from_foreground_work
         queue.record_pass(KEY_B)
     _publish(queue, KEY_A, priority=0, resources={"gpu": 1})
 
-    taken = queue.claim(capacity=capacity)
+    taken = queue.claim(has_gpu=True, capacity=capacity)
     assert taken is not None and taken["action_key"] == KEY_A
     assert queue.item_path(pool.READY, KEY_B).exists()
 
@@ -1343,7 +1343,7 @@ def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
     assert ledger.acquire("0" * 64, {"gpu": 2}) is True
 
     for _ in range(pool.STARVATION_FLOOR - 1):
-        taken = queue.claim(capacity=capacity)
+        taken = queue.claim(has_gpu=True, capacity=capacity)
         assert taken is not None and taken["action_key"] == KEY_B
         queue.finish(KEY_B, status="executed")
         queue.item_path(pool.DONE, KEY_B).unlink()
@@ -1352,7 +1352,7 @@ def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
     assert queue.passes(KEY_A) >= pool.STARVATION_FLOOR - 1
     queue.record_pass(KEY_A)
     # Now the floor is reached: the host is withheld rather than handed to KEY_B.
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
     assert queue.item_path(pool.READY, KEY_B).exists()
 
 
@@ -1365,7 +1365,7 @@ def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
     _publish(queue, KEY_B, resources={"gpu": 1})
     for _ in range(pool.STARVATION_FLOOR + 2):
         queue.record_pass(KEY_A)
-    taken = queue.claim(capacity={"gpu": 2})
+    taken = queue.claim(has_gpu=True, capacity={"gpu": 2})
     assert taken is not None and taken["action_key"] == KEY_B
     local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     denial = next(iter(pool.cpu_admission.read_json(local)["records"].values()))
@@ -1379,7 +1379,7 @@ def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
 def test_a_claim_clears_its_own_denial_history(queue: pool.PoolQueue) -> None:
     _publish(queue, KEY_A, resources={"gpu": 1})
     queue.record_pass(KEY_A)
-    assert queue.claim(capacity={"gpu": 1}) is not None
+    assert queue.claim(has_gpu=True, capacity={"gpu": 1}) is not None
     assert queue.passes(KEY_A) == 0
 
 
@@ -1411,7 +1411,7 @@ def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
     # Claim on the foreign box so its claim, lease and ledger all agree.
     with monkeypatch.context() as patch:
         patch.setattr(pool.socket, "gethostname", lambda: "other-box")
-        assert queue.claim(capacity={"gpu": 2}) is not None
+        assert queue.claim(has_gpu=True, capacity={"gpu": 2}) is not None
 
     queue.reap_stale(timeout_s=-1.0)
 
@@ -1801,7 +1801,7 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     for _ in range(pool.STARVATION_FLOOR):
         queue.record_pass(KEY_A)
     # Inside the ceiling: the host is withheld, exactly as before this change.
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
     assert queue.item_path(pool.READY, KEY_B).exists()
 
     # Age the block itself past the ceiling -- and only the block.  ``passes``
@@ -1812,7 +1812,7 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     queue.passes_path(KEY_A).write_text(json.dumps(record))
     assert queue.withhold_age(KEY_A) > pool.WITHHOLD_CEILING_S
 
-    taken = queue.claim(capacity=capacity)
+    taken = queue.claim(has_gpu=True, capacity=capacity)
     assert taken is not None and taken["action_key"] == KEY_B, (
         "past the ceiling the box must stop being held shut for work it cannot admit"
     )

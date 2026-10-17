@@ -396,7 +396,7 @@ def test_a_withdrawal_returns_the_capacity_the_action_held(
     queue: pool.PoolQueue
 ) -> None:
     _publish(queue, KEY_A, resources={"gpu": 1, "mem_gb": 8})
-    queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     assert queue.ledger().available() == {}
     result = queue.withdraw(KEY_A)
     assert result["released"] == 0
@@ -588,7 +588,7 @@ def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
     queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
     queued["container_owner"] = owner
     queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
-    item = queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    item = queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -635,7 +635,7 @@ def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
     queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
     queued["container_owner"] = owner
     queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
-    queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -664,7 +664,7 @@ def test_finish_keeps_capacity_while_an_owned_container_survives(
     queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
     queued["container_owner"] = owner
     queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
-    claimed = queue.claim(capacity={"gpu": 1})
+    claimed = queue.claim(has_gpu=True, capacity={"gpu": 1})
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)

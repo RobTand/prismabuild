@@ -136,7 +136,8 @@ def test_a_full_denial_file_falls_back_to_the_reason_ring(fleet):
     assert claimed and claimed['action_key'] == 'a' * 64
 
 
-@pytest.mark.parametrize('why', ['stale', 'full', 'mismatch', 'gone', 'draining'])
+@pytest.mark.parametrize('why', ['stale', 'full', 'mismatch', 'gone', 'draining',
+                                 'unknown-gpu', 'malformed-gpu'])
 def test_without_a_cpu_host_that_can_take_it_the_gpu_host_claims(fleet, why):
     queue, announce, publish, claim = fleet
     tags = None
@@ -148,6 +149,14 @@ def test_without_a_cpu_host_that_can_take_it_the_gpu_host_claims(fleet, why):
         announce(CPU_HOST, has_gpu=False, tags=['x86'], state='draining')
     elif why == 'mismatch':
         tags = ['gb10']                        # aarch64-only work: no CPU host matches
+    elif why in ('unknown-gpu', 'malformed-gpu'):
+        path = queue.root / pool.WORKERS / f'{CPU_HOST}.json'
+        offer = json.loads(path.read_text())
+        if why == 'unknown-gpu':
+            offer.pop('has_gpu')
+        else:
+            offer['has_gpu'] = []
+        path.write_text(json.dumps(offer))
     else:
         (queue.root / 'workers' / f'{CPU_HOST}.json').unlink()
     publish('a' * 64, {'cpu': 2, 'mem_gb': 2}, tags=tags)

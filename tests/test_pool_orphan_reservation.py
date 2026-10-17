@@ -43,7 +43,7 @@ def test_finish_lost_race_releases_from_the_claim_snapshot(
         return {"status": "executed", "returncode": 0}
 
     monkeypatch.setattr(queue, "execute", claim_disappears_after_execution)
-    outcome = queue.serve_once(capacity={"gpu": 1, "mem_gb": 8})
+    outcome = queue.serve_once(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
 
     assert outcome["status"] == "executed"
     assert queue.item_path(pool.DONE, KEY).exists()
