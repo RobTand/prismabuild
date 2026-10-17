@@ -6,6 +6,10 @@
    "tools/fleet/resource_broker.py::_proc_starttime"
   ],
   [
+   "src/prismabuild/ram_promote.py::main",
+   "src/prismabuild/stage_move.py::main"
+  ],
+  [
    "tools/fleet/fleet_membership.py::_membership_owner_parts",
    "tools/fleet/resource_broker.py::_supervisor_owner_parts"
   ],
@@ -79,6 +83,10 @@
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::_hash_fd",
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::run_action",
   "hashlib:tools/fleet/pbmcp.py::_blob_identity",
+  "hashlib:tools/fleet/pbrun.py::build_stamp_closure",
+  "hashlib:tools/fleet/pbrun.py::require_deployed_read_plan_storage",
+  "hashlib:tools/fleet/pbrun.py::result_and_stamp_names",
+  "hashlib:tools/fleet/pbrun.py::verify_retained_wrapper",
   "hashlib:tools/fleet/pbsnapshot.py::verified_stamp",
   "hashlib:tools/fleet/publish_runtime.py::_agent_definitions",
   "hashlib:tools/fleet/publish_runtime.py::_coordinator_sha256",
@@ -129,6 +137,10 @@
   "sorted-json:tools/fleet/pbcanary_legs/common.py::canonical_json",
   "sorted-json:tools/fleet/pbmcp.py::_content",
   "sorted-json:tools/fleet/pbmetrics.py::_refusal_record",
+  "sorted-json:tools/fleet/pbrun.py::bounded_offer_snapshot",
+  "sorted-json:tools/fleet/pbrun.py::freeze_action_template",
+  "sorted-json:tools/fleet/pbrun.py::release_origin_consumer_cli",
+  "sorted-json:tools/fleet/pbrun.py::result_and_stamp_names",
   "sorted-json:tools/fleet/pbsnapshot.py::main",
   "sorted-json:tools/fleet/pbstatus.py::main",
   "sorted-json:tools/fleet/pbsweep.py::main",
@@ -452,7 +464,8 @@
    "src/prismabuild/movement_actions.py"
   ],
   "current_fill_offer": [
-   "src/prismabuild/storage_tiers.py"
+   "src/prismabuild/storage_tiers.py",
+   "tools/fleet/pbrun.py"
   ],
   "cycle": [
    "src/prismabuild/prewarm_loop.py",
@@ -472,7 +485,8 @@
    "tools/fleet/pbcampaign.py"
   ],
   "movement_tools": [
-   "src/prismabuild/movement_actions.py"
+   "src/prismabuild/movement_actions.py",
+   "tools/fleet/pbrun.py"
   ],
   "observe": [
    "src/prismabuild/box_capacity.py",

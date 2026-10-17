@@ -6006,6 +6006,11 @@ def recover_batches(queue, instance: Mapping[str, object],
 
 
 __all__ = [
+    "PRODUCED_OUTPUT_REF_SCHEMA_V1",
+    "OUTPUT_TEMPLATES_SUBDIR",
+    "OUTPUT_SCOPES_SUBDIR",
+    "OUTPUT_BATCHES_SUBDIR",
+    "OUTPUT_FRAGMENTS_SUBDIR",
     "batch_record",
     "batch_records",
     "BATCH_STATE_COMMITTED",
