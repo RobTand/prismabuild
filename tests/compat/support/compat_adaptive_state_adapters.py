@@ -184,7 +184,8 @@ def operation(request, store, load):
 
 def operate(request, store, load):
     nonce = uuid.uuid4
-    uuid.uuid4 = lambda: SimpleNamespace(hex=G)
+    if request["case"].split("/", 1)[0] in ("state-cpu-borrow", "state-gpu"):
+        uuid.uuid4 = lambda: SimpleNamespace(hex=G)
     try:
         with owned_publications():
             return operation(request, store, load)
