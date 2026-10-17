@@ -134,6 +134,7 @@ from stage_move import (  # noqa: E402
     RANGE_SUFFIX, _is_action_key, paths_named_once,
     pre_range_stage_relative, stage_relative,
 )
+from prismabuild import tier_holdings
 
 #: The errnos that mean "this file has no such attribute", as opposed to "this
 #: question cannot be answered here".  Linux reports ``ENODATA``; the name
@@ -1070,7 +1071,7 @@ def _claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
         if not on_tier:
             continue    # not a movement node on this tier; a consumer is
                         # not a copy
-        if on_tier <= pool.TIER_RATE_KINDS:
+        if on_tier <= tier_holdings.RATE_KINDS:
             # A rate reservation names no bytes (#636, #1060): the paced
             # produced export reserves this tier's pool-side fill and
             # writes under its template's output prefix, never onto the
@@ -2350,7 +2351,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # No fragment at all: nothing is known shared, so every token comes
         # back exactly as before -- holding them would cost the tier its
         # capacity for good.
-        released = queue.release_tier_reservations(mover_action_key)
+        released = tier_holdings.release_unspent_all(queue, mover_action_key, authority=tier_holdings.Unspent.NEVER_STARTED)
     else:
         # Freed share: whole GiB actually leaving the stage now (deleted
         # here).  Floor, not ceil: a 1-token holder with 0.5 GiB deleted
@@ -2369,11 +2370,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # mint; nothing takes it in the other order), so a stale-snapshot
         # mint cannot slip between the decharge and the fragment drop.
         occupancy = storage_tiers.capacity_kind_of(tier_id)
-        held = queue.tier_ledger(tier_id).holder_tokens(mover_action_key)
+        held = queue.tier(tier_id).holdings(mover_action_key)
         destroy: dict[str, int] = {}
         free: dict[str, int] = {}
         for kind, count in held.items():
-            if kind in pool.TIER_RATE_KINDS or kind != occupancy:
+            if kind in tier_holdings.RATE_KINDS or kind != occupancy:
                 free[kind] = count
                 continue
             freed = min(count, _tokens_for_newly_free_bytes(
@@ -2383,9 +2384,8 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             if shared_part:
                 destroy[kind] = shared_part
             free[kind] = count - shared_part
-        with queue.tier_mint_lock(tier_id):
-            outcome = queue.release_tier_holder_for_egress(
-                tier_id, mover_action_key, destroy=destroy, free=free)
+        with queue.tier(tier_id).mutation_lock():
+            outcome = queue.tier(tier_id).settle_egress(mover_action_key, destroy=destroy, free=free)
         decharged = sum(outcome["destroyed"].values())
         released = sum(outcome["released"].values())
         shortfall = outcome["shortfall"]
@@ -2400,12 +2400,11 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # Movers hold on one tier; sweep any other tier the old path freed
         # -- but never this one, where a destroy shortfall above is still
         # retained and must stay held.
-        for other_tier in queue.tier_ids():
+        for other_tier in tier_holdings.ids(queue.records):
             if other_tier == tier_id:
                 continue
             try:
-                released += queue.release_tier_holder(
-                    other_tier, mover_action_key)
+                released += queue.tier(other_tier).release_unspent_best_effort(mover_action_key, authority=tier_holdings.Unspent.NEVER_STARTED)
             except (OSError, pool.PoolContractError):
                 continue
     if not errors and not deferred and not declined:
@@ -3704,9 +3703,7 @@ def _evict_uncharged_owner(
                     ))):
                 return None
             with queue.mover_transition_lock(mover):
-                if not pb.immutable_files.confirmed_metadata_absence(
-                    queue.tier_ledger(tier_id).held_dir / mover,
-                ):
+                if not pb.immutable_files.confirmed_metadata_absence(queue.tier(tier_id).paths.held / mover):
                     return None
                 return evict(queue, mover, consumer_action_key=consumer,
                              stage_root=stage_root,
@@ -3882,9 +3879,8 @@ def sweep_dead_owner_fragments(
         try:
             # Include nonregular holder names: an unknown ledger entry is
             # not evidence that this mover has no charge.
-            ledger = queue.tier_ledger(tier)
-            held_by_tier[tier] = {path.name for path in
-                                  ledger._census_scan(ledger.held_dir)}
+            ledger = queue.tier(tier)
+            held_by_tier[tier] = {path.name for path in ledger.entry_paths(ledger.paths.held)}
         except FileNotFoundError:
             held_by_tier[tier] = set()
         except (OSError, pool.PoolContractError) as exc:
@@ -4091,9 +4087,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                     and mover not in held_by_tier.get(tier, ())):
                                 uncharged.add(tier, mover, consumer, observed)
                             continue
-                        if not pb.immutable_files.confirmed_metadata_absence(
-                            queue.tier_ledger(tier).held_dir / mover,
-                        ):
+                        if not pb.immutable_files.confirmed_metadata_absence(queue.tier(tier).paths.held / mover):
                             continue
                         if not done and not (not pool.record_store.value_or_raise(
                             queue.records.retirement_presence_at(queue.records.move_path(mover)),
@@ -4262,7 +4256,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                                           refusal=refusal))
             continue
         try:
-            held = queue.tier_ledger(tier_id).held_keys()
+            held = queue.tier(tier_id).holders()
         except (OSError, pool.PoolContractError) as exc:
             # Neither pass can run without the held set, and a skip is a
             # record, not a silence (#1007).
@@ -4366,7 +4360,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
                 if needed <= 0:
                     break      # nothing on this tier is waiting for the room
                 try:
-                    free = int(queue.tier_ledger(tier_id).available().get(kind, 0))
+                    free = int(queue.tier(tier_id).free_supply().get(kind, 0))
                 except (OSError, pool.PoolContractError):
                     break
                 if free + _tokens_for_newly_free_bytes(credit_bytes) >= needed:
@@ -4432,7 +4426,7 @@ def sweep(queue: pool.PoolQueue, *, stage_roots: dict[str, str],
         # a live plan no longer names has just been evicted and a pinned one it
         # does name is attribution.
         try:
-            still_held = set(queue.tier_ledger(tier_id).held_keys())
+            still_held = set(queue.tier(tier_id).holders())
         except (OSError, pool.PoolContractError) as exc:
             # Without the held set, a held mover no live plan names is not
             # attribution, and its bytes would read as unowned.  Unknown
@@ -4560,7 +4554,7 @@ def _still_short(queue: pool.PoolQueue, tier_id: str, kind: str,
     if needed is None or needed <= 0:
         return False
     try:
-        free = int(queue.tier_ledger(tier_id).available().get(kind, 0))
+        free = int(queue.tier(tier_id).free_supply().get(kind, 0))
     except (OSError, pool.PoolContractError):
         return True
     return free < needed

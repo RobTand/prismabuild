@@ -125,15 +125,15 @@ def landed_and_in_flight_bytes(queue, tier_id: str, kind: str,
     """
     from prismabuild import pool as pool_mod
 
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     landed_tokens = 0
     landed_bytes = 0
     in_flight_tokens = 0
     in_flight_bytes = 0
     in_flight_unknown = 0
     index = declared_range_index(queue)
-    for key in ledger.held_keys():
-        tokens = int(ledger.holder_tokens(key).get(kind, 0))
+    for key in ledger.holders():
+        tokens = int(ledger.holdings(key).get(kind, 0))
         if tokens <= 0:
             continue
         landed_b, flight_b = stage_holder_bytes(queue, key, index)

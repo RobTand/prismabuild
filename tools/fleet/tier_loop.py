@@ -74,6 +74,7 @@ import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
 import stage_release  # noqa: E402
+from prismabuild import tier_holdings
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
 MOVER_RECEIPTS = pool.record_store.MOVERS
@@ -802,11 +803,11 @@ def _mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
     republished by anyone.
     """
 
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     published: set[str] = set()
     staged: set[str] = set()      # held: see the docstring, not residency
     for key in residency_plan.mover_keys(plan):
-        pinned = bool(ledger.holder_tokens(key))
+        pinned = bool(ledger.holdings(key))
         if pinned:
             staged.add(key)
         if (bool(
@@ -837,11 +838,11 @@ def _ram_mover_state(queue: pool.PoolQueue, plan: Mapping[str, object],
     announced ram root under the announced epoch.
     """
 
-    ledger = queue.tier_ledger(ram_tier_id)
+    ledger = queue.tier(ram_tier_id)
     published: set[str] = set()
     staged: set[str] = set()      # held: see the docstring, not residency
     for key in residency_plan.ram_mover_keys(plan):
-        pinned = bool(ledger.holder_tokens(key))
+        pinned = bool(ledger.holdings(key))
         if pinned:
             staged.add(key)
         if (bool(
@@ -1037,7 +1038,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
             (funding["consumer_action_key"], funding["generation"])):
         return "unknown", "funding rotated during qualification"
     if blind and record is None:
-        tokens = queue.tier_ledger(tier_id).holder_tokens(holder)
+        tokens = queue.tier(tier_id).holdings(holder)
         if tokens == {"ram_gib": demand}:
             return "live", "exact blind advance"
         return "unknown", "partial or divergent blind holdings"
@@ -1060,8 +1061,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
     if row.get("published_unix") != record["published_unix"]:
         return "none", "funding publication is stale"
     if blind:
-        names = {p.name for p in pb.immutable_files.match_optional(
-            queue.tier_ledger(tier_id).held_dir / holder, "*-*")}
+        names = {p.name for p in pb.immutable_files.match_optional(queue.tier(tier_id).paths.held / holder, '*-*')}
         if (record["state"] == "reserved" and len(record["tokens"]) == demand
                 and all(name.startswith("ram_gib-") and name in names
                         for name in record["tokens"])):
@@ -1135,13 +1135,13 @@ def drop_prior_ram_epochs(
             events.append({"event": "ram-fragment-dropped", "tier_id": tier_id,
                            "consumer": consumer, "epoch": epoch or None,
                            "current_epoch": live or None})
-    for tier_id in queue.tier_ids():
+    for tier_id in tier_holdings.ids(queue.records):
         if not tier_id.startswith(storage_tiers.RAM_TIER_PREFIX):
             continue
         live = current.get(tier_id, "")
         try:
-            ledger = queue.tier_ledger(tier_id)
-            held = sorted(ledger.held_keys())
+            ledger = queue.tier(tier_id)
+            held = sorted(ledger.holders())
         except (OSError, pool.PoolContractError):
             continue
         for key in held:
@@ -1174,8 +1174,7 @@ def drop_prior_ram_epochs(
                     # in the reverse order. Only this tier is released
                     # under the guard, reentrantly on the mint already
                     # held; other tiers are swept after it drops.
-                    if not locks.enter_context(
-                            queue.tier_mint_lock(tier_id, blocking=False)):
+                    if not locks.enter_context(queue.tier(tier_id).mutation_lock(blocking=False)):
                         credit, reason = "unknown", "tier mint busy"
                     else:
                         credit, reason = _ram_credit_state(
@@ -1210,7 +1209,7 @@ def drop_prior_ram_epochs(
                 # one -- an order nothing else in the tree takes, and one
                 # the "mint is a leaf" analysis does not cover.
                 try:
-                    released = queue.release_tier_holder(tier_id, key)
+                    released = queue.tier(tier_id).release_unspent_best_effort(key, authority=tier_holdings.Unspent.NEVER_STARTED)
                 except (OSError, pool.PoolContractError):
                     released = 0
             # Guard dropped.  A holder reaches one tier, so the rest is
@@ -1218,11 +1217,11 @@ def drop_prior_ram_epochs(
             # ``stage_release._evict_owned`` does after its own mint
             # section, so a holder that somehow reached two tiers still
             # leaves neither behind.
-            for other_tier in queue.tier_ids():
+            for other_tier in tier_holdings.ids(queue.records):
                 if other_tier == tier_id:
                     continue
                 try:
-                    released += queue.release_tier_holder(other_tier, key)
+                    released += queue.tier(other_tier).release_unspent_best_effort(key, authority=tier_holdings.Unspent.NEVER_STARTED)
                 except (OSError, pool.PoolContractError, ValueError):
                     continue
             events.append({"event": "ram-ghost-tokens-released",
@@ -1281,7 +1280,7 @@ def release_incomplete_ram_promotions(
         return events
     for tier_id, ram_root in ram_roots.items():
         try:
-            held = sorted(queue.tier_ledger(tier_id).held_keys())
+            held = sorted(queue.tier(tier_id).holders())
         except (OSError, pool.PoolContractError):
             continue
         for key in _budget_order(budget, RAM_INCOMPLETE_UNIT, held, str):
@@ -1500,13 +1499,13 @@ def _ram_window_state(
     # copy that was still running (#759).
     stage_resident, stage_known = _resident_movers(
         queue, plan, str(plan["tier_id"]), tiers)
-    ledger = queue.tier_ledger(ram_tier_id)
+    ledger = queue.tier(ram_tier_id)
     kind = storage_tiers.capacity_kind_of(ram_tier_id)
     # The consumer's own fence is read back into free for this decision
     # alone, as the stage window reads its grant back: the room the fence
     # holds is the room its advance publishes into (#906).
-    free = int(ledger.available().get(kind, 0)) + int(own_fence_gib)
-    capacity = int(ledger.capacity().get(kind, 0))
+    free = int(ledger.free_supply().get(kind, 0)) + int(own_fence_gib)
+    capacity = int(ledger.mint_supply().get(kind, 0))
     # Bounded by the consumer's refill horizon on the tmpfs, as the stage
     # window is on the stage (#906): a promotion past it publishes on the
     # cycle the consumer's progress brings it inside.  ``prefill_depth`` is
@@ -1614,9 +1613,7 @@ def ram_residency_window(
             if grant_key != key or not isinstance(grant_name, str):
                 continue
             try:
-                own_fence_gib += int(queue.tier_ledger(
-                    grant_tier).holder_tokens(grant_name).get(
-                        storage_tiers.capacity_kind_of(grant_tier), 0))
+                own_fence_gib += int(queue.tier(grant_tier).holdings(grant_name).get(storage_tiers.capacity_kind_of(grant_tier), 0))
             except (OSError, pool.PoolContractError, ValueError):
                 continue
         state = _ram_window_state(queue, consumer, plan, tiers,
@@ -2514,7 +2511,7 @@ def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
 
     index: dict[tuple, list[str]] = {}
     try:
-        held = queue.tier_ledger(tier_id).held_keys()
+        held = queue.tier(tier_id).holders()
     except (OSError, pool.PoolContractError):
         return index
     for key in sorted(held):
@@ -2579,12 +2576,12 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         "chunk_index": chunk_index,
         "tier_id": tier_id, "mover": new_key, "adopted_from": old_key,
     }
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     with queue.mover_transition_lock(old_key, blocking=False) as acquired:
         if not acquired:
             # Its egress holds the lock, which means its bytes are going.
             return {**outcome, "reason": "range_busy"}
-        before = ledger.holder_tokens(old_key)
+        before = ledger.holdings(old_key)
         if not before:
             return {**outcome, "reason": "no_longer_resident"}
         receipt = queue.move_record(old_key)
@@ -2756,7 +2753,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                            if source.get("epoch") is not None else None))
             residency_map.write_fragment(residency_root, successor)
             expected = sum(before.values())
-            moved = queue.transfer_tier_reservation(tier_id, old_key, new_key)
+            moved = queue.tier(tier_id).handover(old_key, new_key)
             if moved != expected:
                 # The reservation is split across the two keys and the sum is
                 # unchanged, so nothing is over-admitted; the old key is still
@@ -2865,7 +2862,7 @@ def adopt_resident_ranges(
         index = index_by_tier[tier_id]
         if not index:
             continue
-        ledger = queue.tier_ledger(tier_id)
+        ledger = queue.tier(tier_id)
         digest = str(plan["manifest_sha256"])
         accepted = consumer["accepted_phase"]
         try:
@@ -2917,7 +2914,7 @@ def adopt_resident_ranges(
                 if not candidates:
                     prefix_blocked = True
                     break
-                if ledger.holder_tokens(new_key):
+                if ledger.holdings(new_key):
                     prefix_blocked = True
                     break         # booked room is not qualified residency
                 if (bool(
@@ -3311,7 +3308,7 @@ def _landed_past(queue: pool.PoolQueue, key: str,
     if not isinstance(beyond, list):
         return out
     try:
-        ledger = queue.tier_ledger(tier_id)
+        ledger = queue.tier(tier_id)
     except (OSError, pool.PoolContractError, ValueError):
         return out
     kind = storage_tiers.capacity_kind_of(tier_id)
@@ -3321,7 +3318,7 @@ def _landed_past(queue: pool.PoolQueue, key: str,
         egress_key = (str(egress.get("action_key"))
                       if isinstance(egress, Mapping) else "")
         try:
-            held = int(ledger.holder_tokens(mover).get(kind, 0))
+            held = int(ledger.holdings(mover).get(kind, 0))
             busy = any(
                 bool(pool.record_store.value_or_raise(queue.records.item_presence(state, name)))
                 for state in (pool.record_store.READY, pool.record_store.CLAIMED)
@@ -3355,11 +3352,11 @@ def _held_ram_copies(queue: pool.PoolQueue, plan: Mapping[str, object],
     kind = storage_tiers.capacity_kind_of(ram_tier_id)
     held: list[str] = []
     try:
-        ledger = queue.tier_ledger(ram_tier_id)
+        ledger = queue.tier(ram_tier_id)
         for leg in residency_plan.legs_over(plan, start, end,
                                             mover_role="ram_mover_row"):
             mover = str(leg["mover_row"]["action_key"])  # type: ignore[index]
-            if int(ledger.holder_tokens(mover).get(kind, 0)) > 0:
+            if int(ledger.holdings(mover).get(kind, 0)) > 0:
                 held.append(mover)
     except (OSError, pool.PoolContractError, ValueError, KeyError,
             residency_plan.ResidencyPlanError):
@@ -3929,10 +3926,9 @@ def _commitment_census(queue: pool.PoolQueue,
             out[tier_id] = {"error": f"live consumer not censused: {blind}"}
             continue
         try:
-            ledger = queue.tier_ledger(tier_id)
-            held = {str(holder): int(ledger.holder_tokens(holder).get(kind, 0))
-                    for holder in ledger.held_keys()}
-            capacity = ledger.capacity().get(kind)
+            ledger = queue.tier(tier_id)
+            held = {str(holder): int(ledger.holdings(holder).get(kind, 0)) for holder in ledger.holders()}
+            capacity = ledger.mint_supply().get(kind)
         except (OSError, pool.PoolContractError, ValueError) as exc:
             out[tier_id] = {"error": f"ledger unreadable: {exc}"}
             continue
@@ -4319,20 +4315,10 @@ def _uncensused_tier(queue: pool.PoolQueue, key: str) -> str | None:
         if not isinstance(leads, list):
             return ""
         try:
-            ledger = queue.tier_ledger(tier_id)
+            ledger = queue.tier(tier_id)
             for lead in leads:
                 lead = str(lead)
-                if (bool(
-                    pool.record_store.value_or_raise(
-                        queue.records.item_presence(pool.record_store.READY, lead),
-                    ),
-                )
-                        or bool(
-                            pool.record_store.value_or_raise(
-                                queue.records.item_presence(pool.record_store.CLAIMED, lead),
-                            ),
-                        )
-                        or ledger.holder_tokens(lead)):
+                if (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, lead))) or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, lead))) or ledger.holdings(lead)):
                     return tier_id
         except (OSError, ValueError, pool.PoolContractError):
             return ""
@@ -5062,8 +5048,7 @@ def _rank_claims(queue: pool.PoolQueue, tier_id: str,
 
     moment = time.time() if now is None else float(now)
     try:
-        free = int(queue.tier_ledger(tier_id).available().get(
-            storage_tiers.capacity_kind_of(tier_id), 0))
+        free = int(queue.tier(tier_id).free_supply().get(storage_tiers.capacity_kind_of(tier_id), 0))
     except (OSError, pool.PoolContractError, ValueError):
         return None
     timed = [claim for claim in claims if claim["claimed_unix"] is not None]
@@ -5251,7 +5236,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
     groups.extend((PREEMPT_READING_PHASE, entry, None)
                   for entry in after if entry.get("blocked"))
     try:
-        ledger = queue.tier_ledger(tier_id)
+        ledger = queue.tier(tier_id)
     except (OSError, pool.PoolContractError, ValueError):
         return []
     kind = storage_tiers.capacity_kind_of(tier_id)
@@ -5334,12 +5319,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
         if basis == PREEMPT_READING_PHASE:
             blocked_at = entry.get("need_start_bytes")
             try:
-                backward = (not isinstance(blocked_at, int)
-                            or isinstance(blocked_at, bool)
-                            or any(int(leg["start_bytes"]) > blocked_at
-                                   and int(ledger.holder_tokens(str(
-                                       leg["mover_row"]["action_key"])  # type: ignore[index]
-                                   ).get(kind, 0)) > 0 for leg in legs))
+                backward = (not isinstance(blocked_at, int) or isinstance(blocked_at, bool) or any((int(leg['start_bytes']) > blocked_at and int(ledger.holdings(str(leg['mover_row']['action_key'])).get(kind, 0)) > 0 for leg in legs)))
             except (OSError, pool.PoolContractError, ValueError):
                 backward = True
             if backward:
@@ -5356,7 +5336,7 @@ def _claim_order_candidates(queue: pool.PoolQueue, *, tier_id: str,
             egress_key = (str(egress.get("action_key"))
                           if isinstance(egress, Mapping) else "")
             try:
-                held = int(ledger.holder_tokens(mover).get(kind, 0))
+                held = int(ledger.holdings(mover).get(kind, 0))
                 busy = any(bool(
                     pool.record_store.value_or_raise(queue.records.item_presence(state, name)),
                 )
@@ -5649,9 +5629,8 @@ def window_pressure(
             continue
         try:
             if tier_of_unit not in _tier_state:
-                _led = queue.tier_ledger(tier_of_unit)
-                _held = {str(holder): dict(_led.holder_tokens(holder))
-                         for holder in _led.held_keys()}
+                _led = queue.tier(tier_of_unit)
+                _held = {str(holder): dict(_led.holdings(holder)) for holder in _led.holders()}
                 _kind = storage_tiers.capacity_kind_of(tier_of_unit)
                 _totals, _detail = prelaunch_tier.obligations(
                     [other for other in _declared
@@ -5731,8 +5710,7 @@ def window_pressure(
         # relieve, which is a deadlock of a different shape.  So the question
         # is "would the window publish this if the room existed", and the way
         # to ask it is to run the same decision with the room.
-        capacity = queue.tier_ledger(tier_id).capacity().get(
-            storage_tiers.capacity_kind_of(tier_id), 0)
+        capacity = queue.tier(tier_id).mint_supply().get(storage_tiers.capacity_kind_of(tier_id), 0)
         ahead = residency_plan.remaining(plan, accepted)          # type: ignore[arg-type]
         # The probe asks in legs, the way the window decides: a chunked
         # phase's chunks are what its movers will ask for one by one (#675).
@@ -5862,8 +5840,7 @@ def window_pressure(
             continue
         ram_tier_id = str(state["ram_tier_id"])
         ram_kind = storage_tiers.capacity_kind_of(ram_tier_id)
-        ram_capacity = int(queue.tier_ledger(ram_tier_id).capacity().get(
-            ram_kind, 0))
+        ram_capacity = int(queue.tier(ram_tier_id).mint_supply().get(ram_kind, 0))
         ram_ahead = [
             phase for phase in residency_plan.remaining(plan, accepted)  # type: ignore[arg-type]
             if "ram_mover_row" in phase or "ram_chunks" in phase]
@@ -5972,10 +5949,10 @@ def window_pressure(
         waiting_claims = claimants.get(tier_id, [])
         kind = storage_tiers.capacity_kind_of(tier_id)
         try:
-            ledger = queue.tier_ledger(tier_id)
-            held_total = int(ledger.held().get(kind, 0))
-            free_gib = int(ledger.available().get(kind, 0))
-            capacity_gib = int(ledger.capacity().get(kind, 0))
+            ledger = queue.tier(tier_id)
+            held_total = int(ledger.holdings().get(kind, 0))
+            free_gib = int(ledger.free_supply().get(kind, 0))
+            capacity_gib = int(ledger.mint_supply().get(kind, 0))
         except (OSError, pool.PoolContractError, ValueError) as exc:
             _note_skip(skipped, scope="tier", tier_id=tier_id,
                        reason="ledger-unreadable", error=repr(exc)[:200],
@@ -5990,7 +5967,7 @@ def window_pressure(
         try:
             wanted_claims, owners = stage_release.live_claims(queue, store=store)
             orphan_gib = 0
-            for holder in ledger.held_keys():
+            for holder in ledger.holders():
                 holders += 1
                 if holder in wanted_claims or holder in owners:
                     live_holders += 1
@@ -6001,8 +5978,7 @@ def window_pressure(
                 record = queue.move_record(holder)
                 if (isinstance(record, Mapping)
                         and record.get("consumer_action_key")):
-                    orphan_gib += int(
-                        ledger.holder_tokens(holder).get(kind, 0))
+                    orphan_gib += int(ledger.holdings(holder).get(kind, 0))
                 else:
                     # No receipt names a consumer, so this probe cannot count
                     # it as evictable; the sweep keeps it unless a fragment
@@ -6200,7 +6176,7 @@ def reclaim_failed_mover_partials(
         if int((pressure or {}).get(tier_id, 0) or 0) <= 0:
             continue
         try:
-            ledger = queue.tier_ledger(tier_id)
+            ledger = queue.tier(tier_id)
         except (OSError, pool.PoolContractError):
             continue
         if budget is not None and not budget.start(
@@ -6231,7 +6207,7 @@ def reclaim_failed_mover_partials(
                 if not mover_key or not egress_key:
                     continue
                 try:
-                    pinned = bool(ledger.holder_tokens(mover_key))
+                    pinned = bool(ledger.holdings(mover_key))
                 except (OSError, pool.PoolContractError):
                     continue
                 if pinned:
@@ -6577,8 +6553,7 @@ def sync_ram_host_mirror(queue: pool.PoolQueue,
     the in-cycle pass, which alone knows the holders still in flight.
     """
 
-    return queue.reconcile_ram_host_holds(
-        storage_tiers.tier_id("ram", host), (), release_orphans=False)
+    return queue.tier(storage_tiers.tier_id('ram', host)).reconcile_mirror((), release_orphans=False)
 
 #: The last manifest-promotion summary triple this loop emitted
 #: (REVIEW-1252-r4 nit): an unchanged cycle appends nothing, the same
@@ -6745,7 +6720,7 @@ def _protect_tier_advances(
             bool(want["newcomer"]), priority_candidate(want),
             -priority_of(want) if priority_candidate(want) else 0))
         try:
-            ledger = queue.tier_ledger(tier_id)
+            ledger = queue.tier(tier_id)
         except (OSError, pool.PoolContractError, ValueError) as exc:
             unknown_tiers.add(tier_id)
             events.append({"event": "advance-deferred-unknown-evidence",
@@ -6754,9 +6729,8 @@ def _protect_tier_advances(
             continue
         kind = storage_tiers.capacity_kind_of(tier_id)
         try:
-            held = {str(holder): dict(ledger.holder_tokens(holder))
-                    for holder in ledger.held_keys()}
-            capacity = ledger.capacity().get(kind)
+            held = {str(holder): dict(ledger.holdings(holder)) for holder in ledger.holders()}
+            capacity = ledger.mint_supply().get(kind)
         except (OSError, pool.PoolContractError, ValueError) as exc:
             unknown_tiers.add(tier_id)
             events.append({"event": "advance-deferred-unknown-evidence",
@@ -7117,8 +7091,7 @@ def _protect_tier_advances(
             if owner is not None and owner != key:
                 if held_grant > 0:
                     # A second fence for one shared advance: give it back.
-                    released = queue.cancel_tier_fence(
-                        tier_id, grant)["released"]
+                    released = queue.tier(tier_id).cancel_fence(grant)['released']
                     if released:
                         held_total -= released
                         events.append({"event": "advance-released",
@@ -7272,8 +7245,7 @@ def _protect_tier_advances(
                 if (record is None
                         or str(record.get("consumer_action_key")) != key
                         or str(record.get("plan_sha256")) != live_digest):
-                    released = queue.cancel_tier_fence(
-                        tier_id, grant)["released"]
+                    released = queue.tier(tier_id).cancel_fence(grant)['released']
                     if released:
                         held_total -= released
                     if record is not None and record.get("state") in (
@@ -7310,8 +7282,7 @@ def _protect_tier_advances(
                     need_gib=demand,
                     mover_holds_need=(mover_holds and not target_fence_live))
                 if due is not None:
-                    released = queue.cancel_tier_fence(
-                        tier_id, grant)["released"]
+                    released = queue.tier(tier_id).cancel_fence(grant)['released']
                     if released:
                         held_total -= released
                     record = queue.read_funding(mover, tier_id)
@@ -7448,7 +7419,7 @@ def _protect_tier_advances(
                 # Already-held grants bind with no new money, so no fit
                 # check; only a fresh take from free needs one.
                 try:
-                    grant_have = int(ledger.holder_tokens(grant).get(kind, 0))
+                    grant_have = int(ledger.holdings(grant).get(kind, 0))
                 except (OSError, pool.PoolContractError, ValueError) as exc:
                     unknown_consumers.add((key, tier_id))
                     events.append({"event": "advance-deferred-unknown-evidence",
@@ -7507,8 +7478,7 @@ def _protect_tier_advances(
                 # tier tokens -- and answers tri-state, so an unreadable
                 # pool defers with its error rather than reading as a
                 # free one (#1245 review B1/B3).
-                state, take_detail = queue.take_tier_advance(
-                    tier_id, grant, int(deficit), kind)
+                state, take_detail = queue.tier(tier_id).take_advance(grant, int(deficit), kind)
                 if state == "unknown":
                     events.append({"event": "advance-deferred-unknown-evidence",
                                    "tier_id": tier_id, "leg": mover_role,
@@ -7561,7 +7531,7 @@ def _protect_tier_advances(
             # carries admitted currents plus still-unheld nexts;
             # running_fence carries same-pass takes.
             try:
-                grant_have = int(ledger.holder_tokens(grant).get(kind, 0))
+                grant_have = int(ledger.holdings(grant).get(kind, 0))
             except (OSError, pool.PoolContractError, ValueError) as exc:
                 unknown_consumers.add((key, tier_id))
                 events.append({"event": "advance-deferred-unknown-evidence",
@@ -7665,15 +7635,14 @@ def _protect_tier_advances(
                                     "dangling cleanup withheld"})
             continue
         try:
-            dangling = [holder for holder in window_credit.held_grants(ledger)
-                        if holder not in expected_grants]
+            dangling = [holder for holder in ledger.held_grants() if holder not in expected_grants]
         except (OSError, pool.PoolContractError):
             events.append({"event": "advance-deferred-unknown-evidence",
                            "tier_id": tier_id, "leg": mover_role,
                            "error": "grant census unreadable: cleanup withheld"})
             continue
         for grant in dangling:
-            released = queue.cancel_tier_fence(tier_id, grant)["released"]
+            released = queue.tier(tier_id).cancel_fence(grant)['released']
             if released:
                 events.append({"event": "advance-released",
                                "consumer": None, "tier_id": tier_id,
@@ -7695,7 +7664,7 @@ def _protect_tier_advances(
         # The window gate's verdict is gathered before discovery by
         # ``sync_ram_host_mirror`` (#1253); this pass heals what landed
         # since and releases orphans, which needs the census above.
-        verdict = queue.reconcile_ram_host_holds(tier_id, expected_grants)
+        verdict = queue.tier(tier_id).reconcile_mirror(expected_grants)
         for healed in verdict.get("events") or []:
             events.append({"event": "ram-host-hold-reconciled",
                            "tier_id": tier_id, "leg": mover_role,
@@ -7715,7 +7684,7 @@ def _protect_tier_advances(
             if str((tiers[empty_tier] or {}).get("tier")) != "stage":
                 continue
             try:
-                empty_ledger = queue.tier_ledger(empty_tier)
+                empty_ledger = queue.tier(empty_tier)
             except (OSError, ValueError, pool.PoolContractError) as exc:
                 events.append({"event": "prelaunch-dangling-retained",
                                "unit": None, "consumer": None,
@@ -7944,7 +7913,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                 # empty listing, which would silently strand a held fence
                 # while the record closes.  True absence (no holder
                 # directory) reads empty; unreadable defers below.
-                mover_names = pool.held_names_visible(ledger, mover)
+                mover_names = ledger.holder_state(mover)
             except (OSError, pool.PoolContractError, ValueError) as exc:
                 events.append({"event": "advance-deferred-unknown-evidence",
                                "consumer": consumer, "tier_id": str(tier_id),
@@ -7952,7 +7921,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
                                "error": f"holder census unreadable: {exc!r}"})
                 return events
             if mover_names == bound_names:
-                released = queue.cancel_tier_fence(tier_id, mover)["released"]
+                released = queue.tier(tier_id).cancel_fence(mover)['released']
                 if released:
                     events.append({"event": "advance-released",
                                    "consumer": consumer,
@@ -8189,10 +8158,10 @@ def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
     if outcome is not True:
         return events
     try:
-        freed = int(queue.release_tier_holder(scan_tier, mover_name))
+        freed = int(queue.tier(scan_tier).release_unspent_best_effort(mover_name, authority=tier_holdings.Unspent.NEVER_STARTED))
         # The ordinary release can swallow an I/O error or return after
         # only some token moves. Its count is not proof of an empty holder.
-        if pool.held_names_visible(queue.tier_ledger(scan_tier), mover_name):
+        if queue.tier(scan_tier).holder_state(mover_name):
             return defer("token release incomplete")
     except (OSError, pool.PoolContractError, ValueError) as exc:
         return defer(repr(exc))
@@ -8247,7 +8216,7 @@ def _settle_protected(queue: pool.PoolQueue,
         if (key, tier_id) in seen:
             continue
         seen.add((key, tier_id))
-        ledger = queue.tier_ledger(str(tier_id))
+        ledger = queue.tier(str(tier_id))
         grant = str(entry["grant"])
         mover = str(entry["mover"])
         kind = str(entry["kind"])
@@ -8261,8 +8230,8 @@ def _settle_protected(queue: pool.PoolQueue,
                     continue
                 record = queue.read_funding(mover, str(tier_id))
                 try:
-                    held_grant = int(ledger.holder_tokens(grant).get(kind, 0))
-                    held_mover = int(ledger.holder_tokens(mover).get(kind, 0))
+                    held_grant = int(ledger.holdings(grant).get(kind, 0))
+                    held_mover = int(ledger.holdings(mover).get(kind, 0))
                 except (OSError, pool.PoolContractError, ValueError):
                     continue
                 try:
@@ -8306,8 +8275,7 @@ def _settle_protected(queue: pool.PoolQueue,
                     # the fence; the exact unspent fence is decided in
                     # _settle_terminal_fence (unknown evidence defers there).
                     if held_grant > 0:
-                        released = queue.cancel_tier_fence(
-                            tier_id, grant)["released"]
+                        released = queue.tier(tier_id).cancel_fence(grant)['released']
                         if released:
                             events.append({"event": "advance-released",
                                            "consumer": key,
@@ -8351,9 +8319,7 @@ def _settle_protected(queue: pool.PoolQueue,
                 if (bound_names and record is not None
                         and record.get("state") == "reserved"):
                     try:
-                        mover_names = {
-                            path.name for path in pb.immutable_files.match_optional(
-                                ledger.held_dir / mover, "*-*")}
+                        mover_names = {path.name for path in pb.immutable_files.match_optional(ledger.paths.held / mover, '*-*')}
                     except (OSError, pool.PoolContractError, ValueError):
                         mover_names = set()
                     if all(name in mover_names for name in bound_names):
@@ -8393,7 +8359,7 @@ def _settle_protected(queue: pool.PoolQueue,
         if mover_name in handled:
             continue
         try:
-            scan_ledger = queue.tier_ledger(scan_tier)
+            scan_ledger = queue.tier(scan_tier)
         except (OSError, pool.PoolContractError, ValueError):
             continue
         scan_status, scan_record, scan_reason = queue.read_funding_evidence(
@@ -8914,8 +8880,7 @@ def publish_landing_expectations(
                     ),
                 ):
                     try:
-                        finished = ("done-not-resident" if pool.held_names_visible(
-                            queue.tier_ledger(tier_id), mover) else "evicted")
+                        finished = ('done-not-resident' if queue.tier(tier_id).holder_state(mover) else 'evicted')
                     except (OSError, ValueError, pool.PoolContractError):
                         finished = None
                 if finished == "done-not-resident":
@@ -9170,11 +9135,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
             wanted.setdefault(unit.tier_id, []).append(unit)
         for reserve_tier, tier_units in wanted.items():
             try:
-                reserve_ledger = queue.tier_ledger(reserve_tier)
+                reserve_ledger = queue.tier(reserve_tier)
                 reserve_kind = storage_tiers.capacity_kind_of(reserve_tier)
-                reserve_held = {
-                    str(holder): dict(reserve_ledger.holder_tokens(holder))
-                    for holder in reserve_ledger.held_keys()}
+                reserve_held = {str(holder): dict(reserve_ledger.holdings(holder)) for holder in reserve_ledger.holders()}
             except (OSError, pool.PoolContractError, ValueError):
                 reserve_held, reserve_kind = {}, ""
             # A unit with no room waits: intent stands, the ledger never moves.
@@ -9267,9 +9230,9 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                             "phases": len(plan["phases"])})  # type: ignore[arg-type]
         try:
             already, staged = _mover_state(queue, plan, tier_id)
-            ledger = queue.tier_ledger(tier_id)
+            ledger = queue.tier(tier_id)
             kind = storage_tiers.capacity_kind_of(tier_id)
-            free = ledger.available().get(kind, 0)
+            free = ledger.free_supply().get(kind, 0)
         except (OSError, pool.PoolContractError, ValueError) as exc:
             # Fail closed for the whole consumer this cycle -- movers and
             # its window-driven egress alike, since both decide off ledger
@@ -9288,8 +9251,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         own_grant = grants.get((key, tier_id))
         if isinstance(own_grant, str):
             try:
-                free = int(free) + int(
-                    ledger.holder_tokens(own_grant).get(kind, 0))
+                free = int(free) + int(ledger.holdings(own_grant).get(kind, 0))
             except (OSError, pool.PoolContractError, ValueError):
                 pass
         # On a ranked tier the walk, not the free remainder, says how much
@@ -9301,7 +9263,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         # rolling window is a fraction of the tier, and a bound read off what
         # is free would shrink as the window it is bounding fills it.
         try:
-            capacity = ledger.capacity().get(kind, 0)
+            capacity = ledger.mint_supply().get(kind, 0)
         except (OSError, pool.PoolContractError, ValueError) as exc:
             published.append({"event": "window-unknown", "consumer": key,
                               "tier_id": tier_id,
@@ -9701,10 +9663,10 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
     """
 
     events: list[dict[str, object]] = []
-    for tier_id in queue.tier_ids():
+    for tier_id in tier_holdings.ids(queue.records):
         try:
-            ledger = queue.tier_ledger(tier_id)
-            keys = ledger.held_keys()
+            ledger = queue.tier(tier_id)
+            keys = ledger.holders()
         except (OSError, pool.PoolContractError):
             continue
         for key in sorted(keys):
@@ -9715,12 +9677,10 @@ def reclaim_idle_rates(queue: pool.PoolQueue) -> list[dict[str, object]]:
                     ),
                 ):
                     continue
-                rates = {kind: count
-                         for kind, count in ledger.holder_tokens(key).items()
-                         if kind in pool.TIER_RATE_KINDS}
+                rates = {kind: count for kind, count in ledger.holdings(key).items() if kind in tier_holdings.RATE_KINDS}
                 if not rates:
                     continue
-                released = ledger.release_kinds(key, pool.TIER_RATE_KINDS)
+                released = ledger.release_rates(key)
             except (OSError, pool.PoolContractError):
                 continue
             events.append({"event": "tier-rate-reclaimed", "tier_id": tier_id,
@@ -9872,8 +9832,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                 or record.get("tier") not in ("stage", "ram")):
             continue
         try:
-            free = int(queue.tier_ledger(tier_id).available().get(
-                storage_tiers.capacity_kind_of(tier_id), 0))
+            free = int(queue.tier(tier_id).free_supply().get(storage_tiers.capacity_kind_of(tier_id), 0))
         except (OSError, pool.PoolContractError, ValueError):
             continue
         if free < int(needed):
@@ -9937,9 +9896,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             assert isinstance(copy, Mapping)
             copy_tier = str(copy["tier_id"])
             try:
-                held = int(queue.tier_ledger(copy_tier).holder_tokens(
-                    str(copy["mover_action_key"])).get(
-                        storage_tiers.capacity_kind_of(copy_tier), 0))
+                held = int(queue.tier(copy_tier).holdings(str(copy['mover_action_key'])).get(storage_tiers.capacity_kind_of(copy_tier), 0))
             except (OSError, pool.PoolContractError, ValueError):
                 return False
             if held <= 0:
@@ -9981,9 +9938,9 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                            "refusal": refusal})
             continue
         kind = storage_tiers.capacity_kind_of(tier_id)
-        ledger = queue.tier_ledger(tier_id)
+        ledger = queue.tier(tier_id)
         try:
-            free = int(ledger.available().get(kind, 0))
+            free = int(ledger.free_supply().get(kind, 0))
         except (OSError, pool.PoolContractError, ValueError):
             continue
         offered = sum(int(row["stage_gib"]) for row in rows)  # type: ignore[arg-type]
@@ -9997,8 +9954,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             if free >= needed:
                 break
             try:
-                if int(ledger.holder_tokens(str(row["mover_action_key"])).get(
-                        kind, 0)) <= 0:
+                if int(ledger.holdings(str(row['mover_action_key'])).get(kind, 0)) <= 0:
                     continue      # given back since the candidates were read
             except (OSError, pool.PoolContractError, ValueError):
                 continue
@@ -10011,7 +9967,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                 _done, event = evicted(row, tier_id, stage_root, needed)
                 events.append(event)
                 try:
-                    free = int(ledger.available().get(kind, 0))
+                    free = int(ledger.free_supply().get(kind, 0))
                 except (OSError, pool.PoolContractError, ValueError):
                     break
             finally:
@@ -10028,9 +9984,9 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             now=time.time())
         stage_root = str(tiers[tier_id].get("mountpoint") or "")
         kind = storage_tiers.capacity_kind_of(tier_id)
-        ledger = queue.tier_ledger(tier_id)
+        ledger = queue.tier(tier_id)
         try:
-            free = int(ledger.available().get(kind, 0))
+            free = int(ledger.free_supply().get(kind, 0))
         except (OSError, pool.PoolContractError, ValueError):
             stamp("unknown")
             continue
@@ -10049,8 +10005,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
         taken: set[str] = set()
         for row in candidates.get(tier_id, []):
             try:
-                if int(ledger.holder_tokens(str(row["mover_action_key"])).get(
-                        kind, 0)) <= 0:
+                if int(ledger.holdings(str(row['mover_action_key'])).get(kind, 0)) <= 0:
                     continue      # given back by the pass above
             except (OSError, pool.PoolContractError, ValueError):
                 continue
@@ -10093,7 +10048,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                 evicted_gib += int(row["stage_gib"]) if done else 0  # type: ignore[call-overload]
                 preempted = preempted or (done and row.get("basis") == PREEMPT_READING_PHASE)
                 try:
-                    free = int(ledger.available().get(kind, 0))
+                    free = int(ledger.free_supply().get(kind, 0))
                 except (OSError, pool.PoolContractError, ValueError):
                     break
             finally:
@@ -10262,11 +10217,11 @@ def landed_and_in_flight(queue: pool.PoolQueue, tier_id: str, kind: str) -> tupl
     ten ENOSPC (#623).  ``available + landed`` is the supply; in-flight tokens
     stay a deduction until their bytes are on the dataset.
     """
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     landed = 0
     in_flight = 0
-    for key in ledger.held_keys():
-        tokens = int(ledger.holder_tokens(key).get(kind, 0))
+    for key in ledger.holders():
+        tokens = int(ledger.holdings(key).get(kind, 0))
         if tokens <= 0:
             continue
         receipt = queue.move_record(key)
@@ -10361,7 +10316,7 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
         merged[kind] = supply
         return merged
 
-    result = queue.mint_tier_capacity_guarded(tier_id, wanted)
+    result = queue.tier(tier_id).mint_guarded(wanted)
     return {"landed": seen["landed"], "in_flight": seen["in_flight"],
             "landed_bytes": seen.get("landed_bytes", 0),
             "in_flight_bytes": seen.get("in_flight_bytes", 0),
@@ -11336,7 +11291,7 @@ def _cycle(
             tokens[kind] = minted["supply"]
             record["ledger"] = minted["ledger"]
         else:
-            record["ledger"] = queue.mint_tier_capacity(tier_id, tokens)
+            record["ledger"] = queue.tier(tier_id).mint(tokens)
         phases.announce(queue, record)
         announced.append(record)
     phases.lap("mint_announce")
@@ -11543,10 +11498,10 @@ def _cycle(
     # its free tokens go now, its held ones as their holders finish, and its
     # record says why it is empty rather than vanishing.
     suffix = f":{host}"
-    for tier_id in queue.tier_ids():
+    for tier_id in tier_holdings.ids(queue.records):
         if tier_id in tiers or not tier_id.endswith(suffix):
             continue
-        ledger = queue.mint_tier_capacity(tier_id, {})
+        ledger = queue.tier(tier_id).mint({})
         phases.announce(queue, {
             "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": tier_id, "host": host,
             "tier": storage_tiers.tier_kind_of(tier_id),

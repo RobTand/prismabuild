@@ -349,19 +349,18 @@ class KeptReads:
         covers.  Taken at most once a scrape, and kept while it holds.
         """
 
-        key = ("ledger-fences", os.fspath(ledger.base))
+        key = ('ledger-fences', os.fspath(ledger.paths.base))
         self._touched.add(key)
         kept = self._memos.get(key)
         if kept is not None and self.holds(kept[0]):
             return kept[0]
-        free = self.fence(ledger.free_dir)
-        held = self.fence(ledger.held_dir)
+        free = self.fence(ledger.paths.free)
+        held = self.fence(ledger.paths.held)
         if free is None or held is None:
             self._memos.pop(key, None)
             return None
         try:
-            holders = sorted(os.listdir(held.directory)) if held.directory == os.fspath(
-                ledger.held_dir) else []
+            holders = sorted(os.listdir(held.directory)) if held.directory == os.fspath(ledger.paths.held) else []
         except OSError:
             self._memos.pop(key, None)
             return None
@@ -950,7 +949,7 @@ def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
 def _ledger_counts(reader: KeptReads, queue: pool.PoolQueue, tier_id: str):
     """``(capacity, available)`` of one tier ledger, or the failure raised."""
 
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
 
     def count():
         try:
@@ -1327,7 +1326,7 @@ def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
         if tier is None:
             continue
         try:
-            ledger = queue.tier_ledger(tier)
+            ledger = queue.tier(tier)
         except (OSError, ValueError, pool.PoolContractError):
             return None
         ledger_fences = reader.ledger_fences(ledger)
