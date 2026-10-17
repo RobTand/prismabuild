@@ -113,7 +113,7 @@ RESIDENCY_PLAN_SUPERSEDED_SCHEMA_V1 = (
 #: below, ``pbstatus``'s starvation census, the MCP cursor join, ``pbmetrics``
 #: -- so a subdirectory is invisible to all of them while the retirement
 #: marker and the reaped body stay on disk as evidence.
-SUPERSEDED = "superseded"
+SUPERSEDED = _pool.record_store.RESIDENCY_SUPERSEDED
 
 _HEX = frozenset("0123456789abcdef")
 #: What a phase says, and nothing else.  Unknown keys refuse, for the reason
@@ -3072,10 +3072,10 @@ SHARED_RANGE_SCHEMA_V1 = "prismaquant.prismabuild.shared_range.v1"
 SHARED_MOVER_SCHEMA_V1 = "prismaquant.prismabuild.shared_mover.v1"
 
 #: The subdirectory of the plan directory the registry lives in.
-SHARED = "shared"
+SHARED = _pool.record_store.RESIDENCY_SHARED
 
 _SHARED_RANGES = "ranges"
-_SHARED_MOVERS = "movers"
+_SHARED_MOVERS = _pool.record_store.RESIDENCY_SHARED_MOVERS
 
 #: The fields of a stage tier's announcement a shared mover's argv is sealed
 #: with (``movement_actions.movement_tools``).  A registration records them,

@@ -125,6 +125,9 @@ RESIDENCY = "residency"
 
 
 RESIDENCY_PLANS = "residency-plans"
+RESIDENCY_SUPERSEDED = "superseded"
+RESIDENCY_SHARED = "shared"
+RESIDENCY_SHARED_MOVERS = "movers"
 
 
 RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
@@ -1226,7 +1229,7 @@ class RecordStore:
     def residency_supersession_path(self, consumer: str, digest: str) -> Path:
         return self.residency_plan_path(
             consumer,
-        ).parent / "superseded" / f"{consumer}.{digest}.superseded.json"
+        ).parent / RESIDENCY_SUPERSEDED / f"{consumer}.{digest}.superseded.json"
 
     @staticmethod
     def lane_unreadable_name(path: Path, stamp: int, token: str) -> str:
@@ -2219,13 +2222,15 @@ class RecordStore:
         return immutable_files.scan_optional(self.residency_registry_root())
 
     def supersession_paths(self) -> list[Path]:
-        return immutable_files.scan_optional(self.residency_registry_root() / "superseded")
+        return immutable_files.scan_optional(
+            self.residency_registry_root() / RESIDENCY_SUPERSEDED)
 
     def shared_registry_present(self) -> bool:
-        return (self.residency_registry_root() / "shared").is_dir()
+        return (self.residency_registry_root() / RESIDENCY_SHARED).is_dir()
 
     def shared_mover_names(self) -> frozenset[str]:
-        directory = self.residency_registry_root() / "shared" / "movers"
+        directory = (self.residency_registry_root() / RESIDENCY_SHARED
+                     / RESIDENCY_SHARED_MOVERS)
         try:
             with os.scandir(directory) as entries:
                 return frozenset(entry.name for entry in entries
@@ -2439,7 +2444,7 @@ class RecordStore:
             keep=_diagnostic_kept)
 
     def residency_supersession_names(self) -> frozenset[str]:
-        directory = self.root / RESIDENCY_PLANS / "superseded"
+        directory = self.root / RESIDENCY_PLANS / RESIDENCY_SUPERSEDED
         if self._records is None:
             return frozenset(os.listdir(directory))
         return self._records.names(directory, select=_all_entries)
