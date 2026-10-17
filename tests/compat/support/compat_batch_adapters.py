@@ -140,11 +140,12 @@ def operate(request, store, load):
                 request["_consumer_boundary"]()
                 return po._checked_origin_ref(json.loads(base64.b64decode(request["raw"])))
             value = po.origin_batch_ref(instance, batch_id="batch", manifest_digest=po.output_manifest_sha256([descriptor]))
-            body = {"schema": core.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {"produced_output_batches": [value]},
+            codec = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["manifest_owner"](core, load)
+            body = {"schema": codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {"produced_output_batches": [value]},
                 "mount_prefix": str(store / "outputs"), "entries": [{"path": descriptor["path"], "offset": 0,
                     "bytes": 8, "sha256": descriptor["sha256"]}], "entry_count": 1, "total_bytes": 8}
             cas = core.PrismaBuildCAS(store / "manifest-cas")
-            entry, _ = cas.ingest_bytes(core._canonical_file_bytes(core.validate_data_manifest(body)), input_id="data_manifest")
+            entry, _ = cas.ingest_bytes(core._canonical_file_bytes(codec.validate_data_manifest(body)), input_id="data_manifest")
             raw = extract(cas.input_path(entry).read_bytes(), "produced_output_batches", array=True)
     return {"raw": base64.b64encode(raw).decode(),
             "fixture_facts": ["private supplied admitted claim", "deterministic portable identity during writer only"]}

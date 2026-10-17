@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import secrets
 
 
@@ -32,9 +33,9 @@ def canonical_directory(store):
     return root
 
 
-def resident_set(rs, core, pool, store, variant):
+def resident_set(rs, codec, pool, store, variant):
     directory = canonical_directory(store)
-    manifest = {"schema": core.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+    manifest = {"schema": codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
                 "mount_prefix": str(directory), "entries": [{"path": str(directory / "weights"),
                 "offset": 0, "bytes": 7, "sha256": hashlib.sha256(b"weights").hexdigest()}],
                 "entry_count": 1, "total_bytes": 7}
@@ -54,7 +55,8 @@ def operate(request, store, load):
     write = request["op"] == "write"
     if family == "resident-pin":
         rs, core, pool, local = (load("prismabuild." + name) for name in ("resident_sets", "core", "pool", "local_resident"))
-        resident, body = resident_set(rs, core, pool, store, "until")
+        codec = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["manifest_owner"](core, load)
+        resident, body = resident_set(rs, codec, pool, store, "until")
         key = body["set_id"]
         spec = {"root": str(store / "local")}
         final = Path(spec["root"]) / key
@@ -93,7 +95,8 @@ def operate(request, store, load):
     else:
         rs, core, pool = (load("prismabuild." + name) for name in ("resident_sets", "core", "pool"))
         if write:
-            resident, body = resident_set(rs, core, pool, store, variant)
+            codec = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["manifest_owner"](core, load)
+            resident, body = resident_set(rs, codec, pool, store, variant)
             key = body["set_id"]
             if family == "resident-set":
                 path = resident.set_path(key)

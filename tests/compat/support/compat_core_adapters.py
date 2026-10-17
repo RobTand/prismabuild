@@ -30,8 +30,12 @@ def action_body(core, store):
             "execution_scope": {"portability": "portable", "platform_key": None, "host_class": None}}
 
 
-def manifest(core, variant, v2):
-    value = {"schema": core.DATA_MANIFEST_SCHEMA_V2 if v2 else core.DATA_MANIFEST_SCHEMA_V1,
+def manifest_owner(core, load):
+    return core if hasattr(core, "validate_data_manifest") else load("prismabuild.data_manifest")
+
+
+def manifest(codec, variant, v2):
+    value = {"schema": codec.DATA_MANIFEST_SCHEMA_V2 if v2 else codec.DATA_MANIFEST_SCHEMA_V1,
              "produced_by": {}, "annotations": {}, "mount_prefix": "/compat/input",
              "entries": [{"path": "/compat/input/weights", "offset": 0, "bytes": 8, "sha256": None}],
              "entry_count": 1, "total_bytes": 8}
@@ -127,13 +131,14 @@ def operate(request, store, load):
                 value = core.build_code_closure(store, names) if write else None
             reader = lambda value: core.verify_code_closure(value, store)
         elif family in ("core-manifest-v1", "core-manifest-v2"):
+            codec = manifest_owner(core, load)
             if write:
                 value = (runpy.run_path(str(Path(__file__).with_name("compat_builder_adapters.py")))["manifest"](
                     core, store, load, variant) if variant.endswith("builder") else
-                    core.validate_data_manifest(manifest(core, variant, family.endswith("v2"))))
+                    codec.validate_data_manifest(manifest(codec, variant, family.endswith("v2"))))
             else:
                 value = None
-            reader = core.validate_data_manifest
+            reader = codec.validate_data_manifest
         else:
             raise ValueError(f"unknown core adapter: {family}")
         if not write:

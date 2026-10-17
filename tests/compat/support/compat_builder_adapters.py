@@ -32,12 +32,13 @@ def manifest(core, store, load, variant):
         canary = load("pbcanary_legs.leg3")
         return canary.manifest_for_run([str(store / name) for name in canary.LEG3_CHUNK_NAMES], str(store))
     factory = helper("compat_core_adapters.py")["manifest"]
+    codec = helper("compat_core_adapters.py")["manifest_owner"](core, load)
     if variant == "task-builder":
         dc = load("prismabuild.decomposition")
         policy = {"schema": dc.TASK_DATA_MANIFEST_SCHEMA_V1, "payload_field": "entries", "mount_prefix": "/compat/input",
                   "residency_tier": None, "residency_ram": "off", "mover_readers": 1, "mover_mem_gb": 1}
         envelope = {"parent_key": "a" * 64, "plan_key": "b" * 64, "child_ordinal": 0,
-                    "tasks": [{"id": "one", "payload": {"entries": factory(core, "unphased", False)["entries"]}}]}
+                    "tasks": [{"id": "one", "payload": {"entries": factory(codec, "unphased", False)["entries"]}}]}
         return dc.task_data_manifest(policy, envelope)
     origin = variant in ("origin-builder", "merged-builder", "placed-builder")
     po, pool, _, queue, template, instance, descriptor, path = helper("compat_batch_adapters.py")["committed"](
@@ -51,11 +52,11 @@ def manifest(core, store, load, variant):
         return po.origin_batch_manifest(queue.root, refs)
     if variant == "merged-builder":
         batches = po.origin_batch_manifest(queue.root, refs)
-        static = factory(core, "phased", False)
+        static = factory(codec, "phased", False)
         static["mount_prefix"] = str(store)
         static["entries"][0]["path"] = str(store / "static.bin")
         return load("prismabuild.action_edges").merged_manifest(static, batches)
-    static = factory(core, "read-plan", True)
+    static = factory(codec, "read-plan", True)
     static["mount_prefix"] = str(store)
     static["entries"][0]["path"] = str(store / "static.bin")
     static["read_plan"]["phases"].append({"name": "origin", "entry_indices": [], "bytes": 0, "cumulative_bytes": 8})

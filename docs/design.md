@@ -18407,14 +18407,6 @@ remain with their current owners. Unknown advertised capacity is still distinct
 from zero. These answer fit, authority and admission questions beyond host
 capability. No C01 reservation, census, lock or commit owner changes.
 
-Sealed gang preparation, its conditional import and group state remain in the
-claim driver. Backfill reclaim retains its own preemption/H lock lifetime under
-T. Measurement census M/H, host admission, acquisition, funding, commit and
-publication also retain their original positions and error boundaries. These
-later protocols and the final claim-driver reduction remain unfinished C01
-work. This extraction adds no compatibility phase and changes no queue schema,
-lock scope, fairness limit or default.
-
 ## Supported-generation record compatibility (C31/B11, 2026-10-16)
 
 The local compatibility implementation uses `prismabuild.record_kinds` as pure
