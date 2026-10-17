@@ -14,6 +14,7 @@ from prismabuild import local_resident, local_tier, pool
 from test_local_resident_mover import world
 
 from local_resident_space import roomy_disk  # noqa: F401
+from prismabuild import tier_holdings
 
 pytestmark = pytest.mark.usefixtures("roomy_disk")
 
@@ -100,8 +101,8 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, expire_while_waiting=F
             assert str(outcome["error"]) == "resident lease expired"
             assert "result" not in outcome
             assert store.read_copy(set_id, "test-host")["state"] == "absent"
-            ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
-            assert ledger.holder_tokens(set_id).get("local_gib", 0) == 0
+            ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
+            assert ledger.holdings(set_id).get('local_gib', 0) == 0
             assert not Path(spec["root"]).joinpath(set_id).exists()
             assert not Path(spec["root"]).joinpath(set_id + ".partial").exists()
             if operation == "adopt":
@@ -111,8 +112,8 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, expire_while_waiting=F
         assert "error" not in outcome, outcome.get("error")
         assert outcome["result"]["state"] == "resident"
         assert store.read_copy(set_id, "test-host")["state"] == "resident"
-        ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
-        assert ledger.held().get("local_gib", 0) == 1, "resident copy must hold its tokens"
+        ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
+        assert ledger.holdings().get('local_gib', 0) == 1, "resident copy must hold its tokens"
         final = Path(outcome["result"]["local_root"])
         assert (final / "weights").read_bytes() == b"weights"
         assert not final.with_name(set_id + ".evicting").exists()
@@ -124,7 +125,7 @@ def _live_lease_race(tmp_path, monkeypatch, operation, *, expire_while_waiting=F
             # or taking another occupancy reservation.
             replay = function(store, set_id, "test-host", spec, source, now=120)
             assert replay["state"] == "resident"
-            assert ledger.held().get("local_gib", 0) == 1
+            assert ledger.holdings().get('local_gib', 0) == 1
             assert (final / "weights").stat().st_ino == source_inode
     finally:
         if child.poll() is None:
@@ -148,23 +149,23 @@ def test_lease_expiring_while_waiting_is_checked_after_the_lock(tmp_path, monkey
 def test_copy_refuses_an_expired_lease_before_any_byte(tmp_path):
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
-    ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
+    ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
     # Remove the publication hold for this absent, byte-less fixture. A
     # refused new attempt must not create a fresh occupancy reservation.
-    ledger.release(record["set_id"])
+    ledger.release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED)
     with pytest.raises(ValueError, match="resident lease expired"):
         local_resident.copy(store, record["set_id"], "test-host", spec)
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert not Path(spec["root"]).joinpath(record["set_id"] + ".partial").exists()
-    assert ledger.holder_tokens(record["set_id"]).get("local_gib", 0) == 0
+    assert ledger.holdings(record['set_id']).get('local_gib', 0) == 0
 
 
 def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     store, record, spec = world(tmp_path)
     store.release(record["set_id"], by="test")
-    ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
-    ledger.release(record["set_id"])
+    ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
+    ledger.release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED)
     source = tmp_path / "manual"
     source.mkdir()
     (source / "weights").write_bytes(b"weights")
@@ -173,7 +174,7 @@ def test_adopt_refuses_an_expired_lease_and_keeps_the_source(tmp_path):
     assert (source / "weights").read_bytes() == b"weights"
     assert not Path(spec["root"]).joinpath(record["set_id"]).exists()
     assert store.read_copy(record["set_id"], "test-host")["state"] == "absent"
-    assert ledger.holder_tokens(record["set_id"]).get("local_gib", 0) == 0
+    assert ledger.holdings(record['set_id']).get('local_gib', 0) == 0
 
 
 def _host_locked(root):

@@ -75,7 +75,7 @@ def test_descriptor_write_cannot_resurrect_an_evicted_copy(tmp_path, monkeypatch
     row = _publication(tmp_path, monkeypatch, store, set_id, spec, operation)
     assert interleaved, "the eviction must finish before the pending descriptor write"
     assert not Path(spec["root"]).joinpath(set_id).exists()
-    assert pool.PoolQueue(store.queue_root).tier_ledger("local:test-host").holder_tokens(set_id) == {}
+    assert pool.PoolQueue(store.queue_root).tier('local:test-host').holdings(set_id) == {}
     assert store.read_copy(set_id, "test-host")["state"] == "absent", "descriptor publication must not resurrect copy state"
     assert row["action_key"] in _referenced_action_keys(store, set_id)
     assert (store.set_path(set_id).parent / "movements" / "test-host.json").exists()

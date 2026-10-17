@@ -35,7 +35,7 @@ def test_copy_hashes_fsyncs_then_lands_whole_tree(tmp_path, monkeypatch):
     assert result["verification"][0]["sha256"] == record["manifest"]["entries"][0]["sha256"]
     assert fsyncs
     assert not Path(spec["root"]).joinpath(record["set_id"] + ".partial").exists()
-    assert pool.PoolQueue(store.queue_root).tier_ledger("local:test-host").held()["local_gib"] == 1
+    assert pool.PoolQueue(store.queue_root).tier('local:test-host').holdings()['local_gib'] == 1
 
 
 def test_corrupt_source_never_becomes_resident_and_retry_resumes(tmp_path):
@@ -105,7 +105,7 @@ def test_stage_selection_holds_real_reader_pin_until_copy_finishes(tmp_path, mon
     queue, stage, staged, manifest_sha, manifest_path = fixture._world(tmp_path)
     import json
     manifest = json.loads(manifest_path.read_text())
-    queue.mint_tier_capacity("local:test-host", {"local_gib": 1})
+    queue.tier('local:test-host').mint({'local_gib': 1})
     store = resident_sets.ResidentSets(queue.root)
     record = store.publish(manifest=manifest, canonical_root=str(tmp_path / "origin"),
         hosts=["test-host"], lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
