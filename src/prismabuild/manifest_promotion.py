@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Promote READY manifest rows onto the tiers, through the one sealing path.
 
 PrismaBuild #1247.  A row that declares a ``pbcampaign.data-manifest`` input
@@ -44,11 +43,14 @@ from __future__ import annotations
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+
+ENTRYPOINT = (Path(__file__).resolve(strict=True).parents[2]
+              / "tools" / "fleet" / "tier_loop.py")
 import sys
 
 from prismabuild import core as pb
 from prismabuild import data_manifest as manifest_codec
-from submission_frontend import store_for, render_submission
+from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 from prismabuild.queue_publication import RowPublication
 
@@ -61,7 +63,6 @@ from prismabuild import storage_tiers
 # tools/fleet sibling import, the way tier_loop does its own: the path is
 # inserted once and unconditionally (REVIEW-1252 item 8), and the import is
 # never conditional on a package context that a caller may or may not give.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import submission
 
 
@@ -343,7 +344,7 @@ def promote_ready_manifest_rows(
             # dead-consumer pass cannot reap a plan between its filing and
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
-            store = replace(store_for(__file__), queue_root=Path(queue.root), cas_root=Path(row_cas))
+            store = replace(store_for(ENTRYPOINT), queue_root=Path(queue.root), cas_root=Path(row_cas))
             with submission.write_window(floor_request, store=store):
                 staged = residency_plan.file_manifest_row(
                     queue, key, template=template, tier=dict(stage_tier),

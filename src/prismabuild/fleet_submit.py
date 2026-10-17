@@ -47,16 +47,16 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+
+ENTRYPOINT = (Path(__file__).resolve(strict=True).parents[2]
+              / "tools" / "fleet" / "slurm_job.py")
 import sys
 from collections.abc import Mapping, Sequence
 
 SH = Path("/mnt/shared/prismabuild-fleet")
-sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
-RUNTIME_ROOT = generation_root(__file__)
-sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+RUNTIME_ROOT = ENTRYPOINT.parents[2]
 from prismabuild import container_images, core as pb, local_dependencies, pool, slurm_lane  # noqa: E402
-from submission_frontend import store_for, render_submission
+from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused, FleetStore, ProducerPublication
 from prismabuild import submission, action_client
 
@@ -69,7 +69,7 @@ DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
 #: every fleet script twice -- ``tools/<name>`` and ``tools/fleet/<name>`` --
 #: so a sibling resolves in both layouts, while a path built from
 #: ``RUNTIME_ROOT`` has to guess which one it is looking at.
-JOB_ENTRY = Path(__file__).resolve(strict=True).parent / "slurm_job.py"
+JOB_ENTRY = ENTRYPOINT
 WORKER_SCRIPT = RUNTIME_ROOT / "tools" / "prismabuild_worker.py"
 
 #: What a producer's action gets if it does not say otherwise: no deadline.
@@ -131,7 +131,7 @@ def default_transport() -> str:
     """
 
     try:
-        return submission.transport_default(store=store_for(__file__, root=SH))
+        return submission.transport_default(store=store_for(ENTRYPOINT, root=SH))
     except SubmissionRefused as exc:
         raise SystemExit(exc.reason or exc.returncode) from None
 
@@ -252,7 +252,7 @@ def submit(
             anything is queued.
     """
 
-    current = store_for(__file__, root=SH)
+    current = store_for(ENTRYPOINT, root=SH)
     store = FleetStore(current.root, current.runtime_root, current.roster_path,
                        queue_root=Path(queue_root) if queue_root is not None else current.queue_root, cas_root=Path(cas.root), d38_config_path=current.d38_config_path)
     request = SubmissionRequest(transport=transport, detach=True, priority=priority,

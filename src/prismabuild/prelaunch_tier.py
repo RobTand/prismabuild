@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One prelaunch-resident pass per tier over live declared units (#1594).
 
 The tier loop drives these functions once per tier per cycle. They turn
@@ -18,10 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
 
-sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
