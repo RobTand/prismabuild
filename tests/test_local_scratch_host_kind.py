@@ -13,6 +13,7 @@ the action and a box it fits does, and two holders cannot jointly exceed one
 box.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import local_scratch as ls, pool  # noqa: E402
 from prismabuild import produced_spool as ps  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from test_pbrun_detach import _checkout  # noqa: E402
 
 GIB = 1 << 30
@@ -57,7 +59,7 @@ def _declared(spill=SPILL_BYTES, sink=None):
 
 def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
     work = _checkout(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     args = pbrun.parse_args([
         "--cwd", str(work), "--detach", "--transport", transport,
@@ -65,7 +67,7 @@ def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
         "--tag", "sparky", *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return pbrun.prepare_submission(args)["template"]
+    return submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
 
 
 # -- off: nothing declared ----------------------------------------------------
@@ -80,12 +82,12 @@ def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
 def test_nothing_declared_seals_the_demand_it_always_did(tmp_path, monkeypatch, extra):
     template = _build(tmp_path, monkeypatch, *_env(*extra))
     assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4}
-    assert KIND not in json.dumps(pbrun.seal_action_from_template(template), default=str)
+    assert KIND not in json.dumps(submit_core.seal(template), default=str)
 
 
 def test_the_undeclared_path_does_not_import_the_scratch_module(monkeypatch):
     monkeypatch.delitem(sys.modules, "prismabuild.local_scratch", raising=False)
-    assert pbrun.scratch_window_terms({"X": "1"}, transport="pool") == {}
+    assert submit_core.scratch_window_terms({"X": "1"}, transport="pool") == {}
     assert "prismabuild.local_scratch" not in sys.modules
 
 
@@ -95,7 +97,7 @@ def test_the_undeclared_path_does_not_import_the_scratch_module(monkeypatch):
 def test_one_pair_derives_its_ceiling_in_whole_gib(tmp_path, monkeypatch):
     template = _build(tmp_path, monkeypatch, *_env(*_declared()))
     assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4, KIND: SPILL_GIB}
-    sealed = pbrun.seal_action_from_template(template)
+    sealed = submit_core.seal(template)
     assert sealed["params"]["demand"][KIND] == SPILL_GIB
 
 
@@ -150,7 +152,7 @@ def test_a_pair_that_cannot_be_charged_is_refused_at_submit(
 def test_a_typed_local_disk_demand_is_still_refused(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match=KIND):
         _build(tmp_path, monkeypatch, *_env(*_declared()), "--demand", f"{KIND}=4")
-    assert pbrun._FLEET_DEMAND_KINDS == frozenset(
+    assert submit_core._FLEET_DEMAND_KINDS == frozenset(
         {"cpu", "gpu", "mem_gb", "disk_metadata"})
 
 
@@ -164,7 +166,7 @@ def test_slurm_refuses_declared_scratch(tmp_path, monkeypatch):
 
 def _freeze(tmp_path, *, demand, variables, transport="pool"):
     repo = _checkout(tmp_path)
-    return pbrun.freeze_action_template(
+    return submit_core.freeze(
         command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin", **variables}, determinism="stochastic",
@@ -174,7 +176,7 @@ def _freeze(tmp_path, *, demand, variables, transport="pool"):
         checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
         exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
         progress=None, profile=None, container_image_refs=(),
-        wrapper_dir=tmp_path / "wrapper")
+        wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
 
 
 DECLARED = {SPILL[0]: "/home/rob/pq-scratch/spill", SPILL[1]: str(GIB + 1),
@@ -190,13 +192,13 @@ DECLARED = {SPILL[0]: "/home/rob/pq-scratch/spill", SPILL[1]: str(GIB + 1),
 ])
 def test_freeze_refuses_a_sealed_demand_that_disagrees_with_the_pairs(
         tmp_path, monkeypatch, demand, variables):
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     with pytest.raises(SystemExit, match=KIND):
         _freeze(tmp_path, demand=demand, variables=variables)
 
 
 def test_freeze_accepts_the_derived_demand(tmp_path, monkeypatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     frozen = _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 2},
                      variables=DECLARED)
     assert frozen["params"]["demand"][KIND] == 2

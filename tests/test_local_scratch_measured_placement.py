@@ -17,6 +17,7 @@ Run only inside the parent's admitted CPU-only PB test action; its real CAS
 receipt is separate from the synthetic inner queue's durable claim evidence.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 import shlex
@@ -35,6 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 import pbrun  # noqa: E402  # type: ignore[import-not-found]
+from prismabuild import submission as submit_core
 import worker_loop  # noqa: E402  # type: ignore[import-not-found]
 from prismabuild import adaptive_cpu, adaptive_gpu, materialize, pool  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
@@ -96,9 +98,9 @@ class ScratchFleet:
         self.actual_root_identity = getattr(ls, "root_identity", None)
         self.clock = [time.time()]
         monkeypatch.setattr(time, "time", lambda: self.clock[0])
-        monkeypatch.setattr(pbrun, "SH", root)
+        patch_store(monkeypatch, client=pbrun, root=root)
         monkeypatch.setattr(pbrun, "RUNTIME_ROOT", SHARED_RUNTIME)
-        monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", SHARED_RUNTIME / "tools")
+        patch_store(monkeypatch, client=pbrun, wrapper_dir=SHARED_RUNTIME / "tools")
         monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root / "box-state")
         monkeypatch.setenv("PRISMABUILD_BOX_STATE_ROOT", str(root / "box-state"))
         self.host = SLOW
@@ -194,8 +196,8 @@ class ScratchFleet:
             *(["--max-attempts", "2", "--retry-safe"] if retry else []),
             "--", "/bin/bash", "-c", "true"])
         # prepare_submission calls the real freeze_action_template.
-        template = pbrun.prepare_submission(args)["template"]
-        action = pbrun.seal_action_from_template(template)
+        template = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+        action = submit_core.seal(template)
         assert action["params"]["demand"] == {"cpu": 1, "mem_gb": 4, "gpu": 1, "spool_gb": 186}
         assert -(-ISSUE_BYTES // GIB) == 186
         required = action["params"]["placement"]["required_tags"]
@@ -205,7 +207,7 @@ class ScratchFleet:
     def publish(self, **options):
         args, self.action, self.declaration = self.build(**options)
         self.cas.publish_action_request(self.action)
-        row = pbrun.publication_row(self.action, args=args, queue=self.queue)
+        row = submit_core.publication_row(self.action, args=args, queue=self.queue, store=pbrun.configured_store())
         self.publication = deepcopy(row)
         self.queue.publish(**row)
         self.key = self.action["action_key"]
@@ -635,13 +637,13 @@ def test_traffic_requires_pool_one_pair_and_exact_version_at_prepare(fleet, faul
                              "--transport", "slurm" if fault == "slurm" else "pool", *extra,
                              "--", "/bin/bash", "-c", "true"])
     with pytest.raises(SystemExit, match=IO_ENV):
-        pbrun.prepare_submission(args)
+        submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
     assert fleet.queue.ready_items() == []
 
 
 def test_freeze_cannot_omit_opted_in_worker_code_fence(fleet):
     with pytest.raises(SystemExit, match=CAPABILITY):
-        pbrun.freeze_action_template(
+        submit_core.freeze(
             command=["/bin/bash", "-c", "true"], cwd=fleet.work, logical_cwd=".",
             demand={"cpu": 1, "mem_gb": 4, "spool_gb": 186},
             placement={"required_tags": ["gb10"]}, variables=_variables(fleet),
@@ -649,7 +651,7 @@ def test_freeze_cannot_omit_opted_in_worker_code_fence(fleet):
             host_class=None, measurement=False, transport="pool", pool_measurement_class=False,
             data_manifest_path=None, checkout_snapshot_max_bytes=512 * 1024 * 1024,
             snapshot_refs=[], exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
-            progress=None, profile=None, wrapper_dir=SHARED_RUNTIME / "tools")
+            progress=None, profile=None, wrapper_dir=SHARED_RUNTIME / "tools", store=pbrun.configured_store())
 
 
 def test_direct_unsealed_publication_cannot_forge_the_capability(fleet):
@@ -719,8 +721,8 @@ def _recorder_action(fleet, *, changed_source=False, extra_env=None):
         "--", sys.executable, "-I", "-S", ls.RECORDER, "--root", fleet.scratch,
         "--bytes", "1024", "--block-bytes", "256", "--repetitions", "1",
         "--result", ls.PROFILE_RESULT])
-    template = pbrun.prepare_submission(args)["template"]
-    action = pbrun.seal_action_from_template(template)
+    template = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+    action = submit_core.seal(template)
     fleet.cas.publish_action_request(action)
     return action
 
@@ -970,9 +972,9 @@ def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, 
         "--cpus", str(cpu), "--demand", f"mem_gb={memory}", "--priority", str(priority),
         "--timeout-s", "30", *(["--max-attempts", "2", "--retry-safe"] if retry else []),
         "--", "/bin/bash", "-c", f"true # {label}"])
-    action = pbrun.seal_action_from_template(pbrun.prepare_submission(args)["template"])
+    action = submit_core.seal(submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"])
     fleet.cas.publish_action_request(action)
-    fleet.queue.publish(**pbrun.publication_row(action, args=args, queue=fleet.queue))
+    fleet.queue.publish(**submit_core.publication_row(action, args=args, queue=fleet.queue, store=pbrun.configured_store()))
     return str(action["action_key"])
 
 
