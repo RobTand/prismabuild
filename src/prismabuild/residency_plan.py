@@ -5165,29 +5165,31 @@ class ConsumerWindow:
         return publishable
 
 
-    @cached_property
-    def pre_progress_stage_reach(self) -> set[str]:
-        """Later stage legs inside the first-progress run-ahead bound.
 
-        A withdrawn leg still counts against this geometric bound, so
-        the answer can name fewer legs than the window publishes.
-        """
 
-        ahead = [str(phase["name"]) for phase in remaining(
-            self.plan, self.accepted_phase)][1:]                               # type: ignore[arg-type]
-        later = [leg for leg in legs_over(
-            self.plan, 0, 1 << 62, mover_role="mover_row") if leg["phase"] in ahead]
-        budget = _budget_from_step(
-            max((int(leg["stage_gib"]) for leg in later), default=0),
-            has_accepted=False, capacity_gib=None)
-        reach: set[str] = set()
-        spent = 0
-        for leg in later:
-            spent += int(leg["stage_gib"])
-            if budget is not None and spent > budget:
-                break
-            reach.add(str(leg["mover_row"]["action_key"]))          # type: ignore[index]
-        return reach
+def pre_progress_stage_reach(plan: Mapping[str, object],
+                             accepted_phase: object) -> set[str]:
+    """Later stage legs inside the first-progress run-ahead bound.
+
+    A withdrawn leg still counts against this geometric bound, so
+    the answer can name fewer legs than the window publishes.
+    """
+
+    ahead = [str(phase["name"]) for phase in remaining(
+        plan, accepted_phase)][1:]                               # type: ignore[arg-type]
+    later = [leg for leg in legs_over(
+        plan, 0, 1 << 62, mover_role="mover_row") if leg["phase"] in ahead]
+    budget = _budget_from_step(
+        max((int(leg["stage_gib"]) for leg in later), default=0),
+        has_accepted=False, capacity_gib=None)
+    reach: set[str] = set()
+    spent = 0
+    for leg in later:
+        spent += int(leg["stage_gib"])
+        if budget is not None and spent > budget:
+            break
+        reach.add(str(leg["mover_row"]["action_key"]))          # type: ignore[index]
+    return reach
 
 
 def stage_leg_rows(phase: Mapping[str, object],

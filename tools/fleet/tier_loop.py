@@ -8570,7 +8570,7 @@ def publish_landing_expectations(
     With no horizon (no accepted progress yet, or no rate to price one),
     nothing can extend it, so only the legs the window publishes regardless
     are listed: the phase being read and, before first progress, its one
-    step of run-ahead (:attr:`residency_plan.ConsumerWindow.pre_progress_stage_reach`).  A later leg keeps no
+    step of run-ahead (:func:`residency_plan.pre_progress_stage_reach`).  A later leg keeps no
     row and the reader's clock refuses it, as before #1018 (review F1).
 
     On a tier the claim order ranks (#1011), the range a held-back consumer
@@ -8679,8 +8679,7 @@ def publish_landing_expectations(
             # run-ahead (``residency_plan.ConsumerWindow.decision``: ``no_accepted_progress``).
             # Those legs, and only those, are coming without a report.
             first_step = (set() if horizon is not None or progressed else
-                          residency_plan.ConsumerWindow(plan, accepted_phase,
-                              residency_plan.LegObservation()).pre_progress_stage_reach)
+                          residency_plan.pre_progress_stage_reach(plan, accepted_phase))
             ranges: list[dict[str, object]] = []
             for leg in residency_plan.legs_over(plan, 0, 1 << 62,
                                                 mover_role="mover_row"):
