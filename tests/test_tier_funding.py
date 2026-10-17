@@ -550,7 +550,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
     generation = _reserve_and_transfer(
         queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
 
-    real_write = pool.record_store._write_json
+    real_write = pool.immutable_files.write_json_atomic
 
     def fail_claim_record(path, *args, **kwargs):
         if (str(path).endswith(f"{mover}.json")
@@ -558,7 +558,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
             raise OSError("injected claim-record failure")
         return real_write(path, *args, **kwargs)
 
-    monkeypatch.setattr(pool.record_store, '_write_json', fail_claim_record)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_claim_record)
     assert queue.claim(tags=["dl380g10"], owner="w-inj") is None
     # The row is back in ready with its publication intact; the fence never
     # touched free, so the free count is exact and no stealer window opened.
@@ -573,7 +573,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
     assert ledger.available().get("stage_gib") == 2
 
     # Retry spends the same fence exactly once: holdings do not grow.
-    monkeypatch.setattr(pool.record_store, '_write_json', real_write)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', real_write)
     got = queue.claim(tags=["dl380g10"], owner="w-inj-retry")
     assert got is not None and got["action_key"] == mover
     assert got["tier_funding"][TIER]["generation"] == generation
