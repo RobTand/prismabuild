@@ -27,7 +27,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from prismabuild import action_client, claim_identity  # noqa: E402
-from submission_frontend import store_for, render_submission
+from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
 

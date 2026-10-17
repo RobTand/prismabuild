@@ -60,7 +60,10 @@ from pathlib import Path
 
 FLAG = Path(os.environ.get("REQUIRE_POOL_FLAG", "/home/rob/tmp/arb/require_pool.on"))
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import fleet_tool, generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import fleet_tool, generation_root  # noqa: E402
 
 _RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(_RUNTIME_ROOT / "src"))
