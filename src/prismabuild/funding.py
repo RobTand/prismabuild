@@ -3595,11 +3595,11 @@ class FundingLedger:
             owner_scope = str(record.get("owner_scope_id") or "")
         except (AttributeError, TypeError, ValueError):
             return ("unknown", "")
-        if (not pool.record_store.key_shaped(owner) or not nonce or not template_id
+        if (not record_store.key_shaped(owner) or not nonce or not template_id
                 or not batch_id or not owner_scope):
             return ("unknown", owner)
         try:
-            residency = self.queue.root / pool.record_store.RESIDENCY
+            residency = self.queue.root / record_store.RESIDENCY
             scope = bl.attempt_scope(self.queue.root, owner, template_id, nonce)
             instance = oc.validate_instance(
                 json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
@@ -3620,7 +3620,7 @@ class FundingLedger:
             return ("unknown", owner)
         try:
             return (str(bl.producer_attempt_state(self.queue, instance)), owner)
-        except (OSError, ValueError, pool.PoolContractError):
+        except (OSError, ValueError, PoolContractError):
             return ("unknown", owner)
 
 
@@ -3645,11 +3645,11 @@ class FundingLedger:
             owner_scope = str(record.get("owner_scope_id") or "")
         except (AttributeError, TypeError, ValueError):
             return (False, "funding binding unreadable")
-        if (not pool.record_store.key_shaped(owner) or not nonce or not template_id
+        if (not record_store.key_shaped(owner) or not nonce or not template_id
                 or not batch_id or not tier_id or not owner_scope):
             return (False, "funding binding unreadable")
         try:
-            residency = self.queue.root / pool.record_store.RESIDENCY
+            residency = self.queue.root / record_store.RESIDENCY
             scope = bl.attempt_scope(self.queue.root, owner, template_id, nonce)
             instance = oc.validate_instance(
                 json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
