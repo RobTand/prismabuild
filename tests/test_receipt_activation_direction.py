@@ -208,6 +208,10 @@ def test_predeploy_refuses_the_actual_a174_direction_before_issuing_approval(tmp
         out = tmp_path / "predeploy-approval.json"
         args = SimpleNamespace(census=census, window=window, designation=designation,
                                generations=old.parent, candidate=ROOT, out=out)
-        with pytest.raises(WindowError, match="receipt-member"):
+        # The retained source archive preserves the actual full receipt;
+        # omitted publication docs cannot stand in for the deployed directory.
+        with pytest.raises(FileNotFoundError, match="SKILL.md"):
             validate(args)
+        with pytest.raises(WindowError, match="receipt-member"):
+            require_reachable(ROOT, old)
         assert not out.exists()
