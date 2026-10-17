@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-import fleet_submit
+from prismabuild import fleet_submit
 import pbcampaign
 import pbrun
 from prismabuild import core, pool, submission

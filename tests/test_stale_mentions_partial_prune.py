@@ -41,7 +41,7 @@ from prismabuild import kept_reads
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 NAMES = red.NAMES
