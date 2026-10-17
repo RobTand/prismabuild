@@ -78,4 +78,4 @@ def test_the_ram_window_publishes_into_its_own_fence(tmp_path: Path) -> None:
                              "phase-1", SPAN, 2 * SPAN)
     ram_ledger = queue.tier(RAM_TIER)
     assert ram_ledger.free_supply().get('ram_gib') == 1
-    assert window_credit.held_grants(ram_ledger) == []
+    assert ram_ledger.held_grants() == []

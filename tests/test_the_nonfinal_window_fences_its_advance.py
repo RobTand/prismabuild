@@ -528,4 +528,4 @@ def test_the_ram_window_fences_its_advance_before_the_promotion_runs(
     tier_loop.ram_residency_window(queue, tiers=_ram_tiers(tmp_path))
     assert int(ram_ledger.holdings(r1).get('ram_gib', 0)) == 1
     assert ram_ledger.free_supply().get('ram_gib') == 2
-    assert window_credit.held_grants(ram_ledger) == []
+    assert ram_ledger.held_grants() == []

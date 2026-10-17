@@ -166,7 +166,7 @@ def _tier_reads_fail(monkeypatch: pytest.MonkeyPatch, queue: pool.PoolQueue) -> 
 def _uncontain(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutate the driver: put back the unguarded scan the fix contains."""
 
-    monkeypatch.setattr(pool.PoolQueue, "tier_ids", lambda self: sorted(
+    monkeypatch.setattr(tier_holdings, "ids", lambda self: sorted(
         directory.name for directory in pool.immutable_files.scan_optional(
             self.root / pool.record_store.TIER_RESERVATIONS,
         )
