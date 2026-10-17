@@ -13,6 +13,8 @@ admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
 
+from legacy_funding_fixture import allocated_legacy_intent
+
 from prismabuild.legacy_funding import LegacyFunding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
@@ -489,6 +491,7 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
         _desc(origin, template, "cotangent-0", "payload", "cotangent-0.pt", b, instance),
         _desc(origin, template, "scratch-0", "temp", "scratch-0.pt", c, instance),
     ]
+    allocated_legacy_intent(queue, instance, descs, batch_id='batch-0000', tier=STAGE_TIER, mover_key=MOVER0)
     committed = po.commit_batch(queue, instance, template, descs,
                                 batch_id="batch-0000", tier=STAGE_TIER,
                                 mover_key=MOVER0)
@@ -984,6 +987,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
               instance, gen=gen_a),
         _desc(origin, template, "scratch-0", "temp", "scratch-0.pt", b"C" * 2048, instance),
     ]
+    allocated_legacy_intent(queue, instance, descs0, batch_id='batch-0000', tier=STAGE_TIER, mover_key=MOVER0)
     batch0 = po.commit_batch(queue, instance, template, descs0,
                              batch_id="batch-0000", tier=STAGE_TIER, mover_key=MOVER0)
     assert batch0["ok"] is True
@@ -1009,6 +1013,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
         _desc(origin, template, "checkpoint-0", "checkpoint", "checkpoint-0.pt", b"F" * 2048,
               instance),
     ]
+    allocated_legacy_intent(queue, instance, descs1, batch_id='batch-0001', tier=STAGE_TIER, mover_key=MOVER1)
     batch1 = po.commit_batch(queue, instance, template, descs1,
                              batch_id="batch-0001", tier=STAGE_TIER, mover_key=MOVER1)
     assert batch1["ok"] is True
@@ -1192,6 +1197,7 @@ def test_due_rows_validate_and_lifecycle_classify(tmp_path: Path) -> None:
         paths=paths)["ok"] is True
     descs = [_desc(origin, template, "boundary-0", "payload", "boundary-0.pt",
                    b"A" * 4096, instance)]
+    allocated_legacy_intent(queue, instance, descs, batch_id='batch-0000', tier=STAGE_TIER, mover_key=MOVER0)
     batch = po.commit_batch(queue, instance, template, descs,
                             batch_id="batch-0000", tier=STAGE_TIER,
                             mover_key=MOVER0)
@@ -1259,6 +1265,7 @@ def test_pin_lifecycle_owner_split(tmp_path: Path) -> None:
         _desc(origin, template, "cotangent-0", "payload", "cotangent-0.pt", b"B" * 8192, instance),
         _desc(origin, template, "checkpoint-0", "checkpoint", "checkpoint-0.pt", b"C" * 2048, instance),
     ]
+    allocated_legacy_intent(queue, instance, descs, batch_id='batch-0000', tier=STAGE_TIER, mover_key=MOVER0)
     batch = po.commit_batch(queue, instance, template, descs,
                             batch_id="batch-0000", tier=STAGE_TIER, mover_key=MOVER0)
     assert batch["ok"] is True
@@ -1545,6 +1552,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
         paths=[shared])["ok"] is True
     desc_a = _desc(origin, template, "cotangent-0", "payload",
                    "cotangent-0.pt", b"A" * 4096, instance)
+    allocated_legacy_intent(queue, instance, [desc_a], batch_id='batch-a', tier=STAGE_TIER, mover_key=MOVER0)
     batch_a = po.commit_batch(queue, instance, template, [desc_a],
                               batch_id="batch-a", tier=STAGE_TIER,
                               mover_key=MOVER0)
@@ -1594,6 +1602,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
         paths=[shared])
     desc_b = _desc(origin, template, "cotangent-0", "payload",
                    "cotangent-0.pt", b"Z" * 4096, instance)
+    allocated_legacy_intent(queue, instance, [desc_b], batch_id='batch-b', tier=STAGE_TIER, mover_key=MOVER1)
     batch_b = po.commit_batch(queue, instance, template, [desc_b],
                               batch_id="batch-b", tier=STAGE_TIER,
                               mover_key=MOVER1)

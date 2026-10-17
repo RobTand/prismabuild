@@ -27,6 +27,8 @@ next to a legacy flat consumer, and drive the actual
 ``tier_loop.sweep_orphans`` boundary rather than a helper.
 """
 from __future__ import annotations
+
+from legacy_funding_fixture import allocated_legacy_intent
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -127,6 +129,7 @@ def world(tmp_path: Path):
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w0.pt")])["ok"] is True
     desc = produced._payload_desc(origin, template, instance, "w0.pt", b"A" * 64)
+    allocated_legacy_intent(queue, instance, [desc], batch_id='w0', tier=TIER, mover_key=PRODUCED_MOVER)
     batch = po.commit_batch(queue, instance, template, [desc], batch_id="w0",
                             tier=TIER, mover_key=PRODUCED_MOVER)
     assert batch["ok"] is True, batch
