@@ -143,6 +143,98 @@ def lifecycle_audit_inventory(revision=None):
             for name in LIFECYCLE_AUDIT_OWNERS if "PoolQueue." + name in pool}}
 
 
+LIFECYCLE_AUDIT_MOVES = {
+    name: name for name in ("_finish_late", "_retry_late_finish", "_archive_late_finish",
+                            "_archive_earlier_terminal", "_file_unreadable", "_sweep_orphan_requeue_staging")
+} | {name: "_" + name for name in ("quarantine_orphans", "sweep_ready_transitions", "sweep_widowed_leases")}
+
+
+class LifecycleBodyNormalizer(LifecycleAuditNormalizer):
+    def visit_Expr(self, node):
+        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "_legal_destination":
+            return None
+        return self.generic_visit(node)
+
+    def visit_Name(self, node):
+        if node.id == "self":
+            node.id = "queue"
+        elif node.id == "invalid":
+            node.id = "AmbiguousClaimHolder"
+        return super().visit_Name(node)
+
+    def visit_Attribute(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id == "pool" and node.attr in {
+                "_now", "DEFAULT_MAX_ATTEMPTS", "POOL_OUTCOME_SCHEMA_V1", "UNREADABLE_HEAD_BYTES"}:
+            return ast.Name(node.attr, ast.Load())
+        return super().visit_Attribute(node)
+
+    def visit_ImportFrom(self, node):
+        if node.level == 1 and (node.module == "pool" or
+                                node.module is None and [a.name for a in node.names] == ["pool"]):
+            return None
+        return node
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Attribute) and node.func.attr in LIFECYCLE_AUDIT_MOVES:
+            node.args.insert(0, node.func.value)
+            node.func = ast.Name(LIFECYCLE_AUDIT_MOVES[node.func.attr], ast.Load())
+        node = self.generic_visit(node)
+        if isinstance(node.func, ast.Name) and node.func.id == "check_lease_identity":
+            node.keywords = [k for k in node.keywords if k.arg != "invalid"]
+        return node
+
+
+def lifecycle_audit_body(node):
+    body = copy.deepcopy(node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]
+    return ast.dump(LifecycleBodyNormalizer().visit(ast.Module(body=body, type_ignores=[])),
+                    include_attributes=False)
+
+
+def lifecycle_audit_owner_equivalence():
+    old = lifecycle_audit_definitions(lifecycle_audit_text("src/prismabuild/pool.py", LIFECYCLE_AUDIT_BASE))
+    current = lifecycle_audit_definitions(lifecycle_audit_text("src/prismabuild/pool.py"))
+    owner_path = LIFECYCLE_AUDIT_ROOT / "src/prismabuild/lifecycle.py"
+    owner = lifecycle_audit_definitions(owner_path.read_text()) if owner_path.exists() else {}
+    checks = {}
+    for old_name, new_name in LIFECYCLE_AUDIT_MOVES.items():
+        if new_name in owner:
+            checks["moved-body:" + old_name] = lifecycle_audit_body(old["PoolQueue." + old_name]) == lifecycle_audit_body(owner[new_name])
+    for old_name, new_name in (("_entomb_claim", "_entomb_claim"),
+                              ("_transition_locked", "action_transition_lock"),
+                              ("_scope_from_record", "scope_for_record")):
+        checks["boundary-body:" + old_name] = lifecycle_audit_body(old["PoolQueue." + old_name]) == lifecycle_audit_body(current["PoolQueue." + new_name])
+    checks["ResourceLedger-full-AST"] = ast.dump(old["ResourceLedger"], include_attributes=False) == ast.dump(current["ResourceLedger"], include_attributes=False)
+    before_store = lifecycle_audit_definitions(lifecycle_audit_text("src/prismabuild/record_store.py", LIFECYCLE_AUDIT_BASE))
+    after_store = lifecycle_audit_definitions(lifecycle_audit_text("src/prismabuild/record_store.py"))
+    checks["RecordStore-full-body"] = lifecycle_audit_body(before_store["RecordStore"]) == lifecycle_audit_body(after_store["RecordStore"])
+    checks["error-vocabulary"] = ast.dump(old["AmbiguousClaimHolder"], include_attributes=False) == ast.dump(after_store["AmbiguousClaimHolder"], include_attributes=False)
+    identity = lifecycle_audit_definitions(lifecycle_audit_text("src/prismabuild/claim_identity.py"))
+    for old_name, new_name in (("_same_claim", "same_claim"), ("_check_claim_lease_identity", "check_lease_identity")):
+        checks["identity-body:" + old_name] = lifecycle_audit_body(old[old_name]) == lifecycle_audit_body(identity[new_name])
+    for path, names in (("src/prismabuild/scratch_lifetime.py", ("register_attempt", "_persist", "finalize")),):
+        before = lifecycle_audit_definitions(lifecycle_audit_text(path, LIFECYCLE_AUDIT_BASE))
+        after = lifecycle_audit_definitions(lifecycle_audit_text(path))
+        for name in names:
+            checks["scratch-body:" + name] = lifecycle_audit_body(before[name]) == lifecycle_audit_body(after[name])
+    public = ("finish", "reap_stale", "sweep_finish_tombstones", "sweep_ready_transitions",
+              "sweep_widowed_leases", "quarantine_orphans", "reclaim_terminal_reservation", "_defer_unstarted_claim")
+    for name in public:
+        a, b = old["PoolQueue." + name], current["PoolQueue." + name]
+        checks["public-signature:" + name] = (ast.dump(a.args) == ast.dump(b.args) and
+            [ast.dump(d) for d in a.decorator_list] == [ast.dump(d) for d in b.decorator_list])
+    # These are the original decisions before the delegated conclusion starts.
+    before_loop = next(n for n in old["PoolQueue.reap_stale"].body if isinstance(n, ast.For))
+    after_loop = next(n for n in current["PoolQueue.reap_stale"].body if isinstance(n, ast.For))
+    before = before_loop.body[1].body if isinstance(before_loop.body[1], ast.With) else before_loop.body[0].body
+    after = after_loop.body[1].body if isinstance(after_loop.body[1], ast.With) else after_loop.body[0].body
+    cut = next(i for i, n in enumerate(before) if isinstance(n, ast.Assign) and any(
+        isinstance(c, ast.Attribute) and c.attr == "cleanup_action_containers" for c in ast.walk(n)))
+    checks["reaper-acted-from-prefix"] = lifecycle_audit_body(ast.Module(body=before[:cut])) == lifecycle_audit_body(ast.Module(body=after[:cut]))
+    return {"checks": checks, "passed": all(checks.values()), "moved_owners": LIFECYCLE_AUDIT_MOVES}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
@@ -150,7 +242,10 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     before = lifecycle_audit_inventory(LIFECYCLE_AUDIT_BASE)
     after = lifecycle_audit_inventory()
+    equivalence = lifecycle_audit_owner_equivalence()
+    (args.out / "owner-equivalence.json").write_text(json.dumps(equivalence, indent=2) + "\n")
     failures = []
+    failures.extend(name for name, passed in equivalence["checks"].items() if not passed)
     for key, old in before["tests"].items():
         new = after["tests"].get(key)
         if new is None or old["decorators"] != new["decorators"]:

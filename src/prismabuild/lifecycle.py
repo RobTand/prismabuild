@@ -133,6 +133,10 @@ class Transition(Enum):
     RETIRE_TOMBSTONE = "retire_tombstone"
     QUARANTINE = "quarantine"
     DEFER = "defer"
+    RETIRE_READY_CAPTURE = "retire_ready_capture"
+    RESTORE_READY_CAPTURE = "restore_ready_capture"
+    RETIRE_LEASE = "retire_lease"
+    RECLAIM_RESERVATION = "reclaim_reservation"
 
 
 LEGAL_DESTINATIONS = {
@@ -146,6 +150,10 @@ LEGAL_DESTINATIONS = {
     Transition.RETIRE_TOMBSTONE: frozenset({"evidence"}),
     Transition.QUARANTINE: frozenset({FAILED, "existing"}),
     Transition.DEFER: frozenset({READY}),
+    Transition.RETIRE_READY_CAPTURE: frozenset({"evidence"}),
+    Transition.RESTORE_READY_CAPTURE: frozenset({READY}),
+    Transition.RETIRE_LEASE: frozenset({"existing"}),
+    Transition.RECLAIM_RESERVATION: frozenset({"existing"}),
 }
 
 
@@ -308,6 +316,7 @@ def _archive_late_finish(
         # slot makes the successor adopt an outcome it never produced.
         # Keep the report attributable without charging an execution or
         # creating a terminal that a waiter could mistake for completion.
+        _legal_destination(Transition.LATE, "evidence")
         return queue.records.file_superseded(
             snapshot, key=action_key, kind="uncharged-late-finish",
             status=status, detail=dict(detail or {}),
@@ -329,6 +338,7 @@ def _archive_late_finish(
         WITHDRAWN if status == WITHDRAWN else
         DONE if succeeded else FAILED if attempt >= limit else "requeued"
     )
+    _legal_destination(Transition.LATE, "attempt")
     queue.archive_attempt(
         archived,
         attempt=attempt,
@@ -853,6 +863,7 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         # directory view or a cycle racing the final unlink may still
         # expose its old claim, but that copy is cleanup, not a retry.
         state, outcome = terminal
+        _legal_destination(Transition.ADOPT_TERMINAL, "existing")
         queue.records.file_superseded(
             record, key=key, kind="terminal-claim", status="dropped",
             dropped_unix=pool._now(), dropped_host=socket.gethostname(),
@@ -1206,6 +1217,7 @@ def _sweep_finish_tombstones(
                     # sweep -- the only disposition that keeps the evidence.
                     continue
             if restorable:
+                _legal_destination(Transition.RESTORE_TOMBSTONE, CLAIMED)
                 try:
                     os.link(tombstone, queue.records.item_path(CLAIMED, key))
                 except OSError:
@@ -1264,6 +1276,7 @@ def _sweep_finish_tombstones(
                     queue._persist_publication_supersession(record, successor=successor)
                 except (OSError, pb.PrismaBuildError):
                     continue
+            _legal_destination(Transition.RETIRE_TOMBSTONE, "evidence")
             queue.records.file_superseded(
                 record, key=key, kind="finish-tombstone", status="dropped",
                 dropped_unix=pool._now(), dropped_host=socket.gethostname(),
@@ -1332,6 +1345,7 @@ def _file_unreadable(queue, path: Path, *, reason: str) -> str | None:
         raw_path=str(evidence.relative_to(queue.root)),
         raw_head=raw[:pool.UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"), when=pool._now(),
     )
+    _legal_destination(Transition.QUARANTINE, FAILED)
     if not any(bool(record_store.value_or_raise(queue.records.item_presence(state, key)))
                for state in (DONE, FAILED)):
         queue.records.file_record_if_absent_at(queue.records.item_path(FAILED, key), {
@@ -1454,6 +1468,7 @@ def _quarantine_orphans(queue) -> list[str]:
             )
             # The moved bytes remain evidence. Neither a terminal ending nor
             # a new live record under the same key belongs to this stub.
+            _legal_destination(Transition.QUARANTINE, FAILED)
             if not any(bool(
                 record_store.value_or_raise(queue.records.item_presence(state, path.stem)),
             )
@@ -1533,9 +1548,12 @@ def _sweep_ready_transitions(queue, *, grace_s: float) -> list[str]:
                             and bool(terminal))
                     )
                 if superseded:
+                    _legal_destination(Transition.RETIRE_READY_CAPTURE, "evidence")
                     queue._finish_ready_transition(captured)
-                elif not queue._restore_ready_transition(captured, key):
-                    continue
+                else:
+                    _legal_destination(Transition.RESTORE_READY_CAPTURE, READY)
+                    if not queue._restore_ready_transition(captured, key):
+                        continue
             except (OSError, PoolContractError, pb.CASUnavailableError):
                 continue
             recovered.append(key)
@@ -1608,6 +1626,7 @@ def _sweep_widowed_leases(queue, *, timeout_s: float) -> list[str]:
             # tokens are *meant* to outlive its claim, from ``finish``
             # until an egress deletes the bytes, so a widowed lease beside
             # a filed ending that pins must leave them alone.
+            _legal_destination(Transition.RETIRE_LEASE, "existing")
             queue._release_reservation(key, host=host,
                                      keep_tier=queue._filed_pin_holds(key))
             lease.unlink(missing_ok=True)
@@ -1757,6 +1776,7 @@ def _reclaim_terminal(queue, action_key: str, *,
         raise PoolContractError(
             f"refusing to reclaim {key}: container lifecycle verification "
             "is required")
+    _legal_destination(Transition.RECLAIM_RESERVATION, "existing")
     if not hosts:
         # No box holds it; a tier still may (a mover's stage tokens), and
         # an operator asking for a terminal key's reservation back means
@@ -1862,12 +1882,17 @@ def _retire_recorded_terminal(queue, outcome: Mapping[str, object]) -> bool:
     state, key = summary.get("state"), str(outcome["action_key"])
     if state not in {DONE, FAILED}:
         return False
+    listed = queue.records.listed_item_present(state, key)
     prior = record_store.value_or_raise(queue.records.confirmed_item(state, key))
     if prior is None:
-        return True
+        return not listed
     earlier = endings.publication_generation(prior.get("published_unix"))
     current = endings.publication_generation(outcome.get("published_unix"))
-    if earlier is None or current is None or earlier >= current:
+    if earlier is None or current is None:
+        return False
+    if earlier > current:
+        return True
+    if earlier == current:
         return False
     # Interpretation stays in C06. A mutable summary does not verify history.
     adopted = queue.attempt_ending(outcome)

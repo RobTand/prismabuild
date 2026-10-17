@@ -18487,8 +18487,9 @@ Subsequent lifetime-only edits leave `PRODUCER_FILES` bytes unchanged. The sourc
 controls use a tiny real recorder receipt and preserve source-mismatch refusal;
 they provide no new physical profile, broker deployment, or live cleanup proof.
 
-Run `python3 tools/maintenance/audit_scratch_lifetime.py` for the source-only
-body, caller, assertion and decorator preservation audit. Runtime qualification
+Run `python3 tests/lifecycle_source_audit.py --out DIRECTORY` for the current
+source-only boundary, owner, caller, assertion and decorator audit. The original
+C24 extraction audit remains a historical source artifact. Runtime qualification
 and native scope evidence are separate PB artifacts.
 
 Sealed gang preparation, its conditional import and group state remain in the
