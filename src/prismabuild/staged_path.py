@@ -1046,7 +1046,7 @@ def claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
 
 
 def withdraw_vouch(queue: pool.PoolQueue | None, root: Path, namespace: str,
-                mover_action_key: str) -> None:
+                mover_action_key: str, *, missing_ok: bool = True) -> None:
     """Remove one namespace's fragment, material and retiring mark for a mover.
 
     The documents only, never a file: what they vouch for is someone else's
@@ -1058,10 +1058,10 @@ def withdraw_vouch(queue: pool.PoolQueue | None, root: Path, namespace: str,
     """
 
     residency_map.fragment_path(root, namespace,
-                                mover_action_key).unlink(missing_ok=True)
+                                mover_action_key).unlink(missing_ok=missing_ok)
     try:
         reader_lease.material_path(root, namespace,
-                                   mover_action_key).unlink(missing_ok=True)
+                                   mover_action_key).unlink(missing_ok=missing_ok)
     except OSError:
         if queue is None:
             raise

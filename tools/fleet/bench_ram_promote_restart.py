@@ -287,8 +287,8 @@ def main(argv: list[str] | None = None) -> int:
 
         # What a kill before the end-of-range records leaves.
         residence = queue.root / pool.record_store.RESIDENCY
-        residency_map.fragment_path(residence, CONSUMER, RAM_MOVER).unlink()
-        reader_lease.material_path(residence, CONSUMER, RAM_MOVER).unlink()
+        staged_path.withdraw_vouch(None, residence, CONSUMER, RAM_MOVER,
+                                   missing_ok=False)
 
         restart = run_promotion(args, work, out, queue, window, "restart")
         after = identities(paths)

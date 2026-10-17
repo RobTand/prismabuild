@@ -109,7 +109,7 @@ def build_forest(queue: pool.PoolQueue, stage: Path, *, empty_dirs: int,
             named[residency_map.residency_map_key(declared, 0)] = {
                 "stage_path": str(stage / "noise" / tag / f"part-{number}.bin"),
                 "bytes": ENTRY_BYTES, "offset": 0, "sha256": "e" * 64}
-        residency_map.write_fragment(root, {
+        staged_path.publish_vouch(root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": consumer, "mover_action_key": mover,
             "tier_id": TIER, "stage_root": str(stage),
