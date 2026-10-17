@@ -79,7 +79,7 @@ def _withdrawn_owner(fleet) -> tuple[str, str]:
         dead._stage_marked(stage, name)
     dead._write_fragment(queue, stage, consumer, mover, NAMES)
     assert queue.move_record(mover) is None
-    assert mover not in queue.tier_ledger(TIER).held_keys()
+    assert mover not in queue.tier(TIER).holders()
     return consumer, mover
 
 
@@ -156,7 +156,7 @@ def _held_mover(queue: pool.PoolQueue, stage: Path, consumer: str) -> str:
     receipt in ``movers/``.
     """
 
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     mover = dead._key()
     queue.publish(action_key=mover, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py",
@@ -175,7 +175,7 @@ def _held_mover(queue: pool.PoolQueue, stage: Path, consumer: str) -> str:
         "range_start_bytes": 0, "range_end_bytes": storage_tiers.GIB,
         "bytes_staged": storage_tiers.GIB, "complete": True})
     queue.finish(mover, status="executed")
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     queue.records.move_path(mover).unlink()
     assert queue.move_record(mover) is None
     return mover
@@ -221,7 +221,7 @@ def test_a_receiptless_holder_is_swept_through_its_fragments_consumer(fleet) -> 
     assert swept[0]["consumer_action_key"] == consumer
     assert swept[0]["complete"] is True
     assert not any((stage / name).exists() for name in NAMES)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue.tier(TIER).holdings(mover) == {}
     assert not residency_map.fragment_path(
         queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
@@ -234,7 +234,7 @@ def test_a_receiptless_holder_waits_for_pressure_like_any_orphan(fleet) -> None:
     receipts = stage_release.sweep(
         queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert not [entry for entry in receipts if entry.get("action_key") == mover]
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     assert all((stage / name).exists() for name in NAMES)
 
 
@@ -247,7 +247,7 @@ def test_a_receiptless_holder_named_by_two_consumers_retains(fleet) -> None:
         queue, stage_roots={TIER: str(stage)}, pressure=UNMET)
     refused = _refusals(receipts, mover)
     assert any("2 fragments" in " ".join(entry.get("errors", [])) for entry in refused)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     assert all((stage / name).exists() for name in NAMES)
 
 
@@ -262,7 +262,7 @@ def test_a_receiptless_holder_with_no_fragment_retains(fleet) -> None:
     refused = _refusals(receipts, mover)
     assert any("no fragment names" in " ".join(entry.get("errors", []))
                for entry in refused)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
 
 
 def test_a_receiptless_holder_with_a_tainted_census_retains(fleet) -> None:
@@ -272,7 +272,7 @@ def test_a_receiptless_holder_with_a_tainted_census_retains(fleet) -> None:
     residue.write_bytes(b"{not json")
     receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert not _retired(receipts, mover)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     assert all((stage / name).exists() for name in NAMES)
 
 
@@ -296,7 +296,7 @@ def test_a_produced_output_holder_is_left_to_its_batch_lifecycle(fleet) -> None:
                 "sha256": "b" * 64, "offset": 0} for name in NAMES}})
     receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert not _retired(receipts, mover)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     assert all((stage / name).exists() for name in NAMES)
 
 
@@ -313,7 +313,7 @@ def _fragment_named(fleet, consumer: str) -> str:
 
 
 def _kept(queue, stage, mover) -> None:
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     assert all((stage / name).exists() for name in NAMES)
 
 
@@ -370,4 +370,4 @@ def test_an_unresolvable_holder_is_quiet_when_it_costs_nothing(fleet) -> None:
         events.extend(entry.get("event") for entry in receipts
                       if entry.get("action_key") == mover)
     assert events == [stage_release.HOLDER_UNRESOLVED_EVENT], events
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}

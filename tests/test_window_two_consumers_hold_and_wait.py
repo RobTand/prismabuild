@@ -159,7 +159,7 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
-    queue.mint_tier_capacity(TIER, {"stage_gib": CAPACITY_GIB})
+    queue.tier(TIER).mint({'stage_gib': CAPACITY_GIB})
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -254,4 +254,4 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     for mover in (q0, q1):
         stage_release.evict(queue, mover, consumer_action_key=Q,
                             stage_root=str(stage))
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == CAPACITY_GIB
+    assert queue.tier(TIER).free_supply().get('stage_gib') == CAPACITY_GIB

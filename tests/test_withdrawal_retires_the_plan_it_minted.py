@@ -169,7 +169,7 @@ def _published(events: list[dict[str, object]]) -> list[str]:
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
 
 
@@ -389,8 +389,8 @@ def test_retirement_leaves_a_resident_range_held_for_adoption(
     finished = _hexkey("firstmover0")
     stage = tmp_path / "stage"
     stage.mkdir()
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(finished, {"stage_gib": 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(finished, {'stage_gib': 2})
     queue.record_move(finished, {
         "consumer_action_key": FIRST, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -401,7 +401,7 @@ def test_retirement_leaves_a_resident_range_held_for_adoption(
     tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert residency_plan.read(queue, FIRST) is None
-    assert finished in ledger.held_keys(), (
+    assert finished in ledger.holders(), (
         "retirement never releases a resident range's tokens")
 
 
@@ -414,8 +414,8 @@ def test_a_running_consumers_other_resident_ranges_stay_named(
     lead = _hexkey("firstmover0")
     queue.publish(**plan["phases"][0]["mover_row"], recompute=True)
     later = _hexkey("firstmover2")
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(later, {"stage_gib": 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(later, {'stage_gib': 2})
     stage = tmp_path / "stage"
     stage.mkdir()
     queue.record_move(later, {
@@ -435,7 +435,7 @@ def test_a_running_consumers_other_resident_ranges_stay_named(
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)},
                                 pressure={TIER: 8})
 
-    assert later in ledger.held_keys(), (
+    assert later in ledger.holders(), (
         "a resident range of the running consumer was treated as an orphan")
 
 

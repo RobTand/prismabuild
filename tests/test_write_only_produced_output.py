@@ -103,7 +103,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 4})
+    queue.tier(TIER).mint({KIND: 4})
     return queue
 
 
@@ -231,15 +231,15 @@ def test_a_write_only_template_declares_no_window_and_refuses_one(
 def test_the_producer_admission_charges_no_stage_window(tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    before = (ledger.capacity(), ledger.available())
+    ledger = queue.tier(TIER)
+    before = (ledger.mint_supply(), ledger.free_supply())
     owner = fx._hexkey("wo-admission")
     instance = fx._bind(queue, template, owner)
     claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, owner))
     assert claimed["resources"] == {"cpu": 1, "mem_gb": 1}
-    assert (ledger.capacity(), ledger.available()) == before
-    assert ledger.available() == ledger.capacity()
-    assert ledger.holder_tokens(owner) == {}
+    assert (ledger.mint_supply(), ledger.free_supply()) == before
+    assert ledger.free_supply() == ledger.mint_supply()
+    assert ledger.holdings(owner) == {}
     assert po.admit_funded_window(
         queue, instance, template, need_gib_per_tier={TIER: 1},
     )["refusal"] == "template-is-write-only"
@@ -260,8 +260,8 @@ def test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite(
         tmp_path: Path) -> None:
     spool = _spool_producer(tmp_path)
     queue = spool.queue
-    ledger = queue.tier_ledger(TIER)
-    before = ledger.available()
+    ledger = queue.tier(TIER)
+    before = ledger.free_supply()
     payload = b"write-only batch bytes"
     destination, descriptor = _exported(spool, payload)
 
@@ -277,7 +277,7 @@ def test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite(
                          / po.instance_namespace(spool.instance)
                          / "b1.json").read_text())
     assert record["origin_only"] is True and record["mover_key"] is None
-    assert ledger.available() == before, "no stage token moved"
+    assert ledger.free_supply() == before, "no stage token moved"
     assert _queued_rows(queue) == {spool.owner}, "no mover was published"
     assert committed["ref"] == po.origin_batch_ref(
         spool.instance, batch_id="b1",

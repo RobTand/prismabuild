@@ -134,13 +134,13 @@ def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueu
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.records.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
-    queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
+    queue.tier(TIER).mint({'stage_gib': stage_gib})
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
     assert stage_release.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
     if ram_gib:
-        queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
+        queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
     return queue
 
 
@@ -200,8 +200,7 @@ def _await_funded(queue: pool.PoolQueue, mover: str, *, cycles: int = 4) -> None
         record = queue.read_funding(mover, TIER)
         if record is not None and record.get("state") == "transferring":
             names = record.get("tokens")
-            held = {path.name for path in
-                    (queue.tier_ledger(TIER).held_dir / mover).glob("*-*")}
+            held = {path.name for path in (queue.tier(TIER).paths.held / mover).glob('*-*')}
             if isinstance(names, list) and names and all(
                     str(name) in held for name in names):
                 return
@@ -228,7 +227,7 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
     queue.record_move(mover, receipt)
     queue.finish(mover, status="executed")
     assert queue.records.item_path(pool.record_store.DONE, mover).exists()
-    assert int(queue.tier_ledger(TIER).holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(queue.tier(TIER).holdings(mover).get('stage_gib', 0)) == 1
     entries = sorted(json.loads(manifest_path.read_text())["entries"],
                      key=lambda entry: entry["path"])
     staged_name = Path(str(entries[start // SPAN]["path"])).name
@@ -316,11 +315,11 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
         if record is not None and record.get("state") == "transferring":
             break
     # The protected next claims with no new money: free is untouched.
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     _await_funded(queue, p1)
-    free_before = ledger.available().get("stage_gib")
+    free_before = ledger.free_supply().get('stage_gib')
     _claim_exact(queue, p1, owner="w-pp")
-    assert ledger.available().get("stage_gib") == free_before
+    assert ledger.free_supply().get('stage_gib') == free_before
     receipt = stage_move.move(
         _move_args(queue, tmp_path, ctx[ptag]["manifest_path"],
                    ctx[ptag]["digest"], p1, P, SPAN, 2 * SPAN))
@@ -375,11 +374,11 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     # staged entry is shared across windows: every egress releases plainly.
     # Exact conservation: three minted markers, three free, nothing held,
     # nothing decharged, nothing phantom.
-    minted = queue.tier_ledger(TIER)
-    assert minted.available().get("stage_gib") == 3
-    assert minted.capacity().get("stage_gib") == 3
-    assert minted.held().get("stage_gib", 0) == 0
-    assert not (minted.minted_dir / "dead").exists()
+    minted = queue.tier(TIER)
+    assert minted.free_supply().get('stage_gib') == 3
+    assert minted.mint_supply().get('stage_gib') == 3
+    assert minted.holdings().get('stage_gib', 0) == 0
+    assert not (minted.paths.minted / 'dead').exists()
 
 
 def test_parallel_fit_runs_both(tmp_path: Path) -> None:
@@ -406,7 +405,7 @@ def test_parallel_fit_runs_both(tmp_path: Path) -> None:
         assert tier_loop.compose_map(queue, consumer) is not None
         _claim_exact(queue, consumer, owner="w-pp")
         queue.finish(consumer, status="executed")
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 2
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 2
 
 
 def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
@@ -414,7 +413,7 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     first = tier_loop.residency_window(queue, tiers=tiers)
     first_consumer = (CONSUMER_A
@@ -434,7 +433,7 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
             break
     _await_funded(queue, p1)
     # Fence for the protected next is held: free is 1 of 3.
-    assert ledger.available().get("stage_gib") == 1
+    assert ledger.free_supply().get('stage_gib') == 1
 
     big = _hexkey("fence-big")
     _stealer_row(queue, big, 2)
@@ -450,7 +449,7 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
 
     # The protected next still claims with no new money after the probe.
     _claim_exact(queue, p1, owner="w-fence")
-    assert ledger.available().get("stage_gib") == 1
+    assert ledger.free_supply().get('stage_gib') == 1
     queue.record_move(p1, stage_move.move(
         _move_args(queue, tmp_path, ctx[ptag]["manifest_path"],
                    ctx[ptag]["digest"], p1, P, SPAN, 2 * SPAN)))
@@ -462,14 +461,14 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
     queue.finish(P, status="executed")
     stage_release.evict(queue, p0, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
-    assert ledger.available().get("stage_gib") == 2
+    assert ledger.free_supply().get('stage_gib') == 2
     stage_release.evict(queue, p1, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
-    assert ledger.available().get("stage_gib") == 3
+    assert ledger.free_supply().get('stage_gib') == 3
     got = queue.claim(tags=["dl380g10"], owner="w-fence")
     assert got is not None and got["action_key"] == big
     queue.finish(big, status="executed")
-    assert ledger.available().get("stage_gib") == 3
+    assert ledger.free_supply().get('stage_gib') == 3
 
 
 def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
@@ -477,7 +476,7 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     p0, p1 = ctx["aa"]["movers"]
 
     tier_loop.residency_window(queue, tiers=tiers)
@@ -490,7 +489,7 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, p1)
-    assert ledger.available().get("stage_gib") == 1
+    assert ledger.free_supply().get('stage_gib') == 1
 
     queue.withdraw(CONSUMER_A, reason="operator-cancel-test")
     tier_loop.withdraw_dead_consumer_movers(queue)
@@ -499,16 +498,15 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
     # branch; the staged pin is untouched, the queued mover withdrawn. B is
     # admitted in the same window and fences its own advance (#832), so one
     # free token is B's legitimate reservation, not A's leaked fence.
-    assert ledger.available().get("stage_gib") == 1
-    assert int(ledger.holder_tokens(p0).get("stage_gib", 0)) == 1
-    assert int(ledger.holder_tokens(p1).get("stage_gib", 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 1
+    assert int(ledger.holdings(p0).get('stage_gib', 0)) == 1
+    assert int(ledger.holdings(p1).get('stage_gib', 0)) == 0
     assert not queue.records.item_path(pool.record_store.READY, p1).exists()
     record = queue.read_funding(p1, TIER)
     assert record is not None and record["state"] == "released"
     assert sum(int(e.get("released_gib", 0)) for e in events
                if e.get("event") == "advance-released") == 1
-    assert ledger.holder_tokens(window_credit.grant_key(
-        CONSUMER_B, TIER, "mover_row", "phase-1", None)) == {"stage_gib": 1}
+    assert ledger.holdings(window_credit.grant_key(CONSUMER_B, TIER, 'mover_row', 'phase-1', None)) == {'stage_gib': 1}
 
 
 def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
@@ -516,7 +514,7 @@ def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     p0 = ctx["aa"]["movers"][0]
 
     tier_loop.residency_window(queue, tiers=tiers)
@@ -527,14 +525,14 @@ def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
     for _ in range(3):
         tier_loop.residency_window(queue, tiers=tiers)
         # Pin intact and the next advance fenced beside it: exact split.
-        assert int(ledger.holder_tokens(p0).get("stage_gib", 0)) == 1
+        assert int(ledger.holdings(p0).get('stage_gib', 0)) == 1
         record = queue.read_funding(p1, TIER)
         assert record is not None and record.get("state") in (
             "reserved", "transferring")
-        assert ledger.available().get("stage_gib") == 1
+        assert ledger.free_supply().get('stage_gib') == 1
     stage_release.evict(queue, p0, consumer_action_key=CONSUMER_A,
                         stage_root=str(tmp_path / "stage"))
-    assert ledger.available().get("stage_gib") == 2
+    assert ledger.free_supply().get('stage_gib') == 2
 
 
 def _ram_setup(tmp_path: Path, *, stage_gib: int, ram_gib: int):
@@ -625,7 +623,7 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     ctx = _ram_setup(tmp_path, stage_gib=3, ram_gib=1)
     queue = ctx["queue"]
     tiers = _ram_tiers(tmp_path)
-    ram_ledger = queue.tier_ledger(RAM_TIER)
+    ram_ledger = queue.tier(RAM_TIER)
 
     tier_loop.residency_window(queue, tiers=tiers)
     _land(queue, tmp_path, ctx["manifest_path"], ctx["digest"], ctx["m0"],
@@ -643,7 +641,7 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
     queue.finish(ctx["r0"], status="executed")
     assert (tmp_path / "ram" / _staged_name("ram-p0.bin")).read_bytes() == \
         ctx["payloads"]["ram-p0.bin"]
-    assert int(ram_ledger.holder_tokens(ctx["r0"]).get("ram_gib", 0)) == 1
+    assert int(ram_ledger.holdings(ctx['r0']).get('ram_gib', 0)) == 1
 
     # A second promotion does not fit beside the pinned one: typed stall.
     # Land B's stage first (real bytes), then the ram joint gate refuses.
@@ -709,7 +707,7 @@ def test_ram_leg_promotes_behind_landed_stage(tmp_path: Path) -> None:
                                    if "gated" in str(e.get("event"))]
     assert stalled[CONSUMER_B]["permanent"] is False
     assert not queue.records.item_path(pool.record_store.READY, r1).exists()
-    assert int(ram_ledger.holder_tokens(ctx["r0"]).get("ram_gib", 0)) == 1
+    assert int(ram_ledger.holdings(ctx['r0']).get('ram_gib', 0)) == 1
 
 
 def test_gate_permanent_joint_oversize(tmp_path: Path) -> None:
@@ -758,7 +756,7 @@ def test_unknown_ready_defers_all_publication(tmp_path: Path) -> None:
     unknown = [e for e in events
                if e.get("event") == "advance-deferred-unknown-evidence"]
     assert unknown, "ready outage must be named, not silent"
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 3
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 3
 
 
 def test_unknown_plan_defers_only_its_consumer(tmp_path: Path) -> None:
@@ -793,7 +791,7 @@ def test_unknown_ledger_defers_tier_keeps_obligations(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    tier_dir = queue.tier_ledger(TIER).base
+    tier_dir = queue.tier(TIER).paths.base
     tier_dir.chmod(0o000)
     try:
         events = tier_loop.residency_window(queue, tiers=tiers)
@@ -810,7 +808,7 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
     """Tokens split grant/mover by a crash land whole via the normal tick."""
     import os as _os
     queue = _queue(tmp_path, stage_gib=3)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     mover = _hexkey("split-mover")
     consumer = _hexkey("split-consumer")
     plan = _plan(queue, consumer, "8" * 64, tag="split")
@@ -827,13 +825,12 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-0")
     # Two-token fence taken directly: the record below is filed by hand to
     # stage the exact crash residue (split tokens, unmarked record).
-    assert ledger.acquire(grant, {"stage_gib": 2}) is True
-    names = sorted(path.name for path in (ledger.held_dir / grant).glob("*-*"))
+    assert ledger.take(grant, {'stage_gib': 2}) is True
+    names = sorted((path.name for path in (ledger.paths.held / grant).glob('*-*')))
     assert len(names) == 2
     # Crash residue: one token moved, the record still reserved.
-    (ledger.held_dir / mover).mkdir(parents=True, exist_ok=True)
-    _os.rename(str(ledger.held_dir / grant / names[0]),
-               str(ledger.held_dir / mover / names[0]))
+    (ledger.paths.held / mover).mkdir(parents=True, exist_ok=True)
+    _os.rename(str(ledger.paths.held / grant / names[0]), str(ledger.paths.held / mover / names[0]))
     record = {"schema": pool.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
               "consumer_action_key": consumer,
               "plan_sha256": residency_plan.plan_sha256(plan),
@@ -847,9 +844,9 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
         "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
     events = tier_loop._settle_protected(queue, protection)
     # The remainder completed without touching free: 2 under the mover.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 2
-    assert int(ledger.holder_tokens(grant).get("stage_gib", 0)) == 0
-    assert ledger.available().get("stage_gib") == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
+    assert int(ledger.holdings(grant).get('stage_gib', 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 1
     assert queue.read_funding(mover, TIER)["state"] == "transferring"
     assert [e for e in events if e.get("event") == "advance-handed-off"]
 
@@ -857,7 +854,7 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
 def test_republish_recovery_through_tick(tmp_path: Path) -> None:
     """A republished row re-fences fresh; the stale fence never double-holds."""
     queue = _queue(tmp_path, stage_gib=3)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     consumer = _hexkey("repub-consumer")
     plan = _plan(queue, consumer, "8" * 64, tag="repub")
     residency_plan.freeze(queue, plan)
@@ -886,7 +883,7 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
         generation=old_gen) is True
     # Unpublish without terminal (row withdrawn by hand): fence stranded.
     queue.records.item_path(pool.record_store.READY, mover).unlink()
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     # Republish the same key: a new publication never inherits old credit.
     # The stale fence is reclaimed exactly and a fresh one takes its place.
     queue.publish(action_key=mover, cas_root=mover_row["cas_root"],
@@ -902,7 +899,7 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
     assert new is not None and new["state"] == "reserved"
     assert str(new["generation"]) != old_gen
     # No double hold: exactly the live fence is held, free is exact.
-    assert ledger.available().get("stage_gib") == 2
+    assert ledger.free_supply().get('stage_gib') == 2
     assert queue.transfer_fence(TIER, grant, mover) == 1
     assert queue.advance_funding_state(
         mover, TIER, expect="reserved", advance_to="transferring",
@@ -910,9 +907,9 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
     got = queue.claim(tags=["dl380g10"], owner="w-repub",
                       ready=_ready_only(queue, mover))
     assert got is not None and got["action_key"] == mover
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     queue.finish(mover, status="executed")
-    assert ledger.available().get("stage_gib") == 3
+    assert ledger.free_supply().get('stage_gib') == 3
 
 
 def test_published_nexts_leave_no_unfunded_window(tmp_path: Path) -> None:
@@ -927,7 +924,7 @@ def test_published_nexts_leave_no_unfunded_window(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     for _ in range(3):
         tier_loop.residency_window(queue, tiers=tiers)
         for tag in ("aa", "bb"):
@@ -940,13 +937,12 @@ def test_published_nexts_leave_no_unfunded_window(tmp_path: Path) -> None:
                     assert record is not None
                     assert record.get("state") == "transferring"
                     names = record.get("tokens")
-                    held = {path.name for path in
-                            (ledger.held_dir / mover).glob("*-*")}
+                    held = {path.name for path in (ledger.paths.held / mover).glob('*-*')}
                     assert isinstance(names, list) and names and all(
                         str(name) in held for name in names)
                 else:
                     # Unfunded and exposed: the room must actually be there.
-                    assert ledger.available().get("stage_gib") >= 1, (
+                    assert ledger.free_supply().get('stage_gib') >= 1, (
                         f"{mover[:12]} unfunded with no free room behind it")
 
 
@@ -956,7 +952,7 @@ def test_competing_claim_race_stays_exact(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     p0 = ctx["aa"]["movers"][0]
     p1 = ctx["aa"]["movers"][1]
 
@@ -1004,26 +1000,23 @@ def test_competing_claim_race_stays_exact(tmp_path: Path) -> None:
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, p1)
-    before = ledger.available().get("stage_gib")
+    before = ledger.free_supply().get('stage_gib')
     _claim_exact(queue, p1, owner="w-race")
-    assert ledger.available().get("stage_gib") == before
+    assert ledger.free_supply().get('stage_gib') == before
     queue.record_move(p1, stage_move.move(
         _move_args(queue, tmp_path, ctx["aa"]["manifest_path"],
                    ctx["aa"]["digest"], p1, CONSUMER_A, SPAN, 2 * SPAN)))
     queue.finish(p1, status="executed")
     # Pins plus fences add up; nothing leaked, nothing doubled.
-    total_held = sum(
-        int(tokens.get("stage_gib", 0))
-        for tokens in (ledger.holder_tokens(holder)
-                       for holder in ledger.held_keys()))
-    assert total_held + ledger.available().get("stage_gib") == 3
+    total_held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(holder) for holder in ledger.holders())))
+    assert total_held + ledger.free_supply().get('stage_gib') == 3
 
 
 def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     """The production tick (simulated discovery only) advances a window."""
     ctx = _setup_two_consumers(tmp_path, stage_gib=3)
     queue = ctx["queue"]
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     def discover(*, host, source_pool, fill_records, now, ram_policy,
                  rows_held_gib):
@@ -1044,7 +1037,7 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     wtag = "aa" if winner == CONSUMER_A else "bb"
     w0, w1 = ctx[wtag]["movers"]
     # The blind advance take is already held: free 2 of 3, no publish gap.
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 2
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 2
     record = queue.read_funding(w1, TIER)
     assert record is not None and record.get("state") in (
         "reserved", "transferring")
@@ -1068,8 +1061,8 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     assert receipt["complete"] is True
     queue.record_move(w1, receipt)
     queue.finish(w1, status="executed")
-    assert int(ledger.holder_tokens(w1).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 1
+    assert int(ledger.holdings(w1).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 1
 
 
 def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
@@ -1085,7 +1078,7 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
     ctx = _setup_two_consumers(tmp_path, stage_gib=6)
     queue = ctx["queue"]
     tiers = _tiers(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     a0, a1 = ctx["aa"]["movers"]
     b0, b1 = ctx["bb"]["movers"]
 
@@ -1098,14 +1091,10 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
     # Exact after the takes: blind-held advances plus free add to capacity.
     grant_a = window_credit.grant_key(CONSUMER_A, TIER, "mover_row", "phase-1")
     grant_b = window_credit.grant_key(CONSUMER_B, TIER, "mover_row", "phase-1")
-    total_held = sum(
-        int(tokens.get("stage_gib", 0))
-        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
-    assert total_held + ledger.available().get("stage_gib") == 6
-    assert int(ledger.holder_tokens(grant_a).get("stage_gib", 0)) + \
-        int(ledger.holder_tokens(a1).get("stage_gib", 0)) == 1
-    assert int(ledger.holder_tokens(grant_b).get("stage_gib", 0)) + \
-        int(ledger.holder_tokens(b1).get("stage_gib", 0)) == 1
+    total_held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(h) for h in ledger.holders())))
+    assert total_held + ledger.free_supply().get('stage_gib') == 6
+    assert int(ledger.holdings(grant_a).get('stage_gib', 0)) + int(ledger.holdings(a1).get('stage_gib', 0)) == 1
+    assert int(ledger.holdings(grant_b).get('stage_gib', 0)) + int(ledger.holdings(b1).get('stage_gib', 0)) == 1
 
     # Competing claim: a 5-token stealer cannot take advance room; the
     # published prefix stays funded.
@@ -1115,10 +1104,8 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
                       ready=_ready_only(queue, stealer5))
     assert got is None
     assert queue.records.item_path(pool.record_store.READY, stealer5).exists()
-    total_held = sum(
-        int(tokens.get("stage_gib", 0))
-        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
-    assert total_held + ledger.available().get("stage_gib") == 6
+    total_held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(h) for h in ledger.holders())))
+    assert total_held + ledger.free_supply().get('stage_gib') == 6
     # Stealer withdraws: its queued demand must not pollute later windows.
     queue.records.item_path(pool.record_store.READY, stealer5).unlink()
 
@@ -1134,16 +1121,13 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
     _await_funded(queue, a1)
     # A1's advance retained (transferred), B's still held (grant or mover);
     # total exact.
-    assert int(ledger.holder_tokens(a1).get("stage_gib", 0)) == 1
-    assert int(ledger.holder_tokens(grant_b).get("stage_gib", 0)) + \
-        int(ledger.holder_tokens(b1).get("stage_gib", 0)) == 1
-    total_held = sum(
-        int(tokens.get("stage_gib", 0))
-        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
-    assert total_held + ledger.available().get("stage_gib") == 6
-    free_before = ledger.available().get("stage_gib")
+    assert int(ledger.holdings(a1).get('stage_gib', 0)) == 1
+    assert int(ledger.holdings(grant_b).get('stage_gib', 0)) + int(ledger.holdings(b1).get('stage_gib', 0)) == 1
+    total_held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(h) for h in ledger.holders())))
+    assert total_held + ledger.free_supply().get('stage_gib') == 6
+    free_before = ledger.free_supply().get('stage_gib')
     _claim_exact(queue, a1, owner="w-tight")
-    assert ledger.available().get("stage_gib") == free_before
+    assert ledger.free_supply().get('stage_gib') == free_before
     receipt = stage_move.move(
         _move_args(queue, tmp_path, ctx["aa"]["manifest_path"],
                    ctx["aa"]["digest"], a1, CONSUMER_A, SPAN, 2 * SPAN))
@@ -1151,9 +1135,6 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
     queue.record_move(a1, receipt)
     queue.finish(a1, status="executed")
     # Pins plus B's fence add up; nothing leaked, nothing doubled.
-    total_held = sum(
-        int(tokens.get("stage_gib", 0))
-        for tokens in (ledger.holder_tokens(h) for h in ledger.held_keys()))
-    assert total_held + ledger.available().get("stage_gib") == 6
-    assert int(ledger.holder_tokens(grant_b).get("stage_gib", 0)) + \
-        int(ledger.holder_tokens(b1).get("stage_gib", 0)) == 1
+    total_held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(h) for h in ledger.holders())))
+    assert total_held + ledger.free_supply().get('stage_gib') == 6
+    assert int(ledger.holdings(grant_b).get('stage_gib', 0)) + int(ledger.holdings(b1).get('stage_gib', 0)) == 1
