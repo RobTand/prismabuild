@@ -79,7 +79,7 @@ def private_runtime(monkeypatch, binding):
         assert binding["pb_sdk_version"] == client.SDK_VERSION
         modules = {name: importlib.import_module("prismabuild." + name)
                    for name in ("core", "pool", "reader_lease", "residency_map")}
-        stage_move = importlib.import_module("stage_move")
+        stage_move = importlib.import_module("prismabuild.stage_move")
         tool_root = Path(os.environ["PB725_TOOLS_ROOT"]).resolve()
         assert Path(stage_move.__file__ or "").resolve() == tool_root / "tools/fleet/stage_move.py"
         assert not (tool_root / "src").exists()

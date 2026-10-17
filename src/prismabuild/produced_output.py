@@ -6984,17 +6984,7 @@ def retire_batch(queue, instance: Mapping[str, object],
         in_process = _egress_runs_in_process(tier_record)
         stage_release = None
         if in_process:
-            # `stage_release` is a FLEET TOOL, not part of this package: the
-            # published generation carries it under `tools/`, and an owner
-            # that loads `prismabuild` from `<generation>/src` -- which is
-            # how every production owner loads it -- cannot import it. The
-            # tier host's own action can, so an owner without the tool takes
-            # that route even on the tier host. Never imported on the
-            # tier-host route, which is the route a GPU host always takes.
-            try:
-                import stage_release  # type: ignore[no-redef]
-            except ImportError:
-                in_process = False
+            from prismabuild import stage_release
         if not in_process and tier_record is None:
             return {"ok": False,
                     "refusal": f"unknown-retain: tier-not-announced: {tier}"}
@@ -7170,13 +7160,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
             selections[batch_id] = selection
     if not selections:
         return answers
-    try:
-        import stage_release  # type: ignore[import-not-found]
-    except ImportError:
-        for batch_id in selections:
-            answers[batch_id] = {"ok": False,
-                                 "refusal": "stage-release-unimportable"}
-        return answers
+    from prismabuild import stage_release
     # --- No lock of this lane is held while the egresses run; see
     # `retire_batch` for why nothing needs it.
     receipts: dict[str, dict[str, object]] = {}
@@ -9515,11 +9499,6 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
         return {"event": report.refused(
             "not-on-the-tier-host", mover_key=mover,
             tier_host=str(tier_record.get("host") or ""))}
-    try:
-        import stage_release  # type: ignore[import-not-found]  # noqa: F401
-    except ImportError:
-        return {"event": report.refused("stage-release-unimportable",
-                                        mover_key=mover)}
     return {"ready": {"mover": mover, "tier": tier,
                       "stage_root": str(tier_record["mountpoint"])}}
 

@@ -388,7 +388,7 @@ LIVE_DEFAULTS = (
     # would contend with the box's own running role or file stray lock
     # directories into /tmp.
     ("prismabuild.role_session", "ROLE_LOCK_ROOT", "role-locks"),
-    ("prewarm_loop", "SH", "fleet"),
+    ("prismabuild.prewarm_loop", "SH", "fleet"),
     ("prismabuild.role_session", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
     ("worker", "SH", "fleet"),
     # ``supervise.MIRROR`` was the gap this list was completed to close.
