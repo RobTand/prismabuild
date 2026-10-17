@@ -65,7 +65,6 @@
   "hashlib:src/prismabuild/reader_lease.py::ref_id_for",
   "hashlib:src/prismabuild/residency_plan.py::plan_sha256",
   "hashlib:src/prismabuild/resource_scope.py::ResourceScope.recover_create",
-  "hashlib:src/prismabuild/resource_scope.py::_sha256_file",
   "hashlib:src/prismabuild/slurm_lane.py::submit",
   "hashlib:src/prismabuild/window_credit.py::grant_key",
   "hashlib:tools/duplication_inventory.py::_shingles",
@@ -100,7 +99,6 @@
   "hashlib:tools/fleet/pbrun.py::build_stamp_closure",
   "hashlib:tools/fleet/pbrun.py::require_deployed_read_plan_storage",
   "hashlib:tools/fleet/pbrun.py::result_and_stamp_names",
-  "hashlib:tools/fleet/pbrun.py::verify_retained_wrapper",
   "hashlib:tools/fleet/pbsnapshot.py::verified_stamp",
   "hashlib:tools/fleet/publish_runtime.py::_agent_definitions",
   "hashlib:tools/fleet/publish_runtime.py::_coordinator_sha256",
@@ -118,7 +116,6 @@
   "hashlib:tools/fleet/shape_gate.py::write_sources",
   "hashlib:src/prismabuild/stage_move.py::_Copier._copy_one",
   "hashlib:src/prismabuild/stage_move.py::_StagedPublisher._content_proof",
-  "hashlib:tools/fleet/supervise.py::_sha256",
   "hashlib:tools/fleet/upgrade_client.py::digest",
   "hashlib:tools/prismabuild_worker.py::_capture_launched_source",
   "sorted-json:src/prismabuild/action_edges.py::_canonical",
@@ -458,8 +455,7 @@
   ],
   "_sha256": [
    "src/prismabuild/core.py",
-   "tools/fleet/publish_runtime.py",
-   "tools/fleet/supervise.py"
+   "tools/fleet/publish_runtime.py"
   ],
   "_start": [
    "tools/fleet/bench_tier_cold_start.py",
