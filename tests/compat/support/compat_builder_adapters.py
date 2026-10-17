@@ -28,6 +28,9 @@ def action(core, store, load, variant):
 
 
 def manifest(core, store, load, variant):
+    if variant == "canary-builder":
+        canary = load("pbcanary_legs.leg3")
+        return canary.manifest_for_run([str(store / name) for name in canary.LEG3_CHUNK_NAMES], str(store))
     factory = helper("compat_core_adapters.py")["manifest"]
     if variant == "task-builder":
         dc = load("prismabuild.decomposition")
