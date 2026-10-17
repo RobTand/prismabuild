@@ -54,7 +54,7 @@ def tier_call(node):
             and node.func.attr in {"tier_ledger", "tier"})
 
 
-def caller_aliases(tree, seeds=None):
+def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
     parents, scopes = {}, {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -84,8 +84,12 @@ def caller_aliases(tree, seeds=None):
             return tuple(shape(n, enclosing) for n in node.elts)
         if isinstance(node, ast.Name):
             return values.get((enclosing, node.id), returns.get(node.id, False))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            return returns.get(node.func.id, False)
+        if isinstance(node, ast.Call):
+            external = (external_returns or {}).get(ast.unparse(node.func), False)
+            if external:
+                return external
+            if isinstance(node.func, ast.Name):
+                return returns.get(node.func.id, False)
         return False
     def bind(target, value, enclosing):
         if isinstance(target, ast.Name):
@@ -128,7 +132,7 @@ def caller_aliases(tree, seeds=None):
                         aliases[called].add(param.arg)
         if (sum(map(len, aliases.values())), repr(returns), repr(values)) == before:
             break
-    return scopes, aliases
+    return (scopes, aliases, returns) if details else (scopes, aliases)
 
 
 class CallerMove(ast.NodeTransformer):
