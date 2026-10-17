@@ -3,16 +3,23 @@ import json
 
 import pytest
 
+from prismabuild import produced_output
 from test_commit_requires_existing_funding import _world, _commit
 from test_produced_output_scope import STAGE_TIER, STAGE_BARE
 
 
 def test_zero_token_commit_keeps_its_original_success(tmp_path):
-    world = _world(tmp_path, size=0)
-    queue, _, _, _, _, namespace, funding = world
+    world = _world(tmp_path)
+    queue, template, instance, descriptor, _, namespace, funding = world
+    # The existing descriptor contract requires positive bytes. An empty
+    # batch reconciles a ceiling whose planned output was omitted and absent.
+    from pathlib import Path
+    Path(descriptor['path']).unlink()
     ledger = queue.tier(STAGE_TIER)
     free = ledger.free_supply()
-    result = _commit(world)
+    result = produced_output.commit_batch(
+        queue, instance, template, [], batch_id='batch',
+        tier=STAGE_TIER, mover_key='a' * 64)
     assert result['ok'] is True, result
     assert result['funding'] == 'legacy'
     assert result['class_bytes'] == {'payload': 0, 'checkpoint': 0, 'temp': 0}
