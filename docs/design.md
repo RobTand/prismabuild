@@ -18868,7 +18868,17 @@ Remote retirement still uses the tier-host action. Import availability no
 longer selects a different route. Storage formats, stage marker refusal,
 claim identity, retention rules, lock order and C05 record/trust ownership are
 unchanged. [The movement ownership note](c29_movement_package.md) records the
-boundary comparison and the remaining broader C29 integration work.
+boundary comparison and the completed remaining library move.
+
+The tier-role implementation is `prismabuild.tier_cycle`; the physical
+`tools/fleet/tier_loop.py` entry passes its own path to the package owner.
+That binding preserves its role stem, singleton, mover directory, policy
+search, argv and exits. Ten remaining fleet libraries now have package source
+owners and no `FLEET_SCRIPTS` rows. The stdlib `runtime_paths` source also
+supplies its two existing standalone published leaf paths through an explicit
+publisher source map. Retained proxy receipts prove the same helper identity
+at its current package path or original tool path. Installed client members,
+C15 receipt dependencies and protocols remain unchanged.
 
 ## Captured generation receipts (C15, 2026-10-17)
 
