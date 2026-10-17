@@ -155,9 +155,7 @@ def main():
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Attribute):
                     continue
-                bound = (migration["tier_call"](node.value)
-                         or isinstance(node.value, ast.Name)
-                         and node.value.id in aliases[scopes[node]])
+                bound = migration["bound_tier"](node.value, aliases[scopes[node]])
                 if bound and node.attr not in methods:
                     unknown[node.attr].append(f"{relative}:{node.lineno}")
     commits, oversize = [], []

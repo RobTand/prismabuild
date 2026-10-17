@@ -43,6 +43,8 @@ RAW = {
     "_strict_census": "uses_tier_census", "_minted_and_dead_names": "mint_history",
     "last_census_report": "mint_issues",
     "census_report_path": "census_report",
+    "release": "release_unspent", "release_except": "release_unspent",
+    "release_count": "release_unspent", "release_kinds": "release_rates",
 }
 AGGREGATE = {"tier_ids": "ids", "tier_holdings": "for_action",
              "release_tier_rate_reservations": "release_rates_all",
@@ -54,6 +56,10 @@ def tier_call(node):
             and node.func.attr in {"tier_ledger", "tier"})
 
 
+def bound_tier(node, aliases):
+    return tier_call(node) or (node is not None and ast.unparse(node) in aliases)
+
+
 def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
     parents, scopes = {}, {}
     for node in ast.walk(tree):
@@ -63,11 +69,21 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
         while node is not tree and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             node = parents[node]
         return node
-    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    all_functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    functions = {n.name: n for n in all_functions}
+    classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    fields = {name: {} for name in classes}
+
+    def owning_class(node):
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, ast.ClassDef):
+                return node.name
+        return None
     for node in ast.walk(tree):
         scopes[node] = scope(node)
     aliases = {n: set() for n in set(scopes.values())}
-    for function in functions.values():
+    for function in all_functions:
         aliases[function].update((seeds or {}).get(function.name, ()))
         for arg in (*function.args.args, *function.args.kwonlyargs):
             annotation = arg.annotation
@@ -75,16 +91,38 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                     or isinstance(annotation, ast.Name) and annotation.id == "TierLedger"):
                 aliases[function].add(arg.arg)
     returns, values = {}, {}
+    for function in all_functions:
+        for arg in (*function.args.args, *function.args.kwonlyargs):
+            annotation = arg.annotation
+            if isinstance(annotation, ast.Name) and annotation.id in classes:
+                values[function, arg.arg] = {"@class": annotation.id}
     def is_tier(node, enclosing):
-        return tier_call(node) or (isinstance(node, ast.Name) and node.id in aliases[enclosing])
+        return bound_tier(node, aliases[enclosing])
     def shape(node, enclosing):
         if is_tier(node, enclosing):
             return True
         if isinstance(node, (ast.Tuple, ast.List)):
             return tuple(shape(n, enclosing) for n in node.elts)
+        if isinstance(node, ast.Dict):
+            return {key.value: shape(value, enclosing) for key, value in zip(node.keys, node.values)
+                    if isinstance(key, ast.Constant)}
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            container = shape(node.value, enclosing)
+            if isinstance(container, dict):
+                return container.get(node.slice.value, False)
+        if isinstance(node, ast.Attribute):
+            container = shape(node.value, enclosing)
+            if isinstance(container, dict) and "@class" in container:
+                return fields[container["@class"]].get(node.attr, False)
         if isinstance(node, ast.Name):
+            if node.id in {"self", "cls"} and owning_class(enclosing):
+                return {"@class": owning_class(enclosing)}
             return values.get((enclosing, node.id), returns.get(node.id, False))
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in classes:
+                return {"@class": node.func.id}
+            if isinstance(node.func, ast.Name) and node.func.id == "type" and node.args:
+                return shape(node.args[0], enclosing)
             external = (external_returns or {}).get(ast.unparse(node.func), False)
             if external:
                 return external
@@ -96,12 +134,15 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
             values[enclosing, target.id] = value
             if value is True:
                 aliases[enclosing].add(target.id)
+        elif (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+              and target.value.id in {"self", "cls"} and owning_class(enclosing)):
+            fields[owning_class(enclosing)][target.attr] = value
         elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, tuple):
             for name, item in zip(target.elts, value):
                 bind(name, item, enclosing)
     for _ in range(12):
-        before = (sum(map(len, aliases.values())), repr(returns), repr(values))
-        for function in functions.values():
+        before = (sum(map(len, aliases.values())), repr(returns), repr(values), repr(fields))
+        for function in all_functions:
             parent = scope(parents[function])
             local = {arg.arg for arg in function.args.args}
             local.update(n.id for n in ast.walk(function)
@@ -118,6 +159,9 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     bind(target, shape(node.value, enclosing), enclosing)
+            if (isinstance(node, (ast.Attribute, ast.Subscript, ast.Name, ast.Call))
+                    and shape(node, enclosing) is True):
+                aliases[enclosing].add(ast.unparse(node))
             if isinstance(node, ast.Call):
                 name = (node.func.id if isinstance(node.func, ast.Name) else
                         node.func.attr if isinstance(node.func, ast.Attribute) else "")
@@ -130,7 +174,7 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 for param, arg in zip(params, node.args):
                     if is_tier(arg, enclosing):
                         aliases[called].add(param.arg)
-        if (sum(map(len, aliases.values())), repr(returns), repr(values)) == before:
+        if (sum(map(len, aliases.values())), repr(returns), repr(values), repr(fields)) == before:
             break
     return (scopes, aliases, returns) if details else (scopes, aliases)
 
@@ -151,7 +195,7 @@ class CallerMove(ast.NodeTransformer):
             self.scoped = previous
 
     def is_tier(self, node):
-        return tier_call(node) or isinstance(node, ast.Name) and node.id in self.scoped
+        return bound_tier(node, self.scoped)
 
     def authority(self):
         self.need_import = True
@@ -203,6 +247,9 @@ class CallerMove(ast.NodeTransformer):
             node.func = ast.Attribute(node.args.pop(0), "holder_state", ast.Load())
         elif old == "held_grants" and node.args and self.is_tier(node.args[0]):
             node.func = ast.Attribute(node.args.pop(0), "held_grants", ast.Load())
+        elif old in {"getattr", "setattr", "delattr", "hasattr"} and len(node.args) > 1:
+            if self.is_tier(node.args[0]) and isinstance(node.args[1], ast.Constant):
+                node.args[1].value = RAW.get(node.args[1].value, node.args[1].value)
         elif bound and old in {"release", "release_except", "release_kinds", "release_count"}:
             node.func.attr = "release_rates" if old == "release_kinds" else "release_unspent"
             if old == "release_kinds":
@@ -224,11 +271,11 @@ class CallerMove(ast.NodeTransformer):
         return node
 
 
-def migrate_callers(root, path):
+def migrate_callers(root, path, seeds=None, external_returns=None):
     source = path.read_text()
     original = ast.parse(source)
     tree = copy.deepcopy(original)
-    scopes, aliases = caller_aliases(tree)
+    scopes, aliases = caller_aliases(tree, seeds, external_returns)
     mover = CallerMove(scopes, aliases)
     tree = mover.visit(tree)
     original_nodes = {(n.lineno, n.col_offset, n.end_lineno, n.end_col_offset, type(n)): n

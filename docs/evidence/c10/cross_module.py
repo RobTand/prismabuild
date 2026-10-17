@@ -104,9 +104,7 @@ def analyze(root):
                 valid = {parameter.arg for parameter in
                          (*params, *function.args.kwonlyargs)}
                 for parameter, argument in paired:
-                    tier = (move["tier_call"](argument)
-                            or isinstance(argument, ast.Name)
-                            and argument.id in aliases[scopes[call]])
+                    tier = move["bound_tier"](argument, aliases[scopes[call]])
                     if not tier or parameter not in valid:
                         continue
                     key = (path, call.lineno, target_name, parameter)
@@ -131,8 +129,7 @@ def analyze(root):
         for node in ast.walk(unit["tree"]):
             if not isinstance(node, ast.Attribute):
                 continue
-            bound = (move["tier_call"](node.value) or isinstance(node.value, ast.Name)
-                     and node.value.id in unit["aliases"][unit["scopes"][node]])
+            bound = move["bound_tier"](node.value, unit["aliases"][unit["scopes"][node]])
             if bound and node.attr not in known:
                 unknown.append(dict(path=path, line=node.lineno, name=node.attr))
     return dict(source_only=True, passes=passes, files=len(units),
