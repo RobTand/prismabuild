@@ -15,20 +15,22 @@ from pathlib import Path
 
 import pytest
 
+from prismabuild import target_evidence
 import pbevidence
 import pbrun
+from prismabuild import submission as submit_core
 from prismabuild import core as pb
 from test_pbrun_target_evidence_1598 import _packet, _write
 
 
 def _scope(packet, tmp_path):
-    loaded = pbrun.load_target_evidence(str(_write(tmp_path, packet)), host_class="gb10")
-    return pbrun.host_class_scope("gb10", measurement=True, transport="pool",
+    loaded = submit_core.load_target_evidence(str(_write(tmp_path, packet)), host_class="gb10")
+    return submit_core.host_class_scope("gb10", measurement=True, transport="pool",
                                   target_evidence=loaded)
 
 
 def test_the_toolchain_declares_the_workers_bash_and_not_the_submitters(tmp_path) -> None:
-    local = pb.executable_toolchain_contract(pbrun.SEALED_ARGV0)
+    local = pb.executable_toolchain_contract(submit_core.SEALED_ARGV0)
     packet = _packet()
     packet["argv0"]["bytes"] = str(int(local["argv0.bytes"]) + 2528)
     _, toolchain = _scope(packet, tmp_path)
@@ -50,8 +52,8 @@ def test_the_worker_check_accepts_what_the_packet_declared_and_refuses_the_submi
 
 
 def test_without_a_packet_the_submitters_own_bash_is_still_sealed() -> None:
-    local = pb.executable_toolchain_contract(pbrun.SEALED_ARGV0)
-    _, toolchain = pbrun.host_class_scope(None, measurement=True, transport="pool")
+    local = pb.executable_toolchain_contract(submit_core.SEALED_ARGV0)
+    _, toolchain = submit_core.host_class_scope(None, measurement=True, transport="pool")
     assert toolchain["argv0.bytes"] == local["argv0.bytes"]
     assert toolchain["argv0.sha256"] == local["argv0.sha256"]
 
@@ -73,12 +75,12 @@ def test_a_packet_without_a_usable_argv0_is_refused_before_anything_is_sealed(
     change(packet)
     path = _write(tmp_path, packet)
     with pytest.raises(SystemExit, match="argv0"):
-        pbrun.load_target_evidence(str(path), host_class="gb10")
+        submit_core.load_target_evidence(str(path), host_class="gb10")
 
 
 def test_a_good_packet_loads_with_the_workers_identity_beside_the_evidence(tmp_path: Path) -> None:
     path = _write(tmp_path, _packet())
-    loaded = pbrun.load_target_evidence(str(path), host_class="gb10")
+    loaded = submit_core.load_target_evidence(str(path), host_class="gb10")
     assert loaded.argv0 == {"argv0.sha256": "ab" * 32, "argv0.bytes": "1543048"}
     assert "argv0" not in loaded        # the core evidence mapping is strict
 
@@ -86,7 +88,7 @@ def test_a_good_packet_loads_with_the_workers_identity_beside_the_evidence(tmp_p
 def test_evidence_without_the_loader_cannot_seal_a_class(tmp_path: Path) -> None:
     plain = {k: v for k, v in _packet().items() if k != "argv0"}
     with pytest.raises(ValueError, match="argv0"):
-        pbrun.host_class_scope("gb10", measurement=True, transport="pool",
+        submit_core.host_class_scope("gb10", measurement=True, transport="pool",
                                target_evidence=plain)
 
 
@@ -150,9 +152,9 @@ def test_a_recorder_packet_for_another_interpreter_is_refused(tmp_path, monkeypa
 ])
 def test_a_malformed_recorder_declaration_is_refused(change) -> None:
     with pytest.raises(pbevidence.PacketError):
-        pbevidence.recorder_contract(dict(_packet(), recorder=dict(RECORDER, **change)))
+        target_evidence.recorder_contract(dict(_packet(), recorder=dict(RECORDER, **change)))
     with pytest.raises(pbevidence.PacketError):
-        pbevidence.recorder_contract(dict(_packet(), recorder={"path": RECORDER_PYTHON}))
+        target_evidence.recorder_contract(dict(_packet(), recorder={"path": RECORDER_PYTHON}))
 
 
 def test_the_collector_names_the_recorder_interpreter_it_was_asked_for(monkeypatch) -> None:
@@ -162,7 +164,7 @@ def test_the_collector_names_the_recorder_interpreter_it_was_asked_for(monkeypat
                                       "argv0.bytes": RECORDER["bytes"]})
     monkeypatch.setattr(pb, "_probe_python_toolchain", lambda path, *a: {"python": "3.12.3"})
     packet = pbevidence.collect_packet(RECORDER_PYTHON)
-    assert pbevidence.recorder_contract(packet)["python"] == "3.12.3"
+    assert target_evidence.recorder_contract(packet)["python"] == "3.12.3"
     assert "recorder" not in pbevidence.collect_packet()
 
 
