@@ -195,3 +195,24 @@ def test_a_partial_host_topup_keeps_its_preexisting_named_half(tmp_path, monkeyp
     assert any(event["reason"] == "ram-host-hold-missing" for event in outcome["events"])
     assert pool.held_names_visible(host, mirror) == before
     assert tier.holdings(GRANT) == {"ram_gib": 3}
+
+
+def test_a_rate_only_named_ram_handover_never_reads_host_memory(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    reads = []
+
+    def unavailable_host(self, host):
+        reads.append(host)
+        raise OSError("rate-only operation must not ask the host")
+
+    monkeypatch.setattr(pool.PoolQueue, "ledger", unavailable_host)
+    tier = queue.tier(TIER)
+    rate = pool.storage_tiers.FILL_KIND
+    tier.mint({rate: 1})
+    assert tier.take(GRANT, {rate: 1})
+    names = sorted(tier.holder_state(GRANT))
+    faults = []
+    assert tier.handover_named(GRANT, MOVER, names, faults=faults) == 1
+    assert reads == []
+    assert faults == []
