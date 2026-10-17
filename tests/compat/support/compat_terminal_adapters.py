@@ -53,7 +53,12 @@ def operate(request, store, load):
         Path(descriptor["path"]).unlink()
         assert po.dead_input_dependency(queue, item) is not None, {
             "producer_state": po._producer_attempt_state(queue, instance), "batch": po._read_commitments(po._commitments_path(queue.root, instance)),
-            "reference": ref, "origin_exists": Path(descriptor["path"]).exists()}
+            "reference": ref, "origin_exists": Path(descriptor["path"]).exists(),
+            "standing": repr(po.RecordStore(queue.root).standing(owner)),
+            "beside": [path.name for path in queue.item_path(pool.CLAIMED, owner).parent.glob(owner + ".*")],
+            "terminal": [{"state": state, **{name: body.get(name) for name in ("status", "published_unix", "action_key")}}
+                for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
+                if (body := pool._read_json(queue.item_path(state, owner))) is not None]}
         assert queue.fail_dead_input_dependency(item, key)
     elif variant == "unreadable-writer":
         ready = queue.item_path(pool.READY, key)

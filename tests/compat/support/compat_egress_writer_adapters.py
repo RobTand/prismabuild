@@ -51,7 +51,9 @@ def operate(request, store, load):
         elif variant == "recover-writer":
             value = release.recover_orphaned_range(queue, stage_root=str(stage), head_action_key=M, egress_action_key=OTHER)
         elif variant == "sweep-refusal-writer":
-            (root / "unreadable-namespace").write_bytes(b"not a residency directory")
+            corrupt = maps.fragment_path(root, C, M)
+            corrupt.parent.mkdir(parents=True, exist_ok=True)
+            corrupt.write_bytes(b"{private malformed fragment")
             values = release.sweep_dead_owner_fragments(queue, stage_roots={TIER: str(stage)})
             assert len(values) == 1, values
             value = values[0]
@@ -59,6 +61,8 @@ def operate(request, store, load):
             (queue.root / pool.TIER_RESERVATIONS / TIER).write_bytes(b"private blocked ledger")
             value = release._evict_uncharged_owner(queue, M, C, **common, residency_root=root)
         elif variant == "produced-orphan-writer":
+            queue.announce_tier({"tier_id": TIER, "host": "other-compat-host", "tier": "stage",
+                                 "mountpoint": str(stage), "capacity_bytes": 0})
             value = release._retire_produced_orphan(queue, M, {"batch_id": "batch", "producer_action_key": C, "producer_state": "failed"},
                 **common, residency_root=root)
         elif variant == "output-deferred-writer":
