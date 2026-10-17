@@ -9,6 +9,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from wire_inventory import catalogue
+
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -42,6 +44,7 @@ def captured_records(evidence):
 
 def reconcile(root, inventory, records):
     observed, functions, inputs = defaultdict(set), defaultdict(set), []
+    case_records = defaultdict(list)
     for identity, data_hash, record in records:
         if not isinstance(record, dict) or record.get("returncode") != 0 or not record.get("isolated"):
             continue
@@ -54,6 +57,7 @@ def reconcile(root, inventory, records):
             if source.is_file() and digest(source) == member["sha256"]:
                 actual[name] = member["sha256"]
         phase = record.get("catalogued_operation")
+        case_records[record["request"]].append((identity, phase, record, actual))
         if phase != "write":
             continue
         inputs.append({"path": identity, "sha256": data_hash, "case": record["request"]})
@@ -88,7 +92,34 @@ def reconcile(root, inventory, records):
             else:
                 row["disposition"] = "uncovered_constructor"
             rows.append(row)
+    case_writers = []
+    for kind in catalogue(root).values():
+        for variant in kind["variants"]:
+            case = kind["name"] + "/" + variant
+            mode = "input-reader" if kind.get("caller_input") else "source-reader" if kind.get("fixture_source") else "write"
+            writer = dict(kind.get("variant_writers", [])).get(variant)
+            if mode != "write":
+                references = [dict(kind.get("variant_readers", [])).get(variant, kind["reader"]), *kind.get("legacy_readers", [])]
+            else:
+                if writer is None:
+                    assert len(kind["writers"]) == 1
+                    writer = kind["writers"][0]
+                references = [writer, *kind.get("legacy_writers", [])]
+            evidence = []
+            for identity, phase, record, actual in case_records[case]:
+                if phase != mode:
+                    continue
+                for reference in references:
+                    module, qualified = reference.split(":", 1)
+                    paths = (["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
+                             ["tools/fleet/" + module + ".py", "tools/" + module + ".py"])
+                    for name, _, _, owner in record.get("calls", []):
+                        if name in paths and name in actual and owner == qualified:
+                            evidence.append({"record": identity, "reference": reference, "source_sha256": actual[name]})
+            case_writers.append({"case": case, "wire_id": kind["wire_id"], "operation": mode,
+                                 "expected_entries": references, "executed": evidence})
     return {"constructors": rows, "counts": dict(Counter(row["disposition"] for row in rows)),
+            "case_writers": case_writers, "uncovered_case_writers": [row for row in case_writers if not row["executed"]],
             "evidence": inputs, "inventory_sha256": digest(inventory),
             "uncovered": [row for row in rows if row["disposition"] == "uncovered_constructor"]}
 
@@ -112,8 +143,9 @@ def main():
     with args.out.open("x") as stream:
         stream.write(json.dumps(report, sort_keys=True, indent=2) + "\n")
     args.out.chmod(0o444)
-    print(json.dumps({"counts": report["counts"], "uncovered": len(report["uncovered"])}, sort_keys=True))
-    if args.require_complete and report["uncovered"]:
+    print(json.dumps({"counts": report["counts"], "uncovered": len(report["uncovered"]),
+                      "uncovered_case_writers": len(report["uncovered_case_writers"])}, sort_keys=True))
+    if args.require_complete and (report["uncovered"] or report["uncovered_case_writers"]):
         raise SystemExit(2)
 
 

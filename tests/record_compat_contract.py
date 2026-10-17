@@ -58,7 +58,7 @@ class WriterEvidence:
         case = record["request"]
         assert case not in self.records
         fields = ("returncode", "isolated", "no_site", "compiled_source_code_verified", "catalogued_entry_verified",
-                  "catalogued_operation", "imports", "executed_lines", "executing_code_sha256", "driver_sha256",
+                  "catalogued_operation", "imports", "calls", "executed_lines", "executing_code_sha256", "driver_sha256",
                   "selected_adapter_sha256", "request", "sys_path", "interpreter")
         self.records[case] = {key: record[key] for key in fields}
         self.records[case].update(wire_sha256=hashlib.sha256(raw).hexdigest(),
