@@ -2206,6 +2206,27 @@ class RecordStore:
             return sorted(Path(entry.path) for entry in entries
                           if entry.name.endswith(".json"))
 
+    @staticmethod
+    def inspection_fragment_records_at(directory: Path):
+        try:
+            with os.scandir(directory) as entries:
+                paths = sorted(Path(entry.path) for entry in entries
+                               if entry.is_file() and entry.name.endswith(".json"))
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+        captured = []
+        for path in paths:
+            try:
+                with open(path) as stream:
+                    value = json.load(stream)
+                if not isinstance(value, dict):
+                    raise ValueError("not a JSON object")
+                record = DiagnosticRecord(_freeze_json(value))
+            except (OSError, ValueError) as exc:
+                record = DiagnosticRecord(None, exc)
+            captured.append((path, record))
+        return captured
+
     def inspection_plan_names(self) -> list[str]:
         try:
             with os.scandir(self.root / RESIDENCY_PLANS) as entries:

@@ -207,6 +207,8 @@ def test_unreadable_fragment_population_never_becomes_absent(tmp_path):
 
 def test_offer_sample_errors_keep_metadata_partial_and_population_counts_known(tmp_path):
     fleet = fixture.build(tmp_path)
+    fleet.queue.announce(host="fixture-box", tags=["x86"], has_gpu=False,
+                         capacity={"cpu": 8, "mem_gb": 16})
     sample = fleet.queue_root / pool.RESERVATIONS / "fixture-box" / "adaptive" / "cpu-sample.json"
     sample.parent.mkdir(parents=True, exist_ok=True)
     sample.write_text("{")

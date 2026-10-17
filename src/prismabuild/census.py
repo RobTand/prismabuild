@@ -872,17 +872,34 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     # Fragments are per consumer, one file per mover; an invalid one is
     # skipped by the reader, exactly as the consumer's own compose sees it.
     fragments_known = True
+    fragments = []
     try:
-        fragments = residency_map.read_fragments(
-            queue.records.residency_fragment_root(), key)
+        directory = residency_map.fragment_path(
+            queue.records.residency_fragment_root(), key, key).parent
+        captured_fragments = queue.records.inspection_fragment_records_at(directory)
     except (OSError, ValueError) as exc:
         notes.append(f"starvation plan {prefix} fragments: {exc}")
         unreadable.append(f"starvation plan {prefix} fragments: {exc}")
-        fragments = []
+        captured_fragments = []
         fragments_known = False
+    for path, observed_fragment in captured_fragments:
+        try:
+            if observed_fragment.error is not None:
+                raise observed_fragment.error
+            fragments.append(residency_map.validate_fragment(observed_fragment.record))
+        except (OSError, ValueError) as exc:
+            note = f"starvation plan {prefix} fragment {path.name}: {exc}"
+            notes.append(note)
+            unreadable.append(note)
+            fragments_known = False
     fragment_movers = {str(fragment.get("mover_action_key")): str(fragment.get("tier_id"))
                        for fragment in fragments
                        if isinstance(fragment.get("mover_action_key"), str)}
+
+    def fragment_present(mover: str) -> bool | None:
+        if mover in fragment_movers:
+            return True
+        return False if fragments_known else None
     mover_keys = []
     for phase in plan["phases"]:
         chunks = phase.get("stage_chunks")
@@ -944,15 +961,15 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     for index, phase in enumerate(plan["phases"]):
         stage: dict | None = None
         stage_chunks: list[dict] | None = None
-        stage_fragment = False if fragments_known else None
+        stage_fragment = False
         if "mover_row" in phase:
             mover_key = str(phase["mover_row"]["action_key"])
             stage = {"mover_action_key_prefix": mover_key[:12],
                      "published": observed_publication(mover_key, staged),
                      "staged": _resident(mover_key),
                      "reserved": staged.get(mover_key),
-                     "fragment": mover_key in fragment_movers if fragments_known else None}
-            stage_fragment = mover_key in fragment_movers if fragments_known else None
+                     "fragment": fragment_present(mover_key)}
+            stage_fragment = fragment_present(mover_key)
         elif isinstance(phase.get("stage_chunks"), list):
             # A chunked phase reports per chunk, beside the phase's own
             # ``stage`` staying ``None``: the census shape for whole-phase
@@ -962,8 +979,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
             assert isinstance(phase["stage_chunks"], list)
             for chunk in phase["stage_chunks"]:
                 chunk_key = str(chunk["mover_row"]["action_key"])  # type: ignore[index]
-                chunk_fragment = chunk_key in fragment_movers if fragments_known else None
-                stage_fragment = stage_fragment or chunk_fragment
+                chunk_fragment = fragment_present(chunk_key)
+                stage_fragment = (True if stage_fragment is True or chunk_fragment is True else
+                                  None if stage_fragment is None or chunk_fragment is None else False)
                 stage_chunks.append({
                     "chunk_index": chunk.get("chunk_index"),  # type: ignore[union-attr]
                     "mover_action_key_prefix": chunk_key[:12],
@@ -982,7 +1000,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                    "reserved": ram_staged.get(ram_key),
                    # The question the ram tier exists to answer: which phases
                    # have promotion fragments and which have none.
-                   "fragment": ram_key in fragment_movers if fragments_known else None,
+                   "fragment": fragment_present(ram_key),
                    "fragment_tier_id": fragment_movers.get(ram_key)}
         elif isinstance(phase.get("ram_chunks"), list):
             # A chunked phase reports per chunk, beside the phase's own
@@ -999,7 +1017,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                     "published": observed_publication(chunk_key, ram_staged),
                     "staged": _resident(chunk_key, ram=True),
                     "reserved": ram_staged.get(chunk_key),
-                    "fragment": chunk_key in fragment_movers if fragments_known else None,
+                    "fragment": fragment_present(chunk_key),
                     "fragment_tier_id": fragment_movers.get(chunk_key)})
         phases.append({"name": str(phase["name"]),
                        "start_bytes": phase["start_bytes"],
