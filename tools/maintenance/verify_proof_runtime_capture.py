@@ -274,6 +274,15 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if request['params']['progress'] != dict(schema='prismabuild.action_progress_policy.v1',
         phases=[dict(name=name, grace_s=120.0) for name in owner['CAPTURE_PHASES']]):
         raise ValueError('capture did not seal its exact finite progress policy')
+    progress_observation = terminal['detail']['progress_observation']
+    accepted = progress_observation['last_accepted']
+    if (progress_observation['source'] != 'action-progress'
+            or type(progress_observation['accepted_count']) is not int or progress_observation['accepted_count'] < 1
+            or type(progress_observation['rejected_count']) is not int or progress_observation['rejected_count'] < 0
+            or progress_observation['phase'] != 'closure_archive'
+            or accepted['phase'] != 'closure_archive' or accepted['unit'] != 'closure_archive'
+            or type(accepted['units_completed']) is not int or accepted['units_completed'] != 4):
+        raise ValueError('capture terminal does not retain actual accepted final progress')
     geometry = dict(members=sum(len(root['entries']) for root in closure['roots']),
                     regular_bytes=sum(entry['bytes'] for entry in members.values()),
                     profile_bytes=len(raw_profile), archive_bytes=capture['closure_archive']['bytes'])

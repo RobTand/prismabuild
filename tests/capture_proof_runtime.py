@@ -59,7 +59,7 @@ def publish_capture_checkpoint(cas, private, phase, units, value, commit):
     blob, _ = cas.ingest_input(path, input_id='proof-capture-' + phase,
                               expected_sha256=digest(raw), expected_bytes=len(raw))
     if not commit(units, phase, unit=phase):
-        raise ValueError('the actual PB progress helper did not accept the durable commitment')
+        raise ValueError('the actual PB progress helper did not publish the durable commitment')
     print('prismabuild-root-capture-checkpoint: ' + canonical(dict(phase=phase, units=units, blob=blob)).decode(), flush=True)
     return blob
 
