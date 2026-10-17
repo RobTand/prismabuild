@@ -71,7 +71,9 @@ def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     requests = list((root / 'cas/requests').rglob('*.json'))
     assert len(requests) == 1
     action = json.loads(requests[0].read_text())
-    item = json.loads(queue.records.item_path(pool.record_store.READY, action['action_key']).read_text())
+    item = json.loads(
+        queue.records.item_path(pool.record_store.READY, action['action_key']).read_text(),
+    )
     return action, item, queue
 
 

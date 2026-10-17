@@ -57,7 +57,9 @@ def test_ambiguous_claim_does_not_block_reaping_another_claim(queue):
     queue.publish(action_key=other, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources={}, max_attempts=1, retry_safe=True)
-    queue.records.item_path(pool.record_store.READY, other).rename(queue.records.item_path(pool.record_store.CLAIMED, other))
+    queue.records.item_path(pool.record_store.READY, other).rename(
+        queue.records.item_path(pool.record_store.CLAIMED, other),
+    )
     assert _reap_on_a_third_box(queue) == [other]
     _assert_preserved(queue, original)
     assert queue.records.item_path(pool.record_store.READY, other).exists()

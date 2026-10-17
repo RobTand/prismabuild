@@ -103,9 +103,13 @@ def test_a_late_finish_record_is_outstanding_pool_work(tmp_path: Path) -> None:
         assert found is not None and found[:2] == ("pool", 123.5), found
         path.unlink()
     # Another key's tombstone and a malformed one are not this key's work.
-    (queue.records.dir(pool.record_store.CLAIMED) / f"{'b' * 64}.1.h.1.x{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
+    (queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{'b' * 64}.1.h.1.x{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
         pbrun.json.dumps({"action_key": "b" * 64, "published_unix": 9.0}),
         encoding="utf-8")
-    (queue.records.dir(pool.record_store.CLAIMED) / f"{key}.2.h.1.y{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
+    (queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{key}.2.h.1.y{pool.record_store.TOMBSTONE_SUFFIX}").write_text(
         "not json", encoding="utf-8")
     assert pbrun.outstanding_submission(queue, key) is None

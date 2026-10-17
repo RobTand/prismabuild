@@ -62,7 +62,8 @@ def test_first_cause_and_later_stale_output_refusal_both_survive(
             "elapsed_s": 600.0,
         },
     )
-    assert queue.records.item_path(pool.record_store.READY, KEY).exists(), "retry is explicitly enabled"
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists(
+    ), "retry is explicitly enabled"
 
     assert queue.claim() is not None
     terminal_path = queue.finish(

@@ -108,7 +108,10 @@ def test_immutable_summary_verification_is_bounded_per_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(
+        json.dumps(_outcome()),
+        encoding="utf-8",
+    )
     real_read = pbrun._bounded_pool_read
 
     def short_verification(section, read, *, budget_s, **kwargs):
@@ -136,7 +139,10 @@ def test_terminal_record_outranks_and_skips_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(
+        json.dumps(_outcome()),
+        encoding="utf-8",
+    )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: pytest.fail(
         "a landed ending must return before the sealed request is read"))
@@ -245,7 +251,10 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     blocked = "a" * 64
     healthy = "b" * 64
     good = {**_outcome(), "action_key": healthy}
-    queue.records.item_path(pool.record_store.DONE, healthy).write_text(json.dumps(good), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, healthy).write_text(
+        json.dumps(good),
+        encoding="utf-8",
+    )
     healthy_returned = threading.Event()
     released_by_healthy_row = []
 
@@ -311,7 +320,10 @@ def test_retained_observation_reader_stops_before_render_or_another_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue.records.item_path(pool.record_store.DONE, KEY).write_text(
+        json.dumps(_outcome()),
+        encoding="utf-8",
+    )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     retained = []
 

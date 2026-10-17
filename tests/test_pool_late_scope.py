@@ -79,7 +79,9 @@ def test_late_finisher_releases_its_scope_without_touching_the_live_attempt(scop
     cleanup = archived['detail']['resource_scope_cleanup']
     assert cleanup['complete'] is True and cleanup['nonce'] == old
     assert not list(
-        queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            '*' + pool.record_store.LATE_FINISH_SUFFIX,
+        ),
     )
 
 
@@ -258,7 +260,9 @@ def test_crash_before_stop_leaves_a_record_only_the_owner_host_can_recover(scope
             queue.finish(first['action_key'], status='executed',
                          detail={'returncode': 0}, claim_snapshot=first)
     paths = list(
-        queue.records.dir(pool.record_store.CLAIMED).glob('*' + pool.record_store.LATE_FINISH_SUFFIX),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            '*' + pool.record_store.LATE_FINISH_SUFFIX,
+        ),
     )
     assert len(paths) == 1
     before = paths[0].read_bytes()
