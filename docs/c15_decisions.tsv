@@ -1,0 +1,5 @@
+ts	phase	decision	why	evidence	result
+2026-10-17T13:26:00Z	setup	Create clean owned C15 branch at a962ed3	Preserve initial T3 ref and every existing checkout	git base a962ed3fb2767ce6805110a18124f3cf01a166a3	clean exact base
+2026-10-17T13:40:00Z	architecture	Prefer explicit captured receipt with named integrity operations	Small parse leaf would retain duplicated schema and manifest rules	docs/c15_receipt_architecture.md	architecture sent to Root; implementation pending
+2026-10-17T13:40:01Z	boundary	Keep identity observation separate from integrity and root authority	Legacy roles deliberately accept minimal identity receipts while root enrollment grants store authority	src/prismabuild/role_session.py; tools/fleet/upgrade_client.py:440	public observation API preserved
+2026-10-17T13:40:02Z	bootstrap	Prepare a new standalone bridge with both receipt and digest leaves	Existing unpublished proof bridge has no demonstrated closure for the new installed dependency	docs/c15_receipt_architecture.md	no runtime publication authorized
