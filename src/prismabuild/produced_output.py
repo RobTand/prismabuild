@@ -4026,7 +4026,7 @@ def _retire_consumed_batch_locked(
             # Not a refusal and nothing is reported: the caller reads them
             # without this lock and comes back.
             return to_verify(pending)
-        if not retiring:
+        if not entry.is_retiring:
             file_repins()
             entry.begin_origin_retirement(
                 reason=reason, consumers=consumers)
