@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from prismabuild import pool, resource_scope
+from prismabuild import core, pool, resource_scope
 from qualify_claim_recovery import start_scope
 from test_lifecycle_recovery_crashes import (
     KEY, _assert_endpoint, _history, _interrupt_after, _publication, _recover,
@@ -13,6 +13,14 @@ from test_lifecycle_recovery_crashes import (
 
 pytestmark = pytest.mark.skipif(
     not resource_scope.BROKER_SOCKET.exists(), reason="real PB resource broker socket unavailable")
+
+
+def _owned_scope(queue, item, stack):
+    # Published workers carry a container owner even for a native command.
+    # Its real daemon census is what commits the broker's settlement proof.
+    item["container_owner"] = core.canonical_sha256({"queue": str(queue.root), "key": KEY})
+    queue.records.replace_record_at(queue.records.item_path(pool.record_store.CLAIMED, KEY), item)
+    return start_scope(queue, item, stack)
 
 
 def _closed(record, scope, process, queue, request, capsys):
@@ -43,7 +51,7 @@ def _closed(record, scope, process, queue, request, capsys):
 def test_durable_crash_retry_retains_real_stopped_scope_proof(tmp_path, cancelled, phase, request, capsys):
     queue, item, decision = _history(tmp_path, cancelled)
     with ExitStack() as stack:
-        scope, process, started = start_scope(queue, item, stack)
+        scope, process, started = _owned_scope(queue, item, stack)
         assert len(resource_scope.scope_pids(scope.cgroup_path)) >= 2
         assert process.poll() is None
         _interrupt_after(queue, item, tmp_path, phase, cancelled)
@@ -61,7 +69,7 @@ def test_durable_crash_retry_retains_real_stopped_scope_proof(tmp_path, cancelle
 def test_late_finish_stops_only_its_saved_scope_beside_live_successor(tmp_path, cancelled, request, capsys):
     queue, item, decision = _history(tmp_path, cancelled)
     with ExitStack() as stack:
-        old_scope, old_process, _ = start_scope(queue, item, stack)
+        old_scope, old_process, _ = _owned_scope(queue, item, stack)
         _interrupt_after(queue, item, tmp_path, "reservation", cancelled)
         restarted = _recover(tmp_path, item, cancelled)
         _assert_endpoint(restarted, item, cancelled, decision)
@@ -71,7 +79,7 @@ def test_late_finish_stops_only_its_saved_scope_beside_live_successor(tmp_path, 
         _publication(restarted, tmp_path)
         successor = restarted.claim(owner="successor", capacity={"cpu": 1})
         assert successor is not None
-        scope, process, started = start_scope(restarted, successor, stack)
+        scope, process, started = _owned_scope(restarted, successor, stack)
         paths = (restarted.records.item_path(pool.record_store.CLAIMED, KEY),
                  restarted.records.lease_path(KEY))
         saved = [path.read_bytes() for path in paths]
