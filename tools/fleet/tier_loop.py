@@ -1061,7 +1061,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
     if row.get("published_unix") != record["published_unix"]:
         return "none", "funding publication is stale"
     if blind:
-        names = {p.name for p in pb.immutable_files.match_optional(queue.tier(tier_id).paths.held / holder, '*-*')}
+        names = queue.tier(tier_id).token_names(holder)
         if (record["state"] == "reserved" and len(record["tokens"]) == demand
                 and all(name.startswith("ram_gib-") and name in names
                         for name in record["tokens"])):
@@ -6542,7 +6542,7 @@ def sync_ram_host_mirror(queue: pool.PoolQueue,
                          host: str) -> dict[str, object]:
     """This cycle's RAM host mirror verdict, gathered before discovery.
 
-    The sync half of :meth:`pool.PoolQueue.reconcile_ram_host_holds`: every
+    The sync half of :meth:`tier_holdings.TierLedger.reconcile_mirror`: every
     live RAM tier holder's ``ram-host:`` hold is made equal to its
     occupancy tokens, which lands any claim-path take made while the loop
     was down (#1245 r3 R5), and ``converged`` says whether every half
@@ -8319,7 +8319,7 @@ def _settle_protected(queue: pool.PoolQueue,
                 if (bound_names and record is not None
                         and record.get("state") == "reserved"):
                     try:
-                        mover_names = {path.name for path in pb.immutable_files.match_optional(ledger.paths.held / mover, '*-*')}
+                        mover_names = ledger.token_names(mover)
                     except (OSError, pool.PoolContractError, ValueError):
                         mover_names = set()
                     if all(name in mover_names for name in bound_names):
@@ -10250,7 +10250,7 @@ def mint_stage_supply(queue: pool.PoolQueue, *, tier_id: str, kind: str,
     discovery number; discovery itself offers nothing on unreadable, so
     the next cycle still converges).  The reader runs INSIDE
     the same tier mint lock as the landed snapshot and the ensure+retire
-    apply (via :meth:`PoolQueue.mint_tier_capacity_guarded`): a copy
+    apply (via :meth:`tier_holdings.TierLedger.mint_guarded`): a copy
     landing between discovery and the mint can no longer combine
     discovery's writable with the newcomer's landed into free, because
     the writable number is re-read after every pre-lock completion, and

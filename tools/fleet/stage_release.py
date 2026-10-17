@@ -3703,7 +3703,7 @@ def _evict_uncharged_owner(
                     ))):
                 return None
             with queue.mover_transition_lock(mover):
-                if not pb.immutable_files.confirmed_metadata_absence(queue.tier(tier_id).paths.held / mover):
+                if not queue.tier(tier_id).holder_absent(mover):
                     return None
                 return evict(queue, mover, consumer_action_key=consumer,
                              stage_root=stage_root,
@@ -3880,7 +3880,7 @@ def sweep_dead_owner_fragments(
             # Include nonregular holder names: an unknown ledger entry is
             # not evidence that this mover has no charge.
             ledger = queue.tier(tier)
-            held_by_tier[tier] = {path.name for path in ledger.entry_paths(ledger.paths.held)}
+            held_by_tier[tier] = ledger.holder_names()
         except FileNotFoundError:
             held_by_tier[tier] = set()
         except (OSError, pool.PoolContractError) as exc:
@@ -4087,7 +4087,7 @@ def _dead_owner_unit(queue: pool.PoolQueue, consumer: str,
                                     and mover not in held_by_tier.get(tier, ())):
                                 uncharged.add(tier, mover, consumer, observed)
                             continue
-                        if not pb.immutable_files.confirmed_metadata_absence(queue.tier(tier).paths.held / mover):
+                        if not queue.tier(tier).holder_absent(mover):
                             continue
                         if not done and not (not pool.record_store.value_or_raise(
                             queue.records.retirement_presence_at(queue.records.move_path(mover)),

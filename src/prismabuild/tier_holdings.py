@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 import os
 
-from . import immutable_files, posix_lock, record_store, storage_tiers
+from . import immutable_files, kept_reads, posix_lock, record_store, storage_tiers
 from .digest_primitives import raw_sha256
 from .record_store import PoolContractError
 
@@ -71,6 +71,44 @@ class TierLedger:
 
     def holders(self) -> list[str]:
         return self._ledger.held_keys()
+
+    def declared(self) -> bool:
+        return self._ledger.base.is_dir()
+
+    def holder_absent(self, holder: str) -> bool:
+        return immutable_files.confirmed_metadata_absence(self._ledger.held_dir / holder)
+
+    def holder_entries(self, holder: str) -> set[str]:
+        with os.scandir(self._ledger.held_dir / holder) as entries:
+            return {entry.name for entry in entries}
+
+    def holder_has_entries(self, holder: str) -> bool:
+        with os.scandir(self._ledger.held_dir / holder) as entries:
+            return any(True for _ in entries)
+
+    def holder_fresh_present(self, holder: str) -> bool:
+        if holder not in os.listdir(self._ledger.held_dir):
+            return False
+        return any("-" in name for name in os.listdir(self._ledger.held_dir / holder))
+
+    @property
+    def fence_key(self) -> str:
+        return os.fspath(self._ledger.base)
+
+    def observation_fences(self, fence) -> kept_reads.EvidenceSet | None:
+        free = fence(self._ledger.free_dir)
+        held = fence(self._ledger.held_dir)
+        if free is None or held is None:
+            return None
+        try:
+            holders = (sorted(os.listdir(held.directory))
+                       if held.directory == os.fspath(self._ledger.held_dir) else [])
+        except OSError:
+            return None
+        taken = (free, held, *(fence(Path(held.directory) / name) for name in holders))
+        if any(item is None for item in taken):
+            return None
+        return kept_reads.EvidenceSet(taken)
 
     def holder_state(self, holder: str) -> set[str]:
         try:

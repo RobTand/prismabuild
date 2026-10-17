@@ -339,7 +339,7 @@ class KeptReads:
         return (None if any(fence is None for fence in taken) else
                 kept_reads.EvidenceSet(taken))
 
-    def ledger_fences(self, ledger: pool.ResourceLedger) -> kept_reads.EvidenceSet | None:
+    def ledger_fences(self, ledger: tier_holdings.TierLedger) -> kept_reads.EvidenceSet | None:
         """Fences on everything a tier ledger's tokens are read from.
 
         ``free/``, ``held/`` and each holder directory under ``held/``: a
@@ -349,27 +349,15 @@ class KeptReads:
         covers.  Taken at most once a scrape, and kept while it holds.
         """
 
-        key = ('ledger-fences', os.fspath(ledger.paths.base))
+        key = ('ledger-fences', ledger.fence_key)
         self._touched.add(key)
         kept = self._memos.get(key)
         if kept is not None and self.holds(kept[0]):
             return kept[0]
-        free = self.fence(ledger.paths.free)
-        held = self.fence(ledger.paths.held)
-        if free is None or held is None:
+        evidence = ledger.observation_fences(self.fence)
+        if evidence is None:
             self._memos.pop(key, None)
             return None
-        try:
-            holders = sorted(os.listdir(held.directory)) if held.directory == os.fspath(ledger.paths.held) else []
-        except OSError:
-            self._memos.pop(key, None)
-            return None
-        taken = (free, held, *(self.fence(Path(held.directory) / name)
-                               for name in holders))
-        if any(fence is None for fence in taken):
-            self._memos.pop(key, None)
-            return None
-        evidence = kept_reads.EvidenceSet(taken)
         self._memos[key] = (evidence, None)
         return evidence
 
@@ -938,7 +926,7 @@ def _tiers(reader: KeptReads, queue: pool.PoolQueue) -> list[dict[str, object]]:
 
 
 def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
-    """``PoolQueue.tier_ids``, from a kept listing; any failure reads empty."""
+    """``tier_holdings.ids``, from a kept listing; any failure reads empty."""
 
     try:
         return sorted(path.name for path in reader.tier_directories(queue))
@@ -953,7 +941,7 @@ def _ledger_counts(reader: KeptReads, queue: pool.PoolQueue, tier_id: str):
 
     def count():
         try:
-            return ledger.capacity(), ledger.available()
+            return (ledger.mint_supply(), ledger.free_supply())
         except Exception as exc:  # noqa: BLE001 -- reported, as the plain read did
             return exc
 

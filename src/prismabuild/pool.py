@@ -817,7 +817,7 @@ MAX_CONTROLLER_JOURNAL_LINE_BYTES = 4096
 #: Tier resources that price a transfer *rate* rather than occupancy, and so
 #: are returned the moment a copy ends even when its bytes stay on the device.
 #: Occupancy kinds are absent on purpose -- see
-#: :meth:`PoolQueue.release_tier_rate_reservations` (#636).
+#: :meth:`tier_holdings.release_rates_all` (#636).
 
 #: Where movers file their residency-map fragments, one directory per consumer
 #: and one file per mover inside it.  The composed map a consumer reads is
@@ -3497,7 +3497,7 @@ def _acquisition_handle_of(name: str, holder: str) -> tuple[int, str, int] | Non
 def _guarded_mutation(*, blocking: bool):
     """Run a ``ResourceLedger`` mutator under its mutation exclusion.
 
-    Tier ledgers built by :meth:`PoolQueue.tier_ledger` carry the tier's
+    Tier ledgers built by :meth:`PoolQueue.tier` carry the tier's
     mint lock as that exclusion, so every token rename on the ledger
     serializes against the reclaim headroom scan (see
     :meth:`PoolQueue._reclaim_dead_markers`): a held/private token renamed
@@ -3585,7 +3585,7 @@ class ResourceLedger:
         # census was exact (#936; see report_census).
         self.last_census_report: dict[str, object] | None = None
         # Optional ``(*, blocking: bool) -> context manager`` yielding the
-        # acquisition status. PoolQueue.tier_ledger supplies its mint lock;
+        # acquisition status. PoolQueue.tier supplies its mint lock;
         # otherwise every host constructor uses the reservation-owner lock.
         # Census/cache purpose is explicit and independent of exclusion,
         # never inferred from a host/tier name or guard presence.
@@ -3623,7 +3623,7 @@ class ResourceLedger:
     def _strict_census(self) -> bool:
         """Whether this ledger refuses to mint from a partial view.
 
-        Tier ledgers built by :meth:`PoolQueue.tier_ledger` enumerate
+        Tier ledgers built by :meth:`PoolQueue.tier` enumerate
         their grow/reclaim census error-visibly and abort the mint/reissue
         on any census error; host ledgers keep the legacy tolerant scans.
         The fork is by explicit factory purpose, never by name or locking.
@@ -5299,9 +5299,9 @@ class _ClaimReservation:
             names = (entry.get("tokens") if isinstance(entry, dict) else None)
             try:
                 if isinstance(names, list) and names:
-                    ledger.release_unspent(self.action_key, keep={str(name) for name in names}, authority=tier_holdings.Unspent.NEVER_STARTED)
+                    ledger.release_unspent(self.action_key, keep={str(name) for name in names}, authority=tier_holdings.Unspent.CLAIM_ROLLBACK)
                 else:
-                    ledger.release_unspent(self.action_key, authority=tier_holdings.Unspent.NEVER_STARTED)
+                    ledger.release_unspent(self.action_key, authority=tier_holdings.Unspent.CLAIM_ROLLBACK)
             except (OSError, PoolContractError, ValueError):
                 continue
 
@@ -12608,7 +12608,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in immutable_files.match_optional(self.tier(tier_id).paths.held / key, '*-*')}
+            held_names = self.tier(tier_id).token_names(key)
         except (OSError, PoolContractError, ValueError):
             return (0, None)
         if any(not isinstance(name, str)
@@ -13285,7 +13285,7 @@ class PoolQueue:
         return counts
 
     def _output_funding_terminal(self, mover: str, tier_id: str,
-                                 ledger: "ResourceLedger") -> bool:
+                                 ledger: "tier_holdings.TierLedger") -> bool:
         """Every retirement fact for one record, fail-closed (see above)."""
 
         record, file_state = self.output_funding_file_state(mover, tier_id)
@@ -13302,9 +13302,8 @@ class PoolQueue:
                 return False
             if os.path.lexists(self.records.lease_path(mover)):
                 return False
-            with os.scandir(ledger.paths.held / mover) as entries:
-                if any(True for _ in entries):
-                    return False
+            if ledger.holder_has_entries(mover):
+                return False
         except FileNotFoundError:
             # The holder directory is absent: the mover holds nothing here.
             return True
@@ -13771,7 +13770,7 @@ class PoolQueue:
             return {"ok": False, "refusal": "stale-superseded-owner"}
         try:
             ledger = self.tier(tier)
-            held_names = sorted((path.name for path in immutable_files.match_optional(ledger.paths.held / str(owner_key), '*-*') if path.name.startswith(kind + '-')))
+            held_names = sorted(name for name in ledger.token_names(str(owner_key)) if name.startswith(kind + '-'))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if self.read_output_funding(str(mover_key), tier) is not None:
@@ -14033,7 +14032,7 @@ class PoolQueue:
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         try:
-            held_names = sorted((path.name for path in immutable_files.match_optional(ledger.paths.held / str(owner_key), '*-*') if path.name.startswith(kind + '-')))
+            held_names = sorted(name for name in ledger.token_names(str(owner_key)) if name.startswith(kind + '-'))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Same disjointness rule as stage_output_intent (R7 liveness): a
@@ -14118,7 +14117,7 @@ class PoolQueue:
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
             ledger = self.tier(tier)
-            held_now = {path.name for path in immutable_files.match_optional(ledger.paths.held / owner_key, '*-*')}
+            held_now = ledger.token_names(owner_key)
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Existing record for this mover: idempotent re-drive, never a
@@ -14348,7 +14347,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in immutable_files.match_optional(self.tier(str(tier_id)).paths.held / key, '*-*')}
+            held_names = self.tier(str(tier_id)).token_names(key)
         except (OSError, PoolContractError, ValueError):
             return (0, None)
         if any(not isinstance(name, str)
@@ -14822,7 +14821,7 @@ class PoolQueue:
 
         try:
             ledger = self.tier(str(tier_id))
-            held_names = {path.name for path in immutable_files.match_optional(ledger.paths.held / str(owner_key), '*-*')}
+            held_names = ledger.token_names(str(owner_key))
         except (OSError, PoolContractError, ValueError):
             return (0, True)
         spoken, unknown = self.output_census_for_owner(str(owner_key))
@@ -14907,10 +14906,9 @@ class PoolQueue:
         """
 
         try:
-            holder_dir = self.tier(str(tier_id)).paths.held / str(owner_key)
+            ledger = self.tier(str(tier_id))
             try:
-                with os.scandir(holder_dir) as entries:
-                    held = {entry.name for entry in entries}
+                held = ledger.holder_entries(str(owner_key))
             except FileNotFoundError:
                 held = set()
             except NotADirectoryError:
@@ -15356,9 +15354,9 @@ class PoolQueue:
                     if unknown:
                         continue
                     if keep:
-                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.NEVER_STARTED)
+                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.CONCLUDED_UNPINNED)
                     else:
-                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.NEVER_STARTED)
+                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.CONCLUDED_UNPINNED)
                 except (OSError, PoolContractError, ValueError):
                     continue
             return released + tier_released
@@ -15433,7 +15431,7 @@ class PoolQueue:
             raise ValueError(f"tier commitment record {path.name} is not one")
         return record
 
-    def _window_fence_state(self, ledger: "ResourceLedger", tier_id: str,
+    def _window_fence_state(self, ledger: "tier_holdings.TierLedger", tier_id: str,
                             action_key: str,
                             sealed: Mapping[str, object] | None) -> str | None:
         """``"pending"``, ``"unknown"`` or ``None`` for this row's ``reserved`` fence.
@@ -15552,7 +15550,7 @@ class PoolQueue:
                 immutable_ref)
         for tier_id, needs in sorted(tier_demand.items()):
             ledger = self.tier(tier_id)
-            if not ledger.paths.base.is_dir():
+            if not ledger.declared():
                 return {"tier_id": tier_id, "reason": "tier_unknown", "demand": dict(needs)}
             # A holder this census cannot read is counted as held and named
             # (#936): the total is a lower bound, and a refusal it causes is
@@ -17150,9 +17148,7 @@ class PoolQueue:
             ledger = self.tier(tier_id)
             # A missing holder counts only after its parent lists it absent.
             # Unlike holder_tokens' tolerant glob, every listing error raises.
-            if lead not in os.listdir(ledger.paths.held):
-                return False
-            if not any(('-' in name for name in os.listdir(ledger.paths.held / lead))):
+            if not ledger.holder_fresh_present(lead):
                 return False
             if record_store.value_or_raise(self.records.confirmed_item(CLAIMED, lead)) is not None:
                 return False

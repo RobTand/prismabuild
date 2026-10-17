@@ -439,7 +439,7 @@ def _record_covers_chunk(record: Mapping[str, object], intent: dict | None,
     return False
 
 
-def _count_shared_pinned(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
+def _count_shared_pinned(queue: pool.PoolQueue, ledger: tier_holdings.TierLedger,
                          kind: str, mover: str, intent: dict | None,
                          tier_id: str, found: GroupCensus) -> None:
     """Count a pinned earlier consumer's tokens as shared coverage (#1690).
@@ -495,7 +495,7 @@ def _count_shared_pinned(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
     found.s += span
 
 
-def _held_or_unknown(ledger: pool.ResourceLedger, key: str,
+def _held_or_unknown(ledger: tier_holdings.TierLedger, key: str,
                      found: GroupCensus) -> set[str] | None:
     """One holder's token names, or None with the mover marked unknown."""
     try:
@@ -719,7 +719,7 @@ def _rollback_receipt(queue: pool.PoolQueue, unit: str, tier_id: str,
                    ["unit", "holder", "tier_id", "demand_gib"])
 
 
-def _settle_handles(ledger: pool.ResourceLedger, holder: str,
+def _settle_handles(ledger: tier_holdings.TierLedger, holder: str,
                     found: GroupCensus, events: list[str]) -> ReconcileOutcome:
     """Commit each acquisition handle this writer owns or a dead one left."""
     live = False
@@ -740,7 +740,7 @@ def _settle_handles(ledger: pool.ResourceLedger, holder: str,
     return ReconcileOutcome("acquiring", events, False, found)
 
 
-def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
+def _top_up(ledger: tier_holdings.TierLedger, kind: str, holder: str,
             demand: int, found: GroupCensus,
             events: list[str]) -> ReconcileOutcome:
     """Begin the acquisition of what a committed group lost.
@@ -766,7 +766,7 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
                             False, found, need_gib=deficit)
 
 
-def _shortage_reason(ledger: pool.ResourceLedger) -> str:
+def _shortage_reason(ledger: tier_holdings.TierLedger) -> str:
     """The ledger's own words for why a begin declined, never a bare wait."""
     try:
         shortage = ledger.shortage
@@ -819,7 +819,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
-            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED)
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT)
         except (OSError, pool.PoolContractError, ValueError):
             events.append("prelaunch-unknown-evidence")
         events.append("prelaunch-group-short"
@@ -854,14 +854,14 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
-            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED)
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT)
         except (OSError, pool.PoolContractError, ValueError):
             events.append("prelaunch-unknown-evidence")
         events.append("prelaunch-group-overfull")
         return ReconcileOutcome("overfull", events, False, found)
     if found.h > 0:
         try:
-            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED)
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT)
         except (OSError, pool.PoolContractError, ValueError):
             return ReconcileOutcome(
                 "unknown", events + ["prelaunch-unknown-evidence"],
@@ -1064,7 +1064,7 @@ def _fresh_binding(tier_id: str, mover: str, kind: str, consumer: str,
             "unix": time.time(), "published_unix": published}
 
 
-def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
+def _rebind_retained(queue: pool.PoolQueue, ledger: tier_holdings.TierLedger,
                      tier_id: str, mover: str, kind: str, consumer: str,
                      digest: str, start: int, end: int, published: float,
                      gib: int, holder: str, tokens: list[str],
@@ -1390,7 +1390,7 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         events.append("prelaunch-unknown-evidence")
         intent = None
     try:
-        holder_freed = int(ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED))
+        holder_freed = int(ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.UNUSED_GRANT))
     except (OSError, pool.PoolContractError, ValueError):
         holder_freed = 0
         events.append("prelaunch-unknown-evidence")
@@ -1441,7 +1441,7 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                 continue
             count = len(set(tokens) & held)
             try:
-                ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED)
+                ledger.release_unspent(mover, authority=tier_holdings.Unspent.UNUSED_GRANT)
             except (OSError, pool.PoolContractError, ValueError):
                 events.append("prelaunch-unknown-evidence")
                 continue
