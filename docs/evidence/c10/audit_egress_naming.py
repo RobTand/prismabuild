@@ -41,15 +41,16 @@ def main():
     authority = ast.parse("tier_holdings.Unspent.NEVER_STARTED", mode="eval").body
 
     class Restore(ast.NodeTransformer):
-        def __init__(self, old, new):
+        def __init__(self, old, new, authority_value=authority):
             self.old, self.new, self.changed = old, new, 0
+            self.authority_value = authority_value
 
         def visit_Call(self, node):
             self.generic_visit(node)
             if isinstance(node.func, ast.Attribute) and node.func.attr == self.new:
                 self.changed += 1
                 node.func.attr = self.old
-                node.keywords.append(ast.keyword("authority", copy.deepcopy(authority)))
+                node.keywords.append(ast.keyword("authority", copy.deepcopy(self.authority_value)))
             return node
 
     proofs = []
@@ -78,7 +79,7 @@ def main():
     assert dump(unspent) == dump(method(args.before, path, "release_unspent"))
     assert dump(egress) == dump(method(args.before, path, "egress"))
     aggregate = method(args.head, path, "egress_all")
-    restore = Restore("release_unspent", "egress")
+    restore = Restore("release_unspent", "egress", ast.Name("authority", ast.Load()))
     restore.visit(aggregate)
     assert restore.changed == 1
     assert statements(body(aggregate)) == statements(body(method(args.head, path, "release_unspent_all")))
