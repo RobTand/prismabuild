@@ -1,10 +1,11 @@
 from pathlib import Path
 import socket
+import time
 import uuid
 
 import pytest
 
-from fleet_world import Admission, FleetWorld
+from fleet_world import Admission, Clock, FleetWorld
 from prismabuild import pool, record_store, tier_holdings
 
 
@@ -90,3 +91,35 @@ def test_corruption_is_explicit_and_preserves_unknown_state(tmp_path):
     for outside in ("../outside", str(tmp_path.parent / "outside")):
         with pytest.raises(ValueError, match="private world path"):
             world.corrupt(outside, b"bad")
+
+
+def test_pool_clock_install_preserves_the_reader_and_other_clocks(monkeypatch):
+    wall = lambda: 9876.0
+    monkeypatch.setattr(time, "time", wall)
+    readings = iter([40.0, 41.0])
+    events = []
+
+    def reader():
+        events.append("read")
+        return next(readings)
+
+    Clock(source=reader).install(monkeypatch, scope="pool")
+    assert events == []
+    assert pool._now is reader
+    assert time.time is wall
+    assert pool._now() == 40.0
+    assert events == ["read"]
+    assert time.time() == 9876.0
+    assert pool._now() == 41.0
+    assert events == ["read", "read"]
+
+
+def test_pool_clock_keeps_the_callers_mutable_cell_and_patch_lifetime(monkeypatch):
+    original = pool._now
+    cell = [100.0]
+    with monkeypatch.context() as patch:
+        Clock(source=lambda: cell[0]).install(patch, scope="pool")
+        assert pool._now() == 100.0
+        cell[0] += 0.001
+        assert pool._now() == 100.001
+    assert pool._now is original

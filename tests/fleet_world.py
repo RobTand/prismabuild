@@ -1,12 +1,13 @@
 """Explicit private fleet setup using production record and queue writers."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 import time
+from typing import Literal
 
 from prismabuild import pool
 
@@ -17,13 +18,16 @@ from residency_publication import publish_landed_files
 @dataclass
 class Clock:
     now: float = 1000.0
+    source: Callable[[], float] | None = None
 
     def advance(self, seconds: float) -> float:
         self.now += seconds
         return self.now
 
-    def install(self, monkeypatch) -> None:
-        monkeypatch.setattr(time, "time", lambda: self.now)
+    def install(self, monkeypatch, *, scope: Literal["unix", "pool"] = "unix") -> None:
+        target, attribute = {"unix": (time, "time"), "pool": (pool, "_now")}[scope]
+        monkeypatch.setattr(target, attribute,
+                            self.source if self.source is not None else lambda: self.now)
 
 
 @dataclass(frozen=True)
