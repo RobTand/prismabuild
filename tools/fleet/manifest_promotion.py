@@ -325,6 +325,7 @@ def promote_ready_manifest_rows(
             # band otherwise.  Zero is a band, not a missing value (item C).
             raw_priority = item.get("priority")
             priority = -10 if raw_priority is None else int(raw_priority)
+            floor_request = SubmissionRequest()
             template = movement_template_of(queue, request, key)
             if template is None:
                 outcome["outcome"] = "refused"
@@ -343,7 +344,7 @@ def promote_ready_manifest_rows(
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
             store = replace(store_for(__file__), queue_root=Path(queue.root), cas_root=Path(row_cas))
-            with submission.write_window(SubmissionRequest(), store=store):
+            with submission.write_window(floor_request, store=store):
                 staged = residency_plan.file_manifest_row(
                     queue, key, template=template, tier=dict(stage_tier),
                     options=residency_plan.FilingOptions(),
