@@ -10,6 +10,7 @@ from kept_read_clock import after_paths
 from prismabuild import pool
 from prismabuild import stage_move
 from test_a_remounted_device_is_not_trusted import table  # noqa: F401
+from prismabuild import staged_path
 
 
 @pytest.mark.parametrize('spelling', ['plain', 'symlink-parent'])
@@ -27,7 +28,7 @@ def test_partial_names_use_the_scanned_directory_observation(
     normalized = Path(os.path.normpath(str(directory)))
     destination = directory / 'shard.safetensors'
     destination.write_bytes(b'existing staged bytes')
-    publisher = stage_move._StagedPublisher(
+    publisher = staged_path.StagedPublisher(
         queue=pool.PoolQueue(tmp_path / 'queue'), stage_root=directory,
         residency_root=tmp_path / 'residency', mover_action_key='a' * 64,
         manifest_sha256='b' * 64, tier_id='test-stage', cas_root=tmp_path / 'cas')

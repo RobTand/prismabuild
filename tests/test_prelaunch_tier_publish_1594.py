@@ -22,6 +22,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     _hexkey, _queue, GIB, MANIFEST)
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan, OTHER_TIER, TIER, TIERS)
+from prismabuild import staged_path
 
 RAM_TIER = "ram:dl380g10"
 EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
@@ -31,7 +32,7 @@ def _stage(queue, tier):
     """A registered stage root with the tier record the window reads."""
     root = queue.root.parent / f"stage-{tier.replace(':', '-')}"
     root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=tier, stage_root=str(root)) == "registered"
     return {"tier_id": tier, "tier": "stage", "mountpoint": str(root)}
 
@@ -190,7 +191,7 @@ def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=300)
     ram = tmp_path / "ram"
     ram.mkdir(exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=str(ram)) == "registered"
     tiers = {RAM_TIER: {"tier": "ram", "tier_id": RAM_TIER,
                         "host": "dl380g10", "mountpoint": str(ram),

@@ -51,6 +51,7 @@ from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 import test_a_consumer_stages_only_to_its_refill_horizon as hz  # noqa: E402
+from prismabuild import staged_path
 
 TIER = hz.TIER
 STAGE_GIB = 5
@@ -218,10 +219,10 @@ class _Loop:
 
 @pytest.fixture(autouse=True)
 def _fresh_process_state():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
 
 

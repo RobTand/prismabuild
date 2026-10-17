@@ -60,6 +60,7 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     CLAIMED_AGO_S, MOVER_SECONDS, REPORTED_AGO_S, _claim, _claim_shortage,
     _newcomer)
+from prismabuild import staged_path
 
 RAM_TIER = "ram:dl380g10"
 RAM_KIND = f"ram_gib@{RAM_TIER}"
@@ -163,16 +164,14 @@ def _ram_range(queue: pool.PoolQueue, *, promotion: str, consumer: str,
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
     assert queue.tier(RAM_TIER).take(promotion, {'ram_gib': PHASE_GIB})
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": promotion,
         "tier_id": RAM_TIER, "stage_root": str(ram), "manifest_sha256": manifest,
-        "epoch": epoch, "entries": entries})
-    reader_lease.write_material(
-        queue.records.residency_fragment_root(), consumer_action_key=consumer,
-        mover_action_key=promotion, tier_id=RAM_TIER, stage_root=str(ram),
-        manifest_sha256=manifest, generation="b" * 32, epoch=epoch,
-        entries={key: {**mention,
+        "epoch": epoch, "entries": entries},
+        generation="b" * 32,
+        material_entries={key: {**mention,
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}
                  for key, mention in entries.items()})
@@ -204,7 +203,7 @@ class Box:
         # The loop registers both roots on every cycle; a test that evicts
         # before its first cycle stands in for that loop (#628).
         for tier_id, root in ((TIER, self.stage), (RAM_TIER, self.ram)):
-            assert stage_release.register_stage_root(
+            assert staged_path.register_stage_root(
                 self.queue, tier_id=tier_id, stage_root=root) == "registered"
         self.queue.tier(TIER).mint({'stage_gib': stage_gib})
         self.queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})

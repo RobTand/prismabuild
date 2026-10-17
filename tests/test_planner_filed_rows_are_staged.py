@@ -201,8 +201,7 @@ def test_a_post_read_progress_phase_places_the_consumer_in_its_last_read_phase(
     order = ["startup", *READ_PHASES, "pricing", "finalize"]
     key, _plan_ = _planner_row(fleet, "row-linear", progress_phases=order)
     _claim(fleet, key)
-    monkeypatch.setattr(prewarm_loop, "progress_phase", lambda _q, k, _c: (
-        {"phase": "pricing", "reported_unix": 1100.0} if k == key else None))
+    monkeypatch.setattr(pool.record_store.RecordStore, 'accepted_progress_phase', lambda _q, k, _c: {'phase': 'pricing', 'reported_unix': 1100.0} if k == key else None)
 
     consumer = {c["action_key"]: c for c in tier_loop.live_consumers(fleet.queue)}[key]
 
@@ -217,8 +216,7 @@ def test_without_the_contract_a_report_reads_as_it_always_did(tmp_path, monkeypa
     key, _plan_ = _planner_row(fleet, "row-pact",
                                progress_phases=["startup", "pricing", "finalize"])
     _claim(fleet, key)
-    monkeypatch.setattr(prewarm_loop, "progress_phase", lambda _q, k, _c: (
-        {"phase": "pricing", "reported_unix": 1100.0} if k == key else None))
+    monkeypatch.setattr(pool.record_store.RecordStore, 'accepted_progress_phase', lambda _q, k, _c: {'phase': 'pricing', 'reported_unix': 1100.0} if k == key else None)
 
     consumer = {c["action_key"]: c for c in tier_loop.live_consumers(fleet.queue)}[key]
 
@@ -294,7 +292,7 @@ def test_a_claim_before_the_landing_is_said_so(tmp_path, monkeypatch):
         "destination": manifest_promotion.TIER_RECEIPT_DESTINATION,
         "status": "planned", "phases": 3}})
     _claim(fleet, key, claimed_unix=4000.0)
-    monkeypatch.setattr(prewarm_loop, "progress_phase", lambda *_a: None)
+    monkeypatch.setattr(pool.record_store.RecordStore, 'accepted_progress_phase', lambda *_a: None)
     monkeypatch.setattr(fleet.queue, "residency_verdict",
                         lambda item: {"state": "lead_not_resident"})
 

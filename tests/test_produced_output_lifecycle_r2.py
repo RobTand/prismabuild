@@ -29,6 +29,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 try:
     from prismabuild import reader_lease as rlc
@@ -341,7 +342,7 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     stage.mkdir()
     from prismabuild import stage_release
 
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
     out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert bl.BatchLedger.reserve(
@@ -422,7 +423,7 @@ def _commit_staged(queue: pool.PoolQueue, tmp_path: Path, template: dict,
 
     stage = tmp_path / f"stage-{tag}"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
     out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     origin = Path(str(oc.validate_template(template)["output_prefix"]))
@@ -541,13 +542,13 @@ def test_strict_loader_mutations_refuse_without_side_effects(
             return False
 
     calls: list[str] = []
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
 
     def _spy(q, mover, **kw):
         calls.append(mover)
         return real_evict(q, mover, **kw)
 
-    monkeypatch.setattr(stage_release, "evict", _spy)
+    monkeypatch.setattr(staged_path, 'evict', _spy)
 
     # (a) non-mapping entry in the filed record.
     batch_a = _fresh("mut-a", "2" * 64)
@@ -703,7 +704,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         stage.mkdir()
         from prismabuild import stage_release
 
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
         out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
         payload = b"W" * BIG

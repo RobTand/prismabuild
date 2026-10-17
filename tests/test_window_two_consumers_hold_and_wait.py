@@ -70,6 +70,7 @@ from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -162,7 +163,7 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     queue.tier(TIER).mint({'stage_gib': CAPACITY_GIB})
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
     tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                     "mountpoint": str(stage)}}
@@ -225,7 +226,7 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     assert got is not None and got["action_key"] == P
     queue.finish(P, status="executed")
     for mover in (p0, p1):
-        stage_release.evict(queue, mover, consumer_action_key=P,
+        staged_path.evict(queue, mover, consumer_action_key=P,
                             stage_root=str(stage))
 
     admitted = False
@@ -252,6 +253,6 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     assert got is not None and got["action_key"] == Q
     queue.finish(Q, status="executed")
     for mover in (q0, q1):
-        stage_release.evict(queue, mover, consumer_action_key=Q,
+        staged_path.evict(queue, mover, consumer_action_key=Q,
                             stage_root=str(stage))
     assert queue.tier(TIER).free_supply().get('stage_gib') == CAPACITY_GIB

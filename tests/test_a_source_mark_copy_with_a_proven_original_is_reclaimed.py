@@ -27,7 +27,8 @@ from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
-from prismabuild.stage_move import stage_relative  # noqa: E402
+from prismabuild import staged_path
+  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -36,7 +37,7 @@ NAMES = ["alpha.bin", "beta.bin"]
 
 
 def _staged(stage: Path, mount: Path, name: str) -> Path:
-    return stage / stage_relative(f"{mount}/{name}", 0, SIZE,
+    return stage / staged_path.stage_relative(f"{mount}/{name}", 0, SIZE,
                                   mount_prefix=str(mount))
 
 
@@ -55,7 +56,7 @@ def fleet(tmp_path: Path, monkeypatch):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     mount = tmp_path / "originals"
     mount.mkdir()
@@ -345,24 +346,21 @@ def test_a_pin_owner_never_moves(fleet) -> None:
     map_key = residency_map.residency_map_key(str(mount / NAMES[0]), 0)
     entry = {"stage_path": str(target), "bytes": SIZE, "offset": 0,
              "sha256": hashlib.sha256(good).hexdigest()}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,
-        "entries": {map_key: entry}})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover, tier_id=TIER,
-        stage_root=str(stage), manifest_sha256="e" * 64,
+        "entries": {map_key: entry}},
         generation=reader_lease.mint_generation(),
-        entries={map_key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
+        material_entries={map_key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
     pin = reader_lease.acquire(
         queue, consumer_action_key=consumer, attempt={"nonce": "n1", "scope_id": "s1"},
         tier_id=TIER, epoch="", span={"start_bytes": 0, "end_bytes": SIZE},
         holder={"host": "test-host", "pid": 4242}, acquire_token="test-pin",
         covers=[{"mover_action_key": mover, "manifest_sha256": "e" * 64}])
     assert pin["ok"]
-    residency_map.fragment_path(root, consumer, mover).unlink()
-    reader_lease.material_path(root, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
 
     got = _reclaim(fleet, apply=True, run_id="run-pin")
 
@@ -494,7 +492,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
 
     def available():
         occupied = sum(path.stat().st_size for path in stage.rglob("*")
-                       if path.is_file() and path.name != stage_release.STAGE_ROOT_MARKER)
+                       if path.is_file() and path.name != staged_path.STAGE_ROOT_MARKER)
         return 2 * storage_tiers.GIB + 4 - occupied
 
     monkeypatch.setattr(storage_tiers, "stage_dataset", lambda pool: {
@@ -565,7 +563,7 @@ def test_a_ranged_name_inside_a_ranged_name_still_pairs(fleet) -> None:
     nested = "nested.pbrange/0-5"
     (mount / "nested.pbrange").mkdir(parents=True, exist_ok=True)
     (mount / nested).write_bytes(good)
-    staged = stage / stage_relative(
+    staged = stage / staged_path.stage_relative(
         f"{mount}/{nested}", 0, SIZE, mount_prefix=str(mount))
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(good)
@@ -807,7 +805,7 @@ def test_apply_budget_includes_copy_verification_and_final_source_read(fleet):
 def test_a_nonzero_original_extent_is_proven(fleet):
     queue, stage, mount, quarantine, good = fleet
     (mount / "offset.bin").write_bytes(b"prefix" + good + b"suffix")
-    target = stage / stage_relative(
+    target = stage / staged_path.stage_relative(
         str(mount / "offset.bin"), 6, SIZE, mount_prefix=str(mount))
     target.parent.mkdir(parents=True)
     target.write_bytes(good)

@@ -39,6 +39,7 @@ from prismabuild import stage_release  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 try:
     from prismabuild import reader_lease as rlc  # coherent package only
@@ -960,7 +961,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
     queue = _queue(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind_contained(queue, tmp_path, template, broker_endpoint)
     instance, claimed = bound["instance"], bound["claimed"]
@@ -1240,7 +1241,7 @@ def test_pin_lifecycle_owner_split(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind(queue, template)
     instance = bound["instance"]
@@ -1529,7 +1530,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
     queue = _queue(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     bound = _bind(queue, template)
     instance = bound["instance"]
@@ -1604,7 +1605,7 @@ def test_one_origin_path_per_live_batch_refuses_before_the_first_byte(
     # This harness stages the batch without ``--produced-output-namespace``
     # (production always passes it), so the copy lives at its staged-input
     # name; derived, never spelled, so this asserts the refusal alone.
-    staged_a = stage / stage_move.stage_relative(
+    staged_a = stage / staged_path.stage_relative(
         shared, 0, 4096, mount_prefix=str(origin))
     assert staged_a.read_bytes() == b"A" * 4096
 

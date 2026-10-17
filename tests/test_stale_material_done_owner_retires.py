@@ -39,6 +39,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 SIZE = base.SIZE
 NAMES = base.NAMES
@@ -55,7 +56,7 @@ GRACE = 0.5
 def staged_name(name: str) -> str:
     """Where the stage mover stages the whole ``SIZE``-byte source ``name``."""
 
-    return stage_move.stage_relative(f"/m/{name}", 0, SIZE, mount_prefix="/m")
+    return staged_path.stage_relative(f"/m/{name}", 0, SIZE, mount_prefix="/m")
 
 
 def _identity(path: Path) -> dict[str, int]:
@@ -299,8 +300,8 @@ def test_housekeeping_retires_the_stale_owner_and_the_successor_reads(
         queue.records.residency_fragment_root(), consumer, mover).exists()
     assert queue.tier(TIER).holdings(mover) == {}
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {name: b"x" * SIZE for name in NAMES}
     path, manifest_digest, entries, digests = _successor_manifest(
         tmp_path, payloads)
@@ -349,8 +350,8 @@ def test_a_mixed_fragment_lets_the_successor_publish_the_stale_path(
         f"the coherent destination's bytes did not survive ordinary "
         f"housekeeping: {receipts}")
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {NAMES[0]: OLD_PAYLOAD, NAMES[1]: b"x" * SIZE}
     path, manifest_digest, entries, digests = _successor_manifest(
         tmp_path, payloads)

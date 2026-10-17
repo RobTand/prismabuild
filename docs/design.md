@@ -8007,7 +8007,7 @@ and mover transition locks are acquired nonblocking beneath it, so a
 contending normal mover→mint path makes cleanup defer rather than deadlock.
 Only the swept tier is released under that guard, reentrantly on the mint it
 already holds; any other tier is swept after the guard drops, the same leaf
-ordering `stage_release._evict_owned` uses after its own mint section. A tier
+ordering `staged_path._evict_owned` uses after its own mint section. A tier
 ledger's mutation guard is that tier's mint lock, so releasing every tier
 inside the guard would wait on a second tier's mint while holding the first,
 which is the one order the "mint is a leaf" analysis does not cover.
@@ -8092,7 +8092,7 @@ entries land and a running copy's receipt belongs to a previous run; a
 receipt's `entries_declared == entries_staged` equals the current fragment's
 entry count, which is what stops a historical complete receipt from speaking
 for a new partial copy after a crash or a requeue. Adoption passes unchanged
-— `tier_loop.adopt` re-issues the donor's fragment under the successor and
+— `staged_path.adopt` re-issues the donor's fragment under the successor and
 files a receipt carrying that fragment's own counts, with the tokens
 transferred rather than released. Cost is one fragment-directory listing per
 plan plus one small receipt read per fragment-backed key; no payload is read
@@ -8142,14 +8142,94 @@ claimed movers -- claims first, then fragments, because a claim exists before it
 copy starts (each mover passes a start gate before its first rename, holding
 nothing during the copy) and a fragment exists before its claim is gone. Shared
 paths are kept with `entries_shared`/`shared_with` on the receipt while the
-mover's own tokens come back and its own fragment is dropped; the last owner to
-leave deletes the file. Anything unreadable fails the pass closed with the reason
+mover's duplicate occupancy is decharged and its own fragment is dropped; the
+last owner to leave deletes the file. Anything unreadable fails the pass closed with the reason
 on the receipt. Limits, stated: the ownership scan parses every consumer's
 fragments once per egress (measured 2.9 s over 50 consumers / 140 fragments on the
 live corpus -- JSON parsing, linear in corpus size, no global map by design;
 since #988 that parse runs before the lock, and the census under it parses
 again only the fragments whose file version changed); a
 worker killed between rename and fragment publication leaves a recovery interval.
+
+`prismabuild.staged_path` owns staged-copy publication, vouch pair operations,
+ownership censuses and the acts that use them. `stage_move` and `ram_promote`
+retain copying and command orchestration. `stage_release` retains the sweep
+orchestration, including produced-batch retirement, and calls the concrete
+staged-path owner. No retired helper is re-exported from those modules.
+
+The pair operations keep these orders:
+
+* `publish_vouch` dates new coverage in its material sidecar before publishing
+  its fragment. Reissue preserves the source generation and uses the same
+  material-before-fragment order. A date without a fragment is inert.
+* `shrink_vouch` writes the surviving fragment before trimming its material.
+  Its result distinguishes a failed fragment write from a material failure
+  after the fragment committed. A partial prune keeps its whole charge and
+  remains `complete=False`, even when its document pair completed.
+* `withdraw_vouch` removes fragment, material, then retiring mark. A committed
+  withdrawal keeps the existing best-effort material removal. An overrun
+  mover discards its own unpublished pair with strict material errors and
+  touches no retiring mark. Neither operation deletes payload bytes.
+
+Adoption takes the donor and successor's existing mover transition locks
+without waiting. A live or unreadable mover state declines. It reads the
+donor pair again under the existing stage ownership lock before mutation,
+compares every dated file identity there, and retains an unknown or distinct
+successor pair. A successor miss is confirmed through the existing strict
+metadata-absence reader, including its NFS parent revalidation. Same-pair
+reissue after an interrupted adoption remains valid. After the full token
+handover, adoption files its existing complete successor receipt before donor
+withdrawal, under the same ownership lock. If interrupted before that receipt,
+both pairs must still agree. If interrupted after donor fragment removal, a
+fresh owner verifies the receipt's exact donor/consumer/range binding, the
+successor pair, live file identities and its whole-range occupancy charge.
+Only then may it finish donor material and retiring-mark cleanup. An unknown
+or different receipt or pair retains authority. Repeating completed adoption
+preserves receipt bytes and moves no token again. No receiptless donorless
+legacy state is guessed into a completed adoption. These process-interruption
+controls establish filesystem effects visible to a fresh owner; they do not
+simulate power loss, stable-storage persistence or NFS durability. There is no
+adoption journal or new durable state.
+
+The egress still reads claims, fragments, pins and promotion sources in its
+existing order. Source-mark reclamation asks the same owner for one
+`RetainedPaths` verdict. Its hint primes the existing memo. The owner then
+takes the existing ownership lock, repeats the conditional census and holds
+the lock through the act. Each refusal keeps its previous short circuit and
+error precedence. Neither a hint nor an incomplete census grants authority.
+The parse counters and timing include that locked re-census.
+
+The census entry points answer different questions. Their read budgets and
+conditional error precedence remain part of each pass:
+
+| Pass | Question and census | Hint | Lock, re-census and act | Read and unknown policy |
+| --- | --- | --- | --- | --- |
+| Held or uncharged-owner sweep | Which candidate namespaces name this mover? `fragment_census` | Captured listings and validated fragments select candidates only. | `evict` or `prune_stale_mentions` takes actual stage ownership and repeats its authority census. | Strict fragment reader and existing byte cap; malformed files, symlinks, unknown directories and incomplete listings taint. A selection never authorizes unlink. |
+| Ordinary/shared egress | Who can still write or read these exact paths? `ownership_census` composes claimed destinations, `fragment_owners`, pins, then promotion sources. | Same ordered census plus own material and path fences fills the memo before ownership. | `_evict_owned` repeats the ordered census under ownership and holds it through containment, payload unlink and vouch withdrawal. | Claim records are read each time; immutable manifest-derived paths may be memoized. Any taint retains bytes and charge. Own claimed paths differ from foreign co-owners. Empty-entry branches keep their short circuits. |
+| Stale-mention prune | Which mentions can be removed while preserving surviving owners? `ownership_census` | Census and containment fences run only for nonempty observed entries. | Under ownership, donor documents are read again and must equal the observation; the census then repeats before classification, unlink and fragment-then-material shrink. | Document versions are captured before reads and compared after classification. Same-tick or untrusted stamps cannot authorize a skip checkpoint. Trim/shrink preserve the material's own epoch, including empty non-RAM epochs. |
+| Source-mark reclaim | Is any known publisher or reader retaining these paths? `source_mark_census` returns one `RetainedPaths` verdict. | Attribution, pins, claims and promotion-source reads prime the memo; hints never authorize an act. | `source_mark_authority` takes ownership, checks in-flight movers first, then repeats each conditional census and yields the verdict while retaining the lock through unlink. | First failing question retains with its original reason. Attribution uses its bounded taint report; later reads do not run after an earlier authority refusal. |
+| Unattributed reconciliation | Which paths are wanted, which are named by any fragment, and which copies are residue? `_named_census` returns both sets from one fragment walk. | The same sets, pins and conditional promotion sources prime the memo. | Reconciliation repeats under ownership, then checks current writer state and containment before deletion. | Wanted attribution and any-name attribution are distinct policies. Unknown ownership, pin state, writer state or promotion sources retain. |
+| Bounded orphan recovery | Does anything retain the exact paths derived from the sealed range? `fragment_owners`, pins, claims and promotion sources. | Scope verification and the same readers run before ownership. | Under ownership it rechecks head/consumer readiness, in-flight movers and the scope's retention questions in order before unlink. | Every fragment retains, wanted or not. This bounded scope must not use the wanted-only view or tolerant map composition. Each refusal keeps its original short circuit. |
+| Staged-copy publication | Can this destination incarnation be reused or replaced? `StagedPublisher` reads current material, claim and live-state evidence. | Copy preparation has no mutation authority. | Existing mover/root ownership locks cover the fresh arbitration, identity comparison, rename and material-before-fragment publication. | Action reads are untrusted by default. Unknown competing writers and dates retain; a hint never proves absence. |
+| Adoption | Can this exact completed range and charge change namespace? Donor/successor pairs, complete receipts and live file identities. | Descriptor matching selects a candidate only. | Both existing mover transition locks and actual stage ownership cover fresh pair/receipt checks, handover, complete receipt and donor withdrawal. | Exact whole-range accounting; live or unknown movers, documents and receipts retain. Retry uses no version cache or second handover. |
+
+`attributed_census` is the strict wanted-path view over `_named_census`;
+`attributed_stage_paths` is a paths-only observation for callers that cannot
+use its taint as deletion authority. `claimed_paths_attributed` distinguishes
+an evicted mover's own live writer from foreign co-owners. These are projections
+with distinct questions, not independent caches. Combining them into one
+unconditional global scan would change conditional reads, budgets and refusal
+precedence. The literal four-to-one verdict applies to source-mark reclaim;
+ordinary egress already composes its four questions in `ownership_census`.
+
+These readers continue to use `kept_reads.CensusMemo`, `CensusIndex`, captured
+directory listings and their filesystem-trust rules. Adoption's action-side
+reads keep no trusted version cache. `RecordStore.accepted_progress_phase`
+owns the existing bounded strict lease observation used to determine shared
+interest. Physical produced-output namespace constants live in the lower
+`output_vocabulary` module. Batch lifecycle and its intent-specific path
+policies remain with the batch owner. Fragment, material, lease and lock path
+grammars, schema bytes, generations and epochs are unchanged.
 
 Stage and RAM movers also use this ownership lock when publishing a copied
 file (#751/#752). Copying stays outside the lock. Publication adopts an
@@ -8194,7 +8274,7 @@ collects every other consumer and mover whose fragment names the divergent
 path, and judges each owner under its transition locks. The locks are taken
 without blocking, in the usual order: consumer, then mover, then the stage
 ownership lock. An owner has ended when its consumer is neither queued nor
-claimed and has exactly one outcome record (`stage_release._unended_owner`,
+claimed and has exactly one outcome record (`staged_path.unended_owner`,
 the dead-owner sweep's proof), and its mover is neither queued nor claimed. A
 consumer whose queue record is in `ready/` or `claimed/` is live. A sibling,
 another mover of the copy's own consumer, is judged by its mover alone. Anything
@@ -8283,7 +8363,7 @@ lock keeps its stamp fence (#1004), and `ownership_lock_held` accounting
 is untouched.
 
 The egress holds the lock for its act, not its census (#988). Before this
-change `stage_release.evict` took the stage root's ownership lock and then
+change `staged_path.evict` took the stage root's ownership lock and then
 ran the fragment, claim, source and pin censuses, judged every entry with two
 `resolve` calls each, unlinked, and pruned empty directories, all in one
 hold. Every publication, pin and start gate on that root waited for the
@@ -8353,7 +8433,7 @@ sidecars reused because their version had not changed. An egress whose
 state did not change between the two censuses parses nothing under the
 lock. `reconcile` and `recover_orphaned_range` record the same two counts.
 The `beyond-horizon-evicted` and `beyond-horizon-eviction-declined` events
-copy these fields (`stage_release.lock_scope`), and the tier loop files
+copy these fields (`staged_path.lock_scope`), and the tier loop files
 those events in the consumer's event file, which a kill's ending record
 reads (#990). Stage and RAM mover receipts record `start_gate_wait_s`; the
 stage mover also records `resume_lock_wait_s`, the first lock it waits
@@ -8816,7 +8896,7 @@ lock, against a census of the residency forest that began after the
 owners' judgment. That census listed the whole forest once per name under the
 lock every mover and egress on the stage root waits for: 38 to 66 ms for 429
 namespaces on dl380g10, about 100 s for a 2,048-name range whose names all
-diverge from one dead owner. `_StagedPublisher._forest_census` keeps each
+diverge from one dead owner. `StagedPublisher._forest_census` keeps each
 directory's fragment names under the same stamp, so the census under the lock
 is one `lstat` per directory and one `stat` and index lookup per fragment,
 with no listing. Records are still looked up through the #761 index on every
@@ -9194,7 +9274,7 @@ timeout would need a constant nothing measures.
   of that window. `mark_superseded` from the loop runs under the consumer's
   lock taken the same way, and an unmarked plan is marked by the next cycle
   that meets the withdrawn mover. The ram-promotion release and the
-  beyond-horizon eviction take the mover's lock before `stage_release.evict`,
+  beyond-horizon eviction take the mover's lock before `staged_path.evict`,
   and a busy mover is retained or declined.
 * **Everything else in the cycle runs under
   `pool.transition_locks_never_wait`.** Inside it, an acquire that asks to
@@ -9986,7 +10066,7 @@ and fragments together: `leases/` (pins and retiring marks), `material/`
 directories are bookkeeping, and are never parsed as namespaces, while the
 produced fragments are real ownership evidence one level deeper at
 `produced-output-fragments/<batch namespace>/<mover>.json` (reached through
-`produced_output.output_fragment_root`). `stage_release._fragment_census`
+`produced_output.output_fragment_root`). `staged_path.fragment_census`
 walks both layouts — legacy flat `<consumer>/<mover>.json` and the nested
 produced namespaces — and is strict on purpose: a directory that is neither
 reserved bookkeeping nor a 64-character namespace, a `.json` document
@@ -11648,7 +11728,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   `stage_output_intent`/`fund_output_batch` (owner -> mover transition locks)
   and never across the reconcile's drive. `retire_batch` was changed the same
   way: it selects and captures under the lock, releases it, runs
-  `stage_release.evict` (mover transition lock, then the STAGE ROOT's
+  `staged_path.evict` (mover transition lock, then the STAGE ROOT's
   ownership lock, then containment reclamation below that) with no lock of
   this lane held, then reacquires and revalidates the exact
   manifest/mover/generation before filing `retired`. Holding an output-prefix
@@ -11711,7 +11791,7 @@ funding record that is not `released`. A mover outside this lane has no such
 record and is swept exactly as before.
 
 Retention is safe here only because the leftovers have a named owner:
-`produced_output.retire_batch` runs `stage_release.evict` for that mover key,
+`produced_output.retire_batch` runs `staged_path.evict` for that mover key,
 which deletes the files and returns the holder's tokens in the same call --
 exactly once, with a re-drive answering `duplicate` and returning nothing
 further. The consumer window's twin (#627: a failed mover's partials, held by
@@ -11720,7 +11800,7 @@ instead; nothing in this contract changes it.
 
 Where that egress runs follows the tier record (#801). Only the tier host
 mounts the stage read-write -- the GPU hosts mount it read-only -- so
-`retire_batch` runs `stage_release.evict` in its own process only when the
+`retire_batch` runs `staged_path.evict` in its own process only when the
 announced tier `host` is the box it is on. Anywhere else it seals the egress
 node `pbrun` seals for a consumer's staged range (`stage_release.py` off the
 tier record, one CPU and one GiB, no tier demand, no residency block, no data
@@ -11744,14 +11824,12 @@ the new one. A process inside a container reads the container's name as its
 hostname unless it was given the host's, and then takes this route, which is
 the safe direction: the route works from any box, the tier host included.
 
-`stage_release` is a fleet tool, not part of the `prismabuild` package, and a
-production owner imports the package from `<generation>/src` with the
-generation's `tools/` off its import path. `retire_batch` therefore imports
-the tool only on the in-process route, and an owner that cannot import it takes
-the tier-host route even on the tier host. The package imports no other fleet
-tool by bare name; a test fixture that puts `tools/fleet` on `sys.path` hides
-such an import, so the tier-host tests make the owner's calls with
-`stage_release` unimportable.
+`produced_output` calls the package owner `staged_path.evict` directly on the
+in-process route. Staged-copy containment has no fleet-tool import or
+`ImportError` fallback. Produced-output physical namespace constants live in
+`output_vocabulary`, below both owners; the staged-path owner does not import
+produced-output orchestration. The existing tier-host route and its
+missing-announcement refusal keep their original policy.
 
 Four behaviours differ from the in-process route, all deliberate. The staged
 paths are filed on the still-live copy before the action is published, because
@@ -12463,7 +12541,7 @@ it gives back landed ranges past their readers' horizons:
 * Not at all when every candidate together could not make the room (#632:
   no futile eviction). The event is `beyond-horizon-eviction-futile`.
 
-Each eviction is all or nothing: `stage_release.evict(..., whole=True)`
+Each eviction is all or nothing: `staged_path.evict(..., whole=True)`
 judges every entry under the ownership lock before the first unlink. A range
 a reader has pinned, that a promotion is reading, or whose ownership the
 pass cannot prove is declined whole — nothing unlinked, no retiring mark,
@@ -12559,7 +12637,7 @@ tmpfs, which is the case where another consumer's promotion needs the room.
 ram tiers as well as stage tiers, on the same pressure (`window_pressure`'s
 ram leg) and the same rules: farthest-needed first, whole or not at all,
 never inside a horizon or the advance, and not when the room cannot be made.
-The eviction is `stage_release.evict` against the announced ram root. The
+The eviction is `staged_path.evict` against the announced ram root. The
 newcomer and claim relief terms count these ranges on the ram tier as they
 do on the stage.
 
@@ -13848,7 +13926,7 @@ record. A claimed mover with no usable report keeps the claim-time price.
 
 An egress (`stage_release.py`) holds the stage's ownership lock from the
 census it takes under the lock to the fragment drop
-(`stage_release._evict_locked`, #988), and every mover takes the same lock
+(`staged_path._evict_locked`, #988), and every mover takes the same lock
 at its start gate (`PoolQueue.ownership_start_gate`). Since #1010 the worker
 credits a mover's wait while the lock is held, so the mover is not killed.
 The egress itself was sealed with no progress policy and no execution
@@ -13980,7 +14058,7 @@ goes ahead without the record.
 A mover's other holds file no record, and need none. Its start gate
 (`PoolQueue.ownership_start_gate`) takes the lock and releases it at once,
 holding nothing; a record would only lengthen it. Its publisher's per-entry
-holds (`_StagedPublisher._ownership`) come after the gate, once the mover has
+holds (`StagedPublisher._ownership`) come after the gate, once the mover has
 reported entering `copy`, so the worker has stopped looking; a record per
 entry would add a write and an unlink on the queue mount to every
 publication under the lock (#981). A mover sealed without the `start` phase
@@ -14164,7 +14242,7 @@ a second time.
 The head's reading phase, and the reading phase of any consumer ranked
 before it, a leg whose copy or egress is queued or running, and a leg whose
 promotion holds the ram tier (#640) are never candidates. Each eviction is
-whole (`stage_release.evict`, `whole`), and a pass whose candidates together
+whole (`staged_path.evict`, `whole`), and a pass whose candidates together
 cannot reach the target evicts nothing (`claim-order-eviction-futile`, the
 #632 rule). The events are `claim-order-evicted`,
 `claim-order-eviction-declined`, `claim-order-eviction-futile` and
@@ -14264,7 +14342,7 @@ in one place:
   when blocked).
 * I2. An eviction is whole or declined, and only of a complete, unpinned
   copy whose copy and egress are not queued or running
-  (`stage_release.evict` with `whole`; `_claim_order_candidates`'s
+  (`staged_path.evict` with `whole`; `_claim_order_candidates`'s
   `held`, `busy`, `_landing_rate` and ram-copy checks).
 * I3. A consumer's blocked-since time does not move while it stays blocked
   on one range (`tier_loop._blocked_since` reads the reader's own
@@ -14405,13 +14483,13 @@ and at most one candidate walk a cycle, and at most two censuses.
 
 **A range several claimed consumers read is charged to each.** Two
 consumers of one manifest name the same bytes (`tier_loop._descriptor`),
-and the staged name is content-addressed (`stage_move.stage_relative`), so
+and the staged name is content-addressed (`staged_path.stage_relative`), so
 the second copy adopts the first's file. The ledger is not told. Each
 consumer's mover is its own action key, because the key hashes
 `--consumer-action-key` (`tools/fleet/pbrun.py`), and each claim takes the
 range's full tokens from free (`PoolQueue._begin_tier_acquire`). Adoption
 takes over only a range that no live item names
-(`tier_loop.adoptable_ranges`). So the commitment counts the range once per
+(`staged_path.adoptable_ranges`). So the commitment counts the range once per
 consumer. Charging it once in the census alone would make the census
 disagree with the ledger it reads, and the fix belongs in the mover's
 identity and the tier ledger's claim, which this change does not touch.
@@ -14660,7 +14738,7 @@ before any path state is classified, so a by-path, first-mention or
 partially-known sidecar can never authorize a deletion; extra material keys
 are the crash superset and are never ownership. Positive staleness for an
 existing regular file is **inode difference**, the same rule
-`_StagedPublisher._proof_candidate` reads (#755); a same-inode size/time
+`StagedPublisher._proof_candidate` reads (#755); a same-inode size/time
 change is divergence, not permission -- this prune path does not take
 `_proof_candidate`'s #1078 content tie-break for a same-inode, same-size
 timestamp drift, since a stale-mention prune must not cost a rehash on its
@@ -14760,7 +14838,7 @@ normally installs a new inode, but two rename cycles in one clock tick can be
 given the freed inode number the census read, and at the same size every
 field of the version can match. So the owner's own fragment and material are
 installed only at a version whose ctime is strictly before a clock read taken
-before their `lstat` (`stage_release._fenced_path_version`, applying
+before their `lstat` (`staged_path._fenced_path_version`, applying
 `FilesystemTrust.file_version`), and a co-owner fragment only at the version
 the census memo kept, which the memo keeps under the same rule (#1045). Every
 later change to a file, a new file under its name included, is stamped at or
@@ -14849,7 +14927,7 @@ budget (#1077) leaves for a later cycle marks its tiers the same way.
 
 A partially pruned owner is a **per-path cache, never a whole-range donor**.
 Its historical move receipt stays factual -- nothing rewrites it to hide the
-prune -- so whole-range adoption notices the disagreement: `tier_loop.adopt`
+prune -- so whole-range adoption notices the disagreement: `staged_path.adopt`
 refuses unless the current donor fragment still agrees with the complete
 receipt's `entries_declared`/`entries_staged`, **covers its staged bytes
 exactly**, and matches the requested leg's range. Coverage is equality, not a
@@ -15142,7 +15220,7 @@ payload bytes copied for two blocked entries on one worker. The policy is
 therefore to bound the wasted work and surface the obstruction, not to
 conclude anything about the remaining names.
 
-The gate signals that refusal with `stage_move._PublicationRefused`, an
+The gate signals that refusal with `staged_path.PublicationRefused`, an
 `OSError` subclass, so every caller that already catches `OSError` keeps
 catching it and no existing behavior breaks on the type; the copier
 deliberately changes its range handling for it. On receiving it a copier
@@ -15186,7 +15264,7 @@ refill rate #1081 measured on the live RAM tier after a role restart (16
 threads parked in the publish poll).
 
 Under positive absence the gate now proves the name by its own bytes
-(`_StagedPublisher._content_proof`): the file is opened without following a
+(`StagedPublisher._content_proof`): the file is opened without following a
 symlink, hashed, and adopted if it is a regular file of the declared length
 whose SHA-256 is the trusted digest and whose identity (inode, size, mtime,
 ctime) is the same after the read as before it. The trusted digest is the
@@ -15237,7 +15315,7 @@ over all of it.
 
 **Dates land before the vouches they date, and go after them.** The stage
 mover (`stage_move.move`'s `publish`), the RAM promotion
-(`ram_promote.promote`) and range adoption (`tier_loop.adopt`) now write the
+(`ram_promote.promote`) and range adoption (`staged_path.adopt`) now write the
 sidecar first and the fragment second, as the #1026 fan-out already did. A
 kill between the two leaves a date that no vouch cites, and that is inert:
 
@@ -15293,7 +15371,7 @@ fragment's keys for fleets that do.
 ### A publish wait is recorded and named by verdict (#994)
 
 Before this, a publication that waited for another publisher left no trace of
-having waited at all. `_StagedPublisher.publish` polls the ownership gate's
+having waited at all. `StagedPublisher.publish` polls the ownership gate's
 four wait verdicts -- a fragment names the destination without a usable date
 (`owned`), a live mover claim covers it (`live_publisher`), a sibling copy is
 in flight (`in_flight`), or nothing names it and it has not been re-verified
@@ -15332,7 +15410,7 @@ the recorded error both name the verdict.
 ### A killed mover's copies that no fragment names are reclaimed, and sized (#1088)
 
 Both movers set the prewarm loop's `user.pbstage.source` on every copy before
-its rename, and `stage_release.reconcile` read that mark as a prewarm object:
+its rename, and `staged_path.reconcile` read that mark as a prewarm object:
 counted in `unowned_left`, never deleted. A copy a mover renamed after its
 last fragment is named by nothing: at most one `FRAGMENT_PUBLISH_S` interval
 of a stage mover's range per kill, and every copy of a RAM promotion's range,
@@ -15428,7 +15506,7 @@ Before #1026, every consumer sealed its own mover for every range it reads. A
 mover's action key is the digest of its whole sealed body, and that body
 carries `--consumer-action-key`, so two consumers of one manifest named two
 movers for the same bytes. Both copied into the same content-addressed staged
-names (`stage_move.stage_relative`). Both claims took the range's tokens from
+names (`staged_path.stage_relative`). Both claims took the range's tokens from
 free (`PoolQueue._begin_tier_acquire`), and the joint commitment charged the
 range once per consumer.
 
@@ -15503,7 +15581,7 @@ one more copy of the vouch and one more egress. Within a cycle each mover's
 index is read once (`residency_plan.share_namespace_of`).
 
 **Interest is derived, not filed.** A consumer is interested in a shared
-range while all of these hold (`stage_release.shared_interest`):
+range while all of these hold (`staged_path.shared_interest`):
 
 - it is in `ready/` or `claimed/` and declares residency leads;
 - its frozen plan names the mover as a stage leg;
@@ -15515,7 +15593,7 @@ would need a reaper of its own. Derived this way, a consumer requeued from its
 first phase regains its interest by construction.
 
 **An egress drops one interest.** Each consumer keeps its own egress row. For
-a shared range, `stage_release.evict` runs under the mover's transition lock
+a shared range, `staged_path.evict` runs under the mover's transition lock
 and reads the mover index. While another consumer is interested, the egress
 removes only the egressing consumer's fragment, material, and retiring mark,
 and returns a complete receipt with `interest_dropped` and no tokens moved.
@@ -15565,7 +15643,7 @@ now treats one mover named by several plans as one holder:
 withdrawn (#620), but a mover is not withdrawn while another consumer that is
 not dead has a filed plan naming it, or while that does not read
 (`residency_plan.plan_interest`, #1114). The witness is the filed plan rather
-than `stage_release.shared_interest`'s live rows and progress, because a
+than `staged_path.shared_interest`'s live rows and progress, because a
 sealed consumer's plan is filed before its row is visible. The dead consumer's
 plan then stays filed, because `reap` does not archive a plan under a live
 child, and a later pass reaps it once the mover has ended.
@@ -15690,7 +15768,7 @@ fragment names (and, since #1088, a mover's copy no fragment names whose
 writer has ended). None of them asked *whose* stage was being walked. On
 2026-09-18 at 16:05Z a test on the storage box announced `/stage/prewarm` to a
 queue under `tmp_path` and ran one tier cycle; that queue's fragments attributed
-nothing, the prewarm xattr marked nothing, and `stage_release.reconcile` deleted
+nothing, the prewarm xattr marked nothing, and `staged_path.reconcile` deleted
 671 GB of staged shards in one walk while the run they were staged for was
 reading them. The bytes came back by the #624 recompute movers over the next
 two hours. The mechanism was working exactly as specified; the specification
@@ -15698,7 +15776,7 @@ had no owner.
 
 **The tier loop marks its own stage before it announces it.** For every stage
 tier discovered on the loop's own host, `cycle` calls
-`stage_release.register_stage_root`, which writes
+`staged_path.register_stage_root`, which writes
 `<mountpoint>/.prismabuild-stage.json` naming the queue by the real path of its
 root, the tier id, the host and the time (schema
 `prismabuild.stage-root.v1`), by temporary and `os.replace`. A marker that
@@ -15800,7 +15878,7 @@ reclaims it once no fragment names it and that writer has ended; see
 #1088 above) -- and every later head pays the
 publisher's 30 s grace once per orphaned entry (measured on the incident
 that motivated this: 36439 entries, 10895318814 bytes, ~0.53 files/s).
-`stage_release.recover_orphaned_range` is the operator-scoped repair for
+`staged_path.recover_orphaned_range` is the operator-scoped repair for
 exactly that history, and nothing else: it changes no lifecycle the loop
 owns, takes no scope from its caller, and defaults to a dry run.
 
@@ -15983,7 +16061,7 @@ block when it names leads (`residency_source: row`), else, for a pool item
 action key) with a filed plan, the block that plan implies, in the shape
 `pbcampaign` writes (`residency_source: filed_plan`). `tier_loop.live_consumers`,
 the RAM credit, the claimed staged-wait attribution, `_uncensused_tier`,
-`stage_release.shared_interest` and the orphan sweep's `live_claims` all
+`staged_path.shared_interest` and the orphan sweep's `live_claims` all
 read through it, so a planner row's first phase stages while the row is
 READY, before its claim, exactly as a `--residency stage` submission's does.
 Its receipt's `tier` block then records the outcome the loop observed:
@@ -16056,7 +16134,7 @@ so a mover keeps that token from `finish` until an egress deletes them, which
 is what the paragraph above about released-but-resident capacity is defending.
 `fill_mb_s_pool_side` prices the pool-side bandwidth a copy *draws*, and
 nothing draws it once the copy stops. `keep_tier` kept both, so every finished
-mover held its full rate for the life of the fleet and `tier_loop.adopt`
+mover held its full rate for the life of the fleet and `staged_path.adopt`
 carried one range's rate on to each successive consumer although adoption
 copies no bytes. Measured on `prismabuild-stage:dl380g10` on 2026-09-18: 506 of
 635 fill units held by seven terminal or never-published keys, 129 free against

@@ -38,8 +38,8 @@ from prismabuild.stage_marks import (  # noqa: E402
 )
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
-from prismabuild import stage_release  # noqa: E402
-from prismabuild.stage_move import RANGE_SUFFIX, stage_relative  # noqa: E402
+from prismabuild import staged_path
+  # noqa: E402
 
 #: The event each reclaim receipt publishes.
 RECLAIM_EVENT = "stage-source-mark-reclaimed"
@@ -74,7 +74,7 @@ def _refusal(stage: Path, refusal: str, **fields: object) -> dict[str, object]:
 def parse_staged_name(stage_rel: str) -> tuple[str, int, int] | None:
     """Split ``<rel>.pbrange/<offset>-<size>`` into its parts, or None."""
 
-    marker = RANGE_SUFFIX + "/"
+    marker = staged_path.RANGE_SUFFIX + "/"
     # From the right: a source path may itself hold ``.pbrange/<a>-<b>``,
     # and the range is always the last component (stage_move.stage_relative
     # is injective on it).
@@ -264,14 +264,14 @@ def _source_mark_only(path: Path) -> bool | None:
     try:
         os.getxattr(path, STAGE_MOVER_XATTR, follow_symlinks=False)
     except OSError as exc:
-        if exc.errno not in stage_release._XATTR_ABSENT:
+        if exc.errno not in staged_path._XATTR_ABSENT:
             return None
     else:
         return False
     try:
         os.getxattr(path, STAGE_SOURCE_XATTR, follow_symlinks=False)
     except OSError as exc:
-        if exc.errno in stage_release._XATTR_ABSENT:
+        if exc.errno in staged_path._XATTR_ABSENT:
             return False
         return None
     return True
@@ -306,7 +306,7 @@ def _walk_source_marks(stage: Path, attributed: set[str]
             if directory_fd is not None:
                 os.close(directory_fd)
         for entry in entries:
-            if entry.name == stage_release.STAGE_ROOT_MARKER:
+            if entry.name == staged_path.STAGE_ROOT_MARKER:
                 continue
             entry_path = directory / entry.name
             try:
@@ -687,7 +687,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
                 proof = extent_digest(blob)
                 if proof is None or proof[0] != digest:
                     raise ValueError(f"reference manifest {digest} is unreadable")
-                layout = stage_release._cached_manifest_layout(own_cas, digest)
+                layout = staged_path.manifest_layout_for(own_cas, digest)
                 if layout is None:
                     raise ValueError(f"reference manifest {digest} is invalid")
                 layouts[key] = layout
@@ -695,11 +695,11 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             start = value.get("range_start_bytes", 0)
             end = value.get("range_end_bytes",
                             sum(int(entry["bytes"]) for entry in entries))
-            if (stage_release._bounded_int(start) is None
-                    or stage_release._bounded_int(end) is None or end < start):
+            if (staged_path.bounded_int(start) is None
+                    or staged_path.bounded_int(end) is None or end < start):
                 raise ValueError("reference names an invalid extent")
             for entry in manifest_layout.entries_between(entries, start, end):
-                relative = stage_relative(
+                relative = staged_path.stage_relative(
                     str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
                     mount_prefix=prefix)
                 named.update(str(root / relative) for root in roots)
@@ -748,7 +748,7 @@ def _reference_census(queue: pool.PoolQueue, *, stage: Path, tier_id: str,
             key = value.get("action_key")
             if not isinstance(key, str):
                 raise ValueError(f"{path}: reference names no action")
-            request, why = stage_release._validated_sealed_request(own_cas, key)
+            request, why = staged_path.validated_sealed_request(own_cas, key)
             if request is None:
                 raise ValueError(f"{path}: {why}")
             direct(request)
@@ -847,9 +847,9 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
         memo = read_memo(memo_path) if memo_path is not None else {}
     except (OSError, ValueError) as exc:
         return _refusal(stage, f"memo unreadable: {exc}", tier_id=tier_id)
-    refusal = stage_release.stage_root_refusal(queue, stage)
+    refusal = staged_path.stage_root_refusal(queue, stage)
     if refusal is not None:
-        receipt["event"] = stage_release.STAGE_ROOT_REFUSED_EVENT
+        receipt["event"] = staged_path.STAGE_ROOT_REFUSED_EVENT
         receipt["skipped"] = refusal
         receipt["complete"] = False
         receipt["errors"] = [refusal]
@@ -900,19 +900,10 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                else str(queue.root.parent / "cas"))
     census_memo = kept_reads.CensusMemo()
     census_started = time.perf_counter()
-    hinted: set[str] = set()
     try:
-        hinted, _hint_taint = stage_release._attributed_census(
-            queue, wanted=None, residency_root=residency_root,
-            memo=census_memo)
-        hint_pins, _hint_pin_taint = stage_release.reader_lease.live_for(
-            queue, None, residency_root=residency_root,
-            memo=census_memo.pins)
-        hinted |= set(hint_pins)
-        stage_release._claimed_paths(queue, tier_id, own_cas,
-                                     memo=census_memo)
-        stage_release._claimed_source_paths(queue, stage, own_cas,
-                                            memo=census_memo)
+        staged_path.source_mark_census(
+            queue, tier_id=tier_id, stage=stage, cas_root=own_cas,
+            residency_root=residency_root, memo=census_memo, hint=True)
     except (OSError, ValueError, pool.PoolContractError):
         pass
     census_s = time.perf_counter() - census_started
@@ -1011,63 +1002,16 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
 
     pruned: list[Path] = []
 
-    def _held_reclaim() -> dict[str, object]:
-        parse_counts = census_memo.counts()
-        validate_started = time.perf_counter()
-        try:
-            in_flight = stage_release.movers_in_flight(queue, tier_id=tier_id)
-        except (OSError, pool.PoolContractError, ValueError) as exc:
-            receipt["skipped"] = "queue_census_unreadable"
+    def _held_reclaim(verdict: staged_path.RetainedPaths, parse_counts,
+                       validate_started: float) -> dict[str, object]:
+        if verdict.refusal:
+            receipt["skipped"] = verdict.refusal
             receipt["complete"] = False
-            receipt["errors"] = [str(exc)]
+            receipt["errors"] = list(verdict.errors)
+            if verdict.movers_in_flight:
+                receipt["movers_in_flight"] = list(verdict.movers_in_flight)
             return receipt
-        if in_flight:
-            receipt["skipped"] = "movers_in_flight"
-            receipt["movers_in_flight"] = sorted(in_flight)
-            receipt["complete"] = False
-            receipt["errors"] = ["movers_in_flight"]
-            return receipt
-        attributed, attribution_taint = stage_release._attributed_census(
-            queue, wanted=None, residency_root=residency_root,
-            memo=census_memo)
-        if attribution_taint:
-            receipt["skipped"] = "attribution_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [
-                f"ownership uncertain: {item}"
-                for item in attribution_taint[
-                    :stage_release.ATTRIBUTION_TAINT_LIMIT]]
-            return receipt
-        pin_owners, pin_taint = stage_release.reader_lease.live_for(
-            queue, None, residency_root=residency_root,
-            memo=census_memo.pins)
-        if pin_taint:
-            receipt["skipped"] = "pin_census_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [f"ownership uncertain: {item}"
-                                 for item in pin_taint]
-            return receipt
-        attributed |= set(pin_owners)
-        claimed, claim_taint = stage_release._claimed_paths(
-            queue, tier_id, own_cas, memo=census_memo)
-        if claim_taint:
-            receipt["skipped"] = "claim_census_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [f"ownership uncertain: {item}"
-                                 for item in claim_taint]
-            return receipt
-        for relative in claimed:
-            attributed.add(os.path.normpath(os.path.join(str(stage),
-                                                         str(relative))))
-        handoffs, handoff_taint = stage_release._claimed_source_paths(
-            queue, stage, own_cas, memo=census_memo)
-        if handoff_taint:
-            receipt["skipped"] = "promotion_census_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [f"ownership uncertain: {item}"
-                                 for item in handoff_taint]
-            return receipt
-        attributed |= {os.path.normpath(str(one)) for one in handoffs}
+        attributed = set(verdict.paths)
         try:
             # Read, not used per file: the ledger names action keys,
             # never paths, so it cannot attribute a copy. The read
@@ -1091,7 +1035,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
             return receipt
         receipt["census_validate_s"] = round(
             time.perf_counter() - validate_started, 6)
-        receipt.update(stage_release._locked_parse_record(
+        receipt.update(staged_path.locked_parse_record(
             census_memo, parse_counts))
 
         def _named(stage_rel: str) -> bool:
@@ -1298,7 +1242,7 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                     queue, stage=stage, tier_id=tier_id, cas_root=cas_root,
                     residency_root=residency_root)
                 attributed.update(fresh)
-                if (_named(rel) or stage_release.movers_in_flight(
+                if (_named(rel) or staged_path.movers_in_flight(
                         queue, tier_id=tier_id)):
                     raise ValueError("reference changed")
                 _safe_tree_path(dest, quarantine)
@@ -1335,9 +1279,11 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
         return receipt
 
     asked = time.perf_counter()
-    with stage_release._stage_ownership(
-            queue, stage, role="reclaim-source-marks") as granted:
-        result = _held_reclaim()
+    with staged_path.source_mark_authority(
+            queue, tier_id=tier_id, stage=stage, cas_root=own_cas,
+            residency_root=residency_root, memo=census_memo) as authority:
+        granted, verdict, parse_counts, validate_started = authority
+        result = _held_reclaim(verdict, parse_counts, validate_started)
     released = time.perf_counter()
     if "entries" not in result:
         result["entries"] = [
@@ -1354,8 +1300,8 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
     prune_started = time.perf_counter()
     for parent in sorted(set(pruned), key=lambda one: len(one.parts),
                          reverse=True):
-        stage_release._prune_empty(parent, stage)
-    result.update(stage_release._hold_record(
+        staged_path.prune_empty(parent, stage)
+    result.update(staged_path.hold_record(
         lock_wait_s=granted - asked, lock_held_s=released - granted,
         census_s=census_s, prune_s=time.perf_counter() - prune_started))
     return result
@@ -1420,9 +1366,9 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
             return receipt
         combined[rel] = entry
     entries = list(combined.values())
-    refusal = stage_release.stage_root_refusal(queue, stage)
+    refusal = staged_path.stage_root_refusal(queue, stage)
     if refusal is not None:
-        receipt["event"] = stage_release.STAGE_ROOT_REFUSED_EVENT
+        receipt["event"] = staged_path.STAGE_ROOT_REFUSED_EVENT
         receipt["complete"] = False
         receipt["errors"] = [refusal]
         return receipt
@@ -1518,11 +1464,11 @@ def restore_run(queue: pool.PoolQueue, *, stage_root: str,
         receipt["complete"] = not errors
 
     asked = time.perf_counter()
-    with stage_release._stage_ownership(
+    with staged_path.ownership(
             queue, stage, role="restore-source-marks") as granted:
         _held_restore()
     released = time.perf_counter()
-    result_hold = stage_release._hold_record(
+    result_hold = staged_path.hold_record(
         lock_wait_s=granted - asked, lock_held_s=released - granted,
         census_s=0.0)
     receipt.update(result_hold)
@@ -1597,7 +1543,7 @@ def main(argv: list[str] | None = None) -> int:
                              "reclaiming")
     args = parser.parse_args(argv)
     declared_key = args.action_key or os.environ.get(pb.ACTION_KEY_ENV)
-    args.action_key = (stage_release.own_action_key(declared_key)
+    args.action_key = (staged_path.own_action_key(declared_key)
                        if declared_key else None)
     for output in (args.receipt, args.memo_out):
         if output is not None:

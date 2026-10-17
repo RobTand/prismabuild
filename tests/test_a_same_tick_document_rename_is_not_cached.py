@@ -43,6 +43,7 @@ from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 import test_a_same_tick_rename_is_not_cached as tick  # noqa: E402
 from prismabuild import reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 TICK_NS = tick.TICK_NS
@@ -53,9 +54,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 class _Version:

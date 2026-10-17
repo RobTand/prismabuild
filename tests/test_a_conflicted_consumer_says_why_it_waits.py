@@ -32,6 +32,7 @@ from prismabuild import adaptive_cpu, pool, residency_plan  # noqa: E402
 from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 
 def _successor_row(world) -> dict:
@@ -65,7 +66,7 @@ def _census(world) -> dict:
 def _retired(fleet, tmp_path, monkeypatch, refusal: str):
     """Run the successor's mover into the terminal refusal; return what it named."""
 
-    if refusal == stage_move.STAGED_DESTINATION_CONFLICT:
+    if refusal == staged_path.STAGED_DESTINATION_CONFLICT:
         consumer, mover = loop._old_owner(fleet, "claimed")
         world = loop._World(fleet, tmp_path, monkeypatch, "last")
         # Before the refusal, a lead that is only coming names no retirement,
@@ -76,10 +77,10 @@ def _retired(fleet, tmp_path, monkeypatch, refusal: str):
         rc, receipt = world.run()
         state = "live"
     else:
-        monkeypatch.setattr(stage_move, "UNPROVEN_ENDING_MIN_SPAN_S", 0.0)
+        monkeypatch.setattr(staged_path, 'UNPROVEN_ENDING_MIN_SPAN_S', 0.0)
         consumer, mover = loop._old_owner(fleet, "absent")
         world = loop._World(fleet, tmp_path, monkeypatch, "last")
-        for _run in range(stage_move.UNPROVEN_ENDING_RUNS):
+        for _run in range(staged_path.UNPROVEN_ENDING_RUNS):
             rc, receipt = world.run()
         state = "uncertain"
     assert rc == 1 and receipt["refusal"] == refusal, receipt.get("refusal")
@@ -101,8 +102,8 @@ def _assert_names_it(summary, *, refusal, path, consumer, mover, state,
             owner["state"]) == (consumer, mover, state)
 
 
-@pytest.mark.parametrize("refusal", [stage_move.STAGED_DESTINATION_CONFLICT,
-                                     stage_move.STAGED_DESTINATION_UNPROVEN])
+@pytest.mark.parametrize("refusal", [staged_path.STAGED_DESTINATION_CONFLICT,
+                                     staged_path.STAGED_DESTINATION_UNPROVEN])
 def test_the_denial_and_the_census_name_the_retirement(
         fleet, tmp_path, monkeypatch, refusal) -> None:
     """RED on the base source: neither reader names the supersession."""
@@ -142,7 +143,7 @@ def test_an_unreadable_marker_is_named_not_absent(
 
     queue, _stage, _ = fleet
     world, *_ = _retired(fleet, tmp_path, monkeypatch,
-                         stage_move.STAGED_DESTINATION_CONFLICT)
+                         staged_path.STAGED_DESTINATION_CONFLICT)
     path = queue.records.residency_supersession_path(
         world.successor,
         residency_plan.plan_sha256(world.plan),

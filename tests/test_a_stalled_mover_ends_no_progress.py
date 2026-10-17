@@ -49,6 +49,7 @@ from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E
     READERS, _Cas, _manifest, _template)
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 MIB = 1 << 20
 MB = storage_tiers.MB
@@ -442,7 +443,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
             "--warm-after-copy", "never", "--unpaced"]
     source = _mover_source(argv, read="stall")
     queue, item = _claimed_mover(tmp_path, source, policy)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     mover = str(item["action_key"])
     progress_path = _waiting_consumer(queue, mover, total=total, digest=digest,
@@ -560,7 +561,7 @@ def _run_mover(base: Path, source: str, policy, *, ceiling: float,
     base.mkdir(parents=True, exist_ok=True)
     (base / "stage").mkdir(exist_ok=True)
     queue, item = _claimed_mover(base, source, policy, contention)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=base / "stage") == "registered"
     if before is not None:
         before(queue)
@@ -993,7 +994,7 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     report = tmp_path / "mover.progress"
     monkeypatch.setenv(progress.ACTION_PROGRESS_PATH_ENV, str(report))

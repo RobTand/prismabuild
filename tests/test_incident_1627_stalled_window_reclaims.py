@@ -36,6 +36,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
 from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan)
+from prismabuild import staged_path
 
 STAGE = "prismabuild-stage:dl380g10"
 RAM = "ram:dl380g10"
@@ -97,7 +98,7 @@ def _ram_orphan(queue, ram: Path, consumer: str, seed: str, ordinal: int) -> str
     assert queue.tier(RAM).take(mover, {'ram_gib': 2})
     assert queue.ledger("dl380g10").acquire(
         f"ram-host:{mover}", {"mem_gb": 2})
-    rp.vouch_landed(
+    rp.publish_landed_files(
         queue, consumer_action_key=consumer, mover_action_key=mover,
         tier_id=RAM, stage_root=ram, manifest_sha256=_hexkey(f"man-{seed}"),
         range_start_bytes=ordinal * 2 * GIB,
@@ -230,8 +231,8 @@ def _jammed(tmp_path: Path):
     stage.mkdir()
     ram = tmp_path / "ram"
     ram.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
-    stage_release.register_stage_root(queue, tier_id=RAM, stage_root=ram)
+    staged_path.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=RAM, stage_root=ram)
 
     _end(queue, DONE, how="done")
     _end(queue, GONE, how="withdrawn")
@@ -346,7 +347,7 @@ def test_a_futile_waiter_names_its_refusal_once(tmp_path: Path) -> None:
     queue = _queue(tmp_path, stage_gib=STAGE_CAP)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
     waiter = _hexkey("1627-too-big")
     plan = _declared_plan(queue, waiter,
                           [("p0", 25, True, 1), ("p1", 1, False, 1)], tag="b")

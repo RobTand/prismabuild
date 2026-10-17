@@ -20,6 +20,7 @@ from prismabuild import stage_move
 from test_btrfs_subvolume_records_are_retained import (
     OBSERVED_DEVICE, _KernelFacts,
 )
+from prismabuild import staged_path
 
 
 pytestmark = pytest.mark.skipif(
@@ -55,7 +56,7 @@ def staged(tmp_path, filesystem):
     directory.mkdir()
     destination = directory / "shard.safetensors"
     destination.write_bytes(b"staged payload")
-    publisher = stage_move._StagedPublisher(
+    publisher = staged_path.StagedPublisher(
         queue=pool.PoolQueue(tmp_path / "queue"), stage_root=directory,
         residency_root=tmp_path / "residency", mover_action_key="a" * 64,
         manifest_sha256="b" * 64, tier_id="test-stage", cas_root=tmp_path / "cas")

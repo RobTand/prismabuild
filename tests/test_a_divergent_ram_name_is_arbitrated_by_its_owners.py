@@ -30,6 +30,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 
 def _foreign_owner(tmp_path: Path, state: str):
@@ -96,7 +97,7 @@ def test_an_ended_owners_ram_name_is_replaced_and_the_promotion_completes(
 
     queue, args, paths, consumer, mover = _foreign_owner(tmp_path, "failed")
     before = ram._identities(paths)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', ram.GRACE)
 
     receipt = ram_promote.promote(args)
 
@@ -125,14 +126,14 @@ def test_a_live_owners_ram_name_is_a_terminal_conflict(
 
     queue, args, paths, consumer, mover = _foreign_owner(tmp_path, "claimed")
     before = ram._identities(paths)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', ram.GRACE)
 
     rc = ram_promote.main(_argv(queue, args))
     receipt = queue.move_record(ram.RAM_MOVER)
 
     assert isinstance(receipt, dict)
     assert rc == 1, (rc, receipt.get("refusal"), receipt.get("errors"))
-    assert receipt["refusal"] == stage_move.STAGED_DESTINATION_CONFLICT
+    assert receipt["refusal"] == staged_path.STAGED_DESTINATION_CONFLICT
     assert receipt["complete"] is False
     conflict = receipt["conflict"]
     assert conflict["stage_path"] == os.path.normpath(str(paths[0]))
@@ -163,7 +164,7 @@ def test_an_unproven_ending_keeps_the_retryable_refusal(
         # The consumer's outcome record is gone: #798's legacy shape.
         queue.records.item_path(pool.record_store.FAILED, consumer).unlink()
     before = ram._identities(paths)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', ram.GRACE)
 
     receipt = ram_promote.promote(args)
 
@@ -184,17 +185,17 @@ def test_an_unprovable_ending_ends_the_promotion_at_the_bound(
     queue, args, paths, consumer, mover = _foreign_owner(tmp_path, "failed")
     queue.records.item_path(pool.record_store.FAILED, consumer).unlink()
     before = ram._identities(paths)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
-    monkeypatch.setattr(stage_move, "UNPROVEN_ENDING_MIN_SPAN_S", 0.0)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', ram.GRACE)
+    monkeypatch.setattr(staged_path, 'UNPROVEN_ENDING_MIN_SPAN_S', 0.0)
 
-    for run in range(1, stage_move.UNPROVEN_ENDING_RUNS + 1):
+    for run in range(1, staged_path.UNPROVEN_ENDING_RUNS + 1):
         rc = ram_promote.main(_argv(queue, args))
         receipt = queue.move_record(ram.RAM_MOVER)
         assert isinstance(receipt, dict)
         assert receipt["unproven"]["runs"] == run, receipt["unproven"]
 
     assert rc == 1, (receipt.get("refusal"), receipt.get("errors"))
-    assert receipt["refusal"] == stage_move.STAGED_DESTINATION_UNPROVEN
+    assert receipt["refusal"] == staged_path.STAGED_DESTINATION_UNPROVEN
     assert receipt["conflict"]["owners"] == [{
         "consumer_action_key": consumer, "mover_action_key": mover,
         "state": "uncertain",

@@ -37,6 +37,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 TIER = "prismabuild-stage:dl380g10"
@@ -492,7 +493,7 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
     stage.mkdir(exist_ok=True)
     other = pool.PoolQueue(tmp_path / "other-queue")
     other.records.ensure_layout()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         other, tier_id=TIER, stage_root=stage) == "registered"
 
     record = _cycle(fleet)[0]
@@ -503,7 +504,7 @@ def test_an_unregistered_root_defers_movers_until_the_operator_clears_it(
     assert queue.tier(TIER).free_supply()['stage_gib'] == 4
     assert not queue.records.item_path(pool.record_store.READY, mover).exists()
 
-    (stage / stage_release.STAGE_ROOT_MARKER).unlink()
+    (stage / staged_path.STAGE_ROOT_MARKER).unlink()
     record = _cycle(fleet)[0]
     assert record["stage_root_owner"] == "registered"
     assert "stage_root_admits" not in record

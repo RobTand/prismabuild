@@ -89,6 +89,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = bench_stage_adopt.TIER
 HOST = "dl380g10"
@@ -156,16 +157,14 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str, mover: str,
                 "sha256": DIGEST}
     assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
     root = queue.records.residency_fragment_root()
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
-        "entries": entries})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
+        "entries": entries},
         generation="a" * 32,
-        entries={key: {**dict(mention),  # type: ignore[dict-item]
+        material_entries={key: {**dict(mention),  # type: ignore[dict-item]
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}  # type: ignore[index]
                  for key, mention in entries.items()})
@@ -318,16 +317,14 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
             mover = _key(f"dead{pair}{side}:mover")
             _dead_action(queue, consumer, "failed")
             _dead_action(queue, mover, "executed")
-            reader_lease.write_material(
-                root, consumer_action_key=consumer, mover_action_key=mover,
-                tier_id=TIER, stage_root=str(stage),
-                manifest_sha256=MANIFEST, generation="b" * 32,
-                entries=mentions)
-            residency_map.write_fragment(root, {
+            staged_path.publish_vouch(
+                root, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": consumer, "mover_action_key": mover,
                 "tier_id": TIER, "stage_root": str(stage),
-                "manifest_sha256": MANIFEST, "entries": fragment_entries})
+                "manifest_sha256": MANIFEST, "entries": fragment_entries},
+                generation="b" * 32,
+                material_entries=mentions)
             queue.record_move(mover, {
                 "consumer_action_key": consumer, "tier_id": TIER,
                 "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -434,16 +431,14 @@ def _land_shared(queue: pool.PoolQueue, stage: Path, *, vouch_as: str,
                    "sha256": DIGEST}
     assert queue.tier(TIER).take(mover, {'stage_gib': phase_gib})
     root = queue.records.residency_fragment_root()
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": vouch_as, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": SHARED_MANIFEST, "entries": entries})
-    reader_lease.write_material(
-        root, consumer_action_key=vouch_as, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=SHARED_MANIFEST,
+        "manifest_sha256": SHARED_MANIFEST, "entries": entries},
         generation="a" * 32,
-        entries={key: {**dict(mention),  # type: ignore[dict-item]
+        material_entries={key: {**dict(mention),  # type: ignore[dict-item]
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}  # type: ignore[index]
                  for key, mention in entries.items()})
@@ -617,7 +612,7 @@ def run_cycles(args) -> int:
             if isinstance(held, (int, float)):
                 swept["lock_held_s"] = swept.get("lock_held_s", 0.0) + held
                 swept["holds"] = swept.get("holds", 0) + 1
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT:
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT:
                 swept["stale_receipts"] = swept.get("stale_receipts", 0) + 1
         return out
 
@@ -848,7 +843,7 @@ def main(argv: list[str] | None = None) -> int:
     queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     shape = build_queue(queue, stage, args)

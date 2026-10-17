@@ -46,6 +46,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -63,7 +64,7 @@ HOST_CAP = {"cpu": 8, "mem_gb": 16}
 def _staged_name(name: str, size: int) -> str:
     """The stage's name for one whole ``size``-byte pool file ``name``."""
 
-    return stage_move.stage_relative(f"/m/{name}", 0, size, mount_prefix="/m")
+    return staged_path.stage_relative(f"/m/{name}", 0, size, mount_prefix="/m")
 
 def _manifest_bytes(pool_dir: Path) -> tuple[dict, Path]:
     pool_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +97,7 @@ def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue.records.ensure_layout()
     queue.tier(TIER).mint({KIND: 8})  # standing supply admits A, B
     (tmp_path / "stage").mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage") == "registered"
     return queue
 
@@ -209,7 +210,7 @@ def test_shared_egress_leaves_no_stealable_phantom(tmp_path: Path) -> None:
     assert ledger.holdings(MOVER_A).get(KIND) == 1
     assert ledger.holdings(MOVER_B).get(KIND) == 1
     staged = [p for p in (tmp_path / "stage").rglob("*")
-              if p.is_file() and p.name != stage_release.STAGE_ROOT_MARKER]
+              if p.is_file() and p.name != staged_path.STAGE_ROOT_MARKER]
     assert len(staged) == 1, "one extent staged once, two owners"
     snap["staged_files"] = len(staged)
 
@@ -223,7 +224,7 @@ def test_shared_egress_leaves_no_stealable_phantom(tmp_path: Path) -> None:
     print("AUDIT minted " + json.dumps(snap, sort_keys=True))
 
     # A's egress: bytes stay (shared), so no token may return as free.
-    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    first = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(tmp_path / "stage"))
     assert first["complete"] is True
     assert first["entries_shared"] == 1 and first["entries_deleted"] == 0
@@ -255,7 +256,7 @@ def test_shared_egress_leaves_no_stealable_phantom(tmp_path: Path) -> None:
         snap, sort_keys=True)
 
     # Final owner deletes: useful capacity returns, next cycle is stable.
-    second = stage_release.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
+    second = staged_path.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
                                  stage_root=str(tmp_path / "stage"))
     assert second["entries_deleted"] == 1 and not staged[0].exists()
     assert second["tokens_released"] == 1
@@ -286,7 +287,7 @@ def test_mixed_shared_and_deleted_splits_freed_from_decharged(tmp_path: Path) ->
     assert ledger.holdings(MOVER_A).get(KIND) == 2
     _supply(queue, W_MODEL_TIGHT)
 
-    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    first = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(tmp_path / "stage"))
     assert first["complete"] is True
     assert first["entries_shared"] == 1 and first["entries_deleted"] == 1
@@ -294,7 +295,7 @@ def test_mixed_shared_and_deleted_splits_freed_from_decharged(tmp_path: Path) ->
     assert first.get("tokens_decharged") == 1, first
     stage = tmp_path / "stage"
     remaining = sorted(str(p.relative_to(stage)) for p in stage.rglob("*")
-                       if p.is_file() and p.name != stage_release.STAGE_ROOT_MARKER)
+                       if p.is_file() and p.name != staged_path.STAGE_ROOT_MARKER)
     assert remaining == [_staged_name("shared.bin", MIB)], remaining
 
 
@@ -324,7 +325,7 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     tier_holdings.TierLedger.settle_egress = _crash_once  # type: ignore[method-assign]
     try:
         try:
-            stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+            staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(tmp_path / "stage"))
         except RuntimeError:
             pass
@@ -336,7 +337,7 @@ def test_interrupted_decharge_recovers_conservatively(tmp_path: Path) -> None:
     assert ledger.holdings(MOVER_A).get(KIND) == 1
     assert ledger.free_supply().get(KIND, 0) == 0
 
-    second = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    second = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                  stage_root=str(tmp_path / "stage"))
     assert second["complete"] is True
     assert second.get("tokens_decharged") == 1
@@ -575,7 +576,7 @@ def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> Non
                    "leads": ["d" * 64]})
     other = pool.PoolQueue(tmp_path / "other-queue")
     other.records.ensure_layout()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         other, tier_id=TIER, stage_root=stage) == "registered"
     # A ready row with sealed fill demand, so the keep-mint must carry the
     # rate kind through the refusal path as well.
@@ -665,7 +666,7 @@ def test_fractional_mixed_bucket_decharges_without_freeing(tmp_path: Path) -> No
     assert ledger.holdings(MOVER_A).get(KIND) == 1
     _supply(queue, W_MODEL_TIGHT)
 
-    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    first = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(tmp_path / "stage"))
     assert first["complete"] is True
     assert first["entries_shared"] == 1 and first["entries_deleted"] == 1
@@ -708,7 +709,7 @@ def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> No
     monkey = pytest.MonkeyPatch()
     monkey.setattr("os.rename", _fail_once)
     try:
-        failed = stage_release.evict(
+        failed = staged_path.evict(
             queue, MOVER_A, consumer_action_key=CONSUMER_A,
             stage_root=str(tmp_path / "stage"))
     finally:
@@ -721,7 +722,7 @@ def test_decharge_failure_retains_and_surfaces_until_retry(tmp_path: Path) -> No
     _publish_mover(queue, MOVER_C, MIB, 2 * MIB, manifest_sha, total)
     assert _claim(queue) is None, "failed decharge must not free anything"
 
-    retry = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    retry = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(tmp_path / "stage"))
     assert retry["complete"] is True
     assert retry.get("tokens_decharged") == 1
@@ -754,7 +755,7 @@ def test_concurrent_egress_and_mint_never_shows_phantom(tmp_path: Path) -> None:
                 queue, tier_id=TIER, kind=KIND, writable_tokens=W_MODEL_TIGHT)
 
     def _egress() -> None:
-        stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+        staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                             stage_root=str(tmp_path / "stage"))
 
     mint_thread = threading.Thread(target=_mint_loop)
@@ -858,10 +859,10 @@ def test_fresh_mint_regrows_usable_capacity(tmp_path: Path) -> None:
     _run_mover(tmp_path, queue, manifest_path, MOVER_A, CONSUMER_A, 0, MIB)
     _run_mover(tmp_path, queue, manifest_path, MOVER_B, CONSUMER_B, 0, MIB)
     _supply(queue, 0)
-    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    first = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(tmp_path / "stage"))
     assert first.get("tokens_decharged") == 1
-    second = stage_release.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
+    second = staged_path.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
                                  stage_root=str(tmp_path / "stage"))
     assert second["entries_deleted"] == 1 and second["tokens_released"] == 1
 

@@ -124,12 +124,12 @@ def starved_queue(tmp_path, monkeypatch):
     # The bookings above are the room; these are the records the finished
     # copies left.  The promotion's fragment names the ram root it landed
     # on, under the announced epoch -- what ``ram_promote`` writes (#759).
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER, mover_action_key=_hexkey("mover0"),
         tier_id=STAGE_TIER, stage_root=tmp_path / "stage",
         manifest_sha256=MANIFEST, range_start_bytes=0,
         range_end_bytes=2 * GIB)
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER,
         mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
         stage_root=tmp_path / "ram", manifest_sha256=MANIFEST,

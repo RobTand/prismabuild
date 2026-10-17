@@ -30,6 +30,7 @@ from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -39,7 +40,7 @@ RAM_TIER = "ram:dl380g10"
 GIB = storage_tiers.GIB
 CHUNK = 1 << 20
 #: The stage's (and the promotion's) name for the one whole-file entry.
-SHARD = stage_move.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
+SHARD = staged_path.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
                                   mount_prefix="/mnt/shared")
 
 
@@ -99,21 +100,18 @@ def _publish_stage(queue: pool.PoolQueue, stage: Path, payload: bytes
     staged = stage / SHARD
     key = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
     digest = hashlib.sha256(payload).hexdigest()
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": STAGE_MOVER,
         "tier_id": "prismabuild-stage:dl380g10", "stage_root": str(stage),
         "manifest_sha256": MANIFEST_SHA,
         "entries": {key: {"stage_path": str(staged), "bytes": len(payload),
-                          "sha256": digest, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=STAGE_MOVER,
-        tier_id="prismabuild-stage:dl380g10", stage_root=str(stage),
-        manifest_sha256=MANIFEST_SHA,
+                          "sha256": digest, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={key: {"stage_path": str(staged), "bytes": len(payload),
+        material_entries={key: {"stage_path": str(staged), "bytes": len(payload),
                        "sha256": digest, "file_id": identity}})
 
 
@@ -220,9 +218,9 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     # The egress is the only thing that may return them, because it is the
     # only thing that removes the bytes they stand for.
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=ram) == "registered"
-    egress = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    egress = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                  stage_root=str(ram))
 
     assert egress["complete"] is True

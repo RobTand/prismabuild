@@ -1668,50 +1668,6 @@ def declares_progress(request: dict | None) -> bool:
     return isinstance(params, dict) and pb.PROGRESS_PARAM in params
 
 
-def progress_phase(queue: pool.PoolQueue, action_key: str,
-                   claimed_unix: float) -> dict | None:
-    """The matching worker's accepted progress observation, if it has one.
-
-    The action-writable channel is not authority for the storage role: its
-    launch token is intentionally known only to the worker.  The claim lease
-    carries the worker's already authenticated ``ProgressWatch`` observation,
-    keyed to this exact claim and refreshed at heartbeat cadence.
-    """
-
-    # The raw channel is owned by the running action and requires a launch
-    # token only its worker knows.  The storage role cannot authenticate that
-    # token.  Its authority is therefore the matching lease's accepted
-    # ProgressWatch observation, which has already checked token, policy,
-    # counter monotonicity and regular-file identity at heartbeat cadence.
-    path = queue.records.lease_path(action_key)
-    try:
-        raw = pb.immutable_files.read_stable_file(
-            path,
-            where="prewarm progress lease",
-            max_bytes=progress_v1.MAX_ACTION_PROGRESS_BYTES,
-        )
-        record = pb.digest_primitives.decode_strict_json(raw, where="prewarm progress lease")
-    except (OSError, pb.ActionContractError, pb.CASTamperError,
-            pb.CASUnavailableError, RecursionError):
-        return None
-    if not isinstance(record, dict):
-        return None
-    if record.get("action_key") != action_key:
-        return None
-    lease_claimed = record.get("claimed_unix")
-    if not isinstance(lease_claimed, (int, float)) or lease_claimed != claimed_unix:
-        return None
-    observed = record.get("progress_observation")
-    if not isinstance(observed, dict) or observed.get("source") != "action-progress":
-        return None
-    accepted = observed.get("last_accepted")
-    if not isinstance(accepted, dict):
-        return None
-    phase = accepted.get("phase")
-    if not isinstance(phase, str) or not phase:
-        return None
-    return {"phase": phase, "reported_unix": accepted.get("reported_unix"),
-            "units_completed": accepted.get("units_completed")}
 
 
 def resident_bytes(record: Mapping[str, object] | None) -> int:
@@ -1814,7 +1770,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
                 policy = ((request.get("params") or {}).get(pb.PROGRESS_PARAM)
                           if isinstance(request, dict) else None)
                 cyclic = isinstance(policy, dict) and bool(policy.get("cycle"))
-                reported = (progress_phase(queue, key, float(claimed_unix))
+                reported = (queue.records.accepted_progress_phase(key, float(claimed_unix))
                             if not cyclic else None)
                 consumed = (manifest_layout.consumed_through(phases, reported["phase"])
                             if reported is not None else 0)
@@ -1842,7 +1798,7 @@ def claimed_reserve(queue: pool.PoolQueue, cas_root: Path, grace_s: float) -> di
         policy = ((request.get("params") or {}).get(pb.PROGRESS_PARAM)
                   if isinstance(request, dict) else None)
         cyclic = isinstance(policy, dict) and bool(policy.get("cycle"))
-        reported = (progress_phase(queue, key, float(claimed_unix))
+        reported = (queue.records.accepted_progress_phase(key, float(claimed_unix))
                     if declared and not cyclic else None)
         if (now - float(claimed_unix) > grace_s and reported is None
                 and not declared):

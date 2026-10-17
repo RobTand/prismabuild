@@ -47,6 +47,7 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
 from test_a_stalled_mover_ends_no_progress import (  # noqa: E402
     CONSUMER, HEARTBEAT, MEMBERS, MIB, UNDER, _Disks, _contention,
     _mover_source, _policy, _real_window, _seal_rows)
+from prismabuild import staged_path
 
 #: The consumer the mover waiting at the gate stages for.  Its range is a
 #: second manifest, so its staged names never meet the egressed range's.
@@ -244,7 +245,7 @@ def _setup(tmp_path: Path, monkeypatch):
     (tmp_path / "stage").mkdir(exist_ok=True)
     queue = pool.PoolQueue(tmp_path / "queue")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage") == "registered"
     mover = _staged_range(tmp_path, queue, cas)
     return queue, cas, mover, params, grace
@@ -547,17 +548,7 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
 
 #: An egress wedged inside its own hold, before its drain: the stage's lock
 #: taken the way ``stage_release`` takes it, then nothing.
-HOLDER = textwrap.dedent('''
-    import sys, time
-    sys.path.insert(0, {source!r})
-    from prismabuild import stage_release
-    from prismabuild import pool
-    queue = pool.PoolQueue({queue!r})
-    with stage_release._stage_ownership(queue, {stage!r}, role="egress"):
-        with open({marker!r}, "w") as stream:
-            stream.write("held")
-        time.sleep(3600)
-''')
+HOLDER = textwrap.dedent('\n    import sys, time\n    sys.path.insert(0, {source!r})\n    from prismabuild import stage_release\n    from prismabuild import pool\n    from prismabuild import staged_path\n    queue = pool.PoolQueue({queue!r})\n    with staged_path.ownership(queue, {stage!r}, role="egress"):\n        with open({marker!r}, "w") as stream:\n            stream.write("held")\n        time.sleep(3600)\n')
 
 
 def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(

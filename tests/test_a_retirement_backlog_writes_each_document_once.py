@@ -42,6 +42,7 @@ from prismabuild import stage_release  # noqa: E402
 
 import r13_1053_replay as r13  # noqa: E402
 import test_prepaid_writer_integration as fx  # noqa: E402
+from prismabuild import staged_path
 
 UNRETIRED = 10
 
@@ -146,14 +147,14 @@ def test_a_crash_at_the_write_files_nothing_and_the_next_tick_files_all(
         tmp_path, monkeypatch):
     world = _World(tmp_path, monkeypatch)
     evicted: list[str] = []
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
 
     def evict(queue, mover, *args, **kwargs):
         receipt = real_evict(queue, mover, *args, **kwargs)
         evicted.append(mover)
         return receipt
 
-    monkeypatch.setattr(stage_release, "evict", evict)
+    monkeypatch.setattr(staged_path, 'evict', evict)
     world.crash_at_write = True
     with pytest.raises(_Crash):
         world.tick()
@@ -175,7 +176,7 @@ def test_an_incomplete_egress_stays_unretired(tmp_path, monkeypatch):
     world = _World(tmp_path, monkeypatch)
     held = world.replay.unretired[0]
     held_mover = world.mover(held)
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
 
     def evict(queue, mover, *args, **kwargs):
         receipt = real_evict(queue, mover, *args, **kwargs)
@@ -184,7 +185,7 @@ def test_an_incomplete_egress_stays_unretired(tmp_path, monkeypatch):
                         errors=["a reader still holds the copy"])
         return receipt
 
-    monkeypatch.setattr(stage_release, "evict", evict)
+    monkeypatch.setattr(staged_path, 'evict', evict)
     events = world.tick()
     assert world.retired() == world.replay.unretired[1:]
     assert _retired_events(events) == sorted(world.replay.unretired[1:])
@@ -201,7 +202,7 @@ def test_a_batch_that_changed_during_its_egress_is_not_filed(
     world = _World(tmp_path, monkeypatch)
     moved = world.replay.unretired[3]
     moved_mover = world.mover(moved)
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
 
     def other_writer(entry: dict) -> None:
         if change == "retired-by-another":
@@ -216,7 +217,7 @@ def test_a_batch_that_changed_during_its_egress_is_not_filed(
             world.edit(moved, other_writer)
         return receipt
 
-    monkeypatch.setattr(stage_release, "evict", evict)
+    monkeypatch.setattr(staged_path, 'evict', evict)
     events = world.tick()
     others = [batch_id for batch_id in world.replay.unretired if batch_id != moved]
     assert _retired_events(events) == sorted(others)

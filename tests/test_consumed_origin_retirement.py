@@ -51,6 +51,7 @@ from test_pbrun_detach import _checkout  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     KIND, TIER, _descriptor, _prewrite, _queue, _template,
 )
+from prismabuild import staged_path
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -500,7 +501,7 @@ def _cycle_lines(queue: pool.PoolQueue, stage: Path) -> list[dict]:
 
     queue.tier(TIER).mint({KIND: 8})
     stage.mkdir(parents=True, exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         tier_loop.cycle(queue, host="sparky", source_pool="storage_pool",

@@ -30,6 +30,7 @@ from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -76,7 +77,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     ledger = queue.tier(TIER)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
 
     mover, consumer = _hexkey("settle-mover"), _hexkey("settle-consumer")
@@ -146,7 +147,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
 
     # Only the owner path returns landed bytes: a real egress deletes the
     # staged file, releases the charge, and drops the fragment.
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         queue, mover, consumer_action_key=consumer, stage_root=str(stage))
     assert not staged.exists()
     assert int(receipt.get("tokens_released", 0)) == 1

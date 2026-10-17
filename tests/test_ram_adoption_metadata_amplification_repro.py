@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "ram:fixture"
 EPOCH = "1789957191-repro"
@@ -69,7 +70,7 @@ SMALL_BUDGET = 16 << 10
 
 #: The production default captured before any test patches it, so an arm that
 #: asks for "no lever" is not silently handed a previous arm's budget.
-DEFAULT_BUDGET = int(stage_move._INDEX_BUDGET_BYTES)
+DEFAULT_BUDGET = int(staged_path._INDEX_BUDGET_BYTES)
 
 
 def _staged(root: Path, source: str) -> Path:
@@ -79,7 +80,7 @@ def _staged(root: Path, source: str) -> Path:
     copier uses, so the fixture's published destinations are the copier's.
     """
 
-    path = root / stage_move.stage_relative(
+    path = root / staged_path.stage_relative(
         "/m/" + Path(source).name, 0, len(PAYLOAD), mount_prefix="/m")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
@@ -102,8 +103,8 @@ class _Counters:
         self.decode_bytes = 0
         self.reclaims = 0
         self.parses = 0
-        real_read = stage_move._read_metadata
-        real_reclaim = stage_move._StagedPublisher._reclaim
+        real_read = staged_path._read_metadata
+        real_reclaim = staged_path.StagedPublisher._reclaim
         real_loads = json.loads
 
         def counted_read(path):
@@ -120,8 +121,8 @@ class _Counters:
             self.parses += 1
             return real_loads(raw, **kwargs)
 
-        monkeypatch.setattr(stage_move, "_read_metadata", counted_read)
-        monkeypatch.setattr(stage_move._StagedPublisher, "_reclaim",
+        monkeypatch.setattr(staged_path, '_read_metadata', counted_read)
+        monkeypatch.setattr(staged_path.StagedPublisher, "_reclaim",
                             counted_reclaim)
         monkeypatch.setattr(json, "loads", counted_loads)
 
@@ -212,7 +213,7 @@ def _write_material(residence: Path, consumer: str, mover: str,
 
 
 def _publisher(forest: dict[str, object], tmp_path: Path):
-    return stage_move._StagedPublisher(
+    return staged_path.StagedPublisher(
         queue=forest["queue"], stage_root=forest["ram_root"],
         residency_root=forest["residence"],
         mover_action_key=_hex64("promoting-mover"), manifest_sha256=MANIFEST,
@@ -228,14 +229,14 @@ def _sweep(tmp_path: Path, monkeypatch, *, budget: int,
     promotion drives, with counters around the metadata reads and reclaims.
     """
     forest = _fixture(tmp_path, destinations=destinations, owners=owners)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', budget)
     counters = _Counters(monkeypatch)
     publisher = _publisher(forest, tmp_path)
     adopted = []
     for entry in forest["entries"]:
         destination = _staged(forest["ram_root"], entry["path"])
         result = publisher.try_adopt(
-            entry, destination, stage_move._origin_id_of(entry["path"]))
+            entry, destination, staged_path._origin_id_of(entry["path"]))
         adopted.append(result is not None)
     return {
         "entries": len(forest["entries"]),
@@ -364,7 +365,7 @@ def test_compact_retained_verdicts_match_uncached_verdicts(tmp_path,
     forest = _fixture(tmp_path)
     answers = {}
     for label, budget in (("retained", CONSTRAINED_BUDGET), ("uncached", 1)):
-        monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
+        monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', budget)
         answers[label] = _verdicts(_publisher(forest, tmp_path / label),
                                    forest)
     assert answers["retained"] == answers["uncached"], (
@@ -383,7 +384,7 @@ def test_a_mutated_sidecar_and_a_corrupt_fragment_are_seen_after_retention(
     repaired fragment proves again -- all on the very next lookup.
     """
     forest = _fixture(tmp_path, destinations=SMALL_DESTS, owners=1)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", SMALL_BUDGET)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', SMALL_BUDGET)
     counters = _Counters(monkeypatch)
     publisher = _publisher(forest, tmp_path)
     consumer, mover = forest["owners"][0]
@@ -476,7 +477,7 @@ def test_duplicate_sidecar_mentions_keep_their_order(tmp_path, monkeypatch):
         answers = {}
         for label, budget in (("retained", CONSTRAINED_BUDGET),
                               ("uncached", 1)):
-            monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", budget)
+            monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', budget)
             publisher = _publisher(forest, tmp_path / label)
             answers[label] = publisher._proof_search(
                 norm, int(entry["bytes"]), digest)[1]
@@ -511,7 +512,7 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
     it proves no reader-lease interaction.
     """
     forest = _fixture(tmp_path)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', CONSTRAINED_BUDGET)
     counters = _Counters(monkeypatch)
     publisher = _publisher(forest, tmp_path)
     copier = stage_move._Copier(
@@ -524,7 +525,7 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
     first_decode = threading.Event()
     competing_entered = threading.Event()
     gate = threading.Lock()
-    counted_read = stage_move._read_metadata
+    counted_read = staged_path._read_metadata
 
     def gated_read(path):
         with gate:
@@ -536,7 +537,7 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
                     "the competing adopter never reached its proof search")
         return counted_read(path)
 
-    monkeypatch.setattr(stage_move, "_read_metadata", gated_read)
+    monkeypatch.setattr(staged_path, '_read_metadata', gated_read)
 
     real_search = publisher._proof_search
 
@@ -556,7 +557,7 @@ def test_copier_threads_and_a_competing_adopter_share_the_compact_index(
             for entry in forest["entries"]:
                 adopted = publisher.try_adopt(
                     entry, _staged(forest["ram_root"], entry["path"]),
-                    stage_move._origin_id_of(entry["path"]))
+                    staged_path._origin_id_of(entry["path"]))
                 competing_results.append(adopted is not None)
         except BaseException as exc:            # surfaced, never swallowed
             competing_errors.append(exc)
@@ -599,13 +600,13 @@ def test_a_late_tainted_fragment_defeats_an_earlier_proof(tmp_path,
     """
 
     forest = _fixture(tmp_path)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
     destination = _staged(forest["ram_root"], entry["path"])
     assert publisher.try_adopt(
         entry, destination,
-        stage_move._origin_id_of(entry["path"])) is not None
+        staged_path._origin_id_of(entry["path"])) is not None
 
     last = max(path.name for path in forest["residence"].iterdir()
                if path.is_dir() and path.name not in ("leases", "material"))
@@ -620,7 +621,7 @@ def test_a_late_tainted_fragment_defeats_an_earlier_proof(tmp_path,
         f"{standing!r}: {detail!r}")
     assert publisher.try_adopt(
         entry, destination,
-        stage_move._origin_id_of(entry["path"])) is None, (
+        staged_path._origin_id_of(entry["path"])) is None, (
         "a late corrupt fragment must not adopt")
 
 
@@ -633,7 +634,7 @@ def test_a_late_divergent_sidecar_defeats_an_earlier_proof(tmp_path,
     """
 
     forest = _fixture(tmp_path, destinations=SMALL_DESTS)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
     norm = os.path.normpath(str(_staged(forest["ram_root"], entry["path"])))
@@ -658,7 +659,7 @@ def test_a_late_divergent_sidecar_defeats_an_earlier_proof(tmp_path,
     with pytest.raises(OSError):
         publisher.try_adopt(
             entry, _staged(forest["ram_root"], entry["path"]),
-            stage_move._origin_id_of(entry["path"]))
+            staged_path._origin_id_of(entry["path"]))
 
 
 def test_a_replaced_incarnation_is_not_adopted_until_a_record_dates_it(
@@ -671,7 +672,7 @@ def test_a_replaced_incarnation_is_not_adopted_until_a_record_dates_it(
     """
 
     forest = _fixture(tmp_path, destinations=1, owners=1)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
     destination = _staged(forest["ram_root"], entry["path"])
@@ -688,7 +689,7 @@ def test_a_replaced_incarnation_is_not_adopted_until_a_record_dates_it(
         f"a superseded incarnation must defer, saw {standing!r}")
     assert publisher.try_adopt(
         entry, destination,
-        stage_move._origin_id_of(entry["path"])) is None
+        staged_path._origin_id_of(entry["path"])) is None
 
     consumer, mover = forest["owners"][0]
     dated = {key: dict(record) for key, record in
@@ -703,7 +704,7 @@ def test_a_replaced_incarnation_is_not_adopted_until_a_record_dates_it(
         "a record dating the new incarnation must prove it again")
     assert publisher.try_adopt(
         entry, destination,
-        stage_move._origin_id_of(entry["path"])) is not None
+        staged_path._origin_id_of(entry["path"])) is not None
 
 
 def test_a_same_size_rewrite_with_restored_mtime_is_seen(tmp_path,
@@ -716,7 +717,7 @@ def test_a_same_size_rewrite_with_restored_mtime_is_seen(tmp_path,
     """
 
     forest = _fixture(tmp_path, destinations=1, owners=1)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", CONSTRAINED_BUDGET)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', CONSTRAINED_BUDGET)
     publisher = _publisher(forest, tmp_path)
     entry = forest["entries"][0]
     norm = os.path.normpath(str(_staged(forest["ram_root"], entry["path"])))

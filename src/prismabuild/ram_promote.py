@@ -60,11 +60,8 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
-from prismabuild.stage_move import (  # noqa: E402
-    _Copier, _StagedPublisher, _delta, bound_unproven_endings, cpu_seconds,
-    load_manifest, own_action_key, prior_move_record, proc_io,
-    retire_conflicted_window, stage_relative,
-)
+from prismabuild.stage_move import _Copier, _delta, bound_unproven_endings, cpu_seconds, load_manifest, prior_move_record, proc_io, retire_conflicted_window
+from prismabuild import staged_path
 
 
 def _refused(args, reason: str, **extra) -> dict[str, object]:
@@ -188,7 +185,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
     destinations: dict[str, str] = {}
     for entry in window:
         path, offset = str(entry["path"]), int(entry["offset"])
-        relative = stage_relative(path, offset, int(entry["bytes"]),
+        relative = staged_path.stage_relative(path, offset, int(entry["bytes"]),
                                   mount_prefix=mount_prefix)
         # The staged name is taken from the proof, never recomputed on
         # trust: a replace between the proof and this loop must refuse,
@@ -231,7 +228,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
         # retryable.  Without it a promotion whose destination held a dead
         # owner's different bytes refused retryably and was republished
         # into the same refusal every window cycle.
-        publisher=_StagedPublisher(
+        publisher=staged_path.StagedPublisher(
             queue=queue, stage_root=Path(args.ram_root),
             residency_root=residence,
             mover_action_key=str(args.action_key),
@@ -320,12 +317,8 @@ def promote(args, *, stop=None) -> dict[str, object]:
     if overran:
         receipt["refusal"] = "residency_overran_reservation"
         receipt["complete"] = False
-        residency_map.fragment_path(
-            Path(args.residency_root), args.consumer_action_key,
-            args.action_key).unlink(missing_ok=True)
-        reader_lease.material_path(
-            residence, args.consumer_action_key,
-            args.action_key).unlink(missing_ok=True)
+        staged_path.withdraw_vouch(
+            None, Path(args.residency_root), args.consumer_action_key, args.action_key)
     elif copier.staged:
         # Once, at the end, on purpose: see the module docstring.  The
         # sidecar goes first, then the fragment it dates -- the stage
@@ -334,18 +327,9 @@ def promote(args, *, stop=None) -> dict[str, object]:
         # other promotion of these names adopt them by content.  The other
         # order left a vouch without a date, which the publication gate
         # reads as a pending date and refuses on forever.
-        if copier.sidecar:
-            reader_lease.write_material(
-                residence,
-                consumer_action_key=args.consumer_action_key,
-                mover_action_key=args.action_key,
-                tier_id=args.tier_id, stage_root=str(args.ram_root),
-                manifest_sha256=args.manifest_sha256,
-                generation=material_generation, entries=copier.sidecar,
-                epoch=str(epoch["epoch"]))
         # The fragment carries the epoch so every reader of the map can
         # tell a current promotion from one the reboot deleted.
-        residency_map.write_fragment(args.residency_root, {
+        staged_path.publish_vouch(args.residency_root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": args.consumer_action_key,
             "mover_action_key": args.action_key,
@@ -354,7 +338,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
             "epoch": str(epoch["epoch"]),
             "manifest_sha256": args.manifest_sha256,
             "entries": copier.staged,
-        })
+        }, generation=material_generation, material_entries=copier.sidecar)
     receipt["material_generation"] = material_generation
     receipt["source_covers"] = proof.get("covers")
     if not copier.staged and not overran:
@@ -423,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    args.action_key = own_action_key(args.action_key)
+    args.action_key = staged_path.own_action_key(args.action_key)
     if args.residency_root is None:
         args.residency_root = str(Path(args.pool_root) / pool.record_store.RESIDENCY)
 

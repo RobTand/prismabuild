@@ -61,6 +61,7 @@ from prismabuild import stage_release  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -208,7 +209,7 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     """
     import socket
     stage_root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         q, tier_id=TIER, stage_root=stage_root) == "registered"
     record = {
         "tier": "stage",

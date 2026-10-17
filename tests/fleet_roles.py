@@ -7,6 +7,7 @@ import uuid
 from prismabuild import pool, stage_marks
 from prismabuild import stage_move
 from prismabuild import stage_release
+from prismabuild import staged_path
 
 
 class Clock:
@@ -97,7 +98,7 @@ class Stage:
         self.tier, self.actions, self.damage = tier, actions, damage
         root.mkdir(parents=True)
         cas_root.mkdir(exist_ok=True)
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             queue, tier_id=tier, stage_root=root) == "registered"
 
     def dead_owner_fragment(self, *, names, size):
@@ -117,7 +118,7 @@ class Stage:
         return consumer, mover
 
     def publisher(self, *, mover, consumer):
-        return stage_move._StagedPublisher(
+        return staged_path.StagedPublisher(
             queue=self.queue, stage_root=self.root,
             residency_root=self.queue.root / pool.record_store.RESIDENCY,
             mover_action_key=mover, manifest_sha256="a" * 64,

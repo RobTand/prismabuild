@@ -27,6 +27,7 @@ from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 OBSERVED_DEVICE = os.makedev(0, 31)
 TABLE_DEVICE = os.makedev(0, 30)
@@ -347,7 +348,7 @@ def test_census_level_compares_unlisted_btrfs_directory(kernel):
     index = kept_reads.CensusIndex()
     for _pass in range(2):
         fragments, tainted = [], []
-        stage_release._census_level(
+        staged_path._census_level(
             kernel.directory, direct=True, allow_nested=False,
             fragments=fragments, tainted=tainted, memo=index)
         assert fragments == []  # r.json is not a fragment namespace.
@@ -623,8 +624,8 @@ def test_fragment_memo_keeps_live_fd_evidence_and_rechecks_trust(kernel):
     # Real schema validator, real record reader, real memo; no validator mock.
     kernel.record.write_text(json.dumps(_fragment_document(kernel, "c")))
     memo = kept_reads.CensusMemo()
-    first = stage_release._read_fragment(kernel.record, memo)
-    second = stage_release._read_fragment(kernel.record, memo)
+    first = staged_path._read_fragment(kernel.record, memo)
+    second = staged_path._read_fragment(kernel.record, memo)
     assert isinstance(first, dict)
     assert second is first
     assert memo.counts() == (1, 1)
@@ -634,7 +635,7 @@ def test_fragment_memo_keeps_live_fd_evidence_and_rechecks_trust(kernel):
     # Changed bytes behind the same synthetic observed version must be read
     # after loss of trust, rather than served by the old fstat memo hit.
     kernel.record.write_text(json.dumps(_fragment_document(kernel, "d")))
-    third = stage_release._read_fragment(kernel.record, memo)
+    third = staged_path._read_fragment(kernel.record, memo)
     assert isinstance(third, dict)
     assert third["manifest_sha256"] == "d" * 64
     assert memo.counts() == (2, 1)

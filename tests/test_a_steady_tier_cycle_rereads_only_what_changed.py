@@ -55,6 +55,7 @@ from prismabuild import pool, residency_map  # noqa: E402
 import bench_tier_cycle as bench  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 #: CPU seconds one steady cycle may take at this shape.  Derived from the
 #: after-fix measurement at exactly this shape on sparky (GB10), through
@@ -333,7 +334,7 @@ def test_what_the_loop_keeps_stays_what_is_on_disk(loop: _Loop) -> None:
         assert document == fresh, key
         paths = census.paths_of(document)
         if paths is not None:
-            assert paths == stage_release._fragment_stage_paths(fresh), key
+            assert paths == staged_path._fragment_stage_paths(fresh), key
     remembered = {id(document) for _version, document
                   in census.fragments.values()}
     assert census.namespaces._slots

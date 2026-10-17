@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:testbox"
 KIND = "stage_gib"
@@ -42,7 +43,7 @@ def _fleet(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     queue.tier(TIER).mint({KIND: CAPACITY_GIB})
     stage_release.reset_holder_reports()

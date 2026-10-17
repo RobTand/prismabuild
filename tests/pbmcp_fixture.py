@@ -339,12 +339,12 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
     # are the records a finished copy leaves.  The promotion's fragment
     # names the ram root it landed on, under the announced epoch, which is
     # what ``ram_promote`` writes and what the census now reports.
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER_KEY,
         mover_action_key=_hexkey("mover0"), tier_id=STAGE_TIER,
         stage_root=base / "stage", manifest_sha256=CONSUMER_MANIFEST,
         range_start_bytes=0, range_end_bytes=2 * STARVED_GIB)
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER_KEY,
         mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
         stage_root=base / "ram", manifest_sha256=CONSUMER_MANIFEST,

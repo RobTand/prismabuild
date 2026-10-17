@@ -37,6 +37,7 @@ from prismabuild import pool, residency_map, residency_plan, storage_tiers  # no
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -280,7 +281,7 @@ def test_two_movers_copying_one_entry_do_not_share_a_temporary(
         assert copier.errors == [], copier.errors[:3]
         assert copier.bytes_staged == sum(int(entry["bytes"]) for entry in entries)
     for entry in entries:
-        staged = tmp_path / "stage" / stage_move.stage_relative(
+        staged = tmp_path / "stage" / staged_path.stage_relative(
             str(entry["path"]), 0, int(entry["bytes"]),
             mount_prefix=str(source_dir))
         assert staged.read_bytes() == Path(str(entry["path"])).read_bytes()

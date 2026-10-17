@@ -34,6 +34,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -415,16 +416,14 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
         residency_map.compose(
             residency_map.read_fragments(residency, CONSUMER_A))["entries"])
     assert len(saved_entries) == 1
-    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
-    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
+    staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
 
     def _refile() -> None:
         time.sleep(4.0)
         file_id = reader_lease.stat_identity(str(staged))
         assert file_id is not None
-        residency_map.write_fragment(residency, {
+        staged_path.publish_vouch(
+            residency, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER_A,
             "mover_action_key": MOVER_A,
@@ -432,14 +431,9 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
             "stage_root": str(tmp_path / "stage"),
             "manifest_sha256": manifest_sha,
             "entries": saved_entries,
-        })
-        reader_lease.write_material(
-            residency, consumer_action_key=CONSUMER_A,
-            mover_action_key=MOVER_A, tier_id=STAGE_TIER,
-            stage_root=str(tmp_path / "stage"),
-            manifest_sha256=manifest_sha,
+        },
             generation=reader_lease.mint_generation(),
-            entries={key: {
+            material_entries={key: {
                 "stage_path": str(staged), "bytes": SIZE,
                 "sha256": digest, "file_id": file_id}})
 
@@ -472,7 +466,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     unattributed live incarnation.
     """
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 1.0, raising=False)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 1.0, raising=False)
     queue = _queue(tmp_path)
     manifest, manifest_sha, body = _manifest(tmp_path)
 
@@ -482,10 +476,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     residency = queue.root / pool.record_store.RESIDENCY
     # Unpublish the bytes without touching them, then fake an in-flight
     # sibling copy that never finishes.
-    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
-    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
+    staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
     sibling = staged.with_name(f".{staged.name}.{'f' * 16}.partial")
     sibling.write_bytes(b"partial-prefix")
 

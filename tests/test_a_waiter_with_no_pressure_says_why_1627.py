@@ -34,6 +34,7 @@ from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _fixture_queue)
 from test_admission_charges_refill_horizons_jointly import (  # noqa: E402
     NEWCOMER_FOOTPRINT, READER_FOOTPRINT, Consumer, _reader, _tiers)
+from prismabuild import staged_path
 
 EVENT = "window-pressure-skipped"
 
@@ -42,7 +43,7 @@ def _tier(tmp_path: Path):
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 

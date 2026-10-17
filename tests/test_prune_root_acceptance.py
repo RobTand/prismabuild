@@ -9,6 +9,7 @@ from test_stale_material_done_owner_retires import (
 from prismabuild import stage_release
 import tier_loop
 from test_stale_material_done_owner_retires import base, SIZE, staged_name
+from prismabuild import staged_path
 
 
 def test_equal_entry_counts_do_not_prove_missing_range_bytes(fleet):
@@ -20,7 +21,7 @@ def test_equal_entry_counts_do_not_prove_missing_range_bytes(fleet):
     queue.record_move(mover, receipt)
     held = queue.tier(TIER).holdings(mover)
     successor, copier = base._key(), base._key()
-    result = tier_loop.adopt(
+    result = staged_path.adopt(
         queue, old_key=mover, new_key=copier, consumer_action_key=successor,
         tier_id=TIER, phase='head', range_start_bytes=0,
         range_end_bytes=4 * SIZE, residency_root=queue.records.residency_fragment_root())
@@ -54,7 +55,7 @@ def test_matching_nonram_epochs_are_still_invalid_for_cleanup(fleet):
 def test_replacement_before_checkpoint_install_does_not_become_clean(fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = stale_owner(fleet, coherent_names=set(NAMES), replace=False)
-    original = stage_release._install_skip_checkpoint
+    original = staged_path._install_skip_checkpoint
     raced = []
 
     def before_install(*args, **kwargs):
@@ -64,7 +65,7 @@ def test_replacement_before_checkpoint_install_does_not_become_clean(fleet, monk
             os.replace(replacement, stage / staged_name(NAMES[1]))
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, '_install_skip_checkpoint', before_install)
+    monkeypatch.setattr(staged_path, '_install_skip_checkpoint', before_install)
     stage_release.sweep_dead_owner_fragments(queue, stage_roots={TIER: str(stage)})
     assert raced
     result = stage_release.sweep_dead_owner_fragments(queue, stage_roots={TIER: str(stage)})

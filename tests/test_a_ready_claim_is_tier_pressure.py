@@ -35,6 +35,7 @@ import tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     MANIFEST, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _plan, _row,
     _stage_range, _tier_record, assert_ledger_matches_the_stage)
+from prismabuild import staged_path
 
 #: Ten GiB of stage: the successor's landed lead (2) and three orphans of the
 #: withdrawn consumer (3 x 2) leave 2 free.
@@ -56,7 +57,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def stage(tmp_path: Path, queue: pool.PoolQueue) -> Path:
     path = tmp_path / "stage"
     path.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=path)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=path)
     return path
 
 

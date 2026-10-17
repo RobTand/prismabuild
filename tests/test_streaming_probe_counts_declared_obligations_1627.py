@@ -32,6 +32,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
 from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan)
+from prismabuild import staged_path
 
 STAGE = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{STAGE}"
@@ -69,7 +70,7 @@ def _fixture(tmp_path: Path):
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
     queue.publish(action_key=DONE, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),

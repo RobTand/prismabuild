@@ -56,6 +56,7 @@ from prismabuild import submission as submit_core
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:sparky"
 RAM_TIER = "ram:sparky"
@@ -650,7 +651,7 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
     # so a token can be held, and the stage root registered (#628).
     queue.tier(TIER).mint({'stage_gib': 8})
     stage.mkdir(parents=True, exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
 
     entries: dict[str, object] = {}
     written: list[Path] = []
@@ -674,20 +675,17 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": "a" * 64}
     assert queue.tier(TIER).take(mover, {'stage_gib': (end - start) // GIB})
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": manifest_sha256, "entries": entries})
-    if material is not None:
-        reader_lease.write_material(
-            queue.records.residency_fragment_root(), consumer_action_key=consumer,
-            mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
-            manifest_sha256=manifest_sha256, generation="a" * 32,
-            entries={key: {**dict(mention),
-                           "file_id": reader_lease.stat_identity(
-                               str(mention["stage_path"]))}
-                     for key, mention in list(entries.items())[:material]})
+        "manifest_sha256": manifest_sha256, "entries": entries},
+        generation="a" * 32,
+        # Missing/partial material deliberately exercises donor refusal.
+        material_entries=({key: {**dict(mention),
+            "file_id": reader_lease.stat_identity(str(mention["stage_path"]))}
+            for key, mention in list(entries.items())[:material]}
+            if material is not None else None))
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": manifest_sha256,
@@ -712,7 +710,7 @@ def _tier_cycle(queue: pool.PoolQueue, stage: Path) -> None:
 
     queue.tier(TIER).mint({'stage_gib': 8})
     stage.mkdir(parents=True, exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     # The loop narrates its cycle on stdout; ``_detach_key`` reads stdout for
     # the submission's one JSON line, so the narration is kept out of it.
     with contextlib.redirect_stdout(io.StringIO()):
@@ -739,7 +737,7 @@ def test_a_cold_lead_is_published_by_the_loop_on_its_next_cycle(
     queue = prepared["queue"]
     queue.tier(TIER).mint({'stage_gib': 8})
     (tmp_path / "stage").mkdir(exist_ok=True)
-    stage_release.register_stage_root(
+    staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage")
 
     assert pbrun.main() == 0

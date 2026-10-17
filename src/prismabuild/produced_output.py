@@ -144,6 +144,11 @@ import tempfile
 import time
 import uuid
 from prismabuild import tier_holdings
+from prismabuild import staged_path
+from .output_contract import (
+    PRODUCED_OUTPUT_REF_SCHEMA_V1, OUTPUT_TEMPLATES_SUBDIR,
+    OUTPUT_SCOPES_SUBDIR, OUTPUT_BATCHES_SUBDIR, OUTPUT_FRAGMENTS_SUBDIR,
+)
 
 #: The queue item's projection of the sealed declaration: which immutable
 #: template this action's tier demand was derived from. The runtime binds
@@ -2882,9 +2887,6 @@ def retire_batch(queue, instance: Mapping[str, object],
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         in_process = _egress_runs_in_process(tier_record)
-        stage_release = None
-        if in_process:
-            from prismabuild import stage_release
         if not in_process and tier_record is None:
             return {"ok": False,
                     "refusal": f"unknown-retain: tier-not-announced: {tier}"}
@@ -2908,8 +2910,8 @@ def retire_batch(queue, instance: Mapping[str, object],
     # refusing a successor, and a failed or partial egress files nothing and
     # leaves the old materialization holding its own credit.
     if in_process:
-        assert stage_release is not None
-        receipt = stage_release.evict(
+        assert staged_path is not None
+        receipt = staged_path.evict(
             queue, target_mover, consumer_action_key=consumer,
             stage_root=str(stage_root), residency_root=str(residency_root))
         if not receipt.get("complete"):
@@ -3057,7 +3059,6 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
             selections[batch_id] = selection
     if not selections:
         return answers
-    from prismabuild import stage_release
     # --- No lock of this lane is held while the egresses run; see
     # `retire_batch` for why nothing needs it.
     receipts: dict[str, dict[str, object]] = {}
@@ -3074,7 +3075,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
                                  "deferred": True}
             continue
         try:
-            receipt = stage_release.evict(
+            receipt = staged_path.evict(
                 queue, str(selection["target_mover"]),
                 consumer_action_key=str(selection["consumer"]),
                 stage_root=str(stage_root), residency_root=str(residency_root))

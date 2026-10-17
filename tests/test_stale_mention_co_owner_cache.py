@@ -47,6 +47,7 @@ from prismabuild import reader_lease, residency_map  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 SIZE = red.SIZE
@@ -55,9 +56,9 @@ TIER = red.TIER
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 def _path(stage: Path, name: str) -> Path:
@@ -115,8 +116,7 @@ def _drop_owner(queue, consumer, mover) -> None:
     """What an owner's egress leaves: no fragment and no material."""
 
     root = queue.records.residency_fragment_root()
-    residency_map.fragment_path(root, consumer, mover).unlink()
-    reader_lease.material_path(root, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
 
 
 def _pass(queue, stage, index=None):
@@ -127,7 +127,7 @@ def _pass(queue, stage, index=None):
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
     return [entry for entry in receipts
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT
             and entry.get("action_key") == mover]
 
 
@@ -138,7 +138,7 @@ def _one(receipts, mover: str) -> dict:
 
 
 def _checkpoint_key(queue, stage, consumer, mover) -> tuple:
-    return stage_release._skip_checkpoint_key(
+    return staged_path._skip_checkpoint_key(
         queue, queue.records.residency_fragment_root(), stage, TIER, consumer, mover)
 
 
@@ -295,7 +295,7 @@ def test_a_tainted_census_still_caches_an_idle_owner(fleet, monkeypatch):
                                       replace=False)
     _co_owner(fleet, NAMES)
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), ["46da18322b2d: mover seals no range"],
                                  set()))
 
@@ -340,7 +340,7 @@ def test_a_promotion_handoff_on_an_idle_owner_caches(fleet, monkeypatch):
     consumer, mover = red.stale_owner(fleet, coherent_names=set(NAMES),
                                       replace=False)
     handoff = os.path.normpath(str(_path(stage, NAMES[1]).resolve()))
-    monkeypatch.setattr(stage_release, "_claimed_source_paths",
+    monkeypatch.setattr(staged_path, 'claimed_source_paths',
                         lambda *args, **kwargs: ({handoff}, []))
 
     receipt = _one(_pass(queue, stage), mover)
@@ -355,7 +355,7 @@ def test_a_retained_owner_with_a_stale_path_is_never_cached(fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), ["46da18322b2d: mover seals no range"],
                                  set()))
 
@@ -388,18 +388,18 @@ def test_the_checkpoint_holds_the_live_owner_shape():
     owners = [("big",)] + [("owner", index) for index in range(40)]
     # The sweep names the owners it discovered before it consults the cache
     # (#1056); main has no such step and caches under its fixed literals.
-    discovered = getattr(stage_release, "_retain_skip_checkpoints", None)
+    discovered = getattr(staged_path, '_retain_skip_checkpoints', None)
     if discovered is not None:
         discovered(owners)
     fragment, material = (1, 2, 3, 4, 5), (1, 2, 3, 4, 6)
     for key in owners:
         count = 2575 if key == ("big",) else 1680
-        assert stage_release._install_skip_checkpoint(
+        assert staged_path._install_skip_checkpoint(
             key, fragment, material, _stamps(str(key), count),
             documents={}), (
             f"{key}: a discovered owner of {count} entries, one parent "
             f"directory each, must fit")
-    assert set(stage_release._skip_checkpoints) == set(owners)
+    assert set(staged_path._skip_checkpoints) == set(owners)
 
 
 def test_overflow_refuses_and_the_refused_owner_is_still_censused(
@@ -416,11 +416,8 @@ def test_overflow_refuses_and_the_refused_owner_is_still_censused(
     _consumer_a, mover_a = red.stale_owner(fleet, coherent_names=set(NAMES),
                                            replace=False)
     _consumer_b, mover_b = _co_owner(fleet, NAMES)
-    # Room for one checkpoint: the fixed literal on main, the discovered
-    # count (#1056) here.
-    monkeypatch.setattr(stage_release, "SKIP_CHECKPOINT_MAX_ENTRIES", 1,
-                        raising=False)
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_capacity",
+    # Room for one checkpoint through the actual discovered-count policy.
+    monkeypatch.setattr(staged_path, '_skip_checkpoint_capacity',
                         lambda discovered: 1, raising=False)
 
     first = _pass(queue, stage)
@@ -446,7 +443,7 @@ def test_a_checkpoint_installed_under_a_taint_sees_a_replaced_leaf(
     consumer, mover = red.stale_owner(fleet, coherent_names=set(NAMES),
                                       replace=False)
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), ["46da18322b2d: mover seals no range"],
                                  set()))
     assert _one(_pass(queue, stage), mover)["cacheable"] is True
@@ -473,15 +470,15 @@ def test_a_sweep_forgets_the_checkpoint_of_an_owner_that_left(fleet):
     other_consumer, other_mover = _co_owner(fleet, [NAMES[1]])
     _pass(queue, stage)
     key = _checkpoint_key(queue, stage, other_consumer, other_mover)
-    assert key in stage_release._skip_checkpoints
+    assert key in staged_path._skip_checkpoints
 
     _drop_owner(queue, other_consumer, other_mover)
     _pass(queue, stage)
 
-    assert key not in stage_release._skip_checkpoints, (
+    assert key not in staged_path._skip_checkpoints, (
         "a checkpoint must not outlive the owner the sweep discovers")
     assert _checkpoint_key(queue, stage, consumer, mover) in (
-        stage_release._skip_checkpoints)
+        staged_path._skip_checkpoints)
 
 
 def test_the_cycle_line_counts_skips_and_censuses(fleet):

@@ -34,6 +34,7 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[0] / "src"))
 sys.path.insert(0, str(HERE.parents[0] / "tools" / "fleet"))
+from prismabuild import staged_path
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
@@ -151,7 +152,10 @@ def run(scratch: Path) -> dict[str, object]:
         # The digest comes from the bounded write above, not a second pass.
         residency = scratch / "residency"
         staged_key = f"0:/mnt/shared/{relative}"
-        residency_map.write_fragment(residency, {
+        source_stat = reader_lease.stat_identity(str(source))
+        assert source_stat is not None
+        staged_path.publish_vouch(
+            residency, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER, "mover_action_key": "b" * 64,
             "tier_id": "prismabuild-stage:acceptance",
@@ -159,16 +163,9 @@ def run(scratch: Path) -> dict[str, object]:
             "manifest_sha256": "0" * 64,
             "entries": {staged_key: {
                 "stage_path": str(source), "bytes": RANGE_BYTES,
-                "sha256": source_digest, "offset": 0}}})
-        source_stat = reader_lease.stat_identity(str(source))
-        assert source_stat is not None
-        reader_lease.write_material(
-            residency, consumer_action_key=CONSUMER,
-            mover_action_key="b" * 64,
-            tier_id="prismabuild-stage:acceptance",
-            stage_root=str(STAGE_ROOT), manifest_sha256="0" * 64,
+                "sha256": source_digest, "offset": 0}}},
             generation=reader_lease.mint_generation(),
-            entries={staged_key: {
+            material_entries={staged_key: {
                 "stage_path": str(source), "bytes": RANGE_BYTES,
                 "sha256": source_digest, "file_id": source_stat}})
         started = time.time()

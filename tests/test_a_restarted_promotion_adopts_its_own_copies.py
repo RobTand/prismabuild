@@ -45,6 +45,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -137,7 +138,7 @@ def _promote_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
 
 
 def _ram_paths(tmp_path: Path, body: dict) -> list[Path]:
-    return [tmp_path / "ram" / stage_move.stage_relative(
+    return [tmp_path / "ram" / staged_path.stage_relative(
                 str(entry["path"]), 0, SIZE,
                 mount_prefix=str(body["mount_prefix"]))
             for entry in body["entries"]]
@@ -174,8 +175,7 @@ def _forget(queue: pool.PoolQueue, consumer: str = CONSUMER,
     """What a kill before the end-of-range records leaves: no records."""
 
     residence = queue.root / pool.record_store.RESIDENCY
-    residency_map.fragment_path(residence, consumer, mover).unlink()
-    reader_lease.material_path(residence, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, residence, consumer, mover, missing_ok=False)
 
 
 def _timings(receipt: dict) -> dict:
@@ -197,7 +197,7 @@ def test_a_restarted_promotion_adopts_without_a_copy_or_a_grace(
     queue, args, _body, paths, _epoch, _sha = _promoted(tmp_path)
     before = _identities(paths)
     _forget(queue)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     started = time.monotonic()
     receipt = ram_promote.promote(args)
@@ -233,7 +233,7 @@ def test_copies_another_key_left_are_adopted_too(
     queue, args, _body, paths, _epoch, _sha = _promoted(tmp_path)
     before = _identities(paths)
     _forget(queue)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
     args.action_key = FOREIGN_RAM_MOVER
 
     receipt = ram_promote.promote(args)
@@ -259,13 +259,13 @@ def test_a_digest_less_stage_copy_adopts_at_publication(
     first = stage_move.move(_stage_args(
         tmp_path, queue, manifest, manifest_sha, CONSUMER, STAGE_MOVER))
     assert first["complete"] is True, first
-    paths = [tmp_path / "stage" / stage_move.stage_relative(
+    paths = [tmp_path / "stage" / staged_path.stage_relative(
                  str(entry["path"]), 0, SIZE,
                  mount_prefix=str(body["mount_prefix"]))
              for entry in body["entries"]]
     before = _identities(paths)
     _forget(queue, CONSUMER, STAGE_MOVER)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     receipt = stage_move.move(_stage_args(
         tmp_path, queue, manifest, manifest_sha, FOREIGN_CONSUMER,
@@ -289,7 +289,7 @@ def test_a_copy_in_flight_still_defers_and_never_replaces(
     _forget(queue)
     sibling = paths[0].with_name(f".{paths[0].name}.{'f' * 16}.partial")
     sibling.write_bytes(b"partial-prefix")
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     started = time.monotonic()
     receipt = ram_promote.promote(args)
@@ -314,16 +314,16 @@ def test_a_live_claim_still_defers_and_never_replaces(
     before = _identities(paths)
     _forget(queue)
     covered = os.path.normpath(str(paths[0]))
-    real = stage_move._StagedPublisher._live_claim_cover
+    real = staged_path.StagedPublisher._live_claim_cover
 
     def cover(self, norm):
         if norm == covered:
             return True, "live mover claim"
         return real(self, norm)
 
-    monkeypatch.setattr(stage_move._StagedPublisher, "_live_claim_cover",
+    monkeypatch.setattr(staged_path.StagedPublisher, "_live_claim_cover",
                         cover)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     started = time.monotonic()
     receipt = ram_promote.promote(args)
@@ -356,7 +356,7 @@ def test_a_live_pin_still_refuses(tmp_path: Path, monkeypatch) -> None:
     assert pinned.get("ok"), pinned
     before = _identities(paths)
     _forget(queue)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     receipt = ram_promote.promote(args)
 
@@ -398,7 +398,7 @@ def test_a_record_dating_other_bytes_still_refuses_at_once(
     queue.publish(action_key=FOREIGN_RAM_MOVER, cas_root="/cas",
                   checkout_root="/co", worker_script="/w.py",
                   resources={"cpu": 1}, max_attempts=1)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     started = time.monotonic()
     receipt = ram_promote.promote(args)
@@ -417,7 +417,7 @@ def test_unattributed_wrong_bytes_wait_and_heal_never_adopt(
     wrong.write_bytes(bytes(SIZE))
     os.replace(wrong, paths[0])
     planted = reader_lease.stat_identity(str(paths[0]))
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
 
     started = time.monotonic()
     receipt = ram_promote.promote(args)

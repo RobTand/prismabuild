@@ -62,6 +62,7 @@ from prismabuild import residency_map, residency_plan  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -133,7 +134,7 @@ class _Reclaim:
         self.queue.records.ensure_layout()
         self.stage = root / "stage"
         self.stage.mkdir()
-        if stage_release.register_stage_root(
+        if staged_path.register_stage_root(
                 self.queue, tier_id=TIER, stage_root=self.stage) != "registered":
             raise SystemExit("the scratch stage root did not register")
         self.cas = root / "cas"
@@ -292,7 +293,7 @@ class _Reclaim:
             if not self.queue.records.item_path(pool.record_store.READY, egress).exists():
                 continue
             claimed = self._claim(egress)
-            stage_release.evict(
+            staged_path.evict(
                 self.queue, self.movers[ordinal],
                 consumer_action_key=self.consumer,
                 stage_root=str(self.stage),
@@ -311,7 +312,7 @@ def reclaim_scenario(root: Path, *, entries: int, landed: int,
     def copy_one(copier, entry, destination, *args, **kwargs):
         if str(entry["path"]) in world.refuse:
             # What 574747d717fc met on boundary-425 (defect 2's symptom).
-            raise stage_move._PublicationRefused(
+            raise staged_path.PublicationRefused(
                 "shared staged name still has a live publisher after the "
                 f"grace, deferring to retry: {destination}")
         return real(copier, entry, destination, *args, **kwargs)
@@ -463,8 +464,8 @@ def collision_scenario(root: Path, *, shared: int, size: int, grace: float,
 
     first: dict = {}
     reads = _OriginReads()
-    with _patched(stage_move, "_PUBLISH_GRACE_S", grace), \
-            _patched(stage_move, "_PUBLISH_POLL_S", 0.02), \
+    with _patched(staged_path, '_PUBLISH_GRACE_S', grace), \
+            _patched(staged_path, '_PUBLISH_POLL_S', 0.02), \
             _patched(stage_move, "FRAGMENT_PUBLISH_S", fragment_s), \
             _patched(stage_move._Copier, "_copy_one", copy_one), \
             reads.installed():

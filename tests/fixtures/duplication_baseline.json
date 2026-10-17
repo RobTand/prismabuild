@@ -12,14 +12,6 @@
   [
    "tools/fleet/pbcanary_legs/leg3.py::_returncode",
    "tools/fleet/pbcanary_legs/leg4.py::_returncode"
-  ],
-  [
-   "src/prismabuild/ram_promote.py::main",
-   "src/prismabuild/stage_move.py::main"
-  ],
-  [
-   "src/prismabuild/stage_move.py::own_action_key",
-   "src/prismabuild/stage_release.py::own_action_key"
   ]
  ],
  "primitive_digest_sites": [
@@ -56,6 +48,8 @@
   "hashlib:src/prismabuild/resource_scope.py::ResourceScope.recover_create",
   "hashlib:src/prismabuild/resource_scope.py::_sha256_file",
   "hashlib:src/prismabuild/slurm_lane.py::submit",
+  "hashlib:src/prismabuild/stage_move.py::_Copier._copy_one",
+  "hashlib:src/prismabuild/staged_path.py::StagedPublisher._content_proof",
   "hashlib:src/prismabuild/window_credit.py::grant_key",
   "hashlib:tools/duplication_inventory.py::_shingles",
   "hashlib:tools/fleet/bench_failed_mover_reclaim.py::_Reclaim.__init__",
@@ -86,10 +80,6 @@
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::_hash_fd",
   "hashlib:tools/fleet/pbcanary_legs/leg3.py::run_action",
   "hashlib:tools/fleet/pbmcp.py::_blob_identity",
-  "hashlib:tools/fleet/pbrun.py::build_stamp_closure",
-  "hashlib:tools/fleet/pbrun.py::require_deployed_read_plan_storage",
-  "hashlib:tools/fleet/pbrun.py::result_and_stamp_names",
-  "hashlib:tools/fleet/pbrun.py::verify_retained_wrapper",
   "hashlib:tools/fleet/pbsnapshot.py::verified_stamp",
   "hashlib:tools/fleet/publish_runtime.py::_agent_definitions",
   "hashlib:tools/fleet/publish_runtime.py::_coordinator_sha256",
@@ -105,8 +95,6 @@
   "hashlib:tools/fleet/shape_gate.py::ShapeGate.read_phase",
   "hashlib:tools/fleet/shape_gate.py::main",
   "hashlib:tools/fleet/shape_gate.py::write_sources",
-  "hashlib:src/prismabuild/stage_move.py::_Copier._copy_one",
-  "hashlib:src/prismabuild/stage_move.py::_StagedPublisher._content_proof",
   "hashlib:tools/fleet/supervise.py::_sha256",
   "hashlib:tools/fleet/upgrade_client.py::digest",
   "hashlib:tools/prismabuild_worker.py::_capture_launched_source",
@@ -123,9 +111,12 @@
   "sorted-json:src/prismabuild/produced_spool.py::export_group",
   "sorted-json:src/prismabuild/produced_spool.py::main",
   "sorted-json:src/prismabuild/progress.py::_write",
+  "sorted-json:src/prismabuild/ram_promote.py::main",
   "sorted-json:src/prismabuild/reader_lease.py::_canonical_pin_body",
   "sorted-json:src/prismabuild/resource_scope.py::_atomic_json",
   "sorted-json:src/prismabuild/slurm_lane.py::LivenessMonitor._append",
+  "sorted-json:src/prismabuild/stage_move.py::main",
+  "sorted-json:src/prismabuild/stage_release.py::main",
   "sorted-json:tools/duplication_inventory.py::main",
   "sorted-json:tools/fleet/bench_failed_mover_reclaim.py::main",
   "sorted-json:tools/fleet/bench_tier_cold_start.py::main",
@@ -140,10 +131,6 @@
   "sorted-json:tools/fleet/pbcanary_legs/common.py::canonical_json",
   "sorted-json:tools/fleet/pbmcp.py::_content",
   "sorted-json:tools/fleet/pbmetrics.py::_refusal_record",
-  "sorted-json:tools/fleet/pbrun.py::bounded_offer_snapshot",
-  "sorted-json:tools/fleet/pbrun.py::freeze_action_template",
-  "sorted-json:tools/fleet/pbrun.py::release_origin_consumer_cli",
-  "sorted-json:tools/fleet/pbrun.py::result_and_stamp_names",
   "sorted-json:tools/fleet/pbsnapshot.py::main",
   "sorted-json:tools/fleet/pbstatus.py::main",
   "sorted-json:tools/fleet/pbsweep.py::main",
@@ -159,13 +146,10 @@
   "sorted-json:tools/fleet/qualify_resource_scope.py::main",
   "sorted-json:tools/fleet/qualify_rollout.py::coordinator_actor",
   "sorted-json:tools/fleet/qualify_rollout.py::emit_manifest",
-  "sorted-json:src/prismabuild/ram_promote.py::main",
   "sorted-json:tools/fleet/require_pool.py::_record_sighting",
   "sorted-json:tools/fleet/runtime_process_census.py::main",
   "sorted-json:tools/fleet/shape_gate.py::main",
   "sorted-json:tools/fleet/shape_gate.py::table_bytes",
-  "sorted-json:src/prismabuild/stage_move.py::main",
-  "sorted-json:src/prismabuild/stage_release.py::main",
   "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.fill_supply",
   "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.mover_cap",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.attest",
@@ -343,10 +327,6 @@
    "src/prismabuild/produced_spool.py",
    "tools/fleet/pb_gc.py"
   ],
-  "_is_action_key": [
-   "src/prismabuild/stage_move.py",
-   "src/prismabuild/stage_release.py"
-  ],
   "_key": [
    "tools/fleet/bench_failed_mover_reclaim.py",
    "tools/fleet/bench_ram_promote_restart.py",
@@ -374,7 +354,7 @@
   ],
   "_observe": [
    "src/prismabuild/produced_spool.py",
-   "src/prismabuild/stage_move.py"
+   "src/prismabuild/staged_path.py"
   ],
   "_parser": [
    "src/prismabuild/prewarm_loop.py",
@@ -416,8 +396,8 @@
    "tools/fleet/pbcanary_legs/leg4.py"
   ],
   "_serve": [
-   "tools/fleet/pbmetrics.py",
    "src/prismabuild/prewarm_loop.py",
+   "tools/fleet/pbmetrics.py",
    "tools/fleet/tier_loop.py"
   ],
   "_sha256": [
@@ -472,12 +452,10 @@
    "src/prismabuild/gpu_memory.py"
   ],
   "container_owner": [
-   "src/prismabuild/movement_actions.py",
-   "tools/fleet/pbrun.py"
+   "src/prismabuild/movement_actions.py"
   ],
   "current_fill_offer": [
-   "src/prismabuild/storage_tiers.py",
-   "tools/fleet/pbrun.py"
+   "src/prismabuild/storage_tiers.py"
   ],
   "cycle": [
    "src/prismabuild/prewarm_loop.py",
@@ -492,21 +470,16 @@
    "tools/fleet/qualify_rollout.py"
   ],
   "load_manifest": [
-   "tools/fleet/pbcampaign.py",
    "src/prismabuild/prewarm_loop.py",
-   "src/prismabuild/stage_move.py"
+   "src/prismabuild/stage_move.py",
+   "tools/fleet/pbcampaign.py"
   ],
   "movement_tools": [
-   "src/prismabuild/movement_actions.py",
-   "tools/fleet/pbrun.py"
+   "src/prismabuild/movement_actions.py"
   ],
   "observe": [
    "src/prismabuild/box_capacity.py",
    "src/prismabuild/container_images.py"
-  ],
-  "own_action_key": [
-   "src/prismabuild/stage_move.py",
-   "src/prismabuild/stage_release.py"
   ],
   "parse": [
    "tools/fleet/admission_shared_io.py",
@@ -518,8 +491,8 @@
   ],
   "reconcile": [
    "src/prismabuild/pool_reconcile.py",
-   "tools/fleet/pbtest_outcomes.py",
-   "src/prismabuild/stage_release.py"
+   "src/prismabuild/staged_path.py",
+   "tools/fleet/pbtest_outcomes.py"
   ],
   "recorded_action": [
    "src/prismabuild/slurm_lane.py",
@@ -553,8 +526,8 @@
   ],
   "sweep": [
    "src/prismabuild/slurm_lane.py",
-   "tools/fleet/pb_gc.py",
-   "src/prismabuild/stage_release.py"
+   "src/prismabuild/stage_release.py",
+   "tools/fleet/pb_gc.py"
   ],
   "verdict": [
    "tools/fleet/pbcanary_verdict.py",

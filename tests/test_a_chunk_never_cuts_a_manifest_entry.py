@@ -42,6 +42,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, storage_tiers  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 HOST = "dl380g10"
@@ -424,6 +425,6 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
 
     for root in ("stage", "ram"):
         for path, payload in payloads.items():
-            relative = stage_move.stage_relative(
+            relative = staged_path.stage_relative(
                 path, 0, len(payload), mount_prefix=str(mount))
             assert (tmp_path / root / relative).read_bytes() == payload

@@ -45,6 +45,7 @@ import prismabuild.reader_lease as reader_lease  # noqa: E402
 import prismabuild.residency_map as residency_map  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -59,7 +60,7 @@ def _staged(stage: Path, name: str) -> Path:
     """Where the mover stages the whole source ``name`` (one of ``SIZES``)."""
 
     names = ["shard-1.bin", "sub/shard-2.bin", "shard-3.bin"]
-    return stage / stage_move.stage_relative(
+    return stage / staged_path.stage_relative(
         f"/m/{name}", 0, SIZES[names.index(name)], mount_prefix="/m")
 
 
@@ -196,7 +197,7 @@ def test_a_partial_retry_never_publishes_below_its_own_qualified_prefix(
     _interrupted_first_attempt(fleet)
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
     opened = _count_source_opens(monkeypatch, fleet[2])
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     suffix = _staged(Path(args.stage_root), "sub/shard-2.bin")
     inode_before = suffix.stat().st_ino
 
@@ -223,7 +224,7 @@ def test_a_repeated_partial_retry_keeps_its_coverage(fleet, monkeypatch) -> None
 
     _tmp, args, mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
 
     (mount / "shard-3.bin").write_bytes(b"c" * (SIZES[2] // 2))
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
@@ -267,7 +268,7 @@ def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
         manifest_sha256=str(args.manifest_sha256),
         residency_root=Path(args.residency_root), window=window,
         mount_prefix=str(manifest["mount_prefix"]),
-        named_once=frozenset(stage_move.paths_named_once(entries)))
+        named_once=frozenset(staged_path.paths_named_once(entries)))
 
 
 @pytest.mark.parametrize("filesystem", [
@@ -473,7 +474,7 @@ def test_changed_prior_bytes_fail_closed_and_are_never_replaced(
 
     _tmp, args, mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     tampered_payload = b"b" * SIZES[1] + b"X"
     _staged(Path(args.stage_root), "sub/shard-2.bin").write_bytes(
         tampered_payload)
@@ -494,7 +495,7 @@ def test_a_corrupt_prior_sidecar_preserves_vouches_but_dates_nothing(
 
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     reader_lease.material_path(
         Path(args.residency_root), CONSUMER, MOVER).write_text("not json")
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
@@ -541,7 +542,7 @@ def test_a_corrupt_own_fragment_with_a_new_destination_refuses_everything(
 
     _tmp, args, _mount, _entries, _keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     fragment = residency_map.fragment_path(
         Path(args.residency_root), CONSUMER, MOVER)
     corrupt_bytes = b'{"schema": "prismaquant.prismabuild.resi'
@@ -573,7 +574,7 @@ def test_a_conflicting_own_fragment_refuses_and_keeps_the_record(
 
     _tmp, args, _mount, _entries, _keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     fragment = residency_map.fragment_path(
         Path(args.residency_root), CONSUMER, MOVER)
     document = json.loads(fragment.read_bytes())
@@ -594,7 +595,7 @@ def test_a_conflicting_extent_in_the_own_fragment_refuses(
 
     _tmp, args, _mount, entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     fragment = residency_map.fragment_path(
         Path(args.residency_root), CONSUMER, MOVER)
     document = json.loads(fragment.read_bytes())
@@ -621,7 +622,7 @@ def test_conflicting_own_material_headers_refuse(
 
     _tmp, args, _mount, _entries, _keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     sidecar = reader_lease.material_path(
         Path(args.residency_root), CONSUMER, MOVER)
     document = json.loads(sidecar.read_bytes())
@@ -653,7 +654,7 @@ def test_concurrent_publications_keep_the_preserved_prefix(
 
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", 0.0)
     args.max_readers = 2
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
@@ -702,7 +703,7 @@ def test_a_live_pin_on_a_resumed_entry_stays_valid_as_new_material_lands(
 
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     queue, pin = _pin(fleet)
     assert pin["ok"], pin
     prior = _material(args)
@@ -739,7 +740,7 @@ def test_an_all_adopted_resume_keeps_the_material_generation(
 
     _tmp, args, mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     queue, pin = _pin(fleet)
     assert pin["ok"], pin
     prior_generation = _material(args)["generation"]

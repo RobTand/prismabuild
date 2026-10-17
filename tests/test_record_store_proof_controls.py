@@ -10,6 +10,7 @@ from record_store_trust import ObservedTrust
 from prismabuild import stage_release
 import tier_loop
 import test_stale_material_done_owner_retires as owner
+from prismabuild import staged_path
 
 fleet = owner.fleet
 KEY = 'a' * 64
@@ -135,20 +136,20 @@ def test_real_dead_owner_checkpoint_uses_the_census_trust_owner(fleet):
     root = queue.records.residency_fragment_root()
     trust = ObservedTrust()
     index = kept_reads.CensusIndex(trust=trust)
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     try:
         def sweep():
             return stage_release.sweep_dead_owner_fragments(
                 queue, stage_roots={owner.TIER: str(stage)}, residency_root=root, index=index)
-        first = [row for row in sweep() if row.get('event') == stage_release.STALE_MENTION_EVENT]
+        first = [row for row in sweep() if row.get('event') == staged_path.STALE_MENTION_EVENT]
         assert len(first) == 1 and first[0]['cacheable'], first
         assert sweep() == []
         assert index.stale_skipped == 1
         trust.available = False
-        after = [row for row in sweep() if row.get('event') == stage_release.STALE_MENTION_EVENT]
+        after = [row for row in sweep() if row.get('event') == staged_path.STALE_MENTION_EVENT]
         assert after and not after[0]['cacheable']
         assert index.stale_censused >= 2
         assert any(kind == 'fence' for kind, _ in trust.events)
         assert all((stage / owner.staged_name(name)).exists() for name in owner.NAMES)
     finally:
-        stage_release.reset_skip_checkpoints()
+        staged_path.reset_skip_checkpoints()

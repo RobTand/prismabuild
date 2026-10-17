@@ -33,6 +33,7 @@ from prismabuild import kept_reads
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64
@@ -52,7 +53,7 @@ def _old_unattributed_candidates(stage: Path, stage_resolved: Path,
     for base, _directories, names in os.walk(stage):
         for name in sorted(names):
             path = Path(base) / name
-            if (name == stage_release.STAGE_ROOT_MARKER
+            if (name == staged_path.STAGE_ROOT_MARKER
                     and Path(base) == stage):
                 continue
             if (name == storage_tiers.RAM_EPOCH_MARKER
@@ -69,11 +70,11 @@ def _old_unattributed_candidates(stage: Path, stage_resolved: Path,
                 continue
             if os.path.normpath(str(path)) in attributed:
                 continue
-            partial = stage_release._is_mover_partial(name)
+            partial = staged_path._is_mover_partial(name)
             if not partial:
                 if re.search(r"\.pbstage@\d+\+\d+\.(\d+)\.\d+\.tmp$", name):
                     continue
-                marked = stage_release._marked_by_the_prewarm_stage(path)
+                marked = staged_path._marked_by_the_prewarm_stage(path)
                 if marked is None or marked:
                     candidates.append((path, None, False))
                     continue
@@ -97,7 +98,7 @@ def _as_candidates(walk):
         for path, identity, partial in candidates:
             if identity is None:
                 kind = ("source_mark_only"
-                        if stage_release._marked_by_the_prewarm_stage(path)
+                        if staged_path._marked_by_the_prewarm_stage(path)
                         else "mark_unanswerable")
             else:
                 kind = "partial" if partial else "unmarked"
@@ -142,7 +143,7 @@ def _fleet(root: Path) -> tuple[pool.PoolQueue, Path]:
     queue.records.ensure_layout()
     stage = root / "stage"
     stage.mkdir(parents=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -210,7 +211,7 @@ def test_an_unmarked_orphan_under_a_directory_outside_the_stage_stays(swapped):
     beyond = _staged_file(outside, "unmarked.bin")
     control = _staged_file(stage, "orphans/unmarked.bin")
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
 
     assert beyond.exists(), "a path resolving outside the stage is not ours"
@@ -225,7 +226,7 @@ def test_a_mover_partial_under_a_directory_outside_the_stage_stays(swapped):
     beyond = _staged_file(outside, ".shard.bin.partial")
     control = _staged_file(stage, "orphans/.shard.bin.partial")
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
 
     assert beyond.exists(), "a partial resolving outside the stage is not ours"
@@ -240,7 +241,7 @@ def test_no_candidate_carries_an_identity_for_a_path_outside_the_stage(
     _queue, stage, outside = swapped
     _staged_file(outside, "unmarked.bin")
     _staged_file(outside, ".shard.bin.partial")
-    candidates, errors = stage_release._unattributed_candidates(
+    candidates, errors = staged_path._unattributed_candidates(
         stage, stage.resolve(strict=True), set())
     assert errors == []
     assert not [path for path, identity, *_rest in candidates
@@ -252,11 +253,11 @@ def test_no_candidate_carries_an_identity_for_a_path_outside_the_stage(
 def test_the_walk_returns_what_the_old_walk_returned(tmp_path: Path):
     queue, stage = _fleet(tmp_path)
     _ordinary_tree(queue, stage)
-    attributed = stage_release.attributed_stage_paths(queue, wanted={MOVER})
+    attributed = staged_path.attributed_stage_paths(queue, wanted={MOVER})
     assert attributed, "the fragment must attribute something"
     resolved = stage.resolve(strict=True)
 
-    new = stage_release._unattributed_candidates(stage, resolved, attributed)
+    new = staged_path._unattributed_candidates(stage, resolved, attributed)
     old = _old_unattributed_candidates(stage, resolved, attributed)
 
     # Since #1088 a candidate also carries its kind, size and writer; on a
@@ -279,9 +280,9 @@ def test_reconcile_counts_and_deletes_what_the_old_code_did(
         _ordinary_tree(queue, stage)
         with monkeypatch.context() as patch:
             if arm == "old":
-                patch.setattr(stage_release, "_unattributed_candidates",
+                patch.setattr(staged_path, '_unattributed_candidates',
                               _as_candidates(_old_unattributed_candidates))
-            receipts.append(stage_release.reconcile(
+            receipts.append(staged_path.reconcile(
                 queue, tier_id=TIER, stage_root=str(stage), wanted={MOVER}))
         left_behind.append(_snapshot(stage))
         shutil.rmtree(tmp_path / arm)

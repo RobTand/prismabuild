@@ -32,6 +32,7 @@ from prismabuild import stage_marks  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from fleet_fixture import actions, damage, queue, stages  # noqa: F401
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 NAMES = ["model-00087-range.bin", "model-00090-prefix.bin"]
@@ -48,7 +49,7 @@ def fleet(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     cas = tmp_path / "cas"
     cas.mkdir()
@@ -131,9 +132,9 @@ def _dead_owner(fleet) -> tuple[str, str]:
     return consumer, mover
 
 
-def _publisher(fleet, mover: str, consumer: str, *, trust=None) -> stage_move._StagedPublisher:
+def _publisher(fleet, mover: str, consumer: str, *, trust=None) -> staged_path.StagedPublisher:
     queue, stage, cas = fleet
-    return stage_move._StagedPublisher(
+    return staged_path.StagedPublisher(
         queue=queue, stage_root=stage,
         residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
@@ -157,7 +158,7 @@ def test_dead_owner_fragment_blocks_a_same_path_mover(queue, stages, actions) ->
     assert verdict[0] == "refuse"
     assert "published elsewhere" in verdict[1]
     assert "still unproven after the grace" in verdict[1]
-    reconciled = stage_release.reconcile(
+    reconciled = staged_path.reconcile(
         queue, tier_id=TIER, stage_root=str(stage), wanted=set())
     assert reconciled["unowned_left"] == len(NAMES), reconciled
     assert all((stage / name).exists() for name in NAMES)
@@ -335,7 +336,7 @@ def test_missing_or_unknown_authority_is_not_absence(fleet, which):
 def test_republication_after_census_retains_new_generation(fleet, monkeypatch, owner):
     queue, stage, _ = fleet
     consumer, mover = _dead_owner(fleet)
-    original = stage_release._fragment_census
+    original = staged_path.fragment_census
     published = False
 
     def census(root, *args, **kwargs):
@@ -348,7 +349,7 @@ def test_republication_after_census_retains_new_generation(fleet, monkeypatch, o
                           resources={'cpu': 1}, max_attempts=1, recompute=True)
         return result
 
-    monkeypatch.setattr(stage_release, '_fragment_census', census)
+    monkeypatch.setattr(staged_path, 'fragment_census', census)
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     _assert_retained(queue, stage, consumer, mover)
     assert queue.records.item_path(
@@ -369,7 +370,7 @@ def test_consumer_and_mover_excluded_through_egress(fleet, monkeypatch):
     import multiprocessing
     queue, stage, _ = fleet
     consumer, mover = _dead_owner(fleet)
-    original = stage_release.evict
+    original = staged_path.evict
     observed = []
 
     def evict(*args, **kwargs):
@@ -384,7 +385,7 @@ def test_consumer_and_mover_excluded_through_egress(fleet, monkeypatch):
             assert process.exitcode == 0
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, 'evict', evict)
+    monkeypatch.setattr(staged_path, 'evict', evict)
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     assert observed == [False, False]
     assert not (stage / NAMES[0]).exists()
@@ -428,7 +429,7 @@ def test_one_discovery_for_all_tiers(fleet, monkeypatch):
     second = stage.parent / 'ram'
     second.mkdir()
     ram = 'prismabuild-ram:dl380g10'
-    stage_release.register_stage_root(queue, tier_id=ram, stage_root=second)
+    staged_path.register_stage_root(queue, tier_id=ram, stage_root=second)
     original = stage_release.sweep_dead_owner_fragments
     calls = []
 

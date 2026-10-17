@@ -37,6 +37,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan, TIER)
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 CAPACITY = 156
 # Four chunks: 40 + 40 + 40 + 1 = 121.
@@ -50,7 +51,7 @@ TOOLS = {"mover_python": "/gen-1690/venv/bin/python",
 def _stage(queue, tier):
     root = queue.root.parent / f"stage-{tier.replace(':', '-')}"
     root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=tier, stage_root=str(root)) == "registered"
     return {"tier_id": tier, "tier": "stage", "mountpoint": str(root)}
 
@@ -123,16 +124,14 @@ def _land_range(queue, stage_root: Path, *, consumer: str, mover: str,
     entries = {key: {"stage_path": str(path), "bytes": size, "offset": 0,
                      "sha256": "b" * 64}}
     assert queue.tier(TIER).take(mover, {'stage_gib': storage_tiers.stage_tokens_for_bytes(size)})
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage_root),
-        "manifest_sha256": manifest, "entries": entries})
-    reader_lease.write_material(
-        queue.records.residency_fragment_root(), consumer_action_key=consumer,
-        mover_action_key=mover, tier_id=TIER, stage_root=str(stage_root),
-        manifest_sha256=manifest, generation="c" * 32,
-        entries={key: {**entries[key],
+        "manifest_sha256": manifest, "entries": entries},
+        generation="c" * 32,
+        material_entries={key: {**entries[key],
                        "file_id": reader_lease.stat_identity(str(path))}})
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
@@ -217,7 +216,7 @@ def _state_1690(tmp_path):
             pass
     for mover in movers[2:]:
         consumer = str(queue.move_record(mover)["consumer_action_key"])
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, mover, consumer_action_key=consumer,
             stage_root=str(stage_root),
             residency_root=queue.root / pool.record_store.RESIDENCY,
@@ -276,16 +275,14 @@ def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
         stream.truncate(size)
     entries = {key: {"stage_path": str(path), "bytes": size, "offset": 0,
                      "sha256": "d" * 64}}
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": namespace, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage_root),
-        "manifest_sha256": manifest, "entries": entries})
-    reader_lease.write_material(
-        queue.records.residency_fragment_root(), consumer_action_key=namespace,
-        mover_action_key=mover, tier_id=TIER, stage_root=str(stage_root),
-        manifest_sha256=manifest, generation="e" * 32,
-        entries={key: {**entries[key],
+        "manifest_sha256": manifest, "entries": entries},
+        generation="e" * 32,
+        material_entries={key: {**entries[key],
                        "file_id": reader_lease.stat_identity(str(path))}})
     queue.record_move(mover, {
         "consumer_action_key": namespace, "tier_id": TIER,

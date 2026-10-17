@@ -31,6 +31,7 @@ from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
 import residency_publication  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
@@ -86,14 +87,14 @@ def _plan(queue: pool.PoolQueue) -> dict[str, object]:
         start = end
     return residency_plan.build_plan(
         consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
-        stage_root="/stage/prewarm", manifest_sha256=MANIFEST,
+        stage_root=str(queue.root.parent / "stage"), manifest_sha256=MANIFEST,
         manifest_bytes=start, phases=phases, ram_tier_id=RAM_TIER)
 
 
 def _tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
     return {
         STAGE_TIER: {"tier": "stage", "tier_id": STAGE_TIER,
-                     "host": "dl380g10", "mountpoint": "/stage/prewarm"},
+                     "host": "dl380g10", "mountpoint": str(tmp_path / "stage")},
         RAM_TIER: {"tier": "ram", "tier_id": RAM_TIER, "host": "dl380g10",
                    "mountpoint": str(tmp_path / "ram"), "epoch": EPOCH,
                    "capacity_bytes": 112 * GIB, "window_gib": 112},
@@ -128,9 +129,9 @@ def _fixture(tmp_path: Path, *, landed: tuple[int, ...]) -> pool.PoolQueue:
         assert queue.tier(STAGE_TIER).take(stage_lead, {'stage_gib': PHASE_GIB[ordinal]})
         # Landed means landed (#759): the tokens are the booking, and the
         # fragment beside the receipt is what says the bytes arrived.
-        residency_publication.vouch_landed(
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=CONSUMER, mover_action_key=stage_lead,
-            tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+            tier_id=STAGE_TIER, stage_root=str(queue.root.parent / "stage"),
             manifest_sha256=MANIFEST,
             range_start_bytes=int(phase["start_bytes"]),
             range_end_bytes=int(phase["end_bytes"]),
@@ -184,7 +185,7 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
     tiers = _tiers(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
-    stage_release.register_stage_root(queue, tier_id=RAM_TIER, stage_root=ram)
+    staged_path.register_stage_root(queue, tier_id=RAM_TIER, stage_root=ram)
     queue.tier(RAM_TIER).mint({'ram_gib': 20})
     tiers[RAM_TIER].update(capacity_bytes=20 * GIB, window_gib=20)
     ledger = queue.tier(RAM_TIER)
@@ -193,7 +194,7 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
         (_hexkey("ramorphan"), "d" * 64, 0, 8 * GIB, "orphan"),
     ):
         assert ledger.take(key, {'ram_gib': 8})
-        residency_publication.vouch_landed(
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=consumer, mover_action_key=key,
             tier_id=RAM_TIER, stage_root=ram, manifest_sha256=MANIFEST,
             range_start_bytes=start, range_end_bytes=end, epoch=EPOCH, name=name)

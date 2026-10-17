@@ -59,6 +59,7 @@ from kept_read_clock import after_paths
 import test_a_leg_past_the_horizon_is_waited_for_not_clocked as leg  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     _tier_record)
+from prismabuild import staged_path
 
 TIER = leg.TIER
 HOST = "dl380g10"
@@ -77,10 +78,10 @@ READER_POLL_S = 0.05
 
 @pytest.fixture(autouse=True)
 def _fresh_process_state():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
 
 

@@ -56,6 +56,7 @@ import tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     DIGEST, GIB, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _row, _stage_range,
     _tier_record, assert_ledger_matches_the_stage)
+from prismabuild import staged_path
 
 READER = "3" * 64       # R12's shape: claimed, reading phase-0, staged ahead
 NEWCOMER = "4" * 64     # the capture's shape: ready, its lead short
@@ -216,7 +217,7 @@ def _fixture_queue(tmp_path: Path, gib: int) -> tuple[pool.PoolQueue, Path]:
     queue.tier(TIER).mint({'stage_gib': gib})
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -342,16 +343,14 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str,
             "stage_path": str(path), "bytes": size, "offset": 0,
             "sha256": DIGEST}}
     assert queue.tier(TIER).take(mover, {'stage_gib': storage_tiers.stage_tokens_for_bytes(size)})
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": manifest,
-        "entries": entries})
-    reader_lease.write_material(
-        queue.records.residency_fragment_root(), consumer_action_key=consumer,
-        mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
-        manifest_sha256=manifest, generation="b" * 32,
-        entries={key: {**dict(mention),  # type: ignore[dict-item]
+        "entries": entries},
+        generation="b" * 32,
+        material_entries={key: {**dict(mention),  # type: ignore[dict-item]
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}  # type: ignore[index]
                  for key, mention in entries.items()})
@@ -439,7 +438,7 @@ def test_a_running_consumers_next_range_preempts_ranges_past_another_horizon(
     assert len(evicted) == WIDE - 13, printed
     assert len(filed) == WIDE - 13, filed
     for event in evicted + filed:
-        assert set(stage_release.LOCK_SCOPE_FIELDS) <= set(event), event
+        assert set(staged_path.LOCK_SCOPE_FIELDS) <= set(event), event
         assert event["entries_judged"] > 0, event
         assert 0.0 <= event["lock_held_s"], event
         assert 0.0 <= event["census_validate_s"] <= event["lock_held_s"], event

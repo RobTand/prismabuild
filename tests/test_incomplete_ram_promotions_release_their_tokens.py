@@ -30,6 +30,7 @@ from prismabuild import pool, residency_map, residency_plan, storage_tiers  # no
 
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -61,7 +62,7 @@ def _ram_root(tmp_path: Path, queue: pool.PoolQueue) -> Path:
 
     ram = tmp_path / "ram"
     ram.mkdir(exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=str(ram)) == "registered"
     return ram
 

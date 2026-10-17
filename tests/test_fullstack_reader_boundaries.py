@@ -24,6 +24,7 @@ from prismabuild import stage_release  # noqa: E402
 from test_fullstack_stage_ram_chain import (  # noqa: E402
     CONSUMER, RAM_TIER, STAGE_TIER, _fleet, _move_args, _pool_fixture,
 )
+from prismabuild import staged_path
 
 WHOLE = "shard-0.bin"
 
@@ -108,14 +109,14 @@ def test_double_egress_reclaims_exactly_once(tmp_path: Path) -> None:
     queue.tier(STAGE_TIER).mint({'stage_gib': 4})
     assert ledger.take(WHOLE_MOVER, {'stage_gib': 1}) is True
     assert ledger.holdings(WHOLE_MOVER) == {'stage_gib': 1}
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=tmp_path / "stage") == "registered"
-    first = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
+    first = staged_path.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                 stage_root=tmp_path / "stage")
     assert first["complete"] is True
     assert ledger.holdings(WHOLE_MOVER) == {}
     assert ledger.free_supply() == {'stage_gib': 4}
-    second = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
+    second = staged_path.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                  stage_root=tmp_path / "stage")
     assert second["complete"] is True
     assert ledger.holdings(WHOLE_MOVER) == {}

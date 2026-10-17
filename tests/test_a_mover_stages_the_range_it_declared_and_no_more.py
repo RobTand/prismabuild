@@ -28,6 +28,7 @@ from prismabuild import data_manifest as manifest_codec
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.residency_map as rm  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -94,7 +95,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
 def _staged(stage: Path, relative: str, size: int) -> Path:
     """Where the mover stages the whole ``size``-byte source ``relative``."""
 
-    return stage / stage_move.stage_relative(
+    return stage / staged_path.stage_relative(
         f"/m/{relative}", 0, size, mount_prefix="/m")
 
 def _three_files(tmp_path: Path) -> tuple[Path, list[dict[str, object]]]:

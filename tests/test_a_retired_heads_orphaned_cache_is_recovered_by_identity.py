@@ -36,6 +36,7 @@ from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "2" * 64
@@ -53,7 +54,7 @@ def _staged(stage: Path, name: str) -> Path:
     this file follows the naming rule instead of restating it.
     """
 
-    return stage / stage_move.stage_relative(
+    return stage / staged_path.stage_relative(
         f"/originals/{name}", 0, SIZE, mount_prefix="/originals")
 
 
@@ -177,7 +178,7 @@ def fleet(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     cas_root = tmp_path / "cas"
     cas_root.mkdir()
     cas = pb.PrismaBuildCAS(cas_root)
@@ -195,7 +196,6 @@ def fleet(tmp_path: Path):
                           command=_egress_command(stage, mover=head),
                           digest=digest, mount=originals)
     _file_receipts(queue, stage, digest, head=head, egress=egress)
-    stage_release._manifest_layout_cache.clear()
     return queue, stage, cas_root, digest, originals, checkout, head, egress
 
 
@@ -205,7 +205,7 @@ def _recover(fleet, *, apply: bool = False, **kwargs):
               "egress_action_key": egress, "cas_root": str(cas),
               "apply": apply}
     params.update(kwargs)
-    got = stage_release.recover_orphaned_range(queue, **params)
+    got = staged_path.recover_orphaned_range(queue, **params)
     print(json.dumps(got, indent=1, sort_keys=True, default=str))
     return got
 
@@ -246,7 +246,6 @@ def _reseal(fleet, *, seal_digest: str | None = None,
                               digest=seal_digest, mount=mount)
     _file_receipts(queue, stage, receipt_digest, head=head_key,
                    egress=egress_key, entries=entries, end=end)
-    stage_release._manifest_layout_cache.clear()
     return head_key, egress_key
 
 
@@ -376,7 +375,7 @@ def test_every_ownership_census_retains_what_it_names(
         monkeypatch.setattr(getattr(stage_release, module), name,
                             lambda *a, **k: (held, []))
     else:
-        monkeypatch.setattr(stage_release, census, lambda *a, **k: (held, []))
+        monkeypatch.setattr(staged_path, {'_claimed_paths': 'claimed_paths', '_claimed_source_paths': 'claimed_source_paths'}.get(census, census), lambda *a, **k: (held, []))
 
     got = _recover(fleet, apply=True)
     assert _staged(stage, NAMES[0]).exists()
@@ -491,7 +490,7 @@ def test_an_unreadable_census_refuses_before_mutating(
         monkeypatch.setattr(getattr(stage_release, module), name,
                             lambda *a, **k: (empty, ["unreadable"]))
     else:
-        monkeypatch.setattr(stage_release, census,
+        monkeypatch.setattr(staged_path, {'_claimed_paths': 'claimed_paths', '_claimed_source_paths': 'claimed_source_paths'}.get(census, census),
                             lambda *a, **k: (empty, ["unreadable"]))
 
     got = _recover(fleet, apply=True)
@@ -575,7 +574,7 @@ def test_nothing_happens_while_a_mover_could_be_writing(fleet) -> None:
                              "manifest_sha256": "a" * 64,
                              "manifest_bytes": SIZE, "tier_id": TIER,
                              "range_start_bytes": 0, "range_end_bytes": SIZE})
-    assert stage_release.movers_in_flight(queue, tier_id=TIER) == {LIVE_MOVER}
+    assert staged_path.movers_in_flight(queue, tier_id=TIER) == {LIVE_MOVER}
 
     got = _recover(fleet, apply=True)
     assert got["skipped"] == "movers_in_flight"
@@ -729,7 +728,7 @@ def test_a_foreign_stage_root_is_refused_before_anything_else(
     _populate(fleet[1])
     got = _recover(fleet, apply=True, stage_root=str(foreign))
     assert got["complete"] is False
-    assert got["event"] == stage_release.STAGE_ROOT_REFUSED_EVENT
+    assert got["event"] == staged_path.STAGE_ROOT_REFUSED_EVENT
     assert _intact(fleet)
 
 

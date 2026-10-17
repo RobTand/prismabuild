@@ -45,6 +45,7 @@ from prismabuild import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
@@ -138,7 +139,7 @@ def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueu
     queue.tier(TIER).mint({'stage_gib': stage_gib})
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
     if ram_gib:
         queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
@@ -211,7 +212,7 @@ def _await_funded(queue: pool.PoolQueue, mover: str, *, cycles: int = 4) -> None
 def _staged_name(file_name: str) -> str:
     """The stage's name for one whole ``SPAN``-byte source file."""
 
-    return stage_move.stage_relative(f"/m/{file_name}", 0, SPAN,
+    return staged_path.stage_relative(f"/m/{file_name}", 0, SPAN,
                                      mount_prefix="/m")
 
 def _land(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
@@ -335,7 +336,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     queue.finish(P, status="executed")
 
     # The stalled window is admitted into the freed room and completes.
-    stage_release.evict(queue, p0, consumer_action_key=P,
+    staged_path.evict(queue, p0, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
     assert not (tmp_path / "stage" / _staged_name(f"{ptag}-p0.bin")).exists()
     admitted = False
@@ -365,11 +366,11 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
     _claim_exact(queue, Q, owner="w-pp")
     queue.finish(Q, status="executed")
 
-    stage_release.evict(queue, p1, consumer_action_key=P,
+    staged_path.evict(queue, p1, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
-    stage_release.evict(queue, q0, consumer_action_key=Q,
+    staged_path.evict(queue, q0, consumer_action_key=Q,
                         stage_root=str(tmp_path / "stage"))
-    stage_release.evict(queue, q1, consumer_action_key=Q,
+    staged_path.evict(queue, q1, consumer_action_key=Q,
                         stage_root=str(tmp_path / "stage"))
     # Per-consumer payload names (#752 shared-publication contract), so no
     # staged entry is shared across windows: every egress releases plainly.
@@ -460,10 +461,10 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
     assert tier_loop.compose_map(queue, P) is not None
     _claim_exact(queue, P, owner="w-fence")
     queue.finish(P, status="executed")
-    stage_release.evict(queue, p0, consumer_action_key=P,
+    staged_path.evict(queue, p0, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
     assert ledger.free_supply().get('stage_gib') == 2
-    stage_release.evict(queue, p1, consumer_action_key=P,
+    staged_path.evict(queue, p1, consumer_action_key=P,
                         stage_root=str(tmp_path / "stage"))
     assert ledger.free_supply().get('stage_gib') == 3
     got = queue.claim(tags=["dl380g10"], owner="w-fence")
@@ -531,7 +532,7 @@ def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
         assert record is not None and record.get("state") in (
             "reserved", "transferring")
         assert ledger.free_supply().get('stage_gib') == 1
-    stage_release.evict(queue, p0, consumer_action_key=CONSUMER_A,
+    staged_path.evict(queue, p0, consumer_action_key=CONSUMER_A,
                         stage_root=str(tmp_path / "stage"))
     assert ledger.free_supply().get('stage_gib') == 2
 

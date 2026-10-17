@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64
@@ -41,7 +42,7 @@ def held_mover(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     shard = stage / "model-00007-of-00120.safetensors"
     shard.write_bytes(b"\0" * 8192)
     residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
@@ -106,7 +107,7 @@ def test_the_reconciliation_is_skipped_when_the_held_set_cannot_be_read(
 
     assert shard.exists(), f"a held mover's bytes were reconciled away: {events}"
     assert not [event for event in events
-                if event.get("event") == stage_release.UNATTRIBUTED_EVENT
+                if event.get("event") == staged_path.UNATTRIBUTED_EVENT
                 and event.get("entries_deleted")], events
     skipped = [event for event in events if event.get("event") == SKIPPED_EVENT]
     assert len(skipped) == 1, events
