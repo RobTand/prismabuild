@@ -12,6 +12,8 @@ and bounds, and omitted fields pass nothing, as every row field does.
 
 from __future__ import annotations
 
+from pbtest_shard_output import finish_submission
+
 import json
 from pathlib import Path
 import socket
@@ -100,10 +102,10 @@ def test_the_argv_pbrun_is_given_is_the_hand_typed_submission(
 
     seen: list[list[str]] = []
 
-    def fake_main() -> int:
+    def fake_main(*, report) -> int:
         seen.append(list(sys.argv))
         print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return 0
+        return finish_submission(report)
 
     monkeypatch.setattr(pbrun, "main", fake_main)
     row = {"argv": ["./reader.sh"], "cwd": "/home/rob/tree",

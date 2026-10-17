@@ -75,7 +75,7 @@ def test_a_launcher_killed_by_a_stray_term_does_not_read_as_a_withdrawal(
 
     queue = _failed_record(tmp_path / "pb-queue", returncode=143)
 
-    code = pbrun.action_client.await_outcome(queue, KEY, wait_s=0.0, generation=100.0)
+    code = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0)
 
     assert code != pbrun.action_client.WITHDRAWN_EXIT
     assert code == 1
@@ -89,7 +89,7 @@ def test_a_run_that_exits_seventy_five_is_not_no_verdict_yet(
 
     queue = _failed_record(tmp_path / "pb-queue", returncode=75)
 
-    code = pbrun.action_client.await_outcome(queue, KEY, wait_s=0.0, generation=100.0)
+    code = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0)
 
     assert code != pbrun.action_client.GAVE_UP_EXIT
     assert code == 1
@@ -110,7 +110,7 @@ def test_every_reserved_code_is_reported_as_a_failure(
     queue = _failed_record(tmp_path / f"pb-queue-{returncode}",
                            returncode=returncode)
 
-    assert pbrun.action_client.await_outcome(
+    assert pbrun.action_client.report_pool_outcome(
         queue, KEY, wait_s=0.0, generation=100.0) == 1
     assert str(returncode) in capsys.readouterr().err
 
@@ -122,7 +122,7 @@ def test_a_status_pbrun_does_not_reserve_still_reaches_the_caller(
 
     queue = _failed_record(tmp_path / "pb-queue", returncode=7)
 
-    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0.0, generation=100.0) == 7
+    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.0, generation=100.0) == 7
 
 
 def test_the_lane_reports_a_job_that_exited_143_as_a_failure(

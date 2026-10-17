@@ -100,7 +100,7 @@ def test_a_detached_pool_submission_queues_and_returns_without_waiting(
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
 
     line = _one_json_line(capsys.readouterr())
-    assert line["schema"] == pbrun.DETACH_SCHEMA_V1
+    assert line["schema"] == pbrun.action_client.DETACH_SCHEMA_V1
     assert line["transport"] == "pool"
     assert line["status"] == "submitted"
     assert line["job_id"] is None
