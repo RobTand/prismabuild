@@ -55,8 +55,7 @@ OUTCOMES = frozenset({
 #: name, so the window can be applied without stat'ing a record the scan is
 #: about to discard -- the same reason ``_ending_paths`` stats entries rather
 #: than reading them.
-RELEASE_FILING = re.compile(
-    r"\A(?P<key>[0-9a-f]{64})\.(?P<when>[0-9]+\.[0-9]{6})\.unstarted-claim\.json\Z")
+
 
 RESOURCE_NAMES = {
     "cpu": ("cpu", 1),
@@ -171,131 +170,49 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # the plain walk's raise does, and is not kept either.
 
 
-class _Stat:
-    """The two ``stat`` fields a kept entry answers ``stat()`` with."""
-
-    __slots__ = ("st_mtime", "st_size")
-
-    def __init__(self, info: os.stat_result) -> None:
-        self.st_mtime = info.st_mtime
-        self.st_size = info.st_size
 
 
-class _KeptEntry:
-    """One file as a kept listing holds it: its name and the version it was listed at.
-
-    It stands in for the ``os.DirEntry`` the plain reader handed to
-    ``pbstatus.ending_row``: ``path``, ``name`` and ``stat()``, where
-    ``stat()`` is the ``stat`` taken when the entry was listed, exactly as a
-    ``DirEntry`` caches its own.  ``derived`` is whatever a gauge computed
-    from the file's bytes, kept on the entry because the entry is replaced
-    whenever the file's version changes (``DirectoryRecords``).
-    """
-
-    __slots__ = ("path", "name", "mtime", "version", "_stat", "derived")
-
-    def __init__(self, path: str, name: str, info: os.stat_result,
-                 version: tuple) -> None:
-        self.path = path
-        self.name = name
-        self.mtime = info.st_mtime
-        #: The #761 version (``kept_reads.metadata_version``).
-        self.version = version
-        self._stat = _Stat(info)
-        self.derived: object = None
-
-    def stat(self) -> _Stat:
-        return self._stat
 
 
-def _kept_entry(path: Path, info: os.stat_result | None) -> _KeptEntry | None:
-    """``DirectoryRecords``' parse for a listing of files: no read at all.
-
-    ``info`` is the ``stat`` the listing took for the file's version.
-    ``None`` for a file that could not be stat-ed: the listing is then not
-    kept, and a caller must count the entry as unreadable, never skip it.
-    """
-
-    if info is None:
-        return None
-    return _KeptEntry(str(path), path.name, info,
-                      kept_reads.metadata_version(info))
 
 
-def _entry_kept(entry: _KeptEntry | None) -> bool:
-    return entry is not None
 
 
-@dataclass
-class _Parsed:
-    """One queue record's plain read: the record, or why it could not be had."""
-
-    record: dict | None
-    error: Exception | None
 
 
-def _parse_queue_record(path: Path) -> _Parsed:
-    """``pbstatus._pool_records``' read of one record, failure retained."""
-
-    try:
-        if not statmod.S_ISREG(path.lstat().st_mode):
-            raise ValueError("not a regular queue record")
-        record = pool.record_store.read_document(path)
-        if record is None:
-            # A rename may have raced this census. Unknown, rather than a
-            # confident empty answer; a later screen can settle it.
-            raise ValueError("record disappeared or is empty")
-        return _Parsed(record, None)
-    except (OSError, ValueError) as exc:
-        return _Parsed(None, exc)
 
 
-def _parsed_ok(parsed: _Parsed) -> bool:
-    return parsed.error is None
 
 
-def _parse_json(path: Path) -> _Parsed:
-    """``pool.record_store.read_document`` of one record, failure retained."""
-
-    try:
-        return _Parsed(pool.record_store.read_document(path), None)
-    except (OSError, ValueError) as exc:
-        return _Parsed(None, exc)
 
 
-def _read_or_exception(path: Path) -> dict | None | Exception:
-    """``pbstatus._pool_sidecar``: the record, ``None``, or the failure."""
-
-    try:
-        return pool.record_store.read_document(path)
-    except (OSError, ValueError) as exc:
-        return exc
 
 
-def _json_name(entry: os.DirEntry) -> bool:
-    return entry.name.endswith(".json")
 
 
-def _json_file(entry: os.DirEntry) -> bool:
-    return entry.name.endswith(".json") and entry.is_file()
 
 
-def _visible_json(entry: os.DirEntry) -> bool:
-    # ``Path.glob("*.json")``, which ``PoolQueue.tiers`` lists with, never
-    # matches a leading dot.
-    return entry.name.endswith(".json") and not entry.name.startswith(".")
 
 
-def _a_directory(entry: os.DirEntry) -> bool:
-    return entry.is_dir()
 
 
-def _visible_directory(entry: os.DirEntry) -> bool:
-    return entry.is_dir() and not entry.name.startswith(".")
 
 
-def _listed(path: Path) -> bool:
-    return True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class KeptReads:
@@ -326,8 +243,8 @@ class KeptReads:
         self.trust = kept_reads.filesystem_trust if trust is None else trust
         self.records = kept_reads.DirectoryRecords(trust=self.trust)
         self._histories = kept_reads.DirectoryCaptures(self.trust)
-        self._history_listed = 0
-        self._history_kept = 0
+        self._stores: dict[str, pool.record_store.RecordStore] = {}
+        self._derived_values: dict[tuple[str, int], object] = {}
         self._at_begin: tuple[int, ...] = (0, 0, 0, 0, 0)
         #: path -> opaque directory evidence and a derived single-file value.
         self._files: dict[str, tuple[kept_reads.DirectoryEvidence, object]] = {}
@@ -338,16 +255,16 @@ class KeptReads:
         self._named: set[str] = set()
         self._touched: set[object] = set()
         #: Entries whose ``derived`` value the previous scrape used, by kind.
-        self._derived_now: dict[str, dict[int, _KeptEntry]] = {}
-        self._derived_entries: dict[str, dict[int, _KeptEntry]] = {}
+        self._derived_now: dict[str, dict[int, pool.record_store.HistoryEntry]] = {}
+        self._derived_entries: dict[str, dict[int, pool.record_store.HistoryEntry]] = {}
         self.computed = 0
         self.reused = 0
 
     # -- scrape boundaries -------------------------------------------------
 
     def _totals(self) -> tuple[int, ...]:
-        return (self.records.listed + self._history_listed,
-                self.records.kept + self._history_kept,
+        return (self.records.listed + sum(store.history_listed for store in self._stores.values()),
+                self.records.kept + sum(store.history_kept for store in self._stores.values()),
                 self.records.parsed, self.computed, self.reused)
 
     def scrape_counts(self) -> dict[str, int]:
@@ -359,6 +276,8 @@ class KeptReads:
 
     def begin(self) -> None:
         self._view = self.trust.scrape_view()
+        for store in self._stores.values():
+            store.begin_read()
         self._reads = {}
         self._named = set()
         self._touched = set()
@@ -369,6 +288,9 @@ class KeptReads:
         # A directory this scrape did not read -- a withdrawal decision's,
         # once the decision is gone -- is forgotten with its records.
         wanted = set(self._reads) | self._named
+        for store in self._stores.values():
+            wanted.update(store.history_directories())
+            store.end_read()
         self.records.retain(wanted)
         self._histories.retain(wanted)
         for name in [name for name in self._files if name not in self._touched]:
@@ -382,15 +304,15 @@ class KeptReads:
             current = self._derived_now.get(kind, {})
             for ident, entry in previous.items():
                 if ident not in current:
-                    entry.derived = None
+                    self._derived_values.pop((kind, ident), None)
         self._derived_entries = self._derived_now
 
-    def used(self, kind: str, entry: _KeptEntry) -> None:
+    def used(self, kind: str, entry: pool.record_store.HistoryEntry) -> None:
         """Record that this scrape used ``entry.derived`` under ``kind``."""
 
         self._derived_now.setdefault(kind, {})[id(entry)] = entry
 
-    def derive(self, kind: str, entry: _KeptEntry, compute, *, keep=None):
+    def derive(self, kind: str, entry: pool.record_store.HistoryEntry, compute, *, keep=None):
         """``compute()`` of ``entry``'s bytes, kept on the entry while it lasts.
 
         The entry is replaced whenever its file's version changes, so a value
@@ -399,13 +321,14 @@ class KeptReads:
         """
 
         self.used(kind, entry)
-        if entry.derived is not None:
+        cached = self._derived_values.get((kind, id(entry)))
+        if cached is not None:
             self.reused += 1
-            return entry.derived
+            return cached
         value = compute()
         self.computed += 1
         if keep is None or keep(value):
-            entry.derived = value
+            self._derived_values[(kind, id(entry))] = value
         return value
 
     # -- fences ------------------------------------------------------------
@@ -498,115 +421,21 @@ class KeptReads:
 
     # -- reads ---------------------------------------------------------------
 
-    def entries(self, directory: Path, *, select=_json_file) -> list[tuple[Path, _KeptEntry | None]]:
-        """The files in ``directory``, each with the version it was listed at."""
 
-        return self._read(directory, select, _kept_entry, _entry_kept)
 
-    def history(self, directory: Path, *, select=_json_file,
-                absent_ok: bool = True) -> Iterable[_KeptEntry]:
-        """Every entry ``select`` keeps in ``directory``, in listing order.
 
-        ``pbstatus._ending_paths``' walk, kept: while the directory's stamp
-        holds its kept entries are returned without a listing, and when it
-        moved it is listed and every entry ``stat``-ed -- one ``scandir`` and
-        one ``stat`` per name, what the plain walk costs -- and an entry whose
-        #761 version held is the same object as before, carrying what was
-        derived from it.  Nothing else is done per name: no ``Path``, no
-        sort, so a changed history directory costs what a fresh walk does.
 
-        Failures are the plain walk's.  ``FileNotFoundError`` while listing
-        is an absent directory only if a second ``stat`` of the directory
-        says so (``absent_ok``, else it is raised); any other error, or a
-        name that vanished from a directory still there, is raised.  A
-        listing that raised is not kept.
-        """
 
-        name = os.fspath(directory)
-        done = self._reads.get(name)
-        if done is not None:
-            if done[0] is not _HISTORY or done[1] is not select:
-                raise AssertionError(f"{name} read under two meanings")
-            return done[2]
-        with self._histories.acquire_files(name) as capture:
-            if capture.hit:
-                self._history_kept += 1
-                out = capture.value.values()
-            else:
-                previous = capture.previous
-                out = self._list_history(name, select, absent_ok,
-                                         {} if previous is kept_reads.NoCapture else previous,
-                                         capture)
-        self._reads[name] = (_HISTORY, select, out)
-        return out
 
-    def _list_history(self, name: str, select, absent_ok: bool,
-                      previous: dict[str, _KeptEntry], capture) -> Iterable[_KeptEntry]:
-        complete = True
-        entries: dict[str, _KeptEntry] = {}
-        stat = os.stat
-        try:
-            with os.scandir(name) as scan:
-                for entry in scan:
-                    if not select(entry):
-                        continue
-                    info = stat(entry.path)
-                    version = capture.file_version(info, path=entry.path)
-                    kept = previous.get(entry.name)
-                    if (version is None or kept is None
-                            or kept.version != version):
-                        kept = _KeptEntry(entry.path, entry.name, info, version)
-                        complete = complete and version is not None
-                    entries[entry.name] = kept
-        except FileNotFoundError:
-            try:
-                os.stat(name)
-            except FileNotFoundError:
-                if absent_ok:
-                    return ()
-            # The directory exists, but a selected entry was not readable.
-            raise
-        self._history_listed += 1
-        capture.commit(entries, complete=complete)
-        return entries.values()
 
-    def names(self, directory: Path, *, select) -> frozenset[str]:
-        """The names ``select(name)`` keeps in ``directory``; nothing stat-ed."""
 
-        self._named.add(os.fspath(directory))
-        return self.records.names(Path(directory), select=select)
 
-    def subdirectories(self, directory: Path, *, select=_a_directory) -> list[Path]:
-        """The subdirectories of ``directory``; empty when it does not exist."""
 
-        return [path for path, _ in self._read(directory, select, _listed, None)]
 
-    def queue_records(self, directory: Path) -> list[tuple[Path, _Parsed]]:
-        """Every ``.json`` record in one queue state directory, parsed."""
 
-        return self._read(directory, _json_name, _parse_queue_record, _parsed_ok)
 
-    def json_records(self, directory: Path, *, select=_visible_json,
-                     ) -> list[tuple[Path, _Parsed]]:
-        """Every record ``select`` names, read as ``pool.record_store.read_document`` reads it."""
 
-        return self._read(directory, select, _parse_json, _parsed_ok)
 
-    def _read(self, directory: Path, select, parse, keep):
-        # One read per directory per scrape: ``ready/`` and ``claimed/`` were
-        # read three times a scrape, once by each census that wanted them.
-        # ``DirectoryRecords`` keeps one meaning per directory, so a second
-        # reading of one directory under another parse is a defect here.
-        name = os.fspath(directory)
-        done = self._reads.get(name)
-        if done is not None:
-            if done[0] is not parse or done[1] is not select:
-                raise AssertionError(f"{name} read under two meanings")
-            return done[2]
-        out = self.records.read(Path(directory), select=select, parse=parse,
-                                keep=keep, stat_parse=parse is _kept_entry)
-        self._reads[name] = (parse, select, out)
-        return out
 
     def sidecar(self, path: Path) -> dict | None | Exception:
         """One small record by path, reused while its directory's stamp holds.
@@ -620,13 +449,14 @@ class KeptReads:
         kept = self._files.get(name)
         if kept is not None and self._view.holds(kept[0]):
             self.reused += 1
-            return kept[1]
+            return kept[1].record
         fence = self.fence(Path(name).parent)
-        value = _read_or_exception(Path(name))
+        parsed = pool.record_store.RecordStore.diagnostic_sidecar_at(Path(name))
+        value = parsed.error if parsed.error is not None else parsed.record
         self.computed += 1
         if (fence is not None and not isinstance(value, Exception)
                 and self.still(fence)):
-            self._files[name] = (fence, value)
+            self._files[name] = (fence, parsed)
         else:
             self._files.pop(name, None)
         return value
@@ -678,8 +508,57 @@ class KeptReads:
         return None
 
 
+    def queue_store(self, root: Path):
+        name = os.fspath(root)
+        store = self._stores.get(name)
+        if store is None:
+            store = pool.record_store.RecordStore.kept(
+                root, records=self.records, history=self._histories)
+            store.begin_read()
+            self._stores[name] = store
+        return store
+
+    def _from_store(self, directory: Path, meaning: str, read):
+        name = os.fspath(directory)
+        done = self._reads.get(name)
+        if done is not None:
+            if done[0] != meaning:
+                raise AssertionError(f"{name} read under two meanings")
+            return done[2]
+        out = read()
+        self._reads[name] = (meaning, None, out)
+        return out
+
+    def queue_records(self, directory: Path):
+        store = self.queue_store(directory.parent)
+        return self._from_store(directory, 'queue',
+                                lambda: store.diagnostic_records_at(directory))
+
+    def tier_records(self, queue):
+        store = self.queue_store(queue.root)
+        directory = store.tier_directory()
+        return self._from_store(directory, 'tier-records',
+                                lambda: store.diagnostic_json_at(directory))
+
+    def plan_entries(self, queue):
+        store = self.queue_store(queue.root)
+        return self._from_store(queue.root / pool.record_store.RESIDENCY_PLANS, 'plan-entries',
+                                store.plan_entries)
+
+    def tier_directories(self, queue):
+        store = self.queue_store(queue.root)
+        return self._from_store(queue.root / pool.record_store.TIER_RESERVATIONS, 'tier-directories',
+                                store.tier_directories)
+
+    def mover_entries(self, queue):
+        return self.queue_store(queue.root).mover_entries()
+
+    def released_claim_filings(self, queue_root):
+        self._named.add(os.fspath(Path(queue_root) / pool.record_store.WITHDRAWN / 'superseded'))
+        return self.queue_store(Path(queue_root)).released_claim_filings()
+
+
 #: The ``_reads`` meaning of a :meth:`KeptReads.history` listing.
-_HISTORY = object()
 
 
 def _fresh(reader: KeptReads | None) -> KeptReads:
@@ -859,86 +738,28 @@ def _recent_cores(
 
 
 def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]:
-    """``pbstatus.read_endings``, from the kept terminal listings.
-
-    The same selection ``pbstatus._ending_paths`` makes -- the ``limit``
-    newest records by modification time across ``done``, ``failed`` and
-    ``withdrawn``, and a withdrawal decision only where it is newer than the
-    summary filed for it -- taken from listings kept between scrapes, and
-    the same projection, ``pbstatus.ending_row``, of each selected record,
-    kept on its entry while its version holds.  An unreadable record is
-    projected again every scrape, and an entry that cannot be ``stat``-ed
-    raises, as the plain walk does.  Records with equal modification times
-    are taken in listing order, as the plain walk's stable sort takes them.
-
-    The whole selection is also kept, fenced on every directory it came
-    from, so a scrape of unchanged history does not even walk the kept
-    listings: 40,000 names sorted by time every ten seconds was most of an
-    idle scrape's CPU.
-    """
-
     queue_root = Path(queue_root)
-    decisions = queue_root / pool.record_store.WITHDRAWN / "decisions"
-    states = [queue_root / state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)]
-
-    def fences():
-        taken = reader.fences([*states, decisions])
-        if taken is None:
-            return None
-        # Listed after ``decisions/``' own stamp, so the list is the one
-        # that stamp covers; a decision filed since moves that stamp.
-        subdirectories = reader.fences(
-            entry.path for entry in reader.history(decisions, select=_a_directory))
-        return (None if subdirectories is None else
-                kept_reads.EvidenceSet((*taken, *subdirectories)))
-
+    store = reader.queue_store(queue_root)
+    def project():
+        chosen = store.recent_ending_paths(limit)
+        rows = [reader.derive("ending", entry,
+                              lambda entry=entry: pbstatus.ending_row(entry, queue_root),
+                              keep=lambda row: not row.get("unreadable"))
+                for entry in chosen]
+        rows.sort(key=lambda row: row["finished_unix"], reverse=True)
+        return rows, chosen
     rows, used = reader.memo(
-        ("endings", os.fspath(queue_root), int(limit)), fences,
-        lambda: _select_endings(reader, queue_root, states, decisions, limit),
+        ("endings", os.fspath(queue_root), int(limit)), store.ending_fences, project,
         keep=lambda value: not any(row.get("unreadable") for row in value[0]))
     for entry in used:
         reader.used("ending", entry)
     return list(rows)
 
 
-def _mtime(entry: _KeptEntry) -> float:
-    return entry.mtime
 
 
-def _select_endings(reader: KeptReads, queue_root: Path, states: list[Path],
-                    decisions: Path, limit: int) -> tuple[list[dict], list[_KeptEntry]]:
-    """``pbstatus._ending_paths``' selection, from :meth:`KeptReads.history`.
 
-    ``heapq.nlargest`` is ``sorted(..., reverse=True)[:limit]`` by
-    definition, ties included, over the same sequence the plain walk sorts:
-    ``done``, ``failed``, ``withdrawn`` and the decisions, each in listing
-    order.
-    """
 
-    entries: list[_KeptEntry] = []
-    withdrawal_mtimes: dict[str, float] = {}
-    for directory in states:
-        listed = reader.history(directory)
-        entries.extend(listed)
-        if directory.name == pool.record_store.WITHDRAWN:
-            for entry in listed:
-                withdrawal_mtimes[entry.name[:-5]] = entry.mtime
-    # A cancellation is durable before its visible summary is written. Keep
-    # that ending visible if the operator crashed between the two writes.
-    for directory in list(reader.history(decisions, select=_a_directory)):
-        candidates = list(reader.history(Path(directory.path), select=_json_name,
-                                         absent_ok=False))
-        if candidates:
-            newest = max(candidates, key=_mtime)
-            if newest.mtime > withdrawal_mtimes.get(directory.name, float("-inf")):
-                entries.append(newest)
-    chosen = heapq.nlargest(max(0, int(limit)), entries, key=_mtime)
-    rows = [reader.derive("ending", entry,
-                          lambda entry=entry: pbstatus.ending_row(entry, queue_root),
-                          keep=lambda row: not row.get("unreadable"))
-            for entry in chosen]
-    rows.sort(key=lambda row: row["finished_unix"], reverse=True)
-    return rows, chosen
 
 
 def _terminal_metrics(
@@ -1129,15 +950,14 @@ def _release_metrics(
     try:
         # Names only: the filing time is in the name, so the window is
         # applied to a listing kept between scrapes, with nothing stat-ed.
-        names = reader.names(directory, select=RELEASE_FILING.match)
+        filings = reader.released_claim_filings(queue_root)
     except OSError:
-        names = frozenset()
+        filings = []
         readable = False
-    for name in names:
-        when = float(RELEASE_FILING.match(name).group("when"))
+    for when, path in filings:
         age = now - when
         if -_SKEW_S <= age <= window_seconds:
-            selected.append((when, os.path.join(directory, name)))
+            selected.append((when, path))
     selected.sort(reverse=True)
     complete = readable and len(selected) <= limit
 
@@ -1173,7 +993,7 @@ def _tiers(reader: KeptReads, queue: pool.PoolQueue) -> list[dict[str, object]]:
     """
 
     records = []
-    for path, parsed in reader.json_records(queue.root / pool.record_store.TIERS):
+    for path, parsed in reader.tier_records(queue):
         if parsed.error is not None:
             raise parsed.error
         record = parsed.record
@@ -1186,8 +1006,7 @@ def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
     """``PoolQueue.tier_ids``, from a kept listing; any failure reads empty."""
 
     try:
-        return sorted(path.name for path in reader.subdirectories(
-            queue.root / pool.record_store.TIER_RESERVATIONS, select=_visible_directory))
+        return sorted(path.name for path in reader.tier_directories(queue))
     except OSError:
         return []
 
@@ -1387,7 +1206,7 @@ _UNREADABLE = object()
 _NOT_A_RECEIPT = object()
 
 
-def _receipt_projection(entry: _KeptEntry):
+def _receipt_projection(entry: pool.record_store.HistoryEntry):
     """The six numbers the move gauges read from one receipt.
 
     Kept on the receipt's entry instead of the record, because 7,500
@@ -1433,14 +1252,17 @@ class _PlanCensus:
     legs: tuple | None = None
 
 
-def _plan_slot(reader: KeptReads, entry: _KeptEntry) -> dict:
+def _plan_slot(reader: KeptReads, entry: pool.record_store.HistoryEntry) -> dict:
     reader.used("plan", entry)
-    if entry.derived is None:
-        entry.derived = {}
-    return entry.derived  # type: ignore[return-value]
+    key = ("plan", id(entry))
+    slot = reader._derived_values.get(key)
+    if slot is None:
+        slot = {}
+        reader._derived_values[key] = slot
+    return slot
 
 
-def _plan_tier(reader: KeptReads, entry: _KeptEntry):
+def _plan_tier(reader: KeptReads, entry: pool.record_store.HistoryEntry):
     """The tier a filed plan names; ``None`` for an empty file.
 
     ``_UNREADABLE`` for a plan that cannot be read or does not validate.  A
@@ -1501,7 +1323,7 @@ def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
                  movers: frozenset[str], ram_tier_id: str | None, *,
                  ready: set[str], claimed: set[str], claimed_listed: set[str],
                  announced: Mapping[str, Mapping[str, object]],
-                 receipts: Mapping[str, _KeptEntry] | None) -> tuple | None:
+                 receipts: Mapping[str, pool.record_store.HistoryEntry] | None) -> tuple | None:
     """Everything one plan's census reads outside its fenced directories.
 
     ``pbstatus._starvation_plan_entry`` reads, besides the plan itself, the
@@ -1572,10 +1394,10 @@ def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
 
 
 def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
-                 entry: _KeptEntry, *, ready: set[str], claimed: set[str],
+                 entry: pool.record_store.HistoryEntry, *, ready: set[str], claimed: set[str],
                  claimed_listed: set[str],
                  announced: Mapping[str, Mapping[str, object]],
-                 receipts: Mapping[str, _KeptEntry] | None,
+                 receipts: Mapping[str, pool.record_store.HistoryEntry] | None,
                  now: float) -> _PlanCensus:
     """One plan's census, reused while nothing it read has changed.
 
@@ -1603,7 +1425,8 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
             return census
         slot.pop("census", None)
     reader.computed += 1
-    raw = _read_or_exception(path)
+    observation = queue.records.diagnostic_sidecar_at(path)
+    raw = observation.error if observation.error is not None else observation.record
     if isinstance(raw, Exception):
         return _PlanCensus(valid=False, unreadable=True)
     fences = inputs = movers = ram_tier_id = None
@@ -1742,7 +1565,7 @@ def _promotion_metrics(
     # signal, not a reason to drop the row.
     plan_root = queue.root / pool.record_store.RESIDENCY_PLANS
     try:
-        plan_listing = reader.entries(plan_root, select=_json_name)
+        plan_listing = reader.plan_entries(queue)
         plan_listing_error: OSError | None = None
     except OSError as exc:
         plan_listing, plan_listing_error = [], exc
@@ -1810,7 +1633,7 @@ def _promotion_metrics(
         ok = False
     try:
         receipts = {entry.name[:-len(".json")]: entry for entry
-                    in reader.history(queue.root / pool.record_store.MOVERS, select=_json_name)}
+                    in reader.mover_entries(queue)}
     except OSError:
         receipts = None
     for path, entry in plan_listing:

@@ -36,6 +36,7 @@ from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 import stage_release  # noqa: E402
 from kept_read_clock import after_paths
+from record_store_trust import ObservedTrust
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -413,11 +414,9 @@ def test_a_refused_directory_stamp_lists_again(stage_fleet, monkeypatch):
     queue, stage = stage_fleet
     _mark(_staged_file(stage, "prewarm/obj.bin"))
     after_paths(monkeypatch, stage, *stage.rglob("*"))
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_before',
-                        lambda path: None)
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'file_version',
-                        lambda info, fence, **context: None)
-    index = kept_reads.CensusIndex()
+    trust = ObservedTrust()
+    trust.available = False
+    index = kept_reads.CensusIndex(trust=trust)
     calls = StageCalls(stage, monkeypatch)
     stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                             wanted=set(), index=index)

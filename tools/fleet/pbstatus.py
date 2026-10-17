@@ -710,26 +710,16 @@ def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
     reader = _KEPT_READS.get()
     if reader is not None:
         return reader.pool_records(directory)
+    try:
+        listed = pool.record_store.RecordStore(directory.parent).required_diagnostic_records_at(directory)
+    except OSError as exc:
+        return {}, [f"pool {directory}: {_unreadable_reason(exc)}"]
     records: dict[str, dict | None] = {}
     notes: list[str] = []
-    try:
-        with os.scandir(directory) as entries:
-            paths = sorted(Path(entry.path) for entry in entries if entry.name.endswith('.json'))
-    except OSError as exc:
-        return records, [f"pool {directory}: {_unreadable_reason(exc)}"]
-    for path in paths:
-        try:
-            if not stat.S_ISREG(path.lstat().st_mode):
-                raise ValueError("not a regular queue record")
-            record = pool.record_store.read_document(path)
-            if record is None:
-                # A rename may have raced this census. Unknown, rather than
-                # a confident empty answer; a later screen can settle it.
-                raise ValueError("record disappeared or is empty")
-            records[path.stem] = record
-        except (OSError, ValueError) as exc:
-            records[path.stem] = None
-            notes.append(f"pool {path}: {exc}")
+    for path, parsed in listed:
+        records[path.stem] = parsed.record
+        if parsed.error is not None:
+            notes.append(f"pool {path}: {parsed.error}")
     return records, notes
 
 
@@ -864,10 +854,8 @@ def _pool_sidecar(path: Path) -> dict | None | Exception:
     reader = _KEPT_READS.get()
     if reader is not None:
         return reader.sidecar(path)
-    try:
-        return pool.record_store.read_document(path)
-    except (OSError, ValueError) as exc:
-        return exc
+    parsed = pool.record_store.RecordStore.diagnostic_sidecar_at(path)
+    return parsed.error if parsed.error is not None else parsed.record
 
 
 def _admission_sample(record: dict | None | Exception, *, now: float, max_age_s: float) -> dict:
