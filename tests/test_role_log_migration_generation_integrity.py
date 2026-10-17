@@ -15,6 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 import publish_runtime  # noqa: E402
+from generation_fixture import generation_receipt
 
 
 @pytest.fixture
@@ -25,9 +26,7 @@ def sealed(tmp_path, monkeypatch):
     member = root / "tools/upgrade_client.py"
     member.write_text("CLIENT_UPGRADE_ROLLOUT_PROTOCOL = 1\n")
     receipt_path = root / "RUNTIME_VERSION.json"
-    receipt = {"schema": "prismaquant.prismabuild.runtime_version.v1",
-               "generation": root.name, "commit": "b" * 40,
-               "files": {"tools/upgrade_client.py": hashlib.sha256(member.read_bytes()).hexdigest()}}
+    receipt = generation_receipt(root.name, "b" * 40, {"tools/upgrade_client.py": hashlib.sha256(member.read_bytes()).hexdigest()})
     receipt_path.write_text(json.dumps(receipt))
     member.chmod(0o444)
     receipt_path.chmod(0o444)
