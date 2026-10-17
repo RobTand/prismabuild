@@ -21,7 +21,7 @@ from prismabuild import box_capacity  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prewarm_fixture import Fleet  # noqa: E402

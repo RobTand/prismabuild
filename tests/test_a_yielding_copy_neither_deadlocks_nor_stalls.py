@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, storage_tiers  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
 from test_the_reader_plan_measures_and_fails_open import (  # noqa: E402
     GIB, TIER, _claim, _queue)

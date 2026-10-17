@@ -49,7 +49,7 @@ def test_missing_frontier_keeps_future_donors_available_to_pressure(queue, stage
 def test_frontier_is_claimed_copied_and_read_through_a_real_pin(queue, stage, monkeypatch, tmp_path):
     import json
     import os
-    import stage_move
+    from prismabuild import stage_move
     from prismabuild import core as pb
 
     monkeypatch.setattr(base, 'PHASE_GIB', 14)
