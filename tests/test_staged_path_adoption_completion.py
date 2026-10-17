@@ -53,7 +53,8 @@ def adoption_completion_files(tmp_path):
 
 
 @pytest.mark.parametrize('boundary', ['fragment-unlinked', 'withdrawn'])
-@pytest.mark.parametrize('successor_state', ['valid', 'unknown-fragment', 'unknown-material', 'live'])
+@pytest.mark.parametrize('successor_state', ['valid', 'unknown-fragment', 'unknown-material', 'live',
+    'unknown-receipt', 'different-receipt'])
 def test_an_interrupted_withdrawal_finishes_from_a_fresh_owner(
         adoption_completion_files, monkeypatch, boundary, successor_state):
     queue, root, path, payload, manifest, mark, args = adoption_completion_files
@@ -89,6 +90,11 @@ def test_an_interrupted_withdrawal_finishes_from_a_fresh_owner(
         queue.publish(action_key=SUCCESSOR, cas_root=queue.root / 'cas',
             checkout_root=queue.root / 'co', worker_script=queue.root / 'worker.py',
             resources={'cpu': 1, 'mem_gb': 1})
+    elif successor_state == 'unknown-receipt':
+        queue.records.move_path(SUCCESSOR).write_bytes(b'{unknown')
+    elif successor_state == 'different-receipt':
+        receipt = queue.move_record(SUCCESSOR, fresh=True)
+        queue.record_move(SUCCESSOR, {**receipt, 'adopted_from_consumer': 'f' * 64})
     donor_material = reader_lease.material_path(root, FIRST, DONOR)
     before_material = donor_material.read_bytes() if donor_material.exists() else None
     before_mark = mark.read_bytes() if mark.exists() else None
@@ -115,6 +121,10 @@ def test_an_interrupted_withdrawal_finishes_from_a_fresh_owner(
         'range_end_bytes': len(payload), 'bytes_staged': len(payload), 'bytes_copied': 0,
         'entries_declared': 1, 'entries_staged': 1, 'complete': True,
         pool.MOVE_ADOPTED_FROM_FIELD: DONOR, 'adopted_from_consumer': FIRST, 'phase': 'phase-0'}
+    # Adoption files a move receipt; the normal map composer is a separate
+    # consumer. Compose its real successor fragment before testing admission.
+    residency_map.write_map(queue.records.residency_map_path(SECOND),
+        residency_map.compose(residency_map.read_fragments(root, SECOND)))
     assert queue.residency_verdict({'action_key': SECOND, 'residency': {
         'schema': pool.RESIDENCY_SCHEMA_V1, 'tier_id': TIER,
         'manifest_sha256': manifest, 'manifest_bytes': len(payload),

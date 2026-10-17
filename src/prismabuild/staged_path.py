@@ -7872,7 +7872,12 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
             if completed_receipt is not None:
                 if (completed_receipt.get("schema") != pool.POOL_MOVE_SCHEMA_V1
                         or completed_receipt.get("action_key") != new_key
+                        or completed_receipt.get("complete") is not True
                         or completed_receipt.get("refusal")
+                        or any(isinstance(completed_receipt.get(field), bool)
+                               for field in ("range_start_bytes", "range_end_bytes",
+                                   "range_bytes", "bytes_staged", "bytes_copied",
+                                   "entries_declared", "entries_staged"))
                         or any(completed_receipt.get(field) != value
                                for field, value in adoption_receipt.items())):
                     return {**outcome, "reason": "successor_receipt_changed"}
