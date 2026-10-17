@@ -33,8 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "2" * 64
