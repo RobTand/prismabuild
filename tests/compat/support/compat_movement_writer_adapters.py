@@ -10,6 +10,7 @@ import runpy
 import time
 from types import SimpleNamespace
 import uuid
+import secrets
 
 C, M, SOURCE, D, G = "c" * 64, "a" * 64, "b" * 64, "9" * 64, "7" * 32
 TIER, RAM = "prismabuild-stage:compat", "ram:compat"
@@ -76,6 +77,7 @@ def operate(request, store, load):
     is_ram = variant.startswith("ram")
     assert release.register_stage_root(queue, tier_id=RAM if is_ram else TIER, stage_root=ram if is_ram else stage) == "registered"
     uuid.uuid4 = lambda: uuid.UUID(G)
+    secrets.token_hex = lambda size: "7" * (size * 2)
     common = ["--pool-root", str(queue.root), "--action-key", M, "--consumer-action-key", C,
               "--manifest-sha256", D, "--range-start-bytes", "0", "--range-end-bytes", "8",
               "--manifest", str(manifest_path), "--residency-root", str(root), "--readers", "1", "--max-readers", "1", "--block", "8"]

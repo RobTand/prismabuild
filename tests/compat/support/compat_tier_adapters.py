@@ -7,6 +7,8 @@ from pathlib import Path
 import runpy
 from types import SimpleNamespace
 import time
+import io
+from contextlib import redirect_stdout
 
 C = "c" * 64
 
@@ -25,12 +27,15 @@ def operate(request, store, load):
                                 "mountpoint": str(store / "stage"), "capacity_bytes": tiers.GIB})
             original = time.monotonic
             time.monotonic = lambda: 100.0
+            printed = io.StringIO()
             try:
-                loop.cycle(queue, host="compat", source_pool="compat", receipts=loop.ReceiptCache(), now=100.0,
-                           discover=lambda **kwargs: {}, supply_reader_for=lambda *args: None)
+                with redirect_stdout(printed):
+                    loop.cycle(queue, host="compat", source_pool="compat", receipts=loop.ReceiptCache(), now=100.0,
+                               discover=lambda **kwargs: {}, supply_reader_for=lambda *args: None)
             finally:
                 time.monotonic = original
             return {"raw": base64.b64encode(queue.tier_record_path(name).read_bytes()).decode(),
+                    "fixture_output": printed.getvalue(),
                     "fixture_facts": ["private tier retirement with supplied absent discovery/supply; no real hardware or root registration"]}
         if writing and variant.startswith("ram"):
             root = store / "ram"

@@ -43,14 +43,17 @@ def operate(request, store, load):
         # Exercise the supported legacy unscoped terminal API for this fixture.
         claim.pop("resource_scope")
         pool._write_json_atomic(claim_path, claim)
-        queue.finish(owner, status="failed", detail={"returncode": 1})
+        ended = queue.finish(owner, status="failed", detail={"returncode": 1})
+        assert not claim_path.exists(), {"ended": str(ended), "producer_state": po._producer_attempt_state(queue, instance)}
         ref = queue.build_produced_output_batch_ref(instance=instance, template=template,
             batch_id="batch", descriptors=[descriptor], tier_id="prismabuild-stage:compat")
         published = queue.publish(action_key=key, cas_root=store / "cas", checkout_root="/compat/checkout",
             worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1})
         item = {**json.loads(published.read_bytes()), "produced_output_batch": ref}
         Path(descriptor["path"]).unlink()
-        assert po.dead_input_dependency(queue, item) is not None
+        assert po.dead_input_dependency(queue, item) is not None, {
+            "producer_state": po._producer_attempt_state(queue, instance), "batch": po._read_commitments(po._commitments_path(queue.root, instance)),
+            "reference": ref, "origin_exists": Path(descriptor["path"]).exists()}
         assert queue.fail_dead_input_dependency(item, key)
     elif variant == "unreadable-writer":
         ready = queue.item_path(pool.READY, key)
