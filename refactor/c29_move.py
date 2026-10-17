@@ -122,6 +122,7 @@ def migrate(root: Path) -> list[str]:
                 after = after[:start] + after[end:]
                 after = after.replace('import importlib.util\n', '')
                 after = after.replace('    loop = load("prewarm_loop")', '    from prismabuild import prewarm_loop as loop')
+            after = after.replace("upgrade = load('upgrade_client')", 'import upgrade_client as upgrade')
         if path == 'tools/fleet/publish_runtime.py':
             after = after.replace('    # The tier role imports this helper for stage byte and token reports (#1555).\n    "stage_rounding.py",\n', '')
         if before != after:

@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from prismabuild import record_store
+
 from test_produced_output_restage import (
     REPO, _World, _descriptors, _prewrite,
     _isolated_synthetic_launch_context,
@@ -22,7 +24,7 @@ def test_local_retirement_uses_the_packaged_owner(tmp_path, layout):
     world.run_mover(str(first['mover_key']), 'package-source-proof')
     staged = world.stage_path('p1.bin')
     assert staged.read_bytes() == b'package-egress'
-    before = list(world.q.ready())
+    before = list(world.q.records.inspection_keys(record_store.READY))
     root = REPO
     if layout != 'source':
         import publish_runtime
@@ -73,6 +75,6 @@ print('package-proof: ' + json.dumps({'answer': answer, 'origins': origins, 'sys
     proof = json.loads(next(line.removeprefix('package-proof: ') for line in result.stdout.splitlines() if line.startswith('package-proof: ')))
     assert proof['answer']['ok'] is True
     assert not staged.exists()
-    assert list(world.q.ready()) == before
+    assert list(world.q.records.inspection_keys(record_store.READY)) == before
     assert world.entry('b1')['retired'] is True
     print('package-proof: ' + json.dumps(proof))
