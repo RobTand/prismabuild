@@ -42,7 +42,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import (  # noqa: E402
     pool, progress, residency_map, residency_plan, storage_tiers)
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     STAGE_KIND, TIER, _hexkey, _row)
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
