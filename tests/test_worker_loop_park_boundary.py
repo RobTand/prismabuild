@@ -1,7 +1,8 @@
 """The real idle loop records its stop before announcing, sleeping or admitting.
 
-A parked loop leaves its park marker before anything else it does that poll,
-and it must never reach admission.  Since #1204 the drain branch also
+An exact drain identity produces a park marker before the loop announces or
+sleeps. Unknown drain identity produces no authoritative marker. Both paths
+remain parked and never reach admission.  Since #1204 the drain branch also
 republishes an advisory offer -- a queue *write* that reserves nothing -- and
 since #1403 it retries this box's own saved finishes -- a narrow, claim-free
 pass over ``claimed/``.  The fixture allows exactly those two bounded
@@ -119,8 +120,10 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
         # follow the park.  The real bounded writer forks helper processes
         # whose sleeps and locks are not this loop's polls, so the fixture
         # substitutes its verdict rather than running them.
-        if make_root:
+        if make_root and stamp != "unknown":
             assert expected.is_file(), "loop announced before leaving park evidence"
+        elif make_root:
+            assert list(parked.iterdir()) == [], "unknown drain identity produced park evidence"
         announces.append(announce)
         return loop.PublicationResult("published", 0.0, None, "")
 
@@ -128,11 +131,14 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
     stop = Event()
 
     def sleeping(seconds):
-        if make_root:
+        if make_root and stamp != "unknown":
             assert expected.is_file(), "loop slept without leaving park evidence"
             assert expected.read_bytes() == b""
             assert list(parked.iterdir()) == [expected]
             polls.append(expected.stat().st_mtime_ns)
+        elif make_root:
+            assert list(parked.iterdir()) == [], "unknown drain identity produced park evidence"
+            polls.append(None)
         else:
             assert not parked.exists()
             polls.append(None)
