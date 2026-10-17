@@ -1522,9 +1522,11 @@ def _slurm_main_kwargs(
         lambda self, action: Path("/requests/test.json"))
 
     def capture(action, **kwargs):
+        from pbtest_shard_output import finish_submission
         seen.update(kwargs)
         seen["action_key"] = action["action_key"]
-        return 0
+        return finish_submission(kwargs["report"], key=action["action_key"],
+                                 transport="slurm")
 
     monkeypatch.setattr(pbrun, "slurm_outcome", capture)
     monkeypatch.setattr(sys, "argv", [

@@ -37,7 +37,7 @@ def test_corruption_landing_during_pool_wait_ends_the_wait(tmp_path, monkeypatch
         SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
     )
     if waiter == 'pbrun':
-        assert pbrun.action_client.await_outcome(q, key, wait_s=60, generation=1.0) == 1
+        assert pbrun.action_client.report_pool_outcome(q, key, wait_s=60, generation=1.0) == 1
         assert 'not valid JSON' in capsys.readouterr().err
     else:
         row = pbwait.wait_one(q, key, cas=pb.PrismaBuildCAS(tmp_path / 'cas'), deadline=time.monotonic() + 60)

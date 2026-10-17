@@ -177,7 +177,7 @@ def test_wait_s_is_one_budget_across_retries(
     ``wait``, so with ``--wait-s 60`` a first attempt that failed at 40 s let
     the second wait until 100 s (``assert elapsed <= 70`` failed with
     ``elapsed == 105.0``).  The pool holds one deadline across retries
-    (``pbrun.action_client.await_outcome``); the lane now does the same."""
+    (``pbrun.action_client.report_pool_outcome``); the lane now does the same."""
 
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", "RUNNING")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")

@@ -96,7 +96,7 @@ def _publish_result(base: Path, action, payload: bytes, *, launcher=None):
 
 def _finish(base: Path, action, receipt, *, status: str = "executed",
             stdout: str | None = None, returncode: int = 0,
-            native=None, worker_script=None):
+            native=None, worker_script=None, queue_root=None):
     key = str(action["action_key"])
     cas = pb.PrismaBuildCAS(base / "cas")
     if stdout is None:
@@ -106,7 +106,7 @@ def _finish(base: Path, action, receipt, *, status: str = "executed",
             "payload_path": str(cas.blob_path(str(receipt["result"]["sha256"]))),
         }
         stdout = json.dumps(announcement) + "\n"
-    queue = pool.PoolQueue(base / "queue")
+    queue = pool.PoolQueue(queue_root if queue_root is not None else base / "queue")
     queue.ensure_layout()
     queue.publish(action_key=key, cas_root=base / "cas",
                   checkout_root=base / "checkout",

@@ -41,7 +41,7 @@ def _legacy_slot(queue, clock, damage):
 
 def _observe(queue, generation, consumer):
     if consumer == "pbrun":
-        return pbrun.action_client.await_outcome(queue, KEY, wait_s=0, generation=generation), None
+        return pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0, generation=generation), None
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(queue.root / "cas"),
         deadline=time.monotonic(), generation=generation,
