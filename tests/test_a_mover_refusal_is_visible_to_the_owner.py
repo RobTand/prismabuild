@@ -16,6 +16,7 @@ mover `stage_move`, exactly as the restage suite does; the fixture
 concessions are that suite's and are not repeated here.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 
 import shutil
 from pathlib import Path
@@ -76,7 +77,7 @@ def test_an_unreachable_origin_refusal_is_visible_to_the_owner(
     shutil.rmtree(world.template["output_prefix"])
     _run_failed_mover(world, mover, "w-mover-804")
 
-    state = po.materialization_state(world.q, world.inst, world.template,
+    state = bl.BatchLedger.materialization(world.q, world.inst, world.template,
                                      batch_id="b1")
     assert state["ok"] is False, state
     assert state["refusal"] == "origin_unreachable", state
@@ -107,7 +108,7 @@ def test_a_retired_predecessors_refusal_does_not_poison_the_successor(
         "bytes_staged": 0, "entries_declared": 0, "entries_staged": 0,
         "complete": False, "refusal": "origin_unreachable"})
 
-    state = po.materialization_state(world.q, world.inst, world.template,
+    state = bl.BatchLedger.materialization(world.q, world.inst, world.template,
                                      batch_id="b1")
     assert state["mover_key"] == second, state
     assert state["generation"] == 2, state
@@ -131,7 +132,7 @@ def test_an_unfiled_receipt_is_unknown_and_never_a_refusal(
     _claim_mover(world.q, "w-mover-804-silent")
     world.q.finish(mover, status="failed")
 
-    state = po.materialization_state(world.q, world.inst, world.template,
+    state = bl.BatchLedger.materialization(world.q, world.inst, world.template,
                                      batch_id="b1")
     assert state["ok"] is True, state
     assert state["mover_refusal"] is None, state
@@ -146,7 +147,7 @@ def test_a_successful_mover_files_no_refusal(tmp_path: Path) -> None:
     mover = _publish(world)
     world.run_mover(mover, "w-mover-804-clean")
 
-    state = po.materialization_state(world.q, world.inst, world.template,
+    state = bl.BatchLedger.materialization(world.q, world.inst, world.template,
                                      batch_id="b1")
     assert state["ok"] is True, state
     assert state["mover_receipt_complete"] is True, state

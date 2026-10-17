@@ -24,6 +24,8 @@ fresh broker control on the owner's claim (`fx._broker_control`), which is what
 a new attempt's claim carries.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from submission_support import patch_store
 
 import contextlib
@@ -53,7 +55,7 @@ from test_write_only_produced_output import (  # noqa: E402
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
 WORKER = str(fx.REPO / "tools" / "prismabuild_worker.py")
-CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
+CONSUMED = oc.ORIGIN_LIFETIME_CONSUMED
 
 
 def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
@@ -72,8 +74,8 @@ def _bind_owner(queue: pool.PoolQueue, template: dict, owner: str) -> dict:
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     return instance
 
 
@@ -88,7 +90,7 @@ def _commit(queue, template, seed: str, *, lifetime: str = CONSUMED,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     descriptor = _descriptor(instance, template, path, payload)
-    committed = po.commit_origin_batch(queue, instance, template, [descriptor],
+    committed = bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                        batch_id=batch_id, lifetime=lifetime)
     assert committed["ok"], committed
     return instance, path, committed
@@ -108,13 +110,11 @@ def _run_consumer(queue: pool.PoolQueue, key: str, status: str, *,
 
 
 def _entry(queue, instance, batch_id: str = "b1") -> dict:
-    return po._read_commitments(
-        po._commitments_path(queue.root, instance))["batches"][batch_id]
+    return bl.BatchLedger.for_instance(queue.root, instance).capture()["batches"][batch_id]
 
 
 def _charged(queue, instance) -> int:
-    return po._class_sums(po._read_commitments(
-        po._commitments_path(queue.root, instance))["batches"])["payload"]
+    return bl._class_sums(bl.BatchLedger.for_instance(queue.root, instance).capture()["batches"])["payload"]
 
 
 # -- the consumed handoff ----------------------------------------------------
@@ -130,8 +130,8 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     instance, path, committed = _commit(queue, template, "handoff",
                                         payload=payload)
     assert committed["lifetime"] == CONSUMED
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                         / po.instance_namespace(instance) / "b1.json"
+    record = json.loads((queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                         / oc.instance_namespace(instance) / "b1.json"
                          ).read_text())
     assert record["lifetime"] == CONSUMED
     assert _entry(queue, instance)["lifetime"] == CONSUMED
@@ -155,10 +155,10 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     assert pbrun.main() == 0
     lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
     consumer = json.loads(lines[-1])["action_key"]
-    declaration = (po._consumers_dir(queue.root, instance, "b1")
+    declaration = (bl._consumers_dir(queue.root, instance, "b1")
                    / f"{consumer}.json")
     assert json.loads(declaration.read_text()) == {
-        "schema": po.ORIGIN_CONSUMER_SCHEMA_V1,
+        "schema": oc.ORIGIN_CONSUMER_SCHEMA_V1,
         "consumer_action_key": consumer, "ref": committed["ref"]}
     assert queue.records.item_path(pool.record_store.READY, consumer).exists()
 
@@ -171,7 +171,7 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     events = po.origin_retirement_tick(queue)
 
     assert events == [{
-        "event": po.ORIGIN_RETIRED_EVENT, "ref": committed["ref"],
+        "event": oc.ORIGIN_RETIRED_EVENT, "ref": committed["ref"],
         "bytes": len(payload), "reason": "consumed",
         "consumers": [{"action_key": consumer, "state": "succeeded"}],
         "origin_identity": identity, "unlinked": [str(path)],
@@ -183,9 +183,9 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     assert entry["retiring"] == {
         "reason": "consumed",
         "consumers": [{"action_key": consumer, "state": "succeeded"}]}
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-reclaimed"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-reclaimed"):
         po.origin_batch_manifest(queue.root, [committed["ref"]])
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-reclaimed"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-reclaimed"):
         po.declare_origin_consumer(queue, committed["ref"],
                                    consumer_action_key=fx._hexkey("late"))
     assert po.origin_retirement_tick(queue) == []
@@ -209,7 +209,7 @@ def test_a_failed_consumer_holds_the_batch_until_its_resubmission_executes(
 
     stalled = po.origin_retirement_tick(queue)
     assert stalled == [{
-        "event": po.ORIGIN_RETIREMENT_STALLED_EVENT, "ref": committed["ref"],
+        "event": oc.ORIGIN_RETIREMENT_STALLED_EVENT, "ref": committed["ref"],
         "bytes": path.stat().st_size,
         "consumers": [{"action_key": consumer, "state": "failed"}]}]
     assert po.origin_retirement_tick(queue) == [], "once per change, not per cycle"
@@ -231,7 +231,7 @@ def test_a_failed_consumer_holds_the_batch_until_its_resubmission_executes(
     assert not queue.records.item_path(pool.record_store.FAILED, consumer).exists()
 
     events = po.origin_retirement_tick(queue)
-    assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]
+    assert [event["event"] for event in events] == [oc.ORIGIN_RETIRED_EVENT]
     assert events[0]["consumers"] == [{"action_key": consumer,
                                        "state": "succeeded"}]
     assert not path.exists() and _charged(queue, instance) == 0
@@ -252,7 +252,7 @@ def test_every_declared_consumer_must_succeed(tmp_path: Path) -> None:
     # between the declaration and its row.  Held, and said so once.
     events = po.origin_retirement_tick(queue)
     assert events == [{
-        "event": po.ORIGIN_RETIREMENT_STALLED_EVENT, "ref": committed["ref"],
+        "event": oc.ORIGIN_RETIREMENT_STALLED_EVENT, "ref": committed["ref"],
         "bytes": path.stat().st_size,
         "consumers": [{"action_key": first, "state": "succeeded"},
                       {"action_key": second, "state": "unpublished"}]}]
@@ -263,7 +263,7 @@ def test_every_declared_consumer_must_succeed(tmp_path: Path) -> None:
         "a stall that resolved is forgotten, so a new one reports again")
     _run_consumer(queue, second, "executed")
     assert [e["event"] for e in po.origin_retirement_tick(queue)] == [
-        po.ORIGIN_RETIRED_EVENT]
+        oc.ORIGIN_RETIRED_EVENT]
     assert not path.exists()
 
 
@@ -302,13 +302,13 @@ def test_a_consumer_claimed_between_directory_reads_keeps_its_origin(
 
     assert len(claims) == 1, "the READY-to-CLAIMED move never occurred"
     assert queue.records.item_path(pool.record_store.CLAIMED, consumer).exists()
-    assert not any(event["event"] == po.ORIGIN_RETIRED_EVENT for event in events)
+    assert not any(event["event"] == oc.ORIGIN_RETIRED_EVENT for event in events)
     assert path.read_bytes() == payload
     assert _charged(queue, instance) == charge
 
     queue.finish(consumer, status="executed")
     events = po.origin_retirement_tick(queue)
-    assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]
+    assert [event["event"] for event in events] == [oc.ORIGIN_RETIRED_EVENT]
     assert not path.exists() and _charged(queue, instance) == 0
 
 
@@ -335,7 +335,7 @@ def test_a_claim_in_transition_holds_and_a_widowed_lease_does_not(
     queue.records.lease_path(consumer).write_text("{}")
     events = po.origin_retirement_tick(queue)
     assert [(e["event"], e["consumers"]) for e in events] == [
-        (po.ORIGIN_RETIRED_EVENT,
+        (oc.ORIGIN_RETIRED_EVENT,
          [{"action_key": consumer, "state": "succeeded"}])]
     assert not path.exists() and _charged(queue, instance) == 0
 
@@ -355,7 +355,7 @@ def test_a_failed_attempts_undeclared_batch_is_swept(tmp_path: Path) -> None:
 
     events = po.origin_retirement_tick(queue)
 
-    assert len(events) == 1 and events[0]["event"] == po.ORIGIN_RETIRED_EVENT
+    assert len(events) == 1 and events[0]["event"] == oc.ORIGIN_RETIRED_EVENT
     assert events[0]["reason"] == "orphan" and events[0]["consumers"] == []
     assert events[0]["ref"] == committed["ref"]
     assert events[0]["unlinked"] == [str(path)]
@@ -375,7 +375,7 @@ def test_a_superseded_attempts_batch_is_swept_and_a_successful_ones_is_kept(
     events = po.origin_retirement_tick(queue)
 
     assert [(e["event"], e["reason"]) for e in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "orphan")]
+        (oc.ORIGIN_RETIRED_EVENT, "orphan")]
     assert events[0]["unlinked"] == [str(swept_path)]
     assert not swept_path.exists()
     assert kept_path.exists(), (
@@ -408,20 +408,20 @@ def test_a_declaration_and_a_retirement_cannot_cross(tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
     instance, _path, committed = _commit(queue, template, "crossing")
-    commitments_path = po._commitments_path(queue.root, instance)
-    record = po._read_commitments(commitments_path)
+    commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
+    record = bl.BatchLedger(commitments_path).capture()
     record["batches"]["b1"]["retiring"] = {"reason": "orphan", "consumers": []}
-    po._write_commitments(commitments_path, {"batches": record["batches"]})
+    bl.BatchLedger(commitments_path).file({"batches": record["batches"]})
 
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-retiring"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-retiring"):
         po.declare_origin_consumer(queue, committed["ref"],
                                    consumer_action_key=fx._hexkey("too-late"))
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-retiring"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-retiring"):
         po.origin_batch_manifest(queue.root, [committed["ref"]])
     # A retiring batch resumes its delete even while its producer still runs.
     events = po.origin_retirement_tick(queue)
     assert [(e["event"], e["reason"]) for e in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "orphan")]
+        (oc.ORIGIN_RETIRED_EVENT, "orphan")]
 
 
 # -- identity ---------------------------------------------------------------
@@ -439,7 +439,7 @@ def test_an_origin_changed_in_place_is_refused_once_and_kept(
     events = po.origin_retirement_tick(queue)
 
     assert events == [{
-        "event": po.ORIGIN_RETIREMENT_REFUSED_EVENT, "ref": committed["ref"],
+        "event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "ref": committed["ref"],
         "bytes": path.stat().st_size, "reason": "origin-changed",
         "path": str(path)}]
     assert po.origin_retirement_tick(queue) == []
@@ -463,7 +463,7 @@ def test_a_path_a_retried_attempt_wrote_again_is_left_to_it(
 
     events = po.origin_retirement_tick(queue)
 
-    assert len(events) == 1 and events[0]["event"] == po.ORIGIN_RETIRED_EVENT
+    assert len(events) == 1 and events[0]["event"] == oc.ORIGIN_RETIRED_EVENT
     assert events[0]["unlinked"] == [] and events[0]["superseded"] == [str(path)]
     assert path.read_bytes() == b"the retry's own bytes"
     assert _charged(queue, instance) == 0
@@ -482,13 +482,13 @@ def test_an_unreachable_output_prefix_is_never_read_as_gone(
     events = po.origin_retirement_tick(queue)
 
     assert [(e["event"], e["reason"]) for e in events] == [
-        (po.ORIGIN_RETIREMENT_REFUSED_EVENT, "output-prefix-unreachable")]
+        (oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "output-prefix-unreachable")]
     assert po.origin_retirement_tick(queue) == []
     entry = _entry(queue, instance)
     assert not entry.get("origin_reclaimed") and not entry.get("retiring")
     parked.rename(prefix)
     assert [e["event"] for e in po.origin_retirement_tick(queue)] == [
-        po.ORIGIN_RETIRED_EVENT]
+        oc.ORIGIN_RETIRED_EVENT]
     assert not path.exists()
 
 
@@ -518,8 +518,8 @@ def test_the_tier_cycle_logs_one_line_per_retired_batch(tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
     instance, path, committed = _commit(queue, template, "cycle")
-    origin_events = {po.ORIGIN_RETIRED_EVENT, po.ORIGIN_RETIREMENT_STALLED_EVENT,
-                     po.ORIGIN_RETIREMENT_REFUSED_EVENT}
+    origin_events = {oc.ORIGIN_RETIRED_EVENT, oc.ORIGIN_RETIREMENT_STALLED_EVENT,
+                     oc.ORIGIN_RETIREMENT_REFUSED_EVENT}
 
     quiet = _cycle_lines(queue, tmp_path / "stage")
     assert [line for line in quiet if line.get("event") in origin_events] == []
@@ -529,7 +529,7 @@ def test_the_tier_cycle_logs_one_line_per_retired_batch(tmp_path: Path) -> None:
              if line.get("event") in origin_events]
 
     assert len(lines) == 1
-    assert lines[0]["event"] == po.ORIGIN_RETIRED_EVENT
+    assert lines[0]["event"] == oc.ORIGIN_RETIRED_EVENT
     assert isinstance(lines[0]["unix"], float)
     assert lines[0]["ref"] == committed["ref"]
     assert lines[0]["bytes"] == len(b"band handoff bytes")
@@ -548,10 +548,10 @@ def test_a_retained_batch_survives_and_is_filed_as_912_filed_it(
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
     instance, path, committed = _commit(queue, template, "retained",
-                                        lifetime=po.ORIGIN_LIFETIME_RETAIN)
+                                        lifetime=oc.ORIGIN_LIFETIME_RETAIN)
     assert "lifetime" not in committed
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                         / po.instance_namespace(instance) / "b1.json"
+    record = json.loads((queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                         / oc.instance_namespace(instance) / "b1.json"
                          ).read_text())
     assert "lifetime" not in record
     assert set(_entry(queue, instance)) == {
@@ -561,9 +561,9 @@ def test_a_retained_batch_survives_and_is_filed_as_912_filed_it(
     assert po.declare_origin_consumer(
         queue, committed["ref"], consumer_action_key=consumer) == {
             "ok": True, "declared": False}
-    assert not po._consumers_dir(queue.root, instance, "b1").exists()
+    assert not bl._consumers_dir(queue.root, instance, "b1").exists()
     queue.finish(instance["owner_action_key"], status="failed")
-    commitments = po._commitments_path(queue.root, instance)
+    commitments = bl.BatchLedger.for_instance(queue.root, instance).path
     before = (commitments.read_bytes(), commitments.stat().st_mtime_ns)
 
     assert po.origin_retirement_tick(queue) == []
@@ -578,14 +578,14 @@ def test_a_replay_with_another_lifetime_refuses(tmp_path: Path) -> None:
     queue = _queue(tmp_path)
     instance, path, committed = _commit(queue, template, "replayed")
     descriptor = committed["entries"][0]
-    assert po.commit_origin_batch(
+    assert bl.BatchLedger.commit_origin(
         queue, instance, template, [descriptor], batch_id="b1",
         lifetime=CONSUMED)["duplicate"] is True
-    assert po.commit_origin_batch(
+    assert bl.BatchLedger.commit_origin(
         queue, instance, template, [descriptor], batch_id="b1",
     )["refusal"] == "batch-lifetime-mismatch"
-    with pytest.raises(po.ProducedOutputError, match="lifetime"):
-        po.commit_origin_batch(queue, instance, template, [descriptor],
+    with pytest.raises(oc.ProducedOutputError, match="lifetime"):
+        bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                batch_id="b1", lifetime="forever")
 
 
@@ -630,4 +630,4 @@ def test_a_submission_without_declared_batches_files_nothing(
     assert len(prepared) == 1
     assert "produced_output_batches" not in prepared[0]["template"], (
         "the frozen template is the one it always was")
-    assert not (queue.root / "residency" / po.OUTPUT_SCOPES_SUBDIR).exists()
+    assert not (queue.root / "residency" / oc.OUTPUT_SCOPES_SUBDIR).exists()

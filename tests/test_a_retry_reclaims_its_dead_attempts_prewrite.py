@@ -30,6 +30,8 @@ is simulated by filing a fresh broker control on the owner's claim
 (`fx._broker_control`), which is what a new attempt's claim carries.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 from pathlib import Path
@@ -51,9 +53,9 @@ from test_write_only_produced_output import (  # noqa: E402
     TIER, _descriptor, _prewrite, _queue, _template,
 )
 
-RECLAIMED = po.ORIGIN_PREWRITE_RECLAIMED_EVENT
-ORPHANED = po.ORIGIN_PREWRITE_ORPHANED_EVENT
-PREWRITE_EVENTS = {RECLAIMED, ORPHANED, po.ORIGIN_RETIREMENT_REFUSED_EVENT}
+RECLAIMED = oc.ORIGIN_PREWRITE_RECLAIMED_EVENT
+ORPHANED = oc.ORIGIN_PREWRITE_ORPHANED_EVENT
+PREWRITE_EVENTS = {RECLAIMED, ORPHANED, oc.ORIGIN_RETIREMENT_REFUSED_EVENT}
 
 
 def _first_attempt(queue: pool.PoolQueue, template: dict,
@@ -63,7 +65,7 @@ def _first_attempt(queue: pool.PoolQueue, template: dict,
     queue.publish(action_key=owner, cas_root="/cas", worker_script=WORKER,
                   checkout_root=str(Path(queue.root).parent / "mover-checkout"),
                   resources={"cpu": 1, "mem_gb": 1,
-                             **po.owner_demand_terms(template)},
+                             **oc.owner_demand_terms(template)},
                   max_attempts=1, produced_output_template=template)
     claimed = queue.claim(owner="w-owner")
     assert claimed is not None and claimed["action_key"] == owner
@@ -81,19 +83,19 @@ def _attempt(queue: pool.PoolQueue, template: dict, owner: str,
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
     instance = po.bind_instance(queue, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     return instance
 
 
 def _reserved(queue: pool.PoolQueue, instance: dict) -> int:
     """Committed plus outstanding payload bytes the instance's accounting holds."""
 
-    return po._outstanding_sums(queue.root, instance, "")["payload"]
+    return bl._outstanding_sums(queue.root, instance, "")["payload"]
 
 
 def _record(queue: pool.PoolQueue, instance: dict, batch_id: str = "b1") -> Path:
-    return po._prewrites_dir(queue.root, instance) / f"{batch_id}.prewrite.json"
+    return bl.prewrites_dir(queue.root, instance) / f"{batch_id}.prewrite.json"
 
 
 def _write(path: Path, payload: bytes) -> None:
@@ -133,8 +135,8 @@ def test_a_retry_commits_over_its_dead_attempts_prewrite(tmp_path: Path) -> None
 
     second = _attempt(queue, template, owner, claimed)
     assert _nonce(second) != _nonce(first)
-    assert po._producer_attempt_state(queue, first) == "dead"
-    late = po.commit_origin_batch(
+    assert bl.producer_attempt_state(queue, first) == "dead"
+    late = bl.BatchLedger.commit_origin(
         queue, first, template, [_descriptor(first, template, path, v1)],
         batch_id="b1")
     assert late == {"ok": False, "refusal": "stale-superseded-owner"}
@@ -149,11 +151,11 @@ def test_a_retry_commits_over_its_dead_attempts_prewrite(tmp_path: Path) -> None
     assert _reserved(queue, first) == len(v1)
 
     _write(path, v2)
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, second, template, [_descriptor(second, template, path, v2)],
         batch_id="b1")
     assert committed["ok"], committed
-    _filed, sealed = po._load_batch_record(
+    _filed, sealed = bl.BatchLedger.open(
         queue.root, second, template, _entry(queue, second), "b1")
     assert [(d["path"], d["bytes"], d["sha256"]) for d in sealed] == [
         (str(path), len(v2), hashlib.sha256(v2).hexdigest())]
@@ -198,7 +200,7 @@ def test_files_no_attempt_committed_are_reported_until_removed(
 
     assert cycle() == [], "a live attempt's prewrite is its own"
     queue.finish(owner, status="failed")
-    assert po._producer_attempt_state(queue, first) == "dead"
+    assert bl.producer_attempt_state(queue, first) == "dead"
 
     lines = cycle()
     key = f"{owner}/{template['template_id']}.{_nonce(first)}/b1"
@@ -246,13 +248,13 @@ def test_the_orphan_event_names_what_the_tick_found(tmp_path: Path) -> None:
     assert po.origin_retirement_tick(queue) == [{
         "event": ORPHANED, "prewrite": key, "class_bytes": _class_bytes(8),
         "paths": [str(a), str(b)], "superseded": [], "held": [],
-        "remedy": po.ORPHANED_PREWRITE_REMEDY}]
+        "remedy": oc.ORPHANED_PREWRITE_REMEDY}]
     assert po.origin_retirement_tick(queue) == []
     a.unlink()
     assert po.origin_retirement_tick(queue) == [{
         "event": ORPHANED, "prewrite": key, "class_bytes": _class_bytes(8),
         "paths": [str(b)], "superseded": [], "held": [],
-        "remedy": po.ORPHANED_PREWRITE_REMEDY}]
+        "remedy": oc.ORPHANED_PREWRITE_REMEDY}]
     b.unlink()
     assert [e["reason"] for e in po.origin_retirement_tick(queue)] == ["absent"]
 
@@ -275,7 +277,7 @@ def test_a_path_the_retry_did_not_write_again_is_orphaned(tmp_path: Path) -> Non
     second = _attempt(queue, template, owner, claimed)
     assert _prewrite(queue, second, template, "b1", [kept], 4)["ok"]
     _write(kept, b"two1")
-    assert po.commit_origin_batch(
+    assert bl.BatchLedger.commit_origin(
         queue, second, template,
         [_descriptor(second, template, kept, b"two1")], batch_id="b1")["ok"]
     queue.finish(owner, status="executed")
@@ -306,7 +308,7 @@ def test_a_retry_that_also_died_vouches_for_nothing(tmp_path: Path) -> None:
     assert _prewrite(queue, second, template, "b1", [path], 4)["ok"]
     _write(path, b"two!")
     third = _attempt(queue, template, owner, claimed)
-    assert po._producer_attempt_state(queue, second) == "dead"
+    assert bl.producer_attempt_state(queue, second) == "dead"
 
     events = po.origin_retirement_tick(queue)
 
@@ -318,7 +320,7 @@ def test_a_retry_that_also_died_vouches_for_nothing(tmp_path: Path) -> None:
     assert po.origin_retirement_tick(queue) == [], (
         "held while the live retry plans the path, and the change is silent")
     _write(path, b"3rd!")
-    assert po.commit_origin_batch(
+    assert bl.BatchLedger.commit_origin(
         queue, third, template,
         [_descriptor(third, template, path, b"3rd!")], batch_id="b1")["ok"]
     assert sorted((e["event"], e["reason"])
@@ -339,7 +341,7 @@ def test_a_prewrite_is_kept_while_its_attempt_can_still_commit(
     path = Path(template["output_prefix"]) / "never-written.bin"
     assert _prewrite(queue, first, template, "b1", [path], 4)["ok"]
 
-    assert po._producer_attempt_state(queue, first) == "live"
+    assert bl.producer_attempt_state(queue, first) == "live"
     assert po.origin_retirement_tick(queue) == []
     assert _record(queue, first).exists()
 
@@ -349,14 +351,14 @@ def test_a_prewrite_is_kept_while_its_attempt_can_still_commit(
     control = dict(live["resource_scope"])
     live["resource_scope"] = {**control, "nonce": ""}
     pool.immutable_files.write_json_atomic(claim, live)
-    assert po._producer_attempt_state(queue, first) == "unknown"
+    assert bl.producer_attempt_state(queue, first) == "unknown"
     assert po.origin_retirement_tick(queue) == []
     assert _record(queue, first).exists()
 
     live["resource_scope"] = control
     pool.immutable_files.write_json_atomic(claim, live)
     queue.finish(owner, status="executed")
-    assert po._producer_attempt_state(queue, first) == "succeeded"
+    assert bl.producer_attempt_state(queue, first) == "succeeded"
     assert [(e["event"], e["reason"]) for e in po.origin_retirement_tick(queue)
             ] == [(RECLAIMED, "absent")]
     assert _reserved(queue, first) == 0
@@ -379,7 +381,7 @@ def test_an_unreachable_output_prefix_is_never_read_as_absent(
     events = po.origin_retirement_tick(queue)
 
     assert [(e["event"], e["reason"]) for e in events] == [
-        (po.ORIGIN_RETIREMENT_REFUSED_EVENT, "output-prefix-unreachable")]
+        (oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "output-prefix-unreachable")]
     assert po.origin_retirement_tick(queue) == []
     assert _record(queue, first).exists()
     assert _listed(queue) == []
@@ -409,7 +411,7 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
     other, _other_claim = _first_attempt(queue, template, running)
     assert _prewrite(queue, other, template, "b1", [prefix / "other.bin"], 4)["ok"]
     # A running producer's instance is never read: a read would report it.
-    filed = po.instance_dir(queue.root, other) / "instance.json"
+    filed = bl.scope_dir(queue.root, other) / "instance.json"
     filed.unlink()
     filed.write_text("{")
 
@@ -418,10 +420,10 @@ def test_one_pass_reads_each_owner_key_and_sibling_set_once(
     standing = RecordStore.standing
     # The other attempts' paths are read through one tick's reads (#1053),
     # once per instance whose prewrites are decided.
-    path_owners = po._TickReads.path_owners
+    path_owners = bl.LedgerReads.path_owners
     monkeypatch.setattr(RecordStore, "standing", lambda store, key: (
         reads.append(key), standing(store, key))[1])
-    monkeypatch.setattr(po._TickReads, "path_owners", lambda *args: (
+    monkeypatch.setattr(bl.LedgerReads, "path_owners", lambda *args: (
         scans.append(_nonce(args[1])), path_owners(*args))[1])
 
     events = po.origin_retirement_tick(queue)
@@ -452,21 +454,21 @@ def test_a_read_back_templates_prewrite_is_swept_too(tmp_path: Path) -> None:
     """
 
     template = fx._template(str(tmp_path / "canonical"))
-    assert not po.is_write_only(template)
+    assert not oc.is_write_only(template)
     queue = fx._queue(tmp_path)
     owner = fx._hexkey("read-back")
     first, claimed = _first_attempt(queue, template, owner)
     path = Path(template["output_prefix"]) / "p0.bin"
-    pre = po.require_prewrite(queue, first, template, batch_id="b1",
+    pre = bl.BatchLedger.reserve(queue, first, template, batch_id="b1",
                               tier=fx.TIER, class_bytes=_class_bytes(4),
                               paths=[str(path)])
     assert pre["ok"], pre
     _attempt(queue, template, owner, claimed)
-    assert po._producer_attempt_state(queue, first) == "dead"
+    assert bl.producer_attempt_state(queue, first) == "dead"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     events = po.origin_retirement_tick(queue)
     assert [(event["event"], event["reason"]) for event in events] == [
-        (po.ORIGIN_PREWRITE_RECLAIMED_EVENT, "absent")]
+        (oc.ORIGIN_PREWRITE_RECLAIMED_EVENT, "absent")]
     assert not _record(queue, first).exists()
     assert _listed(queue) == []

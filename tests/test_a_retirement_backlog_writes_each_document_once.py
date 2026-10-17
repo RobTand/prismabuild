@@ -23,6 +23,8 @@ What must hold:
   tick, and the change is kept.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import json
 from pathlib import Path
@@ -74,35 +76,36 @@ class _World:
         self.writes = 0
         #: Set to make the next write of the instance's commitments crash.
         self.crash_at_write = False
-        real_read = po._read_commitments
-        real_write = po._write_commitments
+        real_read = bl.BatchLedger.capture
+        real_write = bl.BatchLedger.file
 
-        def read(path, *args, **kwargs):
+        def read(ledger, *args, **kwargs):
+            path = ledger.path
             if Path(path) == self.commitments:
                 self.reads += 1
-            return real_read(path, *args, **kwargs)
+            return real_read(ledger, *args, **kwargs)
 
-        def write(path, *args, **kwargs):
+        def write(ledger, *args, **kwargs):
+            path = ledger.path
             if Path(path) == self.commitments:
                 if self.crash_at_write:
                     self.crash_at_write = False
                     raise _Crash("crashed before the commitments write")
                 self.writes += 1
-            return real_write(path, *args, **kwargs)
+            return real_write(ledger, *args, **kwargs)
 
-        monkeypatch.setattr(po, "_read_commitments", read)
-        monkeypatch.setattr(po, "_write_commitments", write)
+        monkeypatch.setattr(bl.BatchLedger, 'capture', read)
+        monkeypatch.setattr(bl.BatchLedger, 'file', write)
 
     def mover(self, batch_id: str) -> str:
         """The mover of the batch's active copy: a restaged batch's successor."""
 
-        return str(po._active_materialization(
-            self.replay.entry(self.q.root, batch_id))["mover_key"])
+        return str(bl.BatchFacets(self.replay.entry(self.q.root, batch_id)).active_copy["mover_key"])
 
     def retired(self) -> list[str]:
         return [batch_id for batch_id in self.replay.unretired
-                if po._batch_stage_retired(self.replay.entry(self.q.root,
-                                                             batch_id))]
+                if bl.BatchFacets(self.replay.entry(self.q.root,
+                                                             batch_id)).stage_retired]
 
     def tick(self) -> list[dict]:
         self.reads = self.writes = 0
@@ -122,7 +125,7 @@ class _World:
 
 def _retired_events(events: list[dict]) -> list[str]:
     return sorted(str(event["batch"]).rpartition("/")[2] for event in events
-                  if event.get("event") == po.DEAD_PRODUCER_BATCH_RETIRED_EVENT)
+                  if event.get("event") == oc.DEAD_PRODUCER_BATCH_RETIRED_EVENT)
 
 
 def test_ten_retirements_write_the_commitments_once(tmp_path, monkeypatch):
@@ -186,7 +189,7 @@ def test_an_incomplete_egress_stays_unretired(tmp_path, monkeypatch):
     assert world.retired() == world.replay.unretired[1:]
     assert _retired_events(events) == sorted(world.replay.unretired[1:])
     refused = [event for event in events
-               if event.get("event") == po.ORIGIN_RETIREMENT_REFUSED_EVENT
+               if event.get("event") == oc.ORIGIN_RETIREMENT_REFUSED_EVENT
                and str(event.get("batch", "")).endswith(held)]
     assert [event["reason"] for event in refused] == ["egress-incomplete"]
     assert world.writes == 1

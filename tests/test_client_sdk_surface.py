@@ -22,6 +22,7 @@ the "Client SDK" section of ``docs/design.md`` in the same change.
 from __future__ import annotations
 
 from prismabuild import scratch_lifetime
+from prismabuild import batch_ledger as bl, output_contract as oc
 
 import ast
 import inspect
@@ -210,17 +211,37 @@ REEXPORTS = {
     "ActionResultError": action_result.ActionResultError,
     "read_verified_action_result": action_result.read_verified_action_result,
     "bind_standard_capture_command": action_result.bind_standard_capture_command,
-    **{name: getattr(produced_output, name) for name in (
-        "TEMPLATE_SCHEMA_V1", "DESCRIPTOR_SCHEMA_V2", "declared_template",
-        "validate_template", "bind_declared_instance", "declare_instance",
-        "admit_instance", "validate_instance", "instance_dir",
-        "checked_instance_maxima", "owner_demand_terms", "admit_funded_window",
-        "refill_window", "require_prewrite", "abort_prewrite",
-        "validate_descriptor", "output_manifest_sha256", "batch_namespace",
-        "output_fragment_root", "publish_prepaid_batch", "commit_batch",
-        "commit_origin_batch", "retire_batch", "reclaim_origin",
-        "recover_batches", "due_mover_rows", "materialization_state",
-        "ensure_batch_materialized", "safe_release_instance")},
+    **{
+        'TEMPLATE_SCHEMA_V1': oc.TEMPLATE_SCHEMA_V1,
+        'DESCRIPTOR_SCHEMA_V2': oc.DESCRIPTOR_SCHEMA_V2,
+        'declared_template': produced_output.declared_template,
+        'validate_template': oc.validate_template,
+        'bind_declared_instance': produced_output.bind_declared_instance,
+        'declare_instance': bl.declare_instance,
+        'admit_instance': bl.BatchLedger.admit,
+        'validate_instance': oc.validate_instance,
+        'instance_dir': bl.scope_dir,
+        'checked_instance_maxima': oc.checked_instance_maxima,
+        'owner_demand_terms': oc.owner_demand_terms,
+        'admit_funded_window': produced_output.admit_funded_window,
+        'refill_window': produced_output.refill_window,
+        'require_prewrite': bl.BatchLedger.reserve,
+        'abort_prewrite': bl.BatchLedger.abort,
+        'validate_descriptor': oc.validate_descriptor,
+        'output_manifest_sha256': oc.output_manifest_sha256,
+        'batch_namespace': oc.batch_namespace,
+        'output_fragment_root': bl.output_fragment_root,
+        'publish_prepaid_batch': produced_output.publish_prepaid_batch,
+        'commit_batch': produced_output.commit_batch,
+        'commit_origin_batch': bl.BatchLedger.commit_origin,
+        'retire_batch': produced_output.retire_batch,
+        'reclaim_origin': bl.BatchLedger.reclaim,
+        'recover_batches': produced_output.recover_batches,
+        'due_mover_rows': bl.BatchLedger.due_mover_rows,
+        'materialization_state': bl.BatchLedger.materialization,
+        'ensure_batch_materialized': produced_output.ensure_batch_materialized,
+        'safe_release_instance': produced_output.safe_release_instance,
+    },
 }
 
 
@@ -276,15 +297,27 @@ def test_the_patterns_keep_their_grammar():
 
 
 @pytest.mark.parametrize("name", sorted(REEXPORTS))
-def test_a_reexport_is_the_internal_object_itself(name):
-    assert getattr(client, name) is REEXPORTS[name]
+def test_a_reexport_is_the_internal_object_itself(name, monkeypatch):
+    if name == "due_mover_rows":
+        calls = []
+        result = []
+        def due(queue, instance, template, *, residency_schema):
+            calls.append((queue, instance, template, residency_schema))
+            return result
+        monkeypatch.setattr(bl.BatchLedger, "due_mover_rows", due)
+        monkeypatch.setattr(pool, "RESIDENCY_SCHEMA_V1", "live-schema-owner")
+        queue, instance, template = object(), object(), object()
+        assert client.due_mover_rows(queue, instance, template) is result
+        assert calls == [(queue, instance, template, "live-schema-owner")]
+    else:
+        assert getattr(client, name) is REEXPORTS[name]
 
 
 def test_every_non_reexport_is_defined_by_the_sdk():
     """What is not a re-export is one of the few functions the SDK defines."""
 
-    own = {"read_claimed_record", "release_produced_instance", "cas_receipt_self_check"}
-    functions = set(SIGNATURES) - set(REEXPORTS)
+    own = {"read_claimed_record", "release_produced_instance", "cas_receipt_self_check", "due_mover_rows"}
+    functions = set(SIGNATURES) - (set(REEXPORTS) - {"due_mover_rows"})
     assert functions == own
     for name in own:
         assert getattr(client, name).__module__ == "prismabuild.client"

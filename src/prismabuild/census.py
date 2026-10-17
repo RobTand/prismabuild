@@ -13,7 +13,7 @@ import shlex
 import time
 from typing import Generic, Literal, TypeVar
 
-from . import (core as pb, pool, produced_output, residency_map, residency_plan,
+from . import (core as pb, pool, produced_output, output_contract, residency_map, residency_plan,
                storage_tiers, tier_holdings, window_credit, slurm_lane as sl)
 from . import kept_reads
 read_cache = kept_reads
@@ -35,7 +35,7 @@ NOT_OBSERVABLE = "not_observable"
 STARVATION_QUIET_FRACTION = 0.5
 STARVATION_CHILD_SILENT_S = 30.0
 BLOCKED_ORIGINS_SCHEMA_V1 = "prismabuild.pbstatus.blocked_origins.v1"
-ORPHANED_PREWRITE_REMEDY = produced_output.ORPHANED_PREWRITE_REMEDY
+ORPHANED_PREWRITE_REMEDY = output_contract.ORPHANED_PREWRITE_REMEDY
 _UNKNOWN_TIER = "unknown"
 _UNREADABLE = object()
 _NOT_A_RECEIPT = object()

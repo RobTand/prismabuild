@@ -22,10 +22,23 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.compatibility_window import require_reachable
-from compat_references import module_paths
+from compat_references import module_paths, generation_reference
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
+_PRIOR_DRIVERS = None
+
+
+def pre_c13_drivers():
+    """The exact d2f fixture drivers for independently captured old sources."""
+    global _PRIOR_DRIVERS
+    if _PRIOR_DRIVERS is None:
+        import atexit
+        _PRIOR_DRIVERS = tempfile.TemporaryDirectory(prefix="compat-pre-c13-")
+        atexit.register(_PRIOR_DRIVERS.cleanup)
+        with tarfile.open(ROOT / "tests/compat/drivers-before-c13.tar.gz") as archive:
+            archive.extractall(_PRIOR_DRIVERS.name, filter="data")
+    return Path(_PRIOR_DRIVERS.name) / "tests/compat/support"
 
 
 def sha(raw):
@@ -105,8 +118,10 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
         request["raw"] = base64.b64encode(raw).decode()
-    adapter_path = HERE / "compat_adapters.py" if adapter_path is None else adapter_path
-    command = [sys.executable, "-I", "-S", str(HERE / "compat_isolate.py"),
+    prior_owner = manifest and not (root / "src/prismabuild/batch_ledger.py").is_file()
+    driver = pre_c13_drivers() if prior_owner and adapter_path is None else HERE
+    adapter_path = driver / "compat_adapters.py" if adapter_path is None else adapter_path
+    command = [sys.executable, "-I", "-S", str(driver / "compat_isolate.py"),
                "--root", str(root), "--adapters", str(adapter_path),
                "--store", str(store)]
     if manifest:
@@ -119,11 +134,11 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         stable = Path("/opt/prismabuild-compat")
         namespace = [bwrap, "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/opt",
                      "--ro-bind", str(root), str(stable / "generation"),
-                     "--ro-bind", str(HERE), str(stable / "driver"),
+                     "--ro-bind", str(driver), str(stable / "driver"),
                      "--bind", str(store), str(stable / "store")]
         command = [sys.executable, "-I", "-S", str(stable / "driver/compat_isolate.py"),
                    "--root", str(stable / "generation"), "--adapters", str(
-                       stable / "driver" / adapter_path.name if adapter_path.parent == HERE else adapter_path),
+                       stable / "driver" / adapter_path.name if adapter_path.parent == driver else adapter_path),
                    "--store", str(stable / "store")]
         if manifest:
             namespace.extend(["--ro-bind", str(manifest), str(stable / "manifest.json")])
@@ -161,6 +176,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
             result["entry_error"] = "available qualification-input constructor was not reached"
     result["catalogued_operation"] = ("input-reader" if raw is None and kind.caller_input else
                                      "source-reader" if raw is None and kind.fixture_source else request["op"])
+    references = tuple(generation_reference(root, reference) for reference in references)
     result["catalogued_entry_verified"] = any(reached(result, reference) for reference in references)
     if raw is None and result["returncode"] == 0 and kind.wire_id is not None:
         actual_wire = decode_wire(kind, base64.b64decode(result["result"]["raw"]))

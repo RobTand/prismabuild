@@ -16,6 +16,8 @@ The three hazards the #1053 fix must not open:
 Everything runs on a synthetic stage and origin prefix under ``tmp_path``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -68,7 +70,7 @@ def _strand_holding(producer: _Producer, batch_id: str, res: dict, path: Path,
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(payload)
     residency_map.write_fragment(
-        po.output_fragment_root(q.root / pool.record_store.RESIDENCY), {
+        bl.output_fragment_root(q.root / pool.record_store.RESIDENCY), {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": namespace, "mover_action_key": mover,
             "tier_id": TIER, "stage_root": str(producer.fleet.stage),
@@ -124,13 +126,13 @@ def test_a_dead_producers_batches_a_live_action_reads_keep_their_origin(
 
     for batch_id in ("b43-g7", "b1-g6"):
         entry = dead.entry(batch_id)
-        assert po._batch_stage_retired(entry), batch_id
+        assert bl.BatchFacets(entry).stage_retired, batch_id
         assert entry.get("origin_reclaimed") is False, batch_id
     assert [event["batch"] for event in _events(events, DEAD_BATCH_RETIRED)] == [
         dead.coordinates("b43-g7")]
     assert [event["batch_id"] for event in _events(
         events, stage_release.PRODUCED_ORPHAN_EVENT)] == ["b1-g6"]
-    assert not _events(events, po.ORIGIN_RETIREMENT_REFUSED_EVENT), events
+    assert not _events(events, oc.ORIGIN_RETIREMENT_REFUSED_EVENT), events
     # The relaunch may regenerate them: a dead action owns nothing live.
     assert resume.prewrite("b43-g7", [stranded, Path(f"{stranded}.tmp")],
                            64)["ok"] is True
@@ -237,7 +239,7 @@ def _dead_consumed_batch(tmp_path: Path):
     instance, path, committed = _commit(queue, template, "dead",
                                         payload=b"the dead attempt's bytes")
     queue.finish(instance["owner_action_key"], status="failed")
-    assert po._producer_attempt_state(queue, instance) == "dead"
+    assert bl.producer_attempt_state(queue, instance) == "dead"
     return template, queue, instance, path
 
 
@@ -263,7 +265,7 @@ def test_a_retirement_racing_a_successors_rename_keeps_its_file(
     """
 
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
-    overlapping = po.validate_template({
+    overlapping = oc.validate_template({
         **template, "template_id": "write-only-overlapping-v1",
         "output_prefix": str(tmp_path)})
     successor = _bind_owner(queue, overlapping, fx._hexkey("successor"))
@@ -287,17 +289,17 @@ def test_a_retirement_racing_a_successors_rename_keeps_its_file(
     assert all(live[key] == landed["identity"][key]
                for key in ("ino", "size", "mtime_ns")), (
         "the file at the path is not the one the successor wrote")
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, successor, overlapping,
         [wo._descriptor(successor, overlapping, path, payload)], batch_id="b1")
     assert committed["ok"] is True, committed
     recorded = json.loads((Path(queue.root) / "residency"
-                           / po.OUTPUT_BATCHES_SUBDIR
-                           / po.instance_namespace(successor)
+                           / oc.OUTPUT_BATCHES_SUBDIR
+                           / oc.instance_namespace(successor)
                            / "b1.json").read_text())["origin_identity"]
     assert reader_lease.file_id_matches(recorded[str(path)], live), (
         f"the successor committed {recorded[str(path)]}, its file is {live}")
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     if after:
         assert retired[0]["unlinked"] == [str(path)]
@@ -322,20 +324,19 @@ def test_a_retirement_holds_while_a_live_successors_prewrite_names_the_path(
 
     assert po.origin_retirement_tick(queue) == [], (
         "a live prewrite of the path holds the retirement, quietly")
-    entry = po._read_commitments(
-        po._commitments_path(queue.root, instance))["batches"]["b1"]
+    entry = bl.BatchLedger.for_instance(queue.root, instance).capture()["batches"]["b1"]
     assert not entry.get("retiring") and not entry.get("origin_reclaimed")
 
     _successor_rename(path, payload)()
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, successor, template,
         [wo._descriptor(successor, template, path, payload)], batch_id="b1",
-        lifetime=po.ORIGIN_LIFETIME_RETAIN)
+        lifetime=oc.ORIGIN_LIFETIME_RETAIN)
     assert committed["ok"], committed
 
     events = po.origin_retirement_tick(queue)
 
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     assert retired[0]["unlinked"] == []
     assert retired[0]["superseded"] == [str(path)]
@@ -361,7 +362,7 @@ def test_an_interrupted_delete_of_the_committed_file_is_finished(
 
     events = po.origin_retirement_tick(queue)
 
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1 and retired[0]["unlinked"] == [str(path)], events
     assert not private.exists() and not path.exists()
 
@@ -376,7 +377,7 @@ def test_an_interrupted_delete_puts_a_writers_file_back(tmp_path: Path) -> None:
 
     events = po.origin_retirement_tick(queue)
 
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     assert retired[0]["unlinked"] == [] and retired[0]["superseded"] == [
         str(path)]
@@ -399,7 +400,7 @@ def test_a_writers_file_displaced_by_a_later_one_is_kept_and_named(
 
     events = po.origin_retirement_tick(queue)
 
-    refused = _events(events, po.ORIGIN_RETIREMENT_REFUSED_EVENT)
+    refused = _events(events, oc.ORIGIN_RETIREMENT_REFUSED_EVENT)
     assert len(refused) == 1, events
     assert refused[0]["reason"].startswith("origin-displaced")
     assert str(private) in refused[0]["reason"]
@@ -418,7 +419,7 @@ def test_a_file_that_names_no_prefix_does_not_stop_the_owner_lookup(
     """
 
     fleet = _Fleet(tmp_path)
-    templates = fleet.q.root / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    templates = fleet.q.root / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
     (templates / "template-0.json").write_text(
         '{"schema": "prismaquant.prismabuild.produced_output_template.v1", '
         '"index": 0}\n')

@@ -22,6 +22,8 @@ ordinary paced command); the claim is `PoolQueue.claim` directly rather than a
 fleet worker loop.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -80,7 +82,7 @@ def _isolated_synthetic_launch_context(monkeypatch):
 def _template(prefix: str, window_gib: int = 1,
               maxima: int = 1 << 20) -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "restage-v1",
         "output_prefix": prefix,
@@ -94,7 +96,7 @@ def _template(prefix: str, window_gib: int = 1,
                                    "window_gib": window_gib}},
         "permitted_tiers": [TIER],
     }
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
@@ -132,7 +134,7 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
 
 def _bind(q: pool.PoolQueue, template: dict, owner: str,
           cas_root: Path, *, checkout_root: Path | None = None) -> dict:
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     q.publish(action_key=owner, cas_root=str(cas_root),
               worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
               checkout_root=str(checkout_root or (Path(q.root).parent / "mover-checkout")),
@@ -147,8 +149,8 @@ def _bind(q: pool.PoolQueue, template: dict, owner: str,
     po.declare_template(q.root, template)
     inst = po.bind_instance(q, template, owner_action_key=owner,
                             claim_snapshot=claimed, env=env)
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"] is True
+    bl.declare_instance(q.root, inst)
+    assert bl.BatchLedger.admit(q, inst, template)["ok"] is True
     return inst
 
 
@@ -169,11 +171,11 @@ def _descriptors(template: dict, inst: dict, tag: str, payload: bytes, *,
     cls = "payload" if slot == "s0" else "checkpoint"
     sha256 = None if digest_mode == "null" else hashlib.sha256(
         payload).hexdigest()
-    return [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": slot,
+    return [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": slot,
         "artifact_class": cls, "path": str(path),
         "bytes": len(payload), "sha256": sha256,
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)]
@@ -183,7 +185,7 @@ def _prewrite(q, inst, template, batch_id, descs) -> dict:
     classes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for d in descs:
         classes[str(d["artifact_class"])] += int(d["bytes"])
-    out = po.require_prewrite(q, inst, template, batch_id=batch_id,
+    out = bl.BatchLedger.reserve(q, inst, template, batch_id=batch_id,
                               tier=TIER, class_bytes=classes,
                               paths=sorted(str(d["path"]) for d in descs))
     assert out.get("ok") is True, out
@@ -283,7 +285,7 @@ class _World:
         self.stage_root = tmp_path / "stage"
         _announce_tier(self.q, self.stage_root)
         self.ledger = self.q.tier(TIER)
-        self.out_base = po.output_fragment_root(self.q.root / pool.record_store.RESIDENCY)
+        self.out_base = bl.output_fragment_root(self.q.root / pool.record_store.RESIDENCY)
         self.publish_kwargs = dict(producer_action_key=self.owner,
                                    command_extra=["--unpaced"])
 
@@ -319,20 +321,20 @@ class _World:
                 / self.entry(batch_id)["batch_namespace"] / name)
 
     def commitments(self) -> dict:
-        path = po._commitments_path(self.q.root, self.inst)
+        path = bl.BatchLedger.for_instance(self.q.root, self.inst).path
         return json.loads(path.read_text())
 
     def entry(self, batch_id: str) -> dict:
         return self.commitments()["batches"][batch_id]
 
     def batch_record_path(self, batch_id: str) -> Path:
-        return (Path(self.q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                / po.instance_namespace(self.inst) / f"{batch_id}.json")
+        return (Path(self.q.root) / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                / oc.instance_namespace(self.inst) / f"{batch_id}.json")
 
     def pin(self, mover: str, manifest: str, total: int, *,
             token: str | None = None) -> dict:
         return rlc.acquire(
-            self.q, consumer_action_key=po.batch_namespace(
+            self.q, consumer_action_key=oc.batch_namespace(
                 self.inst, "b1", manifest),
             attempt={"nonce": secrets.token_hex(16),
                      "scope_id": "downstream-scope"},
@@ -395,18 +397,18 @@ def test_the_existing_api_cannot_restage_a_retired_batch(tmp_path: Path) -> None
     # batch simply reads retired.
     events = po.recover_batches(world.q, world.inst, world.template)
     assert [e["event"] for e in events] == ["output-batch-retired"], events
-    assert po.due_mover_rows(world.q, world.inst, world.template) == []
+    assert bl.BatchLedger.due_mover_rows(world.q, world.inst, world.template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
 
     # (b) The only remaining existing route is a SECOND logical batch over the
     #     same origin files, which charges the same bytes twice.
-    committed_payload = po._class_sums(world.commitments()["batches"])["payload"]
+    committed_payload = bl._class_sums(world.commitments()["batches"])["payload"]
     assert committed_payload == len(payload)
-    second = po.require_prewrite(
+    second = bl.BatchLedger.reserve(
         world.q, world.inst, world.template, batch_id="b2", tier=TIER,
         class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
         paths=[str(descs[0]["path"])])
     assert second.get("ok") is True, second
-    outstanding = po._outstanding_sums(world.q.root, world.inst, None)
+    outstanding = bl._outstanding_sums(world.q.root, world.inst, None)
     assert outstanding["payload"] == 2 * len(payload), outstanding
 
 
@@ -437,7 +439,7 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
     mover0 = str(first["mover_key"])
     manifest = str(first["manifest_digest"])
     ns = str(first["batch_namespace"])
-    charge_before = po._class_sums(world.commitments()["batches"])
+    charge_before = bl._class_sums(world.commitments()["batches"])
 
     # The producer's window paid for it; nothing came from free.
     assert world.ledger.holdings(world.owner).get(KIND, 0) == 0
@@ -499,7 +501,7 @@ def test_a_retired_batch_is_read_again_from_a_new_materialization(
 
     # One logical batch, one durable charge: unchanged across forward and
     # reverse staging.
-    assert po._class_sums(world.commitments()["batches"]) == charge_before
+    assert bl._class_sums(world.commitments()["batches"]) == charge_before
     entry = world.entry("b1")
     assert entry["retired"] is True
     assert len(entry["materializations"]) == 1
@@ -723,7 +725,7 @@ def test_a_reclaimed_origin_can_never_be_restaged(tmp_path: Path) -> None:
     world.run_mover(str(first["mover_key"]), "w-reclaim")
     assert world.retire("b1").get("ok") is True
     origin.unlink()
-    assert po.reclaim_origin(world.q, world.inst, world.template,
+    assert bl.BatchLedger.reclaim(world.q, world.inst, world.template,
                              batch_id="b1") == {
         "ok": True, "batch_id": "b1", "reclaimed": True}
     refused = world.ensure("b1")
@@ -943,7 +945,7 @@ def test_a_crash_at_every_prefix_resumes_without_double_funding(
         elif prefix_name == "after-fund":
             crash.setattr(po, "_reconcile_materialization_funding", _boom)
         else:
-            crash.setattr(po, "_mark_materialization_funded_locked", _boom)
+            crash.setattr(bl.BatchLedger, 'fund_materialization', _boom)
 
         with pytest.raises(_Crash):
             world.ensure("b1")
@@ -1034,7 +1036,7 @@ def test_every_census_follows_the_active_materialization(
     # Retired everywhere, before the successor exists.
     assert [e["event"] for e in po.recover_batches(
         world.q, world.inst, world.template)] == ["output-batch-retired"]
-    assert po.due_mover_rows(world.q, world.inst, world.template) == []
+    assert bl.BatchLedger.due_mover_rows(world.q, world.inst, world.template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
     assert po.output_scope_tick(world.q, {}) == []
 
     ensured = world.ensure("b1")
@@ -1046,7 +1048,7 @@ def test_every_census_follows_the_active_materialization(
     events = po.recover_batches(world.q, world.inst, world.template)
     assert [e["event"] for e in events] == ["output-mover-live-wait"], events
     assert str(events[0]["mover"]) == mover1
-    rows = po.due_mover_rows(world.q, world.inst, world.template)
+    rows = bl.BatchLedger.due_mover_rows(world.q, world.inst, world.template, residency_schema=pool.RESIDENCY_SCHEMA_V1)
     assert rows == [], rows  # already READY; nothing to publish
 
     world.run_mover(mover1, "w-census")
@@ -1065,7 +1067,7 @@ def test_every_census_follows_the_active_materialization(
 
     # A new writer may not claim the origin paths while the successor reads
     # them -- ownership follows the active materialization, not the flag.
-    blocked = po.require_prewrite(
+    blocked = bl.BatchLedger.reserve(
         world.q, world.inst, world.template, batch_id="b2", tier=TIER,
         class_bytes={"payload": 600, "checkpoint": 0, "temp": 0},
         paths=[str(Path(world.template["output_prefix"]) / "p1.bin")])
@@ -1093,20 +1095,20 @@ def test_a_malformed_materialization_list_retains_everywhere(
     world, _descs = _staged_world(tmp_path)
     ensured = world.ensure("b1")
     assert ensured.get("ok") is True, ensured
-    path = po._commitments_path(world.q.root, world.inst)
+    path = bl.BatchLedger.for_instance(world.q.root, world.inst).path
     record = json.loads(path.read_text())
     record["batches"]["b1"]["materializations"] = [{"mover_key": "nope"}]
     path.write_text(json.dumps(record, sort_keys=True) + "\n")
 
     assert [e["event"] for e in po.recover_batches(
         world.q, world.inst, world.template)] == ["output-recovery-unknown"]
-    assert po.due_mover_rows(world.q, world.inst, world.template) == []
+    assert bl.BatchLedger.due_mover_rows(world.q, world.inst, world.template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
     assert [e["event"] for e in po.output_scope_tick(world.q, {})] == [
         "output-recovery-unknown"]
     retired = world.retire("b1")
     assert retired.get("ok") is False, retired
     assert str(retired.get("refusal")).startswith("unknown-retain"), retired
-    state = po.materialization_state(world.q, world.inst, world.template,
+    state = bl.BatchLedger.materialization(world.q, world.inst, world.template,
                                      batch_id="b1")
     assert state.get("ok") is False, state
     if HAS_SDK:
@@ -1142,13 +1144,13 @@ def _assert_retains(world: _World) -> None:
 
     assert [e["event"] for e in po.recover_batches(
         world.q, world.inst, world.template)] == ["output-recovery-unknown"]
-    assert po.due_mover_rows(world.q, world.inst, world.template) == []
+    assert bl.BatchLedger.due_mover_rows(world.q, world.inst, world.template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
     assert [e["event"] for e in po.output_scope_tick(world.q, {})] == [
         "output-recovery-unknown"]
     retired = world.retire("b1")
     assert retired.get("ok") is False, retired
     assert str(retired.get("refusal")).startswith("unknown-retain"), retired
-    state = po.materialization_state(world.q, world.inst, world.template,
+    state = bl.BatchLedger.materialization(world.q, world.inst, world.template,
                                      batch_id="b1")
     assert state.get("ok") is False, state
     ensured = world.ensure("b1")
@@ -1164,7 +1166,7 @@ def _install(world: _World, rows: list[dict], *,
              batch_retired: bool = True) -> None:
     """Write a permuted history back over the real commitments record."""
 
-    path = po._commitments_path(world.q.root, world.inst)
+    path = bl.BatchLedger.for_instance(world.q.root, world.inst).path
     record = json.loads(path.read_text())
     record["batches"]["b1"]["materializations"] = rows
     record["batches"]["b1"]["retired"] = batch_retired

@@ -13,6 +13,7 @@ sealed environment does not set ``PRISMABUILD_PRODUCED_SPOOL_PACED_EXPORT=1``
 exports exactly as before, and a runtime publication changes no live export.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 
 import json
 import os
@@ -153,9 +154,9 @@ def refuse_unpriced_export_then_retry(spool, source, destination, entries, *, pa
     payload = source.read_bytes()
     identity = ps._identity(source)
     reservation = (group / "reservation.json").read_bytes()
-    prewrite = po._prewrites_dir(spool.queue.root, spool.instance) / "b1.prewrite.json"
+    prewrite = bl.prewrites_dir(spool.queue.root, spool.instance) / "b1.prewrite.json"
     authority = prewrite.read_bytes()
-    bound = po._read_prewrite(prewrite)
+    bound = bl.read_prewrite(prewrite)
     assert isinstance(bound, dict)
     assert bound["owner_action_key"] == spool.owner
     assert bound["owner_attempt"] == spool.instance["owner_attempt"]

@@ -24,6 +24,8 @@ through the real ``PoolQueue``, and commit through ``commit_origin_batch``
 without running a worker; consumers go through the real ``pbrun.main``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from submission_support import patch_store
 
 import contextlib
@@ -64,7 +66,7 @@ from test_write_only_produced_output import (  # noqa: E402
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
 WORKER = str(fx.REPO / "tools" / "prismabuild_worker.py")
-CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
+CONSUMED = oc.ORIGIN_LIFETIME_CONSUMED
 PLACEHOLDER = ae.DATA_MANIFEST_PLACEHOLDER
 DIGEST = ae.DATA_MANIFEST_SHA256_PLACEHOLDER
 #: A consumer that verifies its manifest: exit 0 only when the file at the
@@ -149,8 +151,8 @@ def _start(queue: pool.PoolQueue, template: dict, key: str, *,
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
     instance = po.bind_instance(queue, template, owner_action_key=key,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     return instance
 
 
@@ -163,7 +165,7 @@ def _commit(queue, template, instance, batch_id: str, payload: bytes, *,
                      len(payload))["ok"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, instance, template, [_descriptor(instance, template, path, payload)],
         batch_id=batch_id, lifetime=lifetime)
     assert committed["ok"], committed
@@ -244,7 +246,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     )["priority_reason"] == "producer gate"
     assert "priority_reason" not in _request(tmp_path, key)["params"]
     # Declared against the batch (#914), so its retirement waits for it.
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists()
 
     # The sealed command names the manifest, and the manifest names exactly
@@ -258,7 +260,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     manifest, _ = manifest_codec.read_data_manifest(manifest_path)
     assert [(entry["path"], entry["sha256"]) for entry in manifest["entries"]] == [
         (str(path), hashlib.sha256(payload).hexdigest())]
-    assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [
+    assert manifest["annotations"][oc.ORIGIN_BATCHES_ANNOTATION] == [
         committed["ref"]]
     assert request["params"]["data_manifest"]["input"]["sha256"] == \
         released["manifest_sha256"]
@@ -550,7 +552,7 @@ def test_an_unreleased_consumer_holds_the_batch_its_producer_committed(
     assert claimed["action_key"] == key
     queue.finish(key, status="executed")
     retired = [event for event in po.origin_retirement_tick(queue)
-               if event["event"] == po.ORIGIN_RETIRED_EVENT]
+               if event["event"] == oc.ORIGIN_RETIRED_EVENT]
     assert {event["ref"]["owner_action_key"] for event in retired} == {
         first, second}
     assert not path.exists()
@@ -570,7 +572,7 @@ def test_a_cache_hit_producer_is_read_from_the_attempt_that_committed(
     fx._broker_control(queue, producer)       # a retry's attempt holds the claim
     queue.finish(producer, status="cache_hit")
 
-    assert po._producer_attempt_state(queue, instance) == "unknown"
+    assert bl.producer_attempt_state(queue, instance) == "unknown"
     assert po.origin_retirement_tick(queue) == []
     assert path.exists(), "the cache hit ran nothing: these are the only bytes"
 

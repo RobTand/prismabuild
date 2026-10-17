@@ -35,6 +35,8 @@ Everything runs on a synthetic stage under ``tmp_path`` registered to a queue
 under ``tmp_path``; nothing reads or writes a real stage.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import json
 from pathlib import Path
@@ -95,7 +97,7 @@ class _World:
                        worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
                        checkout_root=str(tmp_path / "mover-checkout"),
                        resources={"cpu": 1, "mem_gb": 1,
-                                  **po.owner_demand_terms(self.template)},
+                                  **oc.owner_demand_terms(self.template)},
                        produced_output_template=self.template,
                        max_attempts=1, retry_safe=False)
         claimed = self.q.claim(owner="w-owner")
@@ -108,8 +110,8 @@ class _World:
         self.inst = po.bind_instance(self.q, self.template,
                                      owner_action_key=self.owner,
                                      claim_snapshot=claimed, env=env)
-        po.declare_instance(self.q.root, self.inst)
-        assert po.admit_instance(self.q, self.inst, self.template)["ok"] is True
+        bl.declare_instance(self.q.root, self.inst)
+        assert bl.BatchLedger.admit(self.q, self.inst, self.template)["ok"] is True
         self.stage = tmp_path / "stage"
         _announce_tier(self.q, self.stage)
         self.descs = _descriptors(tmp_path, self.template, self.inst, "p1",
@@ -153,7 +155,7 @@ class _World:
 
     def batch_entry(self) -> dict:
         commitments = json.loads(
-            (po.instance_dir(self.q.root, self.inst) / "commitments.json")
+            (bl.scope_dir(self.q.root, self.inst) / "commitments.json")
             .read_text())
         return commitments["batches"]["b1"]
 
@@ -240,7 +242,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
     staged.write_bytes(PAYLOAD)
     origin = str(world.descs[0]["path"])
     residency_map.write_fragment(
-        po.output_fragment_root(world.q.root / pool.record_store.RESIDENCY), {
+        bl.output_fragment_root(world.q.root / pool.record_store.RESIDENCY), {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": world.namespace,
             "mover_action_key": world.mover, "tier_id": TIER,
@@ -277,7 +279,7 @@ def test_an_unresolvable_produced_holder_is_reported_once_and_kept(
     world.strand_the_mover()
     world.fail_the_producer()
     template_file = (world.q.root / pool.record_store.RESIDENCY
-                     / po.OUTPUT_TEMPLATES_SUBDIR
+                     / oc.OUTPUT_TEMPLATES_SUBDIR
                      / f"{world.inst['template_id']}.json")
     template_file.chmod(0o644)
     template_file.unlink()

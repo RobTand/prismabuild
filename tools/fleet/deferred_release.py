@@ -48,6 +48,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+from prismabuild import output_contract as oc
 from prismabuild import submission
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRefused
@@ -74,7 +75,7 @@ _QUIET_STATES = frozenset({"live", "pending"})
 
 #: What a record or a release can raise that the tick reports and keeps.
 #: Package refusals retain the reason without stopping the tier loop.
-_CONTAINED = (action_edges.ActionEdgeError, produced_output.ProducedOutputError,
+_CONTAINED = (action_edges.ActionEdgeError, oc.ProducedOutputError,
               pool.PoolContractError, pb.PrismaBuildError, OSError, ValueError,
               KeyError, TypeError, SubmissionRefused)
 

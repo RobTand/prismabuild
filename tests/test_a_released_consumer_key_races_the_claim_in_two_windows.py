@@ -51,6 +51,8 @@ the claim's index listing really runs before the release's entry (window
 row really lands in between (window 1).
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import threading
 from pathlib import Path
@@ -78,7 +80,7 @@ from test_superseded_origin_consumers import (  # noqa: E402
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
-RETIRED = po.ORIGIN_RETIRED_EVENT
+RETIRED = oc.ORIGIN_RETIRED_EVENT
 WAIT_S = 30.0
 
 
@@ -164,7 +166,7 @@ def _assert_held_by_the_live_consumer(queue, key: str, origin: Path) -> None:
 
     assert queue.records.item_path(pool.record_store.CLAIMED, key).exists(), (
         "the released row was not claimed")
-    assert po._consumer_state(queue, key) == "live"
+    assert bl.consumer_state(queue, key) == "live"
     assert _events(queue, RETIRED) == []
     assert origin.exists(), "the batch this consumer reads was deleted"
 
@@ -202,7 +204,7 @@ def test_an_old_submitters_row_landing_before_the_record_is_still_refused(
         def index_then_land(*args, **kwargs):
             # Inside ``_release_origin_consumer_locked``, past its state
             # read and at its record threshold: the release has decided.
-            landed_state["state"] = po._consumer_state(queue, key)
+            landed_state["state"] = bl.consumer_state(queue, key)
             real_index(*args, **kwargs)
             resume()
 
@@ -301,7 +303,7 @@ def test_a_release_of_a_claimed_consumer_is_refused(
     refused = _refused(monkeypatch, *_release_argv(committed, key))
     assert "origin-consumer-live" in refused, refused
     assert po.origin_consumer_release(queue, key) is None
-    assert not po._released_consumers_dir(queue.root, instance, "b1").exists()
-    assert po._consumer_state(queue, key) == "live"
+    assert not bl._released_consumers_dir(queue.root, instance, "b1").exists()
+    assert bl.consumer_state(queue, key) == "live"
     assert _events(queue, RETIRED) == []
     assert path.exists()

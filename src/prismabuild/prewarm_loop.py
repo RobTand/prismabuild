@@ -129,6 +129,7 @@ budget and the outcome stays visible.
 """
 
 from __future__ import annotations
+from prismabuild import output_contract as oc
 
 import argparse
 import json
@@ -2010,7 +2011,7 @@ def released_origin_consumer(queue: pool.PoolQueue, key: str) -> bool:
 
     try:
         return produced_output.origin_consumer_release(queue, key) is not None
-    except produced_output.ProducedOutputError:
+    except oc.ProducedOutputError:
         return True
 
 

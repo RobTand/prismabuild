@@ -11,6 +11,7 @@ C, G = "c" * 64, "7" * 32
 
 
 def operate(request, store, load):
+    bl = load("prismabuild.batch_ledger")
     family, variant = request["case"].split("/", 1)
     writing = request["op"] == "write"
     if family == "controller-wave":
@@ -35,18 +36,18 @@ def operate(request, store, load):
             po, pool, core, queue, template, instance, _, _ = helpers["committed"](store, load, "origin-retain" if variant == "origin" else "payload")
         else:
             po, pool, core, queue, template, instance = helpers["context"](store, load, "payload")
-        path = po._commitments_path(queue.root, instance)
+        path = bl.BatchLedger.for_instance(queue.root, instance).path
         if writing and variant == "empty":
-            po._write_commitments(path, {"batches": {}, "admission": None})
+            bl.BatchLedger(path).file({"batches": {}, "admission": None})
         if writing and variant == "preserved":
-            before = po._read_commitments(path)
-            po._write_commitments(path, {"batches": before["batches"]})
-            assert po._read_commitments(path)["admission"] == before["admission"]
+            before = bl.BatchLedger(path).capture()
+            bl.BatchLedger(path).file({"batches": before["batches"]})
+            assert bl.BatchLedger(path).capture()["admission"] == before["admission"]
         if not writing:
             path.write_bytes(base64.b64decode(request["raw"]))
             request["_consumer_boundary"]()
-            result = po._read_commitments(path)
-            sums = po._class_sums(result["batches"])
+            result = bl.BatchLedger(path).capture()
+            sums = bl._class_sums(result["batches"])
             assert sums["payload"] == (8 if variant in ("staged", "origin", "preserved") else 0), sums
             assert (result["admission"] is None) == (variant == "empty")
             return {"charged_bytes": sums, "admission_present": result["admission"] is not None}

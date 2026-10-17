@@ -24,21 +24,23 @@ def template(po, variant):
 
 
 def operate(request, store, load):
+    bl = load("prismabuild.batch_ledger")
+    oc = load("prismabuild.output_contract")
     family, variant = request["case"].split("/", 1)
     if family in ("out-consumer", "out-release", "out-release-index"):
         return runpy.run_path(str(Path(__file__).with_name("compat_consumer_adapters.py")))["operate"](request, store, load)
     if family in ("out-batch", "out-descriptor", "out-ref", "out-batch-ref", "out-origin-ref"):
         return runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["operate"](request, store, load)
     po, core = load("prismabuild.produced_output"), load("prismabuild.core")
-    value = template(po, variant)
+    value = template(oc, variant)
     if family == "out-template":
-        reader = po.validate_template
+        reader = oc.validate_template
     elif family == "out-instance":
-        value = {"schema": po.INSTANCE_SCHEMA_V1, "version": 1, "template_id": "compat",
-                 "template_sha256": po.template_sha256(value), "owner_action_key": C,
+        value = {"schema": oc.INSTANCE_SCHEMA_V1, "version": 1, "template_id": "compat",
+                 "template_sha256": oc.template_sha256(value), "owner_action_key": C,
                  "owner_attempt": {"nonce": G, "scope_id": "compat-scope"},
                  "attempt_source": "broker-launch", "output_prefix": "/compat/outputs", "bound_unix": 100.0}
-        reader = po.validate_instance
+        reader = oc.validate_instance
     elif family == "out-declaration":
         reader = core.validate_produced_output_declaration
     else:
@@ -51,7 +53,7 @@ def operate(request, store, load):
     if family == "out-template":
         path = po.declare_template(store / "queue", value)
     elif family == "out-instance":
-        path = po.declare_instance(store / "queue", value)
+        path = bl.declare_instance(store / "queue", value)
     else:
         path = po.declare_template(store / "queue", value)
         cas = core.PrismaBuildCAS(store / "cas")

@@ -1,5 +1,7 @@
 """Real prepaid-output writers and broker protocol over a private cgroup double."""
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from dataclasses import dataclass
 import hashlib
@@ -193,8 +195,8 @@ class Outputs:
         self.queue, self.root, self.broker = queue, root, broker
 
     def template(self, tier):
-        return po.validate_template({
-            "schema": po.TEMPLATE_SCHEMA_V1, "version": 1,
+        return oc.validate_template({
+            "schema": oc.TEMPLATE_SCHEMA_V1, "version": 1,
             "template_id": "prepaid-v1", "output_prefix": str(self.root / "outputs"),
             "slots": {"s0": {"class": "payload"}},
             "durable_maxima": {"payload_max_bytes": 1 << 20,
@@ -239,7 +241,7 @@ class Outputs:
         owner, cas_root, checkout, worker = self.producer_request(template, seed)
         q.publish(action_key=owner, cas_root=str(cas_root), checkout_root=str(checkout),
                   worker_script=str(worker),
-                  resources={"cpu": 1, "mem_gb": 1, **po.owner_demand_terms(template)},
+                  resources={"cpu": 1, "mem_gb": 1, **oc.owner_demand_terms(template)},
                   produced_output_template=template)
         claimed = q.claim(owner="w-owner")
         assert claimed is not None and claimed["action_key"] == owner
@@ -251,8 +253,8 @@ class Outputs:
         po.declare_template(q.root, template)
         inst = po.bind_instance(q, template, owner_action_key=owner,
                                 claim_snapshot=claimed, env=env)
-        po.declare_instance(q.root, inst)
-        assert po.admit_instance(q, inst, template)["ok"] is True
+        bl.declare_instance(q.root, inst)
+        assert bl.BatchLedger.admit(q, inst, template)["ok"] is True
         return inst
 
     def fund_ready(self, *, tier, owner_seed, mover_seed):
@@ -268,14 +270,14 @@ class Outputs:
         payload = b"x" * 1024
         path = origin / "a.bin"
         path.write_bytes(payload)
-        descs = [po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
+        descs = [oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
             "path": str(path), "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest(),
-            "producer_generation": po.mint_generation(), "owner_action_key": owner,
+            "producer_generation": oc.mint_output_generation(), "owner_action_key": owner,
             "owner_attempt": dict(inst["owner_attempt"]),
         }, template, inst)]
-        prewrite = po.require_prewrite(
+        prewrite = bl.BatchLedger.reserve(
             q, inst, template, batch_id="b1", tier=tier,
             class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
             paths=[str(path)])
@@ -288,7 +290,7 @@ class Outputs:
         q.publish(action_key=mover, cas_root=str(self.root / "cas"), worker_script="/w.py",
                   checkout_root="/co", resources={"cpu": 1, "mem_gb": 1, f"{kind}@{tier}": 1},
                   residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier,
-                             "manifest_sha256": po.output_manifest_sha256(descs),
+                             "manifest_sha256": oc.output_manifest_sha256(descs),
                              "manifest_bytes": len(payload), "range_start_bytes": 0,
                              "range_end_bytes": len(payload)}, produced_output_batch=ref)
         row = pool.read_queue_record(q.records.item_path(pool.record_store.READY, mover))

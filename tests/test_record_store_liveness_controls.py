@@ -1,4 +1,5 @@
 """Real ownership controls for C05 L; run only through published PrismaBuild."""
+from prismabuild import output_contract as oc
 import errno
 import json
 import os

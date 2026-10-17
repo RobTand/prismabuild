@@ -8,13 +8,14 @@ entries with ``path``, ``bytes`` and ``sha256``; the lifetime; the
 commitments entry; and the state -- ``committed``, ``retiring`` or
 ``reclaimed``.  An unreadable record raises and is never read as empty.
 
-Fixture concessions: owners, batches and the reclaim are the real
-``PoolQueue`` and ``produced_output`` calls.  ``retiring`` is filed onto the
-commitments entry the way ``origin_retirement_tick`` files its decision
-before it deletes anything, because a real tick that could not finish its
-deletes leaves exactly that entry.
+Fixture concessions: owners, commits, failures and reclamation use the real
+queue and batch owners. The retiring state comes from a real orphan-retirement
+tick interrupted immediately before its first unlink, after the owner has filed
+its delete intent. No batch flags are forged for the reader controls.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 from pathlib import Path
@@ -47,7 +48,7 @@ def test_a_committed_batch_reads_back_whole(tmp_path: Path) -> None:
     record = po.batch_record(queue, instance, template, batch_id="b1")
 
     assert record["state"] == po.BATCH_STATE_COMMITTED == "committed"
-    assert record["lifetime"] == po.ORIGIN_LIFETIME_CONSUMED
+    assert record["lifetime"] == oc.ORIGIN_LIFETIME_CONSUMED
     assert record["entries"] == [{
         "path": str(path), "bytes": len(PAYLOAD),
         "sha256": hashlib.sha256(PAYLOAD).hexdigest(),
@@ -58,24 +59,32 @@ def test_a_committed_batch_reads_back_whole(tmp_path: Path) -> None:
     assert sum(record["commitment"]["class_bytes"].values()) == len(PAYLOAD)
     assert str(path) in record["record"]["origin_identity"]
     assert po.batch_records(queue, instance, template) == [record]
+    assert bl.BatchLedger.record(
+        queue, instance, template, batch_id="b1") == record
+    assert bl.BatchLedger.records(queue, instance, template) == [record]
 
 
 def test_a_retained_batch_reports_its_lifetime(tmp_path: Path) -> None:
     queue, template, instance, _path, _committed_ = _committed(
-        tmp_path, lifetime=po.ORIGIN_LIFETIME_RETAIN)
+        tmp_path, lifetime=oc.ORIGIN_LIFETIME_RETAIN)
 
     record = po.batch_record(queue, instance, template, batch_id="b1")
 
-    assert record["lifetime"] == po.ORIGIN_LIFETIME_RETAIN
+    assert record["lifetime"] == oc.ORIGIN_LIFETIME_RETAIN
 
 
-def test_a_retiring_batch_says_so(tmp_path: Path) -> None:
+def test_a_retiring_batch_says_so(tmp_path: Path, monkeypatch) -> None:
     queue, template, instance, _path, _committed_ = _committed(tmp_path)
-    commitments_path = po._commitments_path(queue.root, instance)
-    commitments = po._read_commitments(commitments_path)
-    commitments["batches"]["b1"]["retiring"] = {"reason": "orphan",
-                                               "consumers": []}
-    po._write_commitments(commitments_path, commitments)
+    class PausedRetirement(BaseException):
+        pass
+
+    def pause_before_unlink(*args, **kwargs):
+        raise PausedRetirement()
+
+    queue.finish(instance["owner_action_key"], status="failed")
+    monkeypatch.setattr(po, "_unlink_if_committed", pause_before_unlink)
+    with pytest.raises(PausedRetirement):
+        po.origin_retirement_tick(queue)
 
     record = po.batch_record(queue, instance, template, batch_id="b1")
 
@@ -88,7 +97,7 @@ def test_a_reclaimed_batch_still_reads_its_record(tmp_path: Path) -> None:
     queue, template, instance, path, _committed_ = _committed(tmp_path)
     queue.finish(instance["owner_action_key"], status="executed")
     path.unlink()
-    assert po.reclaim_origin(queue, instance, template,
+    assert bl.BatchLedger.reclaim(queue, instance, template,
                              batch_id="b1")["reclaimed"] is True
 
     record = po.batch_record(queue, instance, template, batch_id="b1")
@@ -102,8 +111,8 @@ def test_a_reclaimed_batch_still_reads_its_record(tmp_path: Path) -> None:
 
 def test_an_unreadable_record_raises_and_is_never_empty(tmp_path: Path) -> None:
     queue, template, instance, _path, _committed_ = _committed(tmp_path)
-    batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                  / po.instance_namespace(instance) / "b1.json")
+    batch_file = (queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                  / oc.instance_namespace(instance) / "b1.json")
     # The record is published immutable (0444, `_publish_immutable`); only
     # root writes through that, so a pbtest shard's user makes it writable
     # first.
@@ -122,7 +131,7 @@ def test_an_unreadable_record_raises_and_is_never_empty(tmp_path: Path) -> None:
 
 def test_unreadable_commitments_raise_and_are_never_empty(tmp_path: Path) -> None:
     queue, template, instance, _path, _committed_ = _committed(tmp_path)
-    po._commitments_path(queue.root, instance).write_text("garbage")
+    bl.BatchLedger.for_instance(queue.root, instance).path.write_text("garbage")
 
     with pytest.raises(po.ProducedOutputError, match="unreadable"):
         po.batch_records(queue, instance, template)
@@ -145,3 +154,16 @@ def test_the_reader_is_public() -> None:
     for name in ("batch_record", "batch_records", "BATCH_STATE_COMMITTED",
                  "BATCH_STATE_RETIRING", "BATCH_STATE_RECLAIMED"):
         assert name in po.__all__, name
+
+
+@pytest.mark.parametrize(("name", "owner"), [
+    ("batch_record", bl.BatchLedger.record),
+    ("batch_records", bl.BatchLedger.records),
+    ("BATCH_STATE_COMMITTED", oc.BATCH_STATE_COMMITTED),
+    ("BATCH_STATE_RETIRING", oc.BATCH_STATE_RETIRING),
+    ("BATCH_STATE_RECLAIMED", oc.BATCH_STATE_RECLAIMED),
+    ("ProducedOutputError", oc.ProducedOutputError),
+], ids=["batch_record", "batch_records", "committed", "retiring", "reclaimed", "error"])
+def test_the_public_readers_bind_the_real_owners(name, owner):
+    assert name in po.__all__, name
+    assert getattr(po, name) is owner

@@ -28,6 +28,8 @@ def action(core, store, load, variant):
 
 
 def manifest(core, store, load, variant):
+    bl = load("prismabuild.batch_ledger")
+    oc = load("prismabuild.output_contract")
     if variant == "canary-builder":
         canary = load("pbcanary_legs.leg3")
         return canary.manifest_for_run([str(store / name) for name in canary.LEG3_CHUNK_NAMES], str(store))
@@ -46,8 +48,8 @@ def manifest(core, store, load, variant):
     batch = json.loads(path.read_bytes())
     if variant == "stage-builder":
         return po.build_stage_manifest(batch, str(store / "outputs"))
-    po._portable_identity_of = lambda info: {"ino": 2, "size": info.st_size, "mtime_ns": 3, "ctime_ns": 4}
-    refs = [po.origin_batch_ref(instance, batch_id="batch", manifest_digest=po.output_manifest_sha256([descriptor]))]
+    bl.portable_origin_identity = lambda info: {"ino": 2, "size": info.st_size, "mtime_ns": 3, "ctime_ns": 4}
+    refs = [oc.origin_batch_ref(instance, batch_id="batch", manifest_digest=oc.output_manifest_sha256([descriptor]))]
     if variant == "origin-builder":
         return po.origin_batch_manifest(queue.root, refs)
     if variant == "merged-builder":
@@ -66,6 +68,8 @@ def manifest(core, store, load, variant):
 
 
 def output_funding(request, store, load):
+    bl = load("prismabuild.batch_ledger")
+    oc = load("prismabuild.output_contract")
     variant = request["case"].split("/", 1)[1]
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
@@ -80,13 +84,13 @@ def output_funding(request, store, load):
         return value
     uuid.uuid4 = lambda: uuid.UUID(nonce)
     po, pool, core, queue, template, instance = helper("compat_batch_adapters.py")["context"](store, load, "staged")
-    assert queue.tier_ledger(tier).acquire(owner, {"stage_gib": 1})
+    assert queue.tier(tier).take(owner, {"stage_gib": 1})
     origin = Path(template["output_prefix"]) / "payload.bin"
-    assert po.require_prewrite(queue, instance, template, batch_id="batch", tier=tier,
+    assert bl.BatchLedger.reserve(queue, instance, template, batch_id="batch", tier=tier,
         class_bytes={"payload": 8, "checkpoint": 0, "temp": 0}, paths=[str(origin)])["ok"]
     origin.parent.mkdir(parents=True)
     origin.write_bytes(b"contents")
-    descriptor = po.validate_descriptor({"schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "payload", "artifact_class": "payload",
+    descriptor = oc.validate_descriptor({"schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "payload", "artifact_class": "payload",
         "path": str(origin), "bytes": 8, "sha256": hashlib.sha256(b"contents").hexdigest(),
         "producer_generation": nonce, "owner_action_key": owner, "owner_attempt": dict(instance["owner_attempt"])}, template, instance)
     args = dict(tier_id=tier, owner_key=owner, mover_key=mover, instance=instance,
@@ -100,7 +104,7 @@ def output_funding(request, store, load):
         assert staged["ok"], staged
         queue.publish(action_key=mover, cas_root=store / "cas", checkout_root="/compat/checkout",
             worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, "stage_gib@" + tier: 1},
-            residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier, "manifest_sha256": po.output_manifest_sha256([descriptor]),
+            residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier, "manifest_sha256": oc.output_manifest_sha256([descriptor]),
                        "manifest_bytes": 8, "range_start_bytes": 0, "range_end_bytes": 8}, produced_output_batch=ref)
         # A legacy publisher could leave a genuine absent intent. Keep the
         # current publication guard, then construct that private recovery state.

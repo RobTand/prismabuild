@@ -1,5 +1,6 @@
 """Request preparation, immutable sealing and fleet publication."""
 from __future__ import annotations
+from prismabuild import output_contract as oc
 import bisect
 import contextlib
 import getpass
@@ -2016,7 +2017,7 @@ def require_declared_origin_batches(
                 "produced_output.place_origin_batches")
         try:
             produced_mod.verify_placed_origin_batches(queue_root, manifest)
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             raise SubmissionRefused(
                 f"pbrun: declared produced-output batch: {exc}") from None
         return
@@ -2026,7 +2027,7 @@ def require_declared_origin_batches(
             "which only a data_manifest.v2 has")
     try:
         derived = produced_mod.origin_batch_manifest(queue_root, declared)
-    except produced_mod.ProducedOutputError as exc:
+    except oc.ProducedOutputError as exc:
         raise SubmissionRefused(f"pbrun: declared produced-output batch: {exc}") from None
     for field in ("mount_prefix", "entries"):
         if manifest.get(field) != derived[field]:
@@ -2058,7 +2059,7 @@ def declare_origin_consumers(queue, refs: Sequence[Mapping[str, object]], *,
         try:
             produced_mod.declare_origin_consumer(
                 queue, ref, consumer_action_key=consumer_action_key)
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             raise SubmissionRefused(
                 f"pbrun: cannot declare {consumer_action_key[:12]} as a consumer "
                 f"of a produced-output batch: {exc}") from None
@@ -4257,16 +4258,16 @@ store: FleetStore) -> dict[str, object]:
             raise SubmissionRefused(
                 f"pbrun: --produced-output-template is not JSON: {exc}") from None
         try:
-            produced_validated = produced_mod.validate_template(candidate)
-        except produced_mod.ProducedOutputError as exc:
+            produced_validated = oc.validate_template(candidate)
+        except oc.ProducedOutputError as exc:
             raise SubmissionRefused(
                 f"pbrun: --produced-output-template invalid: {exc}") from None
         # Derive the qualified tier demand from the bounded working window
         # here (never the durable corpus), so the sealed demand and the
         # sealed declaration cannot drift apart between prepare and freeze.
         try:
-            window_terms = produced_mod.owner_demand_terms(produced_validated)
-        except produced_mod.ProducedOutputError as exc:
+            window_terms = oc.owner_demand_terms(produced_validated)
+        except oc.ProducedOutputError as exc:
             raise SubmissionRefused(
                 f"pbrun: --produced-output-template demand: {exc}") from None
         for qualified, need in window_terms.items():
@@ -4281,7 +4282,7 @@ store: FleetStore) -> dict[str, object]:
         try:
             produced_declaration = produced_mod.build_declaration(
                 produced_validated, template_input)
-        except produced_mod.ProducedOutputError as exc:
+        except oc.ProducedOutputError as exc:
             raise SubmissionRefused(
                 f"pbrun: --produced-output-template declaration: {exc}") from None
         inputs.append(template_input)
@@ -5003,9 +5004,9 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             raise SubmissionRefused(
                 f"pbrun: --produced-output-template is not JSON: {exc}") from None
         try:
-            pre_validated = produced_mod.validate_template(pre_body)
-            pre_terms = produced_mod.owner_demand_terms(pre_validated)
-        except produced_mod.ProducedOutputError as exc:
+            pre_validated = oc.validate_template(pre_body)
+            pre_terms = oc.owner_demand_terms(pre_validated)
+        except oc.ProducedOutputError as exc:
             raise SubmissionRefused(
                 f"pbrun: --produced-output-template invalid: {exc}") from None
         # The explicit user reservation (CPU/memory/GPU) is preserved; the
@@ -5801,7 +5802,7 @@ def _release_deferred(q, pending_id: str, record: Mapping[str, object], *,
                     template_id=str(producer["template_id"])))
             try:
                 batches = produced_mod.origin_batch_manifest(q.root, refs)
-            except produced_mod.ProducedOutputError as exc:
+            except oc.ProducedOutputError as exc:
                 raise action_edges.ActionEdgeError(str(exc)) from None
             manifest = action_edges.merged_manifest(static, batches)
         runtime = sealing_runtime(template, store=store)
@@ -5858,7 +5859,7 @@ def _release_deferred(q, pending_id: str, record: Mapping[str, object], *,
             sealing_runtime(template, store=store)
             try:
                 produced_mod.load_origin_batches(q.root, all_refs)
-            except produced_mod.ProducedOutputError as exc:
+            except oc.ProducedOutputError as exc:
                 raise action_edges.ActionEdgeError(str(exc)) from None
         options = SubmissionRequest(**dict(record["publication"]))
         sealed = {**template,
@@ -6030,7 +6031,7 @@ def release_declared_consumer(batch_ref: str, consumer_key: str, *,
         result = produced_mod.release_origin_consumer(
             q, ref, consumer_action_key=consumer_key, by=by, reason=reason,
             live_runtime=live_runtime, cas_root=store.cas_root)
-    except (produced_mod.ProducedOutputError, OSError, ValueError) as exc:
+    except (oc.ProducedOutputError, OSError, ValueError) as exc:
         raise SubmissionRefused(f"pbrun: --release-origin-consumer: {exc}") from None
     emit_display(display, json.dumps({**result, "consumer_action_key": consumer_key,
                       "ref": ref}, sort_keys=True), flush=True)
@@ -6341,8 +6342,6 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
                              generation=generation, report=report)
 
 
-
-
 def transport_default(*, store: FleetStore) -> str:
     configured = os.environ.get(DEFAULT_TRANSPORT_ENV)
     if configured:
@@ -6479,7 +6478,6 @@ def submit_request(request: SubmissionRequest, *, store: FleetStore,
     return report
 
 
-
 def submit_action(action: Mapping[str, object], *, template: Mapping[str, object],
                   request: SubmissionRequest, store: FleetStore, staged_plan=None,
                   placement_announced: bool = False, display: DisplaySink = discard_display,
@@ -6550,7 +6548,6 @@ def validate_request(request: SubmissionRequest) -> None:
         raise SubmissionRefused("pbrun: --timeout-s must be a positive finite number")
 
 
-
 def producer_publication_row(action, *, args: SubmissionRequest,
                              producer: ProducerPublication, store: FleetStore):
     params = action.get("params") or {}
@@ -6562,7 +6559,6 @@ def producer_publication_row(action, *, args: SubmissionRequest,
         tags=list(producer.tags), needs_gpu=producer.needs_gpu, priority=args.priority,
         resources=dict(producer.resources), max_attempts=args.max_attempts,
         retry_safe=producer.retry_safe, container_images=images or None, **dependencies)
-
 
 
 def release_deferred(q, pending_id, record, *, producers=(), store: FleetStore,

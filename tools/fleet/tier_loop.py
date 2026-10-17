@@ -50,6 +50,8 @@ sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 from prismabuild import role_session as runtime_gate  # noqa: E402
 
 from prismabuild import generation_receipt, kept_reads
@@ -7815,7 +7817,7 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
 
     Returns ``(state, owner)``: ``dead``, ``succeeded``, ``live`` or
     ``unknown`` over the instance the funding record names, through
-    ``_producer_attempt_state``. Any unreadable or disagreeing step
+    ``bl.producer_attempt_state``. Any unreadable or disagreeing step
     answers ``unknown`` and retains; a live or unreadable verdict
     changes nothing.
     """
@@ -7834,27 +7836,26 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
         return ("unknown", owner)
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
-                 / f"{template_id}.{nonce}")
-        instance = _po.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
-        template = _po.validate_template(json.loads(
-            (residency / _po.OUTPUT_TEMPLATES_SUBDIR
+        scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
+        instance = oc.validate_instance(
+            json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
+        template = oc.validate_template(json.loads(
+            (residency / oc.OUTPUT_TEMPLATES_SUBDIR
              / f"{template_id}.json").read_text()))
     except (OSError, ValueError):
         return ("unknown", owner)
     attempt = instance.get("owner_attempt")
     if (not isinstance(attempt, Mapping)
-            or _po.instance_dir(queue.root, instance) != scope
+            or bl.scope_dir(queue.root, instance) != scope
             or str(attempt.get("nonce")) != nonce
             or str(attempt.get("scope_id")) != owner_scope
-            or _po.template_sha256(template)
+            or oc.template_sha256(template)
             != instance.get("template_sha256")
             or str(record.get("template_sha256"))
             != instance.get("template_sha256")):
         return ("unknown", owner)
     try:
-        return (str(_po._producer_attempt_state(queue, instance)), owner)
+        return (str(bl.producer_attempt_state(queue, instance)), owner)
     except (OSError, ValueError, pool.PoolContractError):
         return ("unknown", owner)
 
@@ -7886,33 +7887,30 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
         return (False, "funding binding unreadable")
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
-                 / f"{template_id}.{nonce}")
-        instance = _po.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
+        scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
+        instance = oc.validate_instance(
+            json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
     except (OSError, ValueError):
         return (False, "producer instance unreadable")
     attempt = instance.get("owner_attempt")
     if (not isinstance(attempt, Mapping)
-            or _po.instance_dir(queue.root, instance) != scope
+            or bl.scope_dir(queue.root, instance) != scope
             or str(attempt.get("nonce")) != nonce
             or str(attempt.get("scope_id")) != owner_scope):
         return (False, "funding, instance and attempt disagree")
     try:
-        prewrite = _po._read_prewrite(
-            _po._prewrites_dir(queue.root, instance)
-            / f"{batch_id}.prewrite.json")
-    except _po.ProducedOutputError as exc:
+        prewrite = bl.BatchLedger.for_instance(queue.root, instance).prewrite(batch_id)
+    except oc.ProducedOutputError as exc:
         return (False, f"prewrite unreadable: {exc}")
     if prewrite is None:
         return (False, "prewrite record absent")
-    if str(prewrite.get("tier")) != tier_id:
+    if str(prewrite.tier) != tier_id:
         return (False, "prewrite names another tier")
-    if (str(prewrite.get("owner_action_key")) != owner
-            or dict(prewrite.get("owner_attempt", {}))
+    if (str(prewrite.owner) != owner
+            or prewrite.attempt_binding
             != dict(instance.get("owner_attempt", {}))):
         return (False, "prewrite names another attempt")
-    for planned in (prewrite.get("paths", []) or []):
+    for planned in (prewrite.paths or []):
         try:
             os.lstat(str(planned))
         except FileNotFoundError:
@@ -7934,7 +7932,7 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
     before this lock (and the fresh census refuses) or after it
     (and the new claim takes tokens this already returned). Acts
     only when all hold under that lock: the producer attempt ended
-    in failure (``dead`` by ``_producer_attempt_state``; ``live``,
+    in failure (``dead`` by ``bl.producer_attempt_state``; ``live``,
     ``succeeded`` and ``unknown`` refuse), the mover is neither
     ready nor claimed, the record is ``transferring`` or ``released``,
     and every prewrite path of the bound batch is proven absent.
