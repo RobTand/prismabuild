@@ -84,7 +84,7 @@ from prismabuild import pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 import bench_tier_cycle  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 #: The calls counted, by the name each is reported under.
 _COUNTED = {
@@ -428,7 +428,7 @@ def run_cycles(args) -> int:
 
     po.origin_retirement_tick = counter.step("origin_retirement_tick",
                                              recorded_tick)
-    stage_release.sweep = counter.step("stage_release.sweep",
+    stage_release.sweep = counter.step("prismabuild.stage_release.sweep",
                                        stage_release.sweep)
     receipts = tier_loop.ReceiptCache()
     liveness = (tier_loop.Liveness(interval_s=args.interval_s)
