@@ -257,32 +257,6 @@ def movement_action(template, store, set_id, tier, *, policy_path, operation, so
         demand={"cpu": 1, "mem_gb": 1}, tags=[host], log_name=f"resident-{operation}-{set_id}-{host}.log")
 
 
-def publish_actions(template, store, set_id, tiers, *, policy_path):
-    """Publish copies now and retain host-pinned egress rows for lease expiry."""
-    record = store.read(set_id)
-    if not lease_active(store, set_id):
-        raise ValueError("resident lease expired")
-    queue = pool.PoolQueue(store.queue_root)
-    cas = template["cas"]
-    by_host = {tier["host"]: tier for tier in tiers if tier.get("tier_id", "").startswith("local:")}
-    rows = {}
-    for host in record["hosts"]:
-        tier = by_host[host]
-        pair = {}
-        for operation in ("copy", "evict"):
-            action = movement_action(template, store, set_id, tier, policy_path=policy_path, operation=operation)
-            cas.publish_action_request(action)
-            pair[operation] = movement_row(action, cas, tier)
-        store.update_movements(set_id, host, pair)
-        if store.read_copy(set_id, host)["state"] != "resident":
-            try:
-                queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
-            except pool.ActionAlreadyLiveError:
-                pass  # Attach to the existing generation; never replace a live copy.
-        rows[host] = pair
-    return rows
-
-
 def _resident_live_rows(store, set_id):
     for state in (pool.READY, pool.CLAIMED):
         directory = store.queue_root / state

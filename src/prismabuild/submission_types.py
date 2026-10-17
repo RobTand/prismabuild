@@ -139,6 +139,12 @@ class ProducerPublication:
     sbatch: str = "sbatch"
 
 
+@dataclass(frozen=True)
+class MovementPublication:
+    """A local tier owns the worker and interpreter of its movement row."""
+    tier: Mapping[str, object]
+
+
 ROW_NAMES = {"command": "argv", "tag": "tags", "container_image": "container_images"}
 _ROW_CONTROL_FIELDS = frozenset({"withdraw", "release_origin_consumer", "reason", "detach",
     "transport", "progress_policy", "gang_group", "gang_size", "gang_index"})

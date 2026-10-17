@@ -32,7 +32,7 @@ from .digest_primitives import sorted_json
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
 SHARED_ROOT = Path("/mnt/shared")
 from .submission_types import (FleetStore, SubmissionRequest, SubmissionRefused,
-    OfferDiscoveryTimedOut, DisplaySink, discard_display, notice as emit_display, ProducerPublication, ROW_NAMES)
+    OfferDiscoveryTimedOut, DisplaySink, discard_display, notice as emit_display, ProducerPublication, MovementPublication, ROW_NAMES)
 
 TRANSPORTS = ("pool", "slurm")
 
@@ -7029,7 +7029,7 @@ def publish_consumer_row(q, action: Mapping[str, object],
                          args: SubmissionRequest, cas,
                          attach: bool = False,
                          staged_plan=None, producer: ProducerPublication | None = None,
-                         before_publish=None, store: FleetStore, display: DisplaySink = discard_display) -> tuple[object, float | None]:
+                         movement: MovementPublication | None = None, before_publish=None, store: FleetStore, display: DisplaySink = discard_display) -> tuple[object, float | None]:
     """Publish one sealed action's row, with its window when it stages.
 
     Returns ``(queued_path, generation)``; ``queued_path`` is ``None`` when
@@ -7133,10 +7133,15 @@ def publish_consumer_row(q, action: Mapping[str, object],
                   f"adopt or publish",
                   channel="stderr", flush=True)
     else:
-        publication = (producer_publication_row(action, args=args, producer=producer, store=store)
-            if producer is not None else publication_row(
-                action, args=args, queue=q,
-                tested_repository=template.get("tested_repository"), store=store))
+        if movement is not None:
+            from . import local_resident
+            publication = {**local_resident.movement_row(action, cas, movement.tier),
+                           "recompute": True}
+        else:
+            publication = (producer_publication_row(action, args=args, producer=producer, store=store)
+                if producer is not None else publication_row(
+                    action, args=args, queue=q,
+                    tested_repository=template.get("tested_repository"), store=store))
         if template.get("produced_output_template") is not None:
             publication["produced_output_template"] = template[
                 "produced_output_template"]
@@ -7433,7 +7438,7 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
             q, action, template, key=key, args=args, cas=cas,
             before_publish=supersede, store=store, display=display,
             staged_plan=prepared.get("staged_plan"), producer=producer,
-            attach=prepared.get("attach", False))
+            attach=prepared.get("attach", False), movement=prepared.get("movement"))
     identity = action_client.PoolClientIdentity(key, generation, q.root, Path(cas.root),
         queued_path, (action_client.ClientArrival.SUBMITTED if queued_path is not None
                       else action_client.ClientArrival.ATTACHED))
@@ -7575,7 +7580,8 @@ def _request_value_matches(value, expected) -> bool:
 
 def submit(request: SubmissionRequest, *, store: FleetStore,
            display: DisplaySink = discard_display, report=None,
-           publication_canary_intent=None, authorize_canary=None):
+           publication_canary_intent=None, authorize_canary=None
+           ) -> action_client.ClientReport | SubmissionRefused:
     """Own one complete submission and its C06 report/reader lifetime."""
     report = report if report is not None else action_client.ClientReport()
     with action_wait.client_readers():
@@ -7974,3 +7980,70 @@ def write_window(request: SubmissionRequest, *, store: FleetStore):
     except filesystem_floor.FloorRefused as exc:
         raise SubmissionRefused("pbrun: a used filesystem is below its floor; nothing "
                                 f"submitted: {exc}") from None
+
+
+def freeze_resident(set_id: str, checkout: str | Path, *, store: FleetStore):
+    cwd = Path(checkout).resolve()
+    return freeze(command=["pbresident", "publish", set_id], cwd=cwd,
+        logical_cwd=str(cwd), demand={"cpu": 1, "mem_gb": 1},
+        placement={"required_tags": []}, variables={"PATH": "/usr/bin:/bin"},
+        determinism="stochastic", retry_policy={"max_attempts": 3, "retry_safe": True},
+        host_class=None, measurement=False, transport="pool", pool_measurement_class=False,
+        data_manifest_path=None, checkout_snapshot_max_bytes=CHECKOUT_SNAPSHOT_MAX_BYTES,
+        snapshot_refs=(), exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
+        progress=None, profile=None, store=store)
+
+
+def _resident_publication(action, template, tier, *, store: FleetStore):
+    request = SubmissionRequest(command=("true",), cwd=str(store.runtime_root),
+        detach=True, retry_safe=True, max_attempts=3)
+    sealed = {**template, "params": action["params"]}
+    report = action_client.ClientReport()
+    result = publish(action, {"template": sealed, "cwd": Path(request.cwd),
+        "portable_checkout": True, "movement": MovementPublication(tier)},
+        args=request, store=store, report=report, placement_announced=True)
+    if callable(result):
+        raise RuntimeError("detached resident publication returned a waiter")
+
+
+def dispatch_resident(template, resident, set_id, tiers, *, policy_path,
+                      store: FleetStore):
+    """Keep pair requests and immutable descriptors ahead of the copy row."""
+    from . import local_resident
+    record = resident.read(set_id)
+    if not local_resident.lease_active(resident, set_id):
+        raise ValueError("resident lease expired")
+    request = SubmissionRequest(cwd=str(store.runtime_root), detach=True)
+    store = replace(store, queue_root=resident.queue_root, cas_root=template["cas"].root)
+    by_host = {tier["host"]: tier for tier in tiers if tier.get("tier_id", "").startswith("local:")}
+    rows = {}
+    with action_wait.client_readers(), write_window(request, store=store):
+        for host in record["hosts"]:
+            tier = by_host[host]
+            pair, actions = {}, {}
+            for operation in ("copy", "evict"):
+                action = local_resident.movement_action(template, resident, set_id, tier,
+                    policy_path=policy_path, operation=operation)
+                template["cas"].publish_action_request(action)
+                actions[operation] = action
+                pair[operation] = local_resident.movement_row(action, template["cas"], tier)
+            resident.update_movements(set_id, host, pair)
+            if resident.read_copy(set_id, host)["state"] != "resident":
+                _resident_publication(actions["copy"], template, tier, store=store)
+            rows[host] = pair
+    return rows
+
+
+def adopt_resident(template, resident, set_id, tier, *, source, policy_path,
+                   store: FleetStore):
+    from . import local_resident
+    request = SubmissionRequest(cwd=str(store.runtime_root), detach=True)
+    store = replace(store, queue_root=resident.queue_root, cas_root=template["cas"].root)
+    with action_wait.client_readers(), write_window(request, store=store):
+        action = local_resident.movement_action(template, resident, set_id, tier,
+            policy_path=policy_path, operation="adopt", source=source)
+        template["cas"].publish_action_request(action)
+        row = local_resident.movement_row(action, template["cas"], tier)
+        resident.update_movements(set_id, tier["host"], {"adopt": row})
+        _resident_publication(action, template, tier, store=store)
+        return row
