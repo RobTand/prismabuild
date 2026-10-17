@@ -109,7 +109,7 @@ from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 from contextlib import ExitStack, contextmanager, nullcontext, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import contextvars
 import errno
 from enum import Enum
@@ -172,8 +172,6 @@ from .gpu_sample_facts import (ForeignProcesses, GpuSampleFacts, device_identity
 from . import holder_census
 from .holder_census import ACQUIRING_PREFIX
 from . import container_images as image_inventory
-from . import local_dependencies
-from . import dependency_digest
 from . import residency_map
 from . import storage_tiers
 from . import box_capacity
@@ -6424,8 +6422,7 @@ class PoolQueue:
         record = {
             "schema": POOL_OFFER_SCHEMA_V1,
             "host": host,
-            "tags": sorted({str(t) for t in tags}),
-            "has_gpu": bool(has_gpu),
+            **capability_eligibility.HostPresence.from_observed(tags, has_gpu=has_gpu).offer_fields(),
             "capacity": {str(k): int(v) for k, v in (capacity or {}).items()},
             # What the box can honestly take right now, and the readings
             # behind it.  Additive, optional fields on the same schema: no
@@ -6548,22 +6545,21 @@ class PoolQueue:
         required = item.get("tags") or []
         if not isinstance(required, list):
             raise PoolContractError("pool item tags must be a list")
-        wanted = {str(t) for t in required}
         try:
-            requirements = capability_eligibility.OfferRequirements.from_item(item)
+            requirements = capability_eligibility.CapabilityRequirements.from_item(item)
+            requirements.require_well_formed()
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
         demand = self.demand_of(item)
-        needs_gpu = bool(item.get("needs_gpu")) or demand.get("gpu", 0) > 0
         matches: list[Mapping[str, object]] = []
         for offer in live:
-            tags = {str(t) for t in (offer.get("tags") or [])}
-            if not wanted.issubset(tags):
+            presence = capability_eligibility.HostPresence.from_offer(offer)
+            if not self._placement_matches(
+                    item, tags=presence.tags,
+                    has_gpu=presence.gpu is capability_eligibility.Presence.PRESENT):
                 continue
-            if needs_gpu and not offer.get("has_gpu"):
-                continue
-            if not capability_eligibility.OfferCapabilities.from_offer(offer).matches(
-                    requirements, clock=_now):
+            if isinstance(capability_eligibility.OfferCapabilities.from_offer(offer).check(
+                    requirements, clock=_now), capability_eligibility.CapabilityRefusal):
                 continue
             capacity = offer.get("capacity") or {}
             # A kind the offer does not MENTION is unknown, not zero.  The
@@ -6598,11 +6594,12 @@ class PoolQueue:
         used_hosts = set()
         known = {alias for aliases in members.values() for alias in aliases}
         for offer in live:
-            if klass in (offer.get("tags") or []) and offer.get("host") not in known:
+            if (capability_eligibility.HostPresence.from_offer(offer).matches((klass,), needs_gpu=False)
+                    and offer.get("host") not in known):
                 return f"class offer {offer.get('host')} is not in the fleet inventory"
         for member, aliases in members.items():
             offers = [offer for offer in live if offer.get("host") in aliases
-                      and klass in (offer.get("tags") or [])]
+                      and capability_eligibility.HostPresence.from_offer(offer).matches((klass,), needs_gpu=False)]
             if len(offers) != 1:
                 return f"{member}: missing or ambiguous fresh {klass} offer"
             offer = offers[0]
@@ -6610,12 +6607,15 @@ class PoolQueue:
             if host in used_hosts:
                 return f"{member}: fresh {klass} offer {host} already supplies another member"
             used_hosts.add(host)
-            if requirements and local_dependencies.TAG not in (offer.get("tags") or []):
+            if requirements and not capability_eligibility.HostPresence.from_offer(offer).matches(
+                    (contracts.LOCAL_DEPENDENCY_TAG,), needs_gpu=False):
                 return f"{member}: dependency capability unknown"
-            missing = local_dependencies.missing(requirements, offer.get("local_dependencies"))
-            if missing:
-                path = missing[0]
-                answers = offer.get("local_dependencies")
+            capabilities = capability_eligibility.OfferCapabilities.from_offer(offer)
+            verdict = capabilities.check(capability_eligibility.CapabilityRequirements.from_item(
+                {"local_dependencies": requirements}), clock=_now)
+            if isinstance(verdict, capability_eligibility.CapabilityRefusal):
+                path = verdict.evidence["paths"][0]
+                answers = capabilities.dependencies.local_paths
                 answer = answers.get(path, "unknown") if isinstance(answers, Mapping) else "unknown"
                 return f"{member}: {path} ({answer})"
         return None
@@ -6636,14 +6636,15 @@ class PoolQueue:
         and refusing it would deadlock the tool on its own first use.
         """
 
-        eligible = self._matching_offers(
-            {name: value for name, value in item.items()
-             if name not in ("interpreter",)},
-            live=self.offers(max_age_s=max_age_s))
+        probe = {name: value for name, value in item.items() if name != "interpreter"}
+        tags = probe.get("tags")
+        if isinstance(tags, list):
+            probe["tags"] = [tag for tag in tags if str(tag) != contracts.INTERPRETER_TAG]
+        eligible = self._matching_offers(probe, live=self.offers(max_age_s=max_age_s))
         capable = [
             offer for offer in eligible
-            if contracts.INTERPRETER_TAG in {
-                str(t) for t in (offer.get("tags") or [])}]
+            if capability_eligibility.HostPresence.from_offer(offer).matches(
+                (contracts.INTERPRETER_TAG,), needs_gpu=False)]
         return capability_eligibility.interpreter_answer(
             interpreter, [capability_eligibility.InterpreterAnswers.from_offer(offer)
                           for offer in capable]).value
@@ -6667,14 +6668,15 @@ class PoolQueue:
         path yet, the first-submission case the claim gate guards (#1266).
         """
 
-        eligible = self._matching_offers(
-            {name: value for name, value in item.items()
-             if name != "requires_files"},
-            live=self.offers(max_age_s=max_age_s))
+        probe = {name: value for name, value in item.items() if name != "requires_files"}
+        tags = probe.get("tags")
+        if isinstance(tags, list):
+            probe["tags"] = [tag for tag in tags if str(tag) != contracts.DEPENDENCY_DIGEST_TAG]
+        eligible = self._matching_offers(probe, live=self.offers(max_age_s=max_age_s))
         capable = [
             offer for offer in eligible
-            if contracts.DEPENDENCY_DIGEST_TAG in {
-                str(t) for t in (offer.get("tags") or [])}]
+            if capability_eligibility.HostPresence.from_offer(offer).matches(
+                (contracts.DEPENDENCY_DIGEST_TAG,), needs_gpu=False)]
         if not capable:
             return "unknown_capability"
         requirements = item.get("requires_files") or []
@@ -6735,6 +6737,26 @@ class PoolQueue:
             for offer in self._matching_offers(item, live=live)
         })
         return self._resident_first_order(item, hosts)
+
+    def image_placement_census(
+        self, item: Mapping[str, object], *, max_age_s: float = OFFER_TIMEOUT_S,
+    ) -> dict[str, list[str]] | None:
+        """Otherwise eligible, image-capable and reporting hosts for a diagnostic."""
+        live = self.offers(max_age_s=max_age_s)
+        if not live:
+            return None
+        probe = {name: value for name, value in item.items() if name != "container_images"}
+        tags = probe.get("tags")
+        if isinstance(tags, list):
+            probe["tags"] = [tag for tag in tags if str(tag) != contracts.CONTAINER_IMAGE_TAG]
+        eligible = self._matching_offers(probe, live=live)
+        capable = [offer for offer in eligible
+                   if capability_eligibility.HostPresence.from_offer(offer).matches(
+                       (contracts.CONTAINER_IMAGE_TAG,), needs_gpu=False)]
+        reporting = self._matching_offers(item, live=capable)
+        return {name: sorted({str(offer.get("host") or "?") for offer in offers})
+                for name, offers in (("eligible", eligible), ("capable", capable),
+                                     ("reporting", reporting))}
 
     def resident_copy_hosts(self, set_id: object) -> set[str]:
         """Hosts whose copy of ``set_id`` reads ``resident`` (#1733).
@@ -6935,7 +6957,7 @@ class PoolQueue:
 
         seen: set[str] = set()
         for offer in self.offers(max_age_s=max_age_s):
-            seen.update(str(t) for t in (offer.get("tags") or []))
+            seen.update(capability_eligibility.HostPresence.from_offer(offer).tags)
         return sorted(seen)
 
     # -- producer -------------------------------------------------------
@@ -7085,41 +7107,17 @@ class PoolQueue:
         repository = normalize_tested_repository(tested_repository)
         if not isinstance(action_key, str) or len(action_key) != 64:
             raise PoolContractError("action_key must be a 64-character digest")
-        image_refs: list[str] = []
-        if container_images is not None:
-            # The queue item's copy of the action's sealed requirement.  It is
-            # validated here so a direct producer cannot publish a requirement
-            # the claim check would have to treat as malformed.  It is a
-            # projection of the sealed params -- the direct API trusts its
-            # producer to have derived it, and never re-reads the CAS request
-            # to prove that -- never a second authority.
-            try:
-                image_refs = list(image_inventory.normalize_refs(container_images))
-            except ValueError as exc:
-                raise PoolContractError(f"container_images: {exc}") from exc
         try:
-            declared_interpreter = capability_eligibility.normalize_interpreter(interpreter)
+            declarations = capability_eligibility.DeclaredCapabilities.parse(
+                interpreter=interpreter, images=container_images,
+                local_paths=local_dependencies, queries=dependency_queries, files=requires_files)
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
-        # The required map is class-default eligibility; queries alone are
-        # advisory questions from a conservative host-pinned first use.
-        from . import local_dependencies as dependency_contract
-        try:
-            dependencies = dependency_contract.normalize(local_dependencies or {})
-            queries = dependency_contract.normalize(dependency_queries or {})
-        except ValueError as exc:
-            raise PoolContractError(str(exc)) from exc
-        declared_requirements: list[dict] | None = None
-        if requires_files is not None:
-            # Validated here for the same reason the interpreter is: the row
-            # projection must already be the shape the claim gate reads, so a
-            # direct producer cannot publish a requirement the claim would
-            # have to treat as malformed (#1495).
-            try:
-                declared_requirements = (
-                    dependency_digest.validate_requirements(requires_files))
-            except ValueError as exc:
-                raise PoolContractError(f"requires_files: {exc}") from exc
+        image_refs = list(declarations.images)
+        declared_interpreter = declarations.interpreter
+        dependencies = dict(declarations.local_paths)
+        queries = dict(declarations.queries)
+        declared_requirements = declarations.files
         # Every declaration check is a precondition, ahead of the first side
         # effect below: a publication this method refuses must not have
         # retired a live withdrawal, created a directory or answered an
@@ -7149,27 +7147,10 @@ class PoolQueue:
                 raise PoolContractError("a gang member must declare a resource demand")
         elif _gang.TAG in normalized_tags:
             raise PoolContractError(f"{_gang.TAG} requires a gang declaration")
-        if (contracts.INTERPRETER_TAG in normalized_tags
-                and contracts.INTERPRETER_TAG not in declared_contracts):
-            raise PoolContractError(
-                f"{contracts.INTERPRETER_TAG} requires an interpreter; an item may "
-                "not require the declared-interpreter capability without "
-                "naming one")
-        if (dependency_contract.TAG in normalized_tags
-                and dependency_contract.TAG not in declared_contracts):
-            raise PoolContractError(f"{dependency_contract.TAG} requires local_dependencies")
-        if (contracts.DEPENDENCY_DIGEST_TAG in normalized_tags
-                and contracts.DEPENDENCY_DIGEST_TAG not in declared_contracts):
-            raise PoolContractError(
-                f"{contracts.DEPENDENCY_DIGEST_TAG} requires "
-                "requires_files; an item may not require the "
-                "dependency-digest capability without naming any")
-        if (contracts.CONTAINER_IMAGE_TAG in normalized_tags
-                and contracts.CONTAINER_IMAGE_TAG not in declared_contracts):
-            raise PoolContractError(
-                f"{contracts.CONTAINER_IMAGE_TAG} requires container_images; an item "
-                "may not require the declared-image capability without "
-                "declaring one")
+        try:
+            declarations.validate_tags(normalized_tags)
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
         normalized_tags = normalize_placement_tags([*normalized_tags, *declared_contracts])
         demand = {str(k): int(v) for k, v in dict(resources or {}).items()}
         if any(v < 0 for v in demand.values()):
@@ -7943,7 +7924,7 @@ class PoolQueue:
                     return None
             images = capability_eligibility.LiveImages(
                 observed_images, policy=container_class_policy, inventory=container_inventory)
-            if not images.room_eligible(item, clock=_now):
+            if isinstance(images.check(item, clock=_now), capability_eligibility.CapabilityRefusal):
                 return None
             if self.residency_verdict(item)["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES:
                 return None
@@ -8165,12 +8146,10 @@ class PoolQueue:
     def _placement_matches(
         self, item: Mapping[str, object], *, tags: frozenset[str], has_gpu: bool
     ) -> bool:
-        if item.get("needs_gpu") and not has_gpu:
-            return False
-        required = item.get("tags") or []
-        if not isinstance(required, list):
-            raise PoolContractError("pool item tags must be a list")
-        return all(str(t) in tags for t in required)
+        try:
+            return capability_eligibility.placement_matches(item, tags=tags, has_gpu=has_gpu)
+        except ValueError as exc:
+            raise PoolContractError(str(exc)) from exc
 
     #: What the ready order is made of, and how each part is read.  One
     #: definition, because two callers ask about it and a second spelling that
@@ -19777,8 +19756,11 @@ class PoolQueue:
             cores = len((offer.get("cpu_tiers") or {}).get("preferred", []))
             load = detail.get("load1")
             return load / cores if cores and number(load) else None
-        if not offer.get("has_gpu"):
+        gpu = capability_eligibility.HostPresence.from_offer(offer).gpu
+        if gpu is capability_eligibility.Presence.ABSENT:
             return 0.0            # no GPU to take power from; nothing to prefer away
+        if gpu is capability_eligibility.Presence.UNKNOWN:
+            return None
         stamp = detail.get("gpu_power_sampled_unix")
         # Placement is about drawn power, not the limiter flag: an idle
         # SW-capped device draws ~3% of its GPU power reference while the
@@ -20232,7 +20214,9 @@ class PoolQueue:
         host = socket.gethostname()
         for offer in self._matching_offers(item, live=placement.offers()):
             remote_host = str(offer.get("host") or "")
-            if not remote_host or remote_host == host or offer.get("has_gpu"):
+            if (not remote_host or remote_host == host
+                    or capability_eligibility.HostPresence.from_offer(offer).gpu
+                    is not capability_eligibility.Presence.ABSENT):
                 continue
             if self._opposite_resource_load(offer, gpu_job=False) is None:
                 continue          # its reading is stale: not known to be there
@@ -20311,7 +20295,7 @@ class PoolQueue:
         """
         if not has_gpu or total.get("gpu", 0) < 1:
             return None
-        local: Mapping[str, object] | None = None
+        local: capability_eligibility.OfferCapabilities | None = None
         for item in ready:
             try:
                 if not self._placement_matches(item, tags=tags, has_gpu=has_gpu):
@@ -20325,16 +20309,17 @@ class PoolQueue:
                     continue
                 if local is None:
                     host = socket.gethostname()
-                    local = {
-                        **next((offer for offer in offers()
-                                if offer.get("host") == host), {}),
-                        "tags": tags, "has_gpu": has_gpu, "capacity": total,
-                        "container_images": (list(observed_images)
-                                             if observed_images is not None else None),
-                    }
+                    local = capability_eligibility.OfferCapabilities.from_offer(
+                        next((offer for offer in offers() if offer.get("host") == host), {}))
+                    local = replace(local, images=capability_eligibility.ImageAnswers(
+                        capability_eligibility.ImageAnswers.from_observed(
+                            observed_images, None).references,
+                        local.images.class_report))
                 # Reuse the placement owner's interpreter, image and dependency
                 # capability checks; a GPU row this host cannot run is no veto.
-                if (self._matching_offers({**item, "resources": reservation}, live=[local])
+                if (isinstance(local.check(
+                            capability_eligibility.CapabilityRequirements.from_item(item),
+                            clock=_now), capability_eligibility.ImageAccepted)
                         and not self._ready_gpu_refused_here(
                             item, reads.verdicts(), host=socket.gethostname())):
                     return item
@@ -21103,16 +21088,9 @@ class PoolQueue:
             # verdict is correctness-only, and delaying it behind
             # load no drain clears is the boundary loss.
             canary_exempt = True
-        interpreter_refusal = interpreter_host.refusal(item)
-        if interpreter_refusal is not None:
-            return candidate_policy.CandidateDenial(
-                interpreter_refusal.reason, interpreter_refusal.evidence, scan)
-        dependency_refusal = dependency_host.refusal(item)
-        if dependency_refusal is not None:
-            return candidate_policy.CandidateDenial(
-                dependency_refusal.reason, dependency_refusal.evidence, scan)
         declared_images = item.get("container_images")
-        image_check = image_host.check(item, clock=_now)
+        image_check = capability_eligibility.LiveCapabilities(
+            interpreter_host, dependency_host, image_host).check(item, clock=_now)
         if isinstance(image_check, capability_eligibility.CapabilityRefusal):
             evidence = dict(image_check.evidence)
             if image_check.reason == "container_image_presence_unknown":

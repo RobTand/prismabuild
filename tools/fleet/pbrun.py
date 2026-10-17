@@ -89,7 +89,7 @@ from prismabuild import action_client, action_wait, endings  # noqa: E402
 from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
-    action_edges, adaptive_gpu, container_images, core as pb,
+    action_edges, adaptive_gpu, capability_eligibility, container_images, core as pb,
     decomposition as dc, dependency_digest, filesystem_floor, fleet_roster, materialize,
     movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
 )
@@ -1428,9 +1428,7 @@ def exclusive_gpu_demand(queue, tags) -> int:
     wanted = {str(x) for x in (tags or [])}
     best = 0
     for offer in queue.offers():
-        if not offer.get("has_gpu"):
-            continue
-        if not wanted.issubset({str(x) for x in (offer.get("tags") or [])}):
+        if not capability_eligibility.HostPresence.from_offer(offer).matches(wanted, needs_gpu=True):
             continue
         capacity = offer.get("capacity") or {}
         best = max(best, int(capacity.get("gpu", 0)))
@@ -2034,22 +2032,14 @@ def container_image_notice(queue, intent: Mapping[str, object]) -> str:
     images = list(intent.get("container_images") or [])
     if not images:
         return ""
-    request = {name: value for name, value in intent.items()
-               if name != "container_images"}
-    if queue.placeable(request, max_age_s=RECORDED_OFFER_MAX_AGE_S) is False:
+    fit = queue.image_placement_census(intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if not fit or not fit["capable"]:
         return ""  # capacity or tags, not the image, blocks this request
-    without_capacity = {**request, "resources": {}}
-    eligible = queue.placeable_hosts(
-        {**without_capacity, "tags": [tag for tag in request.get("tags") or []
-                                       if tag != contracts.CONTAINER_IMAGE_TAG]},
-        max_age_s=RECORDED_OFFER_MAX_AGE_S)
-    if eligible is None:                       # nobody has announced at all
+    census = queue.image_placement_census(
+        {**intent, "resources": {}}, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if census is None:
         return ""
-    capable = set(queue.placeable_hosts(
-        without_capacity, max_age_s=RECORDED_OFFER_MAX_AGE_S) or [])
-    reporting = queue.placeable_hosts(
-        {**without_capacity, "container_images": images},
-        max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+    eligible, capable, reporting = census["eligible"], set(census["capable"]), census["reporting"]
     line = ("pbrun: container image " + ", ".join(images)
             + " required; reported on record by: "
             + (", ".join(reporting) if reporting else "(nobody)"))
@@ -2101,14 +2091,9 @@ def producer_allowance_room_refusal(queue, action: Mapping[str, object]) -> str 
     if need <= 0:
         return None
     tags = ((action.get("params") or {}).get("placement") or {}).get("required_tags") or []
-    eligible = queue.placeable_hosts(
-        {"tags": list(tags), "resources": {}}, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
-    if not eligible:
-        return None
     best = 0
     for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
-        host = str(offer.get("host") or "?")
-        if host not in eligible:
+        if not capability_eligibility.HostPresence.from_offer(offer).matches(tags, needs_gpu=False):
             continue
         capacity = offer.get("capacity") or {}
         if isinstance(capacity, Mapping) and "mem_gb" in capacity:
@@ -2131,13 +2116,15 @@ def producer_allowance_room_refusal(queue, action: Mapping[str, object]) -> str 
 def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:
     """Name recorded capacity terms that prevent this request from fitting."""
 
-    request = {name: value for name, value in intent.items()
-               if name != "container_images"}
-    eligible = queue.placeable_hosts(
-        {**request, "resources": {}}, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+    request = {**intent, "resources": {}}
+    if intent.get("container_images"):
+        census = queue.image_placement_census(request, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+        eligible = census["capable"] if census is not None else []
+    else:
+        eligible = queue.placeable_hosts(request, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
     if not eligible:
         return ""
-    demand = pool.PoolQueue.demand_of(request)
+    demand = pool.PoolQueue.demand_of(intent)
     lines = []
     spool_short = False
     for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
@@ -6864,11 +6851,9 @@ def announce_placement(
         intent["local_dependencies"] = dict(params["local_dependencies"])
     if params.get("requires_files"):
         # Same authority for the digest requirements (#1495): the probe
-        # carries the sealed paths and the capability tag publish adds, so
+        # carries the sealed declarations and the capability tag publish adds, so
         # placeable answers for the row it is about to write.
-        intent["requires_files"] = [
-            {"path": str(entry["path"])}
-            for entry in params["requires_files"]]
+        intent["requires_files"] = [dict(entry) for entry in params["requires_files"]]
         intent["tags"] = pool.normalize_placement_tags(
             [*tags, contracts.DEPENDENCY_DIGEST_TAG])
     # Say how wide this action is before saying it was queued.  A pin is a
@@ -6998,6 +6983,8 @@ def announce_placement(
             probe_intent = {
                 name: value for name, value in probe_intent.items()
                 if name != "requires_files"}
+            probe_intent["tags"] = [tag for tag in probe_intent.get("tags") or []
+                                    if tag != contracts.DEPENDENCY_DIGEST_TAG]
     live_verdict = queue.placeable(probe_intent)
     capability_verdict = queue.placeable(
         probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
@@ -7008,17 +6995,11 @@ def announce_placement(
         # requirement, so every question failed on the interpreter and the
         # missing image or capability was never named.  The interpreter keeps
         # its own verdict, asked of ``intent`` below.
-        without_images = {name: value for name, value in probe_intent.items()
-                          if name != "container_images"}
-        image_blocked = bool(intent.get("container_images")) and queue.placeable(
-            without_images, max_age_s=RECORDED_OFFER_MAX_AGE_S) is True
-        without_capability = {**without_images, "tags": [
-            tag for tag in without_images.get("tags") or []
-            if tag != contracts.CONTAINER_IMAGE_TAG]}
-        capability_blocked = (
-            bool(intent.get("container_images")) and not image_blocked
-            and queue.placeable(without_capability,
-                                max_age_s=RECORDED_OFFER_MAX_AGE_S) is True)
+        images = (queue.image_placement_census(
+            probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+            if intent.get("container_images") else None)
+        image_blocked = bool(images and images["capable"])
+        capability_blocked = bool(images and images["eligible"] and not image_blocked)
         image_line = ""
         if image_blocked:
             image_line = (
@@ -7133,9 +7114,7 @@ def interpreter_submission_verdict(queue, intent: Mapping[str, object]):
 
     interpreter = str(intent.get("interpreter") or "")
     verdict = queue.interpreter_placement_verdict(
-        {name: value for name, value in intent.items()
-         if name != "interpreter"},
-        interpreter, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+        intent, interpreter, max_age_s=RECORDED_OFFER_MAX_AGE_S)
     return verdict, interpreter
 
 
