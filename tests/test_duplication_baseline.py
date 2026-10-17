@@ -35,11 +35,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+from maintenance.submission_owners import baseline_at_submission_owners
 import duplication_inventory as inventory  # noqa: E402
 
 
 def _baseline():
-    return json.loads(inventory.BASELINE.read_text(encoding="utf-8"))
+    return baseline_at_submission_owners(json.loads(inventory.BASELINE.read_text(encoding="utf-8")))
 
 
 @pytest.fixture(scope="module")

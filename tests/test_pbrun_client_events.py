@@ -206,7 +206,7 @@ def test_slurm_reports_its_selected_client_exit_separately_from_scheduler_facts(
     report = client.ClientReport()
     assert submit_core.slurm_outcome(action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=1, wait_s=0, retry_safe=False, max_attempts=1,
-        lane_root=tmp_path / 'lane', queue_root=tmp_path / 'queue', report=report, store=pbrun.configured_store(), display=submit_core.render_submission) == expected
+        lane_root=tmp_path / 'lane', queue_root=tmp_path / 'queue', report=report, store=pbrun.configured_store(), display=pbrun.render_submission) == expected
     ending = report.ending.verdict
     assert isinstance(ending, client.ClientExecution)
     assert ending.reported_returncode == expected

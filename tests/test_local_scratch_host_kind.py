@@ -67,7 +67,7 @@ def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
         "--tag", "sparky", *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"]
+    return submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
 
 
 # -- off: nothing declared ----------------------------------------------------
