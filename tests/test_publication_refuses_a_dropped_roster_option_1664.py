@@ -71,6 +71,8 @@ def _checkout(path: Path, roster: dict) -> Path:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text("GENERATION = 'new'\n")
+    for leaf in ("generation_receipt.py", "digest_primitives.py"):
+        (package / leaf).write_bytes((ROOT / "src/prismabuild" / leaf).read_bytes())
     fleet = path / "tools" / "fleet"
     fleet.mkdir(parents=True, exist_ok=True)
     (fleet / "pbcanary.py").write_text(
