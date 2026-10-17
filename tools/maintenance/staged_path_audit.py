@@ -8,6 +8,8 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 from staged_path_migrate import (
     STAGED_BASE, STAGED_MODULES, STAGED_OWNER, STAGED_PUBLIC, staged_references,
@@ -75,13 +77,72 @@ def staged_checks(source):
     return checks
 
 
+def staged_baseline_relocation(root, selected):
+    sys.path.insert(0, str(root / "tools"))
+    import duplication_inventory as inventory
+    from maintenance.submission_owners import baseline_at_submission_owners
+
+    path = root / "tests/fixtures/duplication_baseline.json"
+    base = baseline_at_submission_owners(json.loads(path.read_text()))
+    live = inventory.scan(root)
+
+    def relocate(value):
+        for module, old_path in STAGED_MODULES.items():
+            prefix = old_path + "::"
+            if prefix not in value:
+                continue
+            before, rest = value.split(prefix, 1)
+            name, dot, tail = rest.partition(".")
+            if name in selected[module]:
+                destination = ("src/prismabuild/output_vocabulary.py" if module == "produced_output" else STAGED_OWNER)
+                return before + destination + "::" + STAGED_PUBLIC.get(name, name) + dot + tail
+        return value
+
+    expected_groups, exemptions = {}, {}
+    for name, paths in base["same_name_helpers"].items():
+        for old_path in paths:
+            module, symbol = relocate(old_path + "::" + name).split("::", 1)
+            expected_groups.setdefault(symbol, set()).add(module)
+    distinct = []
+    for row in base["same_name_distinct"]:
+        by_name = {}
+        for old_path in row["modules"]:
+            module, symbol = relocate(old_path + "::" + row["name"]).split("::", 1)
+            by_name.setdefault(symbol, []).append(module)
+            exemptions.setdefault(symbol, set()).add(module)
+        distinct.extend({**row, "name": name, "modules": sorted(modules)} for name, modules in by_name.items())
+    growth = {
+        "pairs": sorted({tuple(pair) for pair in live["near_duplicates"]}
+                        - {tuple(sorted(map(relocate, pair))) for pair in base["near_duplicates"]}),
+        "digest_sites": sorted(set(live["primitive_digest_sites"]) - set(map(relocate, base["primitive_digest_sites"]))),
+        "helpers": inventory.same_name_growth(live["same_name_helpers"], expected_groups, exemptions),
+    }
+    if any(growth.values()):
+        raise SystemExit("C09 adds architecture permissions: " + json.dumps(growth))
+    raw_groups = live["same_name_helpers"]
+    live["same_name_helpers"] = {name: [p for p in paths if p not in exemptions.get(name, set())]
+        for name, paths in raw_groups.items() if set(paths) - exemptions.get(name, set())}
+    live["same_name_distinct"] = [row for row in distinct if all(p in raw_groups.get(row["name"], ()) for p in row["modules"])]
+    pairs = {tuple(pair) for pair in live["near_duplicates"]}
+    live["must_differ"] = [{**row, "pair": sorted(map(relocate, row["pair"]))}
+        for row in base["must_differ"] if tuple(sorted(map(relocate, row["pair"]))) in pairs]
+    path.write_text(json.dumps({key: live[key] for key in sorted(live)}, indent=1) + "\n")
+    return {"growth": growth, "counts": {k: len(v) for k, v in live.items()}}
+
+
 def staged_audit_cli():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--relocate-baseline", action="store_true")
     args = parser.parse_args()
     sources = staged_sources(args.root, STAGED_BASE)
     selected = staged_symbols(sources)
+    if args.relocate_baseline:
+        result = staged_baseline_relocation(args.root, selected)
+        args.output.write_text(json.dumps(result, indent=2) + "\n")
+        print(json.dumps(result))
+        return
     new_tree = ast.parse((args.root / STAGED_OWNER).read_text())
     definitions = {n.name: n for n in new_tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
     moves = []
