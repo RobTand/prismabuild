@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from pathlib import Path
 import runpy
 import time
@@ -24,6 +25,7 @@ def operate(request, store, load):
         return value
     stage, root = store / "stage", queue.root / pool.RESIDENCY
     stage.mkdir()
+    root.mkdir(parents=True, exist_ok=True)
     common = dict(tier_id=TIER, stage_root=str(stage))
     original_clock = time.perf_counter
     time.perf_counter = lambda: 100.0
@@ -86,9 +88,14 @@ def operate(request, store, load):
             else:
                 target = stage / "weights"
                 target.write_bytes(b"contents")
+                digest = hashlib.sha256(b"contents").hexdigest()
                 maps.write_fragment(root, {"schema": maps.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1, "consumer_action_key": C,
                     "mover_action_key": M, "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": D,
-                    "entries": {"0:/compat/input": {"stage_path": str(target), "bytes": 8, "sha256": D, "offset": 0}}})
+                    "entries": {"0:/compat/input": {"stage_path": str(target), "bytes": 8, "sha256": digest, "offset": 0}}})
+                lease = load("prismabuild.reader_lease")
+                lease.write_material(root, consumer_action_key=C, mover_action_key=M, tier_id=TIER, stage_root=str(stage),
+                    manifest_sha256=D, generation="7" * 32, entries={"0:/compat/input": {"stage_path": str(target), "bytes": 8,
+                        "sha256": digest, "file_id": lease.stat_identity(str(target))}})
                 queue.mint_tier_capacity(TIER, {"stage_gib": 1})
                 assert queue.tier_ledger(TIER).acquire(M, {"stage_gib": 1})
                 value = release.evict(queue, M, consumer_action_key=C, stage_root=str(stage))
