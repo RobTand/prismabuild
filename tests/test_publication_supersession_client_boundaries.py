@@ -89,7 +89,7 @@ def test_last_snapshot_can_report_supersession_without_attempt_rendering(
 
     monkeypatch.setattr(pbrun.action_wait, "read_observation", unavailable_once)
 
-    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0,
+    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 76
     assert observations == 2
 

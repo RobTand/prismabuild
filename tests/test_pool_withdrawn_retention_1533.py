@@ -229,7 +229,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
         rows = [row for row in pbstatus.read_endings(queue.root, limit=10) if row["action_key"] == key]
         assert rows and all(row["status"] == "withdrawn" and row["unreadable"] is None for row in rows)
     elif reader == "pbrun":
-        assert pbrun.action_client.await_outcome(queue, key, wait_s=1) == pbrun.action_client.WITHDRAWN_EXIT
+        assert pbrun.action_client.report_pool_outcome(queue, key, wait_s=1) == pbrun.action_client.WITHDRAWN_EXIT
     else:
         assert pbwait._from_ending(queue, (path, record))["status"] == "withdrawn"
 

@@ -198,7 +198,7 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
     if old_terminal:
         pool._write_json_atomic(queue.item_path(pool.DONE, KEY), {
             "action_key": KEY, "status": "executed", "published_unix": 1.0,
-            "detail": {"returncode": 0}})
+            "finished_unix": 1.0, "detail": {"returncode": 0}})
     write = pool._write_json_atomic
     def crash(path, record):
         if path == queue.item_path(pool.WITHDRAWN, KEY):
@@ -214,6 +214,13 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
         queue, KEY, wait_s=0, generation=original["published_unix"])
     assert ending["status"] == "withdrawn"
     assert path == queue.withdrawal_decision_path(original)
+    if old_terminal:
+        import os
+        decision = queue.withdrawal_decision_path(original)
+        stamp = decision.stat().st_mtime_ns
+        old_path = queue.item_path(pool.DONE, KEY)
+        os.utime(old_path, ns=(old_path.stat().st_atime_ns, stamp))
+        assert old_path.stat().st_mtime_ns == stamp
     statuses = [row["status"] for row in pbstatus.read_endings(queue.root)]
     assert statuses[0] == "withdrawn"
     assert len(statuses) == (2 if old_terminal else 1)

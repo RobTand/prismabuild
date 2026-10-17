@@ -23,7 +23,7 @@ def _ready(queue: pool.PoolQueue) -> dict:
 def _assert_superseded(
     queue: pool.PoolQueue, generation: float, successor: float,
 ) -> None:
-    assert pbrun.action_client.await_outcome(
+    assert pbrun.action_client.report_pool_outcome(
         queue, KEY, wait_s=0, generation=generation,
     ) == 76
     row = pbwait.wait_one(
@@ -91,7 +91,7 @@ def test_old_wait_ends_before_and_after_exact_successor_execution(
     unpinned, _ = pbrun.action_wait.outcome_poll(queue, KEY, None)
     assert unpinned is not None
     assert unpinned[1]["published_unix"] == successor_generation
-    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0,
+    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=successor_generation) == 0
 
 
@@ -155,7 +155,7 @@ def test_exact_withdrawal_still_ends_the_original_wait_after_republication(
     _publish(queue)
     _end_claim(queue, original, "finish_retry", clock)
 
-    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0,
+    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 143
     assert not _decision_path(queue, original["published_unix"]).exists()
     assert pbcampaign._pool_slot_occupied(queue, KEY) is True
@@ -177,7 +177,7 @@ def test_exact_publication_ending_outranks_an_unstamped_legacy_terminal(
         "attempts", "detail",
     )}
     path.write_text(json.dumps(legacy_record))
-    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0,
+    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=legacy["published_unix"] + 100) == 0
     clock[0] += 1
     _publish(queue)
@@ -269,6 +269,6 @@ def test_launcher_exit_seventy_six_cannot_impersonate_publication_supersession(
     queue.finish(KEY, status="failed", detail={"returncode": 76},
                  claim_snapshot=retry)
 
-    assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0,
+    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
                               generation=original["published_unix"]) == 1
     assert "which is one of pbrun's own exit codes" in capsys.readouterr().err
