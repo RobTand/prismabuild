@@ -817,7 +817,7 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
         scope = scopes / name
         try:
             instance = oc.validate_instance(json.loads(
-                (scope / "instance.json").read_text()))
+                bl.BatchLedger.at_scope(scope).instance_path.read_text()))
             if (instance["template_id"] != template_id
                     or bl.scope_dir(queue_root, instance) != scope):
                 continue
@@ -915,7 +915,7 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     scope = bl.attempt_scope(queue_root, producer_key, template_id, nonce)
     try:
         instance = oc.validate_instance(json.loads(
-            (scope / "instance.json").read_text()))
+            bl.BatchLedger.at_scope(scope).instance_path.read_text()))
     except FileNotFoundError:
         raise ActionEdgeError(
             f"producer-committed-nothing: attempt {nonce[:8]} of "

@@ -4661,7 +4661,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
     try:
         instance = oc.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
+            json.loads(bl.BatchLedger.at_scope(scope).instance_path.read_text()))
     except (OSError, ValueError) as exc:
         return unknown(f"its producer's instance is unreadable: {exc}")
     try:
