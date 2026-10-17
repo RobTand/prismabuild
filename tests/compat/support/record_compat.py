@@ -291,7 +291,10 @@ def retained(directory=CAPTURE, *, history_control=False):
             for name, expected in manifest["files"].items():
                 assert sha((destination / name).read_bytes()) == expected == version["files"][name]
             if not history_control:
-                require_reachable(ROOT, destination)
+                # Record readers remain inspectable when installing the
+                # current candidate is forbidden. Deployment checks that
+                # direction separately against the actual designated target.
+                require_reachable(destination, destination)
             result.append((generation["generation"], destination, manifest_path))
         yield result
 

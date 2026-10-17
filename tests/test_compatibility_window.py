@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from prismabuild.compatibility_window import (
-    WindowError, content_digest, require_generation, require_predeploy, require_reachable,
+    WindowError, client_protocol, content_digest, require_generation, require_predeploy, require_reachable,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,15 +20,15 @@ from compat_sources import capture_window
 def test_designated_pre_b09_rollback_is_reachable_but_proof_member_requires_bridge(tmp_path):
     with retained() as generations:
         _, old, _ = generations[0]
-        facts = require_reachable(ROOT, old)
+        facts = require_reachable(old, old)
         assert "park_proof.py" not in facts["candidate"]["optional"]
         candidate = tmp_path / "proof-candidate"
         path = candidate / "tools/fleet/upgrade_client.py"
         path.parent.mkdir(parents=True)
-        code = (ROOT / "tools/fleet/upgrade_client.py").read_text()
+        code = (old / client_protocol(old)["updater_member"]).read_text()
         code = code.replace("OPTIONAL_MEMBERS = {", "OPTIONAL_MEMBERS = {'park_proof.py': 'src/prismabuild/park_proof.py', ")
         path.write_text(code + "\nCLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2\n")
-        assert require_reachable(ROOT, candidate), "a bridge with no proof source must remain reachable"
+        assert require_reachable(old, candidate), "a bridge with no proof source must remain reachable"
         proof = candidate / "src/prismabuild/park_proof.py"
         proof.parent.mkdir(parents=True)
         proof.write_bytes((ROOT / "src/prismabuild/park_proof.py").read_bytes())
@@ -63,7 +63,8 @@ def generation(tmp_path):
     source = root / "src/prismabuild/reader.py"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"value = 42\n")
-    receipt = {"generation": root.name, "commit": "1" * 40, "dirty": False,
+    receipt = {"schema": "prismaquant.prismabuild.runtime_version.v1",
+               "generation": root.name, "commit": "1" * 40, "dirty": False,
                "files": {str(source.relative_to(root)): hashlib.sha256(source.read_bytes()).hexdigest()}}
     raw = json.dumps(receipt).encode()
     (root / "RUNTIME_VERSION.json").write_bytes(raw)
@@ -90,6 +91,16 @@ def test_rollback_identity_checks_directory_receipt_commit_and_actual_content(tm
     source.symlink_to(moved)
     with pytest.raises(WindowError, match="unsafe rollback"):
         require_generation(root, designation)
+
+
+def test_current_candidate_cannot_install_against_actual_designated_rollback():
+    window = json.loads((ROOT / "tests/compat/generations/window.json").read_bytes())
+    with retained() as generations:
+        generation_name, old, manifest = generations[0]
+        assert generation_name == window["rollback"]["generation"]
+        assert json.loads(manifest.read_bytes())["commit"] == window["rollback"]["commit"]
+        with pytest.raises(WindowError, match="bridge rollback target|receipt-member"):
+            require_reachable(ROOT, old)
 
 
 def test_window_capture_does_not_promote_retained_directories_or_offline_hosts(tmp_path):
