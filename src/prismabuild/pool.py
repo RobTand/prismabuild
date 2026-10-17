@@ -20272,6 +20272,8 @@ class PoolQueue:
             return False
         if reason == "gang_member_elected_elsewhere":
             return True
+        if reason in {"residency_lead_not_resident", "residency_lead_terminal"}:
+            return True
         for name in ("withhold", "starved"):
             verdict = evidence.get(name)
             if (isinstance(verdict, Mapping)

@@ -5748,6 +5748,9 @@ records `drain_resolves: false` in the denial evidence; foreign GPU processes
 (including exempt vLLM serving), invalid/stale GPU samples and device-state
 refusals therefore do not starve CPU work. A gang member elected elsewhere
 or a measurement reserved on another host likewise has no CPU veto here.
+Known refusals for unlanded or terminal residency leads also release the CPU
+veto. Ordinary GPU admission continues checking those leads, so the request
+stays ready until its residency permits a claim.
 Missing or unrelated verdicts leave the original protection in place, and a
 pool-holder drain still protects the GPU row. This exception shares the
 existing lock-free host-denial snapshot used for carried withholds, adds no
