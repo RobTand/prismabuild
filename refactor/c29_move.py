@@ -140,6 +140,20 @@ def migrate(root: Path) -> list[str]:
         if path in {'tests/test_prewarm_receipt_recovery.py', 'tests/test_prewarm_requires_known_receipts.py'}:
             after = after.replace('repository / "tools" / "fleet" / "prewarm_loop.py"',
                                   'repository / "src" / "prismabuild" / "prewarm_loop.py"')
+        if path == 'tests/test_record_store_reader_controls.py':
+            after = after.replace('    native = os.scandir\n    seen = []',
+                                  '    native = os.scandir\n    native_listdir = os.listdir\n    seen = []')
+            original = "    monkeypatch.setattr(os, 'scandir', scandir)\n"
+            replacement = """    def listdir(path):
+        if isinstance(path, (str, bytes, Path)) and Path(os.fsdecode(path)) == target:
+            seen.append(str(path))
+            raise OSError(error, 'actual incomplete cancellation namespace', str(path))
+        return native_listdir(path)
+    monkeypatch.setattr(os, 'scandir', scandir)
+    monkeypatch.setattr(os, 'listdir', listdir)
+"""
+            if "monkeypatch.setattr(os, 'listdir', listdir)" not in after:
+                after = after.replace(original, replacement)
         if path in {'tests/test_tools_do_not_run_on_import.py', 'tests/test_fleet_tool_flags_have_help.py'}:
             original = 'TOOLS = sorted((Path(__file__).resolve().parents[1] / "tools" / "fleet").glob("*.py"))'
             replacement = 'REPO = Path(__file__).resolve().parents[1]\nTOOLS = sorted([*(REPO / "tools" / "fleet").glob("*.py"),\n                *(REPO / "src" / "prismabuild" / (name + ".py")\n                  for name in '+repr(MODULES)+')])'

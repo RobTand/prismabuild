@@ -41,13 +41,20 @@ def test_cancel_never_certifies_a_partial_prefix_census(
         assert decision is not None and decision.is_file()
         target = decision.parent if location == 'decision-leaf' else decision.parent.parent
     native = os.scandir
+    native_listdir = os.listdir
     seen = []
     def scandir(path):
         if isinstance(path, (str, bytes, Path)) and Path(os.fsdecode(path)) == target:
             seen.append(str(path))
             raise OSError(error, 'actual incomplete cancellation namespace', str(path))
         return native(path)
+    def listdir(path):
+        if isinstance(path, (str, bytes, Path)) and Path(os.fsdecode(path)) == target:
+            seen.append(str(path))
+            raise OSError(error, 'actual incomplete cancellation namespace', str(path))
+        return native_listdir(path)
     monkeypatch.setattr(os, 'scandir', scandir)
+    monkeypatch.setattr(os, 'listdir', listdir)
     refusal = None
     selected = None
     try:
