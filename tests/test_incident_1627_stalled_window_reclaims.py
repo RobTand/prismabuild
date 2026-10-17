@@ -94,7 +94,7 @@ def _end(queue, key, *, how) -> None:
 
 def _ram_orphan(queue, ram: Path, consumer: str, seed: str, ordinal: int) -> str:
     mover = _hexkey(f"1627-ram-{seed}-{ordinal}")
-    assert queue.tier_ledger(RAM).acquire(mover, {"ram_gib": 2})
+    assert queue.tier(RAM).take(mover, {'ram_gib': 2})
     assert queue.ledger("dl380g10").acquire(
         f"ram-host:{mover}", {"mem_gb": 2})
     rp.vouch_landed(
@@ -224,7 +224,7 @@ def _cycle(queue, stage: Path, ram: Path) -> None:
 def _jammed(tmp_path: Path):
     """The incident shape: orphans, a withdrawn group, waiters, no room."""
     queue = _queue(tmp_path, stage_gib=STAGE_CAP)
-    queue.mint_tier_capacity(RAM, {"ram_gib": RAM_CAP})
+    queue.tier(RAM).mint({'ram_gib': RAM_CAP})
     queue.ledger("dl380g10").ensure_capacity({"cpu": 80, "mem_gb": 64})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -304,7 +304,7 @@ def _jammed(tmp_path: Path):
 
 def _held(queue, tier_id: str, key: str) -> bool:
     """Whether one holder still owns tokens on one tier."""
-    return bool(queue.tier_ledger(tier_id).holder_tokens(key))
+    return bool(queue.tier(tier_id).holdings(key))
 
 
 def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
@@ -336,9 +336,8 @@ def test_cycles_reclaim_the_stranded_holders(tmp_path: Path, monkeypatch) -> Non
             if _held(queue, RAM, mover)] == []
     assert not _held(queue, STAGE, pg_holder), "a withdrawn group lets go"
     assert _held(queue, STAGE, live_head), "a live claim stays"
-    ledger = queue.tier_ledger(STAGE)
-    held_prefix = sum(
-        int(ledger.holder_tokens(key).get("stage_gib", 0)) for key in d_prefix)
+    ledger = queue.tier(STAGE)
+    held_prefix = sum((int(ledger.holdings(key).get('stage_gib', 0)) for key in d_prefix))
     assert held_prefix == 2, "the declared waiter reserves its prefix"
 
 

@@ -36,6 +36,7 @@ from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _fixture_queue)
 from test_admission_charges_refill_horizons_jointly import (  # noqa: E402
     NEWCOMER_FOOTPRINT, READER_FOOTPRINT, Consumer, _reader, _refused, _tiers)
+from prismabuild import tier_holdings
 
 STATIC = _hexkey("static")
 
@@ -76,7 +77,7 @@ def test_a_newcomer_behind_a_holder_nothing_can_evict_names_it(
     """
 
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     reader = _reader(queue, stage)
     newcomer = Consumer(queue, stage, "n")
 
@@ -118,7 +119,7 @@ def test_a_newcomer_behind_a_waiting_window_is_named_with_it(
     """
 
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     _reader(queue, stage)
     first = Consumer(queue, stage, "n")
     item = queue.records.item_path(pool.record_store.READY, first.key)
@@ -163,7 +164,7 @@ def test_an_over_committed_tier_is_reported_every_cycle_while_it_lasts(
     """
 
     queue, stage = _fixture_queue(tmp_path, 20)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     reader = _reader(queue, stage, landed=(0,))
 
     for _cycle in range(2):
@@ -181,7 +182,7 @@ def test_an_over_committed_tier_is_reported_every_cycle_while_it_lasts(
     assert commitment["over_committed_gib"] == 10 + READER_FOOTPRINT - 20
     assert commitment["waiting"] == []
 
-    queue.tier_ledger(TIER).release(STATIC)
+    queue.tier(TIER).release_unspent(STATIC, authority=tier_holdings.Unspent.NEVER_STARTED)
     events = tier_loop.residency_window(queue, tiers=_tiers(stage))
     assert _over_committed(events) == []
     assert _record(queue)["over_committed_gib"] == 0
@@ -212,7 +213,7 @@ def test_every_held_token_is_classified_once(tmp_path: Path) -> None:
     """
 
     queue, stage = _fixture_queue(tmp_path, 40)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 3})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 3})
     reader = Consumer(queue, stage, "a", read_mb_s=None)
     reader.land(0, 1, 2, 3)
     reader.land(7, consumer=_hexkey("gone"))

@@ -36,7 +36,7 @@ def test_failed_publication_dispatch_can_retry_without_republishing(tmp_path, mo
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.mint_tier_capacity("local:test-host", {"local_gib": 1})
+    queue.tier('local:test-host').mint({'local_gib': 1})
     calls = []
 
     def dispatch(store, set_id, **kwargs):
@@ -61,7 +61,7 @@ def test_failed_publication_dispatch_can_retry_without_republishing(tmp_path, mo
     assert calls == [set_id, set_id]
     assert store.set_path(set_id).read_bytes() == body
     assert len(store.read_lease_log(set_id)) == 1
-    assert queue.tier_ledger("local:test-host").holder_tokens(set_id)["local_gib"] == 1
+    assert queue.tier('local:test-host').holdings(set_id)['local_gib'] == 1
 
 
 def test_repeated_movement_dispatch_attaches_to_the_live_generation(tmp_path, monkeypatch):
