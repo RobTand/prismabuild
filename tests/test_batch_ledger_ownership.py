@@ -13,8 +13,9 @@ import tempfile
 import pytest
 
 from prismabuild import batch_ledger as bl, output_contract as oc, digest_primitives
-from test_consumed_origin_retirement import _commit
-from test_write_only_produced_output import _queue, _template
+from prismabuild import pool, produced_output as po
+import test_prepaid_writer_integration as output_fixture
+from test_write_only_produced_output import _descriptor, _prewrite, _queue, _template
 
 BASE = 'd2f92f5ff533489182dddaf286feb54afde6f34a'
 
@@ -113,7 +114,40 @@ def test_read_replace_fsync_order_matches_the_original_on_real_files(
 def test_legacy_missing_paths_use_the_real_immutable_batch(tmp_path):
     template = _template(tmp_path / 'canonical')
     queue = _queue(tmp_path)
-    instance, path, _committed = _commit(queue, template, 'legacy-paths-owner')
+    # This reader control needs a bound owner and real immutable commit. File
+    # the claim input explicitly, as the C31 writer does; queue admission and
+    # its pidfd-backed census are exercised by their own integration controls.
+    owner = output_fixture._hexkey('legacy-paths-owner')
+    ready = queue.publish(
+        action_key=owner, cas_root='/cas',
+        worker_script=str(output_fixture.REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(tmp_path / 'mover-checkout'), resources={'cpu': 1, 'mem_gb': 1},
+        max_attempts=1, produced_output_template=template)
+    claimed = pool.record_store.read_document(ready)
+    assert isinstance(claimed, dict)
+    claimed.update(claimed_by='w-owner', claimed_host=__import__('socket').gethostname(),
+                   claimed_unix=pool._now(), attempts=1)
+    ready.unlink()
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.CLAIMED, owner), claimed)
+    control = output_fixture._broker_control(queue, owner)
+    po.declare_template(queue.root, template)
+    instance = po.bind_instance(queue, template, owner_action_key=owner,
+        claim_snapshot=claimed, env={'PRISMABUILD_ACTION_KEY': owner,
+            'PRISMABUILD_ACTION_NONCE': control['nonce'],
+            'PRISMABUILD_ACTION_SCOPE': control['scope_id']})
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)['ok'] is True
+    path = Path(template['output_prefix']) / 'legacy-paths-owner-b1.bin'
+    payload = b'band handoff bytes'
+    assert _prewrite(queue, instance, template, 'b1', [path], len(payload))['ok']
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    descriptor = _descriptor(instance, template, path, payload)
+    _committed = bl.BatchLedger.commit_origin(
+        queue, instance, template, [descriptor], batch_id='b1',
+        lifetime=oc.ORIGIN_LIFETIME_CONSUMED)
+    assert _committed['ok'], _committed
     ledger = bl.BatchLedger.for_instance(queue.root, instance)
     record = ledger.capture()
     record['batches']['b1'].pop('paths')
