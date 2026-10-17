@@ -3147,7 +3147,9 @@ def _read_claim(queue, action_key: str):
     from prismabuild import pool as pool_mod
 
     try:
-        return pool_mod.record_store.value_or_raise(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
+        return pool_mod.record_store.value_or_raise(
+            queue.records.item(pool_mod.record_store.CLAIMED, action_key),
+        )
     except (OSError, pool_mod.PoolContractError) as exc:
         return exc
 
@@ -3269,7 +3271,9 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if queue is None:
         queue = pool_mod.PoolQueue(launch_queue_root(source))
     try:
-        claim = pool_mod.record_store.value_or_raise(queue.records.item(pool_mod.record_store.CLAIMED, action_key))
+        claim = pool_mod.record_store.value_or_raise(
+            queue.records.item(pool_mod.record_store.CLAIMED, action_key),
+        )
     except (OSError, pool_mod.PoolContractError) as exc:
         return {"ok": False, "refusal": f"claim-unreadable: {exc}"}
     if not isinstance(claim, Mapping):

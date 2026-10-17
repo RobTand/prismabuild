@@ -158,7 +158,11 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         _require(bool(outcomes) and outcomes[-1]["attempt"] == attempt,
                  "final immutable attempt is missing")
         archived = outcomes[-1]
-        _require(archived.get("status") == "failed" and archived.get("disposition") == pool.record_store.FAILED,
+        _require(archived.get(
+            "status",
+        ) == "failed" and archived.get(
+            "disposition",
+        ) == pool.record_store.FAILED,
                  "immutable attempt has a different terminal disposition")
         _require(isinstance(archived.get("detail"), dict), "immutable attempt detail is missing")
         # The mutable ending's streams are the bounded tail of the immutable
@@ -227,7 +231,10 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
         # Retain a final readback against unsupported concurrent/manual writers
         # too; an earlier CAS read is no license to reconcile a changed ending.
         _quiescent(q, key, record)
-        _require(q.records.reconciliation_row_at(terminal_path)[1] == terminal_raw, "ending changed during reconciliation")
+        _require(
+            q.records.reconciliation_row_at(terminal_path)[1] == terminal_raw,
+            "ending changed during reconciliation",
+        )
         q.records.file_receipt_reconciliation_at(supplement_path, supplement)
         observed, raw = q.records.reconciliation_history_at(supplement_path)
         _require(raw == pb._canonical_file_bytes(supplement), "reconciliation readback differs")

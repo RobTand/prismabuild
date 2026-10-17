@@ -739,7 +739,9 @@ def read(queue, consumer_action_key: str, *,
             on_unreadable(error)
 
     try:
-        raw = queue.records.text_document_at(Path(queue.records.residency_plan_path(consumer_action_key)))
+        raw = queue.records.text_document_at(
+            Path(queue.records.residency_plan_path(consumer_action_key)),
+        )
     except FileNotFoundError:
         return None                       # the ordinary answer: none was filed
     except OSError as error:
@@ -2444,7 +2446,11 @@ def resident_movers(queue: _pool.PoolQueue, plan: Mapping[str, object],
             continue            # no leg of this plan seals that key
         if not ledger.holder_tokens(mover):
             continue            # the tier no longer accounts for the range
-        if bool(_pool.record_store.value_or_raise(queue.records.item_presence(_pool.record_store.CLAIMED, mover))):
+        if bool(
+            _pool.record_store.value_or_raise(
+                queue.records.item_presence(_pool.record_store.CLAIMED, mover),
+            ),
+        ):
             continue            # a running copy; its receipt is a prior run's
         receipt = queue.move_record(mover)
         if not isinstance(receipt, Mapping) or receipt.get("complete") is not True:

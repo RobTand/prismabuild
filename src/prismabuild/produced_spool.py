@@ -486,7 +486,9 @@ class ProducedSpool:
         #: Whether this producer's exports reserve fill and pace by default.
         self.paced_export = paced == "1"
         self._live()
-        row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, self.owner)) or {}
+        row = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, self.owner),
+        ) or {}
         self.host = str(row.get("claimed_host") or "")
         if not self.host:
             raise SpoolError("source host is unknown")
@@ -1525,7 +1527,9 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         record = _export_record(group, manifest["owner"])
         if record is None or record.get("export_key") != export_key or record.get("manifest_sha256") != manifest_sha256:
             raise SpoolError("export action does not own this local group")
-        claim = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, export_key)) or {}
+        claim = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, export_key),
+        ) or {}
         if claim.get("claimed_host") != manifest["host"]:
             raise SpoolError("export is not claimed on the source host")
         try:
