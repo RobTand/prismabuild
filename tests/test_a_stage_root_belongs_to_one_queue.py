@@ -164,7 +164,11 @@ def test_an_egress_on_an_unregistered_root_keeps_bytes_and_tokens(queue, stage) 
     assert receipt["entries_deleted"] == 0 and receipt["tokens_released"] == 0
     assert path.exists()
     assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
-    fragment = residency_map.fragment_path(queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER)
+    fragment = residency_map.fragment_path(
+        queue.root / pool.record_store.RESIDENCY,
+        CONSUMER,
+        MOVER,
+    )
     assert fragment.exists(), "a refused egress keeps the fragment for the owner"
 
 

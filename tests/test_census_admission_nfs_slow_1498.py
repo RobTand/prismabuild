@@ -94,7 +94,9 @@ def test_slow_census_over_concluded_sidecars_refuses_ordinary_work_until_swept(
     assert queue.sweep_orphan_passes() == []
     assert not any(queue.records.passes_path(key).exists() for key in orphans)
     # Terminal/withdrawal records are untouched: only the sidecar retires.
-    assert all(queue.records.item_path(pool.record_store.WITHDRAWN, key).exists() for key in orphans)
+    assert all(
+        (queue.records.item_path(pool.record_store.WITHDRAWN, key).exists() for key in orphans),
+    )
 
     tick(11)
     claimed = _claim(queue, ordinary,

@@ -168,7 +168,12 @@ def warm_checkpoint(fleet, monkeypatch):
         assert len(first) == 1
         assert first[0]["cacheable"] is True, json.dumps(first[0], sort_keys=True)
         assert first[0]["entries_pruned"] == first[0]["entries_unlinked"] == 0
-        assert stage_release._skip_checkpoint_hit(key, fragment, material, trust=kept_reads.filesystem_trust)
+        assert stage_release._skip_checkpoint_hit(
+            key,
+            fragment,
+            material,
+            trust=kept_reads.filesystem_trust,
+        )
         assert sweep() == [], "a real inferred checkpoint must warm before trust loss"
         assert (index.stale_skipped, index.stale_censused) == (1, 1)
         files = {str(path): stage_release._path_version(path)
@@ -190,7 +195,11 @@ def _observe_trust_loss(warm, loss):
     # Bare versions have not changed; the refusal must be about current trust.
     for path, version in warm["files"].items():
         assert stage_release._path_version(path) == version
-        bare, trusted = stage_release._fenced_path_version(path, kept_reads.filesystem_trust.file_fence(), trust=kept_reads.filesystem_trust)
+        bare, trusted = stage_release._fenced_path_version(
+            path,
+            kept_reads.filesystem_trust.file_fence(),
+            trust=kept_reads.filesystem_trust,
+        )
         assert bare == version
         if loss.startswith("file-") or loss in ("watch-error", "namespace-change"):
             assert trusted is None

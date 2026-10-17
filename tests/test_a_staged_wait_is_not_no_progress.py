@@ -654,7 +654,9 @@ def test_a_ready_mover_the_claim_pass_refuses_is_not_waited_on(
 
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
-    ready = json.loads(queue.records.item_path(pool.record_store.READY, str(row["action_key"])).read_text())
+    ready = json.loads(
+        queue.records.item_path(pool.record_store.READY, str(row["action_key"])).read_text(),
+    )
     queue._record_denial_transition(ready, host="dl380g10", reason=reason,
                                     decision_reason=None)
 
@@ -987,7 +989,9 @@ def test_a_withhold_on_one_host_outranks_a_refusal_on_another(
     queue, item, row, progress_path = _verdict_fixture(tmp_path, over_committed_gib=0)
     queue.publish(**dict(row))
     now = clock.time()
-    ready = json.loads(queue.records.item_path(pool.record_store.READY, str(row["action_key"])).read_text())
+    ready = json.loads(
+        queue.records.item_path(pool.record_store.READY, str(row["action_key"])).read_text(),
+    )
     queue._record_denial_transition(ready, host="sparky", reason="never_fits_capacity",
                                     decision_reason=None)
     _withheld(queue, row, "reservation_unavailable_withholding",

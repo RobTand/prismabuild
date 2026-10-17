@@ -357,7 +357,9 @@ def test_ordinary_abandonment_leaves_gpu_sample_for_next_candidate(gpu_rig, monk
     assert set(queue.ledger().held_keys()) == {holder, successor}
     assert queue.ledger().held()['mem_gb'] == 2
     assert queue.ledger().capacity() == capacity
-    assert adaptive_cpu.read_json(queue.records.item_path(pool.record_store.CLAIMED, holder)) == first
+    assert adaptive_cpu.read_json(
+        queue.records.item_path(pool.record_store.CLAIMED, holder),
+    ) == first
     assert not queue.records.item_path(pool.record_store.CLAIMED, abandoned).exists()
 
 
@@ -378,7 +380,9 @@ def unlaunched_probe(gpu_rig):
         # launched, the existing holder is untouched, only sample credit remains.
         gpu._sample = None
         with cpu.locked():
-            metadata = gpu.decision(adaptive_cpu.read_json(queue.records.item_path(pool.record_store.READY, candidate)),
+            metadata = gpu.decision(adaptive_cpu.read_json(
+                queue.records.item_path(pool.record_store.READY, candidate),
+            ),
                                     {'gpu': 1, 'cpu': 1, 'mem_gb': 1})
             assert metadata
             handle = queue.ledger().begin_acquire(candidate, {'gpu': 1, 'mem_gb': 1},
@@ -504,7 +508,9 @@ def test_gpu_sample_write_failure_releases_provisional_reservation(gpu_rig, monk
     assert set(queue.ledger().held_keys()) == {holder}
     assert queue.records.item_path(pool.record_store.READY, candidate).exists()
     assert not queue.records.item_path(pool.record_store.CLAIMED, candidate).exists()
-    assert adaptive_cpu.read_json(queue.records.item_path(pool.record_store.CLAIMED, holder)) == first
+    assert adaptive_cpu.read_json(
+        queue.records.item_path(pool.record_store.CLAIMED, holder),
+    ) == first
     if written:
         assert claim() is None  # Uncertain writes never refund a spent sample.
     else:
