@@ -8,7 +8,6 @@ and verified (not shape-only) producer holds in egress attribution.
 
 from __future__ import annotations
 
-from legacy_funding_fixture import allocated_legacy_intent
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -351,7 +350,6 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
         class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w0.pt")])["ok"] is True
     desc = _payload_desc(origin, template, instance, "w0.pt", b"A" * BIG)
-    allocated_legacy_intent(queue, instance, [desc], batch_id='w0', tier=STAGE_TIER, mover_key=MOVER0)
     batch = po.commit_batch(queue, instance, template, [desc],
                             batch_id="w0", tier=STAGE_TIER, mover_key=MOVER0)
     assert batch["ok"] is True
@@ -398,7 +396,6 @@ def test_damaged_batch_record_retains_quota(tmp_path: Path) -> None:
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "dmg.pt")])["ok"] is True
     desc = _payload_desc(origin, template, instance, "dmg.pt", b"D" * 64)
-    allocated_legacy_intent(queue, instance, [desc], batch_id='dmg', tier=STAGE_TIER, mover_key=MOVER0)
     assert po.commit_batch(queue, instance, template, [desc],
                            batch_id="dmg", tier=STAGE_TIER,
                            mover_key=MOVER0)["ok"] is True
@@ -445,7 +442,6 @@ def _commit_staged(queue: pool.PoolQueue, tmp_path: Path, template: dict,
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
-    allocated_legacy_intent(queue, instance, [desc], batch_id=tag, tier=STAGE_TIER, mover_key='1' * 64)
     batch = po.commit_batch(queue, instance, template, [desc],
                             batch_id=tag, tier=STAGE_TIER,
                             mover_key="1" * 64)
@@ -526,7 +522,6 @@ def test_strict_loader_mutations_refuse_without_side_effects(
             paths=[str(origin / f"{tag}.pt")])["ok"] is True
         desc = _payload_desc(origin, template, instance, f"{tag}.pt",
                              b"Q" * 64)
-        allocated_legacy_intent(queue, instance, [desc], batch_id=tag, tier=STAGE_TIER, mover_key=mover)
         batch = po.commit_batch(queue, instance, template, [desc],
                                 batch_id=tag, tier=STAGE_TIER, mover_key=mover)
         assert batch["ok"] is True
@@ -718,7 +713,6 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
             class_bytes={"payload": BIG, "checkpoint": 0, "temp": 0},
             paths=[str(origin / "full.pt")])["ok"] is True
         desc = _payload_desc(origin, template, instance, "full.pt", payload)
-        allocated_legacy_intent(queue, instance, [desc], batch_id='full', tier=STAGE_TIER, mover_key=MOVER0)
         batch = po.commit_batch(queue, instance, template, [desc],
                                 batch_id="full", tier=STAGE_TIER,
                                 mover_key=MOVER0)

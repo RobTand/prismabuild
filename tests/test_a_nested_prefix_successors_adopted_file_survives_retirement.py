@@ -29,7 +29,6 @@ the retirement holds.  Before this change it finishes, and its file is gone.
 """
 from __future__ import annotations
 
-from legacy_funding_fixture import allocated_legacy_intent
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -152,7 +151,6 @@ class _Successor:
         descriptor = wo._descriptor(self.instance, self.template, self.path,
                                     payload)
         if self.kind == "read-back":
-            allocated_legacy_intent(self.queue, self.instance, [descriptor], batch_id='s1', tier=wo.TIER, mover_key=MOVER)
             self.committed = po.commit_batch(
                 self.queue, self.instance, self.template, [descriptor],
                 batch_id="s1", tier=wo.TIER, mover_key=MOVER)
@@ -429,7 +427,6 @@ def test_each_step_asks_for_every_overlapping_prefix_lock_in_one_order(
         descriptor = wo._descriptor(successor.instance, successor.template,
                                     successor.path, FRESH_BYTES)
         if name == "read-back":
-            allocated_legacy_intent(queue, successor.instance, [descriptor], batch_id='s1', tier=wo.TIER, mover_key=MOVER)
             successor.committed = po.commit_batch(
                 queue, successor.instance, successor.template, [descriptor],
                 batch_id="s1", tier=wo.TIER, mover_key=MOVER)

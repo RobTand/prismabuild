@@ -37,7 +37,6 @@ name raise ``EPERM`` when the name is free, as the kernel does.
 """
 from __future__ import annotations
 
-from legacy_funding_fixture import allocated_legacy_intent
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -204,7 +203,6 @@ class _Successor:
 
     def commit(self) -> dict:
         if self.kind == "staged-null-digest":
-            allocated_legacy_intent(self.queue, self.instance, [self.descriptor], batch_id=self.batch_id, tier=r2.STAGE_TIER, mover_key=r2.MOVER0)
             return po.commit_batch(self.queue, self.instance, self.template,
                                    [self.descriptor], batch_id=self.batch_id,
                                    tier=r2.STAGE_TIER, mover_key=r2.MOVER0)
