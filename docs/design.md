@@ -1907,6 +1907,13 @@ names the generation root, never `src`; the client appends `src` itself.
 | Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
 
+`prismabuild.data_manifest` owns manifest parsing, validation, format limits and
+the declared-input identifier. The SDK keeps its existing manifest names and
+version 6. The parser uses Core's existing validation helpers; Core does not
+import the manifest module. Manifest changes therefore stay outside the
+attested run-local and profiling implementation. `manifest_layout` retains
+the pure read-order operations.
+
 Most names are the internal objects, re-exported unchanged. The SDK defines
 five functions of its own, each because the behaviour a client needed had no
 public name:
@@ -6854,7 +6861,7 @@ It still returns `None` when there are no live offers. Rows without a nonempty s
 read no resident metadata and retain ordinary ordering and claim behavior.
 Preference requires a 64-character lowercase hexadecimal set ID and a JSON-object body
 with matching `SET_SCHEMA`, ID and literal `immutable: true`. Its manifest must pass
-`core.validate_data_manifest` and its normalized form must hash to the ID using the
+`data_manifest.validate_data_manifest` and its normalized form must hash to the ID using the
 existing digest serialization. The canonical root must be normalized, absolute and
 non-root, including alternate root spellings such as `//`. Entries must lie under it,
 have zero offsets and real SHA-256 digests, and have unique paths. `hosts` must be a
@@ -11068,7 +11075,7 @@ committed, and seals and publishes the consumer.
 
 **Why the consumer is sealed at release, not at submission.** A key covers
 the action's data manifest, and a manifest entry names a path and a positive
-byte count (`core.validate_data_manifest`). A handoff's paths and sizes exist
+byte count (`data_manifest.validate_data_manifest`). A handoff's paths and sizes exist
 only after the producer commits. A consumer keyed at submission would have a
 key that does not cover the bytes it reads, and it could have no residency
 plan, because its mover ranges index into that manifest. An edge carries
