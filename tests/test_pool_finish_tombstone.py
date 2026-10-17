@@ -9,6 +9,7 @@ leaves a reservation no reaper can find.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -32,17 +33,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY_A,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources={"cpu": 1},
-        **kw,
-    )
-
-
 def _tombstones(q: pool.PoolQueue) -> list[Path]:
     return sorted(
         q.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
@@ -54,7 +44,15 @@ def test_finish_does_not_delete_the_retrys_claim_or_lease(
 ) -> None:
     """The issue #61 probe, inverted: attempt 2 keeps what it acquired."""
 
-    _publish(queue, max_attempts=2, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=2,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
@@ -95,7 +93,15 @@ def test_reap_stale_does_not_delete_the_retrys_claim_or_lease(
 ) -> None:
     """The same ordering, on the reaper's copy of it."""
 
-    _publish(queue, max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
@@ -126,7 +132,15 @@ def test_a_finisher_interrupted_mid_publish_is_recovered(
 ) -> None:
     """A crash in the window leaves a tombstone, and it is put back."""
 
-    _publish(queue, max_attempts=2, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=2,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
@@ -179,7 +193,15 @@ def test_a_redundant_tombstone_is_filed_and_never_restored(
 ) -> None:
     """A key that has moved on must not have an old generation re-injected."""
 
-    _publish(queue, max_attempts=2, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=2,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
     tombstone, mine = queue._entomb_claim(KEY_A, expect=first)
@@ -187,7 +209,13 @@ def test_a_redundant_tombstone_is_filed_and_never_restored(
 
     # A submitter, finding the key nowhere, publishes it again.
     queue.records.item_path(pool.record_store.READY, KEY_A).unlink(missing_ok=True)
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     fresh = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     assert fresh["published_unix"] != first["published_unix"]
 
@@ -209,7 +237,13 @@ def test_a_tombstone_is_invisible_to_every_reader_of_claimed(
 ) -> None:
     """The suffix is what keeps the recovery from becoming a second defect."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
     tombstone, mine = queue._entomb_claim(KEY_A, expect=first)
