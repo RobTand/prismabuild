@@ -64,7 +64,8 @@ def fleet(tmp_path, monkeypatch):
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     def publish(name, *, measurement=False, pinned=False, priority=-10, timeout_s=4200,
-                cpu=2, gpu=1, mem_gb=8, tags=None, retry_safe=None, max_attempts=3):
+                cpu=2, gpu=1, mem_gb=8, tags=None, retry_safe=None, max_attempts=3,
+                residency=None):
         clock[0] += 0.001
         action = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
@@ -89,7 +90,8 @@ def fleet(tmp_path, monkeypatch):
                       worker_script="worker.py", resources={"cpu": cpu, "gpu": gpu, "mem_gb": mem_gb},
                       needs_gpu=bool(gpu),
                       tags=(["sparklina"] if pinned else []) if tags is None else tags,
-                      priority=priority, retry_safe=retry_safe, max_attempts=max_attempts)
+                      priority=priority, retry_safe=retry_safe, max_attempts=max_attempts,
+                      residency=residency)
         return key
 
     def tick(seconds=2.0):
