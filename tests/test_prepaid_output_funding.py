@@ -421,7 +421,7 @@ def test_owner_finish_race_serialized(
     owner_acquisitions, transfers, errors = [], [], []
     results: dict = {}
     real_transfer = pool.ResourceLedger.transfer_tokens
-    real_transition = q._transition_locked
+    real_transition = q.action_transition_lock
     real_release = q._release_reservation
 
     def observed_transfer(actual_ledger, from_key, to_key, names):
@@ -486,7 +486,7 @@ def test_owner_finish_race_serialized(
     fa = threading.Thread(target=do_fund, name="fund", daemon=True)
     fb = threading.Thread(target=do_finish, name="finish", daemon=True)
     monkeypatch.setattr(pool.ResourceLedger, "transfer_tokens", observed_transfer)
-    monkeypatch.setattr(q.queue, "_transition_locked", observed_transition)
+    monkeypatch.setattr(q.queue, "action_transition_lock", observed_transition)
     monkeypatch.setattr(q.queue, "_release_reservation", observed_release)
     try:
         fa.start()

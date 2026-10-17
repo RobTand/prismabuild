@@ -128,7 +128,7 @@ def test_busy_measurement_key_is_nonblocking_even_with_stale_candidates(fleet):
                            ready=[candidate],
                            cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
                            gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
-    with queue._transition_locked(measurement), ThreadPoolExecutor(max_workers=1) as executor:
+    with queue.action_transition_lock(measurement), ThreadPoolExecutor(max_workers=1) as executor:
         assert executor.submit(candidate_only).result(timeout=5) is None
     # Still nonblocking and still no refill: the busy elected key is kept as a
     # live election for the pass (#1498 follow-up), not a census refusal.
@@ -169,7 +169,7 @@ def test_measurement_keys_and_H_cover_begin_but_not_commit(fleet, monkeypatch):
     _observe_real_sharing_permission(fleet, candidate)
     events = []
     def can_take_M():
-        with queue._transition_locked(measurement, blocking=False) as acquired:
+        with queue.action_transition_lock(measurement, blocking=False) as acquired:
             return acquired
     begin = pool.ResourceLedger.begin_acquire
     commit = pool.ResourceLedger.commit_acquire

@@ -148,7 +148,7 @@ def test_recovery_defers_while_the_original_key_transition_is_active(tmp_path, m
 
     q, ready, original = queue_and_record(tmp_path)
     stranded_capture(q, ready, monkeypatch)
-    with q._transition_locked(KEY):
+    with q.action_transition_lock(KEY):
         with ThreadPoolExecutor(max_workers=1) as executor:
             assert executor.submit(q.sweep_ready_transitions).result(timeout=5) == []
     assert not ready.exists()

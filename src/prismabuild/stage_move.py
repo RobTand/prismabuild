@@ -1714,7 +1714,7 @@ class _StagedPublisher:
                 movers = sorted({m for _, m in owners.pairs
                                  if _is_action_key(m)})
                 for key in consumers:
-                    if not held.enter_context(self.queue._transition_locked(
+                    if not held.enter_context(self.queue.action_transition_lock(
                             key, blocking=False)):
                         yield ("busy", [], None,
                                f"owner consumer {key[:12]}'s transition lock "

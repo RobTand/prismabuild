@@ -1,3 +1,4 @@
+from prismabuild import claim_identity
 """A stale claim read cannot authorize cleanup of a different leased attempt."""
 import json
 
@@ -34,7 +35,7 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
     queue.ledger().release(key)
     publish(key)
     newer = queue.claim(owner='original' if reused_owner else 'successor', capacity=resources)
-    assert not pool._same_claim(first, newer)
+    assert not claim_identity.same_claim(first, newer)
     saved = {path: path.read_bytes() for path in (claim_path, lease_path)}
 
     # One contradictory key must not prevent unrelated expired claims recovering.

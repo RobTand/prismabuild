@@ -13,7 +13,7 @@ the agent's client already speaks.
 Two properties, and they are the whole of the design.
 
 **Read-only by construction.**  Nothing here renames, writes, mints, locks or
-claims.  It never calls ``ensure_layout``, ``_transition_locked``,
+claims.  It never calls ``ensure_layout``, ``action_transition_lock``,
 ``record_pass``, ``claim``, ``publish`` or ``withdraw``, and
 ``tests/test_pbmcp_read_only.py`` asserts both halves of that: an import
 surface with no mutating name in it, and every tool run to completion against

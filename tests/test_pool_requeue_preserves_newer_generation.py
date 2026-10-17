@@ -1,6 +1,8 @@
 """An older claim's retry cannot replace a newer publication of the same key."""
 from __future__ import annotations
 
+from prismabuild import claim_identity
+
 import errno
 import json
 from pathlib import Path
@@ -157,7 +159,7 @@ def test_requeue_preserves_attempt_budget_and_releases_capacity(
     assert successor is not None
     assert successor["published_unix"] == claim["published_unix"]
     assert successor["attempts"] == int(charged)
-    assert not pool._same_claim(successor, claim)
+    assert not claim_identity.same_claim(successor, claim)
     assert queue.ledger().held() == DEMAND
 
 

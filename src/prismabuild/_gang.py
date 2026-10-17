@@ -490,7 +490,7 @@ def backfill_reclaiming(queue, record: Mapping[str, object]) -> bool:
 def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
     """Close loans while sharing the member's update exclusion with observations."""
     from . import pool
-    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+    with queue.action_transition_lock(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
         path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
@@ -531,7 +531,7 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
     completed release or replace the original request timestamp.
     """
     from . import pool
-    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+    with queue.action_transition_lock(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
         path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
@@ -558,7 +558,7 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
 def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
     """Snapshot under member exclusion; merge finished observations under it too."""
     from . import pool
-    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+    with queue.action_transition_lock(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
         standing = _gang_read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")

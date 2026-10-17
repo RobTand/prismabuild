@@ -703,7 +703,7 @@ def freeze(queue, plan: Mapping[str, object]) -> dict[str, object]:
     # reap cannot archive a body filed between its read and its rename, and a
     # deliberate reseal cannot interleave with the retirement of its
     # predecessor (#708).
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         try:
             queue.records.file_residency_plan_at(path, checked)
         except _pool.PoolContractError as exc:
@@ -1047,7 +1047,7 @@ def mark_superseded(queue, consumer_action_key: str, *,
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         current = incarnation(queue.records.residency_plan_path(key))
         if current is None:
             return None
@@ -1229,7 +1229,7 @@ def handoff_safe(queue, consumer_action_key: str,
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         state, why = live_state(queue, key)
         if why:
             return False, f"the consumer: {why}"
@@ -1237,7 +1237,7 @@ def handoff_safe(queue, consumer_action_key: str,
             return False, f"the consumer is still {_LIVE_STATE_LABELS[state]}"
         for child in child_keys(plan):
             try:
-                with queue._transition_locked(child):
+                with queue.action_transition_lock(child):
                     state, why = live_state(queue, child)
             except OSError as exc:                            # pragma: no cover
                 return False, f"its row {child[:12]} could not be locked: {exc}"
@@ -1339,7 +1339,7 @@ def reap(queue, consumer_action_key: str, *,
     """
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         filed, current = read_filed(queue, key)
         if filed is None or current is None:
             return None
@@ -1416,9 +1416,9 @@ def retire_predecessor_cancellations(
 
     key = _action_key(consumer_action_key, where="consumer_action_key")
     with contextlib.ExitStack() as held:
-        held.enter_context(queue._transition_locked(key))
+        held.enter_context(queue.action_transition_lock(key))
         for mover in sorted(set(mover_keys(plan))):
-            held.enter_context(queue._transition_locked(mover))
+            held.enter_context(queue.action_transition_lock(mover))
         try:
             cancelled = queue.withdrawn_keys()
         except OSError as exc:
@@ -1438,7 +1438,7 @@ def retire_predecessor_cancellations(
         # the whole renewal before any decision is moved.
         readable: list[str] = []
         for child in hits:
-            with queue._transition_locked(child):
+            with queue.action_transition_lock(child):
                 marker = queue.live_withdrawal(child)
                 if marker is None:
                     continue        # already retired by another writer
@@ -1451,7 +1451,7 @@ def retire_predecessor_cancellations(
                 readable.append(child)
         retired: list[str] = []
         for child in readable:
-            with queue._transition_locked(child):
+            with queue.action_transition_lock(child):
                 try:
                     if queue._supersede_withdrawal(child) is not None:
                         retired.append(child)
@@ -1495,7 +1495,7 @@ def seal_window(queue, plan: Mapping[str, object], *,
     checked = validate_plan(plan)
     key = str(checked["consumer_action_key"])
     path = queue.records.residency_plan_path(key)
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         before, error = _stat_incarnation(path)
         if error is not None:
             raise ResidencyPlanError(
@@ -1638,7 +1638,7 @@ def plan_interest(queue, mover_action_key: str, *,
             continue
         if mover not in keys:
             continue
-        with queue._transition_locked(key, blocking=False) as got:
+        with queue.action_transition_lock(key, blocking=False) as got:
             if not got:
                 unknown.append(key)          # mid-transition: a seal, say
                 continue
@@ -3750,7 +3750,7 @@ def register_shared_range(queue, *, manifest_sha256: str, tier_id: str,
     namespace = share_namespace(manifest_sha256, tier_id, start, end)
     path = shared_range_path(queue, namespace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with queue._transition_locked(namespace):
+    with queue.action_transition_lock(namespace):
         current = read_shared_range(queue, namespace)
         retire_as = ""
         if current is not None:

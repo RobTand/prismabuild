@@ -482,7 +482,7 @@ def test_transition_busy_on_faster_host_is_not_an_admission_refusal(fleet):
     def independent_lock_holder():
         try:
             # Different thread: posix_lock's same-thread nesting is reentrant.
-            with fleet.queue._transition_locked(fleet.key) as locked:
+            with fleet.queue.action_transition_lock(fleet.key) as locked:
                 assert locked
                 acquired.set()
                 assert release.wait(10.), "test lock release signal timed out"

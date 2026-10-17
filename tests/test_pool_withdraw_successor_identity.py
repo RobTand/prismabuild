@@ -1,3 +1,4 @@
+from prismabuild import claim_identity
 """A withdrawal already superseded cannot mutate the successor claim (#318)."""
 import pbstatus
 from prismabuild import submission as submit_core
@@ -39,7 +40,7 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
     monkeypatch.setattr(pool, "find_launcher_pids", lambda key: [])
     queue.withdraw(KEY, signal_child=False)
     live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
-    assert live is not None and pool._same_claim(live, successor)
+    assert live is not None and claim_identity.same_claim(live, successor)
     assert live["max_attempts"] == 2
     assert pool.record_store.read_document(queue.records.lease_path(KEY))["owner"] == "second"
     assert queue.ledger().held() == {"cpu": 1}
@@ -175,7 +176,7 @@ def test_cancelled_cleanup_does_not_conclude_a_successor(tmp_path, monkeypatch, 
     else:
         queue.reap_stale(timeout_s=-1)
     live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
-    assert live is not None and pool._same_claim(live, successor)
+    assert live is not None and claim_identity.same_claim(live, successor)
     assert pool.record_store.read_document(queue.records.lease_path(KEY))["owner"] == "second"
     assert queue.ledger().held() == {"cpu": 1}
 

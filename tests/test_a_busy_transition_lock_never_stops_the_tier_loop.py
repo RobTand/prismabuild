@@ -109,7 +109,7 @@ def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
 
 
 def _lock_path(queue: pool.PoolQueue, key: str) -> Path:
-    """The file ``PoolQueue._transition_locked`` locks for ``key``."""
+    """The file ``PoolQueue.action_transition_lock`` locks for ``key``."""
 
     name = hashlib.sha256(key.encode()).hexdigest()
     return queue.root / "transition-locks" / f"{name}.lock"
@@ -306,12 +306,12 @@ def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited
 
     def run() -> None:
         with pool.transition_locks_never_wait(seen.append):
-            with queue._transition_locked(mine):
+            with queue.action_transition_lock(mine):
                 # Nested re-entry of a key this thread holds is unaffected.
-                with queue._transition_locked(mine):
+                with queue.action_transition_lock(mine):
                     outcome["nested"] = True
             try:
-                with queue._transition_locked(key):
+                with queue.action_transition_lock(key):
                     outcome["entered"] = True
             except pool.TransitionLockBusy as exc:
                 outcome["refused"] = exc
@@ -333,7 +333,7 @@ def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited
     done = threading.Event()
 
     def wait_outside() -> None:
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             done.set()
 
     waiter = threading.Thread(target=wait_outside, daemon=True)

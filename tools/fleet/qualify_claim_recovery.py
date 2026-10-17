@@ -9,6 +9,8 @@ payloads in broker scopes; their demand is included in the enclosing PB actions.
 """
 from __future__ import annotations
 
+from prismabuild import claim_identity
+
 import argparse
 from contextlib import ExitStack
 import hashlib
@@ -202,7 +204,7 @@ time.sleep(600)
 def retained_scope(q, first):
     key = first["action_key"]
     live = json.loads(q.records.item_path(pool.record_store.CLAIMED, key).read_text())
-    assert pool._same_claim(live, first)
+    assert claim_identity.same_claim(live, first)
     assert live["resource_scope"] == first["resource_scope"]
     assert q.ledger(first["claimed_host"]).held() == {"cpu": 1}
     assert q.records.lease_path(key).is_file()

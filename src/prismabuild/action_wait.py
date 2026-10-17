@@ -631,7 +631,7 @@ def _read_preemption_successor(q, key: str, ending, generation) -> float | None:
     # Admission holds this lock across withdrawal and replacement publication.
     # Reading the marker before the replacement exists is an intermediate
     # transition, not evidence that the preempted action was abandoned.
-    with q._transition_locked(key):
+    with q.action_transition_lock(key):
         records = [record for _, record in q.records.withdrawal_decisions(key)]
         records.extend(record for _, record in q.archived_preemption_outcomes(key))
         for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,

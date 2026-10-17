@@ -345,7 +345,7 @@ def test_a_busy_transition_lock_defers_not_refuses(tmp_path, monkeypatch):
     def _busy(self, action_key, **kwargs):
         raise pool_mod.TransitionLockBusy(action_key, {"holder_pid": 1})
 
-    monkeypatch.setattr(pool_mod.PoolQueue, "_transition_locked", _busy)
+    monkeypatch.setattr(pool_mod.PoolQueue, "action_transition_lock", _busy)
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, key)])

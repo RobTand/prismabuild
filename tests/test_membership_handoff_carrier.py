@@ -2,7 +2,7 @@
 
 ``pool.withdraw`` persists ``membership_handoff`` in the immutable
 decision only after proving, against the live claim under the key lock:
-the claim still is the planned attempt (``_same_claim``), its
+the claim still is the planned attempt (``claim_identity.same_claim``), its
 generation is uncovered, and restart permission with remaining budget
 and existing lineage still holds. The tier-loop window reads that exact
 decision back. A supervisor-shaped ``by`` with no (or a failing) proof
@@ -10,6 +10,8 @@ files an ordinary cancellation and still retires the window.
 """
 
 from __future__ import annotations
+
+from prismabuild import claim_identity
 
 import hashlib
 import json
@@ -383,7 +385,7 @@ def test_repeat_handoff_never_retargets_successor(
 def _scoped_live(queue: pool.PoolQueue, key: str, snap: dict,
                  nonce: str) -> dict:
     """Rewrite the live claim adding a broker-valid scope block (the
-    contract `_scope_from_record` enforces), returning the new bytes."""
+    contract `scope_for_record` enforces), returning the new bytes."""
     from prismabuild.resource_scope import BROKER_SOCKET
 
     unit = ("prismabuild-job"

@@ -154,7 +154,7 @@ def test_an_unreadable_origin_is_unknown_not_missing(tmp_path):
 def test_a_busy_transition_lock_does_not_block_the_claim_pass(tmp_path):
     """#1202 review finding 3: the claim pass must never wait on a foreign lock.
 
-    ``_transition_locked`` blocks by default (#1115 class): another box
+    ``action_transition_lock`` blocks by default (#1115 class): another box
     holding the mover key's lock for seconds stalled the whole claim pass.
     The refusal attempt must be non-blocking, recording a ``transition_busy``
     denial instead.
@@ -328,14 +328,14 @@ def test_a_live_producer_pays_no_transition_lock(tmp_path, monkeypatch):
     lock_of = lambda key: (world.q.root / "transition-locks" / (
         hashlib.sha256(key.encode()).hexdigest() + ".lock"))
     taken = []
-    original = world.q._transition_locked
+    original = world.q.action_transition_lock
 
     def counting(key, **kwargs):
         if key == world.mover and lock_of(key).exists():
             taken.append(key)
         return original(key, **kwargs)
 
-    monkeypatch.setattr(world.q, "_transition_locked", counting)
+    monkeypatch.setattr(world.q, "action_transition_lock", counting)
     _warm(world, tmp_path)
     assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     assert taken == [], f"the live-producer check took the mover's lock {len(taken)}x"

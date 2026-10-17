@@ -18502,8 +18502,9 @@ Subsequent lifetime-only edits leave `PRODUCER_FILES` bytes unchanged. The sourc
 controls use a tiny real recorder receipt and preserve source-mismatch refusal;
 they provide no new physical profile, broker deployment, or live cleanup proof.
 
-Run `python3 tools/maintenance/audit_scratch_lifetime.py` for the source-only
-body, caller, assertion and decorator preservation audit. Runtime qualification
+Run `python3 tests/lifecycle_source_audit.py --out DIRECTORY` for the current
+source-only boundary, owner, caller, assertion and decorator audit. The original
+C24 extraction audit remains a historical source artifact. Runtime qualification
 and native scope evidence are separate PB artifacts.
 
 Sealed gang preparation, its conditional import and group state remain in the
@@ -18666,3 +18667,57 @@ bounds.
 snapshot, wait, canary and producer adapters call their package owners without
 importing execution from the CLI. The rollout changes source only; it does not
 activate a runtime generation or D38 enforcement.
+
+### Exact claim facts and scratch action boundaries
+
+`claim_identity` owns the unchanged exact-claim field tuple, equality predicate
+and lease consistency check. It imports only the standard library. The lease
+check receives the existing error constructor. `AmbiguousClaimHolder` lives
+beside its unchanged `PoolContractError` base in RecordStore; Pool imports that
+same object. RecordStore never imports Pool or lifecycle. Scratch registration
+and persistence check supplied facts without importing the queue implementation.
+
+`PoolQueue.action_transition_lock` and `scope_for_record` are the actual action
+lock and fresh scope reconstruction implementations. Current callers and
+fixtures use those names. The retired private APIs have no aliases. Lock paths,
+blocking defaults, conditional reads, exception identity, late-finish names,
+scratch owner-before-lease writes and containment-before-delete order retain
+their existing contracts.
+
+### Lifecycle capture and conclusion ownership (C07)
+
+`lifecycle.classify_action(ActionCapture)` classifies supplied observations.
+Publication, exact claim, lease, reservation phase and terminal evidence stay
+separate, with their generation and record identity. Uncaptured, absent and
+unknown inputs are different answers. C06 `endings.resolve_current` remains
+the terminal interpreter. Classification reads no files and grants no release.
+
+`lifecycle.conclude(queue, policy)` owns worker finish, expired claim, cancelled
+attempt, late result, tombstone recovery, READY quarantine, READY recovery,
+widowed lease, broker deferral and verified terminal-reservation repair.
+The owner uses the queue's single `records` handle and existing containment and
+ledger operations. Named legal destinations apply to each transition. No
+journal, directory enum for a whole key, callback executor or new record schema
+is introduced. Withdrawal remains a durable decision and never concludes a live
+claim.
+
+Worker and reaper policies share exact claim retirement. They retain their
+conditional cleanup, first-writer attempt adoption, entomb comparison, lease
+removal, material-retention rules and publication failure behavior. Ordinary
+finish still takes no broad transition lock. Cancellation retains its existing
+lock through fresh claim and decision reads, proof filing and release. Reaping
+retains its original lock and both pending-finish checks, including the
+acted-from read. Late results control only their saved exact scope.
+
+Interrupted cancellation recovery adopts an already archived, verified withdrawn
+worker attempt before releasing its owner. A decision alone does not invent an
+execution result or occupy a late worker's attempt slot. Unknown attempt
+presence or invalid history retains the claim and reservation. The reaper now
+archives the prior terminal before publishing an adopted terminal, as worker
+finish does. Recovery of an interrupted terminal publication completes only
+its recorded historical unlink after checking the verified attempt, the archived
+record and the still-matching prior terminal. The archive must be bound to the
+winning attempt's generation and disposition. A legacy prior terminal without a
+generation stamp requires the same complete archived-byte match; its missing
+stamp supplies no absence or ordering proof. Live successors and unknown proof
+retain their authority.

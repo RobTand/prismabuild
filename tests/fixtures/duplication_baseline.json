@@ -35,7 +35,7 @@
   "hashlib:src/prismabuild/decomposition.py::document_sha256",
   "hashlib:src/prismabuild/movement_actions.py::container_owner",
   "hashlib:src/prismabuild/pool.py::PoolQueue._archive_move_body",
-  "hashlib:src/prismabuild/pool.py::PoolQueue._transition_locked",
+  "hashlib:src/prismabuild/pool.py::PoolQueue.action_transition_lock",
   "hashlib:src/prismabuild/pool.py::PoolQueue.archive_attempt",
   "hashlib:src/prismabuild/pool.py::PoolQueue.attempt_outcomes",
   "hashlib:src/prismabuild/pool.py::PoolQueue.recover_archived_move",

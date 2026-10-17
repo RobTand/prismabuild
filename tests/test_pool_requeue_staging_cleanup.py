@@ -171,7 +171,7 @@ def test_orphan_staging_cleanup_respects_the_key_lock(
     _recover_owner_while_staging_is_fresh(queue, clock, stage, tombstone)
     clock[0] += GRACE + 1
     with ThreadPoolExecutor(max_workers=1) as executor:
-        with queue._transition_locked(KEY):
+        with queue.action_transition_lock(KEY):
             executor.submit(queue.sweep_finish_tombstones).result(timeout=10)
             assert stage.exists(), "cleanup crossed a key transition owned by another thread"
     queue.sweep_finish_tombstones()

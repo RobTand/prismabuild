@@ -895,7 +895,7 @@ def apply_checkout_recovery(queue, plan, *, expected_plan_sha256,
             _checkout_recovery_refuse('plan belongs to different roots, maintenance owner or host')
         with ExitStack() as held:
             for key in sorted({entry['action_key'] for entry in selections}):
-                if not held.enter_context(queue._transition_locked(key, blocking=False)):
+                if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                     _checkout_recovery_refuse(f'transition lock busy for {key}')
             current, identities = _checkout_recovery_capture(queue, selections, local, bank, gate,
                                             maintenance_owner, proc)

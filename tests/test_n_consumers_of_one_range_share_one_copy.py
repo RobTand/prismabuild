@@ -25,6 +25,8 @@ from __future__ import annotations
 import pbrun
 from prismabuild import submission as submit_core
 
+from prismabuild import claim_identity
+
 import hashlib
 import inspect
 import json
@@ -188,7 +190,7 @@ def _advance(queue: pool.PoolQueue, key: str, phase: str) -> None:
     The lease is rewritten in place.  ``write_lease`` would refuse it: the
     fixture's claim names ``dl380g10`` while the lease ``_claim`` wrote
     names the box the test runs on, and a second heartbeat checks the two
-    agree (``_check_claim_lease_identity``).
+    agree (``claim_identity.check_lease_identity``).
     """
 
     path = queue.records.lease_path(key)

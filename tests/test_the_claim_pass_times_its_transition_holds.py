@@ -35,7 +35,7 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from prismabuild import pool
 queue = pool.PoolQueue(sys.argv[2])
-with queue._transition_locked(sys.argv[3]) as acquired:
+with queue.action_transition_lock(sys.argv[3]) as acquired:
     assert acquired
     print("held", flush=True)
     sys.stdin.read()

@@ -64,7 +64,7 @@ FORBIDDEN_METHODS = frozenset({
     "flock", "lockf",
     "write_text", "write_bytes", "mkdir", "touch", "rmdir", "unlink",
     "symlink_to", "hardlink_to", "chmod", "rename", "replace",
-    "ensure_layout", "_transition_locked", "record_pass", "claim", "publish",
+    "ensure_layout", "action_transition_lock", "record_pass", "claim", "publish",
     "withdraw", "finish", "announce", "serve_once", "reap_stale",
     "write_json_atomic", "write_bytes_atomic", "publish_exact", "publish_mutable",
     "publish_immutable", "_publish_immutable",

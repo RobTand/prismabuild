@@ -54,7 +54,7 @@ def _key_of(item):
 
 
 class _Unheld:
-    """What ``_transition_locked`` yields while another loop holds the key."""
+    """What ``action_transition_lock`` yields while another loop holds the key."""
 
     def __enter__(self):
         return False
@@ -66,14 +66,14 @@ class _Unheld:
 def _contest(monkeypatch, queue: pool.PoolQueue, key: str) -> None:
     """Hold ``key``'s transition lock elsewhere for every later pass."""
 
-    original = queue._transition_locked
+    original = queue.action_transition_lock
 
     def contested(action_key, **kwargs):
         if action_key == key:
             return _Unheld()
         return original(action_key, **kwargs)
 
-    monkeypatch.setattr(queue, "_transition_locked", contested)
+    monkeypatch.setattr(queue, "action_transition_lock", contested)
 
 
 # -- a sparky-shaped box: one GB10, 20 CPUs, adaptive CPU and GPU admission --
@@ -367,13 +367,13 @@ def test_a_box_that_cannot_place_a_row_does_not_take_its_lock(
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources={"cpu": 1, "gpu": 1}, **row)
     taken: list[str] = []
-    original = queue._transition_locked
+    original = queue.action_transition_lock
 
     def recording(action_key, **kwargs):
         taken.append(str(action_key))
         return original(action_key, **kwargs)
 
-    monkeypatch.setattr(queue, "_transition_locked", recording)
+    monkeypatch.setattr(queue, "action_transition_lock", recording)
     assert queue.claim(**worker) is None
     assert key not in taken, (
         "a box that can never place the row took its transition lock (#1085)")

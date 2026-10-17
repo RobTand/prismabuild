@@ -39,7 +39,7 @@ def _loops_holding(queue, keys):
     results: list[bool] = [False] * len(keys)
 
     def hold(index, key):
-        with queue._transition_locked(key, blocking=False) as acquired:
+        with queue.action_transition_lock(key, blocking=False) as acquired:
             results[index] = bool(acquired)
             taken[index].set()
             release.wait(timeout=60)

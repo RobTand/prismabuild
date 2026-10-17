@@ -289,7 +289,7 @@ def _locked_or_skipped(queue: pool.PoolQueue, key: str,
 
     busy: dict[str, object] = {}
     started = time.monotonic()
-    with queue._transition_locked(str(key), blocking=False, busy=busy) as acquired:
+    with queue.action_transition_lock(str(key), blocking=False, busy=busy) as acquired:
         if not acquired:
             events.append(_lock_busy_event(
                 str(key), busy, consumer=consumer, step=step,
@@ -7802,7 +7802,7 @@ def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
 
     events: list[dict[str, object]] = []
     try:
-        with queue._transition_locked(mover, blocking=False) as acquired:
+        with queue.action_transition_lock(mover, blocking=False) as acquired:
             if not acquired:
                 return events
             status, record, funding_reason = queue.read_funding_evidence(
@@ -8117,7 +8117,7 @@ def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
     if not dot or len(mover_name) != 64 or not scan_tier:
         return events
     try:
-        with queue._transition_locked(mover_name,
+        with queue.action_transition_lock(mover_name,
                                       blocking=False) as acquired:
             if not acquired:
                 return events
@@ -8252,7 +8252,7 @@ def _settle_protected(queue: pool.PoolQueue,
         mover = str(entry["mover"])
         kind = str(entry["kind"])
         try:
-            locked = queue._transition_locked(mover, blocking=False)
+            locked = queue.action_transition_lock(mover, blocking=False)
         except (OSError, pool.PoolContractError, ValueError):
             continue
         try:

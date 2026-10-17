@@ -527,7 +527,7 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
 def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, race):
     """A mover that becomes live after the scan keeps its reservation."""
     q, mover, _, _, inst, template, descs = _stranded_with_live_intent(tmp_path)
-    lock = q._transition_locked
+    lock = q.action_transition_lock
     raced = False
 
     def race_before_lock(key, **kwargs):
@@ -548,7 +548,7 @@ def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, rac
                 q.records.item_path(pool.record_store.READY, mover).unlink()
         return lock(key, **kwargs)
 
-    monkeypatch.setattr(q, "_transition_locked", race_before_lock)
+    monkeypatch.setattr(q, "action_transition_lock", race_before_lock)
     _settle(q)
     assert raced
     assert q.read_output_funding(mover, TIER)["state"] == "transferring"

@@ -107,6 +107,8 @@ and returns the exact SDK dependency instead of a stub.
 
 from __future__ import annotations
 
+from . import claim_identity
+
 from prismabuild import immutable_files
 
 from prismabuild import kept_reads
@@ -694,7 +696,7 @@ def bind_instance(queue, template: Mapping[str, object], *,
     if live is None:
         raise ProducedOutputError("stale claim snapshot: no live claimed record")
     try:
-        same = pool_mod._same_claim(live, claim_snapshot)
+        same = pool_mod.claim_identity.same_claim(live, claim_snapshot)
     except Exception as exc:
         raise ProducedOutputError(f"stale claim snapshot: {exc}") from None
     if not same:
@@ -7534,7 +7536,7 @@ def release_origin_consumer(queue, ref: Mapping[str, object], *,
         # action reads it, so its retirement need not wait for one.
         raise ProducedOutputError(
             "origin-batch-not-write-only: its template reads its batches back")
-    with queue._transition_locked(consumer, blocking=False) as owned:
+    with queue.action_transition_lock(consumer, blocking=False) as owned:
         if not owned:
             raise ProducedOutputError(
                 f"origin-consumer-submitting: {consumer[:12]} is being "

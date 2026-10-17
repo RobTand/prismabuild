@@ -1,3 +1,4 @@
+from prismabuild import claim_identity
 """A concluded tombstone remains the owner of unfinished capacity cleanup."""
 import pytest
 
@@ -89,7 +90,7 @@ def test_tombstone_does_not_release_a_claimed_successors_capacity(tmp_path):
     pool.immutable_files.write_json_atomic(tombstone, saved)
     lease = queue.records.lease_path(KEY).read_bytes()
     queue.sweep_finish_tombstones(grace_s=-1)
-    assert pool._same_claim(
+    assert claim_identity.same_claim(
         pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)),
         successor,
     )

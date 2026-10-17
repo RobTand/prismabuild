@@ -11,6 +11,8 @@ and removed its claim.
 
 from __future__ import annotations
 
+from prismabuild import claim_identity
+
 import json
 from pathlib import Path
 import sys
@@ -162,7 +164,7 @@ def test_a_rewritten_claimed_record_is_still_the_same_claim(
     record["stop_pending"] = {"holder_host": "sparky"}
     pool.immutable_files.write_json_atomic(live_path, record)
 
-    assert pool._same_claim(record, claimed)
+    assert claim_identity.same_claim(record, claimed)
     result = queue.finish(
         KEY_A, status="failed", detail={"returncode": 1},
         claim_snapshot=claimed,

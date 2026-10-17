@@ -126,7 +126,7 @@ def test_a_held_owner_lock_past_the_grace_is_a_retryable_refusal(
     acquired: list[bool] = []
 
     def hold() -> None:
-        with queue._transition_locked(consumer, blocking=False) as got:
+        with queue.action_transition_lock(consumer, blocking=False) as got:
             acquired.append(bool(got))
             taken.set()
             release.wait(timeout=60)

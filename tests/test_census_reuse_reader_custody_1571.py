@@ -78,7 +78,7 @@ def test_discovery_excludes_reuse_before_transition_and_admission_locks(
                 ownership, pool_identity=census_reader.pool_identity,
                 section=ownership.section) == "running"
             locks = []
-            real_transition = queue._transition_locked
+            real_transition = queue.action_transition_lock
             real_admission = queue._admission_lock
 
             def transition(*args, **kwargs):
@@ -89,7 +89,7 @@ def test_discovery_excludes_reuse_before_transition_and_admission_locks(
                 locks.append("admission")
                 return real_admission(*args, **kwargs)
 
-            monkeypatch.setattr(queue, "_transition_locked", transition)
+            monkeypatch.setattr(queue, "action_transition_lock", transition)
             monkeypatch.setattr(queue, "_admission_lock", admission)
             with pytest.raises(reservation.CensusUnavailable, match="reader busy"):
                 stack = saved.acquire()

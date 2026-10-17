@@ -151,7 +151,7 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
     allow_publish = threading.Event()
     reader_checkpoint = threading.Event()
     publish = q.publish
-    transition = q._transition_locked
+    transition = q.action_transition_lock
     reader_ident = []
 
     def pause_publish(**kw):
@@ -174,7 +174,7 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
             reader_checkpoint.set()
 
     monkeypatch.setattr(q, 'publish', pause_publish)
-    monkeypatch.setattr(q, '_transition_locked', watch_transition)
+    monkeypatch.setattr(q, 'action_transition_lock', watch_transition)
     with ThreadPoolExecutor(max_workers=2) as workers:
         writer = workers.submit(q.claim, has_gpu=True, capacity={'gpu': 1})
         try:

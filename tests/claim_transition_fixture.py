@@ -9,7 +9,7 @@ def held_transition(queue, key):
     acquired, release = threading.Event(), threading.Event()
 
     def sibling():
-        with queue._transition_locked(key, blocking=False) as held:
+        with queue.action_transition_lock(key, blocking=False) as held:
             assert held, "sibling failed to acquire the real candidate transition"
             acquired.set()
             assert release.wait(60), "history failed to release its sibling claimant"

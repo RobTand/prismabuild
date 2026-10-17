@@ -55,7 +55,7 @@ from prismabuild import role_session
 
 
 def _scope_control(key: str, nonce: str) -> dict:
-    """A valid durable scope identity, exactly as ``_scope_from_record`` derives it."""
+    """A valid durable scope identity, exactly as ``scope_for_record`` derives it."""
 
     unit = ("prismabuild-job"
             + hashlib.sha256((key + nonce).encode()).hexdigest()[:32] + ".slice")

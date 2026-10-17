@@ -101,7 +101,7 @@ def test_persistent_only_owner_does_not_read_containment_or_directories(runtime,
         {"root_env": "CACHE_ROOT", "name": "compile", "lifetime": "persistent"}])
     queue, item, variables = create(json.dumps(selection))
     queue._start_resource_scope(item)
-    monkeypatch.setattr(queue, "_scope_from_record", lambda *a: pytest.fail("needless containment read"))
+    monkeypatch.setattr(queue, "scope_for_record", lambda *a: pytest.fail("needless containment read"))
     monkeypatch.setattr(scratch_lifetime, "_prepare_scratch_directory", lambda *a: pytest.fail("persistent directory read"))
     scratch_lifetime.register_attempt(queue, item["action_key"], claim_snapshot=item, env={})
     assert scratch_lifetime.finalize(queue, item["action_key"], item,
@@ -112,6 +112,6 @@ def test_persistent_only_owner_does_not_read_containment_or_directories(runtime,
 def test_durably_cleaned_owner_does_not_requery_scope(lifetime, monkeypatch):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     assert scratch_lifetime.finalize(queue, item["action_key"], item, export=None)["complete"]
-    monkeypatch.setattr(queue, "_scope_from_record", lambda *a: pytest.fail("needless containment read"))
+    monkeypatch.setattr(queue, "scope_for_record", lambda *a: pytest.fail("needless containment read"))
     monkeypatch.setattr(scratch_lifetime, "_clean_scratch_directory", lambda *a: pytest.fail("consumed directory revisited"))
     assert scratch_lifetime.finalize(queue, item["action_key"], item, export=None)["complete"]

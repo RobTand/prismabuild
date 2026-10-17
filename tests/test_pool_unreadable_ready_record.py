@@ -15,6 +15,8 @@ rather than invisible.
 
 from __future__ import annotations
 
+from prismabuild import lifecycle
+
 import json
 from pathlib import Path
 import sys
@@ -173,13 +175,13 @@ def test_repair_between_scan_and_quarantine_survives(
     queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _foreign_writes_a_broken_record(queue)
-    real_file = queue._file_unreadable
+    real_file = lifecycle._file_unreadable
 
-    def repair_then_file(path: Path, *, reason: str) -> str | None:
+    def repair_then_file(owned_queue, path: Path, *, reason: str) -> str | None:
         _publish(queue, path.stem)
-        return real_file(path, reason=reason)
+        return real_file(owned_queue, path, reason=reason)
 
-    monkeypatch.setattr(queue, "_file_unreadable", repair_then_file)
+    monkeypatch.setattr(lifecycle, "_file_unreadable", repair_then_file)
     assert queue.quarantine_orphans() == []
     assert {item["action_key"] for item in queue.ready_items()} == {
         KEY_INVALID, KEY_TRUNCATED,

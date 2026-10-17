@@ -1048,7 +1048,7 @@ def test_apply_holds_every_selected_transition_lock_through_the_cleanup_owner(ma
     plan = first.prepare(entries=[first.entry, second.entry])
     assert plan["complete"] is True, plan
     active: set[str] = set()
-    actual_lock = first.queue.queue._transition_locked
+    actual_lock = first.queue.queue.action_transition_lock
     actual_cleanup = materialize._cleanup_execution_checkout
 
     @contextmanager
@@ -1065,7 +1065,7 @@ def test_apply_holds_every_selected_transition_lock_through_the_cleanup_owner(ma
         assert active == {first.key, second.key}
         return actual_cleanup(base, temporary, item)
 
-    monkeypatch.setattr(first.queue.queue, "_transition_locked", tracked_lock)
+    monkeypatch.setattr(first.queue.queue, "action_transition_lock", tracked_lock)
     monkeypatch.setattr(materialize, "_cleanup_execution_checkout", locked_cleanup)
     result = first.apply(plan)
     assert result["complete"] is True, result
@@ -1297,7 +1297,7 @@ def test_busy_real_transition_lock_refuses_without_waiting_or_cleanup(case):
         sys.executable, "-c",
         "import sys; from prismabuild.pool import PoolQueue; "
         "q=PoolQueue(sys.argv[1]); "
-        "hold=q._transition_locked(sys.argv[2]); hold.__enter__(); "
+        "hold=q.action_transition_lock(sys.argv[2]); hold.__enter__(); "
         "print('held', flush=True); sys.stdin.readline(); hold.__exit__(None,None,None)",
         str(case.queue.root), case.key,
     ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

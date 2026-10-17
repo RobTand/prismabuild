@@ -396,7 +396,7 @@ def promote_ready_manifest_rows(
             cas = pb.PrismaBuildCAS(row_cas)
             store = replace(store_for(__file__), queue_root=Path(queue.root), cas_root=Path(row_cas))
             with submission.write_window(args, store=store):
-                with queue._transition_locked(key):
+                with queue.action_transition_lock(key):
                     staged = submission.residency_stage_rows(
                         template, consumer_action_key=key,
                         tier=dict(stage_tier), args=args,

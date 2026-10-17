@@ -366,7 +366,7 @@ def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
     before = pool.record_store.read_document(path)
     entered, release = threading.Event(), threading.Event()
     def hold_member():
-        with queue._transition_locked(keys[0]):
+        with queue.action_transition_lock(keys[0]):
             entered.set()
             release.wait(10)
     def update():

@@ -133,7 +133,7 @@ RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
 MOVER_LANDING_REPORT = "landing.json"
 
 
-_CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
+from .claim_identity import CLAIM_IDENTITY_FIELDS
 
 
 def residency_action_key(value: object) -> str:
@@ -155,6 +155,10 @@ class PoolError(digest_primitives.PrismaBuildError):
 
 class PoolContractError(PoolError, ValueError):
     """A queue record does not satisfy its schema."""
+
+
+class AmbiguousClaimHolder(PoolContractError):
+    """Contradictory committed reservations forbid concluding a claim."""
 
 
 class StaleAbsenceError(FileNotFoundError):
@@ -945,7 +949,7 @@ class RecordStore:
 
     def late_finish_path(self, record: Mapping[str, object]) -> Path:
         identity = digest_primitives.canonical_sha256(
-            {field: record.get(field) for field in _CLAIM_IDENTITY},
+            {field: record.get(field) for field in CLAIM_IDENTITY_FIELDS},
         )
         return self.dir(CLAIMED) / f"{record['action_key']}.{identity}{LATE_FINISH_SUFFIX}"
 
