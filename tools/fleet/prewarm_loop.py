@@ -157,6 +157,7 @@ from prismabuild import role_session as runtime_gate  # noqa: E402
 from prismabuild import generation_receipt  # noqa: E402
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import manifest_layout
 from prismabuild import pool  # noqa: E402
 from prismabuild import produced_output  # noqa: E402
@@ -1605,7 +1606,7 @@ def manifest_input_of(request: dict | None) -> dict | None:
         return None
     for entry in request.get("inputs") or ():
         if isinstance(entry, dict) and \
-                entry.get("id") == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
+                entry.get("id") == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
             return entry
     return None
 
@@ -1623,7 +1624,7 @@ def declared_manifest_bytes(request: dict | None) -> int:
     summary = (request.get("params") or {}).get("data_manifest")
     if isinstance(summary, dict):
         value = summary.get("read_bytes" if summary.get("schema") ==
-                            pb.DATA_MANIFEST_SCHEMA_V2 else "total_bytes")
+                            manifest_codec.DATA_MANIFEST_SCHEMA_V2 else "total_bytes")
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
     return 0
@@ -1657,7 +1658,7 @@ def load_manifest(cas_root: Path, entry: dict) -> dict | None:
 
     try:
         path = pb.PrismaBuildCAS(Path(cas_root)).input_path(entry)
-        return pb.load_data_manifest(path)
+        return manifest_codec.load_data_manifest(path)
     except (pb.PrismaBuildError, OSError, ValueError):
         return None
 

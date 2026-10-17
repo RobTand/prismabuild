@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core, resident_sets
+from prismabuild import data_manifest as manifest_codec
 
 
 def timestamp(value):
@@ -119,7 +120,7 @@ def main(argv=None):
     store = resident_sets.ResidentSets(args.pool_root)
     try:
         if args.command == "publish":
-            manifest, _ = core.read_data_manifest(args.manifest)
+            manifest, _ = manifest_codec.read_data_manifest(args.manifest)
             result = store.publish(manifest=manifest, canonical_root=args.canonical_root,
                 hosts=args.hosts.split(","), lease=lease_from_args(args), created_by=args.created_by)
             result["movements"] = submit_copies(store, result["set_id"], policy_path=args.policy, checkout=args.checkout)

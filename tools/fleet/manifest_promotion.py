@@ -47,6 +47,7 @@ from pathlib import Path
 import sys
 
 from prismabuild import core as pb
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import movement_actions
 from prismabuild import pool
 from prismabuild import residency_plan
@@ -253,7 +254,7 @@ def declares_data_manifest(request: Mapping[str, object] | None) -> bool:
         return False
     for entry in request.get("inputs") or ():
         if isinstance(entry, Mapping) and \
-                str(entry.get("id")) == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
+                str(entry.get("id")) == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
             return True
     return False
 
