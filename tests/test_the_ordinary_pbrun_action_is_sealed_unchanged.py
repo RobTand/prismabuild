@@ -56,6 +56,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 
 #: Fixed so the fixture's commit object, and every digest downstream of it, is
 #: the same bytes wherever this runs.
@@ -127,7 +128,7 @@ def _data_manifest(root: Path) -> Path:
         for index in range(3)
     ]
     path.write_text(json.dumps({
-        "schema": pbrun.pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "pb517-test"},
         "annotations": {},
         "mount_prefix": "/mnt/shared",

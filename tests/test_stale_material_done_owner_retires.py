@@ -35,6 +35,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
@@ -226,11 +227,11 @@ def _successor_manifest(tmp_path: Path, payloads: dict[str, bytes]):
         digests[name] = digest
         entries.append({"path": str(source), "offset": 0, "bytes": SIZE,
                         "sha256": digest})
-    manifest = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
                 "annotations": {}, "mount_prefix": str(mount),
                 "entries": entries, "entry_count": len(entries),
                 "total_bytes": len(entries) * SIZE}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(manifest))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(manifest))
     manifest_digest = hashlib.sha256(raw).hexdigest()
     path = tmp_path / "manifest.json"
     path.write_bytes(raw)

@@ -4,13 +4,14 @@ import json
 import pytest
 
 from prismabuild import core
+from prismabuild import data_manifest as manifest_codec
 
 
 def source(tmp_path):
     root = tmp_path / "canonical"
     root.mkdir()
     (root / "weights").write_bytes(b"weights")
-    manifest = {"schema": core.DATA_MANIFEST_SCHEMA_V1,
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
                 "produced_by": {}, "annotations": {}, "mount_prefix": str(root),
                 "entries": [{"path": str(root / "weights"), "offset": 0,
                              "bytes": 7, "sha256": hashlib.sha256(b"weights").hexdigest()}],
