@@ -19,7 +19,19 @@ def review_source_hash(raw):
 
 def reviewed_sites(raw, owner, members, wire=None):
     nodes = ast.parse(raw).body
-    for component in owner.split("."):
+    if owner == "<module>:embedded":
+        embedded = []
+        for statement in nodes:
+            for node in ast.walk(statement):
+                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and "schema" in node.value):
+                    continue
+                try:
+                    embedded.extend(ast.parse(node.value).body)
+                except SyntaxError:
+                    continue
+        nodes = embedded
+    for component in (() if owner == "<module>:embedded" else owner.split(".")):
         selected = next((node for node in nodes
                          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                          and node.name == component), None)
