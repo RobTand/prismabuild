@@ -15,6 +15,7 @@ from pathlib import Path
 import sys
 
 import prismabuild.core as pb
+from prismabuild import data_manifest as manifest_codec
 import prismabuild.storage_tiers as storage_tiers  # noqa: F401
 from prismabuild import residency_plan
 
@@ -64,11 +65,11 @@ def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
         fleet.file(name, size) for name, size in NAMED_FILES]
     manifest = data_manifest(files, prefix=str(fleet.mount),
                              annotations=annotations)
-    manifest = pb.validate_data_manifest(manifest)
+    manifest = manifest_codec.validate_data_manifest(manifest)
     blob = fleet.root / f"{seed}.manifest.json"
     blob.write_text(json.dumps(manifest))
     entry, _ = fleet.cas.ingest_input(
-        blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     snap = fleet.root / f"{seed}.snapshot.json"
     snap.write_text("{}")
     snap_entry, _ = fleet.cas.ingest_input(

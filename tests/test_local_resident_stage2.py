@@ -56,10 +56,11 @@ def test_lease_pass_skips_absent_sets_with_no_tree_and_no_tokens(tmp_path, monke
 def _second_set(tmp_path, store):
     import hashlib
     from prismabuild import core as pb_core
+    from prismabuild import data_manifest as manifest_codec
     other_root = tmp_path / "canonical2"
     other_root.mkdir()
     (other_root / "weights").write_bytes(b"weights")
-    manifest = {"schema": pb_core.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
                 "mount_prefix": str(other_root),
                 "entries": [{"path": str(other_root / "weights"), "offset": 0, "bytes": 7,
                              "sha256": hashlib.sha256(b"weights").hexdigest()}],

@@ -17,6 +17,7 @@ from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
 from prismabuild import _gang, adaptive_gpu, core as pb, pool
+from prismabuild import data_manifest as manifest_codec
 
 fleet = fleet_fixture
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
@@ -73,7 +74,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
             params: dict = {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang}
             if declares_manifest and index == 0:
                 manifest = {
-                    "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+                    "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
                     "produced_by": {"tool": "tests"},
                     "annotations": {"phases": [
                         {"name": "phase-0", "bytes": 2 << 30, "cumulative_bytes": 2 << 30},
@@ -86,10 +87,10 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
                         {"path": "/data/blob-2", "offset": 0, "bytes": 2 << 30, "sha256": None}],
                     "entry_count": 3, "total_bytes": 6 << 30,
                 }
-                manifest = pb.validate_data_manifest(manifest)
+                manifest = manifest_codec.validate_data_manifest(manifest)
                 blob = tmp_path / f"{name}-manifest.json"
                 blob.write_text(json.dumps(manifest))
-                entry, _ = cas.ingest_input(blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                entry, _ = cas.ingest_input(blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
                 snap_blob = tmp_path / f"{name}-snapshot.json"
                 snap_blob.write_text("{}")
                 snap_entry, _ = cas.ingest_input(snap_blob, input_id="pbrun.checkout-snapshot")
