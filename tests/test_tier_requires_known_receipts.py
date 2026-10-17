@@ -119,4 +119,4 @@ raise SystemExit(code)
         assert (tmp_path / "receipt-read").read_bytes() == receipt.read_bytes()
         assert tiers[0]["tier"] == "arc"
         assert tiers[0]["tokens"] == {"arc_gib": 1}
-        assert queue.tier_ledger(tiers[0]["tier_id"]).available() == {"arc_gib": 1}
+        assert queue.tier(tiers[0]['tier_id']).free_supply() == {'arc_gib': 1}

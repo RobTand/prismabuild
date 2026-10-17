@@ -29,8 +29,7 @@ KIND = "stage_gib"
 
 
 def _settle(held: pool.ResourceLedger, monkeypatch: pytest.MonkeyPatch) -> None:
-    after_paths(monkeypatch, held.base,
-                *(path for path in held.base.rglob("*") if path.is_dir()))
+    after_paths(monkeypatch, held.paths.base, *(path for path in held.paths.base.rglob('*') if path.is_dir()))
 
 
 def _names(reader: kept_reads.DirectoryRecords):
@@ -45,9 +44,9 @@ def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     trust.fence = lambda: time.clock_gettime_ns(kept_reads._COARSE_REALTIME)
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
-    ledger = queue.tier_ledger(TIER)
-    ledger.ensure_capacity({KIND: 4})
-    assert ledger.acquire(MOVER, {KIND: 1})
+    ledger = queue.tier(TIER)
+    ledger.grow_supply({KIND: 4})
+    assert ledger.take(MOVER, {KIND: 1})
     _settle(ledger, monkeypatch)
     return queue, ledger, kept_reads.DirectoryRecords(trust=trust)
 
