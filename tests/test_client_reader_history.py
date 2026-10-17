@@ -65,7 +65,7 @@ def test_final_reread_and_reaping_cannot_erase_the_first_abandoned_reader(
     monkeypatch.setattr(action_wait, 'wait_out_retained_readers',
                         lambda *_a, **_k: ([], 0.0))
     with action_wait.client_readers() as history:
-        assert action_client.await_outcome(object(), 'a' * 64, wait_s=wait_s) == 74
+        assert action_client.report_pool_outcome(object(), 'a' * 64, wait_s=wait_s) == 74
         assert len(calls) == expected_reads
         assert history.snapshot().abandoned_count == 1
         assert history.snapshot().identities[0].pid == 123

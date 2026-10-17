@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import sys
 import textwrap
+import time
 import types
 
 import pytest
@@ -602,9 +603,53 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
 
+    entered = base / "holder-writer-entered"
+    release = base / "holder-writer-released"
+    observed = base / "holder-record-observed"
+    unknown = base / "holder-before-registration.json"
+    source = _mover_source(argv, hold_on=2, hold=hold)
+    registration_window = (
+        "real_holder_writer = pool.PoolQueue.write_stage_ownership_holder\n"
+        "def wait_for_observer(path):\n"
+        "    deadline = time.monotonic() + 10.0\n"
+        "    while not os.path.exists(path):\n"
+        "        assert time.monotonic() < deadline, 'holder observer did not acknowledge'\n"
+        "        time.sleep(0.005)\n"
+        "def registered_holder_writer(self, *args, **kwargs):\n"
+        f"    open({str(entered)!r}, 'w').close()\n"
+        f"    wait_for_observer({str(release)!r})\n"
+        "    record = real_holder_writer(self, *args, **kwargs)\n"
+        f"    wait_for_observer({str(observed)!r})\n"
+        "    return record\n"
+        "pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer\n")
+    source = source.replace("code = stage_move.main(", registration_window + "code = stage_move.main(", 1)
+
+    def observe_registration_window(queue):
+        read_holder = queue.stage_ownership_holder
+
+        def holder_at_registration(stage_root):
+            holder = read_holder(stage_root)
+            if not release.exists():
+                assert entered.exists(), "observed a different unregistered lock"
+                assert holder["recorded"] is False
+                unknown.write_text(json.dumps(holder))
+                release.touch()
+            deadline = time.monotonic() + 5.0
+            while not holder["recorded"]:
+                assert time.monotonic() < deadline, "mover did not record its actual lock ownership"
+                time.sleep(0.005)
+                holder = read_holder(stage_root)
+            observed.touch()
+            return holder
+
+        monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
+
     outcome, receipt = _run_mover(
-        base, _mover_source(argv, hold_on=2, hold=hold), _policy(grace),
-        contention=_contention(base), ceiling=60.0)
+        base, source, _policy(grace),
+        contention=_contention(base), ceiling=60.0, before=observe_registration_window)
+
+    assert entered.exists() and release.exists() and observed.exists()
+    assert json.loads(unknown.read_text())["recorded"] is False
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert outcome["elapsed_s"] > hold
