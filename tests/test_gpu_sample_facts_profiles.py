@@ -73,7 +73,7 @@ def test_a_busy_row_keeps_room_on_evidence_that_cannot_admit_it(gpu_rig):
     sample['complete'] = False
     gpu = publish(1)
     cpu = _publish_cpu(queue)
-    with queue._transition_locked(gpu), ThreadPoolExecutor(max_workers=1) as executor:
+    with queue.action_transition_lock(gpu), ThreadPoolExecutor(max_workers=1) as executor:
         assert executor.submit(_claim_here, queue, capacity,
             cpu_sampler=lambda: _cpu_sample(clock),
             gpu_sampler=sample.copy).result(timeout=5) is None
@@ -123,7 +123,7 @@ def test_unknown_room_evidence_allows_the_later_cpu_row(gpu_rig, fault):
         sample['foreign_processes'] = None
     else:
         sample['foreign_processes'] = [{'pid': 42}]
-    with queue._transition_locked(gpu), ThreadPoolExecutor(max_workers=1) as executor:
+    with queue.action_transition_lock(gpu), ThreadPoolExecutor(max_workers=1) as executor:
         claimed = executor.submit(_claim_here, queue, capacity,
             cpu_sampler=lambda: _cpu_sample(clock),
             gpu_sampler=sample.copy).result(timeout=5)

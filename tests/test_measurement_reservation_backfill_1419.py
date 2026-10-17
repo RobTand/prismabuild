@@ -120,7 +120,7 @@ def test_expiry_cannot_give_a_continuous_lower_priority_stream_the_original_drai
         _assert_holder_unchanged(queue, incumbent, snapshot)
     restarted = pool.PoolQueue(queue.root)
     with (ThreadPoolExecutor(max_workers=1) as executor,
-          queue._transition_locked(measurement) as acquired):
+          queue.action_transition_lock(measurement) as acquired):
         assert acquired
         assert executor.submit(claim, q=restarted).result(timeout=5) is None
     assert denial(measurement)["reason"] == "transition_busy"

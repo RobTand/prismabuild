@@ -731,7 +731,7 @@ def test_a_busy_lead_lock_blocks_the_teardown_and_restarts_the_wait(
     outcome = {}
 
     def hold_lead():
-        with queue._transition_locked(lead, blocking=True) as acquired:
+        with queue.action_transition_lock(lead, blocking=True) as acquired:
             outcome["acquired"] = acquired
             entered.set()
             release.wait(timeout=30)
@@ -1024,7 +1024,7 @@ def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "locked-refresh-gang")
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
-    real_lock = queue._transition_locked
+    real_lock = queue.action_transition_lock
     real_listdir = os.listdir
     real_open = os.open
     locked = False
@@ -1053,7 +1053,7 @@ def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
         return real_open(path, flags, *args, **kwargs)
 
     with monkeypatch.context() as fault:
-        fault.setattr(queue, "_transition_locked", transition)
+        fault.setattr(queue, "action_transition_lock", transition)
         fault.setattr(os, "listdir", list_directory)
         fault.setattr(os, "open", open_directory)
         assert gclaim("sparklina") is None
