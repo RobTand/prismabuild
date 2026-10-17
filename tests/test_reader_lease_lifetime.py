@@ -2043,7 +2043,7 @@ def test_identity_derivation_failure_clears_stale_outer(
              "PRISMABUILD_READER_HELPER_ROOT": "/outer/root",
              "OTHER": "kept"}
     monkeypatch.setitem(_sys.modules, "resource_broker", None)
-    monkeypatch.setitem(_sys.modules, "runtime_paths", None)
+    monkeypatch.setitem(_sys.modules, "prismabuild.runtime_paths", None)
     stamped = resource_exec.payload_identity_env(
         outer, action_key="a" * 64, nonce="b" * 32)
     assert "PRISMABUILD_ACTION_NONCE" not in stamped
