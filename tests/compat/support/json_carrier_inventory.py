@@ -21,6 +21,8 @@ def reference_path(root, reference):
         return {"reference": reference, "present": False}
     nodes = ast.parse(path.read_bytes()).body
     for component in qualified.split("."):
+        if component == "<locals>":
+            continue
         node = next((n for n in nodes if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
                      and n.name == component), None)
         if node is None:

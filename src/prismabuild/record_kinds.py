@@ -192,7 +192,7 @@ KINDS = (
                 "campaign-writer", "output-publish-writer", "output-due-writer"),
                ("filed projections preserve the sealed manifest and lead keys",), stable_paths=True,
                variant_writers=(("pbrun-stage-writer", "pbrun:residency_stage_rows"), ("pbrun-reuse-writer", "pbrun:residency_stage_rows"),
-                    ("pbrun-mover-writer", "pbrun:residency_stage_rows.seal_stage_mover"), ("pbrun-ram-writer", "pbrun:residency_stage_rows.seal_ram_chunk"),
+                    ("pbrun-mover-writer", "pbrun:residency_stage_rows.<locals>.seal_stage_mover"), ("pbrun-ram-writer", "pbrun:residency_stage_rows.<locals>.seal_ram_chunk"),
                     ("campaign-writer", "pbcampaign:child_record"), ("output-publish-writer", "prismabuild.produced_output:_publish_output_mover_row"),
                     ("output-due-writer", "prismabuild.produced_output:due_mover_rows"))),
     RecordKind("plan-superseded", "prismaquant.prismabuild.residency_plan_superseded.v1", "private queue plan supersession marker", "additive",

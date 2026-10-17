@@ -303,6 +303,15 @@ def generate(output, selected=None):
             if not check(result, case, "candidate", phase):
                 continue
             raw = base64.b64decode(result["result"]["raw"])
+            repeat = invoke(ROOT, case, Path(tmp) / (label + "-new-repeat"),
+                            evidence=output / "attestations" / (label + "-new-repeat-" + phase + ".json"))
+            if not check(repeat, case, "candidate", phase + "-repeat"):
+                continue
+            repeated = base64.b64decode(repeat["result"]["raw"])
+            if raw != repeated:
+                failures.append({"case": case, "generation": "candidate", "phase": phase + "-reproducibility",
+                                 "expected_sha256": sha(raw), "actual_sha256": sha(repeated)})
+                continue
             origin = ({"origin": "deterministic caller input; no runtime writer"} if kind.caller_input else
                       {"origin": "immutable configuration; no runtime writer"} if kind.fixture_source else {})
             goldens.append({"case": case, "sha256": sha(raw), "raw": base64.b64encode(raw).decode(), **origin})
@@ -322,6 +331,15 @@ def generate(output, selected=None):
                 if not check(result, case, generation, phase):
                     continue
                 prior = base64.b64decode(result["result"]["raw"])
+                repeat = invoke(writer_root, case, stores / (label + "-old-repeat"), manifest=writer_manifest,
+                                evidence=prefix / (label + "-old-repeat-" + phase + ".json"))
+                if not check(repeat, case, generation, phase + "-repeat"):
+                    continue
+                repeated = base64.b64decode(repeat["result"]["raw"])
+                if prior != repeated:
+                    failures.append({"case": case, "generation": generation, "phase": phase + "-reproducibility",
+                                     "expected_sha256": sha(prior), "actual_sha256": sha(repeated)})
+                    continue
                 check(invoke(ROOT, case, stores / (label + "-forward"), raw=prior,
                              evidence=prefix / (label + "-forward.json")), case, generation, "forward")
                 check(invoke(old, case, stores / (label + "-reverse"), raw=raw, manifest=manifest,
@@ -343,6 +361,7 @@ def generate(output, selected=None):
                                 "historical_participant_absences": len(absences),
                                 "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat(),
                                 "selected_cases": selected,
+                                "independent_writer_reproduction_required": True,
                                 "source_git": {"snapshot": source[0], "parents": source[1].split(), "tree": source[2]},
                                 "failures": failures, "passed": not failures}, sort_keys=True, indent=2) + "\n")
     path.chmod(0o444)
