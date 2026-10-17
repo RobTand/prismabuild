@@ -509,6 +509,6 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     slotted = {**static, "annotations": {
         **static["annotations"],
         po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "head", "refs": [committed["ref"]]}]}}
-    with pytest.raises(SystemExit, match="only a data_manifest.v2 has"):
+    with pytest.raises(submit_core.SubmissionRefused, match="only a data_manifest.v2 has"):
         submit_core.require_declared_origin_batches(
             slotted, transport="pool", queue_root=queue.root)

@@ -24,6 +24,7 @@ receipts, so there is nothing honest to price it off, and pricing it off the
 movers' copy receipts would measure the wrong node entirely (#655's lesson).
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

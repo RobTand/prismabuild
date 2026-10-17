@@ -112,7 +112,7 @@ def test_cycle_false_preserves_linear_policy_bytes():
 
 
 def test_cycle_without_phases_is_refused_before_submission():
-    with pytest.raises(SystemExit, match="requires --progress-phase"):
+    with pytest.raises(submit_core.SubmissionRefused, match="requires --progress-phase"):
         submit_core.parse_progress_phases(None, cycle=True)
 
 
@@ -131,7 +131,7 @@ def test_cyclic_submission_requires_known_capable_workers(tmp_path, old_offer):
     queue = pool.PoolQueue(tmp_path / "queue")
     if old_offer:
         _announce(queue, "old", cycle=False)
-    with pytest.raises(SystemExit, match="no eligible worker offers progress-cycle-v1"):
+    with pytest.raises(submit_core.SubmissionRefused, match="no eligible worker offers progress-cycle-v1"):
         submit_core.progress_contract_notice(queue, {"tags": ["x86"]}, policy=_policy())
 
 

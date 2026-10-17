@@ -16,6 +16,7 @@ The landing record prices a claimed copy from the same report.
 Everything runs on ``tmp_path`` queues, stages and sources (#628).
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

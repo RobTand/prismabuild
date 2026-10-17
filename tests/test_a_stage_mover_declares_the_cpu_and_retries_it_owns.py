@@ -16,6 +16,7 @@ the shipped row had -- is asserted to refuse, so the test would have failed
 before the fix and fails again if the ``cpu`` key is dropped.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

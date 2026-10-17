@@ -1,5 +1,7 @@
 """A publisher cannot expose sealed work to a worker that ignores its contract."""
 from __future__ import annotations
+from submission_support import refusal_value
+import pbrun
 from prismabuild import submission as submit_core
 
 import json
@@ -165,7 +167,7 @@ def test_contract_remedy_reaches_the_real_submission_refusal(tmp_path, monkeypat
         for row in contracts.CONTRACTS))
     args = SimpleNamespace(progress_policy=None, here=False, awaited_batch=None,
                            timeout_s=None, wait_s=0.01)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(submit_core.SubmissionRefused) as exc:
         submit_core.announce_placement(queue, action, args=args, cwd=checkout,
                                  portable_checkout=True, display=pbrun.render)
     assert remedy in str(exc.value)
