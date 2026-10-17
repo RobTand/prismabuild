@@ -4206,3 +4206,543 @@ store: FleetStore) -> dict[str, object]:
         cwd,
         demand,
         variables,
+        identity=identity,
+        logical_cwd=logical_cwd,
+        placement=placement,
+    )
+    # Seal the stamp only in the private snapshot index. Publishing it in the
+    # source tree creates both litter and races: another submitter can hash a
+    # scratch name just as it is renamed. Unlinking the final stamp also races
+    # with readers sealing the same fingerprint. No shared stamp path exists
+    # now; workers still verify the same name and bytes in the materialization.
+    payload = json.dumps(
+        {"cwd": logical_cwd, **identity}, indent=1, sort_keys=True
+    )
+    cas = pb.PrismaBuildCAS(store.cas_root)
+    checkout_snapshot = snapshot_checkout(
+        cwd,
+        stamp_name=stamp_name,
+        stamp_payload=payload,
+        cas=cas,
+        max_bytes=checkout_snapshot_max_bytes,
+        expected_identity=identity,
+        snapshot_refs=list(snapshot_refs),
+    )
+    inputs = [checkout_snapshot["input"]]
+    origin_batch_refs = None
+    if data_manifest_path is not None:
+        # Refuse a malformed source before ingestion, then derive the sealed
+        # summary from verified CAS bytes. The source can be replaced between
+        # these reads; its earlier totals/encoding must not describe a later
+        # blob. Discard the preliminary parse before allocating another one.
+        pb.load_data_manifest(data_manifest_path)
+        manifest_input, _ = cas.ingest_input(
+            data_manifest_path,
+            input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        )
+        manifest, manifest_encoding = pb.read_data_manifest(cas.input_path(manifest_input))
+        require_declared_origin_batches(
+            manifest, transport=transport, queue_root=store.queue_root)
+        annotations = manifest.get("annotations")
+        if isinstance(annotations, Mapping):
+            origin_batch_refs = annotations.get(_ORIGIN_BATCHES_ANNOTATION)
+        inputs.append(manifest_input)
+        data_manifest_summary = {
+            "input": manifest_input,
+            "mount_prefix": manifest["mount_prefix"],
+            "entry_count": manifest["entry_count"],
+            "total_bytes": manifest["total_bytes"],
+        }
+        if manifest["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+            require_deployed_read_plan_storage(store=store)
+            require_linear_read_plan_progress(manifest, progress)
+            data_manifest_summary["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+            data_manifest_summary["read_bytes"] = manifest["read_plan"]["read_bytes"]
+        # Preserve ordinary v1 action identity; only compressed inputs need
+        # the encoding declaration. The CAS digest still covers wire bytes.
+        if manifest_encoding != "identity":
+            data_manifest_summary["content_encoding"] = manifest_encoding
+    else:
+        data_manifest_summary = None
+    # The local-disk demand -- the spool window and any declared scratch --
+    # is derived from the sealed environment, so the two are checked together
+    # here, where both are final (#747, #911).  Off, a sealed ``spool_gb`` is
+    # refused rather than carried unexplained.
+    spool_terms = local_disk_terms(variables, transport=transport)
+    sealed_spool = {kind: int(need) for kind, need in demand.items()
+                    if kind == _SPOOL_WINDOW_KIND}
+    if sealed_spool != spool_terms:
+        raise SubmissionRefused(
+            f"pbrun: sealed {_SPOOL_WINDOW_KIND} demand {sealed_spool or 'none'} "
+            f"disagrees with the environment's local-disk demand "
+            f"{spool_terms or 'none'}; {_SPOOL_WINDOW_ENV}, {_SPOOL_MAX_ENV} and "
+            f"the pairs {_SCRATCH_PAIRS_ENV} names are the only source of it")
+    produced_declaration = None
+    produced_validated = None
+    if produced_output_template_path is not None:
+        from prismabuild import produced_output as produced_mod
+
+        # Single bounded capture: read at most MAX+1 once, publish those
+        # exact bytes to the CAS, then validate the captured blob. A second
+        # read of the path could bind OLD bytes in params while the CAS
+        # captures changed NEW bytes; ingesting the held bytes closes it.
+        # Reuses the existing CAS staging/hard-link machinery via
+        # ingest_bytes (indistinguishable blob, same race handling).
+        try:
+            with open(produced_output_template_path, "rb") as handle:
+                raw_template = handle.read(
+                    pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1)
+        except OSError as exc:
+            raise SubmissionRefused(
+                f"pbrun: cannot read --produced-output-template: {exc}") from None
+        if len(raw_template) > pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+            raise SubmissionRefused(
+                "pbrun: --produced-output-template exceeds "
+                f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes: "
+                "templates are envelopes, not payloads")
+        try:
+            template_input, _ = cas.ingest_bytes(
+                raw_template,
+                input_id=pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
+            )
+        except pb.ActionContractError as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template ingest: {exc}") from None
+        try:
+            candidate = json.loads(raw_template.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template is not JSON: {exc}") from None
+        try:
+            produced_validated = produced_mod.validate_template(candidate)
+        except produced_mod.ProducedOutputError as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template invalid: {exc}") from None
+        # Derive the qualified tier demand from the bounded working window
+        # here (never the durable corpus), so the sealed demand and the
+        # sealed declaration cannot drift apart between prepare and freeze.
+        try:
+            window_terms = produced_mod.owner_demand_terms(produced_validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template demand: {exc}") from None
+        for qualified, need in window_terms.items():
+            if demand.get(qualified, 0) != int(need):
+                raise SubmissionRefused(
+                    "pbrun: --produced-output-template window demand "
+                    f"{qualified}={need} disagrees with the sealed demand; "
+                    "the template is the only source of tier demand")
+        # The CAS digest covers the captured bytes; the declaration below
+        # binds the canonical template identity to that input row, so the
+        # key moves with the template and a post-seal edit changes nothing.
+        try:
+            produced_declaration = produced_mod.build_declaration(
+                produced_validated, template_input)
+        except produced_mod.ProducedOutputError as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template declaration: {exc}") from None
+        inputs.append(template_input)
+    execution_scope, toolchain = host_class_scope(
+        host_class, measurement=measurement, transport=transport,
+        target_evidence=target_evidence)
+    if recorder is not None:
+        # Actual executable/version facts, verified by the normal worker
+        # preflight and bound into its real receipt; never guessed hashes.
+        if target_evidence is not None:
+            # The class is the worker's: its interpreter is not this box's, so
+            # the packet's own declaration is the only source (#1598).
+            declared = getattr(target_evidence, "recorder", None)
+            # Both refusals are correctness checks, not D32 seals (CEO ruling on
+            # dec-1007-143227-359f): facts about another file are not comparable
+            # to this command's executable, and absent facts are missing input.
+            # They also protect the content-addressed action key.
+            if declared is None or declared["path"] != command[0]:
+                raise SubmissionRefused(
+                    "pbrun: a scratch recorder under --target-evidence needs the "
+                    f"worker's identity of {command[0]!r}; collect the packet with "
+                    f"pbevidence.py --recorder-python {command[0]}")
+            toolchain = {**toolchain, **{k: v for k, v in declared.items() if k != "path"}}
+        else:
+            toolchain = {**toolchain, **pb.executable_toolchain_contract(command[0]),
+                         **pb._probe_python_toolchain(Path(command[0]))}
+    if pool_measurement_class and demand.get("gpu", 0) and (
+        "cuda_compute_capability" not in toolchain or "nvidia_driver" not in toolchain
+    ):
+        raise SubmissionRefused("pbrun: class-scoped GPU measurement requires live accelerator "
+                         "model, compute capability and driver evidence")
+    params: dict[str, object] = {
+        "command": list(command),
+        "cwd": logical_cwd,
+        "demand": demand,
+        "placement": placement,
+        "checkout_snapshot": checkout_snapshot,
+        "retry_policy": retry_policy,
+    }
+    if dependency_queries:
+        params["dependency_queries"] = dict(dependency_queries)
+        if local_dependencies.TAG in placement["required_tags"]:
+            params["local_dependencies"] = dict(dependency_queries)
+    if resident_set is not None:
+        from prismabuild import resident_sets
+        params["resident_set"] = resident_sets._set_id(resident_set)
+    if recorder is not None:
+        params["local_scratch_profile"] = recorder
+    declared_interpreter = interpreter_of(command)
+    if declared_interpreter is not None:
+        # The placement requirement travels in the sealed body (#1263), so
+        # the row, the matcher and the claim all read one authority: the
+        # exact path this action will exec.
+        params["interpreter"] = declared_interpreter
+    if requires_files is not None:
+        # Sealed like the interpreter (#1495): the row carries the claim-
+        # relevant projection, and the requirement is part of the action's
+        # own identity, so a changed digest re-keys the action.
+        params["requires_files"] = requires_files
+    if data_manifest_summary is not None:
+        # A summary, not the list: the prewarm budget and the ARC check read
+        # these two numbers every poll, and making them fetch and parse a
+        # 200 KB blob to learn a byte count would put the manifest on the
+        # scheduler's hot path. The list itself stays in the CAS.
+        params["data_manifest"] = data_manifest_summary
+    if produced_declaration is not None:
+        # Sealed like the data manifest: the input row carries the bytes,
+        # this declaration binds the canonical template identity to it, so
+        # the action key covers both. Absent, the key is byte-identical to
+        # before this flag existed.
+        params[pb.PRODUCED_OUTPUT_TEMPLATE_PARAM] = produced_declaration
+    if demand.get("gpu"):
+        params["gpu_exclusive"] = bool(exclusive)
+        if gpu_memory_gb is not None:
+            params["gpu_memory_gb"] = gpu_memory_gb
+    if execution_timeout_s is not None:
+        params["execution_timeout_s"] = execution_timeout_s
+    if gang is not None:
+        # Sealed membership (#1517): the group, its size and this index are
+        # part of the action key. Absent, the key is byte-identical to before.
+        params["gang"] = dict(gang)
+    if progress is not None:
+        # Sealed, like the profiler mode and for the same reason: an action
+        # admitted under the progress contract is a different action from its
+        # unbounded twin, so the store never answers one with the other's
+        # receipt.  Absent, the key is byte-identical to what it was before
+        # this flag existed.
+        params[pb.PROGRESS_PARAM] = progress
+    if awaited_batch is not None:
+        # Sealed beside the progress policy it credits (#1666): a coordinator
+        # the worker credits is a different action from one it does not.
+        # Absent, the key is byte-identical to before this flag existed.
+        params[pb.AWAITED_BATCH_PARAM] = awaited_batch
+    if profile is not None:
+        # Sealed, and only when asked for.  Present, it makes a profiled run a
+        # different action from its unprofiled twin, which is what stops the
+        # CAS from answering a profile request with a receipt that has none.
+        # Absent, the key is byte-identical to what it was before this flag
+        # existed, so nothing already in the store is orphaned.
+        params[pb.PROFILE_PARAM] = profile
+    if container_image_refs:
+        # Sealed for the same reason: an image-pinned action is a different
+        # action from its unpinned twin, and the requirement has to travel on
+        # the action's own bytes -- the queue item's copy is a scheduling
+        # projection of this one, never the other way around (#714).  Absent,
+        # the key is byte-identical to what it was before this flag existed.
+        params["container_images"] = list(container_image_refs)
+    if d38_namespace is not None:
+        # Sealed before the key is computed (D38): the namespace the preflight
+        # proved is part of the job's identity, so a changed namespace is a
+        # changed job and the old receipt no longer binds it.  Absent, the key
+        # is byte-identical to what it was before this flag existed.
+        params[d38_gate.NAMESPACE_PARAM] = d38_namespace
+    template = {
+        "cas": cas,
+        "marker_root": marker_root,
+        "checkout_identity": identity,
+        "tested_repository": tested_repository,
+        "log_name": log_name,
+        "stamp_name": stamp_name,
+        "produced_output_template": produced_validated,
+        "task": {
+            "definition_id": "fleet/pbrun",
+            "definition_version": "v1",
+            "task_class": "measurement" if measurement else "generation",
+            # A pytest or a timing run is not byte-reproducible and must not
+            # claim to be: the CAS only enforces canonical equality on
+            # "deterministic", so mislabelling one would be a false receipt.
+            "determinism": determinism,
+            "artifact_family": "generic",
+            "artifact_kind": "generic",
+            "working_directory": ".",
+        },
+        "inputs": inputs,
+        "code_closure": build_stamp_closure(stamp_name, payload),
+        "params": params,
+        "environment": {"variables": variables, "toolchain": toolchain},
+        "execution_scope": execution_scope,
+    }
+    if origin_batch_refs is not None:
+        # The batches the sealed data manifest declares, for ``main`` to file
+        # this consumer against once its key is known (#914).  Only when
+        # declared, so every other template is the one it always was.
+        template[_ORIGIN_BATCHES_TEMPLATE_KEY] = list(origin_batch_refs)
+    return template
+
+
+_TEMPLATE_SUBMITTER_KEYS = frozenset(
+    {"cas", "marker_root", "checkout_identity", "tested_repository",
+     "log_name", "stamp_name",
+     "produced_output_template", "produced_output_batches"}
+)
+
+
+def template_action_common(template: Mapping[str, object]) -> dict[str, object]:
+    """The half of every action sealed from this template that none of them varies.
+
+    A decomposition's parent has to be keyed on exactly this.  Key it on less
+    -- on the producer's declared command, demand and environment alone -- and
+    two campaigns that differ in placement, retry policy, timeout, profiler
+    mode or the local toolchain collapse onto one parent while their children
+    take different keys; the publication index then refuses the second run with
+    a key mismatch that names the child rather than the cause.
+
+    The two container variables come off, because ownership is per action by
+    the time anything is sealed, and a child's own owner is a function of this
+    record and its own command.
+    """
+
+    shared = {name: value for name, value in template.items()
+              if name not in _TEMPLATE_SUBMITTER_KEYS}
+    shared["params"] = {name: value
+                        for name, value in shared["params"].items()
+                        if name != "command"}
+    variables = dict(shared["environment"]["variables"])
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    shared["environment"] = {**shared["environment"], "variables": variables}
+    return shared
+
+
+def seal(
+    template: Mapping[str, object],
+    *,
+    command: Sequence[str] | None = None,
+    result_path: str | None = None,
+    extra_inputs: Sequence[Mapping[str, object]] = (),
+    extra_params: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Turn one frozen template into one sealed action.
+
+    The command and the result path are rebuilt here rather than carried in
+    the template because they are the two things a decomposed child varies:
+    its own batch resolved into the argument list, its own manifest to write.
+    For an ordinary submission nothing is overridden and this is the
+    template's own command, teed to the template's own log.
+
+    The four overrides are the whole of what makes a child different from an
+    ordinary action, and they are deliberately narrow.  Each one lands in the
+    sealed body, so a child's key is an ordinary ``pbrun`` key over a command,
+    an input list and a ``params`` that say which batch of which plan it
+    measured -- not a new kind of action with its own hashing rules.
+
+    ``command`` still runs under the same wrapper and still tees to a log; the
+    log just stops being the declared result, because a decomposed child's
+    result is its manifest.  ``extra_inputs`` are appended after the
+    template's, so the checkout snapshot stays ``inputs[0]``, which is where
+    the worker's materialization looks for it.  ``extra_params`` may not
+    rewrite anything the template froze: a child that could restate its own
+    command, demand or snapshot would be a different action wearing a
+    template's identity.
+
+    Container ownership is settled here rather than in the template because it
+    is a property of one running action, not of the source tree.  Two children
+    sealed off one template are two Docker lifecycles on what may be one box:
+    a shared ownership label makes the first to finish ``docker rm -f`` the
+    other's live payload, and a shared ``<owner>.used`` marker makes each
+    one's reclaim wait on the other's use.  So the owner is re-derived from
+    this action's own command and re-injected.  With nothing overridden the
+    inputs are the template's, so the digest is the template's and an ordinary
+    submission seals byte for byte what it did before this split existed.
+    """
+
+    params = dict(template["params"])
+    if extra_params:
+        overwritten = sorted(set(extra_params) & set(params))
+        if overwritten:
+            raise SubmissionRefused(
+                "pbrun: refusing to seal an action whose extra params restate "
+                f"the frozen template's: {', '.join(overwritten)}"
+            )
+        params.update(extra_params)
+    command = list(template["params"]["command"] if command is None else command)
+    params["command"] = command
+    # Strip the two injected variables back off to recover exactly the mapping
+    # the template hashed, so an unoverridden command lands on the same digest.
+    variables = dict(template["environment"]["variables"])
+    variables.pop(CONTAINER_OWNER_ENV, None)
+    variables.pop(CONTAINER_MARKER_ENV, None)
+    marker_root = template["marker_root"]
+    owner = container_owner(
+        command,
+        params["cwd"],
+        params["demand"],
+        variables,
+        determinism=template["task"]["determinism"],
+        retry_policy=params["retry_policy"],
+        marker_root=marker_root,
+        # Recorded by the template, never re-read: the tree may have moved on
+        # since, and every action sealed from one template must answer for the
+        # tree that template froze.
+        identity=template["checkout_identity"],
+        logical_cwd=params["cwd"],
+        placement=params["placement"],
+        # The action's own declared images, so a child or an override that
+        # changes them re-derives its own Docker lifecycle rather than sharing
+        # the template's or a sibling's (#714 review).  A movement node cuts
+        # its params from _MOVEMENT_PARAM_KEYS, which does not carry them.
+        container_images=params.get("container_images") or (),
+    )
+    variables[CONTAINER_OWNER_ENV] = owner
+    variables[CONTAINER_MARKER_ENV] = str(marker_root / f"{owner}.used")
+    log_name = str(template["log_name"])
+    recorder = params.get("local_scratch_profile")
+    if recorder is not None:
+        from prismabuild import local_scratch
+        if (local_scratch.check_profile_request(command, variables, params["demand"],
+                cwd=params["cwd"], determinism=template["task"]["determinism"], derived=True) != recorder
+                or result_path not in (None, local_scratch.PROFILE_RESULT)):
+            raise SubmissionRefused("pbrun: scratch recorder override differs from sealed file-result contract")
+        argv, effective_result = command, local_scratch.PROFILE_RESULT
+    else:
+        argv = movement_actions.standard_capture_argv(
+            command, log_name,
+            path_prefix=variables['PATH'].split(':', 1)[0])
+        effective_result = log_name if result_path is None else result_path
+    body = {
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {
+            **template["task"],
+            "argv": argv,
+            "result_path": effective_result,
+        },
+        "inputs": [*template["inputs"], *extra_inputs],
+        "code_closure": template["code_closure"],
+        "params": params,
+        "environment": {**template["environment"], "variables": variables},
+        "execution_scope": template["execution_scope"],
+    }
+    try:
+        return pb.seal_action(body)
+    except pb.ActionContractError as exc:
+        # A refused contract is the caller's to fix; nothing has been queued
+        # or ingested, so say what was refused and stop.  A traceback here
+        # names core.py internals for what is a submission error (issue #21).
+        raise SubmissionRefused(f"pbrun: refusing to seal the action: {exc}") from None
+
+
+def seal_movement(
+    template: Mapping[str, object],
+    *,
+    command: Sequence[str],
+    demand: Mapping[str, int],
+    tags: Sequence[str],
+    log_name: str,
+    retry_policy: Mapping[str, object] | None = None,
+    extra_params: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Seal one movement or egress node off the submission that needs it.
+
+    See ``prismabuild.movement_actions.seal_movement_action`` for the
+    construction: a movement node is a sibling that shares the submission's
+    checkout snapshot, code closure and environment variables, while its
+    command is a fleet tool, its demand is tier tokens, it is placed on the
+    box that owns the stage, and it is sealed as portable generation work
+    whatever the submission is (#944). The submitter's ``container_owner``
+    settles ownership here, exactly as before.
+    """
+
+    return movement_actions.seal_movement_action(
+        template, command=command, demand=demand, tags=tags,
+        log_name=log_name, retry_policy=retry_policy,
+        container_owner_fn=container_owner, extra_params=extra_params)
+
+
+def resolve_stage_tier(queue, declared: str | None) -> dict[str, object]:
+    """Which stage tier this submission's bytes land on, from what the fleet says.
+
+    Discovered rather than configured, because the tiers are: ``tier_loop``
+    announces what each box actually has, so a submitter that hard-coded a
+    pool name would keep asking for a dataset after Rob moved it.  One stage
+    tier is the unambiguous case and needs no flag; none is a refusal naming
+    the loop that would have announced it; more than one is a refusal that
+    lists them, because picking for the operator is picking which box the
+    campaign reads from.
+    """
+
+    stages = [record for record in queue.tiers()
+              if record.get("tier") == "stage" and not record.get("retired")]
+    if declared is not None:
+        for record in stages:
+            if str(record.get("tier_id")) == declared:
+                return record
+        raise SubmissionRefused(
+            f"pbrun: no live stage tier {declared!r}; the fleet announces "
+            f"{sorted(str(r.get('tier_id')) for r in stages) or 'none'}")
+    if not stages:
+        raise SubmissionRefused(
+            "pbrun: --residency stage needs a stage tier, and no box announces "
+            "one.  A storage box mints it by running the tiers role "
+            "(tier_loop.py); until it does, nothing can reserve stage capacity")
+    if len(stages) > 1:
+        raise SubmissionRefused(
+            "pbrun: more than one stage tier is live; name one with "
+            f"--residency-tier: {sorted(str(r.get('tier_id')) for r in stages)}")
+    return stages[0]
+
+
+def resolve_ram_tier(queue, stage_tier: Mapping[str, object],
+                     ) -> dict[str, object] | None:
+    """The ram tier that sits in front of this stage, from what the fleet says.
+
+    Discovered rather than configured, because the tiers are: the promotion
+    node runs on the box that owns the stage, so the ram tier that feeds the
+    same consumers is that box's, and a ram tier on another host is another
+    stage's leg.  None is the ordinary answer -- no tmpfs mounted, or a
+    generation predating the policy -- and it seals no ram leg, exactly as a
+    submission before the tier existed did.
+    """
+
+    host = str(stage_tier.get("host") or "")
+    rams = [record for record in queue.tiers()
+            if record.get("tier") == "ram" and not record.get("retired")
+            and str(record.get("host") or "") == host]
+    if not rams:
+        return None
+    if len(rams) > 1:
+        raise SubmissionRefused(
+            "pbrun: more than one ram tier is live on "
+            f"{host or 'the stage host'}: the policy declares one mountpoint, "
+            f"and the fleet announces {sorted(str(r.get('tier_id')) for r in rams)}")
+    return rams[0]
+
+
+def movement_tools(tier: Mapping[str, object], *,
+                   mover: str = "stage_move.py") -> tuple[str, str, str]:
+    """The interpreter and the two movement scripts, as the tier announces them.
+
+    The construction lives in ``prismabuild.movement_actions`` (the one
+    ordinary movement path, shared verbatim with the produced-output
+    writer lane); see there for why the answer comes off the tier record
+    and never off this process.
+    """
+
+    return movement_actions.movement_tools(tier, mover=mover)
+
+
+def current_fill_offer(tier: Mapping[str, object],
+                       measured: int | None) -> tuple[int | None, int | None, str]:
+    """The fill a freshly sealed mover may reserve; see ``storage_tiers``.
+
+    The rule moved to ``storage_tiers.current_fill_offer`` so the
+    produced-output exporter prices its pool writes by the same rule (#747).
+    """
+
+    return storage_tiers.current_fill_offer(tier, measured)
+
