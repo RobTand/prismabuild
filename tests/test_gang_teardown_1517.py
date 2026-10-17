@@ -117,9 +117,9 @@ def test_pbrun_seals_a_gang_member_and_refuses_retries():
     args = pbrun.parse_args(base)
     assert submit_core.gang_declaration(args) == {"group": "c" * 32, "size": 2, "index": 1}
     for extra in (["--retry-safe", "--max-attempts", "2"],):
-        with pytest.raises(SystemExit, match="one attempt"):
+        with pytest.raises(submit_core.SubmissionRefused, match="one attempt"):
             submit_core.gang_declaration(pbrun.parse_args([*extra, *base]))
-    with pytest.raises(SystemExit, match="go together"):
+    with pytest.raises(submit_core.SubmissionRefused, match="go together"):
         submit_core.gang_declaration(pbrun.parse_args(["--cwd", ".", "--transport", "pool", "--gang-size", "2", "--", "true"]))
     assert submit_core.gang_declaration(pbrun.parse_args(["--cwd", ".", "--", "true"])) is None
 

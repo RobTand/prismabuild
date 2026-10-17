@@ -45,7 +45,7 @@ def _submission_variables(argv, monkeypatch, tmp_path):
     monkeypatch.setattr(submit_core.pb, "seal_action", stop)
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     patch_store(monkeypatch, client=pbrun, wrapper_dir=tmp_path / "fleet" / "repo" / "tools")
-    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd, **_context: tmp_path)
     monkeypatch.setattr(
         submit_core,
         'snapshot_checkout',

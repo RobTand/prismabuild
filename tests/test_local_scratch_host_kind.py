@@ -145,19 +145,19 @@ def test_scratch_and_the_spool_window_share_one_kind(tmp_path, monkeypatch):
 def test_a_pair_that_cannot_be_charged_is_refused_at_submit(
         tmp_path, monkeypatch, pairs, env, match):
     extra = [f"{name}={value}" for name, value in env.items()] + [f"{PAIRS}={pairs}"]
-    with pytest.raises(SystemExit, match=match):
+    with pytest.raises(submit_core.SubmissionRefused, match=match):
         _build(tmp_path, monkeypatch, *_env(*extra))
 
 
 def test_a_typed_local_disk_demand_is_still_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match=KIND):
+    with pytest.raises(submit_core.SubmissionRefused, match=KIND):
         _build(tmp_path, monkeypatch, *_env(*_declared()), "--demand", f"{KIND}=4")
     assert submit_core._FLEET_DEMAND_KINDS == frozenset(
         {"cpu", "gpu", "mem_gb", "disk_metadata"})
 
 
 def test_slurm_refuses_declared_scratch(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         _build(tmp_path, monkeypatch, *_env(*_declared()), transport="slurm")
 
 
@@ -193,7 +193,7 @@ DECLARED = {SPILL[0]: "/home/rob/pq-scratch/spill", SPILL[1]: str(GIB + 1),
 def test_freeze_refuses_a_sealed_demand_that_disagrees_with_the_pairs(
         tmp_path, monkeypatch, demand, variables):
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
-    with pytest.raises(SystemExit, match=KIND):
+    with pytest.raises(submit_core.SubmissionRefused, match=KIND):
         _freeze(tmp_path, demand=demand, variables=variables)
 
 
