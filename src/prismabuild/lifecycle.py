@@ -204,7 +204,7 @@ def _finish_late(
 ) -> Path:
     from . import pool
     if snapshot.get("resource_scope") is None and snapshot.get("resource_scope_intent") is None:
-        return _archive_late_finish(queue, 
+        return _archive_late_finish(queue,
             action_key, status=status, detail=detail, snapshot=snapshot, live=live)
     record = {**dict(snapshot), "action_key": action_key}
     path = queue.records.late_finish_path(record)
@@ -250,7 +250,7 @@ def _retry_late_finish(queue, path: Path, record: dict[str, object]) -> Path:
     # Keep completed cleanup durable until both the immutable attempt and
     # the recovery evidence are filed. Neither can overwrite a successor.
     queue.records.replace_record_at(path, record)
-    result = _archive_late_finish(queue, 
+    result = _archive_late_finish(queue,
         str(record["action_key"]), status=status, detail=detail, snapshot=record, live=live)
     evidence = dict(record)
     evidence.pop("finish_pending", None)
@@ -453,14 +453,14 @@ def _worker_finish(
             # only unstarted releases. The late archive distinguishes their
             # numbered history from an uncharged slot; the missing-claim
             # terminal path would end work still waiting in READY (#234).
-            return _finish_late(queue, 
+            return _finish_late(queue,
                 action_key, status=status, detail=detail,
                 snapshot=claim_snapshot, live=ready,
             )
     if facts.claim is ClaimRelation.DIFFERENT:
         # Whatever is at ``claimed/<key>.json`` now is not the claim this
         # worker executed, so none of the code below may touch it.
-        return _finish_late(queue, 
+        return _finish_late(queue,
             action_key, status=status, detail=detail,
             snapshot=claim_snapshot, live=record,
         )
