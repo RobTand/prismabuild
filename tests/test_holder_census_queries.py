@@ -45,7 +45,7 @@ def test_private_and_mirror_tokens_remain_real_through_commit_and_release(tmp_pa
     queue, ledger = _queue(tmp_path)
     census = ledger.holder_census()
     assert census.token_totals() == {}
-    assert queue.hold_tier_host_memory(ledger.host, 'fill', 3) == ('taken', '')
+    assert queue.tier('ram:' + str(ledger.host))._hold_host('fill', 3) == ('taken', '')
     handle = ledger.begin_acquire(KEY, {'cpu': 1, 'mem_gb': 2})
     assert handle is not None
     assert ledger.held_keys() == ['ram-host:fill']
@@ -55,7 +55,7 @@ def test_private_and_mirror_tokens_remain_real_through_commit_and_release(tmp_pa
     assert ledger.held_keys() == [KEY, 'ram-host:fill']
     assert ledger.holder_tokens(KEY) == {'cpu': 1, 'mem_gb': 2}
     assert ledger.release(KEY) == 3
-    assert queue.release_tier_host_memory(ledger.host, 'fill') == 3
+    assert queue.tier('ram:' + str(ledger.host))._release_host('fill') == 3
     assert census.token_totals() == ledger.held() == {}
     assert ledger.available() == CAPACITY
 

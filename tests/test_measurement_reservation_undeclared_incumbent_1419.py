@@ -225,7 +225,7 @@ def _non_action_holder_keeps_the_bounded_episode(fleet, hold):
 def test_a_ram_fill_hold_alone_does_not_elect_the_host(fleet):
     def hold(queue, publish, claim):
         grant = "a" * 64
-        assert queue.hold_tier_host_memory("sparklina", grant, 100) == ("taken", "")
+        assert queue.tier('ram:' + str('sparklina'))._hold_host(grant, 100) == ('taken', '')
         return pool.PoolQueue.RAM_HOST_MEMORY_PREFIX + grant
     _non_action_holder_keeps_the_bounded_episode(fleet, hold)
 

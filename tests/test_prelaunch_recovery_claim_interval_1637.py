@@ -72,8 +72,8 @@ def test_a_claim_after_an_interrupted_recovery_waits_for_the_fence(
     def interrupted(*_args, **_kwargs):
         raise OSError("the recovery stopped after the rotation")
 
-    real = queue.transfer_tier_reservation_count
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", interrupted)
+    real = tier_holdings.TierLedger.handover_count
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", interrupted)
     stopped = _recover(queue, plan, unit, holder, first, row)
     assert stopped.status == "deferred"
     record = queue.read_funding(first, TIER)
@@ -86,7 +86,7 @@ def test_a_claim_after_an_interrupted_recovery_waits_for_the_fence(
     assert _free(queue) == free_before, state
     assert _tokens(queue, first) == 0, state
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", real)
     assert _recover(queue, plan, unit, holder, first, row).status == "published"
     free_mid = _free(queue)
     got = queue.claim(tags=["dl380g10"], owner="w-after")
@@ -101,7 +101,7 @@ def test_a_claim_while_the_recovery_transfers_is_not_charged_twice(
     queue, plan, unit, holder, first, row = _recovering(tmp_path)
     free_before = _free(queue)
     seen: dict[str, object] = {}
-    real = queue.transfer_tier_reservation_count
+    real = tier_holdings.TierLedger.handover_count
 
     def transfer_with_a_claimant(*args, **kwargs):
         def claim() -> None:
@@ -114,7 +114,7 @@ def test_a_claim_while_the_recovery_transfers_is_not_charged_twice(
         seen["thread"] = worker
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count",
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count",
                         transfer_with_a_claimant)
     assert _recover(queue, plan, unit, holder, first, row).status == "published"
     seen["thread"].join(30)
@@ -137,28 +137,28 @@ def test_a_claim_is_deferred_when_the_fence_custody_cannot_be_read(
     """
     queue, plan, unit, holder, first, row = _recovering(tmp_path)
     free_before = _free(queue)
-    real = queue.transfer_tier_reservation_count
+    real = tier_holdings.TierLedger.handover_count
 
     def part_then_stop(tier_id, source, target, count):
         real(tier_id, source, target, 1)         # one of the two tokens moves
         raise OSError("the recovery stopped after a partial transfer")
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", part_then_stop)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", part_then_stop)
     assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
     assert queue.read_funding(first, TIER)["state"] == "reserved"
     assert _tokens(queue, first) == 1
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", real)
 
     def unreadable(_ledger, _key):
         raise OSError("a holder directory could not be listed")
 
-    real_held = pool.held_names_visible
-    monkeypatch.setattr(pool, "held_names_visible", unreadable)
+    real_held = tier_holdings.TierLedger.holder_state
+    monkeypatch.setattr(tier_holdings.TierLedger, "holder_state", unreadable)
     got = queue.claim(tags=["dl380g10"], owner="w-unreadable")
     state = {"claimed": None if got is None else str(got["action_key"])[-8:],
              "free before": free_before, "free after": _free(queue),
              "mover tokens": _tokens(queue, first)}
-    monkeypatch.setattr(pool, "held_names_visible", real_held)
+    monkeypatch.setattr(tier_holdings.TierLedger, "holder_state", real_held)
     assert got is None or got["action_key"] != first, state
     assert _free(queue) == free_before, state
     assert _tokens(queue, first) == 1, state
@@ -201,16 +201,16 @@ def test_a_claim_is_deferred_when_the_funding_record_cannot_be_read(
         pytest.skip("root reads a mode-000 file")
     queue, plan, unit, holder, first, row = _recovering(tmp_path)
     free_before = _free(queue)
-    real = queue.transfer_tier_reservation_count
+    real = tier_holdings.TierLedger.handover_count
 
     def part_then_stop(tier_id, source, target, count):
         real(tier_id, source, target, 1)
         raise OSError("the recovery stopped after a partial transfer")
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", part_then_stop)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", part_then_stop)
     assert _recover(queue, plan, unit, holder, first, row).status == "deferred"
     assert _tokens(queue, first) == 1
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", real)
 
     restore = breaker(queue.records.funding_path(first, TIER))
     try:

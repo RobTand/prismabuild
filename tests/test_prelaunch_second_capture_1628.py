@@ -181,7 +181,7 @@ def test_a_partial_transfer_resumes_from_the_bound_record(
     no mover holds more than its leg, and none is refused as occupied.
     """
     queue, tiers, second, unit, movers = _first_then_second(tmp_path)
-    real = queue.transfer_tier_reservation_count
+    real = tier_holdings.TierLedger.handover_count
     state = {"failed": False}
 
     def partial(tier_id, holder, mover, count):
@@ -191,7 +191,7 @@ def test_a_partial_transfer_resumes_from_the_bound_record(
             raise OSError("interrupted mid-transfer")
         return real(tier_id, holder, mover, count)
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", partial)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", partial)
     seen = _publish_until_bound(queue, tiers, movers)
     assert state["failed"], "the fixture never interrupted a transfer"
     assert not [e for e in seen if "prelaunch-mover-occupied" in str(e)]
@@ -289,17 +289,17 @@ def test_same_consumer_partial_transfer_resumes_exact_binding(
         _same_consumer_republication(tmp_path, retained))
     mover = movers[0]
     before = _custody(queue)
-    real = queue.transfer_tier_reservation_count
+    real = tier_holdings.TierLedger.handover_count
     boundary = {}
 
     def partial(tier_id, holder, destination, count):
-        boundary["record"] = queue.read_funding(destination, tier_id)
+        boundary["record"] = queue.read_funding(destination, tier_id.tier_id)
         boundary["custody"] = _custody(queue)
         boundary["requested"] = count
         assert real(tier_id, holder, destination, 1) == 1
         raise OSError("same-consumer transfer interrupted after one token")
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", partial)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", partial)
     outcome = pg.publish_chunk(
         queue, TIER, unit.unit, unit.holder, plan, leg, row["published_unix"])
     assert outcome.status == "deferred"
@@ -319,7 +319,7 @@ def test_same_consumer_partial_transfer_resumes_exact_binding(
         calls.append((destination, count))
         return real(tier_id, holder, destination, count)
 
-    monkeypatch.setattr(queue, "transfer_tier_reservation_count", resume)
+    monkeypatch.setattr(tier_holdings.TierLedger, "handover_count", resume)
     seen = _publish_until_bound(queue, tiers, movers)
     assert not [event for event in seen
                 if "prelaunch-mover-occupied" in str(event)]
