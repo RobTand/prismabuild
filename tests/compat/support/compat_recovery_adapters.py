@@ -14,7 +14,7 @@ import tarfile
 
 def operate(request, store, load):
     recovery, core, pool, pbrun = (load(name) for name in
-        ("prismabuild.checkout_recovery", "prismabuild.core", "prismabuild.pool", "pbrun"))
+        ("prismabuild.checkout_recovery", "prismabuild.core", "prismabuild.pool", "prismabuild.submission"))
     helpers = runpy.run_path(str(Path(__file__).with_name("compat_snapshot_adapters.py")))
     git = helpers["git"]
     work = store / "source"
@@ -26,7 +26,7 @@ def operate(request, store, load):
     git(work, "add", "payload")
     git(work, "commit", "--quiet", "-m", "fixture")
     cas = core.PrismaBuildCAS(store / "cas")
-    snapshot = pbrun.build_git_checkout_snapshot(work, cas=cas)
+    snapshot = pbrun.snapshot_checkout(work, cas=cas)
     body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"](core, store)
     body["inputs"] = [snapshot["input"]]
     body["params"]["checkout_snapshot"] = snapshot

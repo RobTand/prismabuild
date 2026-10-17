@@ -54,7 +54,7 @@ def operate(request, store, load):
     if variant == "dirty":
         (work / "payload").write_bytes(b"dirty private bytes\n")
     cas = core.PrismaBuildCAS(store / "cas")
-    value = pbrun.build_git_checkout_snapshot(work, cas=cas)
+    value = load("prismabuild.submission").snapshot_checkout(work, cas=cas)
     body = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["action_body"](core, store)
     body["params"]["checkout_snapshot"] = value
     body["inputs"] = [value["input"]]

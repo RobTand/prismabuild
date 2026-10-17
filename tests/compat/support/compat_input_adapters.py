@@ -17,7 +17,7 @@ def operate(request, store, load):
             path.write_bytes(raw)
             return module.load_config(path)
     elif family == "input-d38-preflight":
-        gate = load("d38_gate")
+        gate = load("prismabuild.d38_gate")
         value = {"schema": gate.RECEIPT_SCHEMA, "job_identity_hash": "a" * 64,
                  "preflight_action_key": "b" * 64, "namespace": "sha256:" + "c" * 64,
                  "image_digest": [], "host_class": "x86", "result": "fail" if variant == "fail" else "pass",
@@ -25,7 +25,7 @@ def operate(request, store, load):
                  "expires": "2026-10-02T00:00:00+00:00" if variant == "expires" else None}
         reader = gate._parse_receipt
     elif family == "input-d38-plan":
-        gate, core = load("d38_gate"), load("prismabuild.core")
+        gate, core = load("prismabuild.d38_gate"), load("prismabuild.core")
         value = {"schema": gate.PLAN_SCHEMA, "target": "compat-target", "images": []}
         cas = core.PrismaBuildCAS(store / "cas")
 

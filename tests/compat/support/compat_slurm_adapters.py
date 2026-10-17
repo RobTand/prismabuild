@@ -59,7 +59,7 @@ def operate(request, store, load):
             assert path is not None
         else:
             record = json.loads(base64.b64decode(request["raw"]))
-            status = load("pbstatus")
+            status = load("prismabuild.census")
             request["_consumer_boundary"]()
             transport = status._transport(record)
             assert transport == "slurm", "actual status consumer did not identify the ending as SLURM"

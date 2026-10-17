@@ -24,7 +24,7 @@ def action(core, store, load, variant):
     body["environment"]["variables"] = {"PATH": "/usr/bin:/bin"}
     template = {**body, "marker_root": Path("/compat/markers"), "checkout_identity": {"commit": "a" * 40},
                 "log_name": "pbrun_result.log"}
-    return load("pbrun").seal_action_from_template(template)
+    return load("prismabuild.submission").seal(template)
 
 
 def manifest(core, store, load, variant):

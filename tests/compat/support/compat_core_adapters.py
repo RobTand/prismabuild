@@ -61,7 +61,7 @@ def operate(request, store, load):
         if family == "core-progress-policy":
             key = core.PROGRESS_PARAM
             if variant.startswith("cli-"):
-                value = load("pbrun").parse_progress_phases(["copy=10", "publish=5"], cycle=variant == "cli-cycle")
+                value = load("prismabuild.submission").parse_progress_phases(["copy=10", "publish=5"], cycle=variant == "cli-cycle")
             elif variant == "mover":
                 value, _ = load("prismabuild.movement_actions").mover_progress_policy(
                     [8, 16], landing_bytes_per_s=8.0, report_latency_s=2.0)
@@ -81,7 +81,7 @@ def operate(request, store, load):
             reader = core.action_pool_contention
         else:
             key = core.AWAITED_BATCH_PARAM
-            value = load("pbrun").parse_awaited_batch("a" * 64 + ":" + "b" * 64 + ":/compat/controller")
+            value = load("prismabuild.submission").parse_awaited_batch("a" * 64 + ":" + "b" * 64 + ":/compat/controller")
             if variant == "validated":
                 value = core.validate_awaited_batch(value)
             reader = core.action_awaited_batch
@@ -126,7 +126,7 @@ def operate(request, store, load):
             names = code_files(store, variant)
             if variant == "stamp-builder":
                 (store / "stamp.py").write_text("compat stamp\n")
-                value = load("pbrun").build_stamp_closure("stamp.py", "compat stamp\n") if write else None
+                value = load("prismabuild.submission").build_stamp_closure("stamp.py", "compat stamp\n") if write else None
             else:
                 value = core.build_code_closure(store, names) if write else None
             reader = lambda value: core.verify_code_closure(value, store)
