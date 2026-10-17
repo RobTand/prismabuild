@@ -17427,7 +17427,7 @@ this is not evidence of a deployed runtime generation or PQ workload acceptance.
 The approved SDK6 adds the capability tag and the selection builder.
 Other exports, signatures and legacy arrays remain unchanged.
 
-`PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
+`scratch_lifetime.register` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
 the claim and existing lease before filesystem mutation or payload launch.
 Each ephemeral path retains the existing host/key/publication-generation/nonce
@@ -18399,3 +18399,27 @@ contention, reservation normalization, gang/canary authority and scratch trust
 remain with their current owners. Unknown advertised capacity is still distinct
 from zero. These answer fit, authority and admission questions beyond host
 capability. No C01 reservation, census, lock or commit owner changes.
+
+### Scratch lifetime ownership (C24)
+
+`scratch_lifetime` owns versioned selection, record validation, registration,
+monotone audit persistence, exact durable-owner validation, and descriptor-bound
+cleanup. `PoolQueue` supplies its existing transition lock, holder resolution,
+naming binder, and exact-scope adapter. Registration and finalization reread the
+concrete `RecordStore`; no per-attempt object caches claim, lease, or scope proof.
+The store owns live, late, tombstone and widowed-lease locations and atomic audit
+writes. These ports preserve the original read order and owner-before-lease
+write order. They do not renew heartbeat or change reservation release.
+
+`local_scratch` retains pair accounting, legacy naming, shared parsers and
+profiles. It imports and reexports no lifetime implementation. The public SDK
+builder now comes directly from `scratch_lifetime`. The isolated recorder still
+loads only its attested producer members. Extraction changes `local_scratch.py`
+bytes once, so old physical profile receipts do not qualify this producer.
+Subsequent lifetime-only edits leave `PRODUCER_FILES` bytes unchanged. The source
+controls use a tiny real recorder receipt and preserve source-mismatch refusal;
+they provide no new physical profile, broker deployment, or live cleanup proof.
+
+Run `python3 tools/maintenance/audit_scratch_lifetime.py` for the source-only
+body, caller, assertion and decorator preservation audit. Runtime qualification
+and native scope evidence are separate PB artifacts.
