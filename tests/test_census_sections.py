@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import io
+import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
+import tarfile
 import time
 from urllib.request import urlopen
 
@@ -38,7 +41,7 @@ def test_offers_do_not_read_active_rows_and_keep_their_own_coverage(tmp_path, mo
 def test_partial_rows_keep_known_claims_and_cannot_prove_empty(tmp_path):
     fleet = fixture.build(tmp_path)
     fleet.queue.records.item_path(pool.record_store.READY, fixture.READY_KEY).write_text("{")
-    observed = census.rows(fleet.queue_root)
+    observed = census.action_rows(fleet.queue_root)
     assert observed.completeness == "partial"
     assert observed.value["queue"]["ready"] is None
     assert observed.value["queue"]["empty"] is None
@@ -59,6 +62,27 @@ def test_denial_profiles_preserve_the_different_zero_and_future_rules(tmp_path):
     assert missing.completeness == "unavailable"
     assert missing.value["hosts"] is None
     assert missing.value["total_in_window"] is None
+
+
+def test_windowed_denials_keep_partial_counts_without_future_credit(tmp_path, monkeypatch):
+    now = time.time()
+    records = [{"action_key": str(i) * 64, "host": "fixture-box", "reason": "capacity",
+                "published_unix": now - 100, "denied_unix": stamp, "evidence": {}}
+               for i, stamp in enumerate((now - 20, now, now + 1), 1)]
+    monkeypatch.setattr(census, "_pool_claim_denials", lambda *a, **k: (records, []))
+    metrics = census.denials(tmp_path, profile="metrics", now=now, window_seconds=20)
+    mcp = census.denials(tmp_path, now=now, hours=20 / 3600)
+    assert metrics.value == {("fixture-box", "capacity"): 2}
+    assert mcp.value["total_in_window"] == 2
+    assert metrics.completeness == "partial"
+
+
+def test_unreadable_live_mover_input_cannot_prove_an_empty_population(tmp_path):
+    fleet = fixture.build(tmp_path)
+    fleet.queue.records.item_path(pool.record_store.CLAIMED, fixture.CLAIMED_KEY).write_text("{")
+    section = census.movers(fleet.queue_root)
+    assert section.completeness == "partial"
+    assert section.errors
 
 
 def test_blocked_origin_commands_keep_the_original_json_spelling():
@@ -110,3 +134,69 @@ def test_cli_mcp_and_http_observe_one_private_actual_store(tmp_path):
         worker.join(timeout=5)
     assert not worker.is_alive()
     assert server.socket.fileno() == -1
+
+
+_OBSERVE = r'''
+import io, json, os, sys, time
+from pathlib import Path
+source, root, moment = Path(sys.argv[1]), Path(sys.argv[2]), float(sys.argv[3])
+sys.path[:0] = [str(source / p) for p in ("src", "tools/fleet", "tests")]
+import pbstatus, pbmcp, pbmetrics
+current = (source / "src/prismabuild/census.py").is_file()
+if current:
+    from prismabuild import census
+time.time = lambda: moment
+events = []
+def audit(event, arguments):
+    if event not in {"open", "os.scandir", "os.listdir", "fcntl.flock"}:
+        return
+    path = arguments[0]
+    if isinstance(path, int):
+        try:
+            path = os.readlink("/proc/self/fd/" + str(path))
+        except OSError:
+            return
+    path = os.fsdecode(path)
+    if path.startswith(str(root)):
+        events.append([event, path, list(arguments[1:])])
+sys.addaudithook(audit)
+values, schedules = {}, {}
+questions = [
+    ("rows", lambda: census.action_rows(root).value if current else pbstatus.read_pool(root)),
+    ("starvation", lambda: census.starvation(root, now=moment) if current else pbstatus.read_starvation(root, now=moment)),
+    ("cursors", lambda: census.plans(root, now=moment).value if current else pbmcp._cursor_census(root, now=moment)),
+    ("tiers", lambda: census.tiers(root).value if current else pbmcp._tier_rows(root)),
+    ("movers", lambda: census.movers(root).value if current else pbmcp._mover_live_rows(root)),
+    ("filed", lambda: census.movers(root, view="filed").value if current else pbmcp._filed_move_receipts(root)),
+    ("metrics", lambda: pbmetrics.collect_metrics(root, now=moment)),
+]
+for name, read in questions:
+    events.clear()
+    value = read()
+    if name == "metrics":
+        value = [line for line in value.splitlines() if not line.startswith((
+            "prismabuild_exporter_", "prismabuild_scrape_seconds"))]
+    values[name], schedules[name] = value, list(events)
+print(json.dumps({"values": values, "schedules": schedules}))
+'''
+
+
+def test_original_fact_values_and_observable_capture_order_match(tmp_path):
+    repository = Path(pbmcp.__file__).parents[2]
+    original = tmp_path / "original"
+    original.mkdir()
+    raw = subprocess.check_output(["git", "-C", str(repository), "archive",
+                                   "8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7", "src", "tools/fleet"])
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        archive.extractall(original, filter="data")
+    fleet = fixture.build_starved(tmp_path / "store")
+    now = str(time.time())
+    environment = {**os.environ, "PYTHONPATH": ""}
+    readings = []
+    for source in (original, repository):
+        run = subprocess.run([sys.executable, "-c", _OBSERVE, str(source), str(fleet.queue_root), now],
+                             env=environment, capture_output=True, text=True, timeout=60)
+        assert run.returncode == 0, run.stderr
+        readings.append(json.loads(run.stdout))
+    assert readings[0]["values"] == readings[1]["values"]
+    assert readings[0]["schedules"] == readings[1]["schedules"]
