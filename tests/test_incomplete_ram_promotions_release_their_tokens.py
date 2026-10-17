@@ -52,7 +52,6 @@ def _hexkey(seed: str) -> str:
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     return q
 
 
@@ -72,6 +71,7 @@ def _tiers(ram: Path) -> dict[str, dict[str, object]]:
 
 
 def _hold(queue: pool.PoolQueue, key: str, gib: int) -> None:
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     queue.tier(RAM_TIER).mint({'ram_gib': 8})
     assert queue.tier(RAM_TIER).take(key, {'ram_gib': gib})
 

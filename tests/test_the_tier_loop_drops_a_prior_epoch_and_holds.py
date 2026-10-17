@@ -64,7 +64,6 @@ def _fragment(*, tier_id: str, root: str, mover: str,
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     return q
 
 
@@ -72,6 +71,7 @@ def _ram_resident(queue: pool.PoolQueue, tmp_path: Path, *, epoch: str,
                   mover: str = RAM_MOVER) -> None:
     """A finished ram promotion: tokens held, receipt filed, fragment written."""
 
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     queue.tier(RAM_TIER).mint({'ram_gib': 8})
     assert queue.tier(RAM_TIER).take(mover, {'ram_gib': 2})
     queue.record_move(mover, {
