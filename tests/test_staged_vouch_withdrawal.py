@@ -162,3 +162,63 @@ def test_adoption_keeps_a_range_with_a_live_mover_key(tmp_path, active_owner):
     assert queue.tier(ranges.TIER).holdings(successor) == {}
     assert residency_map.fragment_path(root, ranges.FIRST, donor).is_file()
     assert not residency_map.fragment_path(root, ranges.SECOND, successor).exists()
+
+
+@pytest.mark.parametrize("corrupt_successor", [False, True])
+def test_adoption_reconciles_a_crash_after_the_complete_handover(
+        tmp_path, monkeypatch, corrupt_successor):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    queue.tier(ranges.TIER).mint({"stage_gib": ranges.STAGE_GIB})
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    staged_path.register_stage_root(queue, tier_id=ranges.TIER, stage_root=stage)
+    donor, successor = "d" * 64, "e" * 64
+    paths = ranges._stage_range(queue, mover=donor, consumer=ranges.FIRST, stage=stage)
+    identities = [reader_lease.stat_identity(str(path)) for path in paths]
+    root = queue.records.residency_fragment_root()
+    material = reader_lease.read_material(root, ranges.FIRST, donor)
+    mark = reader_lease.write_retiring(
+        reader_lease.leases_root(queue, root), consumer_action_key=ranges.FIRST,
+        mover_action_key=donor, generation=material["generation"])
+    ledger_type = type(queue.tier(ranges.TIER))
+    actual_handover = ledger_type.handover
+
+    class PowerLost(BaseException):
+        pass
+
+    def handover(ledger, old_key, new_key):
+        actual_handover(ledger, old_key, new_key)
+        raise PowerLost("after token renames, before donor withdrawal and receipt")
+
+    arguments = dict(old_key=donor, new_key=successor, consumer_action_key=ranges.SECOND,
+                     tier_id=ranges.TIER, phase="phase-0", range_start_bytes=0,
+                     range_end_bytes=ranges.PHASE_GIB * ranges.GIB, residency_root=root)
+    monkeypatch.setattr(ledger_type, "handover", handover)
+    with pytest.raises(PowerLost):
+        staged_path.adopt(queue, **arguments)
+    monkeypatch.undo()
+    successor_path = residency_map.fragment_path(root, ranges.SECOND, successor)
+    assert queue.tier(ranges.TIER).holdings(donor) == {}
+    assert queue.tier(ranges.TIER).holdings(successor) == {"stage_gib": ranges.PHASE_GIB}
+    assert queue.move_record(successor) is None
+    if corrupt_successor:
+        with queue.stage_ownership_lock(stage):
+            successor_path.write_bytes(b"{unknown-successor")
+
+    result = staged_path.adopt(queue, **arguments)
+
+    assert identities == [reader_lease.stat_identity(str(path)) for path in paths]
+    assert queue.tier(ranges.TIER).holdings(successor) == {"stage_gib": ranges.PHASE_GIB}
+    if corrupt_successor:
+        assert result["adopted"] is False, result
+        assert successor_path.read_bytes() == b"{unknown-successor"
+        assert residency_map.fragment_path(root, ranges.FIRST, donor).is_file()
+        assert mark.is_file()
+        assert queue.move_record(successor) is None
+    else:
+        assert result["adopted"] is True, result
+        assert queue.move_record(successor)["complete"] is True
+        assert not residency_map.fragment_path(root, ranges.FIRST, donor).exists()
+        assert reader_lease.read_material(root, ranges.FIRST, donor) is None
+        assert not mark.exists()
