@@ -5,20 +5,21 @@ import json
 from pathlib import Path
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+from prismabuild.digest_primitives import raw_sha256
+
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--root',type=Path,required=True)
 parser.add_argument('--report',type=Path,required=True)
 parser.add_argument('--apply',action='store_true')
 args=parser.parse_args()
-sys.path.insert(0, str(args.root / "src"))
-from prismabuild import digest_primitives
 path=args.root/'src/prismabuild/core.py'
 text=path.read_text()
 node=next(n for n in ast.parse(text).body if isinstance(n,ast.Assign)
           and any(isinstance(t,ast.Name) and t.id=='_IMMUTABLE_FILES_SOURCE' for t in n.targets))
 old=ast.literal_eval(node.value)
 raw=(path.parent/'immutable_files.py').read_bytes()
-new=dict(sha256=digest_primitives.raw_sha256(raw),bytes=len(raw))
+new=dict(sha256=raw_sha256(raw),bytes=len(raw))
 assert set(old)==set(new)
 lines=text.splitlines(keepends=True)
 assert node.value.lineno==node.value.end_lineno
