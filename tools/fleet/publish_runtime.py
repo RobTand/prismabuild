@@ -72,10 +72,10 @@ _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "submission_frontend.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "pbtest_capabilities.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
-    "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
-    "role_log_identity.py", "migrate_role_logs.py",
+    "publish_runtime.py", "pool_reset.py", "supervise.py",
+    "migrate_role_logs.py",
     # The supervisor spawns prewarm_loop.py on a box declaring the storage
     # role, by published path like every other child. A generation without it
     # makes that role a log line saying the script is not there (#487).
@@ -101,16 +101,6 @@ FLEET_SCRIPTS = (
     # The stage lives on dl380g10, which has no checkout, so a generation
     # without it leaves that command with no place to run.
     "stage_reclaim.py",
-    # ...and deferred_release.py, which the tier loop imports to release
-    # consumers filed with ``pbrun --after`` once their producers commit
-    # (#913).  A generation without it is a tier loop that cannot start.
-    "deferred_release.py",
-    # ...and manifest_promotion.py, which the tier loop imports to promote
-    # manifest rows' residency plans (#1252).  Generation 9098f84c872b shipped
-    # without it and the tier role crash-looped at import (#1284);
-    # ``_unshipped_imports`` now refuses any publication in which a
-    # published script imports a tools module the publication does not carry.
-    "manifest_promotion.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
     # the epoch.  A generation without it leaves the ram window publishing
@@ -120,11 +110,8 @@ FLEET_SCRIPTS = (
     "install_ram_mount_unit.py",
     # Qualified scratch profiles bind this producer's bytes in the generation.
     "local_scratch_profile.py",
-    # The SLURM lane's two halves: the shared submit every producer routes
-    # through, and the job entry it names.  A runtime published without them
-    # has producers importing a module that is not there and a batch script
-    # execing a path that does not exist.
-    "fleet_submit.py", "slurm_job.py",
+    # The retained SLURM lane job entry. Submission is a package owner.
+    "slurm_job.py",
     # The commands an operator runs on a box that has no checkout.  The
     # published pool_reset.py:582 tells them to run ``pbwait.py <key>``, and
     # neither dl380g10 nor sparklina has a checkout to run it from.
@@ -138,7 +125,7 @@ FLEET_SCRIPTS = (
     # pbmergeq.py is a client a repository's merge flow runs from a box with
     # no PB checkout; it imports pbtest.py and pbtest_outcomes.py from its own
     # directory, so it must be the same generation's copy (#1417).
-    "pbmergeq.py", "pbmergeq_runtime.py",
+    "pbmergeq.py",
     # pbmcp.py is the same case as pbstatus.py and then some: an agent
     # registers it by absolute published path so that every session starts on
     # the current generation, and the boxes it is registered from are exactly
@@ -171,10 +158,6 @@ FLEET_SCRIPTS = (
     # missing from this list is a tool no box can run, so the gang canary could
     # not start from a published generation.
     "pbgang.py",
-    # tier_loop.py imports prelaunch_tier unconditionally (#1594).  A published
-    # script that imports a tools module the publication lacks makes the
-    # publisher refuse every generation, so the module ships.
-    "prelaunch_tier.py",
     # pbrun imports pbevidence unconditionally (#1598).  A published script that
     # imports a tools module the publication lacks makes the publisher refuse
     # every generation, so the tool ships even for commands that never use
@@ -208,6 +191,11 @@ FLEET_SCRIPTS = (
     # to enroll.  ``runtime_publication.py`` it installs is a package module.
     "install_movement_publisher.sh",
 )
+# The retained proxy verifies the same stdlib layout helper beside itself.
+STANDALONE_PACKAGE_SOURCES = {
+    "runtime_paths.py": "src/prismabuild/runtime_paths.py",
+}
+
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Runtime tools travel; qualification harnesses use submitted checkouts.
 #: The tuple exists so that leaving one out is a decision
@@ -552,6 +540,10 @@ def _published_mode(source: Path, index_modes: dict[str, int]) -> int:
 
 
 def _source_for(name: str) -> Path:
+    parts = name.split("/")
+    if (parts[:-1] in (["tools"], ["tools", "fleet"])
+            and parts[-1] in STANDALONE_PACKAGE_SOURCES):
+        return CHECKOUT / STANDALONE_PACKAGE_SOURCES[parts[-1]]
     if name.startswith("tools/fleet/"):
         base = name.rsplit("/", 1)[1]
         source = CHECKOUT / "tools" / "fleet" / base
@@ -574,8 +566,14 @@ def _imported_modules(source: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name.split(".")[0] for alias in node.names)
+            names.update(alias.name for alias in node.names
+                         if alias.name.startswith("prismabuild."))
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module.split(".")[0])
+            if node.module == "prismabuild":
+                names.update("prismabuild." + alias.name for alias in node.names)
+            elif node.module.startswith("prismabuild."):
+                names.add(node.module)
     return names
 
 
@@ -597,6 +595,11 @@ def _unshipped_imports(published: dict[str, str]) -> list[str]:
         if not source.is_file():
             continue
         for name in sorted(_imported_modules(source)):
+            if name.startswith("prismabuild."):
+                package_member = "src/" + name.replace(".", "/") + ".py"
+                if (CHECKOUT / package_member).is_file() and package_member not in published:
+                    problems.append(f"{member} imports {name}, which this "
+                                    "publication does not carry")
             local = any((CHECKOUT / base / f"{name}.py").is_file()
                         for base in ("tools/fleet", "tools"))
             if local and f"tools/{name}.py" not in published:
@@ -611,6 +614,11 @@ def _publication_manifest() -> dict[str, str]:
         published[f"src/prismabuild/{source.name}"] = _sha256(source)
     for name in ("generation_receipt.py", "digest_primitives.py"):
         published[f"tools/{name}"] = published[f"src/prismabuild/{name}"]
+    for name, owner in STANDALONE_PACKAGE_SOURCES.items():
+        if owner not in published:
+            continue
+        published[f"tools/{name}"] = published[owner]
+        published[f"tools/fleet/{name}"] = published[owner]
     for name in FLEET_SCRIPTS:
         source = CHECKOUT / "tools" / "fleet" / name
         if not source.is_file():

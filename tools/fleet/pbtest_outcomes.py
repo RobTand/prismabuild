@@ -368,7 +368,7 @@ def reconcile(record: dict, counts: dict[str, int] | None,
     }
 
 
-from pbtest_collection import ignored_named_paths
+from prismabuild.pbtest_collection import ignored_named_paths
 
 
 _COUNTED = r"\d+ (?:subtests? )?[A-Za-z][\w-]*"
