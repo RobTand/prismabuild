@@ -162,7 +162,8 @@ commit_origin_batch = bl.BatchLedger.commit_origin
 retire_batch = _produced_output.retire_batch
 reclaim_origin = bl.BatchLedger.reclaim
 recover_batches = _produced_output.recover_batches
-def due_mover_rows(queue, instance, template):
+def due_mover_rows(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object]) -> list[dict[str, object]]:
     """Prepare due batch movers using the queue residency contract."""
     return bl.BatchLedger.due_mover_rows(
         queue, instance, template, residency_schema=_pool.RESIDENCY_SCHEMA_V1)
