@@ -7075,6 +7075,9 @@ moved in an optional `moved_tokens` list, without another directory scan.
 An incomplete tier-domain take abandons its private remainder, then returns
 only those moved names. Previously held names remain charged. The generic
 ledger's default callers and integer commit result are unchanged.
+`transfer_tokens` offers the same optional collector for actual renames;
+already-moved names still count in its integer result, without moving the RAM
+mirror a second time. Both collectors use the existing per-token walk.
 
 `release_unspent` requires an `Unspent` authority from the consumer's existing
 proof. Funding and batch decisions remain with their owners. `settle_egress`

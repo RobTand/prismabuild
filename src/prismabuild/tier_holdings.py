@@ -242,13 +242,13 @@ class TierLedger:
     def handover_named(self, source: str, target: str, names: Sequence[str], *,
                        faults: list | None = None) -> int:
         ram = storage_tiers.tier_kind_of(self.tier_id) == "ram"
-        before = self.holder_state(source) if ram else set()
-        moved = self._ledger.transfer_tokens(source, target, names)
+        actual: list[str] = []
+        moved = (self._ledger.transfer_tokens(source, target, names, moved_tokens=actual)
+                 if ram else self._ledger.transfer_tokens(source, target, names))
         if ram:
             try:
-                after = self.holder_state(source)
                 occupancy = sum(name.rsplit("-", 1)[0] == storage_tiers.RAM_CAPACITY_KIND
-                                for name in before - after)
+                                for name in actual)
                 self._host_ledgers(self._ram_host()).transfer_count(
                     storage_tiers.RAM_HOST_MEMORY_PREFIX + source,
                     storage_tiers.RAM_HOST_MEMORY_PREFIX + target, occupancy)

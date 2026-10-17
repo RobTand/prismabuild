@@ -4772,7 +4772,8 @@ class ResourceLedger:
 
     @_guarded_mutation(blocking=True)
     def transfer_tokens(self, from_key: str, to_key: str,
-                        names: Sequence[str]) -> int:
+                        names: Sequence[str], *,
+                        moved_tokens: list[str] | None = None) -> int:
         """Move an exact token subset between holders, never via free.
 
         The prepaid-output primitive: fund one sealed batch from the
@@ -4851,6 +4852,8 @@ class ResourceLedger:
                 os.rename(origin, landing)
             except OSError:
                 continue
+            if moved_tokens is not None:
+                moved_tokens.append(name)
             done += 1
         try:
             source.rmdir()
