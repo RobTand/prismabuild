@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Copy one byte range of a data manifest's read order onto a stage tier (#583).
 
 This is the movement node: an ordinary PB action, placed by tag on the box
@@ -62,12 +61,8 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
 
-sys.path.insert(0, str(generation_root(__file__) / "src"))
-
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import materialize  # noqa: E402
 from prismabuild import kept_reads, manifest_layout
 from prismabuild import core as pb  # noqa: E402
@@ -1801,7 +1796,7 @@ class _StagedPublisher:
         """Each owner's state, in sorted order; the caller holds its locks."""
 
         try:
-            from stage_release import _unended_owner
+            from prismabuild.stage_release import _unended_owner
         except ImportError as exc:
             return [{"consumer_action_key": consumer,
                      "mover_action_key": mover, "state": "uncertain",
@@ -2183,7 +2178,7 @@ class _StagedPublisher:
         """
 
         try:
-            from stage_release import _claimed_paths
+            from prismabuild.stage_release import _claimed_paths
         except ImportError as exc:
             return None, f"claim authority unavailable: {exc}"
         try:
@@ -4086,7 +4081,7 @@ def _shared_consumers(args) -> list[str] | None:
     if namespace is None or namespace != str(args.consumer_action_key):
         return None
     try:
-        from stage_release import shared_interest
+        from prismabuild.stage_release import shared_interest
         interest = shared_interest(queue, str(args.action_key))
     except (ImportError, OSError, ValueError, pool.PoolContractError):
         return []
@@ -5069,7 +5064,7 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
         # A shared range's window is every sharer's (#1026): each plan that
         # names this mover would republish it into the same refusal.
         try:
-            from stage_release import shared_interest
+            from prismabuild.stage_release import shared_interest
             sharers = shared_interest(queue, mover)
         except (ImportError, OSError, ValueError, pb.PrismaBuildError):
             return False
