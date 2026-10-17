@@ -589,7 +589,7 @@ def _tier_record(stage: Path) -> dict[str, object]:
 def run_cycles(args) -> int:
     """The child: cycles against the built queue, timed one by one."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     work = Path(args.work)
     queue = pool.PoolQueue(work / "pb-queue")

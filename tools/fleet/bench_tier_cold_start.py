@@ -65,7 +65,7 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 import bench_tier_cycle  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 TIER = bench_tier_cycle.TIER
