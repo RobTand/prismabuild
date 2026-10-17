@@ -990,8 +990,8 @@ def test_publish_refuses_a_script_whose_import_it_does_not_carry(
 
     checkout = _checkout(tmp_path / "checkout", "new")
     fleet = checkout / "tools" / "fleet"
-    (fleet / "tier_loop.py").write_text("import manifest_promotion\n")
-    (fleet / "manifest_promotion.py").write_text("")
+    (fleet / "tier_loop.py").write_text("from prismabuild import manifest_promotion\n")
+    (checkout / "src/prismabuild/manifest_promotion.py").write_text("")
     mirror = tmp_path / "mirror"
     monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
@@ -1008,7 +1008,7 @@ def test_publish_refuses_a_script_whose_import_it_does_not_carry(
         "--rollout-reason", "fixture publication",
         "--shape-gate-waiver", "fixture publication", "--dry-run"])
 
-    with pytest.raises(SystemExit, match="tier_loop.py imports manifest_promotion"):
+    with pytest.raises(SystemExit, match="tier_loop.py imports prismabuild.manifest_promotion"):
         publish_runtime.main()
     assert not mirror.exists()
 

@@ -7,7 +7,7 @@ from test_stale_material_done_owner_retires import (
     residency_map, reader_lease,
 )
 from prismabuild import stage_release
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from test_stale_material_done_owner_retires import base, SIZE, staged_name
 from prismabuild import staged_path
 
