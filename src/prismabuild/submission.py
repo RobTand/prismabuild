@@ -1506,3 +1506,543 @@ def command_dependency_contract(
             path = os.path.join(str(cwd), raw)
             local, checkout_local = path_scope(Path(path))
             if local:
+                if not os.path.exists(path):
+                    raise SubmissionRefused(
+                        "pbrun: direct argv or caller environment names an "
+                        "external path absent from the submitting box: "
+                        f"{raw}. Pass --tag for the worker class that owns "
+                        "it, or --anywhere to assert its portability.")
+                requirements.setdefault(path, "path")
+            bindings[raw] = (path if not os.path.isabs(raw) and not checkout_local else None)
+        bound = bindings[raw]
+        return raw if bound is None else bound
+
+    arguments = []
+    for token in command[1:]:
+        if token.startswith("-"):
+            if "=" not in token:
+                arguments.append(token)
+                continue
+            option, raw = token.split("=", 1)
+            arguments.append(option + "=" + bind_input(raw))
+        else:
+            arguments.append(bind_input(token))
+    bound_caller = dict(caller_environment or {})
+    for name, value in bound_caller.items():
+        if name != "PATH":
+            bound_caller[name] = os.pathsep.join(bind_input(raw) for raw in value.split(os.pathsep))
+
+    invocation = (os.path.relpath(executable, cwd)
+                  if executable.is_relative_to(root) else str(executable))
+    if not os.path.isabs(invocation) and os.sep not in invocation:
+        invocation = "./" + invocation
+    return [invocation, *arguments], local_dependencies.normalize(requirements), bound_caller
+
+
+def placement_contract(
+    cwd: Path, *, explicit: list[str], here: bool, hostname: str,
+    portable_checkout: bool = False, command: list[str] | None = None,
+    repository_root: Path | None = None, environment: dict[str, str] | None = None,
+    caller_environment: dict[str, str] | None = None, anywhere: bool = False,
+    needs_gpu: bool = False, offer_queue=None,
+store: FleetStore, display: DisplaySink = discard_display) -> tuple[list[str], dict[str, str], list[str] | None, dict[str, str]]:
+    """Return placement, dependency questions, command, and caller environment."""
+    bound_caller = dict(caller_environment or {})
+    if explicit:
+        return (([*dict.fromkeys(t for t in explicit if t != hostname), hostname]
+                 if here else list(explicit)), {}, command, bound_caller)
+    if here:
+        return [hostname], {}, command, bound_caller
+    if anywhere:
+        return [], {}, command, bound_caller
+    if not portable_checkout:
+        return ([hostname] if is_box_local(cwd) else []), {}, command, bound_caller
+    if command is None:
+        return [], {}, command, bound_caller
+    command, requirements, bound_caller = command_dependency_contract(
+        cwd, command, repository_root=repository_root or cwd,
+        environment=environment, caller_environment=caller_environment)
+    if offer_queue is not None:
+        try:
+            roster = fleet_roster.Roster.read(store.roster_path)
+            members = fleet_roster.class_members(roster.document, "gb10")
+        except (OSError, ValueError, TypeError) as exc:
+            emit_display(display, f"pbrun: keeping {hostname} placement: class inventory unavailable: {exc}",
+                  channel="stderr", flush=True)
+            return [hostname], requirements, command, bound_caller
+        aliases = {alias for names in members.values() for alias in names}
+        if hostname in aliases or (hostname == "celestia" and needs_gpu):
+            reason = offer_queue().class_dependency_gap("gb10", members, requirements)
+            if reason is None:
+                return ["gb10", *([local_dependencies.TAG] if requirements else [])], requirements, command, bound_caller
+            emit_display(display, f"pbrun: keeping host pin {hostname}: gb10 dependencies not proven: {reason}",
+                  channel="stderr", flush=True)
+            return [hostname], requirements, command, bound_caller
+    return ([hostname] if requirements else []), requirements, command, bound_caller
+
+
+def is_box_local(cwd: Path) -> bool:
+    """Does this path exist on exactly one box?
+
+    Resolution happens here and only here.  The rule itself lives in
+    ``pool.is_box_local_path`` because the queue applies it too, to paths
+    other boxes recorded -- and it must not resolve those, since the reading
+    box's symlinks say nothing about a tree it does not have.  At submit the
+    path is local and real, so a symlink into shared storage is followed and
+    the checkout is correctly called shared.
+    """
+
+    return pool.is_box_local_path(cwd.resolve())
+
+
+def require_reachable_runtime(
+    tags: Sequence[str],
+    *,
+    hostname: str,
+    runtime_root: Path,
+) -> None:
+    """Refuse an action whose sealed runtime the chosen boxes cannot open.
+
+    ``pbrun`` transports the *checkout* through the CAS, so a box-local
+    checkout runs anywhere -- measured, not assumed: a worktree under
+    ``/home/rob/tmp`` submitted through the published runtime executed on
+    dl380g10 clean.  What ``pbrun`` does not transport is itself.  The worker
+    launcher and ``core.py`` are sealed as absolute paths into the *submitting*
+    runtime's tree (``worker_script`` in the pool publication, ``worker_script``
+    and ``job_entry`` in the SLURM lane, and the ``runtime`` block of every
+    receipt), so a ``pbrun`` invoked out of a developer worktree can be executed
+    only by the box that worktree is on.
+
+    ``placement_contract`` cannot see this and should not: it screens argv and the
+    caller's environment, which are the submitter's inputs, not ``pbrun``'s own
+    installation.  So an explicit ``--tag`` -- which by design outranks every
+    pin ``placement_contract`` derives -- sends the action to a box where the
+    launcher path does not exist, and the failure arrives from the far side as
+    ``can't open file '<worktree>/tools/prismabuild_worker.py'``, after a
+    claim, a checkout materialization and a wasted slot.  Measured 2026-09-06
+    on dl380g10, and it is what #292 cost four suite shards.
+
+    This is a statement about *this* runtime, not a placement decision: it
+    narrows nothing the queue may choose, and a placement naming this box is
+    admitted whatever else it also names, so ``--tag x86 --here`` on the x86
+    box is a real request and it is still met.
+    """
+
+    if not pool.is_box_local_path(Path(runtime_root).resolve()):
+        return
+    if hostname in tags:
+        return
+    named = ", ".join(tags) if tags else "any eligible worker"
+    raise SubmissionRefused(
+        f"pbrun: this runtime is box-local ({runtime_root}), so its worker "
+        f"launcher exists only on {hostname}, but the placement admits "
+        f"{named}.  Add --tag {hostname} (or --here) to keep the action on "
+        "the box that has it, or submit through the published runtime at "
+        "/mnt/shared/prismabuild-fleet/repo, which every box can open."
+    )
+
+
+def require_checkout_owned_scripts(
+    command: list[str],
+    cwd: Path,
+    *,
+    repository_root: Path | None = None,
+) -> None:
+    """Refuse script files whose bytes the repository snapshot cannot bind.
+
+    The literal argv is part of an action, but a pathname is not the bytes at
+    that pathname.  ``pbrun``'s code closure binds the checkout HEAD and dirty
+    state, so a script anywhere below the repository root is covered. Relative
+    tokens are resolved from the requested working directory, exactly as task
+    argv will resolve them after relocation. A helper outside the repository
+    could change after the action was sealed and the same action key would then
+    execute different code.
+
+    This checks every *direct* argv token that resolves to a script, including
+    an interpreter's ``python /path/tool.py`` argument.  It does not pretend
+    to parse shell programs passed through ``sh -c``; callers using shell
+    indirection must keep executable helpers under the checkout.  Native
+    executables are toolchain members rather than scripts and are not covered
+    by this gate.
+    """
+
+    working_directory = cwd.resolve()
+    root = (repository_root or working_directory).resolve()
+    offenders: list[Path] = []
+    script_suffixes = {".bash", ".py", ".rb", ".sh"}
+    for token in command:
+        if not token or token.startswith("-"):
+            continue
+        candidate = Path(token)
+        if not candidate.is_absolute():
+            candidate = working_directory / candidate
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not resolved.is_file():
+            continue
+        try:
+            with resolved.open("rb") as handle:
+                prefix = handle.read(2)
+        except OSError:
+            continue
+        if prefix != b"#!" and resolved.suffix.lower() not in script_suffixes:
+            continue
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            offenders.append(resolved)
+
+    if offenders:
+        rendered = "\n".join(f"  - {path}" for path in sorted(set(offenders)))
+        raise SubmissionRefused(
+            "pbrun: executable script bytes are outside the snapshotted "
+            "repository:\n"
+            f"{rendered}\n"
+            "Move each helper under the repository so its bytes are bound by "
+            "the action's code closure. Shell-indirected helpers must follow "
+            "the same rule."
+        )
+
+
+UNANNOUNCED_CENSUS = "no worker has announced"
+
+
+NO_CENSUS = "this transport keeps no worker census"
+
+
+class _NoCensus:
+    """The placement census a transport without worker offers has: none.
+
+    The SLURM branch deliberately builds no ``PoolQueue`` -- a retained offer
+    from a loop stopped for the cutover would answer wrongly -- but the pin a
+    box-local checkout imposes is just as real there, and it is the thing the
+    submitter is otherwise never told.  So the notice is printed with the
+    census unavailable, which every branch of it already handles.
+    """
+
+    @staticmethod
+    def placeable_hosts(_intent):
+        return None
+
+
+def _width_of_the_pin(queue, intent, tags: list[str], hostname: str,
+                      *, unknown: str = UNANNOUNCED_CENSUS) -> str:
+    """How many boxes this action WOULD have had, with the host tag taken off.
+
+    Not "how many boxes match the pinned tags" -- that is one, by
+    construction, and saying it would be a tautology dressed as a
+    measurement.  A demand only this box can meet costs nothing to pin, and
+    saying so keeps the notice from crying wolf on every GPU-heavy
+    submission.  ``None`` from ``placeable_hosts`` means no worker has
+    announced, and that stays unknown rather than being printed as zero.
+    """
+
+    unpinned = dict(intent)
+    unpinned["tags"] = [t for t in tags if t != hostname]
+    hosts = queue.placeable_hosts(unpinned)
+    if hosts is None:
+        return f"Fleet width unknown: {unknown}."
+    others = [h for h in hosts if h != hostname]
+    if not others:
+        return "No other live box fits this demand, so the pin costs nothing now."
+    return (f"{len(others)} other live box{'es' if len(others) > 1 else ''} "
+            f"fit{'' if len(others) > 1 else 's'} this demand: "
+            f"{', '.join(others)}.")
+
+
+def parse_progress_phases(
+    declared: Sequence[str] | None, *, cycle: bool = False,
+) -> dict[str, object] | None:
+    """Turn repeated ``--progress-phase NAME=SECONDS`` into a sealed policy.
+
+    Order is the order they were given, and it is load-bearing: entering a
+    later phase re-arms the allowance once, so the declaration reads as the
+    shape of the work -- load, then compile, then the loop, then publish --
+    and the quiet with no new committed units is bounded by the sum declared.
+    Cyclic policies renew these phase grants when the cumulative count rises.
+    """
+
+    if not declared:
+        if cycle:
+            raise SubmissionRefused("pbrun: --progress-cycle requires --progress-phase")
+        return None
+    phases = []
+    for entry in declared:
+        name, sep, seconds = str(entry).partition("=")
+        if not sep:
+            raise SubmissionRefused(
+                f"pbrun: --progress-phase {entry!r} must be NAME=SECONDS")
+        try:
+            grace = float(seconds)
+        except ValueError:
+            raise SubmissionRefused(
+                f"pbrun: --progress-phase {entry!r} has a non-numeric allowance"
+            ) from None
+        phases.append({"name": name, "grace_s": grace})
+    policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1, "phases": phases}
+    if cycle:
+        policy["cycle"] = True
+    try:
+        return pb.validate_progress_policy(policy)
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+
+
+def parse_awaited_batch(declared: str | None) -> dict[str, object] | None:
+    """Turn ``--awaited-batch PARENT:PLAN:STATE`` into a sealed declaration (#1666).
+
+    The first two halves are 64-hex action identities: the parent the
+    campaign cut and the plan that fixed the children's membership. The
+    third names the controller-state directory whose accepted members
+    the worker reads under an exact shape check. Refused at the
+    terminal, before anything seals, like the progress phases beside it.
+    """
+
+    if declared is None:
+        return None
+    parts = str(declared).split(":")
+    if len(parts) != 3 or not all(part.strip() for part in parts):
+        raise SubmissionRefused(
+            "pbrun: --awaited-batch must be PARENT:PLAN:STATE, two 64-hex "
+            "keys and the controller-state directory")
+    parent, plan, state = (part.strip() for part in parts)
+    try:
+        return pb.validate_awaited_batch({
+            "schema": pb.AWAITED_BATCH_SCHEMA_V1,
+            "parent_key": parent, "plan_key": plan,
+            "controller_state": state})
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+
+
+def container_image_refusal(images: Sequence[object]) -> str | None:
+    """Why ``--container-image`` refuses this list, or ``None``.
+
+    Shared with ``pbcampaign``'s row validation so a manifest is refused at
+    load time in the words the flag would use at submit time.
+    """
+
+    try:
+        container_images.normalize_refs(images)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def require_container_image_scope(*, images: Sequence[str], transport: str) -> None:
+    """Refuse image declarations the named transport cannot enforce.
+
+    The check is a pull-queue claim decision over worker offers; the SLURM
+    lane has no worker inventory to read and would seal a requirement nothing
+    ever verifies.  Refused rather than silently dropped, because the whole
+    point of the declaration is that its absence is what #714 was.
+    """
+
+    if images and transport != "pool":
+        raise ValueError(
+            "--container-image is a pull-queue placement requirement; the "
+            "SLURM lane cannot verify a box's local Docker inventory. Submit "
+            "this action on the pool")
+
+
+def container_image_notice(queue, intent: Mapping[str, object]) -> str:
+    """Which recorded eligible boxes can positively run the declared images.
+
+    A report, not the control.  What stops a loop from before the claim check
+    taking the work is the required capability tag; what stops a box without
+    the image taking it is the claim-time inventory check; and what stops a
+    submission into a fleet that reports the image nowhere is the ordinary
+    placement refusal.  This is the census beside them, so the operator can
+    tell "the box that has it is between announcements" apart from "the box
+    that has the tags never adopted the capability" and from "nobody has it".
+    """
+
+    images = list(intent.get("container_images") or [])
+    if not images:
+        return ""
+    fit = queue.image_placement_census(intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if not fit or not fit["capable"]:
+        return ""  # capacity or tags, not the image, blocks this request
+    census = queue.image_placement_census(
+        {**intent, "resources": {}}, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if census is None:
+        return ""
+    eligible, capable, reporting = census["eligible"], set(census["capable"]), census["reporting"]
+    line = ("pbrun: container image " + ", ".join(images)
+            + " required; reported on record by: "
+            + (", ".join(reporting) if reporting else "(nobody)"))
+    not_reporting = sorted(set(capable) - set(reporting))
+    if not_reporting:
+        line += "; capable but not reporting it: " + ", ".join(not_reporting)
+    no_capability = sorted(set(eligible) - capable)
+    if no_capability:
+        line += (f"; not offering {contracts.CONTAINER_IMAGE_TAG}: "
+                 + ", ".join(no_capability))
+    return line + "."
+
+
+def producer_allowance_room_refusal(queue, action: Mapping[str, object]) -> str | None:
+    """Why a spool producer's demand leaves no room for its exports, or ``None`` (#1571).
+
+    A producer whose sealed environment configures a produced-output spool
+    will have exports, each needing ``EXPORT_DEMAND`` from the export
+    allowance the producer's own claim reserves beside its demand. The
+    allowance is the sealed ``EXPORT_SLOTS_ENV`` when declared, else the
+    unmeasured default of one slot. When the demand plus that minimum
+    allowance exceeds the largest recorded ``mem_gb`` among the boxes
+    eligible by tags, the producer can never run with room for even one
+    export: the 2026-10-06 forward declared mem_gb 104 of sparky's 104
+    tokens and its 1 GiB dependents starved on ``token_shortage``. Refuse
+    at submission with the numbers, before publication. Unknown capacity
+    never refuses: no recorded offer means no evidence, not no room.
+    """
+
+    from prismabuild import adaptive_cpu as cpu_admission
+    variables = (action.get("environment") or {}).get("variables") or {}
+    if not isinstance(variables, dict) or not variables.get(cpu_admission.SPOOL_ROOT_ENV):
+        return None
+    demand = (action.get("params") or {}).get("demand") or {}
+    if not isinstance(demand, dict):
+        return None
+    raw_slots = variables.get(cpu_admission.EXPORT_SLOTS_ENV)
+    if raw_slots is None:
+        slots = cpu_admission.DEFAULT_EXPORT_SLOTS
+        basis = "unmeasured default of one slot"
+    elif (isinstance(raw_slots, str) and raw_slots.isascii() and raw_slots.isdigit()
+            and int(raw_slots) > 0):
+        slots = int(raw_slots)
+        basis = f"sealed {cpu_admission.EXPORT_SLOTS_ENV}={slots}"
+    else:
+        return None
+    need = int(demand.get("mem_gb", 0) or 0) + slots * int(
+        cpu_admission.EXPORT_DEMAND.get("mem_gb", 0))
+    if need <= 0:
+        return None
+    tags = ((action.get("params") or {}).get("placement") or {}).get("required_tags") or []
+    best = 0
+    for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
+        if not capability_eligibility.HostPresence.from_offer(offer).matches(tags, needs_gpu=False):
+            continue
+        capacity = offer.get("capacity") or {}
+        if isinstance(capacity, Mapping) and "mem_gb" in capacity:
+            try:
+                best = max(best, int(capacity["mem_gb"]))
+            except (TypeError, ValueError):
+                continue
+    if best <= 0 or need <= best:
+        return None
+    return (
+        f"pbrun: this spool producer declares mem_gb "
+        f"{int(demand.get('mem_gb', 0) or 0)} but its export allowance needs "
+        f"{slots * int(cpu_admission.EXPORT_DEMAND.get('mem_gb', 0))} more "
+        f"({basis}), for {need} GiB against the largest recorded box total "
+        f"of {best} GiB. Its exports could never run beside it. Declare at "
+        f"most {best - slots * int(cpu_admission.EXPORT_DEMAND.get('mem_gb', 0))} "
+        f"GiB, or wait for a larger box. No runnable submission was published.")
+
+
+def placement_capacity_notice(queue, intent: Mapping[str, object]) -> str:
+    """Name recorded capacity terms that prevent this request from fitting."""
+
+    request = {**intent, "resources": {}}
+    if intent.get("container_images"):
+        census = queue.image_placement_census(request, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+        eligible = census["capable"] if census is not None else []
+    else:
+        eligible = queue.placeable_hosts(request, max_age_s=RECORDED_OFFER_MAX_AGE_S) or []
+    if not eligible:
+        return ""
+    demand = pool.PoolQueue.demand_of(intent)
+    lines = []
+    spool_short = False
+    for offer in queue.offers(max_age_s=RECORDED_OFFER_MAX_AGE_S):
+        host = str(offer.get("host") or "?")
+        if host not in eligible:
+            continue
+        capacity = offer.get("capacity") or {}
+        if not isinstance(capacity, Mapping):
+            continue
+        timing = pool.offer_timing(offer.get("announced_unix"), now=time.time())
+        # ``announced_unix`` is when the loop last announced, not when it
+        # measured the capacity it reports.  The offer record carries no
+        # measurement timestamp, so state the age the reader actually holds
+        # and leave the measurement's age unknown rather than presenting the
+        # announcement age as one (#1189).
+        age = ("offer announced "
+               f"{timing.age_s:.0f}s ago; capacity measurement age unknown"
+               if timing.age_s is not None else
+               "offer announcement time unknown; "
+               "capacity measurement age unknown")
+        for kind, need in demand.items():
+            if kind in capacity and int(capacity[kind]) < need:
+                if kind == "spool_gb":
+                    spool_short = True
+                lines.append(
+                    f"{kind} {need} > {host} {capacity[kind]} ({age})")
+    if not lines:
+        return ""
+    notice = "  capacity: " + "; ".join(lines) + "\n"
+    if spool_short:
+        # The deployed refresh path (#1190): a live box re-measures its spool
+        # offer on every tick while nothing holds spool_gb, but a declaration
+        # refused at start is not revisited without a restart.
+        notice += ("  spool_gb: the box's supervisor re-measures its spool "
+                   "offer on every tick while no spool_gb is held, so a freed "
+                   "disk raises the recorded offer on the next tick; a "
+                   "declaration refused at start offers no spool_gb until the "
+                   "supervisor restarts or re-execs (#1190).\n")
+    return notice
+
+
+_ORIGIN_BATCHES_ANNOTATION = "produced_output_batches"
+
+
+_ORIGIN_BATCHES_TEMPLATE_KEY = "produced_output_batches"
+
+
+_ORIGIN_SLOTS_ANNOTATION = "produced_output_slots"
+
+
+def require_declared_origin_batches(
+    manifest: Mapping[str, object], *, transport: str, queue_root: Path,
+) -> None:
+    """Refuse a manifest whose declared batches are not what it lists (#912).
+
+    A consumer declares committed origin-only batches by carrying their
+    references under ``annotations.produced_output_batches``.  The references
+    are what PB will later account the read against, so they must describe
+    the manifest exactly: the manifest is derived again from the queue's own
+    records (``produced_output.origin_batch_manifest``, which also refuses an
+    uncommitted, reclaimed or changed batch) and its mount prefix, entries and
+    references must be the declared ones.  A manifest without the annotation
+    is not read here at all.
+
+    A data_manifest.v2 declares them with its own entries, at the read
+    phases ``annotations.produced_output_slots`` names (#946), and is checked
+    by placing those slots again into its static part
+    (``produced_output.verify_placed_origin_batches``). A v1 manifest has no
+    read plan to place them in, so it may not carry slots.
+    """
+
+    annotations = manifest.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return
+    declared = annotations.get(_ORIGIN_BATCHES_ANNOTATION)
+    slots = annotations.get(_ORIGIN_SLOTS_ANNOTATION)
+    if declared is None and slots is None:
+        return
+    if transport != "pool":
+        raise SubmissionRefused(
+            f"pbrun: a data manifest that declares {_ORIGIN_BATCHES_ANNOTATION} "
+            f"needs the pull queue, where those batches are filed; --transport "
+            f"{transport} has none")
+    from prismabuild import produced_output as produced_mod
+
+    if manifest.get("schema") == pb.DATA_MANIFEST_SCHEMA_V2:
+        if slots is None:
+            raise SubmissionRefused(
+                f"pbrun: a data_manifest.v2 declares its batches where it reads "
+                f"them, under {_ORIGIN_SLOTS_ANNOTATION}; build it with "
+                "produced_output.place_origin_batches")
