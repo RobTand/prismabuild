@@ -141,6 +141,10 @@ def migrate(root: Path) -> list[str]:
         if path in {'tests/test_prewarm_receipt_recovery.py', 'tests/test_prewarm_requires_known_receipts.py'}:
             after = after.replace('repository / "tools" / "fleet" / "prewarm_loop.py"',
                                   'repository / "src" / "prismabuild" / "prewarm_loop.py"')
+        if path in {'tests/test_tools_do_not_run_on_import.py', 'tests/test_fleet_tool_flags_have_help.py'}:
+            original = 'TOOLS = sorted((Path(__file__).resolve().parents[1] / "tools" / "fleet").glob("*.py"))'
+            replacement = 'REPO = Path(__file__).resolve().parents[1]\nTOOLS = sorted([*(REPO / "tools" / "fleet").glob("*.py"),\n                *(REPO / "src" / "prismabuild" / (name + ".py")\n                  for name in '+repr(MODULES)+')])'
+            after = after.replace(original, replacement)
         if path in {'tests/test_a_stalled_mover_ends_no_progress.py',
                     'tests/test_a_wedged_egress_ends_no_progress.py'}:
             after = after.replace('sys.path.insert(0, {tools!r})', 'sys.path.insert(0, {source!r})')
