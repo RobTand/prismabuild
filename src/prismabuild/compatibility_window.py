@@ -83,6 +83,8 @@ def require_generation(directory, designation):
     directory = Path(directory)
     if directory.is_symlink():
         raise WindowError("rollback generation must be an immutable directory, not a symlink")
+    if str(directory.resolve()) != designation.get("directory"):
+        raise WindowError("rollback directory differs from the persistent operator designation")
     raw = (directory / "RUNTIME_VERSION.json").read_bytes()
     value = json.loads(raw)
     if (directory.name != designation["generation"] or value["generation"] != designation["generation"]

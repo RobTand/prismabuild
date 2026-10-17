@@ -21,6 +21,7 @@
   "requires_no_proof_member": true,
   "must_be_live_at_predeploy": true,
   "rollback": {
+    "directory": "/mnt/shared/prismabuild-fleet/runtime-generations/a17477b2b206-1791745175-65dffa700dfb",
     "commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34",
     "content_sha256": "dd694fdb23b193f46ab82349c81067b6a9fd68eeaaba3ec24e24bf4176767ff3",
     "generation": "a17477b2b206-1791745175-65dffa700dfb",

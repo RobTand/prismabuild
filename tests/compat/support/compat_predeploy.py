@@ -104,6 +104,7 @@ def validate(args):
     if designation.get("requires_no_proof_member") and "park_proof.py" in facts["candidate"]["present"]:
         raise WindowError("a174 designation does not authorize a B09 proof-member deployment")
     immutable(args.out, {"hosts": hosts, "rollback": rollback, "protocols": facts,
+                         "target_directory": str(target.resolve()),
                          "census_sha256": sha(args.census.read_bytes()),
                          "window_sha256": sha(args.window.read_bytes()),
                          "designation_sha256": sha(args.designation.read_bytes()),

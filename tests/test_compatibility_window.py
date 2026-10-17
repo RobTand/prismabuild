@@ -68,6 +68,7 @@ def generation(tmp_path):
     raw = json.dumps(receipt).encode()
     (root / "RUNTIME_VERSION.json").write_bytes(raw)
     designation = {"generation": root.name, "commit": receipt["commit"],
+                   "directory": str(root.resolve()),
                    "receipt_sha256": hashlib.sha256(raw).hexdigest(),
                    "content_sha256": content_digest(receipt["files"])}
     return root, source, designation
@@ -76,6 +77,8 @@ def generation(tmp_path):
 def test_rollback_identity_checks_directory_receipt_commit_and_actual_content(tmp_path):
     root, source, designation = generation(tmp_path)
     assert require_generation(root, designation)["commit"] == "1" * 40
+    with pytest.raises(WindowError, match="persistent operator designation"):
+        require_generation(root, {**designation, "directory": str(tmp_path / "another-directory")})
     source.write_bytes(b"value = 43\n")
     with pytest.raises(WindowError, match="content changed"):
         require_generation(root, designation)
