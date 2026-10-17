@@ -64,7 +64,7 @@ def test_registration_keeps_intent_parent_leaf_and_mirror_order(lifetime, monkey
                 else "parent" if entry["parent_identity"] else "intent")
 
     original = RecordStore.replace_record_at
-    def write(self, path, record):
+    def write(self, path, record, original=original):
         if scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
             label = "lease" if path == self.lease_path(item["action_key"]) else "owner"
             events.append((label, phase(record)))

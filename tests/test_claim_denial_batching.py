@@ -54,7 +54,7 @@ def test_record_pass_reads_its_existing_sidecar_once(tmp_path, monkeypatch):
             reads.append(candidate)
         return original(candidate)
 
-    monkeypatch.setattr(pool.record_store, '_read_json', record)
+    monkeypatch.setattr(pool.record_store, 'read_document', record)
     assert queue.record_pass(key) == 2
     assert len(reads) == 1, f"one increment reread the sidecar {len(reads)} times"
     after = json.loads(path.read_text())
