@@ -96,4 +96,3 @@ class RowPublication:
         if params.get("resident_set") is not None:
             row["resident_set"] = params["resident_set"]
         return row
-
