@@ -237,7 +237,7 @@ def test_one_gc_leaves_exactly_the_live_lock_files(tmp_path):
             age_s=old,
         )
     for key in terminal + live:
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             pass
     assert len(_lock_names(queue)) == 1010
     assert _lock_names(queue) == {pb_gc.transition_lock_name(key)
@@ -263,7 +263,7 @@ def test_a_young_ending_keeps_its_lock_and_an_apply_needs_the_acknowledgement(tm
     _file(queue, pool.record_store.DONE, young, age_s=1)
     _file(queue, pool.record_store.DONE, old, age_s=pool.LEASE_TIMEOUT_S + 60)
     for key in (young, old):
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             pass
     assert pb_gc.main(["--queue-root", str(queue.root), "--apply"]) == 2
     assert len(_lock_names(queue)) == 2
@@ -381,7 +381,7 @@ def test_a_consumer_queued_again_after_the_survey_keeps_its_namespace(tmp_path):
     # A consumer whose lock is held when the sweep reaches it is left alone.
     queue.records.item_path(pool.record_store.READY, key).unlink()
     plan = pb_gc.survey_queue(Path(queue.root))
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         context = multiprocessing.get_context("fork")
         results = context.Queue()
         worker = context.Process(target=_sweep_in_child, args=(plan, results))
@@ -422,7 +422,7 @@ def _hold_repeatedly(root: str, keys: list[str], marks: str, stop_at: float,
     violations = entries = 0
     while time.monotonic() < stop_at:
         for key in keys:
-            with queue._transition_locked(key):
+            with queue.action_transition_lock(key):
                 mark = Path(marks) / key
                 try:
                     fd = os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -443,7 +443,7 @@ def test_a_holder_racing_the_gc_keeps_mutual_exclusion(tmp_path):
     keys = [_key(f"race-{index}") for index in range(8)]
     for key in keys:
         _file(queue, pool.record_store.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             pass
     marks = tmp_path / "marks"
     marks.mkdir()

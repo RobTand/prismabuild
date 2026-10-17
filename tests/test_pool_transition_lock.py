@@ -1,3 +1,4 @@
+from prismabuild import claim_identity
 """A repeated action key cannot acquire a predecessor's ownership paths."""
 from concurrent.futures import ThreadPoolExecutor
 import pytest
@@ -20,7 +21,7 @@ def test_successor_waits_for_holder_cleanup(tmp_path):
     publish(queue, KEY)
     lease = queue.records.lease_path(KEY).read_bytes()
     assert queue.claim(owner="second", capacity={"cpu": 2}) is None
-    assert pool._same_claim(
+    assert claim_identity.same_claim(
         pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY)),
         first,
     )
@@ -39,7 +40,7 @@ def test_busy_key_does_not_block_independent_claim(tmp_path):
     publish(queue, KEY)
     publish(queue, OTHER)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        with queue._transition_locked(KEY):
+        with queue.action_transition_lock(KEY):
             claimed = executor.submit(queue.claim, owner="worker", capacity={"cpu": 2}).result(timeout=5)
     assert claimed["action_key"] == OTHER
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
@@ -54,7 +55,7 @@ def test_scope_start_keeps_creation_with_its_claim(scoped, monkeypatch):
     def create(scope):
         with ThreadPoolExecutor(max_workers=1) as executor:
             assert executor.submit(queue.reap_stale, timeout_s=-1).result(timeout=5) == []
-        assert pool._same_claim(
+        assert claim_identity.same_claim(
             pool.record_store.value_or_raise(
                 queue.records.item(pool.record_store.CLAIMED, item["action_key"]),
             ),
@@ -103,7 +104,7 @@ def test_claim_census_does_not_trust_cached_negative_name(tmp_path, monkeypatch)
     exists = Path.exists
     monkeypatch.setattr(Path, "exists", lambda path: False if path == claimed else exists(path))
     assert queue.claim(owner="second", capacity={"cpu": 2}) is None
-    assert pool._same_claim(pool.record_store.read_document(claimed), first)
+    assert claim_identity.same_claim(pool.record_store.read_document(claimed), first)
 
 
 @pytest.mark.parametrize("field,value", [

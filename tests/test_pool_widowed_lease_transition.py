@@ -20,7 +20,7 @@ def test_lease_sweep_skips_an_active_key_and_recovers_an_independent_key(tmp_pat
     original = queue.records.lease_path(keys[0]).read_bytes()
     # The claimant owns the key while publishing its claim and first lease.
     # A concurrent sweep must defer this key without blocking other recovery.
-    with queue._transition_locked(keys[0]):
+    with queue.action_transition_lock(keys[0]):
         with ThreadPoolExecutor(max_workers=1) as executor:
             swept = executor.submit(queue.sweep_widowed_leases, timeout_s=60).result(timeout=5)
     assert swept == [keys[1]], 'the sweep crossed an active ownership transition'
