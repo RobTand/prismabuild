@@ -1034,7 +1034,7 @@ def test_withdraw_cancels_the_job_the_record_names(
     tmp_path: Path, fleet: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     job = _submit(tmp_path, resources=sl.LaneResources(), seed="withdraw")
-    assert submit_core.withdraw_slurm_main([job.action_key[:12]], by="test", store=pbrun.configured_store(), display=pbrun.render) == 0
+    assert submit_core.withdraw_slurm_main([job.action_key[:12]], by="test", store=pbrun.configured_store(), display=submit_core.render_submission) == 0
     assert (fleet / "cancelled").read_text().split() == [job.job_id]
     assert f"cancelled slurm job {job.job_id}" in capsys.readouterr().err
 
@@ -1047,8 +1047,8 @@ def test_withdraw_refuses_a_prefix_that_names_two_actions(
 
     _submit(tmp_path, resources=sl.LaneResources(), seed="a")
     _submit(tmp_path, resources=sl.LaneResources(), seed="b")
-    assert submit_core.withdraw_slurm_main([""], by="test", store=pbrun.configured_store(), display=pbrun.render) == 2
-    assert submit_core.withdraw_slurm_main(["0123456789ab"], by="test", store=pbrun.configured_store(), display=pbrun.render) == 2
+    assert submit_core.withdraw_slurm_main([""], by="test", store=pbrun.configured_store(), display=submit_core.render_submission) == 2
+    assert submit_core.withdraw_slurm_main(["0123456789ab"], by="test", store=pbrun.configured_store(), display=submit_core.render_submission) == 2
     assert not (fleet / "cancelled").exists()
     assert "no slurm submission matches" in capsys.readouterr().err
 
@@ -1064,7 +1064,7 @@ def test_withdrawing_four_and_missing_one_still_withdraws_three(
         for index in range(3)
     ]
     keys = [job.action_key for job in jobs] + ["deadbeefdead"]
-    assert submit_core.withdraw_slurm_main(keys, by="test", store=pbrun.configured_store(), display=pbrun.render) == 2
+    assert submit_core.withdraw_slurm_main(keys, by="test", store=pbrun.configured_store(), display=submit_core.render_submission) == 2
     assert sorted((fleet / "cancelled").read_text().split()) == sorted(
         job.job_id for job in jobs)
 
@@ -1259,7 +1259,7 @@ def test_pbrun_reports_a_slurm_execution_the_way_it_reports_a_pool_one(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
     assert code == 0
     assert cas.lookup(action) is not None
     err = capsys.readouterr().err
@@ -1285,7 +1285,7 @@ def test_a_priority_reaches_sbatch_through_the_whole_lane(
         action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0, priority=-10,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert f"--nice={sl.NICE_BASE + 10 * sl.NICE_SCALE}" in _submissions(fleet)[0]["argv"]
 
@@ -1314,7 +1314,7 @@ def test_the_slurm_path_prints_the_placement_notices_the_pool_path_prints(
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
         placement_notice="pbrun: PINNED to sparky -- test notice",
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     err = capsys.readouterr().err
     assert "pbrun: PINNED to sparky -- test notice" in err
@@ -1335,7 +1335,7 @@ def test_a_gpu_action_is_not_told_its_slot_has_no_device(
         demand={"gpu": 1, "mem_gb": 16}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert "no GPU" not in capsys.readouterr().err
 
@@ -1374,7 +1374,7 @@ def test_an_attached_pbrun_joins_a_running_job_instead_of_submitting_again(
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, queue_root=queue,
         poll_s=0.0, sleep=ends_while_we_wait,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     # Nothing new was submitted, and the ending filed is the recorded job's.
     assert [row["job_id"] for row in _submissions(fleet)] == [int(running.job_id)]
@@ -1415,7 +1415,7 @@ def test_a_recorded_submission_the_controller_forgot_is_submitted_afresh(
         action, cas=cas, request_path=request, tags=[], demand={"cpu": 1},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, queue_root=queue, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     submitted = [row["job_id"] for row in _submissions(fleet)]
     assert len(submitted) == 2 and submitted[0] == int(forgotten.job_id)
@@ -1437,7 +1437,7 @@ def test_a_job_that_exits_zero_without_a_receipt_is_not_reported_as_success(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
     assert code == 1
     assert "published no receipt" in capsys.readouterr().err
 
@@ -1459,7 +1459,7 @@ def test_a_job_slurm_killed_at_the_time_limit_is_reported_as_a_timeout(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
     err = capsys.readouterr().err
     assert code == 1
     assert "failed (TIMEOUT)" in err
@@ -1477,7 +1477,7 @@ def test_a_cancelled_job_exits_the_way_a_withdrawal_does(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
     assert code == submit_core.action_client.WITHDRAWN_EXIT
 
 
@@ -1635,7 +1635,7 @@ def test_a_refusal_from_sbatch_reaches_the_caller_as_a_refusal(
             demand={"cpu": 1, "mem_gb": 4}, exclusive=False, timeout_s=600.0,
             wait_s=60.0, retry_safe=False, max_attempts=1,
             runtime_root=REPOSITORY, poll_s=0.0,
-        store=pbrun.configured_store(), display=pbrun.render)
+        store=pbrun.configured_store(), display=submit_core.render_submission)
     message = str(refusal.value)
     assert "slurm refused this action" in message
     assert "nosuchbox" in message

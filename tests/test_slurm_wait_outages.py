@@ -142,7 +142,7 @@ def test_no_ending_files_no_terminal_record(
         timeout_s=None, wait_s=(None if verdict == "UNKNOWN" else 30.0),
         retry_safe=False, max_attempts=1, runtime_root=REPOSITORY,
         queue_root=queue, **scheduler.commands, poll_s=5.0, sleep=clock.sleep, clock=clock,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert code == submit_core.action_client.GAVE_UP_EXIT
     for state in ("done", "failed", "withdrawn"):
@@ -163,7 +163,7 @@ def test_no_ending_files_no_terminal_record(
     rc = submit_core.withdraw_slurm_main(
         [key[:12]], reason="dead", by="tester",
         lane_root=Path(str(sl.lane_root())), queue_root=queue,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
     assert rc == 0
     assert (fleet / "cancelled").read_text().split() == ["1000"]
     assert "already has an outcome filed" not in capsys.readouterr().err
@@ -292,7 +292,7 @@ def test_a_hung_scheduler_command_does_not_end_the_wait(
         runtime_root=REPOSITORY, queue_root=tmp_path / "queue",
         **scheduler.commands_with(squeue=hanging_squeue),
         poll_s=5.0, sleep=clock.sleep, clock=clock,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     err = capsys.readouterr().err
     assert "slurm refused this action" not in err

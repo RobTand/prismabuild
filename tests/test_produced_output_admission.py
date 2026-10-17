@@ -353,7 +353,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     _write_template(tpath, template)
     terms = po.owner_demand_terms(template)
     demand = {"cpu": 1, "mem_gb": 1, **terms}
-    frozen = submit_core.freeze(
+    frozen = submit_core.freeze_template(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -371,7 +371,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     key = sealed["action_key"]
     # A second template seals a different key.
     _write_template(tpath, _template(str(out_prefix), "pbrun-path-v2"))
-    frozen2 = submit_core.freeze(
+    frozen2 = submit_core.freeze_template(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand={"cpu": 1, "mem_gb": 1,
                 **po.owner_demand_terms(
