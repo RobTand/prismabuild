@@ -12,7 +12,7 @@ FUNDING_KINDS = tuple(kind for kind in KINDS
 
 
 @pytest.fixture(scope="module", autouse=True)
-def funding_wire_observations(request):
+def funding_wire_observations(request, generations):
     """Give the additional controls their own existing C31 recorder."""
     evidence = contract.WriterEvidence()
     with pytest.MonkeyPatch.context() as patch:
@@ -20,6 +20,7 @@ def funding_wire_observations(request):
         try:
             yield
         finally:
+            assert contract.WRITER_EVIDENCE is evidence
             for record in evidence.records.values():
                 record['proof_scope'] = 'tests/test_funding_wire_compatibility.py'
             reporter = request.config.pluginmanager.getplugin('terminalreporter')
