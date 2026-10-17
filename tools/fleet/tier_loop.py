@@ -1628,7 +1628,7 @@ def ram_residency_window(
                             step="ram-window-publish"))
                             for lock_key in (key, str(row["action_key"]))):
                         break
-                    owned, why = residency_plan.ConsumerWindow.decision_owned(
+                    owned, why = residency_plan.window_owned(
                         queue, key, filing=incarnation, generation=generation)
                     if not owned:
                         events.append({
@@ -9363,7 +9363,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
                             step="window-publish"))
                             for lock_key in (key, str(row["action_key"]))):
                         break
-                    owned, why = residency_plan.ConsumerWindow.decision_owned(
+                    owned, why = residency_plan.window_owned(
                         queue, key, filing=incarnation, generation=generation)
                     if not owned:
                         published.append({
