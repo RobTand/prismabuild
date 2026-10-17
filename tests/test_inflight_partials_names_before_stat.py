@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "fleet"))
 
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 OWN = "a" * 64
 OTHER = "b" * 16

@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 from fullstack_fixtures import corpus  # noqa: E402
 
