@@ -39,13 +39,12 @@ PER_ACTION = (
 )
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 1},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 1}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:

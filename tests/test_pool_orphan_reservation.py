@@ -20,10 +20,11 @@ from prismabuild import pool  # noqa: E402
 KEY = "d" * 64
 
 
+from fleet_world import FleetWorld
+
+
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, queue_name='queue').queue
 
 
 def test_finish_lost_race_releases_from_the_claim_snapshot(

@@ -28,6 +28,9 @@ from prismabuild import pool  # noqa: E402
 
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture(autouse=True)
 def known_generation_action(monkeypatch):
     # These private logical-token fixtures stand for a verified generation
@@ -42,9 +45,7 @@ OTHER = uuid.uuid4().hex + uuid.uuid4().hex
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:

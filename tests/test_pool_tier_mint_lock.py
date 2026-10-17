@@ -39,10 +39,11 @@ STAGE_DEMAND = f"{KIND}@{TIER}"
 GIB = storage_tiers.GIB
 
 
+from fleet_world import FleetWorld
+
+
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 # -- the mint lock -----------------------------------------------------------
