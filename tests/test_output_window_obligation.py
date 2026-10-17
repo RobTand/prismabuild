@@ -18,6 +18,8 @@ counted twice.  The tier loop counts it only when
 every decision is the one it made before.
 """
 from __future__ import annotations
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 
 from pathlib import Path
@@ -115,7 +117,7 @@ def test_a_batch_census_it_cannot_read_charges_the_upper_bound(
     # ``queue`` is an AdmittedQueueFixture: it forwards attribute reads to the
     # real queue, so the method to replace belongs to PoolQueue, not to the
     # wrapper class (the fixture says fault injection targets the real owner).
-    monkeypatch.setattr(pool.PoolQueue, "_output_outstanding_window_tokens",
+    monkeypatch.setattr(funding.FundingLedger, "_output_outstanding_window_tokens",
                         lambda self, owner_key, tier_id, kind: (1, True))
     owed = po.unheld_window_gib(queue, TIER)
     assert owed == {"gib": 2, "owners": {key: 2}, "unknown": [],
