@@ -118,7 +118,8 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
         request["raw"] = base64.b64encode(raw).decode()
-    driver = pre_c13_drivers() if manifest and adapter_path is None else HERE
+    prior_owner = manifest and not (root / "src/prismabuild/batch_ledger.py").is_file()
+    driver = pre_c13_drivers() if prior_owner and adapter_path is None else HERE
     adapter_path = driver / "compat_adapters.py" if adapter_path is None else adapter_path
     command = [sys.executable, "-I", "-S", str(driver / "compat_isolate.py"),
                "--root", str(root), "--adapters", str(adapter_path),
