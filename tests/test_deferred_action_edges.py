@@ -836,7 +836,7 @@ def test_a_burst_of_releases_is_bounded_per_cycle_and_after_the_windows(
 
     def cycle() -> list[dict]:
         out = io.StringIO()
-        queue.mint_tier_capacity(TIER, {KIND: 8})
+        queue.tier(TIER).mint({KIND: 8})
         stage = tmp_path / "stage"
         stage.mkdir(exist_ok=True)
         stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)

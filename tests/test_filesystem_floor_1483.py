@@ -322,10 +322,10 @@ def test_aggregate_charge_spans_every_ledger_on_the_filesystem(tmp_path, enforce
     _stable(tmp_path)
     queue = _queue(tmp_path)
     tier = "prismabuild-stage:" + HOST
-    queue.mint_tier_capacity(tier, {"stage_gib": 4})
+    queue.tier(tier).mint({'stage_gib': 4})
     binding = _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
                         ("tier-reservations", tier, "stage_gib"))["binding"]
-    host, stage = queue.ledger(HOST), queue.tier_ledger(tier)
+    host, stage = (queue.ledger(HOST), queue.tier(tier))
     assert host.acquire("a" * 64, {"spool_gb": 3})
     counted = ff.refresh_binding(queue.root, binding)
     assert counted["charge_bytes"] == 3 * GIB
@@ -394,18 +394,18 @@ def test_tier_advance_reports_the_floor_as_tier_short(tmp_path, enforce, ample_s
     _stable(tmp_path)
     queue = _queue(tmp_path)
     tier = "prismabuild-stage:" + HOST
-    queue.mint_tier_capacity(tier, {"stage_gib": 4})
+    queue.tier(tier).mint({'stage_gib': 4})
     binding = _register(queue, tmp_path / "stage", ("tier-reservations", tier, "stage_gib"))[
         "binding"]
     _leave(queue, binding["key"], 1)
-    assert queue.take_tier_advance(tier, "grant-advance", 2, "stage_gib")[0] == "tier-short"
-    ledger = queue.tier_ledger(tier)
-    assert not ledger.acquire("grant-probe", {"stage_gib": 2})
-    assert ledger.last_token_shortage["resource"] == "filesystem_floor"
-    assert queue.take_tier_advance(tier, "grant-advance", 1, "stage_gib")[0] == "taken"
+    assert queue.tier(tier).take_advance('grant-advance', 2, 'stage_gib')[0] == 'tier-short'
+    ledger = queue.tier(tier)
+    assert not ledger.take('grant-probe', {'stage_gib': 2})
+    assert ledger.shortage['resource'] == 'filesystem_floor'
+    assert queue.tier(tier).take_advance('grant-advance', 1, 'stage_gib')[0] == 'taken'
     # The tokens were there all along: a refresh, not more capacity, admits 2.
     ff.refresh_binding(queue.root, binding)
-    assert queue.take_tier_advance(tier, "grant-advance-2", 2, "stage_gib")[0] == "taken"
+    assert queue.tier(tier).take_advance('grant-advance-2', 2, 'stage_gib')[0] == 'taken'
 
 
 def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
@@ -427,7 +427,7 @@ def test_fence_top_up_is_refused_by_the_floor_and_admitted_after_refresh(
     monkeypatch.setenv(ff.MODE_ENV, "enforce")
     _leave(queue, binding["key"], 1)
     assert queue.reserve_fence(tf.TIER, grant, fields, 2) is False
-    assert queue.tier_ledger(tf.TIER).holder_tokens(grant) == {}
+    assert queue.tier(tf.TIER).holdings(grant) == {}
     ff.refresh_binding(queue.root, binding)
     assert queue.reserve_fence(tf.TIER, grant, fields, 2) is True
 
@@ -621,7 +621,7 @@ def test_a_busy_floor_lock_is_waited_for_then_refused_as_a_shortage(
 def _contend(queue_root: str, tier: str, host: str, rounds: int, errors, wins) -> None:
     os.environ[ff.MODE_ENV] = "enforce"
     queue = pool.PoolQueue(queue_root)
-    ledgers = [queue.ledger(host), queue.tier_ledger(tier)]
+    ledgers = [queue.ledger(host), queue.tier(tier)]
     kinds = ["spool_gb", "stage_gib"]
     try:
         for i in range(rounds):
@@ -643,7 +643,7 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     _stable(tmp_path)
     queue = _queue(tmp_path, spool_gb=8)
     tier = "prismabuild-stage:" + HOST
-    queue.mint_tier_capacity(tier, {"stage_gib": 8})
+    queue.tier(tier).mint({'stage_gib': 8})
     _register(queue, tmp_path / "spool", ("reservations", HOST, "spool_gb"),
               ("tier-reservations", tier, "stage_gib"))
     context = multiprocessing.get_context("fork")
@@ -662,7 +662,7 @@ def test_concurrent_acquire_release_refresh_across_two_ledgers_never_deadlocks(
     # floor never wedges: most of the hundred succeed.
     assert wins.value >= 50, wins.value
     assert queue.ledger(HOST).held().get("spool_gb", 0) == 0
-    assert queue.tier_ledger(tier).held().get("stage_gib", 0) == 0
+    assert queue.tier(tier).holdings().get('stage_gib', 0) == 0
 
 
 def test_floor_section_runs_inside_a_held_ledger_lock_without_deadlock(tmp_path, enforce, ample_space):
