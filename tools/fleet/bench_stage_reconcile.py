@@ -189,7 +189,7 @@ def analyze(profile: Path, rate: int) -> dict[str, object]:
             by_frame[function] += samples
         for function, file, number in reversed(frames):
             if os.path.basename(file) == "stage_release.py":
-                by_line[f"prismabuild.stage_release.py:{number} ({function})"] += samples
+                by_line[f"stage_release.py:{number} ({function})"] += samples
                 break
 
     def share(count: int) -> float:
