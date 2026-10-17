@@ -3,6 +3,8 @@
 
 import argparse
 import ast
+import copy
+import json
 from pathlib import Path
 import subprocess
 import textwrap
@@ -25,6 +27,192 @@ MOVED = {
     "mint_tier_capacity_guarded": "mint_guarded",
     "release_tier_holder_for_egress": "settle_egress",
 }
+
+RAW = {
+    "holder_tokens": "holdings", "held": "holdings", "held_keys": "holders",
+    "capacity": "mint_supply", "capacity_census": "mint_census",
+    "available": "free_supply", "acquire": "take", "begin_acquire": "begin_take",
+    "commit_acquire": "commit_take", "abandon_acquire": "abandon_take",
+    "acquisitions_of": "pending_takes", "unparsed_acquisitions_of": "unparsed_takes",
+    "sweep_stale_acquisitions": "reap_pending_takes", "transfer": "handover",
+    "transfer_count": "handover_count", "transfer_tokens": "handover_named",
+    "ensure_capacity": "grow_supply", "retire_free_capacity": "trim_supply",
+    "retire_held": "retire_duplicate", "holder_census": "holder_observations",
+    "_mutation_locked": "mutation_lock", "last_token_shortage": "shortage",
+    "_census_glob": "token_paths", "_census_scan": "entry_paths",
+}
+AGGREGATE = {"tier_ids": "ids", "tier_holdings": "for_action",
+             "release_tier_rate_reservations": "release_rates_all",
+             "release_tier_reservations": "release_unspent_all"}
+
+
+def tier_call(node):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"tier_ledger", "tier"})
+
+
+def caller_aliases(tree):
+    parents, scopes = {}, {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    def scope(node):
+        while node is not tree and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            node = parents[node]
+        return node
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for node in ast.walk(tree):
+        scopes[node] = scope(node)
+    aliases = {n: set() for n in set(scopes.values())}
+    def is_tier(node, enclosing):
+        return tier_call(node) or (isinstance(node, ast.Name) and node.id in aliases[enclosing])
+    for _ in range(12):
+        before = sum(map(len, aliases.values()))
+        for node in ast.walk(tree):
+            enclosing = scopes[node]
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if is_tier(node.value, enclosing):
+                    aliases[enclosing].update(t.id for t in targets if isinstance(t, ast.Name))
+            if isinstance(node, ast.Call):
+                name = (node.func.id if isinstance(node.func, ast.Name) else
+                        node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                called = functions.get(name)
+                if called is None:
+                    continue
+                params = called.args.args
+                if isinstance(node.func, ast.Attribute) and params and params[0].arg == "self":
+                    params = params[1:]
+                for param, arg in zip(params, node.args):
+                    if is_tier(arg, enclosing):
+                        aliases[called].add(param.arg)
+        if sum(map(len, aliases.values())) == before:
+            break
+    return scopes, aliases
+
+
+class CallerMove(ast.NodeTransformer):
+    def __init__(self, scopes, aliases):
+        self.scopes, self.aliases = scopes, aliases
+        self.scoped = set()
+        self.need_import = False
+
+    def visit(self, node):
+        if node in self.scopes:
+            self.scoped = self.aliases[self.scopes[node]]
+        return super().visit(node)
+
+    def is_tier(self, node):
+        return tier_call(node) or isinstance(node, ast.Name) and node.id in self.scoped
+
+    def authority(self):
+        self.need_import = True
+        return ast.keyword("authority", ast.parse("tier_holdings.Unspent.NEVER_STARTED", mode="eval").body)
+
+    def visit_Attribute(self, node):
+        bound = self.is_tier(node.value)
+        node = self.generic_visit(node)
+        if node.attr == "tier_ledger":
+            node.attr = "tier"
+        elif node.attr == "TIER_RATE_KINDS":
+            node.value = ast.Name("tier_holdings", ast.Load())
+            node.attr = "RATE_KINDS"
+            self.need_import = True
+        elif bound:
+            if node.attr in {"held_dir", "free_dir", "minted_dir", "base"}:
+                node.value = ast.Attribute(node.value, "paths", ast.Load())
+                node.attr = {"held_dir": "held", "free_dir": "free", "minted_dir": "minted"}.get(node.attr, node.attr)
+            else:
+                node.attr = RAW.get(node.attr, node.attr)
+        return node
+
+    def visit_Call(self, node):
+        old = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        bound = receiver is not None and self.is_tier(receiver)
+        held = (old == "held_names_visible" and node.args and self.is_tier(node.args[0]))
+        node = self.generic_visit(node)
+        if old in AGGREGATE:
+            self.need_import = True
+            node.func = ast.Attribute(ast.Name("tier_holdings", ast.Load()), AGGREGATE[old], ast.Load())
+            node.args.insert(0, ast.Attribute(receiver, "records", ast.Load()) if old == "tier_ids" else receiver)
+            if old == "release_tier_reservations":
+                node.keywords.append(self.authority())
+        elif old in MOVED and not old.startswith("_") and node.args:
+            if old in {"hold_tier_host_memory", "release_tier_host_memory"}:
+                return node
+            tier, *remaining = node.args
+            node.func = ast.Attribute(ast.Call(ast.Attribute(receiver, "tier", ast.Load()), [tier], []), MOVED[old], ast.Load())
+            node.args = remaining
+            if old == "release_tier_holder":
+                node.keywords.append(self.authority())
+        elif held:
+            node.func = ast.Attribute(node.args.pop(0), "holder_state", ast.Load())
+        elif old == "held_grants" and node.args and self.is_tier(node.args[0]):
+            node.func = ast.Attribute(node.args.pop(0), "held_grants", ast.Load())
+        elif bound and old in {"release", "release_except", "release_kinds"}:
+            node.func.attr = "release_rates" if old == "release_kinds" else "release_unspent"
+            if old == "release_kinds":
+                node.args = node.args[:1]
+            else:
+                if old == "release_except":
+                    node.keywords.append(ast.keyword("keep", node.args.pop(1)))
+                node.keywords.append(self.authority())
+        return node
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, str):
+            if node.value == "tier_ledger":
+                node.value = "tier"
+            elif node.value.endswith("PoolQueue.tier_ledger"):
+                node.value = node.value.removesuffix("tier_ledger") + "tier"
+        return node
+
+
+def migrate_callers(root, path):
+    source = path.read_text()
+    original = ast.parse(source)
+    tree = copy.deepcopy(original)
+    scopes, aliases = caller_aliases(tree)
+    mover = CallerMove(scopes, aliases)
+    tree = mover.visit(tree)
+    pairs = zip(ast.walk(original), ast.walk(copy.deepcopy(original)))
+    del pairs
+    original_nodes = {(n.lineno, n.col_offset, type(n)): n for n in ast.walk(original) if isinstance(n, ast.expr)}
+    replacements = []
+    lines = source.splitlines(keepends=True)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line.encode()))
+    for node in ast.walk(tree):
+        key = (getattr(node, "lineno", None), getattr(node, "col_offset", None), type(node))
+        old = original_nodes.get(key)
+        if old is not None and ast.dump(old) != ast.dump(node):
+            replacements.append((starts[old.lineno - 1] + old.col_offset,
+                                 starts[old.end_lineno - 1] + old.end_col_offset,
+                                 ast.unparse(node)))
+    chosen, end = [], -1
+    for start, stop, replacement in sorted(replacements, key=lambda r: (r[0], -r[1])):
+        if start >= end:
+            chosen.append((start, stop, replacement))
+            end = stop
+    raw = source.encode()
+    for start, stop, replacement in reversed(chosen):
+        raw = raw[:start] + replacement.encode() + raw[stop:]
+    result = raw.decode()
+    if mover.need_import and "from prismabuild import tier_holdings" not in result:
+        parsed = ast.parse(result)
+        imports = [n for n in parsed.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+        if imports:
+            after = imports[-1].end_lineno
+            rows = result.splitlines(keepends=True)
+            rows.insert(after, "from prismabuild import tier_holdings\n")
+            result = "".join(rows)
+    ast.parse(result)
+    if result != source:
+        path.write_text(result)
+    return {"path": str(path.relative_to(root)), "expressions": len(chosen),
+            "aliases": {getattr(s, "name", "module"): sorted(a) for s, a in aliases.items() if a}}
 
 
 class OwnerMove(ast.NodeTransformer):
@@ -108,9 +296,14 @@ def extract_owner(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
-    parser.add_argument("--extract", type=Path, required=True)
+    parser.add_argument("--extract", type=Path)
+    parser.add_argument("--migrate", nargs="*")
     args = parser.parse_args()
-    args.extract.write_text(extract_owner(args.root))
+    if args.extract:
+        args.extract.write_text(extract_owner(args.root))
+    if args.migrate:
+        for relative in args.migrate:
+            print(json.dumps(migrate_callers(args.root, args.root / relative)))
 
 
 if __name__ == "__main__":
