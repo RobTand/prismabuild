@@ -16196,6 +16196,8 @@ files remain tolerated, while a failed directory or named mover stays unknown.
 Negative residency projections require known holder input. A cursor gap with
 unknown phases withholds that leg's full metric counts; known positive facts
 and other legs remain available.
+Stage and RAM residency coverage are independent: a later RAM failure retains
+the stage result already captured, without starting any read previously skipped.
 
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.

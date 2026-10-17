@@ -940,21 +940,22 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     # reports ``None`` -- unknown -- never a clean ``False``.
     stage_resident: set[str] = set()
     ram_resident: set[str] = set()
-    resident_known = True
+    stage_known = ram_known = False
     try:
         stage_resident = residency_plan.resident_movers(queue, plan, tier_id)
+        stage_known = True
         if ram_tier_id is not None:
             ram_resident = residency_plan.resident_movers(
                 queue, plan, ram_tier_id)
+            ram_known = True
     except (OSError, ValueError) as exc:
         notes.append(f"starvation plan {prefix} residency: {exc}")
         unreadable.append(f"starvation plan {prefix} residency: {exc}")
-        resident_known = False
 
     def _resident(mover: str, *, ram: bool = False) -> bool | None:
         """Published residency for one key, or ``None`` when it is unknown."""
 
-        if not resident_known:
+        if not (ram_known if ram else stage_known):
             return None
         if mover in (ram_resident if ram else stage_resident):
             return True

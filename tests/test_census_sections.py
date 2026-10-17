@@ -180,6 +180,17 @@ def test_unreadable_denial_snapshot_keeps_metric_coverage_partial(tmp_path):
                                          window_seconds=20) is False
 
 
+def test_ram_read_failure_keeps_captured_stage_residency(tmp_path):
+    fleet = fixture.build_starved(tmp_path)
+    fleet.queue.records.tier_record_path(fixture.RAM_TIER).write_text("{")
+    section = census.plans(fleet.queue_root, view="starvation")
+    row = next(row for row in section.value["residency_plans"]
+               if row["consumer_action_key_prefix"] == fixture.CONSUMER_KEY[:12])
+    assert section.completeness == "partial"
+    assert row["phases"][0]["stage"]["staged"] is True
+    assert row["phases"][0]["ram"]["staged"] is None
+
+
 def test_unreadable_filed_receipt_cannot_prove_no_receipts(tmp_path):
     fleet = fixture.build_starved(tmp_path)
     receipt = fleet.queue_root / pool.record_store.MOVERS / (fixture._hexkey("mover0") + ".json")
