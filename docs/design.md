@@ -18539,3 +18539,19 @@ as a third variable producer. Its current reconciliation questions use fixed
 immutable/stable profiles in RecordStore, with the same custody and strict
 decoding boundaries. Three native reader profiles remain after retirement
 of the single-link reader.
+
+### Exact claim facts and scratch action boundaries
+
+`claim_identity` owns the unchanged exact-claim field tuple, equality predicate
+and lease consistency check. It imports only the standard library. The lease
+check receives the existing error constructor. `AmbiguousClaimHolder` lives
+beside its unchanged `PoolContractError` base in RecordStore; Pool imports that
+same object. RecordStore never imports Pool or lifecycle. Scratch registration
+and persistence check supplied facts without importing the queue implementation.
+
+`PoolQueue.action_transition_lock` and `scope_for_record` are the actual action
+lock and fresh scope reconstruction implementations. Current callers and
+fixtures use those names. The retired private APIs have no aliases. Lock paths,
+blocking defaults, conditional reads, exception identity, late-finish names,
+scratch owner-before-lease writes and containment-before-delete order retain
+their existing contracts.
