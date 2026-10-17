@@ -7048,6 +7048,41 @@ that role is not in `fleet_boxes.json`. With no tier ledger and no residency
 block, admission takes the path it took before: no ledger is scanned, no token
 moves, and a claim record gains no field.
 
+`tier_holdings.TierLedger` owns one tier's holdings and RAM host mirror.
+`PoolQueue.tier(tier_id)` binds the existing `RecordStore` and host reservation
+owner to it. Consumers use named take, handover, unspent, egress and rate
+operations. The generic `ResourceLedger` remains the token mechanism inside
+the owner. Its persisted paths and token names are unchanged.
+
+Holdings counts, strict holder names, optional names, directory presence and
+mint supply remain separate lazy observations. Each consumer keeps its
+existing conditional reads and unknown-evidence policy. Metrics still fence
+free and held directories before listing the holders. A mint callback receives
+the tier owner, under the same mint lock as its supply observations and apply.
+Every tier rename uses that guard; host reservations retain their different
+mutation lock. Neither side acquires the other side's mutation lock while held.
+
+`take` and `take_advance` charge RAM host memory before taking tier occupancy.
+A failed additional take returns only that take's host charge. Rate-only
+takes never become host GiB. Handover moves the tier first and the host mirror
+second; count handover mirrors the actual moved count, and named handover
+mirrors only the RAM occupancy names it actually moved. Host handover failures
+retain their named diagnostics and reconcile by holder name.
+
+`release_unspent` requires an `Unspent` authority from the consumer's existing
+proof. Funding and batch decisions remain with their owners. `settle_egress`
+destroys duplicate charges before returning counts backed by physical egress.
+A failed or partial return retains the RAM mirror for its still-held
+occupancy. An unreadable remainder releases no host memory. Idle-rate
+reclamation enumerates `RATE_KINDS`; new and unknown kinds stay held.
+
+The private claim begin/commit/abandon lifecycle keeps its existing token
+grammar and observations. Two-way RAM reconciliation remains necessary for
+private claim takes and interrupted or old-generation operations. Its sync
+half runs before discovery, so admission uses one current-cycle verdict.
+Failed top-ups keep existing host holds, and orphan cleanup waits for the
+complete in-cycle consumer census.
+
 ### The resource PB could not see
 
 `cpu`, `gpu` and `mem_gb` are reserved on the box that executes the action.
