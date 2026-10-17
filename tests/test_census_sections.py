@@ -162,6 +162,7 @@ def test_unknown_holder_stays_unknown_in_plan_reservation_and_publication(tmp_pa
                if row["consumer_action_key_prefix"] == fixture.CONSUMER_KEY[:12])
     assert row["phases"][0]["stage"]["reserved"] is None
     assert row["phases"][0]["stage"]["published"] is None
+    assert row["phases"][0]["stage"]["staged"] is None
     assert row["phases"][1]["stage"]["reserved"] is False
     assert census.starvation(fleet.queue_root)["complete"] is False
 
@@ -203,6 +204,8 @@ def test_unreadable_fragment_population_never_becomes_absent(tmp_path):
     assert section.completeness == "partial"
     assert row["phases"][0]["stage"]["fragment"] is None
     assert row["phases"][0]["stage_fragment"] is None
+    facts = census.promotion(fleet.queue_root, now=time.time(), window_seconds=3600)
+    assert facts.value["staged_phases"][(fixture.STAGE_TIER, "stage")] is None
 
 
 def test_offer_sample_errors_keep_metadata_partial_and_population_counts_known(tmp_path):

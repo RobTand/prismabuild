@@ -956,7 +956,9 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
 
         if not resident_known:
             return None
-        return mover in (ram_resident if ram else stage_resident)
+        if mover in (ram_resident if ram else stage_resident):
+            return True
+        return None if (ram_staged if ram else staged).get(mover) is None else False
 
     names = [str(phase["name"]) for phase in plan["phases"]]
     accepted_index = names.index(accepted) if accepted in names else None
@@ -2577,7 +2579,7 @@ def _project_plan(entry: Mapping[str, object], unreadable: list[str]) -> _PlanCe
             phases = leg_gap.get("unstaged_phases")
             missing = leg_gap.get("unstaged_bytes")
             if (type(staged) is not int or not isinstance(phases, list)
-                    or type(missing) not in (int, float)):
+                    or type(missing) not in (int, float) or leg_gap.get("unknown_phases")):
                 counted.append((leg, None))
                 continue
             counted.append((leg, (staged, len(phases), float(missing))))
