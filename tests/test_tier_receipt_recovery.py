@@ -83,7 +83,7 @@ def test_unknown_cannot_replace_physical_park_proof(tmp_path, proof_failure):
         output = complete(role, code=75, cycles=int(after_cycle), adoption=int(after_cycle))
         assert b"tier-runtime-moved" not in output
         markers = state(role, cycles=int(after_cycle), layout=after_cycle,
-                        parked=int(proof_failure != "marker-failure"))
+                        parked=int(proof_failure == "rotate-epoch"))
         if after_cycle:
             assert markers[0].name.endswith("-101.5")
             assert not any(marker.name.endswith("-202.5") for marker in markers)

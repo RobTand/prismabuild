@@ -161,7 +161,10 @@ def test_storage_drain_observation_does_not_gate_ordinary_client_convergence(set
     result = updater.run()
     assert result['state'] == 'draining'
     assert result['drained'] is False
-    assert result['unparked'] == [105]
+    assert result['unparked'] == []
+    assert result['evidence_errors'] == [
+        f'host park observation unavailable: unsafe root-owned installation path: {updater.install}'
+    ]
     backend.active = 0
     assert updater.run()['state'] == 'updated'
     assert not backend.draining
@@ -473,15 +476,16 @@ def test_failed_removal_recovers_previously_installed_dependency(setup):
     original_copy = updater.copy_files
     failed = False
 
-    def interrupted_once(source, files):
+    def interrupted_once(source, files, *, proof_metadata=None):
         nonlocal failed
-        original_copy(source, files)
+        original_copy(source, files, proof_metadata=proof_metadata)
         if not failed:
             failed = True
             raise RuntimeError('injected failed downgrade')
 
     updater.copy_files = interrupted_once
     assert updater.run()['state'] == 'rolled_back'
+    assert failed, 'the failed dependency-removal cut must be exercised'
     assert updater.installed() == with_dependency
     assert (updater.install / 'gpu_capacity.py').exists()
 
