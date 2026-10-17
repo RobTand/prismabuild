@@ -7,6 +7,7 @@ ownership after reopening the queue. No final-state result is mocked.
 import json
 import os
 from pathlib import Path
+import time
 
 import pytest
 
@@ -103,9 +104,15 @@ def _interrupt_after(queue, item, root, phase, cancelled):
             pool.record_store.RecordStore.replace_record_at = replaced
             pool.record_store.RecordStore.file_superseded = superseded
             Path.unlink = unlinked
-            queue.finish(KEY, status="withdrawn" if cancelled else "executed",
-                         detail={"stdout": "completed payload", "returncode": 0}, claim_snapshot=item)
-            os._exit(92)
+            deadline = time.monotonic() + 20
+            while True:
+                result = queue.finish(KEY, status="withdrawn" if cancelled else "executed",
+                                      detail={"stdout": "completed payload", "returncode": 0}, claim_snapshot=item)
+                if result != queue.records.item_path(pool.record_store.CLAIMED, KEY):
+                    os._exit(92)
+                if time.monotonic() >= deadline:
+                    os._exit(94)
+                time.sleep(.05)
         except BaseException:
             import traceback
             traceback.print_exc()

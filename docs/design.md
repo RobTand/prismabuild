@@ -18555,3 +18555,38 @@ fixtures use those names. The retired private APIs have no aliases. Lock paths,
 blocking defaults, conditional reads, exception identity, late-finish names,
 scratch owner-before-lease writes and containment-before-delete order retain
 their existing contracts.
+
+### Lifecycle capture and conclusion ownership (C07)
+
+`lifecycle.classify_action(ActionCapture)` classifies supplied observations.
+Publication, exact claim, lease, reservation phase and terminal evidence stay
+separate, with their generation and record identity. Uncaptured, absent and
+unknown inputs are different answers. C06 `endings.resolve_current` remains
+the terminal interpreter. Classification reads no files and grants no release.
+
+`lifecycle.conclude(queue, policy)` owns worker finish, expired claim, cancelled
+attempt, late result, tombstone recovery, READY quarantine, READY recovery,
+widowed lease, broker deferral and verified terminal-reservation repair.
+The owner uses the queue's single `records` handle and existing containment and
+ledger operations. Named legal destinations apply to each transition. No
+journal, directory enum for a whole key, callback executor or new record schema
+is introduced. Withdrawal remains a durable decision and never concludes a live
+claim.
+
+Worker and reaper policies share exact claim retirement. They retain their
+conditional cleanup, first-writer attempt adoption, entomb comparison, lease
+removal, material-retention rules and publication failure behavior. Ordinary
+finish still takes no broad transition lock. Cancellation retains its existing
+lock through fresh claim and decision reads, proof filing and release. Reaping
+retains its original lock and both pending-finish checks, including the
+acted-from read. Late results control only their saved exact scope.
+
+Interrupted cancellation recovery adopts an already archived, verified withdrawn
+worker attempt before releasing its owner. A decision alone does not invent an
+execution result or occupy a late worker's attempt slot. Unknown attempt
+presence or invalid history retains the claim and reservation. The reaper now
+archives the prior terminal before publishing an adopted terminal, as worker
+finish does. Recovery of an interrupted terminal publication completes only
+its recorded historical unlink after checking the verified attempt, the archived
+record and the still-matching older terminal. Live successors and unknown proof
+retain their authority.
