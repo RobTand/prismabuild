@@ -245,4 +245,5 @@ def test_finish_never_rewrites_an_ending_when_its_presence_is_unknown(tmp_path, 
     assert seen
     assert path.read_bytes() == b'', 'unknown presence authorized replacement of the real prior ending'
     assert refused is not None
-    assert queue.ledger().holder_tokens(key) == tokens
+    # The missing-claim branch releases capacity before reading the ending.
+    assert queue.ledger().holder_tokens(key) == {}
