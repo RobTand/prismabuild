@@ -13,7 +13,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 
 from prismabuild import (
     adaptive_gpu, candidate_policy, capability_eligibility, contracts,
-    core as pb, pool, residency_map, residency_plan, storage_tiers,
+    core as pb, pool, residency_map, residency_plan, storage_tiers, stage_release,
 )
 from prismabuild import data_manifest as manifest_codec
 from test_measurement_drains_gpu_backfill import (
@@ -23,7 +23,6 @@ from test_pbrun_detach import _checkout
 
 import pbrun
 import stage_move
-import stage_release
 import tier_loop
 from submission_support import patch_store
 

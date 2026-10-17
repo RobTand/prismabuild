@@ -123,7 +123,7 @@ def test_compiled_producer_retains_d38_reason_without_a_display(tmp_path, monkey
     with pytest.raises(fleet_submit.SubmitRefused) as error:
         fleet_submit.submit(action, cas=cas, request_path=cas.publish_action_request(action),
             transport="pool", needs_gpu=True, resources={"cpu": 1, "mem_gb": 1},
-            queue_root=store.queue_root)
+            queue_root=store.queue_root, checkout_root=tmp_path)
     assert "D38 refuses GPU publication:" in str(error.value)
     assert "namespace descriptor" in str(error.value)
     assert str(error.value) == D38_DIAGNOSTIC.format(key=action["action_key"])
@@ -155,7 +155,7 @@ def test_compiled_producer_records_d38_before_ordinary_publication(tmp_path, mon
     action = _runnable_action(tmp_path, cas)
     result = fleet_submit.submit(action, cas=cas, request_path=cas.publish_action_request(action),
         transport="pool", needs_gpu=True, resources={"cpu": 1, "mem_gb": 1},
-        queue_root=store.queue_root)
+        queue_root=store.queue_root, checkout_root=tmp_path)
     audit, = (store.queue_root / "d38-audit" / action["action_key"]).glob("*.json")
     event = json.loads(audit.read_bytes())
     assert event["mode"] == "record_only" and event["result"] == "failed"
@@ -168,10 +168,11 @@ def test_compiled_producer_records_d38_before_ordinary_publication(tmp_path, mon
 def test_actual_interpreter_and_submission_source_are_attested(capsys):
     root = Path(__file__).resolve().parents[1]
     executable = Path("/proc/self/exe").resolve(strict=True)
-    modules = (submission, sys.modules[SubmissionRequest.__module__], submission.d38_gate)
+    owners = (submission.prepare, SubmissionRequest.refuse_argument,
+              submission.d38_gate.judge_publication)
     sources = {}
-    for module in modules:
-        path = Path(module.__file__).resolve(strict=True)
+    for owner in owners:
+        path = Path(owner.__code__.co_filename).resolve(strict=True)
         assert path.is_relative_to(root / "src/prismabuild")
         sources[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
     identity = {"version": list(sys.version_info), "executable": sys.executable,
