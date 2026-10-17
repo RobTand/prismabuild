@@ -14,6 +14,7 @@ sleeping on a worker that does not exist in a unit test.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -48,18 +49,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        retry_safe=kw.pop("retry_safe", True),
-        max_attempts=kw.pop("max_attempts", 3),
-        **kw,
-    )
-
-
 def _decisions(q: pool.PoolQueue, key: str) -> list[dict]:
     return [decision for _, decision in q.records.withdrawal_decisions(key)]
 
@@ -79,8 +68,13 @@ def test_a_foreground_denial_preempts_the_background_holder_and_requeues_it(
     capacity = {"gpu": 1}
     queue.ledger().ensure_capacity(capacity)
 
-    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1},
-             max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        BACKGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     holder = queue.claim(has_gpu=True, capacity=capacity)
     assert holder is not None and holder["action_key"] == BACKGROUND
     assert queue.ledger().held() == {"gpu": 1}
@@ -90,7 +84,13 @@ def test_a_foreground_denial_preempts_the_background_holder_and_requeues_it(
     queue.record_pass(BACKGROUND)
     assert queue.passes(BACKGROUND) == 1
 
-    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        FOREGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=0,
+        resources={'gpu': 1},
+    )
 
     # The pass that denies the foreground item preempts the holder and returns
     # nothing: the token is not free until the holder stops.
@@ -139,11 +139,23 @@ def test_a_background_denial_never_preempts_a_background_holder(
     capacity = {"gpu": 1}
     queue.ledger().ensure_capacity(capacity)
 
-    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        BACKGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     holder = queue.claim(has_gpu=True, capacity=capacity)
     assert holder is not None and holder["action_key"] == BACKGROUND
 
-    _publish(queue, OTHER, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        OTHER,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     assert queue.claim(has_gpu=True, capacity=capacity) is None
 
     assert _decisions(queue, BACKGROUND) == []
@@ -160,11 +172,23 @@ def test_a_foreground_holder_is_never_preempted_by_foreground_work(
     capacity = {"gpu": 1}
     queue.ledger().ensure_capacity(capacity)
 
-    _publish(queue, OTHER, priority=0, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        OTHER,
+        retry_safe=True,
+        max_attempts=3,
+        priority=0,
+        resources={'gpu': 1},
+    )
     holder = queue.claim(has_gpu=True, capacity=capacity)
     assert holder is not None and holder["action_key"] == OTHER
 
-    _publish(queue, FOREGROUND, priority=5, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        FOREGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=5,
+        resources={'gpu': 1},
+    )
     assert queue.claim(has_gpu=True, capacity=capacity) is None
 
     assert _decisions(queue, OTHER) == []
@@ -189,11 +213,23 @@ def test_a_holder_whose_release_would_still_not_fit_is_left_alone(
     # the background holder leaves one free against a demand for two.
     assert ledger.acquire("0" * 64, {"gpu": 1}) is True
 
-    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        BACKGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     holder = queue.claim(has_gpu=True, capacity=capacity)
     assert holder is not None and holder["action_key"] == BACKGROUND
 
-    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 2})
+    ActionRows(queue).publish(
+        FOREGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=0,
+        resources={'gpu': 2},
+    )
     assert queue.claim(has_gpu=True, capacity=capacity) is None
 
     assert _decisions(queue, BACKGROUND) == []
@@ -213,14 +249,32 @@ def test_preemption_never_cascades_while_a_release_is_already_in_flight(
     capacity = {"gpu": 2}
     queue.ledger().ensure_capacity(capacity)
 
-    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        BACKGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     first = queue.claim(has_gpu=True, capacity=capacity)
     assert first is not None and first["action_key"] == BACKGROUND
-    _publish(queue, OTHER, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        OTHER,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     second = queue.claim(has_gpu=True, capacity=capacity)
     assert second is not None and second["action_key"] == OTHER
 
-    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        FOREGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=0,
+        resources={'gpu': 1},
+    )
     assert queue.claim(has_gpu=True, capacity=capacity) is None
     assert queue.claim(has_gpu=True, capacity=capacity) is None
     assert queue.claim(has_gpu=True, capacity=capacity) is None
@@ -244,11 +298,23 @@ def test_a_holder_that_finished_first_is_not_requeued(
     capacity = {"gpu": 1}
     queue.ledger().ensure_capacity(capacity)
 
-    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        BACKGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     holder = queue.claim(has_gpu=True, capacity=capacity)
     assert holder is not None and holder["action_key"] == BACKGROUND
 
-    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        FOREGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=0,
+        resources={'gpu': 1},
+    )
 
     original = pool.PoolQueue.withdraw
 
@@ -282,11 +348,23 @@ def test_a_contradictory_holder_does_not_end_the_claim_pass(
     capacity = {"gpu": 1}
     queue.ledger().ensure_capacity(capacity)
 
-    _publish(queue, BACKGROUND, priority=-10, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        BACKGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=-10,
+        resources={'gpu': 1},
+    )
     holder = queue.claim(has_gpu=True, capacity=capacity)
     assert holder is not None and holder["action_key"] == BACKGROUND
 
-    _publish(queue, FOREGROUND, priority=0, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        FOREGROUND,
+        retry_safe=True,
+        max_attempts=3,
+        priority=0,
+        resources={'gpu': 1},
+    )
 
     def refuse(self, key, *args, **kwargs):
         raise pool.AmbiguousClaimHolder(f"two hosts claim {key}")

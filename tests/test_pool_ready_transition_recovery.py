@@ -1,4 +1,5 @@
 """Taking a READY record aside must preserve recovery after crashes and I/O errors."""
+from fleet_world import Clock as FleetClock
 import errno
 import json
 import os
@@ -56,7 +57,7 @@ def test_a_taken_valid_record_is_recovered_after_interruption(tmp_path, monkeypa
                 assert exc.errno == errno.EIO
     assert not ready.exists()
     later = pool._now() + pool.LEASE_TIMEOUT_S * 2
-    monkeypatch.setattr(pool, '_now', lambda: later)
+    FleetClock(source=lambda: later).install(monkeypatch, scope="pool")
     q.reap_stale()
     assert ready.exists(), 'a valid record remains invisible after recovery'
     assert json.loads(ready.read_text()) == original
@@ -78,7 +79,7 @@ def test_an_orphan_capture_survives_failure_to_publish_its_ending(tmp_path, monk
         with pytest.raises(OSError):
             q.quarantine_orphans()
     later = pool._now() + pool.LEASE_TIMEOUT_S * 2
-    monkeypatch.setattr(pool, '_now', lambda: later)
+    FleetClock(source=lambda: later).install(monkeypatch, scope="pool")
     q.reap_stale()
     ending = q.records.item_path(pool.record_store.FAILED, KEY)
     assert ending.exists(), 'the owned stub lost its observable ending on a crash'
@@ -99,7 +100,7 @@ def stranded_capture(q, ready, monkeypatch):
         with pytest.raises(KeyboardInterrupt):
             q._withdraw_ready(KEY)
     later = pool._now() + pool.LEASE_TIMEOUT_S * 2
-    monkeypatch.setattr(pool, '_now', lambda: later)
+    FleetClock(source=lambda: later).install(monkeypatch, scope="pool")
 
 
 def test_recovery_does_not_replace_a_new_publication(tmp_path, monkeypatch):
