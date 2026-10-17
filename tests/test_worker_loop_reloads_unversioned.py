@@ -24,12 +24,18 @@ def _replace(path, value):
     os.replace(replacement, path)
 
 
-def _start(tmp_path, loaded, published, *, continuous=False, poll_s=0, unpublish_on_offer=False):
+def _start(tmp_path, loaded, published, *, continuous=False, poll_s=0, unpublish_on_offer=False,
+           corrupt_first_files=None):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     for key in KEYS:
         queue.publish(action_key=key, cas_root=str(tmp_path / "cas"),
                       checkout_root=str(tmp_path), worker_script="worker.py",
                       resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
+    if corrupt_first_files is not None:
+        path = queue.item_path(pool.READY, KEYS[0])
+        row = json.loads(path.read_text())
+        row["requires_files"] = corrupt_first_files
+        path.write_text(json.dumps(row))
     for name, value in (("loaded.json", loaded), ("published.json", published)):
         if value is not None:
             _replace(tmp_path / name, value)
@@ -63,6 +69,19 @@ affinity = os.sched_getaffinity(0)
 def record(name, value):
     with (root / name).open("a") as stream:
         stream.write(json.dumps(value) + "\\n")
+publishers = []
+if {corrupt_first_files is not None!r}:
+    publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
+    def publish_and_track(local, shared):
+        child = publish_snapshot(local, shared)
+        if child is not None:
+            publishers.append(child)
+            owner = json.loads((local / "publisher-owner.json").read_text())
+            assert owner["pid"] == child.pid
+            record("publishers.jsonl", {{"pid": child.pid, "owner": owner,
+                                        "local": str(local), "shared": str(shared)}})
+        return child
+    pool.cpu_admission.adaptive_snapshot.publish = publish_and_track
 def execute(self, item, **kwargs):
     key = item["action_key"]
     assert json.loads(self.item_path(pool.CLAIMED, key).read_text())["action_key"] == key
@@ -87,6 +106,9 @@ arguments = ["--assume-idle", "--all-cores", "--cpu-slots", "1", "--mem-gb", "1"
 if not {continuous!r}:
     arguments.append("--once")
 code = wl.main(arguments, on_outcome=lambda value: record("outcomes.jsonl", value))
+for publisher in publishers:
+    assert publisher.wait(timeout=10) == 0
+    record("settled-publishers.jsonl", publisher.pid)
 assert os.sched_getaffinity(0) == affinity
 raise SystemExit(code)
 ''')
@@ -226,5 +248,30 @@ def test_publication_lost_after_offer_cannot_authorize_a_claim(tmp_path, continu
             _assert_one_completed(queue, tmp_path)
         else:
             _assert_paused(queue, tmp_path)
+    finally:
+        _finish(child)
+
+
+@pytest.mark.parametrize("value", [7, True])
+def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("PRISMABUILD_BOX_STATE_ROOT", str(tmp_path / "box-state"))
+    queue, child = _start(tmp_path, KNOWN, KNOWN, corrupt_first_files=value)
+    before = queue.item_path(pool.READY, KEYS[0]).read_bytes()
+    try:
+        output = child.communicate(timeout=30)[0]
+        assert child.returncode == 0, output.decode(errors="replace")
+        publishers = _lines(tmp_path / "publishers.jsonl")
+        assert publishers
+        assert _lines(tmp_path / "settled-publishers.jsonl") == [
+            entry["pid"] for entry in publishers]
+        assert _lines(tmp_path / "executions.jsonl") == [KEYS[1]]
+        assert _lines(tmp_path / "outcomes.jsonl") == [
+            {"action_key": KEYS[1], "status": "executed", "returncode": 0}]
+        assert [offer["runtime_commit"] for offer in queue.offers()] == [KNOWN["commit"]]
+        assert queue.item_path(pool.READY, KEYS[0]).read_bytes() == before
+        assert queue.latest_denials({KEYS[0]})[KEYS[0]][0]["reason"] == "malformed_requires_files"
+        assert queue.terminal_keys() == frozenset([KEYS[1]])
+        assert not queue.lease_path(KEYS[0]).exists()
+        assert queue.ledger().held_keys() == []
     finally:
         _finish(child)
