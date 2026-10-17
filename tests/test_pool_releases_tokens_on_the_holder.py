@@ -79,7 +79,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     """
 
     claimed_path = q.records.item_path(pool.record_store.CLAIMED, KEY)
-    real = pool.record_store._write_json
+    real = pool.immutable_files.write_json_atomic
 
     def dies_before_naming_itself(path, payload):
         if Path(path) == claimed_path and "claimed_host" in payload:
@@ -87,7 +87,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
         return real(path, payload)
 
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
-        with mock.patch.object(pool.record_store, '_write_json',
+        with mock.patch.object(pool.immutable_files, 'write_json_atomic',
                                dies_before_naming_itself):
             with pytest.raises(_ClaimantDied):
                 q.claim(owner=f"{HELD_BY}:1:abcd1234", capacity=DEMAND)
@@ -221,7 +221,7 @@ def test_a_claim_already_filed_elsewhere_still_credits_its_holder(
     _lose_the_record_rewrite(queue)
     filed = _same_generation_record(queue)
     filed["status"] = "executed"
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.DONE, KEY), filed)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.DONE, KEY), filed)
 
     _reap_here(queue)
 
@@ -239,7 +239,7 @@ def test_a_withdrawn_claim_still_credits_its_holder(
     _lose_the_record_rewrite(queue)
     marker = _same_generation_record(queue)
     marker["withdrawn_unix"] = pool._now()
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.WITHDRAWN, KEY), marker)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.WITHDRAWN, KEY), marker)
 
     _reap_here(queue)
 

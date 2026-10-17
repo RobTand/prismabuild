@@ -139,7 +139,7 @@ def test_a_row_whose_identity_disagrees_with_its_name_is_left_alone(
     record = ({**live, **mutation} if mutation is not None else {
         name: value for name, value in live.items() if name != "action_key"})
     path = queue.records.item_path(pool.record_store.CLAIMED, queued_key)
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
     before = path.read_bytes()
 
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)

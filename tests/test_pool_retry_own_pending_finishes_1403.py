@@ -59,7 +59,7 @@ def _claim_stale(queue: pool.PoolQueue, tmp_path: Path, key: str) -> Path:
     record["claimed_by"] = "gone:1:deadbeef"
     record["claimed_host"] = "gone"
     path.write_text(json.dumps(record))
-    pool.record_store._write_json(queue.records.lease_path(key), {
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(key), {
         "action_key": key, "owner": "gone:1:deadbeef", "host": "gone",
         "heartbeat_unix": pool._now() - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S)})
     return path
@@ -147,7 +147,7 @@ def test_a_malformed_saved_outcome_is_skipped_without_stopping_the_sweep(
     broken["claimed_by"] = "this-box:1:beef"
     broken["claimed_host"] = socket.gethostname()
     broken["finish_pending"] = ["not", "a", "mapping"]
-    pool.record_store._write_json(broken_path, broken)
+    pool.immutable_files.write_json_atomic(broken_path, broken)
     before = broken_path.read_bytes()
 
     monkeypatch.setattr(queue, "_sweep_due", lambda: True)
@@ -171,7 +171,7 @@ def test_a_foreign_boxes_saved_finish_is_left_alone(scoped, monkeypatch):
     foreign_key = "f" * 64
     live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
     foreign_path = queue.records.item_path(pool.record_store.CLAIMED, foreign_key)
-    pool.record_store._write_json(foreign_path, dict(
+    pool.immutable_files.write_json_atomic(foreign_path, dict(
         live, action_key=foreign_key, claimed_by="foreign-box:1:feed",
         claimed_host="foreign-box"))
     before = foreign_path.read_bytes()
@@ -209,7 +209,7 @@ def test_the_narrow_retry_reuses_the_host_sweep_throttle(tmp_path, monkeypatch):
         )
         record["finish_pending"] = {"status": "failed",
                                     "detail": {"returncode": 137}}
-        pool.record_store._write_json(
+        pool.immutable_files.write_json_atomic(
             queue.records.item_path(pool.record_store.CLAIMED, key),
             record,
         )
