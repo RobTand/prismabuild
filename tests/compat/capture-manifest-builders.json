@@ -1,0 +1,30 @@
+{
+  "capture_name": "manifest-builders-02-capture",
+  "capture_report_sha256": "e2c924e0710f0da1f1b8d029727aa359781dc6939fecd0c8358fe8ce92ba1237",
+  "excluded_cases": [],
+  "files": {
+    "goldens-manifest-builders.jsonl": "60b2e3b50888b0f0a4193a14407ce3e1cfdb345ac36e40b16c612ed398506d15",
+    "historical-manifest-builders.jsonl": "0e2db748448d4af83943688d906981f814f595bdda0172b5b09e0096975f83db"
+  },
+  "finished_at": "2026-10-17T00:42:47.048198+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "core-manifest-v1/merged-builder",
+    "core-manifest-v1/origin-builder",
+    "core-manifest-v1/stage-builder",
+    "core-manifest-v1/task-builder",
+    "core-manifest-v2/placed-builder"
+  ],
+  "source_git": {
+    "parents": [
+      "5e8b24ecebfcde748d620bf32ba5df9bd263fafa"
+    ],
+    "snapshot": "73e293be75a715dae48fede71fd2992f5f937111",
+    "tree": "ae384e6690612a3bb521ed8e7667ce5e21330ab7"
+  },
+  "started_at": "2026-10-17T00:42:03.515628+00:00"
+}
