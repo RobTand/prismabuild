@@ -16,6 +16,7 @@ free pool (#1245 review B3).
 """
 from __future__ import annotations
 
+
 import ast
 from pathlib import Path
 import sys
@@ -51,7 +52,7 @@ def _fill_to_mover(queue: pool.PoolQueue, tmp_path: Path,
     """Reserve a fence then hand it to the mover: both pools move."""
     state, _detail = queue.tier(RAM_TIER).take_advance(grant, gib, 'ram_gib')
     assert state == "taken", "fixture: the advance must be taken to start"
-    moved = queue.transfer_fence(RAM_TIER, grant, mover)
+    moved = queue.funding._transfer_window(RAM_TIER, grant, mover)
     assert moved == gib, "fixture: the whole fence moves onto the mover"
 
 
@@ -73,7 +74,7 @@ def test_the_host_hold_follows_the_fence_through_its_whole_life(
     assert host.holder_tokens("ram-host:" + grant) == {"mem_gb": 60}
     assert queue.rows_host_memory_held(HOST) == 48
 
-    assert queue.transfer_fence(RAM_TIER, grant, mover) == 60
+    assert queue.funding._transfer_window(RAM_TIER, grant, mover) == 60
     assert tier.holdings(grant) == {}
     assert tier.holdings(mover) == {'ram_gib': 60}
     assert host.holder_tokens("ram-host:" + grant) == {}
@@ -203,7 +204,7 @@ def test_the_rows_read_subtracts_every_ram_host_holder_by_prefix(
     assert state == "taken"
     state, _ = queue.tier(RAM_TIER).take_advance('d' * 64, 60, 'ram_gib')
     assert state == "taken"
-    assert queue.transfer_fence(RAM_TIER, "d" * 64, "b" * 64) == 60
+    assert queue.funding._transfer_window(RAM_TIER, "d" * 64, "b" * 64) == 60
     state, _ = queue.tier('ram:' + str(HOST))._hold_host('e' * 64, 30)
     assert state == "taken"
     # Fills under grant, mover and orphan names all subtract; rows stay 48.

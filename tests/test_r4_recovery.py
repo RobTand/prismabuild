@@ -29,6 +29,8 @@ correct decision on the next attempt.
 """
 from __future__ import annotations
 
+from prismabuild import funding
+
 import json
 import os
 from pathlib import Path
@@ -61,7 +63,7 @@ def _queue(tmp_path: Path, gib: int) -> pool.PoolQueue:
 
 def _funding(q: pool.PoolQueue, mover: str, *, tokens: list[str],
              published: float = 1.0) -> dict[str, object]:
-    return {"schema": pool.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
+    return {"schema": funding.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
             "consumer_action_key": _hexkey("r4-consumer"),
             "plan_sha256": "8" * 64, "mover_action_key": mover,
             "range_start_bytes": 0, "range_end_bytes": SPAN,
@@ -77,9 +79,9 @@ def _terminal_transferring(q: pool.PoolQueue, gib: int = 3
     mover = _hexkey("r4-mover")
     assert ledger.take(mover, {'stage_gib': 1}) is True
     name = sorted((p.name for p in (ledger.paths.held / mover).glob('*-*')))[0]
-    q._write_funding_record_locked(
+    q.funding._write_locked(
         _funding(q, mover, tokens=[name]), expect_generation=None, binding="window")
-    assert q.advance_funding_state(
+    assert q.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="b" * 32) is True
     done = q.records.item_path(pool.record_store.DONE, mover)
@@ -101,8 +103,8 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
     held = ledger.paths.held / mover
     held.chmod(0o000)  # real EACCES for a non-root worker
     try:
-        events = tier_loop._settle_terminal_fence(
-            q, ledger, tier_id=TIER, mover_role="mover_row",
+        events = q.funding.settle_terminal_fence(
+             ledger, tier_id=TIER, mover_role="mover_row",
             consumer=None, mover=mover)
     finally:
         held.chmod(0o755)
@@ -110,7 +112,7 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
     # a named unknown reason is emitted.
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1, \
         "unreadable holder census must not release or strand the fence"
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert [e for e in events
             if e.get("event") == "advance-deferred-unknown-evidence"
@@ -123,18 +125,18 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
     finally:
         held.chmod(0o755)
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert [e for e in window_events
             if e.get("event") == "advance-deferred-unknown-evidence"], \
         window_events
     # Eventual progress: fault cleared, the same settle now reads the
     # census, releases by exact name match, and closes the record.
-    settled = tier_loop._settle_terminal_fence(
-        q, ledger, tier_id=TIER, mover_role="mover_row",
+    settled = q.funding.settle_terminal_fence(
+         ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "released"
     assert [e for e in settled if e.get("event") == "advance-released"]
 
@@ -145,12 +147,12 @@ def test_repro_empty_terminal_proof_retains_terminal_fence(
     ledger, mover, name, done = _terminal_transferring(q)
     # A present but zero-byte terminal proof: unproved, not absent.
     done.write_bytes(b"")
-    events = tier_loop._settle_terminal_fence(
-        q, ledger, tier_id=TIER, mover_role="mover_row",
+    events = q.funding.settle_terminal_fence(
+         ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1, \
         "a present empty proof must not become unused authority"
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert [e for e in events
             if e.get("event") == "advance-deferred-unknown-evidence"
@@ -159,7 +161,7 @@ def test_repro_empty_terminal_proof_retains_terminal_fence(
     window_events = tier_loop.residency_window(
         q, tiers={TIER: {"tier_id": TIER}})
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert [e for e in window_events
             if e.get("event") == "advance-deferred-unknown-evidence"], \
@@ -170,11 +172,11 @@ def test_repro_empty_terminal_proof_retains_terminal_fence(
         "status": "executed",
         "tier_funding": {TIER: {"generation": "b" * 32,
                                 "tokens": [name]}}}))
-    tier_loop._settle_terminal_fence(
-        q, ledger, tier_id=TIER, mover_role="mover_row",
+    q.funding.settle_terminal_fence(
+         ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
 
 
@@ -203,7 +205,7 @@ def test_repro_reserve_defers_on_unknown_funding_record(
     path.write_text('{"schema": "placeholder"}')
     path.chmod(0o000)
     try:
-        assert q.reserve_fence(TIER, grant, fields, 2) is False, \
+        assert q.funding.reserve_window(TIER, grant, fields, 2) is False, \
             "an unreadable funding record must defer, never re-fence"
     finally:
         path.chmod(0o644)
@@ -213,7 +215,7 @@ def test_repro_reserve_defers_on_unknown_funding_record(
 
     # Present but empty: still unproved authority, never true absence.
     path.write_bytes(b"")
-    assert q.reserve_fence(TIER, grant, fields, 2) is False, \
+    assert q.funding.reserve_window(TIER, grant, fields, 2) is False, \
         "a present empty funding record must defer, never be replaced"
     assert path.read_bytes() == b""
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
@@ -223,8 +225,8 @@ def test_repro_reserve_defers_on_unknown_funding_record(
     # Eventual progress via true absence (operator removes the torn
     # record): a fresh fence binds normally -- no double-hold remains.
     path.unlink()
-    assert q.reserve_fence(TIER, grant, fields, 2) is True
-    record = q.read_funding(mover, TIER)
+    assert q.funding.reserve_window(TIER, grant, fields, 2) is True
+    record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "reserved"
     assert int(ledger.holdings(grant).get('stage_gib', 0)) == 2
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
@@ -245,13 +247,13 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
         consumer, TIER, "mover_row", "phase-r4split")
     fields = _fields(q, plan, mover, row, kind="stage_gib")
     # Real handoff: fence reserved under the grant, moved onto the mover.
-    assert q.reserve_fence(TIER, grant, fields, 2) is True
-    generation = str(q.read_funding(mover, TIER)["generation"])
-    assert q.transfer_fence(TIER, grant, mover) == 2
-    assert q.advance_funding_state(
+    assert q.funding.reserve_window(TIER, grant, fields, 2) is True
+    generation = str(q.funding.read_window(mover, TIER)["generation"])
+    assert q.funding._transfer_window(TIER, grant, mover) == 2
+    assert q.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=generation) is True
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     bound = sorted(str(name) for name in record["tokens"])
     assert len(bound) == 2
     first, second = bound
@@ -272,11 +274,11 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
     # short count.
     (ledger.paths.held / mover).chmod(320)
     try:
-        got = q.reserve_fence(TIER, grant, fields2, 2)
+        got = q.funding.reserve_window(TIER, grant, fields2, 2)
     finally:
         (ledger.paths.held / mover).chmod(493)
     assert got is False, "a short retry transfer must retain, never close"
-    record = q.read_funding(mover, TIER)
+    record = q.funding.read_window(mover, TIER)
     assert record is not None
     assert record["state"] == "transferring"
     assert str(record["generation"]) == generation
@@ -290,8 +292,8 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
     # with no free interval, the record closed through the legal step and
     # rotated to a fresh reserved generation bound to the exact grant
     # names -- no duplicate credit anywhere.
-    assert q.reserve_fence(TIER, grant, fields2, 2) is True
-    record2 = q.read_funding(mover, TIER)
+    assert q.funding.reserve_window(TIER, grant, fields2, 2) is True
+    record2 = q.funding.read_window(mover, TIER)
     assert record2 is not None and record2["state"] == "reserved"
     assert str(record2["generation"]) != generation
     assert sorted(str(name) for name in record2["tokens"]) == bound

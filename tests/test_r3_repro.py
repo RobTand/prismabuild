@@ -1,5 +1,7 @@
 """R3 repro: positive publication and exact-obligation defects (must fail pre-fix)."""
 from __future__ import annotations
+
+from prismabuild import funding
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -38,7 +40,7 @@ def test_repro_unknown_ready_preserved(tmp_path: Path) -> None:
             state_of=tier_loop._mover_state)
     finally:
         ready_dir.chmod(0o755)
-    assert out.get("unknown_ready") is True, f"got {out.get('unknown_ready')}"
+    assert out.unknown_ready is True, f"got {out.unknown_ready}"
 
 def test_repro_terminal_torn_proof_preserved(tmp_path: Path) -> None:
     q = _queue(tmp_path, 3)
@@ -46,31 +48,31 @@ def test_repro_terminal_torn_proof_preserved(tmp_path: Path) -> None:
     mover = _hexkey("r3-torn-mover")
     assert ledger.take(mover, {'stage_gib': 1}) is True
     names = sorted((p.name for p in (ledger.paths.held / mover).glob('*-*')))
-    rec = {"schema": pool.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
+    rec = {"schema": funding.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
            "consumer_action_key": _hexkey("r3-consumer"),
            "plan_sha256": "8" * 64, "mover_action_key": mover,
            "range_start_bytes": 0, "range_end_bytes": SPAN,
            "kind": "stage_gib", "tokens": names,
            "generation": "b" * 32, "state": "reserved",
            "unix": 1.0, "published_unix": 1.0}
-    q._write_funding_record_locked(rec, expect_generation=None, binding="window")
-    assert q.advance_funding_state(
+    q.funding._write_locked(rec, expect_generation=None, binding="window")
+    assert q.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="b" * 32) is True
     done = q.records.item_path(pool.record_store.DONE, mover)
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text("{torn-json")
-    tier_loop._settle_terminal_fence(
-        q, ledger, tier_id=TIER, mover_role="mover_row",
+    q.funding.settle_terminal_fence(
+         ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
-    assert q.read_funding(mover, TIER) is not None
-    assert q.read_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_window(mover, TIER) is not None
+    assert q.funding.read_window(mover, TIER)["state"] == "transferring"
     # Same through the real window caller (funding scan): defers loudly,
     # frees nothing, closes nothing.
     events = tier_loop.residency_window(q, tiers={TIER: {"tier_id": TIER}})
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
-    assert q.read_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_window(mover, TIER)["state"] == "transferring"
     assert [e for e in events
             if e.get("event") == "advance-deferred-unknown-evidence"], \
         "torn terminal proof must defer loudly"

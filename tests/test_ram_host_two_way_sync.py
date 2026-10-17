@@ -11,6 +11,7 @@ half that cannot land refuses window growth until it does.
 
 from __future__ import annotations
 
+
 from pathlib import Path
 import sys
 
@@ -70,7 +71,7 @@ def test_claim_path_ram_takes_gain_their_host_half(tmp_path: Path) -> None:
     _claim_path_take(queue, bare, {"ram_gib": 100})
     # A partial fence: 40 fenced, handed to the mover, 60 claimed beside it.
     assert queue.tier(RAM_TIER).take_advance(grant, 40, 'ram_gib')[0] == 'taken'
-    assert queue.transfer_fence(RAM_TIER, grant, fenced) == 40
+    assert queue.funding._transfer_window(RAM_TIER, grant, fenced) == 40
     _claim_path_take(queue, fenced, {"ram_gib": 60})
 
     verdict = queue.tier(RAM_TIER).reconcile_mirror(())
@@ -148,7 +149,7 @@ def test_a_failed_host_transfer_is_heard_and_healed(
 
     monkeypatch.setattr(pool.ResourceLedger, "transfer", _host_side_transfer)
     faults: list[dict[str, object]] = []
-    moved = queue.transfer_fence(RAM_TIER, grant, mover, faults=faults)
+    moved = queue.funding._transfer_window(RAM_TIER, grant, mover, faults=faults)
     monkeypatch.undo()
 
     # The tier half moved; the fault was named, not swallowed; the host

@@ -1,4 +1,5 @@
 """Real ownership controls for C05 L; run only through published PrismaBuild."""
+
 from prismabuild import output_contract as oc
 import errno
 import json
@@ -44,12 +45,12 @@ def test_prelaunch_unknown_claim_keeps_exact_reserved_chunk(tmp_path, monkeypatc
     unit, holder = _group(queue, plan, [mover], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [mover])
     row = _publish(queue, plan, mover)
-    assert pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
+    assert queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, mover),
                             float(row['published_unix'])).status == 'published'
     ledger = queue.tier(TIER)
     before = ledger.holdings(mover)
     assert before == {'stage_gib': 2}
-    funding_before = queue.read_funding(mover, TIER)
+    funding_before = queue.funding.read_window(mover, TIER)
     assert funding_before['state'] == 'transferring'
     seen = _unreadable_stat(
         monkeypatch,
@@ -59,7 +60,7 @@ def test_prelaunch_unknown_claim_keeps_exact_reserved_chunk(tmp_path, monkeypatc
     events = pg.release_unit(queue, TIER, unit, holder, [mover], terminal=True)
     assert seen, 'the underlying native metadata failure was never exercised'
     assert ledger.holdings(mover) == before, 'unknown claimed evidence released the actual chunk tokens'
-    assert queue.read_funding(mover, TIER) == funding_before
+    assert queue.funding.read_window(mover, TIER) == funding_before
     assert 'prelaunch-unknown-evidence' in events
 
 
@@ -194,7 +195,7 @@ def test_funding_missing_metadata_never_certifies_an_empty_intent_as_absent(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b'')
     seen = _unreadable_stat(monkeypatch, path, error)
-    status, record, reason = queue.read_funding_evidence(mover, TIER)
+    status, record, reason = queue.funding.window_evidence(mover, TIER)
     assert seen, 'the actual metadata query was not reached'
     assert status == 'unknown', 'unavailable metadata certified a present empty funding intent as absent'
     assert record is None
