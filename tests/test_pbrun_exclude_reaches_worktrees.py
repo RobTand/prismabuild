@@ -142,14 +142,14 @@ def test_legacy_exclude_migration_fails_closed_when_it_cannot_publish(
     exclude = root / ".git" / "info" / "exclude"
     with exclude.open("a", encoding="utf-8") as handle:
         handle.write(f"{submit_core.RESULT_PREFIX}*\n")
-    real_replace = pbrun.os.replace
+    real_replace = submit_core.os.replace
 
     def refuse_replace(source, destination):
         if Path(destination) == exclude:
             raise PermissionError("simulated unwritable common exclude")
         return real_replace(source, destination)
 
-    monkeypatch.setattr(pbrun.os, "replace", refuse_replace)
+    monkeypatch.setattr(submit_core.os, "replace", refuse_replace)
     with pytest.raises(submit_core.SubmissionRefused, match="cannot update pbrun Git excludes"):
         submit_core.keep_droppings_out_of_git(root)
 
@@ -160,7 +160,7 @@ def test_git_exclude_setup_refuses_failed_initial_repository_detection(
     """A checkout marker plus failed rev-parse is uncertainty, not no-Git."""
 
     root = _repo(tmp_path)
-    real_run = pbrun.subprocess.run
+    real_run = submit_core.subprocess.run
 
     def fail_common_dir(argv, *args, **kwargs):
         if (
@@ -172,7 +172,7 @@ def test_git_exclude_setup_refuses_failed_initial_repository_detection(
             )
         return real_run(argv, *args, **kwargs)
 
-    monkeypatch.setattr(pbrun.subprocess, "run", fail_common_dir)
+    monkeypatch.setattr(submit_core.subprocess, "run", fail_common_dir)
     with pytest.raises(submit_core.SubmissionRefused, match="cannot inspect local Git excludes"):
         submit_core.keep_droppings_out_of_git(root)
 

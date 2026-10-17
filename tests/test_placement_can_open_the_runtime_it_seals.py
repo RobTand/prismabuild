@@ -203,7 +203,7 @@ def test_pbrun_refuses_the_submission_and_not_only_the_predicate(
 
     with mock.patch.object(pbrun, "configured_store", return_value=submit_core.FleetStore(
             tmp_path / "fleet", WORKTREE, pbrun.configured_store().roster_path)), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", WORKTREE), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=WORKTREE)), \
          mock.patch.object(submit_core.socket, "gethostname", return_value="sparky"), \
          mock.patch.object(
              sys, "argv",

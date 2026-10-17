@@ -299,7 +299,7 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
     def identity(_cwd, _seen=seen):
         return {"commit": _seen.pop(0)}
 
-    monkeypatch.setattr(pbrun, "_git_identity", identity)
+    monkeypatch.setattr(submit_core, '_git_identity', identity)
     names = []
     for commit in ("aaaa", "bbbb", "aaaa"):
         seen.append(commit)
@@ -361,9 +361,7 @@ def test_effective_placement_is_normalized_into_action_identity(
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
-    monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
-    )
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "repo" / "tools")
 
     populations = [
         ["x86", "dl380g10", "x86"],
@@ -420,9 +418,7 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
-    monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
-    )
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "repo" / "tools")
 
     policies = [
         [],
@@ -445,9 +441,7 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
     # Runtime publication changes the wrapper path sealed in both argv and
     # PATH. A still-running action from the prior runtime must keep a distinct
     # cleanup namespace during that overlap window.
-    monkeypatch.setattr(
-        pbrun, "CONTAINER_WRAPPER_DIR", fleet / "next-runtime" / "tools"
-    )
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "next-runtime" / "tools")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -843,7 +837,7 @@ def test_git_snapshot_limits_logical_tree_bytes_after_indexing(
     (checkout / "mostly-zero.bin").write_bytes(b"\0" * (256 * 1024))
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_kw: 0)
+    monkeypatch.setattr(submit_core, 'require_working_tree_size', lambda *_a, **_kw: 0)
     with pytest.raises(submit_core.SubmissionRefused, match="logical checkout tree"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=32 * 1024
@@ -867,7 +861,7 @@ def test_git_snapshot_refuses_oversize_before_git_add_hashes_it(
             pytest.fail("git add -A ran before the logical-size refusal")
         return real_snapshot_git(cwd, argv, **kwargs)
 
-    monkeypatch.setattr(pbrun, "_snapshot_git", observed_snapshot_git)
+    monkeypatch.setattr(submit_core, '_snapshot_git', observed_snapshot_git)
     with pytest.raises(submit_core.SubmissionRefused, match="logical working tree"):
         submit_core.snapshot_checkout(
             checkout, cas=cas, max_bytes=32 * 1024
@@ -1083,7 +1077,7 @@ def test_an_unknown_snapshot_ref_refuses_before_anything_is_sealed(
     def unreachable(*_args: object, **_kwargs: object) -> None:
         pytest.fail("a refused --snapshot-ref reached the CAS")
 
-    monkeypatch.setattr(pbrun, "build_git_checkout_snapshot", unreachable)
+    monkeypatch.setattr(submit_core, 'snapshot_checkout', unreachable)
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(
         sys, "argv",
@@ -1138,9 +1132,9 @@ def test_git_snapshot_bounds_a_bundle_its_history_made_large(
 
     # Both tree-side bounds pass on this checkout; the bundle bound is the
     # only thing between a heavy history and CAS ingestion.
-    monkeypatch.setattr(pbrun, "require_working_tree_size", lambda *_a, **_k: 0)
+    monkeypatch.setattr(submit_core, 'require_working_tree_size', lambda *_a, **_k: 0)
     monkeypatch.setattr(
-        pbrun, "require_supported_snapshot_tree", lambda *_a, **_k: None
+        submit_core, 'require_supported_snapshot_tree', lambda *_a, **_k: None
     )
     with pytest.raises(submit_core.SubmissionRefused, match="above the .* safety limit"):
         submit_core.snapshot_checkout(
@@ -1199,7 +1193,7 @@ def test_snapshot_names_legacy_and_modern_partial_source_before_pack(
     original = (checkout / ".git" / "config").read_bytes()
     def cannot_pack(*args, **kwargs):
         raise AssertionError("partial source must refuse before bundle packing")
-    monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
+    monkeypatch.setattr(submit_core, 'write_deterministic_bundle', cannot_pack)
     with pytest.raises(submit_core.SubmissionRefused, match="partial clone") as refused:
         submit_core.snapshot_checkout(
             checkout, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
@@ -1239,7 +1233,7 @@ def test_real_modern_filtered_clone_without_legacy_extension_refuses_early(
     assert tuple((partial / ".git" / "objects" / "pack").glob("*.promisor"))
     def cannot_pack(*args, **kwargs):
         raise AssertionError("modern partial source must not reach pack-objects")
-    monkeypatch.setattr(pbrun, "write_deterministic_bundle", cannot_pack)
+    monkeypatch.setattr(submit_core, 'write_deterministic_bundle', cannot_pack)
     with pytest.raises(submit_core.SubmissionRefused, match="partial clone"):
         submit_core.snapshot_checkout(
             partial, cas=core_module.PrismaBuildCAS(tmp_path / "cas"),
@@ -1392,7 +1386,7 @@ def test_a_non_git_checkout_cannot_fall_back_to_mutable_execution(
     work = tmp_path / "plain-directory"
     work.mkdir()
     fleet = tmp_path / "fleet"
-    with mock.patch.object(pbrun, "SH", fleet), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=fleet, queue_root=Path(fleet) / "pb-queue", cas_root=Path(fleet) / "cas")), \
          mock.patch.object(sys, "argv", [
              "pbrun.py", "--cwd", str(work), "--wait-s", "0", "--", "true",
         ]):
@@ -1651,7 +1645,7 @@ def test_retained_offer_reader_reports_identity_and_releases_parent_flock(
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
     monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
-    monkeypatch.setattr(pbrun, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(submit_core, 'SUBMISSION_OFFER_READ_TIMEOUT_S', 0.2)
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
@@ -1753,7 +1747,7 @@ def _submitted_environment(root: Path, *extra_argv: str) -> dict[str, str]:
     # reader budget.  A subsecond caller deadline races bounded-reader startup
     # and IPC under suite load, and the read timeout's exit (74) is not this
     # test's subject; the sealed action it reads is unaffected (#822).
-    with mock.patch.object(pbrun, "SH", root), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=root, queue_root=Path(root) / "pb-queue", cas_root=Path(root) / "cas")), \
          mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
@@ -1998,8 +1992,8 @@ def test_a_real_submission_says_it_before_it_says_queued(tmp_path, capsys) -> No
     # ``--wait-s 0`` is one immediate observation with the standard bounded
     # reader budget; a subsecond deadline races reader startup under load and
     # the read timeout's 74 is not what this test asserts (#822).
-    with mock.patch.object(pbrun, "SH", tmp_path), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=tmp_path, queue_root=Path(tmp_path) / "pb-queue", cas_root=Path(tmp_path) / "cas")), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=PUBLISHED_RUNTIME)), \
          mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
              mock.patch.object(socket, "gethostname", return_value=HOST), \
              mock.patch.object(sys, "argv",
@@ -2044,8 +2038,8 @@ def test_a_matching_recorded_offer_outvotes_a_fresh_nonmatch_at_submit(
     # ``--wait-s 0``: one immediate observation with the standard bounded
     # reader budget, so a loaded box's reader startup cannot turn the
     # accepted-and-unclaimed 75 into the read timeout's 74 (#822).
-    with mock.patch.object(pbrun, "SH", tmp_path), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=tmp_path, queue_root=Path(tmp_path) / "pb-queue", cas_root=Path(tmp_path) / "cas")), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=PUBLISHED_RUNTIME)), \
          mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(sys, "argv",
@@ -2126,8 +2120,8 @@ def test_anywhere_and_a_tag_are_refused_together(tmp_path, monkeypatch) -> None:
     from unittest import mock
 
     work = _git_checkout(tmp_path)
-    with mock.patch.object(pbrun, "SH", tmp_path), \
-         mock.patch.object(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME), \
+    with mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), root=tmp_path, queue_root=Path(tmp_path) / "pb-queue", cas_root=Path(tmp_path) / "cas")), \
+         mock.patch.object(pbrun, "configured_store", return_value=__import__("dataclasses").replace(pbrun.configured_store(), runtime_root=PUBLISHED_RUNTIME)), \
          mock.patch.object(socket, "gethostname", return_value=HOST), \
          mock.patch.object(submit_core.action_wait, "POLL_S", 0.001), \
          mock.patch.object(sys, "argv",
@@ -2175,10 +2169,10 @@ def class_submission(tmp_path, monkeypatch):
         "spark-a": {"args": ["--class", "gb10"]},
         "spark-old": {"_alias": "spark-b", "args": ["--class", "gb10"]},
     }}))
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools")
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=fleet / "repo" / "tools")
     sealed = []
     real_seal = core_module.seal_action
 
@@ -2338,7 +2332,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
         offer = json.loads(offer_path.read_text())
         offer["local_dependencies"] = {bash: "executable"}
         offer_path.write_text(json.dumps(offer))
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
@@ -2510,7 +2504,7 @@ def test_default_cli_resolves_nominal_docker_through_capture_shim(class_submissi
     """Execute the real selected shim against a controlled CLI, not a Docker daemon."""
     submit, root = class_submission
     wrapper = Path(__file__).resolve().parents[1] / "tools" / "fleet"
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", wrapper)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=wrapper)
     backend = root / "controlled-docker"
     calls = root / "docker-call.json"
     calls.write_text("{}")
@@ -2687,7 +2681,7 @@ def retained_executable_alias(class_submission, monkeypatch, request):
     submit, root = class_submission
     shared = root / "shared"
     shared.mkdir()
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, 'SHARED_ROOT', shared)
     target_root = root / "checkout" if request.param == "checkout" else shared
     target = target_root / "alias-target"
     target.write_bytes(Path("/bin/bash").read_bytes())
@@ -2777,7 +2771,7 @@ def input_submission(class_submission, monkeypatch, request):
     submit, root = class_submission
     shared = root / "shared"
     shared.mkdir()
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, 'SHARED_ROOT', shared)
     target_root = root / "checkout" if request.param == "checkout" else shared
     target = target_root / "input-target.bin"
     target.write_text("input-target-ok\n")
@@ -2957,7 +2951,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
     shared = tmp_path / "shared"
     shared.mkdir()
     (shared / "input.bin").write_text("shared-input\n")
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, 'SHARED_ROOT', shared)
     fleet = tmp_path / "fleet"
     roster = tmp_path / "roster.json"
     roster.write_text(json.dumps({"boxes": {
@@ -2981,7 +2975,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
                 ),
             ),
         )
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
@@ -3145,7 +3139,7 @@ def raw_copy_submission(tmp_path, monkeypatch):
                 ),
             ),
         )
-    monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
+    patch_store(monkeypatch, client=pbrun, roster_path=roster)
     patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")

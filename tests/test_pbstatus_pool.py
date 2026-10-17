@@ -1,4 +1,5 @@
 """Pool status uses the active queue even without SLURM executables."""
+from submission_support import patch_store
 import json
 from pathlib import Path
 import sys

@@ -13,6 +13,7 @@ budget each read is given, on a fake clock, and that an expired wait returns
 before the clock moves at all.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 from pathlib import Path
 import sys
