@@ -1107,3 +1107,43 @@ def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_c
             monkeypatch.setattr(module, "configured_store", lambda: store)
         if getattr(module, "store_for", None) is not None:
             monkeypatch.setattr(module, "store_for", fixture_store)
+
+
+def pytest_terminal_summary(terminalreporter):
+    """Record the actual process for execution and collection receipts."""
+    import hashlib
+    import json
+    import platform
+    import tempfile
+
+    root = Path(__file__).resolve().parents[1]
+    payload = Path('/proc/self/exe').read_bytes()
+    files = {}
+    for directory in ('src', 'tools', 'tests'):
+        for path in sorted((root / directory).rglob('*.py')):
+            files[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    source_hash = hashlib.sha256(json.dumps(
+        files, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    selected = sorted({str(Path(item.path).relative_to(root))
+                       for item in terminalreporter._session.items})
+    native_names = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                    'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS',
+                    'BLIS_NUM_THREADS', 'RAYON_NUM_THREADS')
+    record = {
+        'version': sys.version,
+        'version_info': list(sys.version_info[:3]),
+        'executable': sys.executable,
+        'resolved': str(Path(sys.executable).resolve()),
+        'mapped_executable': os.readlink('/proc/self/exe'),
+        'executable_bytes': len(payload),
+        'executable_sha256': hashlib.sha256(payload).hexdigest(),
+        'kernel': platform.release(),
+        'machine': platform.machine(),
+        'affinity': sorted(os.sched_getaffinity(0)),
+        'native_bounds': {name: os.environ.get(name) for name in native_names},
+        'tmpdir': tempfile.gettempdir(),
+        'selected_files': selected,
+        'source_files': len(files),
+        'source_sha256': source_hash,
+    }
+    terminalreporter.write_line('pbtest-runtime: ' + json.dumps(record, sort_keys=True))

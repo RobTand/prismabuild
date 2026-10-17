@@ -822,8 +822,11 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         if need > capacity:
             return {"ok": False, "refusal": "never-fits-tier-capacity",
                     "tier_id": tier}
-    delivered = [name for name in ("reserve_fence", "funded_cover")
-                 if callable(getattr(pool_mod.PoolQueue, name, None))]
+    from .funding import FundingLedger
+
+    delivered = [label for label, method in (
+        ("reserve_fence", FundingLedger.reserve_window),
+        ("funded_cover", FundingLedger.cover_window)) if callable(method)]
     if callable(getattr(pool_mod.ResourceLedger, "transfer_tokens", None)):
         delivered.append("transfer_tokens")
     if len(delivered) == 3:

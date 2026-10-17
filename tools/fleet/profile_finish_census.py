@@ -24,8 +24,6 @@ Scenarios, each repeated ``--repeat`` times:
 """
 from __future__ import annotations
 
-from prismabuild import funding
-
 import argparse
 import cProfile
 import io
@@ -93,7 +91,7 @@ def profiled(label, repeat, fn):
     stats = pstats.Stats(profile, stream=buffer).sort_stats("cumulative")
     stats.print_stats(12)
     calls = {}
-    watched = ("_read_json", "output_census_for_owner", "validate_output_funding",
+    watched = ("_read_json", "output_census", "validate_output",
                "output_keep_names_for_owner", "_release_reservation", "scandir", "io.open")
     for (_filename, _line, name), row in stats.stats.items():
         for token in watched:
