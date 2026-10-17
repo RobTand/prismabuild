@@ -7069,7 +7069,12 @@ def publish_consumer_row(q, action: Mapping[str, object],
             else:
                 if residency_plan.superseded(q, staged_plan) is not None:
                     raise SubmissionRefused("decomposed child's immutable data plan was superseded; refusing automatic revival")
-                staged = {"plan": staged_plan}
+                staged = {"plan": staged_plan, "residency": {
+                    "schema": pool.RESIDENCY_SCHEMA_V1,
+                    "manifest_sha256": staged_plan["manifest_sha256"],
+                    "manifest_bytes": staged_plan["manifest_bytes"],
+                    "tier_id": staged_plan["tier_id"],
+                    "leads": residency_plan.leads_for(staged_plan)}}
             # A seal is a new generation of this consumer's window, and so is
             # a resubmission that reuses its frozen plan.  The predecessor's
             # *visible* child cancellations -- an operator's withdrawal, or

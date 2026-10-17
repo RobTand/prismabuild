@@ -28,14 +28,6 @@ def render(event: Display) -> None:
 
 
 def request_from_args(args: argparse.Namespace) -> SubmissionRequest:
-    if args.request_json is not None:
-        try:
-            row = json.loads(args.request_json)
-        except ValueError as exc:
-            raise SubmissionRefused(f"invalid request JSON: {exc}", returncode=2) from None
-        if not isinstance(row, dict):
-            raise SubmissionRefused("request JSON must be an object", returncode=2)
-        return submission.request_from_mapping(row)
     return SubmissionRequest(**{field.name: getattr(args, field.name) for field in fields(SubmissionRequest)})
 
 def _profile_mode(text: str) -> str:
@@ -73,7 +65,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     "--transport or the published generation's default; the "
                     "result does not depend on which."
     )
-    ap.add_argument("--request-json", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--client-events-fd", type=int, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")

@@ -279,9 +279,8 @@ def member_request(args, manifest: dict, member: dict, *, group: str, index: int
 
 
 def member_command(args, manifest: dict, member: dict, *, group: str, index: int) -> list[str]:
-    from dataclasses import asdict
     request = member_request(args, manifest, member, group=group, index=index)
-    return [sys.executable, str(HERE / "pbrun.py"), "--request-json", json.dumps(asdict(request))]
+    return [sys.executable, str(HERE / "pbrun.py"), *request_arguments(request)]
 
 
 def withdraw(keys: list[str], reason: str) -> None:

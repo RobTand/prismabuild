@@ -58,7 +58,7 @@ from runtime_paths import (  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
-from submission_frontend import store_for, render_submission
+from submission_frontend import store_for, render_submission, request_arguments
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
 def configured_store():
@@ -75,7 +75,6 @@ from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 import pbtest_capabilities  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
-from prismabuild import submission
 from prismabuild import submission
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
@@ -1167,9 +1166,9 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
 
 def shard_command(request: SubmissionRequest, *, environment, python_entry, arguments):
     """Send a typed request across the existing C06 client process boundary."""
-    from dataclasses import asdict, replace
+    from dataclasses import replace
     request = replace(request, env=tuple(environment), command=(*python_entry, *arguments))
-    return ["/usr/bin/python3", str(PBRUN), "--request-json", json.dumps(asdict(request))]
+    return ["/usr/bin/python3", str(PBRUN), *request_arguments(request)]
 
 
 def _client_environment():
