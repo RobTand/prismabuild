@@ -839,7 +839,7 @@ def test_a_replayed_ensure_answers_the_same_generation(tmp_path: Path) -> None:
     _assert_funded_once(world, str(one["mover_key"]))
 
 
-def test_concurrent_ensures_collapse_onto_one_epoch(tmp_path: Path) -> None:
+def test_concurrent_ensures_collapse_onto_one_epoch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Two callers, one materialization.
 
     The intent is appended under the output-prefix ownership lock, so the
@@ -850,6 +850,32 @@ def test_concurrent_ensures_collapse_onto_one_epoch(tmp_path: Path) -> None:
     """
 
     world, _descs = _staged_world(tmp_path)
+
+    # These contenders start from the same actual unfunded census. Otherwise
+    # a late census may already see the winner's tokens as spoken for, which
+    # is a different safe refusal from the transition race exercised here.
+    snapshots = threading.Barrier(2, timeout=10)
+    local = threading.local()
+    native_stage = world.q.stage_output_intent
+    native_census = world.q.output_census_for_owner
+
+    def stage(**kwargs):
+        local.in_stage = True
+        try:
+            return native_stage(**kwargs)
+        finally:
+            local.in_stage = False
+
+    def census(*args, **kwargs):
+        answer = native_census(*args, **kwargs)
+        if (getattr(local, "in_stage", False)
+                and not getattr(local, "snapshot_taken", False)):
+            local.snapshot_taken = True
+            snapshots.wait()
+        return answer
+
+    monkeypatch.setattr(world.q, "stage_output_intent", stage)
+    monkeypatch.setattr(world.q, "output_census_for_owner", census)
     results: list[dict] = []
     lock = threading.Lock()
 
