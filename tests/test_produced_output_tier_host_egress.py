@@ -100,7 +100,7 @@ def _world_with_the_stage_elsewhere(tmp_path: Path, **kwargs):
     record = json.loads(path.read_text())
     assert record["host"] == socket.gethostname()
     record["host"] = ELSEWHERE
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
     assert restage._tier_host(world.q) == ELSEWHERE
     return world
 

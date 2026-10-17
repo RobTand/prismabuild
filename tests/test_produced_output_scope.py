@@ -134,7 +134,7 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
     live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool.record_store._write_json(path, live)
+    pool.immutable_files.write_json_atomic(path, live)
     return control
 
 
@@ -232,7 +232,7 @@ def _bind_contained(queue: pool.PoolQueue, tmp_path: Path, template: dict,
     live = pool.record_store.read_document(path)
     assert isinstance(live, dict)
     live["resource_scope"] = control
-    pool.record_store._write_json(path, live)
+    pool.immutable_files.write_json_atomic(path, live)
     env = {"PRISMABUILD_ACTION_KEY": owner,
            "PRISMABUILD_ACTION_NONCE": control["nonce"],
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
