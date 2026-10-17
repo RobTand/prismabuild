@@ -2355,8 +2355,6 @@ def _record_generation(record: Mapping[str, object] | None) -> float | None:
     return float(theirs)
 
 
-
-
 def _same_generation(path: Path, published_unix: float) -> bool:
     """Is the record already there this submission's own, or an older one?
 
@@ -3397,8 +3395,6 @@ NO_VERDICT = "no-verdict"      #: the controller knows no such job and there is 
 UNREACHABLE = "unreachable"    #: the controller could not be asked
 
 
-
-
 def _ending_on_disk(
     filed: Sequence[tuple[str, Path]], published_unix: float
 ) -> str | None:
@@ -3626,7 +3622,9 @@ def _filed_ending(
 
     floor = float(published_unix)
     for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
-        record = record_store.RecordStore.polled_object_at(record_store.RecordStore(queue_root).item_path(state, action_key))
+        record = record_store.RecordStore.polled_object_at(
+            record_store.RecordStore(queue_root).item_path(state, action_key),
+        )
         if record is not None and _record_generation(record) == floor:
             if state == record_store.WITHDRAWN and "detail" not in record:
                 continue

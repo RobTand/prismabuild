@@ -83,7 +83,9 @@ def announce(queue, host, *, tags=("gb10", contracts.CONTAINER_IMAGE_TAG),
 
 
 def item_of(queue, key):
-    return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8"))
+    return json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8"),
+    )
 
 
 def denials(queue):

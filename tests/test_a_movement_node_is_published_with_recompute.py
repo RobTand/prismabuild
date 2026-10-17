@@ -76,7 +76,9 @@ def test_recompute_survives_a_requeue(queue) -> None:
     record = dict(_publish(queue, "e" * 64, recompute=True))
     record.update({"claimed_by": "x", "claimed_unix": 1.0, "status": "failed"})
     queue._shape_as_ready_item(record, action_key="e" * 64)
-    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, "e" * 64))["recompute"] is True
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, "e" * 64),
+    )["recompute"] is True
 
 
 def _hexkey(seed: str) -> str:
@@ -128,7 +130,9 @@ def test_the_window_publishes_its_movers_as_movement_nodes(queue, tmp_path) -> N
     published = [e["action_key"] for e in events if e["event"] == "mover-published"]
     assert published == [_hexkey("mover0"), _hexkey("mover1")]
     for key in published:
-        assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))["recompute"] is True
+        assert pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.READY, key),
+        )["recompute"] is True
 
 
 def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
@@ -148,5 +152,7 @@ def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
                              "mountpoint": str(tmp_path / "stage")}})
 
     assert [e["event"] for e in events if "egress" in e["event"]] == ["egress-published"]
-    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, _hexkey("egress0")))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, _hexkey("egress0")),
+    )
     assert item["recompute"] is True

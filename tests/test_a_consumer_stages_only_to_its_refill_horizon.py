@@ -272,7 +272,11 @@ def test_a_window_publishes_only_to_its_refill_horizon(tmp_path: Path) -> None:
     _cycle(queue, stage, gib=capacity)
 
     published = {ordinal for ordinal in range(PHASES)
-                 if queue.records.item_path(pool.record_store.READY, _mover("reader", ordinal)).exists()}
+                 if queue.records.item_path(
+                     pool.record_store.READY,
+                     _mover("reader", ordinal),
+                 ).exists(
+                 )}
     assert published == {1, 2}, published
 
 
@@ -418,7 +422,8 @@ def test_a_running_consumers_next_range_preempts_ranges_past_another_horizon(
     assert _claim_shortage(queue, layer_3, 14) is None
     for ordinal in range(4):
         egress = plan["phases"][ordinal]["egress_row"]["action_key"]  # type: ignore[index]
-        assert queue.records.item_path(pool.record_store.READY, egress).exists(), CAPTURE_NAMES[ordinal]
+        assert queue.records.item_path(pool.record_store.READY, egress).exists(
+        ), CAPTURE_NAMES[ordinal]
     _assert_farthest_evicted(files, queue, kept=range(13), evicted=range(13, WIDE))
     assert_ledger_matches_the_stage(queue)
 
@@ -600,7 +605,11 @@ def test_a_window_claimed_before_the_horizon_keeps_its_ranges(
     for ordinal in (5, 6):
         assert queue.records.item_path(pool.record_store.READY, _mover("reader", ordinal)).exists()
     for ordinal in (4, 7):
-        assert not queue.records.item_path(pool.record_store.READY, _mover("reader", ordinal)).exists()
+        assert not queue.records.item_path(
+            pool.record_store.READY,
+            _mover("reader", ordinal),
+        ).exists(
+        )
     assert_ledger_matches_the_stage(queue)
 
 

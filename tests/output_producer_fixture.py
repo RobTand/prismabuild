@@ -115,7 +115,9 @@ class Broker:
         self.scopes.append(scope)
         control = scope.control_record()
         assert control["socket_path"] == str(self.socket)
-        live = pool.read_queue_record(queue.records.item_path(pool.record_store.CLAIMED, claimed["action_key"]))
+        live = pool.read_queue_record(
+            queue.records.item_path(pool.record_store.CLAIMED, claimed["action_key"]),
+        )
         assert live is not None
         assert all(live["resource_scope"].get(key) == value
                    for key, value in control.items())
