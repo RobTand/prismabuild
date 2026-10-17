@@ -153,7 +153,7 @@ def c13_occurrences(source,manifest,path):
         if isinstance(n,ast.Assert):
             assertions.append(ast.dump(n,include_attributes=False))
         elif isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)):
-            decorators.extend(ast.dump(d,include_attributes=False) for d in n.decorator_list if not isinstance(d,ast.Name) or d.id not in ('staticmethod','property','classmethod'))
+            decorators.extend(ast.dump(d,include_attributes=False) for d in n.decorator_list)
     return Counter(assertions),Counter(decorators)
 
 

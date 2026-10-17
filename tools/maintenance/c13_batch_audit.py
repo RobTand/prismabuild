@@ -17,6 +17,7 @@ def c13_git(*args):
 
 
 def c13_inventory(revision):
+    revision = c13_git('rev-parse', revision+'^{commit}').decode().strip()
     paths = c13_git('ls-tree', '-r', '--name-only', revision).decode().splitlines()
     result = {'revision': revision, 'files': {}}
     for path in paths:
