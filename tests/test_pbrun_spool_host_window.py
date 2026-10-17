@@ -48,7 +48,7 @@ def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
         "--cwd", str(work), "--detach", "--transport", transport, *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+    return submit_core.prepare(args, store=pbrun.configured_store(), display=submit_core.render_submission)["template"]
 
 
 def _sealed_mentions(template) -> bool:
@@ -125,7 +125,7 @@ def test_slurm_refuses_a_declared_bound(tmp_path, monkeypatch):
 
 def _freeze(tmp_path, *, demand, variables, transport="pool"):
     repo = _checkout(tmp_path)
-    return submit_core.freeze(
+    return submit_core.freeze_template(
         command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin", **variables}, determinism="stochastic",
@@ -185,7 +185,7 @@ def test_freeze_normalizes_before_the_ownership_and_stamp_fingerprints(tmp_path,
     repo = _checkout(tmp_path)
 
     def frozen(variables):
-        return submit_core.freeze(
+        return submit_core.freeze_template(
             command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
             demand={"cpu": 1, "mem_gb": 1, KIND: 1},
             placement={"required_tags": []},

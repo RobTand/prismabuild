@@ -79,7 +79,7 @@ def test_a_read_the_lane_could_not_make_is_not_reported_as_an_unwritten_record(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     err = capsys.readouterr().err
     assert code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
@@ -110,7 +110,7 @@ def test_a_record_that_will_not_write_keeps_the_headline_it_had(
             exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
             max_attempts=1, runtime_root=REPOSITORY, queue_root=queue,
             poll_s=0.0,
-        store=pbrun.configured_store(), display=pbrun.render)
+        store=pbrun.configured_store(), display=submit_core.render_submission)
     finally:
         (queue / "failed").chmod(0o755)
 
@@ -134,7 +134,7 @@ def test_a_pre_submission_filesystem_failure_does_not_claim_slurm_took_the_actio
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600, wait_s=1, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0,
-    store=pbrun.configured_store(), display=pbrun.render) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
+    store=pbrun.configured_store(), display=submit_core.render_submission) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert 'slurm took this action' not in err
     assert 'could not write its record' not in err

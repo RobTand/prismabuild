@@ -97,7 +97,7 @@ def test_a_queue_it_cannot_write_is_reported_rather_than_raised(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=queue,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert code not in (submit_core.action_client.GAVE_UP_EXIT, submit_core.action_client.WITHDRAWN_EXIT, 0)
@@ -132,7 +132,7 @@ def test_the_report_names_the_job_slurm_accepted(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=queue,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     err = capsys.readouterr().err
     submitted = [line for line in err.splitlines() if "submitted" in line]
@@ -194,7 +194,7 @@ def test_a_failure_after_sbatch_accepted_is_not_reported_as_a_bad_tag(
         demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
         timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0, queue_root=tmp_path / "queue",
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert code == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
@@ -220,6 +220,6 @@ def test_a_refusal_before_sbatch_still_says_to_fix_the_tag(
             demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=600.0, wait_s=60.0, retry_safe=False, max_attempts=1,
             runtime_root=REPOSITORY, poll_s=0.0, queue_root=tmp_path / "queue",
-        store=pbrun.configured_store(), display=pbrun.render)
+        store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert "Fix the --tag" in str(caught.value)

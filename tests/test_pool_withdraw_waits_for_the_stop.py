@@ -179,7 +179,7 @@ def test_pbrun_says_the_release_is_pending_on_the_holder(
             mock.patch.object(
                 pool, "terminate_action",
                 side_effect=AssertionError("must not signal")):
-        assert submit_core.withdraw_main(queue, [KEY_A[:12]], reason="stale", store=pbrun.configured_store(), display=pbrun.render) == 0
+        assert submit_core.withdraw_main(queue, [KEY_A[:12]], reason="stale", store=pbrun.configured_store(), display=submit_core.render_submission) == 0
 
     said = capsys.readouterr().err
     assert "released 0 token(s)" in said
