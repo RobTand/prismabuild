@@ -20,7 +20,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import pool, residency_map  # noqa: E402
+from prismabuild import pool, residency_map, staged_path  # noqa: E402
 
 
 def vouch_landed(
@@ -71,7 +71,7 @@ def vouch_landed(
     }
     if epoch is not None:
         fragment["epoch"] = epoch
-    residency_map.write_fragment(queue.records.residency_fragment_root(), fragment)
+    staged_path.publish_vouch(queue.records.residency_fragment_root(), fragment)
     receipt: dict[str, object] = {
         "consumer_action_key": consumer_action_key,
         "tier_id": tier_id, "stage_root": str(root),
