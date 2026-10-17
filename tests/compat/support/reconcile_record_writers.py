@@ -16,6 +16,20 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def constructor_dispositions(root):
+    path = root / "tests/compat/constructor_dispositions.jsonl"
+    result = {}
+    for line in path.read_text().splitlines() if path.exists() else ():
+        row = json.loads(line)
+        assert digest(root / row["path"]) == row["source_sha256"], row
+        assert row["reason"] and row["disposition"] in (
+            "decoder_normalization", "in_memory_state", "reader_projection", "qualification_fixture_constructor")
+        key = row["wire_id"], row["path"], row["owner"], row["line"]
+        assert key not in result
+        result[key] = row
+    return result
+
+
 def primary_records(audits, fleet, source_pin):
     for audit in audits:
         for action in json.loads(audit.read_bytes()):
@@ -45,6 +59,7 @@ def captured_records(evidence):
 def reconcile(root, inventory, records):
     observed, functions, inputs = defaultdict(set), defaultdict(set), []
     case_records = defaultdict(list)
+    reviewed, used = constructor_dispositions(root), set()
     for identity, data_hash, record in records:
         if not isinstance(record, dict) or record.get("returncode") != 0 or not record.get("isolated"):
             continue
@@ -78,7 +93,13 @@ def reconcile(root, inventory, records):
             row = {"wire_id": wire["wire_id"], **constructor}
             row["owner_cases"] = sorted(functions[path, owner])
             row["constructor_cases"] = sorted(observed[path, constructor["line"]])
-            if wire["disposition"] not in ("catalogued_adapter", "adapter_requires_capture"):
+            review_key = wire["wire_id"], path, owner, constructor["line"]
+            if review_key in reviewed:
+                review = reviewed[review_key]
+                assert review["fields"] == constructor["fields"], review
+                row.update(disposition=review["disposition"], reason=review["reason"], source_sha256=review["source_sha256"])
+                used.add(review_key)
+            elif wire["disposition"] not in ("catalogued_adapter", "adapter_requires_capture"):
                 row["disposition"] = wire["disposition"]
                 row["reason"] = wire.get("classification", {}).get("reason", wire.get("disposition_reason"))
             elif row["constructor_cases"]:
@@ -92,6 +113,7 @@ def reconcile(root, inventory, records):
             else:
                 row["disposition"] = "uncovered_constructor"
             rows.append(row)
+    assert used == set(reviewed), "stale constructor dispositions require an explicit source review"
     case_writers = []
     for kind in catalogue(root).values():
         for variant in kind["variants"]:
