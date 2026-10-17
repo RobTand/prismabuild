@@ -7136,7 +7136,7 @@ far: the role's own host-local singleton refuses the second minter at
 startup (exit 3), so stop the role first or run the cycle on another box.
 
 Since #733 R6 the same per-tier mint lock is the cache-tier mutation
-exclusion, attached by the explicit `PoolQueue.tier_ledger` factory.
+exclusion, attached by the explicit `PoolQueue.tier` factory.
 Every token rename through a tier ledger -- claim
 begin (non-blocking, declining as `tier_reservation_unavailable`),
 commit/abandon/transfer/release (blocking, completing under the lock),
