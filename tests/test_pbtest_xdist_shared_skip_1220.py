@@ -23,6 +23,7 @@ def test_shared_helper_skips_are_both_reconciled(tmp_path):
     pytest.importorskip("xdist")
     tests = tmp_path / "tests"
     tests.mkdir()
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (tests / "helper.py").write_text(
         "import pytest\n\n"
         "def require(name):\n"
