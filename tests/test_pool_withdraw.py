@@ -292,7 +292,7 @@ def test_a_withdrawal_landing_inside_the_claim_still_wins(
         if str(src).endswith(f"{KEY_A}.json") and f"/{pool.record_store.READY}/" in str(src):
             # Exactly what ``withdraw`` does first, and nothing it does after:
             # the item is still in ``ready`` when this rename runs.
-            pool.record_store._write_json(
+            pool.immutable_files.write_json_atomic(
                 queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A),
                 {"action_key": KEY_A, "status": "withdrawn"})
         return real_rename(src, dst, *args, **kwargs)

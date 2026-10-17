@@ -132,7 +132,7 @@ def drained_box(tmp_path, monkeypatch):
         queue.records.item(pool.record_store.CLAIMED, OWNER_KEY),
     )
     record["resource_scope"] = _scope_control(OWNER_KEY, "c" * 32)
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, OWNER_KEY),
         record,
     )
@@ -156,11 +156,11 @@ def drained_box(tmp_path, monkeypatch):
     foreign["claimed_by"] = "foreign-box:1:feedface"
     foreign["claimed_host"] = "foreign-box"
     foreign["resource_scope"] = _scope_control(FOREIGN_KEY, "e" * 32)
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, FOREIGN_KEY),
         foreign,
     )
-    pool.record_store._write_json(queue.records.lease_path(FOREIGN_KEY), {
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(FOREIGN_KEY), {
         "schema": pool.POOL_LEASE_SCHEMA_V1,
         "action_key": FOREIGN_KEY,
         "owner": "foreign-box:1:feedface",

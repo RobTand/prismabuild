@@ -270,7 +270,7 @@ def test_the_receipt_is_filed_where_the_tier_loop_reads_it(tmp_path: Path) -> No
     assert read["schema"] == pool.POOL_MOVE_SCHEMA_V1
     assert read["bytes_staged"] == 4096
     # A record of another schema is not this one, however well-formed.
-    pool.record_store._write_json(path, {**read, "schema": "something.else.v1"})
+    pool.immutable_files.write_json_atomic(path, {**read, "schema": "something.else.v1"})
     assert queue.move_record(MOVER) is None
 
 

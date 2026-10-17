@@ -557,7 +557,7 @@ def test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives(
                 ))
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     assert not _gang.terminal_mark_path(queue, group, first).exists()
@@ -578,7 +578,7 @@ def test_a_changed_ending_restarts_the_wait(gang_fleet, monkeypatch, tmp_path):
     path = queue.records.item_path(pool.record_store.FAILED, lead)
     record = dict(pool.record_store.read_document(path))
     record["published_unix"] = float(record["published_unix"]) + 7
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
     clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None, "the old mark must not confirm a new ending"
@@ -837,7 +837,7 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     )
     live["published_unix"] = float(ended["published_unix"]) + 5
     live.pop("status", None)
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, lead), live)
     real_clear = _gang.clear_terminal
     monkeypatch.setattr(_gang, "clear_terminal",
                         lambda queue, group, key: False)
@@ -940,7 +940,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     mark_path = _gang.terminal_mark_path(queue, group, first)
     old_mark = mark_path.read_bytes()
     real_verdict = queue.residency_verdict
-    real_write = pool.materialize._write_json_atomic
+    real_write = pool.immutable_files.write_json_atomic
     calls = 0
     observed_faults = []
 
@@ -967,7 +967,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     with monkeypatch.context() as fault:
         fault.setattr(queue, "residency_verdict", verdict)
         fault.setattr(_gang, "clear_terminal", fail_clear)
-        fault.setattr(pool.materialize, "_write_json_atomic", write)
+        fault.setattr(pool.immutable_files, "write_json_atomic", write)
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None
         assert "clear-terminal" in observed_faults, "reset never reached the failed terminal clear"
@@ -1000,7 +1000,7 @@ def test_a_future_terminal_timestamp_restarts_confirmation(
     path = _gang.terminal_mark_path(queue, group, first)
     mark = json.loads(path.read_text())
     mark["first_seen_unix"] = clock[0] + 10 * _gang.TERMINAL_CONFIRM_S
-    pool.record_store._write_json(path, mark)
+    pool.immutable_files.write_json_atomic(path, mark)
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
     clock[0] += _gang.TERMINAL_CONFIRM_S - 1

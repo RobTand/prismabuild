@@ -92,3 +92,46 @@ print('expired', flush=True)
 ''')
     assert code == 0, output.decode()
     assert output == b'expired\n'
+
+
+@pytest.mark.parametrize('signum,isolated', [
+    (int(signal.SIGTERM), False), (int(signal.SIGTERM), True),
+    (int(signal.SIGINT), False), (int(signal.SIGINT), True),
+], ids=['term-shared-fds', 'term-isolated-fds',
+        'int-shared-fds', 'int-isolated-fds'])
+def test_a_forked_reader_cannot_request_or_corrupt_its_parents_stop(
+        tmp_path, signum, isolated):
+    code, output = child_result(tmp_path, '''
+import time
+from prismabuild._bounded_reader import _isolate_child_fds
+with stop_requests(signum) as stop:
+    answer_read, answer_write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        writer = answer_write
+        try:
+            os.close(answer_read)
+            if ''' + repr(isolated) + ''':
+                writer = _isolate_child_fds(writer)
+            os.kill(os.getpid(), signum)
+            os.write(writer, b'clean')
+            os._exit(0)
+        except BaseException as exc:
+            os.write(writer, repr(exc).encode())
+            os._exit(1)
+    os.close(answer_write)
+    try:
+        reply = os.read(answer_read, 4096)
+        _, status = os.waitpid(pid, 0)
+    finally:
+        os.close(answer_read)
+    assert os.waitstatus_to_exitcode(status) == 0, reply
+    assert reply == b'clean', reply
+    started = time.monotonic()
+    assert stop.wait(0.05) is False
+    assert time.monotonic() - started >= 0.04
+    assert not stop.is_set()
+print('fork-isolated', flush=True)
+''', signum)
+    assert code == 0, output.decode()
+    assert output == b'fork-isolated\n'

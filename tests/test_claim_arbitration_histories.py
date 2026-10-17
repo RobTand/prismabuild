@@ -157,7 +157,7 @@ def test_an_existing_election_skips_resident_and_prelaunch_observation(
                       "sparky" if existing == "foreign" else "sparklina", clock[0])
     row = _row(queue, key)
     row["resident_set"] = "a" * 64
-    pool.record_store._write_json(queue.records.item_path(pool.READY, key), row)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.READY, key), row)
     monkeypatch.setattr(_gang, "resident_hold", _unexpected)
     monkeypatch.setattr(queue, "_gang_prelaunch_blocker", _unexpected)
     assert claim("sparklina", ready=[row]) is None
@@ -181,7 +181,7 @@ def test_resident_preference_precedes_prelaunch_and_keeps_its_fallback(
     group, (key, peer) = members("resident-arbitration")
     row = _row(queue, key)
     row["resident_set"] = resident
-    pool.record_store._write_json(queue.records.item_path(pool.READY, key), row)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.READY, key), row)
     events = []
     hold = {"set_id": "a" * 64, "preferred_host": "sparky"}
     blocker = {"group": group, "pending": [peer]}

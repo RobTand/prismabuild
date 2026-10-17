@@ -297,7 +297,7 @@ def test_broker_wrapper_encloses_taskset_affinity(scoped, monkeypatch):
     queue, item, calls = scoped
     cpu = min(os.sched_getaffinity(0))
     tiers = {'preferred': [cpu], 'fallback': []}
-    pool.record_store._write_json(queue.ledger().base / 'cpu-map.json', tiers)
+    pool.immutable_files.write_json_atomic(queue.ledger().base / 'cpu-map.json', tiers)
     item['cpu_allocation'] = queue.ledger().cpu_allocation(item['action_key'], tiers)
     seen = []
     original = resource_scope.ResourceScope.wrap_argv
@@ -461,7 +461,7 @@ def test_finish_retains_scope_cleanup_evidence_in_terminal(scoped, monkeypatch, 
     queue, item, calls = scoped
     key = item['action_key']
     item['max_attempts'] = 1
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, key), item)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), item)
     _process(monkeypatch, queue, item, calls)
     outcome = queue.execute(item, containment=True)
     path = queue.finish(key, status=status, detail=outcome, claim_snapshot=item)

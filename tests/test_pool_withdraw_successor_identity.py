@@ -18,7 +18,7 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
 
     publish()
     first = queue.claim(owner="first", capacity={"cpu": 1})
-    write = pool.record_store._write_json
+    write = pool.immutable_files.write_json_atomic
     successor = {}
 
     def advance_after_marker(path, record):
@@ -33,7 +33,7 @@ def test_withdraw_preserves_successor_that_claims_after_marker(tmp_path, monkeyp
             publish()
             successor.update(queue.claim(owner="second", capacity={"cpu": 1}))
 
-    monkeypatch.setattr(pool.record_store, '_write_json', advance_after_marker)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', advance_after_marker)
     monkeypatch.setattr(pool, "find_launcher_pids", lambda key: [])
     queue.withdraw(KEY, signal_child=False)
     live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY))
@@ -66,7 +66,7 @@ def test_withdraw_restores_ready_replacement_without_cancelling_it(tmp_path, mon
                       checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
     publish()
     first = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
-    write = pool.record_store._write_json
+    write = pool.immutable_files.write_json_atomic
     replacement = {}
     def advance_after_marker(path, record):
         write(path, record)
@@ -75,7 +75,7 @@ def test_withdraw_restores_ready_replacement_without_cancelling_it(tmp_path, mon
             replacement.update(
                 pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY)),
             )
-    monkeypatch.setattr(pool.record_store, '_write_json', advance_after_marker)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', advance_after_marker)
     queue.withdraw(KEY, signal_child=False)
     assert pool.record_store.value_or_raise(
         queue.records.item(pool.record_store.READY, KEY),
@@ -121,7 +121,7 @@ def test_corrupted_durable_decision_refuses_other_generation(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     record = {"action_key": KEY, "published_unix": 12.0}
     decision = queue.records.withdrawal_decision_path(record)
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         decision,
         {**record, "published_unix": 13.0, "status": "withdrawn"},
     )
@@ -135,11 +135,11 @@ def test_retiring_marker_does_not_remove_another_concurrent_decision(tmp_path, m
     first = {"action_key": KEY, "published_unix": 12.0, "status": "withdrawn"}
     successor = {**first, "published_unix": 13.0}
     path = queue.records.item_path(pool.record_store.WITHDRAWN, KEY)
-    pool.record_store._write_json(path, first)
+    pool.immutable_files.write_json_atomic(path, first)
     archive = queue.records.file_superseded
     def publish_after_archive(*args, **kwargs):
         result = archive(*args, **kwargs)
-        pool.record_store._write_json(path, successor)
+        pool.immutable_files.write_json_atomic(path, successor)
         return result
     monkeypatch.setattr(queue.records, "file_superseded", publish_after_archive)
     queue._supersede_withdrawal(KEY)
@@ -203,15 +203,15 @@ def test_durable_decision_is_an_ending_before_visible_marker(tmp_path, monkeypat
                   checkout_root=tmp_path / "checkout", worker_script=tmp_path / "worker.py")
     original = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     if old_terminal:
-        pool.record_store._write_json(queue.records.item_path(pool.record_store.DONE, KEY), {
+        pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.DONE, KEY), {
             "action_key": KEY, "status": "executed", "published_unix": 1.0,
             "finished_unix": 1.0, "detail": {"returncode": 0}})
-    write = pool.record_store._write_json
+    write = pool.immutable_files.write_json_atomic
     def crash(path, record):
         if path == queue.records.item_path(pool.record_store.WITHDRAWN, KEY):
             raise OSError("injected lost visible-marker write")
         return write(path, record)
-    monkeypatch.setattr(pool.record_store, '_write_json', crash)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', crash)
     with pytest.raises(OSError, match="lost visible-marker"):
         queue.withdraw(KEY)
     assert queue.claim() is None
@@ -240,11 +240,11 @@ def test_durable_decision_refuses_mutable_authority(tmp_path, kind):
     decision = queue.records.withdrawal_decision_path(record)
     decision.parent.mkdir(parents=True)
     if kind == "writable":
-        pool.record_store._write_json(decision, record)
+        pool.immutable_files.write_json_atomic(decision, record)
         decision.chmod(0o644)
     else:
         target = tmp_path / "decision"
-        pool.record_store._write_json(target, record)
+        pool.immutable_files.write_json_atomic(target, record)
         target.chmod(0o444)
         decision.symlink_to(target)
     with pytest.raises(pool.PoolContractError, match="invalid withdrawal decision"):

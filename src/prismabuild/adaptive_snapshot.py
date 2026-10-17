@@ -36,8 +36,8 @@ def _read(path):
 
 
 def _write(path, value):
-    from prismabuild.materialize import _write_json_atomic
-    _write_json_atomic(path, value)
+    from prismabuild import immutable_files
+    immutable_files.write_json_atomic(path, value)
 
 
 def _start_ticks(pid):

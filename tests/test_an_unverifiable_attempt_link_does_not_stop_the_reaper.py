@@ -110,7 +110,7 @@ def _stranded_tombstone(
         / f"{KEY}.{int((pool._now() - pool.LEASE_TIMEOUT_S * 2) * 1_000_000)}"
         f"{pool.record_store.TOMBSTONE_SUFFIX}"
     )
-    pool.record_store._write_json(tombstone, record)
+    pool.immutable_files.write_json_atomic(tombstone, record)
     claimed_path.unlink(missing_ok=True)
     queue.records.lease_path(KEY).unlink(missing_ok=True)
     return queue, tombstone

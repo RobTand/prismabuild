@@ -98,7 +98,7 @@ def test_a_misfiled_egress_receipt_prices_neither_an_egress_nor_a_move(
               "action_key": EGRESS_KEY, "tier_id": TIER}
     path = queue.records.move_path(EGRESS_KEY)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pool.record_store._write_json(path, legacy)
+    pool.immutable_files.write_json_atomic(path, legacy)
 
     records = queue.move_records(schemas=(pool.POOL_MOVE_SCHEMA_V1,
                                           pool.POOL_EGRESS_SCHEMA_V1))

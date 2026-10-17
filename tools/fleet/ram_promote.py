@@ -57,7 +57,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
-from prismabuild import materialize  # noqa: E402
+from prismabuild import immutable_files  # noqa: E402
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -438,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.receipt:
         # The atomic writer every other fleet record uses: a reader of this
         # path must never be able to observe half a document.
-        materialize._write_json_atomic(Path(args.receipt), receipt)
+        immutable_files.write_json_atomic(Path(args.receipt), receipt)
     print(json.dumps(receipt, indent=1, sort_keys=True, default=str))
     return 1 if receipt.get("refusal") else 0
 

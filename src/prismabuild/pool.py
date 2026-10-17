@@ -4327,7 +4327,7 @@ class ResourceLedger:
             "last_unix": now,
         }
         with suppress(OSError):
-            materialize._write_json_atomic(path, report)
+            immutable_files.write_json_atomic(path, report)
         return report
 
     def capacity(self) -> dict[str, int]:
@@ -4483,7 +4483,7 @@ class ResourceLedger:
                     0, wanted.get("gpu", 0) - len(
                         immutable_files.match_optional(destination, "gpu-*"),
                     )))
-                materialize._write_json_atomic(destination / gpu_admission.METADATA, metadata)
+                immutable_files.write_json_atomic(destination / gpu_admission.METADATA, metadata)
             if adaptive is not None and cpu_tiers is not None:
                 allocation = self.cpu_allocation(handle, cpu_tiers)
                 assigned = set(allocation["preferred"] + allocation["fallback"])
@@ -4546,7 +4546,7 @@ class ResourceLedger:
                         # How the slot count was reached (#999): declared,
                         # measured, or unmeasured with the default.
                         "basis": allowance.get("basis")}
-                materialize._write_json_atomic(destination / cpu_admission.METADATA, metadata)
+                immutable_files.write_json_atomic(destination / cpu_admission.METADATA, metadata)
         except _Insufficient:
             self._empty_into_free(destination)
             return None

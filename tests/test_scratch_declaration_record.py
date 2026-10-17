@@ -261,21 +261,21 @@ def test_mirror_failure_prevents_launch_and_replay_repairs_existing_claim(runtim
     queue, item, variables = create()
     launched = []
     process(monkeypatch, lambda *_: launched.append(True))
-    original = pool.record_store._write_json
+    original = pool.immutable_files.write_json_atomic
 
     def fail_mirror(path, value):
         if path == queue.records.lease_path(item["action_key"]) and FIELD in value:
             raise OSError("fixture lease mirror unavailable")
         return original(path, value)
 
-    monkeypatch.setattr(pool.record_store, '_write_json', fail_mirror)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_mirror)
     with pytest.raises(OSError, match="fixture lease mirror unavailable"):
         queue.execute(item, containment=True)
     evidence = live_record(queue, item)[FIELD]
     assert FIELD not in json.loads(queue.records.lease_path(item["action_key"]).read_text())
     assert not launched and "release" not in calls
     held = queue.ledger().held()
-    monkeypatch.setattr(pool.record_store, '_write_json', original)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', original)
     assert record(pool.PoolQueue(queue.root), item) == evidence
     assert json.loads(queue.records.lease_path(item["action_key"]).read_text())[FIELD] == evidence
     assert queue.ledger().held() == held
@@ -288,7 +288,7 @@ def test_conflicting_stored_declaration_refuses_without_overwrite(runtime, monke
     queue.execute(item, containment=True)
     live = live_record(queue, item)
     live[FIELD]["declarations"][0]["name"] = "other-valid-name"
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]),
         live,
     )
@@ -308,7 +308,7 @@ def test_successor_lease_refuses_before_registration_write(runtime, monkeypatch)
     queue.execute(item, containment=True)
     lease = json.loads(queue.records.lease_path(item["action_key"]).read_text())
     lease["published_unix"] += 1
-    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
     before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes()
     after = queue.records.lease_path(item["action_key"]).read_bytes()
     with pytest.raises(pool.PoolContractError):

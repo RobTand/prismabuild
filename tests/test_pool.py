@@ -378,7 +378,7 @@ def test_atomic_write_leaves_no_partial_file(
     queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "rec.json"
-    pool.record_store._write_json(target, {"schema": "x", "n": 1})
+    pool.immutable_files.write_json_atomic(target, {"schema": "x", "n": 1})
     assert json.loads(target.read_bytes())["n"] == 1
     assert not list(tmp_path.glob(".*tmp"))
 
@@ -390,7 +390,7 @@ def test_atomic_write_leaves_no_partial_file(
 
     monkeypatch.setattr(pool.materialize.os, "fsync", out_of_space)
     with pytest.raises(OSError):
-        pool.record_store._write_json(tmp_path / "torn.json", {"schema": "x", "n": 2})
+        pool.immutable_files.write_json_atomic(tmp_path / "torn.json", {"schema": "x", "n": 2})
 
     assert not (tmp_path / "torn.json").exists()   # nothing at the target name
     assert not list(tmp_path.glob(".*tmp"))        # and no scratch left behind
@@ -734,7 +734,7 @@ def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
     # ignored checkout_snapshot and used it. Persist the same claim identity
     # that execute's heartbeat validates.
     item["checkout_root"] = str(source)
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]),
         item,
     )

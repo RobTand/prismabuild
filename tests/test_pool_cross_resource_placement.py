@@ -69,7 +69,7 @@ def test_without_a_viable_alternative_the_work_is_placed_anyway(placement, reaso
     else:
         item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
         item['tags'] = ['local']
-        pool.record_store._write_json(queue.records.item_path(pool.record_store.READY, key), item)
+        pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.READY, key), item)
     assert claim()
 
 

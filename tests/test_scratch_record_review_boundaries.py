@@ -50,7 +50,7 @@ def test_scope_creation_keeps_its_original_transition_exclusion(runtime, monkeyp
 def test_preintent_boundary_cannot_overwrite_a_successor(runtime, monkeypatch):
     create, calls = runtime
     queue, item, variables = create()
-    original = pool.record_store._write_json
+    original = pool.immutable_files.write_json_atomic
     transitions = []
 
     def guarded(path, value):
@@ -65,7 +65,7 @@ def test_preintent_boundary_cannot_overwrite_a_successor(runtime, monkeypatch):
             transitions.append(other_actor_takes_key(queue, item["action_key"], successor))
         return original(path, value)
 
-    monkeypatch.setattr(pool.record_store, '_write_json', guarded)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', guarded)
     queue._start_resource_scope(item)
     assert transitions and not any(transitions), "startup allowed a successor transition before intent write"
     assert live_record(queue, item)["published_unix"] == item["published_unix"]
@@ -98,7 +98,7 @@ def test_scope_contradiction_in_lease_is_retained_not_overwritten(runtime, monke
     if field == "resource_scope":
         lease[field]["scope_id"] = "prismabuild-job" + hashlib.sha256(
             (item["action_key"] + nonce).encode()).hexdigest()[:32] + ".slice"
-    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
     claim_before = queue.records.item_path(
         pool.record_store.CLAIMED,
         item["action_key"],
@@ -126,7 +126,7 @@ def test_idempotent_recording_preserves_worker_heartbeat_authority(runtime, monk
                  progress_observation={"phase": "payload", "quiet_s": 0.25})
     if needs_repair:
         lease.pop(FIELD)
-    pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(item["action_key"]), lease)
     before = queue.records.lease_path(item["action_key"]).read_bytes()
     evidence = record(queue, item)
     after = json.loads(queue.records.lease_path(item["action_key"]).read_text())

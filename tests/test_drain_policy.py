@@ -188,17 +188,17 @@ def test_failure_consumes_only_notes_past_the_existing_write_preparation_point(
         prior["blocked_unix"] = 10 ** 1000
     elif phase == "measurement":
         prior["measurement_drains"] = {"host": {"generation": GEN, "blocked_unix": 10 ** 1000}}
-    pool.record_store._write_json(queue.records.passes_path(KEY), prior)
+    pool.immutable_files.write_json_atomic(queue.records.passes_path(KEY), prior)
     queue._drain_accounting.stage(KEY, drain.OrdinaryNotes({"foreign_unix": 10.}))
     queue._drain_accounting.stage(KEY, drain.MeasurementNotes("host", GEN, {"epoch_unix": 20.}))
-    write = pool.record_store._write_json
+    write = pool.immutable_files.write_json_atomic
     if phase == "write":
         def fail_write(*args):
             raise OSError("sidecar unavailable")
-        monkeypatch.setattr(pool.record_store, '_write_json', fail_write)
+        monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_write)
     with pytest.raises((OverflowError, OSError)):
         queue.record_pass(KEY, drain_notes=queue._drain_accounting.for_key(KEY))
-    monkeypatch.setattr(pool.record_store, '_write_json', write)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', write)
     write(queue.records.passes_path(KEY), {})
     queue.record_pass(KEY, drain_notes=queue._drain_accounting.for_key(KEY))
     record = json.loads(queue.records.passes_path(KEY).read_text())
@@ -301,7 +301,7 @@ def test_initial_history_coercion_failure_precedes_available_and_keeps_pending_n
     ledger = queue.ledger()
     ledger.ensure_capacity({"cpu": 4})
     queue._drain_accounting.stage(KEY, drain.OrdinaryNotes({"foreign_unix": 10.}))
-    pool.record_store._write_json(queue.records.passes_path(KEY), {"first_unix": 10 ** 1000})
+    pool.immutable_files.write_json_atomic(queue.records.passes_path(KEY), {"first_unix": 10 ** 1000})
     reads = []
     available = ledger.available
 
@@ -313,6 +313,6 @@ def test_initial_history_coercion_failure_precedes_available_and_keeps_pending_n
     with pytest.raises(OverflowError):
         queue._observe_drain(KEY, ledger=ledger, need={"cpu": 2}, mode="tokens")
     assert not reads
-    pool.record_store._write_json(queue.records.passes_path(KEY), {})
+    pool.immutable_files.write_json_atomic(queue.records.passes_path(KEY), {})
     queue.record_pass(KEY, drain_notes=queue._drain_accounting.for_key(KEY))
     assert json.loads(queue.records.passes_path(KEY).read_text())["foreign_unix"] == 10.

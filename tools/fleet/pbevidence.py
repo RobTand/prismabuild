@@ -31,7 +31,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, materialize  # noqa: E402
+from prismabuild import core as pb, immutable_files  # noqa: E402
 from prismabuild.movement_actions import SEALED_ARGV0  # noqa: E402
 
 
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(pb._sorted_lf_bytes(packet).decode("utf-8"))
     else:
         # The repo's one owner of rename-atomic JSON records (#1330).
-        materialize._write_json_atomic(args.out, packet, trailing_newline=True)
+        immutable_files.write_json_atomic(args.out, packet, trailing_newline=True)
     return 0
 
 

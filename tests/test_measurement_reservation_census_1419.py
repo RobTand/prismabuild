@@ -389,7 +389,7 @@ def test_persisted_live_reader_blocks_restart_before_another_fork(fleet, monkeyp
     observer = reservation.CensusReader(queue, queue.ledger())
     identity = reader._capture_ownership(os.getpid(), pool_identity=observer.pool_identity,
                                          section=reservation.READ_SECTION)
-    pool.record_store._write_json(observer.directory / observer.name, identity.to_record())
+    pool.immutable_files.write_json_atomic(observer.directory / observer.name, identity.to_record())
     def no_fork():
         raise AssertionError("live retained identity spawned a second reader")
     monkeypatch.setattr(reader.os, "fork", no_fork)
@@ -404,7 +404,7 @@ def test_corrupt_selector_never_disappears_into_legacy_attention(fleet, field):
     sidecar = pool.record_store.read_document(queue.records.passes_path(measurement))
     assert isinstance(sidecar, dict)
     sidecar[reservation.FIELD][field] = None
-    pool.record_store._write_json(queue.records.passes_path(measurement), sidecar)
+    pool.immutable_files.write_json_atomic(queue.records.passes_path(measurement), sidecar)
     lower = publish("corrupt-selector-lower")
     candidate = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, lower))
     assert _legacy_claim(queue, candidate) is None

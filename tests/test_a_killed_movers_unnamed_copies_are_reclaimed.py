@@ -322,7 +322,7 @@ def test_a_live_writers_residue_is_kept_and_sized(world, monkeypatch, owner):
     if owner == "wanted":
         wanted = {RAM_MOVER}
     else:
-        pool.record_store._write_json(world.queue.records.lease_path(RAM_MOVER),
+        pool.immutable_files.write_json_atomic(world.queue.records.lease_path(RAM_MOVER),
                                 {"action_key": RAM_MOVER})
 
     receipt = stage_release.reconcile(world.queue, tier_id=RAM_TIER,

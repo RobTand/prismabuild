@@ -126,7 +126,7 @@ def test_a_legacy_full_copy_claim_still_files_a_complete_row(
         "host": "dl380g10", "manifest_sha256": "a" * 64,
         "bytes_warmed": 63786036448, "status": "complete",
     }
-    pool.record_store._write_json(path, on_disk)
+    pool.immutable_files.write_json_atomic(path, on_disk)
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)

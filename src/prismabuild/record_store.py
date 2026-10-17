@@ -1333,18 +1333,18 @@ class RecordStore:
 
     def replace_record_at(self, path: Path, payload: Mapping[str, object]) -> None:
         """Replace a canonical store address or a path held by a domain transition."""
-        _write_json(path, payload)
+        immutable_files.write_json_atomic(path, payload)
 
 
     def replace_stage_holder_at(self, path: Path, payload: Mapping[str, object]) -> None:
-        _write_json(path, payload, text="sorted_lf", tmp="pid", fsync=False)
+        immutable_files.write_json_atomic(path, payload, text="sorted_lf", tmp="pid", fsync=False)
 
     def replace_reader_scope_at(self, path: Path, payload: Mapping[str, object]) -> None:
-        _write_json(path, payload, text="sorted_lf", tmp="pid")
+        immutable_files.write_json_atomic(path, payload, text="sorted_lf", tmp="pid")
 
 
     def replace_record_bytes_at(self, path: Path, raw: bytes) -> None:
-        _write_bytes(path, raw)
+        immutable_files.write_bytes_atomic(path, raw)
 
 
     def file_publication_ending_at(self, path: Path, payload: Mapping[str, object]) -> None:
@@ -1366,7 +1366,7 @@ class RecordStore:
             where="pool receipt reconciliation", conflict_error=PoolContractError)
 
     def replace_lane_item_at(self, path: Path, payload: Mapping[str, object]) -> None:
-        _write_json(path, payload, trailing_newline=True)
+        immutable_files.write_json_atomic(path, payload, trailing_newline=True)
 
     def file_lane_item_if_absent(self, path: Path, payload: Mapping[str, object]) -> bool:
         return immutable_files.publish_mutable(
@@ -1384,10 +1384,10 @@ class RecordStore:
         """
 
         try:
-            _write_json(path, record, make_parent=False)
+            immutable_files.write_json_atomic(path, record, make_parent=False)
         except FileNotFoundError:
             path.parent.mkdir(parents=True, exist_ok=True)
-            _write_json(path, record, make_parent=False)
+            immutable_files.write_json_atomic(path, record, make_parent=False)
 
 
     def file_withdrawal_decision(self, record: Mapping[str, object]) -> dict[str, object]:
@@ -2517,28 +2517,6 @@ class RecordStore:
                    else self._records)
         return [path for path, _ in records.read(
             directory, select=_directory_entry, parse=_listed)]
-
-
-def _write_json(
-    path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
-    trailing_newline: bool = False, text: str = "canonical",
-    tmp: str = "pid_uuid", fsync: bool = True,
-) -> None:
-    replacement = immutable_files.prepare_atomic_replacement(
-        path, make_parent=make_parent, temporary_style=tmp, fsync=fsync)
-    if text == "sorted_lf":
-        data = digest_primitives._sorted_lf_bytes(dict(payload))
-    elif text == "canonical_lf" or trailing_newline:
-        data = digest_primitives._canonical_bytes(dict(payload)) + b"\n"
-    else:
-        data = digest_primitives._canonical_bytes(dict(payload))
-    replacement.write(data)
-
-
-def _write_bytes(path: Path, data: bytes) -> None:
-    replacement = immutable_files.prepare_atomic_replacement(
-        path, cleanup_rename=False)
-    replacement.write(data)
 
 
 def read_document(path: Path) -> dict[str, object] | None:

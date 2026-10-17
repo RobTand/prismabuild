@@ -101,7 +101,7 @@ def seeded_backfill(gang_fleet):
     election = _gang.elections(queue, group, 2)[0]
     row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
     row["gang_backfill"] = [election]
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, key), row)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), row)
     return group, keys, incumbent, key
 
 
@@ -189,7 +189,7 @@ def test_backfill_on_both_hosts_reclaims_without_any_fresh_ready_mark(gang_fleet
             queue.records.item(pool.record_store.CLAIMED, holders[index]),
         )
         holder["gang_backfill"] = [_gang.elections(queue, group, 2)[index]]
-        pool.record_store._write_json(
+        pool.immutable_files.write_json_atomic(
             queue.records.item_path(pool.record_store.CLAIMED, holders[index]),
             holder,
         )
@@ -212,14 +212,14 @@ def test_release_telemetry_failure_does_not_gate_cleanup(gang_fleet, monkeypatch
     finish(incumbent, "sparky")
     assert claim("sparky") is None
     assert claim("sparklina") is None
-    original = pool.record_store._write_json
+    original = pool.immutable_files.write_json_atomic
     failed_observations = []
     def broken_observation(path, value):
         if str(path).endswith(".withdrawn-finish.json") and "gang_backfill_release" in value:
             failed_observations.append(path)
             raise OSError("telemetry write unavailable")
         return original(path, value)
-    monkeypatch.setattr(pool.record_store, '_write_json', broken_observation)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', broken_observation)
     finish(key, "sparklina")
     assert failed_observations, "finish never reached the injected telemetry failure"
     assert queue.ledger("sparklina").held_keys() == []
@@ -359,7 +359,7 @@ def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
               "tokens_returned_unix": None}
     if writer == "observe":
         _gang.note_backfill_preemption(queue, election, timing)
-        pool.record_store._write_json(queue.records.superseded_dir() /
+        pool.immutable_files.write_json_atomic(queue.records.superseded_dir() /
                                f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json",
                                {"gang_backfill_release": {**timing, "tokens_returned_unix": clock[0] + 1}})
     path = _gang.state_dir(queue, group) / "elect-0.json"

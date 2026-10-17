@@ -45,7 +45,7 @@ def _offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {KIND: 4, FILL: mb_s}
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
 
 
 def _sealed(world, key: str) -> dict:

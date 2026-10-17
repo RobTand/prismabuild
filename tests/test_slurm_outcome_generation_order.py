@@ -89,7 +89,7 @@ def test_an_ending_this_writer_crossed_is_repaired(
     the later run's ending over it.
     """
 
-    replace = sl.record_store._write_json
+    replace = sl.immutable_files.write_json_atomic
     crossed: list[int] = []
     older = {
         "schema": sl.OUTCOME_SCHEMA_V1, "transport": "slurm",
@@ -109,7 +109,7 @@ def test_an_ending_this_writer_crossed_is_repaired(
     # The older run ended first, so the newer writer replaces that record and
     # is the one the injection crosses.
     assert _file(tmp_path, 100.0) is not None
-    monkeypatch.setattr(sl.record_store, "_write_json", crossing_write)
+    monkeypatch.setattr(sl.immutable_files, "write_json_atomic", crossing_write)
 
     assert _file(tmp_path, 200.0) is not None
 
@@ -162,7 +162,7 @@ def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(
     import concurrent.futures
     import threading
 
-    replace = sl.record_store._write_json
+    replace = sl.immutable_files.write_json_atomic
     older_checked = threading.Event()
     newer_attempted = threading.Event()
     newer_returned = threading.Event()
@@ -185,7 +185,7 @@ def test_a_delayed_write_cannot_erase_a_newer_writer_that_already_returned(
         return result
 
     assert _file(tmp_path, 50.0) is not None
-    monkeypatch.setattr(sl.record_store, "_write_json", delayed_write)
+    monkeypatch.setattr(sl.immutable_files, "write_json_atomic", delayed_write)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         older = executor.submit(_file, tmp_path, 100.0)
         newer = executor.submit(newer_writer)

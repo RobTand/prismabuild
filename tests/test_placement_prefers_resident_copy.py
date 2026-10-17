@@ -104,7 +104,7 @@ def test_a_row_without_a_set_keeps_the_prior_order(tmp_path, monkeypatch, set_va
     item = json.loads(queue.records.item_path(pool.record_store.READY, "b" * 64).read_text())
     if set_value is not None:
         item["resident_set"] = set_value
-        pool.record_store._write_json(
+        pool.immutable_files.write_json_atomic(
             queue.records.item_path(pool.record_store.READY, "b" * 64),
             item,
         )
@@ -514,7 +514,7 @@ def test_gang_without_a_valid_matching_copy_elects_immediately(resident_gang, ki
                 path = queue.records.item_path(pool.record_store.READY, key)
                 row = pool.record_store.read_document(path)
                 row["resident_set"] = damaged_id
-                pool.record_store._write_json(path, row)
+                pool.immutable_files.write_json_atomic(path, row)
     assert gclaim("sparklina", advance=0) is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"

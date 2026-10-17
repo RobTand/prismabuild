@@ -188,7 +188,7 @@ def test_an_expired_lease_is_still_requeued_within_one_heartbeat(
     record["claimed_by"] = "gone:1:deadbeef"
     record["claimed_host"] = "gone"
     claimed.write_text(json.dumps(record))
-    pool.record_store._write_json(queue.records.lease_path(key), {
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(key), {
         "action_key": key, "owner": "gone:1:deadbeef",
         "heartbeat_unix": clock[0] - (pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S),
     })

@@ -43,14 +43,14 @@ def test_unhandled_publication_errors_stay_outside_uncertain_cleanup(tmp_path, m
 
         monkeypatch.setattr(queue, "terminal_outcome_covers", fail_terminal)
     elif phase == "claim-record":
-        write = pool.record_store._write_json
+        write = pool.immutable_files.write_json_atomic
 
         def fail_write(path, *args, **kwargs):
             if path == queue.records.item_path(pool.CLAIMED, KEY):
                 raise cause
             return write(path, *args, **kwargs)
 
-        monkeypatch.setattr(pool.record_store, '_write_json', fail_write)
+        monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_write)
     else:
         def fail_lease(*args, **kwargs):
             raise cause

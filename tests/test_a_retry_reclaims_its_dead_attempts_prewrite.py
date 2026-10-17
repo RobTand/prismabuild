@@ -347,13 +347,13 @@ def test_a_prewrite_is_kept_while_its_attempt_can_still_commit(
     assert live is not None
     control = dict(live["resource_scope"])
     live["resource_scope"] = {**control, "nonce": ""}
-    pool.record_store._write_json(claim, live)
+    pool.immutable_files.write_json_atomic(claim, live)
     assert po._producer_attempt_state(queue, first) == "unknown"
     assert po.origin_retirement_tick(queue) == []
     assert _record(queue, first).exists()
 
     live["resource_scope"] = control
-    pool.record_store._write_json(claim, live)
+    pool.immutable_files.write_json_atomic(claim, live)
     queue.finish(owner, status="executed")
     assert po._producer_attempt_state(queue, first) == "succeeded"
     assert [(e["event"], e["reason"]) for e in po.origin_retirement_tick(queue)

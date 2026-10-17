@@ -86,7 +86,7 @@ def test_tombstone_does_not_release_a_claimed_successors_capacity(tmp_path):
     tombstone = queue.records.dir(
         pool.record_store.CLAIMED,
     ) / f"{KEY}.1.old{pool.record_store.TOMBSTONE_SUFFIX}"
-    pool.record_store._write_json(tombstone, saved)
+    pool.immutable_files.write_json_atomic(tombstone, saved)
     lease = queue.records.lease_path(KEY).read_bytes()
     queue.sweep_finish_tombstones(grace_s=-1)
     assert pool._same_claim(

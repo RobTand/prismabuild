@@ -674,7 +674,7 @@ def test_forged_ready_projection_cannot_bypass_the_actual_sealed_request(fleet, 
         item[IO_ENV]["declaration"]["write_bytes"] += 1
     else:
         item["resources"]["spool_gb"] = 1
-    pool.record_store._write_json(path, item)             # owned corrupt-row observation
+    pool.immutable_files.write_json_atomic(path, item)             # owned corrupt-row observation
     assert fleet.claim(FAST) is None
     fleet.ready_unspent()
     assert fleet.denial(FAST)["reason"] == "local_scratch_io_intent_invalid"

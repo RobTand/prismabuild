@@ -357,8 +357,8 @@ def test_a_stale_claim_copy_does_not_hand_back_a_completed_pin(fleet) -> None:
     # The exact shape the reaper sees: the concluded claim record back in
     # ``claimed/``, its lease beside it, both aged past the lease timeout.
     stale = dict(claim)
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, mover), stale)
-    pool.record_store._write_json(queue.records.lease_path(mover), {
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, mover), stale)
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(mover), {
         "owner": stale.get("claimed_by"), "action_key": mover,
         "attempt": stale.get("attempt", 1),
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
@@ -389,7 +389,7 @@ def test_a_widowed_lease_does_not_hand_back_a_completed_pin(fleet) -> None:
 
     queue, mover = fleet.queue, _lead(fleet)
     claim = _stage_the_lead(fleet)
-    pool.record_store._write_json(queue.records.lease_path(mover), {
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(mover), {
         "owner": claim.get("claimed_by"), "action_key": mover,
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})
 
@@ -421,11 +421,11 @@ def test_an_unpinned_mover_still_gets_its_tokens_back(fleet) -> None:
     queue.finish(mover, status="executed", claim_snapshot=claim)
     assert queue.tier(TIER).holdings(mover) == {}
 
-    pool.record_store._write_json(
+    pool.immutable_files.write_json_atomic(
         queue.records.item_path(pool.record_store.CLAIMED, mover),
         dict(claim),
     )
-    pool.record_store._write_json(queue.records.lease_path(mover), {
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(mover), {
         "owner": claim.get("claimed_by"), "action_key": mover,
         "attempt": claim.get("attempt", 1),
         "heartbeat_unix": pool._now() - 10 * pool.LEASE_TIMEOUT_S})

@@ -57,7 +57,7 @@ def test_oom_cleanup_retry_preserves_kernel_evidence(scoped, monkeypatch):
     key = item['action_key']
     _process(monkeypatch, queue, item, calls)
     item['max_attempts'] = 1
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, key), item)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, key), item)
     sample = resource_scope.ResourceScope.sample
     monkeypatch.setattr(resource_scope.ResourceScope, 'sample',
                         lambda scope: {**sample(scope), 'oom_kill': 5, 'oom_local': 1, 'memory_peak_bytes': 2 * 1024**3})

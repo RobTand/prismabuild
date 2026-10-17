@@ -116,7 +116,7 @@ def test_heartbeat_retains_each_conflicting_lease_identity(tmp_path, field, valu
     first = queue.claim(owner="worker", capacity={"cpu": 1})
     lease = pool.record_store.read_document(queue.records.lease_path(KEY))
     lease[field] = value
-    pool.record_store._write_json(queue.records.lease_path(KEY), lease)
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(KEY), lease)
     before = queue.records.lease_path(KEY).read_bytes()
     claim = queue.records.item_path(pool.record_store.CLAIMED, KEY).read_bytes()
     with pytest.raises(pool.AmbiguousClaimHolder, match="lease"):
@@ -133,7 +133,7 @@ def test_heartbeat_upgrades_compatible_legacy_lease_and_refreshes_observation(tm
     lease = pool.record_store.read_document(queue.records.lease_path(KEY))
     for field in ("claimed_unix", "published_unix"):
         lease.pop(field)
-    pool.record_store._write_json(queue.records.lease_path(KEY), lease)
+    pool.immutable_files.write_json_atomic(queue.records.lease_path(KEY), lease)
     for pid in (123, 456):
         observation = {"last_progress_unix": float(pid)}
         queue.write_lease(KEY, owner="worker", child_pid=pid,

@@ -189,11 +189,11 @@ class Fleet:
         target = self.queue.records.item_path(pool.record_store.CLAIMED, action_key)
         if age_s:
             item["claimed_unix"] = float(item["claimed_unix"]) - age_s
-            pool.record_store._write_json(target, item)
+            pool.immutable_files.write_json_atomic(target, item)
             lease_path = self.queue.records.lease_path(action_key)
             lease = json.loads(lease_path.read_text())
             lease["claimed_unix"] = item["claimed_unix"]
-            pool.record_store._write_json(lease_path, lease)
+            pool.immutable_files.write_json_atomic(lease_path, lease)
         return target
 
     def report_progress(self, action_key: str, phase: str, *,

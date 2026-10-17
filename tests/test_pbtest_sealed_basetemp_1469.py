@@ -57,6 +57,7 @@ def _checkout(tmp_path: Path, source: str, name: str = "checkout") -> Path:
     checkout = tmp_path / name
     tests = checkout / "tests"
     tests.mkdir(parents=True, exist_ok=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n")
     (tests / "test_one.py").write_text(source)
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     return checkout
@@ -300,6 +301,7 @@ def test_simultaneous_shards_and_attempts_cannot_delete_each_other(
     checkout = tmp_path / "two"
     tests = checkout / "tests"
     tests.mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n")
     for name in ("a", "b"):
         (tests / f"test_{name}.py").write_text(
             SCRATCH_RECORDER.replace("test_one", f"test_{name}"))

@@ -53,9 +53,9 @@ def read_json(path):
 
 
 def write_json(path, value):
-    from .materialize import _write_json_atomic
+    from . import immutable_files
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(Path(path), value)
+    immutable_files.write_json_atomic(Path(path), value)
 
 
 def action_identity(item):

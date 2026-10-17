@@ -327,7 +327,7 @@ def test_a_crash_while_filing_the_refusal_is_recovered_and_filed(
         raise OSError("worker died filing the ending")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool.record_store, '_write_json', crash)
+        patch.setattr(pool.immutable_files, 'write_json_atomic', crash)
         with pytest.raises(OSError, match="worker died"):
             queue.claim(owner="w-consumer", tags=list(TAGS))
     assert not queue.records.item_path(pool.record_store.READY, key).exists()

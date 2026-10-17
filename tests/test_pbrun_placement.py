@@ -2354,7 +2354,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
     # Only the isolated fixture's runtime address is bound here. The real
     # source worker executes; no bridge publication, stub or live queue edit.
     row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-    pool_module.record_store._write_json(
+    pool_module.immutable_files.write_json_atomic(
         queue.records.item_path(pool_module.record_store.READY, row["action_key"]),
         row,
     )
@@ -3017,7 +3017,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
         assert pbrun.main() == 0
         row, = queue.ready_items()
         row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-        pool_module.record_store._write_json(
+        pool_module.immutable_files.write_json_atomic(
             queue.records.item_path(pool_module.record_store.READY, row["action_key"]),
             row,
         )
@@ -3177,7 +3177,7 @@ def raw_copy_submission(tmp_path, monkeypatch):
         assert pbrun.main() == 0
         row, = queue.ready_items()
         row["worker_script"] = str(Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py")
-        pool_module.record_store._write_json(
+        pool_module.immutable_files.write_json_atomic(
             queue.records.item_path(pool_module.record_store.READY, row["action_key"]),
             row,
         )

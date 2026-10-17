@@ -183,7 +183,7 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
     assert receipt["entries_staged"] == receipt["entries_declared"] == 1
     queue.finish(lead, status="executed", claim_snapshot=claimed)
     _stage_cycle(queue, stage)
-    mapping = residency_map.read_map(queue.residency_map_path(gpu))
+    mapping = residency_map.read_map(queue.records.residency_map_path(gpu))
     [entry] = mapping["entries"].values()
     assert Path(entry["stage_path"]).read_bytes() == material
     assert queue.residency_verdict(gpu_row)["state"] == "resident"
