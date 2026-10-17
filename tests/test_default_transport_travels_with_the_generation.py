@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
     "publish_runtime_default_transport",

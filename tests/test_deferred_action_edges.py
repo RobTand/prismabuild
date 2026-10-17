@@ -48,13 +48,13 @@ from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan, storage_tiers  # noqa: E402
-import deferred_release as dr  # noqa: E402
+from prismabuild import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
     _announce_tier, _tier_cycle,
