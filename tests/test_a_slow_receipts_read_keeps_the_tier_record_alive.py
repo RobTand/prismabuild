@@ -160,8 +160,9 @@ class _Loop:
 
             def scandir(directory):
                 entries = native_scandir(directory)
-                return (ReceiptEntries(entries) if Path(directory) in receipt_roots
-                        else entries)
+                return (ReceiptEntries(entries)
+                        if isinstance(directory, (str, os.PathLike))
+                        and Path(directory) in receipt_roots else entries)
 
             monkeypatch.setattr(os, "scandir", scandir)
         else:
