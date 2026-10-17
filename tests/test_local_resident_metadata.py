@@ -1,3 +1,5 @@
+import pbrun
+from prismabuild import submission
 """Operator descriptors cannot resurrect or overwrite the mover's copy state."""
 import json
 from pathlib import Path
@@ -17,18 +19,12 @@ def _publication(tmp_path, monkeypatch, store, set_id, spec, operation):
     import test_a_stage_mover_declares_the_cpu_and_retries_it_owns as fixture
     monkeypatch.setattr(local_resident.time, "time", lambda: 120)
 
-    class Cas:
-        root = tmp_path / "cas"
-
-        def publish_action_request(self, action):
-            pass
-
     template = fixture._template("c" * 64, 7)
-    template["cas"] = Cas()
+    template["cas"] = submission.pb.PrismaBuildCAS(tmp_path / "cas")
     tier = {"tier_id": "local:test-host", "host": "test-host", "mountpoint": spec["root"],
             "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"}
     if operation == "copy":
-        return local_resident.publish_actions(template, store, set_id, [tier], policy_path="/policy.json")["test-host"]["copy"]
+        return submission.dispatch_resident(template, store, set_id, [tier], policy_path="/policy.json", store=pbrun.configured_store())["test-host"]["copy"]
     pool.PoolQueue(store.queue_root).announce_tier(tier)
     monkeypatch.setattr(pbresident, "movement_template", lambda *args: template)
     return pbresident.submit_adoption(store, set_id, host="test-host", source=str(tmp_path / "manual"),

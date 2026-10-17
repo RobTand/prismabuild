@@ -36,7 +36,9 @@ from pathlib import Path
 
 import pytest
 
-TOOLS = sorted((Path(__file__).resolve().parents[1] / "tools" / "fleet").glob("*.py"))
+REPO = Path(__file__).resolve().parents[1]
+TOOLS = sorted([*(REPO / "tools" / "fleet").glob("*.py"),
+                REPO / "src" / "prismabuild" / "d38_gate.py"])
 
 #: The bootstrap every tool runs before it can import ``prismabuild``: a tool
 #: is executed out of whichever runtime generation it was published into, so
