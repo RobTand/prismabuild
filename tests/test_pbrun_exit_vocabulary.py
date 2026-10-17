@@ -145,7 +145,7 @@ def test_the_lane_reports_a_job_that_exited_143_as_a_failure(
         action, cas=cas, request_path=request, tags=[], demand={},
         exclusive=False, timeout_s=600.0, wait_s=60.0, retry_safe=False,
         max_attempts=1, runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
     assert code != submit_core.action_client.WITHDRAWN_EXIT
     assert code == 1

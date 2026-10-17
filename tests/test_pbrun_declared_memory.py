@@ -39,7 +39,7 @@ def _run(tmp_path: Path, name: str, demand: dict) -> int:
         tags=[], demand=dict(demand), exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
-    store=pbrun.configured_store(), display=pbrun.render)
+    store=pbrun.configured_store(), display=submit_core.render_submission)
 
 
 def test_an_out_of_memory_job_names_the_memory_it_declared(

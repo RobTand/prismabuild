@@ -45,7 +45,7 @@ def _lane_kwargs(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
             tags=list(tags), demand=dict(demand), exclusive=exclusive,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
             **extra,
-        store=pbrun.configured_store(), display=pbrun.render)
+        store=pbrun.configured_store(), display=submit_core.render_submission)
     return raised.value.kwargs
 
 
@@ -97,7 +97,7 @@ def test_an_exclusive_action_asking_for_more_than_one_device_is_refused(
             {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=[], demand={"gpu": 2, "mem_gb": 16}, exclusive=True,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
-        store=pbrun.configured_store(), display=pbrun.render)
+        store=pbrun.configured_store(), display=submit_core.render_submission)
     message = str(refused.value)
     assert "--exclusive --gpu-capacity 2" in message
     assert "--gres=gpu:1" in message
