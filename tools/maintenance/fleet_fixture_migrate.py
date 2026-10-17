@@ -247,7 +247,17 @@ def fixture_migrate(path, source, sources):
                 except ValueError:
                     pass
         if mode is None:
-            continue
+            # Inline the other repeated publisher shape as statements: the
+            # caller-owned ordering clock, publication, and returned key/row.
+            if (function.name != "_publish" or len(body) not in {2, 3}
+                    or not isinstance(body[-1], ast.Return)
+                    or not isinstance(body[-2], ast.Expr)
+                    or not isinstance(body[-2].value, ast.Call)
+                    or not isinstance(body[-2].value.func, ast.Attribute)
+                    or body[-2].value.func.attr != "publish"
+                    or len(body) == 3 and not isinstance(body[0], ast.AugAssign)):
+                continue
+            mode = "ordered-publish"
         references = [n for n in ast.walk(tree) if isinstance(n, ast.Name)
                       and n.id == function.name]
         calls = [parents[n] for n in references if isinstance(parents.get(n), ast.Call)
@@ -257,7 +267,7 @@ def fixture_migrate(path, source, sources):
         replacements = []
         try:
             for call in calls:
-                if mode == "publish":
+                if mode in {"publish", "ordered-publish"}:
                     # Do not change an assertion's vocabulary to claim that its
                     # exact original AST has survived.
                     ancestor = parents.get(call)
@@ -265,7 +275,31 @@ def fixture_migrate(path, source, sources):
                         if isinstance(ancestor, ast.Assert):
                             raise ValueError("asserted helper call")
                         ancestor = parents.get(ancestor)
-                    replacement = fixture_publish(function, call)
+                    if mode == "publish":
+                        replacement = fixture_publish(function, call)
+                    else:
+                        parent = parents[call]
+                        if (not isinstance(parent, (ast.Expr, ast.Assign, ast.AnnAssign))
+                                or parent.value is not call
+                                or any(isinstance(n, (ast.Call, ast.NamedExpr))
+                                       for value in [*call.args, *(k.value for k in call.keywords)]
+                                       for n in ast.walk(value))):
+                            raise ValueError("ordered recipe needs stable statement arguments")
+                        bindings, extras = fixture_bind(function, call)
+                        if any(k.arg is None for k in extras):
+                            raise ValueError("ordered recipe has dynamic kwargs")
+                        publishing = deepcopy(function)
+                        publishing.body = [body[-2]]
+                        statements = []
+                        if len(body) == 3:
+                            statements.append(ast.unparse(FixtureSubstitute(bindings).visit(deepcopy(body[0]))))
+                        statements.append(fixture_publish(publishing, call))
+                        if not isinstance(parent, ast.Expr):
+                            assignment = deepcopy(parent)
+                            assignment.value = FixtureSubstitute(bindings).visit(deepcopy(body[-1].value))
+                            statements.append(ast.unparse(assignment))
+                        replacement = "\n".join(statements)
+                        call = parent
                 else:
                     bindings, rest = fixture_bind(function, call)
                     if rest:
@@ -277,8 +311,14 @@ def fixture_migrate(path, source, sources):
         text.delete_statement(function)
         removed.add(function)
         for call, replacement in replacements:
-            text.expression(call, replacement)
-        imports.update({"ActionRows"} if mode == "publish" else
+            if mode == "ordered-publish":
+                statements = ast.parse(replacement).body
+                formatted = [fixture_pretty(n.value, call.col_offset) if isinstance(n, ast.Expr)
+                             else ast.unparse(n) for n in statements]
+                text.replace(call, ("\n" + " " * call.col_offset).join(formatted))
+            else:
+                text.expression(call, replacement)
+        imports.update({"ActionRows"} if mode in {"publish", "ordered-publish"} else
                        ({"FleetWorld", "Admission"} if "Admission(" in expression else
                         {"FleetWorld"} if "FleetWorld(" in expression else set()))
         rows.append(dict(kind="helper", line=function.lineno, name=function.name, mode=mode,

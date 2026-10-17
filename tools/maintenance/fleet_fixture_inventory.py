@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter, defaultdict
+import csv
 import io
 import json
 from pathlib import Path
@@ -172,11 +173,19 @@ def fixture_preservation(before, after, paths):
                 current=sum(row["current"] for row in result))
 
 
+def fixture_definition_pins(sources, paths):
+    return {path: [dict(scope=scope, line=node.lineno, form=ast.dump(node))
+                   for node, scope in fixture_nodes(ast.parse(sources.get(path, "")))
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+            for path in sorted(paths)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--base", default=BASE)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--classifications", type=Path)
     args = parser.parse_args()
     before = fixture_sources(args.root, args.base)
     after = fixture_sources(args.root)
@@ -196,8 +205,22 @@ def main():
                   original_sources={p: fixture_blob(s) for p, s in before.items()},
                   original_occurrences=rows, current_occurrences=fixture_inventory(after),
                   checks=fixture_preservation(before, after, changed),
+                  original_definition_pins=fixture_definition_pins(before, changed),
+                  current_definition_pins=fixture_definition_pins(after, changed),
                   changed_files=changed, importer_graph=graph, original_importer_graph=fixture_graph(before),
                   transitive_affected=sorted(affected))
+    if args.classifications:
+        with args.classifications.open() as stream:
+            classified = list(csv.DictReader(stream, delimiter="\t"))
+        roster = {row["id"] for row in rows}
+        actual = [row["id"] for row in classified]
+        if len(actual) != len(set(actual)) or set(actual) != roster:
+            raise ValueError("classification does not cover each original occurrence exactly once")
+        if any(not row["reason"] or not row["consumer"] for row in classified):
+            raise ValueError("classification lacks a concrete reason or consumer")
+        report["classifications"] = dict(path=str(args.classifications),
+            git_blob=fixture_blob(args.classifications.read_text()),
+            counts=dict(Counter(row["disposition"] for row in classified)), occurrences=classified)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: report[key] for key in ("base", "counts", "files", "changed_files")},
                      separators=(",", ":")))
