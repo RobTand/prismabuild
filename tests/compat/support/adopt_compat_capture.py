@@ -8,9 +8,26 @@ import json
 from pathlib import Path
 
 
-def adopt(capture, destination, suffix, exclude):
+def adopt(capture, destination, suffix, exclude, primary_audit, fleet):
     report_path = capture / "qualification.json"
     report = json.loads(report_path.read_bytes())
+    assert report.get("independent_writer_reproduction_required") is True, "rerun the generator with independent byte reproduction"
+    producers = []
+    for action in json.loads(primary_audit.read_bytes()):
+        if action["source_snapshot"]["commit"] != report["source_git"]["snapshot"]:
+            continue
+        request_path = fleet / "cas/requests" / action["action_key"][:2] / (action["action_key"] + ".json")
+        raw = request_path.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == action["request_sha256"]
+        command = json.loads(raw)["params"].get("command", [])
+        if "tests/compat/support/record_compat.py" not in command or "--generate" not in command:
+            continue
+        if Path(command[command.index("--generate") + 1]).resolve() != capture.resolve():
+            continue
+        assert action["returncode"] == 0 and action["receipt_sha256"] and action["cleanup_complete"]
+        assert action["source_git"]["git_objects_verified"]
+        producers.append({key: action[key] for key in ("action_key", "request_sha256", "receipt_sha256", "source_parent")})
+    assert len(producers) == 1, "one successful, fully verified producer must bind this capture output and source"
     excluded = {case for case in report["selected_cases"] if case.split("/", 1)[0] in exclude}
     selected = set(report["selected_cases"]) - excluded
     assert selected, "capture adoption must select actual cases"
@@ -33,6 +50,7 @@ def adopt(capture, destination, suffix, exclude):
                                for key in ("historical", "absent-participants") for row in rows_by_name[key])
             assert observations == 1, "each case requires exactly one codec or explicit absence observation per generation"
     provenance = {"capture_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+                  "verified_producer": producers[0], "independent_writer_reproduction_required": True,
                   "source_git": report["source_git"], "started_at": report["started_at"], "finished_at": report["finished_at"],
                   "selected_cases": sorted(selected), "excluded_cases": sorted(excluded),
                   "retained_failures": report["failures"], "generations": sorted(generations),
@@ -58,8 +76,10 @@ def main():
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--suffix", required=True)
     parser.add_argument("--exclude-kind", action="append", default=[])
+    parser.add_argument("--primary-audit", type=Path, required=True)
+    parser.add_argument("--fleet", type=Path, default=Path("/mnt/shared/prismabuild-fleet"))
     args = parser.parse_args()
-    adopt(args.capture, args.destination, args.suffix, set(args.exclude_kind))
+    adopt(args.capture, args.destination, args.suffix, set(args.exclude_kind), args.primary_audit, args.fleet)
 
 
 if __name__ == "__main__":
