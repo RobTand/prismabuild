@@ -45,7 +45,7 @@ def operate(request, store, load):
         assert po.release_origin_consumer(queue, ref, consumer_action_key=consumer, by="compat",
                                           reason="ended", **release_args)["released"]
         if family == "out-release-index":
-            path = po._release_index_path(queue, consumer, ref)
+            path = queue.records.released_origin_consumer_path(consumer, ref)
             if variant == "repaired":
                 path.unlink()
                 assert not po.release_origin_consumer(queue, ref, consumer_action_key=consumer, by="compat",

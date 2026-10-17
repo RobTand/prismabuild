@@ -69,7 +69,7 @@ def operate(request, store, load):
             queue.announce_tier({**tier, "tier_id": RAM, "tier": "ram", "mountpoint": str(store / "ram"),
                                  "window_gib": 1, "promotion_chunk_gib": 1})
         publication = load("prismabuild.queue_publication").RowPublication(
-            queue.root, cas.root, store / "tools/prismabuild_worker.py", -10, 1, False)
+            store / "pb-queue", cas.root, store / "tools/prismabuild_worker.py", -10, 1, False)
         options = run.filing_options(args)
         staged = rp.prepare_window(template, consumer_action_key=C, tier=tier, options=options,
             publication=publication, queue=queue, cas=cas)

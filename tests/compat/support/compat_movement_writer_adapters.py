@@ -87,7 +87,7 @@ def operate(request, store, load):
         writer = load("prismabuild.ram_promote")
         if variant != "ram-refusal-writer":
             assert tiers.ensure_ram_epoch(ram, host="compat-host")
-            target = stage / mover.stage_relative(str(source), 0, 8, mount_prefix=str(origin))
+            target = stage / release.stage_relative(str(source), 0, 8, mount_prefix=str(origin))
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"contents")
             entry = {"stage_path": str(target), "bytes": 8, "sha256": digest, "offset": 0}

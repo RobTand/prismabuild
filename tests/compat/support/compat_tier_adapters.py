@@ -103,7 +103,7 @@ def operate(request, store, load):
             observe = rp.incarnation
             rp.incarnation = lambda path: (2, 3, 4)
             try:
-                path = rp._superseded_path(queue, C, rp.plan_sha256(plan))
+                path = rp.superseded_path(queue, plan)
                 if writing:
                     value = rp.mark_superseded(queue, C, reason="compat", movers=["a" * 64], by="compat")
                     if variant == "replay":
