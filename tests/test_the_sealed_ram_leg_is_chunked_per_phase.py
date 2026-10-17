@@ -10,6 +10,7 @@ node kind.  A phase that fits in one chunk seals today's whole-phase pair,
 and a plan sealed before this change keeps the leg it was frozen with.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

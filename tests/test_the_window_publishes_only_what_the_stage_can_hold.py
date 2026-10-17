@@ -20,6 +20,7 @@ key is a content hash, so a second campaign over the same manifest seals the
 same key, and a leftover ``done`` record must not read as "already staged".
 """
 from __future__ import annotations
+from submission_support import refusal_value
 from prismabuild import submission as submit_core
 
 import json
@@ -398,7 +399,7 @@ def test_a_submission_cannot_stage_onto_a_tier_the_fleet_does_not_announce(
     from prismabuild import submission
     from submission_support import patch_store
 
-    with pytest.raises(SystemExit, match="no box announces one"):
+    with pytest.raises(submit_core.SubmissionRefused, match="no box announces one"):
         submit_core.resolve_stage_tier(queue, None)
 
 
@@ -411,7 +412,7 @@ def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> No
                              "host": host, "capacity_bytes": 1 << 40,
                              "mountpoint": str(tmp_path / "stage")})
 
-    with pytest.raises(SystemExit, match="--residency-tier"):
+    with pytest.raises(submit_core.SubmissionRefused, match="--residency-tier"):
         submit_core.resolve_stage_tier(queue, None)
 
     named = submit_core.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
@@ -536,6 +537,6 @@ def test_a_tier_that_announces_neither_is_refused_rather_than_guessed(
             "mover_tools_root": "/gen/tools"}
     del tier[missing]
 
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.raises(submit_core.SubmissionRefused) as excinfo:
         submit_core.movement_tools(tier)
     assert missing in str(excinfo.value) and TIER in str(excinfo.value)

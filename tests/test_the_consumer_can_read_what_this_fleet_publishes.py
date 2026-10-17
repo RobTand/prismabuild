@@ -11,6 +11,7 @@ They also pin the two other ends of the same hand-off: the flag PrismaQuant's
 submitter emits, and the role that has to be running for any of it to exist.
 """
 from __future__ import annotations
+import pbrun
 
 import json
 from pathlib import Path

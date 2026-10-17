@@ -10,6 +10,7 @@ no new node kind.  A phase that fits in one chunk seals today's whole-phase
 pair, and a tier that announces no sizing seals it too.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib

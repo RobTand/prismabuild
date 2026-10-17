@@ -19,6 +19,7 @@ discovery are stubbed -- they are the two things a test may not have -- and
 nothing else is.
 """
 from __future__ import annotations
+import pbrun
 from prismabuild import submission as submit_core
 
 import hashlib
