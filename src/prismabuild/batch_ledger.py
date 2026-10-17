@@ -66,6 +66,15 @@ def require_live_owner(queue, checked_instance: Mapping[str, object]
     return {"ok": False, "refusal": "stale-superseded-owner"}
 
 
+def scopes_root(queue_root: str | Path) -> Path:
+    return Path(queue_root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+
+
+def template_file(queue_root: str | Path, template_id: str) -> Path:
+    return (Path(queue_root) / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
+            / f"{template_id}.json")
+
+
 def scope_dir(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
     checked = oc.validate_instance(instance)
     attempt = checked["owner_attempt"]
@@ -489,7 +498,7 @@ def foreign_write_owner(queue, checked_instance: Mapping[str, object],
         if claimed == "" or (claimed is not None and claimed != nonce):
             continue
         scope = attempt_scope(queue.root, owner, template_id, nonce)
-        batches = BatchLedger(scope / "commitments.json").capture()["batches"]
+        batches = BatchLedger.at_scope(scope).capture()["batches"]
         assert isinstance(batches, Mapping)
         committed, prewritten = _capture_attempt_paths(queue.root, scope, batches)
         for path in sorted(wanted):
@@ -567,7 +576,7 @@ class LedgerReads:
         self.lock_orders = 0
 
     def batches(self, scope: Path) -> dict[str, object]:
-        path = scope / "commitments.json"
+        path = BatchLedger.at_scope(scope).path
         fence = (self.trust.file_fence()
                  if kept_reads.file_versions_enabled() else None)
         info = _file_stat(path)
@@ -611,7 +620,7 @@ class LedgerReads:
         it, and the parse that was not filed must not answer a later batch.
         """
 
-        self._commitments.pop(str(scope / "commitments.json"), None)
+        self._commitments.pop(str(BatchLedger.at_scope(scope).path), None)
 
     def lock_order(self, own_prefix: str,
                    templates: Mapping[str, Mapping[str, object]]
@@ -2541,7 +2550,7 @@ class BatchLedger:
 
     @classmethod
     def for_instance(cls, queue_root, instance):
-        return cls(scope_dir(queue_root, instance) / "commitments.json")
+        return cls.at_scope(scope_dir(queue_root, instance))
 
     @classmethod
     def at_scope(cls, scope: Path) -> BatchLedger:
@@ -4139,6 +4148,13 @@ class BatchCapture:
     @property
     def charges(self) -> dict[str, int]:
         return _class_sums(self._batches)
+
+    @property
+    def unretired_stage_count(self) -> int:
+        """The replay benchmark's count, retaining its original row policy."""
+        return sum(1 for entry in self._batches.values()
+                   if isinstance(entry, dict) and not entry.get("origin_only")
+                   and not BatchFacets(entry).stage_retired)
 
     @property
     def unretired_staged(self) -> list[str]:

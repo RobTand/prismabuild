@@ -654,7 +654,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
     owed: dict[str, int] = {}
     unknown: list[dict[str, str]] = []
     bounded: list[str] = []
-    scopes_root = Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes_root = bl.scopes_root(queue.root)
     try:
         owners = bl.scope_owners(scopes_root)
     except FileNotFoundError:
@@ -3593,8 +3593,8 @@ def dead_input_dependency(
         return None
     try:
         raw = json.loads(
-            (Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR / owner
-             / f"{template_id}.{nonce}" / "instance.json").read_text())
+            bl.BatchLedger.at_scope(bl.attempt_scope(
+                queue.root, owner, template_id, nonce)).instance_path.read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(raw, Mapping):
@@ -4708,7 +4708,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                 "held_by_unknown": held_by_unknown,
                 "unreadable": unreadable}
 
-    scopes_root = Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes_root = bl.scopes_root(queue.root)
     templates_root = Path(queue.root) / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
     try:
         owners = bl.scope_owners(scopes_root)
@@ -5148,7 +5148,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
     """
 
     events: list[dict[str, object]] = []
-    scopes_root = Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes_root = bl.scopes_root(queue.root)
     try:
         owners = bl.scope_owners(scopes_root)
     except OSError:
@@ -5710,7 +5710,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
     from prismabuild import residency_map as map_mod
 
     events: list[dict[str, object]] = []
-    scopes_root = Path(queue.root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
+    scopes_root = bl.scopes_root(queue.root)
     try:
         owners = bl.scope_owners(scopes_root)
     except OSError:

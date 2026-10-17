@@ -4704,7 +4704,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     if str(record.get("state")) not in ("consumed", "released"):
         return unknown(f"its output funding is {record.get('state')}, not a settled end")
     try:
-        commitments = bl.BatchLedger(scope / 'commitments.json').entries()
+        commitments = bl.BatchLedger.at_scope(scope).entries()
         entry = commitments.lookup(batch_id)   # type: ignore[union-attr]
         if not isinstance(entry, bl.BatchFacets):
             return unknown(f"its batch {batch_id} is not committed")

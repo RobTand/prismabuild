@@ -278,10 +278,8 @@ def _unretired(queue: pool.PoolQueue, scopes: list[str]) -> int:
 
     count = 0
     for scope in scopes:
-        batches = bl.BatchLedger(Path(scope) / "commitments.json").capture()["batches"]
-        count += sum(1 for entry in batches.values()
-                     if isinstance(entry, dict) and not entry.get("origin_only")
-                     and not bl.BatchFacets(entry).stage_retired)
+        batches = bl.BatchLedger.at_scope(Path(scope)).entries()
+        count += batches.unretired_stage_count
     return count
 
 

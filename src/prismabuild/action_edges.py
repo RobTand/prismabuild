@@ -821,7 +821,7 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
             if (instance["template_id"] != template_id
                     or bl.scope_dir(queue_root, instance) != scope):
                 continue
-            batches = bl.BatchLedger(scope / 'commitments.json').entries()['batches']
+            batches = bl.BatchLedger.at_scope(scope).entries()['batches']
         except FileNotFoundError:
             continue
         except (OSError, ValueError) as exc:
