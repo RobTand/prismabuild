@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "ab" * 32
 
@@ -36,15 +37,15 @@ def _outcome(monkeypatch, tmp_path, *, receipt):
     def never(*args, **kwargs):
         raise AssertionError("sbatch was reached for receipted work")
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", never)
-    monkeypatch.setattr(pbrun.slurm_lane, "resume", never)
+    monkeypatch.setattr(submit_core.slurm_lane, "run", never)
+    monkeypatch.setattr(submit_core.slurm_lane, "resume", never)
     cas = _Receipted(receipt, tmp_path / 'cas')
-    rc = pbrun.slurm_outcome(
+    rc = submit_core.slurm_outcome(
         {"action_key": KEY}, cas=cas, request_path="r.json",
         tags=["gb10"], demand={"cpu": 2, "mem_gb": 8}, exclusive=False,
         timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
         queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
     # A lookup verifies the result blob, gigabytes over NFS for a rendered
     # model, so the attached path asks exactly once.
     assert cas.lookups == 1
@@ -97,14 +98,14 @@ def test_unreceipted_work_still_reaches_the_scheduler(
 
     def record(action, **kwargs):
         reached["called"] = True
-        raise pbrun.slurm_lane.SlurmLaneError("stop here")
+        raise submit_core.slurm_lane.SlurmLaneError("stop here")
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", record)
+    monkeypatch.setattr(submit_core.slurm_lane, "run", record)
     with pytest.raises(SystemExit):
-        pbrun.slurm_outcome(
+        submit_core.slurm_outcome(
             {"action_key": KEY}, cas=_Receipted(None, tmp_path / 'cas'), request_path="r.json",
             tags=[], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
             queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
-        )
+        store=pbrun.configured_store(), display=pbrun.render)
     assert reached == {"called": True}

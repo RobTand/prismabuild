@@ -26,6 +26,7 @@ disagreed in 8 of 10 trials, so the four seals this file asks for fail on the
 old sealer with near certainty rather than merely usually.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 from pathlib import Path
@@ -82,7 +83,7 @@ def _repository(root: Path, *, files: int) -> Path:
 
 def _seal(checkout: Path, cas_root: Path, **kwargs: object) -> dict[str, object]:
     cas = core_module.PrismaBuildCAS(cas_root)
-    return pbrun.build_git_checkout_snapshot(
+    return submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES, **kwargs   # type: ignore[arg-type]
     )
 
@@ -213,7 +214,7 @@ def test_the_sealed_bundle_is_a_bundle_git_can_read(tmp_path: Path) -> None:
     checkout = _repository(tmp_path / "checkout", files=4)
     assert _git(checkout, "branch", "gate-base").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES, snapshot_refs=["gate-base"],
     )
     bundle = cas.input_path(snapshot["input"])

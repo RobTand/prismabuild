@@ -487,7 +487,7 @@ spec = importlib.util.spec_from_file_location('native_refused_pbtest', sys.argv[
 pbtest = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pbtest)
 from prismabuild import capability_eligibility, contracts
-pbtest.pbrun.SH = pathlib.Path(sys.argv[2]) / 'fleet'
+pbtest.configured_store().root = pathlib.Path(sys.argv[2]) / 'fleet'
 missing = '/no/native-mergeq/python'
 pbtest.fleet_queue().announce(host='fixture', tags=[contracts.INTERPRETER_TAG], has_gpu=False,
     capacity={'cpu': 1, 'mem_gb': 8}, timeout_ceiling_s=300,
