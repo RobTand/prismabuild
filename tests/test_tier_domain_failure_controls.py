@@ -138,3 +138,26 @@ def test_named_handover_moves_only_the_ram_occupancy_mirror(tmp_path):
     assert ledger.handover_named(GRANT, MOVER, chosen) == 2
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
     assert queue.ledger(HOST).holder_tokens("ram-host:" + MOVER) == {"mem_gb": 1}
+
+
+def test_a_partial_native_take_keeps_the_preexisting_named_tokens(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    seeded(queue, 1)
+    queue.tier(TIER).mint({'ram_gib': 3})
+    ledger = queue.tier(TIER)
+    before = ledger.holder_state(GRANT)
+    blocked = max(ledger.paths.free.iterdir()).name
+    original = os.rename
+    holder = ledger.paths.held / GRANT
+
+    def interrupted(source, target, *args, **kwargs):
+        source, target = Path(source), Path(target)
+        if (source.parent.name.startswith("claiming.") and source.name == blocked
+                and target.parent == holder):
+            raise OSError("one native commit rename failed")
+        return original(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", interrupted)
+    assert queue.tier(TIER).take_advance(GRANT, 2, 'ram_gib') == ('tier-short', 'tier pool refused the take')
+    assert ledger.holder_state(GRANT) == before
+    assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
