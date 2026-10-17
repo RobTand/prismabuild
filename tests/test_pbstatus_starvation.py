@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 import residency_publication  # noqa: E402
 
@@ -176,8 +177,8 @@ def starved_queue(tmp_path, monkeypatch):
 
 
 def test_quiet_consumer_with_silent_child_reads_as_waiting(starved_queue):
-    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
-    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    blob = fleet_census.starvation(starved_queue.root, now=NOW)
+    assert blob["schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert blob["complete"] is True
     assert len(blob["waiting_claims"]) == 1
     claim = blob["waiting_claims"][0]
@@ -185,12 +186,12 @@ def test_quiet_consumer_with_silent_child_reads_as_waiting(starved_queue):
     assert claim["accepted_phase"] == "phase-0000"
     assert claim["quiet_fraction"] == pytest.approx(800.0 / 900.0)
     assert claim["child"]["cpu_seconds"] == 12.0
-    assert claim["cpu_growth"] == pbstatus.NOT_OBSERVABLE
+    assert claim["cpu_growth"] == fleet_census.NOT_OBSERVABLE
     assert claim["waiting_on_data"] is True
 
 
 def test_plan_promotion_state_names_ram_fragments_per_phase(starved_queue):
-    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
+    blob = fleet_census.starvation(starved_queue.root, now=NOW)
     assert len(blob["residency_plans"]) == 1
     plan = blob["residency_plans"][0]
     assert plan["valid"] is True and plan["accepted_phase"] == "phase-0000"
@@ -203,11 +204,11 @@ def test_plan_promotion_state_names_ram_fragments_per_phase(starved_queue):
     gap = plan["cursor_gap"]
     assert gap["stage"]["unstaged_phases"] == ["phase-0001"]
     assert gap["stage"]["unstaged_bytes"] == 2 * GIB
-    assert gap["live_byte_cursor"] == pbstatus.NOT_OBSERVABLE
+    assert gap["live_byte_cursor"] == fleet_census.NOT_OBSERVABLE
 
 
 def test_tiers_carry_announced_fill_and_ledger_occupancy(starved_queue):
-    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
+    blob = fleet_census.starvation(starved_queue.root, now=NOW)
     tier = next(t for t in blob["tiers"] if t["tier_id"] == STAGE_TIER)
     assert tier["fill_supply"] == {"best_mb_s": 300.0, "ceiling_mb_s": None,
                                    "may_grow": True}
@@ -217,7 +218,7 @@ def test_tiers_carry_announced_fill_and_ledger_occupancy(starved_queue):
 
 
 def test_tiers_carry_kind_host_epoch_and_window(starved_queue):
-    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
+    blob = fleet_census.starvation(starved_queue.root, now=NOW)
     assert blob["complete"] is True
     ram = next(t for t in blob["tiers"] if t["tier_id"] == RAM_TIER)
     assert ram["announced"] is True
@@ -229,7 +230,7 @@ def test_tiers_carry_kind_host_epoch_and_window(starved_queue):
 
 
 def test_denial_top_separates_mover_blocking_reasons(starved_queue):
-    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
+    blob = fleet_census.starvation(starved_queue.root, now=NOW)
     assert len(blob["denial_top"]) == 1
     host = blob["denial_top"][0]
     assert host["host"] == HOST and host["denials"] == 2
@@ -239,7 +240,7 @@ def test_denial_top_separates_mover_blocking_reasons(starved_queue):
 
 
 def test_gap_list_names_what_would_have_to_be_recorded(starved_queue):
-    blob = pbstatus.read_starvation(starved_queue.root, now=NOW)
+    blob = fleet_census.starvation(starved_queue.root, now=NOW)
     fields = {entry["field"] for entry in blob["not_observable"]}
     assert {"waiting_claims[].cpu_growth",
             "residency_plans[].cursor_gap.live_byte_cursor",
@@ -252,14 +253,14 @@ def test_starvation_cli_prints_one_json_blob(starved_queue, capsys):
     assert pbstatus.main(["--starvation", "--queue-root",
                           str(starved_queue.root)]) == 0
     blob = json.loads(capsys.readouterr().out)
-    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert blob["schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert blob["waiting_claims"] and blob["residency_plans"]
 
 
 def test_starvation_reads_without_writing(starved_queue):
     paths = [p for p in starved_queue.root.rglob("*") if p.is_file()]
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
-    pbstatus.read_starvation(starved_queue.root, now=NOW)
+    fleet_census.starvation(starved_queue.root, now=NOW)
     after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
              for p in starved_queue.root.rglob("*") if p.is_file()}
     assert after == before

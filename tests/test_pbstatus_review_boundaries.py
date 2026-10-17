@@ -20,6 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools/fleet'))
+from prismabuild import census as fleet_census
 import pbstatus
 
 
@@ -29,9 +30,10 @@ def test_abandoned_reader_releases_captured_stdout_and_stderr():
     program = '''
 import os,sys,time
 sys.path.insert(0, 'tools/fleet')
+from prismabuild import census as fleet_census
 import pbstatus
 pbstatus.wedged_peers = lambda: {'peers': [], 'scanned': 0, 'truncated': False, 'note': None}
-pbstatus.read_pool = lambda root, *, reader=None: time.sleep(4)
+fleet_census.rows = lambda root, *, reader=None: time.sleep(4)
 pbstatus.os.kill = lambda pid, sig: None
 raise SystemExit(pbstatus.main(['--transport', 'pool', '--json', '--timeout-s', '0.05']))
 '''
@@ -86,8 +88,8 @@ def test_error_does_not_report_complete_census(monkeypatch, capsys):
     monkeypatch.setattr(pbstatus, 'wedged_peers', lambda: {'peers': [], 'scanned': 0, 'truncated': False, 'note': None})
     def unavailable(root, *, reader=None):
         raise PermissionError('queue unavailable')
-    monkeypatch.setattr(pbstatus, 'read_pool', unavailable)
-    monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit, *, reader=None: [])
+    monkeypatch.setattr(census, 'active', unavailable)
+    monkeypatch.setattr(census, 'endings', lambda root, limit, *, reader=None: [])
     monkeypatch.setattr(pbstatus, 'queue_root_note', lambda root, **kwargs: None)
     pbstatus.main(['--transport', 'pool', '--json'])
     report = json.loads(capsys.readouterr().out)
