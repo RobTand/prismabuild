@@ -138,7 +138,7 @@ def test_independent_producers_same_basename_keep_own_bytes_and_pins(tmp_path):
                                       "range", "unsealed_manifest", "corrupt_request", "missing_reference"])
 def test_unbound_or_unsafe_output_namespace_refuses_before_copy(tmp_path, mutation):
     import json
-    import stage_move
+    from prismabuild import stage_move
 
     world = fx._World(tmp_path)
     desc = fx._descriptors(world.template, world.inst, "p-shared", b"owned bytes",

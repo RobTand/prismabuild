@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,16 +19,9 @@ class CycleBoundary(Exception):
     pass
 
 
-def load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "tools/fleet" / f"{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def role(tmp_path, monkeypatch):
-    loop = load("prewarm_loop")
+    from prismabuild import prewarm_loop as loop
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False}))
     parked = tmp_path / "rollout/parked"

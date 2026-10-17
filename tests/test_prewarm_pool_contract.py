@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prewarm_fixture import Fleet  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 
 #: Every field a prewarm receipt carried before #582, and nothing else.
 RECEIPT_FIELDS = frozenset({
