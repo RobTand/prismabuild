@@ -108,12 +108,12 @@ def _tier_only_terminal(queue: pool.PoolQueue, *, owner: str) -> None:
     an empty holder list used to skip the second one.
     """
 
-    ledger = queue.tier_ledger(TIER)
-    queue.mint_tier_capacity(TIER, {TIER_KIND: 2})
-    handle = ledger.begin_acquire(KEY, {TIER_KIND: 2})
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).mint({TIER_KIND: 2})
+    handle = ledger.begin_take(KEY, {TIER_KIND: 2})
     assert handle is not None
-    assert ledger.commit_acquire(KEY, handle) == 2
-    assert ledger.holder_tokens(KEY) == {TIER_KIND: 2}
+    assert ledger.commit_take(KEY, handle) == 2
+    assert ledger.holdings(KEY) == {TIER_KIND: 2}
     queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps({
         "action_key": KEY, "status": "executed",
         "finished_host": socket.gethostname(), "container_owner": owner,
@@ -136,7 +136,7 @@ def test_reclaim_of_a_tier_only_key_verifies_the_container_is_gone(
     else:
         raise AssertionError(
             "a tier-only reservation came back while its container lives")
-    assert queue.tier_ledger(TIER).holder_tokens(KEY) == {TIER_KIND: 2}
+    assert queue.tier(TIER).holdings(KEY) == {TIER_KIND: 2}
 
 
 def test_reclaim_of_a_tier_only_key_releases_when_the_container_is_gone(
@@ -151,4 +151,4 @@ def test_reclaim_of_a_tier_only_key_releases_when_the_container_is_gone(
     result = queue.reclaim_terminal_reservation(KEY)
 
     assert result == {"action_key": KEY, "released": 2, "hosts": []}
-    assert queue.tier_ledger(TIER).holder_tokens(KEY) == {}
+    assert queue.tier(TIER).holdings(KEY) == {}

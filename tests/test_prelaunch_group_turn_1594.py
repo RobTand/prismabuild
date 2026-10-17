@@ -66,7 +66,7 @@ def test_higher_priority_arriving_later_waits(queue) -> None:
 
 def test_turn_with_holdings_is_not_overtaken(queue) -> None:
     """Holdings pin the next pick even when a better rank exists."""
-    queue.mint_tier_capacity("prismabuild-stage:dl380g10", {"stage_gib": 8})
+    queue.tier('prismabuild-stage:dl380g10').mint({'stage_gib': 8})
     tier = "prismabuild-stage:dl380g10"
     holder = pg.holder_name(G2, tier, ["phase-a"])
     assert pg.file_intent(queue, G2, holder, tier, 2, []) is True
@@ -86,7 +86,7 @@ def test_turn_with_holdings_is_not_overtaken(queue) -> None:
 
 def test_highest_rank_with_holdings_is_skipped_next_turn(queue) -> None:
     """A fully reserved holder never blocks the next epoch behind itself."""
-    queue.mint_tier_capacity("prismabuild-stage:dl380g10", {"stage_gib": 8})
+    queue.tier('prismabuild-stage:dl380g10').mint({'stage_gib': 8})
     tier = "prismabuild-stage:dl380g10"
     holder = pg.holder_name(G2, tier, ["phase-a"])
     assert pg.file_intent(queue, G2, holder, tier, 2, []) is True
@@ -102,9 +102,9 @@ def test_highest_rank_with_holdings_is_skipped_next_turn(queue) -> None:
 
 def test_abandoned_turn_releases_groups_and_moves_on(queue) -> None:
     """Abandon files done; the released room serves the next turn."""
-    queue.mint_tier_capacity("prismabuild-stage:dl380g10", {"stage_gib": 8})
+    queue.tier('prismabuild-stage:dl380g10').mint({'stage_gib': 8})
     tier = "prismabuild-stage:dl380g10"
-    ledger = queue.tier_ledger(tier)
+    ledger = queue.tier(tier)
     holder = pg.holder_name(G1, tier, ["phase-a"])
     assert pg.file_intent(queue, G1, holder, tier, 2, []) is True
     assert pg.take_turn(queue, [_ticket(G1, 1, 10.0, tA=4, tB=2)]).unit == G1
@@ -113,7 +113,7 @@ def test_abandoned_turn_releases_groups_and_moves_on(queue) -> None:
     assert pg.reconcile(queue, tier, G1, holder, 2, [], writer_is_me=True).state == "reserved"
     assert pg.finish_turn(queue, 0, "abandoned") is True
     assert pg.release_unit(queue, tier, G1, holder, [], terminal=True) == ["prelaunch-group-released"]
-    assert ledger.available().get("stage_gib") == 8
+    assert ledger.free_supply().get('stage_gib') == 8
     nxt = pg.take_turn(queue, [_ticket(G1, 1, 10.0, tA=4, tB=2),
                                _ticket(G2, 9, 20.0, tA=4, tB=2)])
     assert (nxt.epoch, nxt.unit, nxt.won) == (1, G2, True)
