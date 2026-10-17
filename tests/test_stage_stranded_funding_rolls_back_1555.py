@@ -584,7 +584,7 @@ def test_unknown_token_release_keeps_marker_open(tmp_path, monkeypatch):
     scan = pool.immutable_files.scan_required
 
     def unreadable_holder(path):
-        if path == ledger.held_dir / mover:
+        if path == ledger.paths.held / mover:
             raise PermissionError("injected token census failure")
         return scan(path)
 

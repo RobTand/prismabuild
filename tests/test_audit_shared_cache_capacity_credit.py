@@ -425,7 +425,7 @@ def test_reclaim_converges_across_an_interleaved_rename(tmp_path: Path) -> None:
             # A rename landing between classify and reissue: the slot is
             # live again before the dead file moves.
             fired["n"] += 1
-            real_rename(str(spare), str(ledger.held_dir / MOVER_B / victim))
+            real_rename(str(spare), str(ledger.paths.held / MOVER_B / victim))
         return real_rename(src, dst, *args, **kwargs)
 
     monkey = pytest.MonkeyPatch()
@@ -522,15 +522,15 @@ def test_actual_cycle_mints_once_and_never_wipes_rates(tmp_path: Path) -> None:
         expected_source = "measured-growing"
 
     applies: list[dict] = []
-    real_apply = pool.PoolQueue._apply_tier_capacity
+    real_apply = tier_holdings.TierLedger._apply_mint
 
-    def counting(self, tier_id, tier_ledger, wanted):
-        if tier_id == TIER:
+    def counting(self, tier_ledger, wanted):
+        if self.tier_id == TIER:
             applies.append(dict(wanted))
-        return real_apply(self, tier_id, tier_ledger, wanted)
+        return real_apply(self, tier_ledger, wanted)
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(pool.PoolQueue, "_apply_tier_capacity", counting)
+    monkey.setattr(tier_holdings.TierLedger, "_apply_mint", counting)
     try:
         announced = _run_cycle(queue, tmp_path / "stage",
                                capacity_bytes=1, fill=50)
@@ -590,15 +590,15 @@ def test_actual_cycle_on_refused_root_keeps_without_churn(tmp_path: Path) -> Non
         max_attempts=1, retry_safe=False)
 
     applies: list[dict] = []
-    real_apply = pool.PoolQueue._apply_tier_capacity
+    real_apply = tier_holdings.TierLedger._apply_mint
 
-    def counting(self, tier_id, tier_ledger, wanted):
-        if tier_id == TIER:
+    def counting(self, tier_ledger, wanted):
+        if self.tier_id == TIER:
             applies.append(dict(wanted))
-        return real_apply(self, tier_id, tier_ledger, wanted)
+        return real_apply(self, tier_ledger, wanted)
 
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(pool.PoolQueue, "_apply_tier_capacity", counting)
+    monkey.setattr(tier_holdings.TierLedger, "_apply_mint", counting)
     try:
         announced = tier_loop.cycle(
             queue, host=socket.gethostname(), source_pool="tank",
@@ -795,7 +795,7 @@ def test_mixed_time_mint_does_not_create_free(tmp_path: Path) -> None:
     assert claimed is not None and claimed["action_key"] == MOVER_A
     assert _ledger_numbers(queue)["free"] == 0
 
-    real_apply = pool.PoolQueue._apply_tier_capacity
+    real_apply = tier_holdings.TierLedger._apply_mint
     real_helper = tier_loop.mint_stage_supply
     applied: list[dict] = []
 
@@ -809,9 +809,9 @@ def test_mixed_time_mint_does_not_create_free(tmp_path: Path) -> None:
             applied.append("completed")
         return real_helper(*args, **kwargs)
 
-    def recording_apply(self, tier_id, tier_ledger, wanted):
+    def recording_apply(self, tier_ledger, wanted):
         applied.append(dict(wanted))
-        return real_apply(self, tier_id, tier_ledger, wanted)
+        return real_apply(self, tier_ledger, wanted)
 
     def fake_stage_dataset(pool_name, **kwargs):
         return {"dataset": pool_name, "available_bytes": disk["writable"] * storage_tiers.GIB,
@@ -819,7 +819,7 @@ def test_mixed_time_mint_does_not_create_free(tmp_path: Path) -> None:
 
     monkey = pytest.MonkeyPatch()
     monkey.setattr(tier_loop, "mint_stage_supply", completing_helper)
-    monkey.setattr(pool.PoolQueue, "_apply_tier_capacity", recording_apply)
+    monkey.setattr(tier_holdings.TierLedger, "_apply_mint", recording_apply)
     monkey.setattr(storage_tiers, "stage_dataset", fake_stage_dataset)
     try:
         announced = tier_loop.cycle(

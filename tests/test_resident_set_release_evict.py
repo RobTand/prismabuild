@@ -277,7 +277,7 @@ def test_close_preserves_pinned_bytes_and_eviction_deletes_every_tree_before_tok
     original_delete = local_resident.shutil.rmtree
     original_release = type(ledger).release
     def delete(tree):
-        assert pool.held_names_visible(ledger, set_id) == tokens
+        assert ledger.holder_state(set_id) == tokens
         assert store.read_copy(set_id, "test-host")["state"] == "evicting"
         if tree == trees[1]:
             raise OSError("delete interrupted")

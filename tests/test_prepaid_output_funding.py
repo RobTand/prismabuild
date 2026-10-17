@@ -426,7 +426,7 @@ def test_owner_finish_race_serialized(
 
     def observed_transfer(actual_ledger, from_key, to_key, names):
         selected = (threading.current_thread() is fa
-                    and actual_ledger.base == ledger.base
+                    and actual_ledger.base == ledger.paths.base
                     and (from_key, to_key) == (owner, mover))
         if selected and direction == "fund-first":
             fund_parked.set()
@@ -1554,11 +1554,11 @@ def test_transfer_tokens_concurrent_exclusion(tmp_path: Path) -> None:
 
     def move_a():
         barrier.wait(10)
-        results["a"] = ledger.transfer_tokens(owner, mover_a, names[:2])
+        results["a"] = ledger.handover_named(owner, mover_a, names[:2])
 
     def move_b():
         barrier.wait(10)
-        results["b"] = ledger.transfer_tokens(owner, mover_b, names[2:])
+        results["b"] = ledger.handover_named(owner, mover_b, names[2:])
 
     ta = _threading.Thread(target=move_a)
     tb = _threading.Thread(target=move_b)

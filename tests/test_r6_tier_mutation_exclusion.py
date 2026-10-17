@@ -768,7 +768,7 @@ def test_host_begin_declines_but_other_owners_are_independent(tmp_path: Path):
     def contender():
         result["same"] = queue.ledger(ledger.host).begin_acquire(HOLDER_H, {"spool_gb": 1})
         result["other"] = other.begin_acquire(HOLDER_X, {"spool_gb": 1})
-        result["tier"] = tier.begin_acquire(HOLDER_X, {KIND: 1})
+        result["tier"] = tier.begin_take(HOLDER_X, {KIND: 1})
 
     with ledger._mutation_locked():
         worker = threading.Thread(target=contender, daemon=True)

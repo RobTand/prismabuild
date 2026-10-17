@@ -80,7 +80,6 @@ def main():
                 "extra": [dict(function=key[0], assertion=key[1], count=count)
                           for key, count in extra.items()]}
     retired = set(migration["MOVED"]) | set(migration["AGGREGATE"]) | {"tier_ledger"}
-    retired.remove("_reclaim_dead_markers")
     residual, unknown, parse_errors = [], defaultdict(list), []
     owner = ast.parse((args.root / "src/prismabuild/tier_holdings.py").read_text())
     owner_class = next(n for n in owner.body if isinstance(n, ast.ClassDef) and n.name == "TierLedger")
@@ -98,6 +97,14 @@ def main():
                     residual.append(dict(path=relative, line=node.lineno, name=node.attr))
                 if isinstance(node, ast.FunctionDef) and node.name in retired:
                     residual.append(dict(path=relative, line=node.lineno, name=node.name))
+                if isinstance(node, ast.Call):
+                    name = (node.func.id if isinstance(node.func, ast.Name) else
+                            node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                    if name in {"getattr", "setattr", "delattr"}:
+                        for argument in node.args:
+                            if isinstance(argument, ast.Constant) and argument.value in retired:
+                                residual.append(dict(path=relative, line=node.lineno,
+                                                     name=argument.value, dynamic=True))
             if relative == "src/prismabuild/tier_holdings.py":
                 continue
             scopes, aliases = migration["caller_aliases"](tree)
