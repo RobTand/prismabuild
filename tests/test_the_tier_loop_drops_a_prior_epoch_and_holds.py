@@ -64,6 +64,7 @@ def _fragment(*, tier_id: str, root: str, mover: str,
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
+    q.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     return q
 
 

@@ -107,6 +107,7 @@ def _fixture(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path]:
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     plan = _plan(queue, stage_root=str(stage))
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={

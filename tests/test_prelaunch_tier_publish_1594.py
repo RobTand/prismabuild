@@ -194,6 +194,7 @@ def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
     tiers = {RAM_TIER: {"tier": "ram", "tier_id": RAM_TIER,
                         "host": "dl380g10", "mountpoint": str(ram),
                         "epoch": EPOCH}}
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 8})
     holder = pg.holder_name(_hexkey("ram-unit"), RAM_TIER, ["phase-a"])
     queue.tier(RAM_TIER).mint({'ram_gib': 8})
     assert queue.tier(RAM_TIER).take(holder, {'ram_gib': 2})
