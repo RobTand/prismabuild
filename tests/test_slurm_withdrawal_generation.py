@@ -94,7 +94,7 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
     lane = tmp_path / "lane"
     fleet = _Fleet()
     marker = queue / pool.record_store.WITHDRAWN / f"{KEY}.json"
-    published = sl._write_json_atomic
+    published = sl.immutable_files.write_json_atomic
     withdrawn: list[int] = []
 
     def write_then_withdraw(path: Path, payload, *, trailing_newline: bool) -> None:
@@ -111,7 +111,7 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
         ) == 0
         assert marker.exists()
 
-    monkeypatch.setattr(sl, "_write_json_atomic", write_then_withdraw)
+    monkeypatch.setattr(sl.immutable_files, "write_json_atomic", write_then_withdraw)
     monkeypatch.setattr(sl, "cancel", fleet.cancel)
 
     _run(tmp_path, fleet, queue=queue, lane=lane,

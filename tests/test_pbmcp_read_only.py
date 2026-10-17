@@ -55,8 +55,8 @@ FORBIDDEN_OS = frozenset({
 })
 
 #: Methods that mutate, lock, or read a whole log, matched on the last
-#: component so that ``pool.record_store._write_json`` and a bare
-#: ``_write_json_atomic`` are both caught. ``attempt_outcomes`` and
+#: component so that ``immutable_files.write_json_atomic`` and a Store
+#: ``replace_record_at`` are both caught. ``attempt_outcomes`` and
 #: ``attempt_ending`` are here for the log reason rather than the
 #: write reason: they read every stdout and stderr whole to verify a digest,
 #: which is right for a verifier and ruinous for a status call.
@@ -66,7 +66,13 @@ FORBIDDEN_METHODS = frozenset({
     "symlink_to", "hardlink_to", "chmod", "rename", "replace",
     "ensure_layout", "_transition_locked", "record_pass", "claim", "publish",
     "withdraw", "finish", "announce", "serve_once", "reap_stale",
-    "_write_json_atomic", "publish_immutable", "_publish_immutable",
+    "write_json_atomic", "write_bytes_atomic", "publish_exact", "publish_mutable",
+    "publish_immutable", "_publish_immutable",
+    "replace_record_at", "replace_stage_holder_at", "replace_reader_scope_at",
+    "replace_record_bytes_at", "file_publication_ending_at", "file_attempt_log_at",
+    "file_record_if_absent_at", "file_receipt_reconciliation_at", "replace_lane_item_at",
+    "file_lane_item_if_absent", "replace_cycle_at", "file_withdrawal_decision",
+    "file_residency_plan_at", "file_residency_supersession_at", "file_released_origin_index_at",
     "write_new_json", "publish_action_request", "publish_result",
     "ingest_input", "attempt_outcomes", "attempt_ending",
     "archived_preemption_outcomes",

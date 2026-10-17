@@ -940,7 +940,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     mark_path = _gang.terminal_mark_path(queue, group, first)
     old_mark = mark_path.read_bytes()
     real_verdict = queue.residency_verdict
-    real_write = pool.materialize._write_json_atomic
+    real_write = pool.immutable_files.write_json_atomic
     calls = 0
     observed_faults = []
 
@@ -967,7 +967,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     with monkeypatch.context() as fault:
         fault.setattr(queue, "residency_verdict", verdict)
         fault.setattr(_gang, "clear_terminal", fail_clear)
-        fault.setattr(pool.materialize, "_write_json_atomic", write)
+        fault.setattr(pool.immutable_files, "write_json_atomic", write)
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None
         assert "clear-terminal" in observed_faults, "reset never reached the failed terminal clear"
