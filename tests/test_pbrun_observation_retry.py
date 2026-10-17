@@ -33,8 +33,6 @@ class Queue:
             (root / state).mkdir(parents=True)
 
 
-
-
 def _ending(status: str, returncode: int) -> dict:
     return {
         "action_key": KEY,

@@ -53,7 +53,9 @@ def _publish(q: pool.PoolQueue, *, max_attempts: int = 1,
     q.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", max_attempts=max_attempts,
               retry_safe=retry_safe)
-    ready = json.loads(q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"))
+    ready = json.loads(
+        q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"),
+    )
     return float(ready["published_unix"])
 
 
@@ -92,7 +94,9 @@ def test_a_later_done_row_does_not_hide_the_waited_generation(queue) -> None:
     assert path.exists()
     # Recovery is a read: the later generation's row is left where it is.
     assert json.loads(
-        queue.records.item_path(pool.record_store.DONE, KEY).read_text(encoding="utf-8")) == terminal
+        queue.records.item_path(pool.record_store.DONE, KEY).read_text(
+            encoding="utf-8",
+        )) == terminal
 
 
 def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> None:
@@ -131,7 +135,9 @@ def test_a_later_failed_row_does_not_hide_the_waited_generations_failure(
     assert summary["returncode"] == 7
     assert summary["detail"]["stdout"] == "first failed\n"
     assert json.loads(
-        queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8")) == terminal
+        queue.records.item_path(pool.record_store.FAILED, KEY).read_text(
+            encoding="utf-8",
+        )) == terminal
 
 
 def test_a_retried_generation_recovers_its_terminal_attempt_and_history(

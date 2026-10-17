@@ -57,7 +57,9 @@ def _landed(q: pool.PoolQueue, *, status: str = "executed",
 
     q.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", max_attempts=1)
-    ready = json.loads(q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"))
+    ready = json.loads(
+        q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"),
+    )
     claim = q.claim()
     assert claim is not None and claim["action_key"] == KEY
     q.finish(KEY, status=status,

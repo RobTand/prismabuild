@@ -2745,7 +2745,10 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        assert not queue.records.item_path(
+            pool_module.record_store.CLAIMED,
+            action["action_key"],
+        ).exists(
         )
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
@@ -2755,7 +2758,10 @@ def test_retained_alias_is_checked_before_an_attempt(retained_executable_alias, 
     else:
         assert item is not None and item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        assert queue.records.item_path(
+            pool_module.record_store.CLAIMED,
+            action["action_key"],
+        ).exists(
         )
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
@@ -2902,7 +2908,10 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     if not present:
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        assert not queue.records.item_path(
+            pool_module.record_store.CLAIMED,
+            action["action_key"],
+        ).exists(
         )
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})
@@ -2912,7 +2921,10 @@ def test_retained_input_alias_is_checked_before_an_attempt(retained_input_alias,
     else:
         assert item is not None and item["action_key"] == action["action_key"]
         assert not ready.exists()
-        assert queue.records.item_path(pool_module.record_store.CLAIMED, action["action_key"]).exists(
+        assert queue.records.item_path(
+            pool_module.record_store.CLAIMED,
+            action["action_key"],
+        ).exists(
         )
         queue.finish(item["action_key"], status="failed", detail={"returncode": 1}, claim_snapshot=item)
 
@@ -3016,7 +3028,10 @@ def test_relocated_consumer_reads_the_checked_input(relocated_input_submission, 
     if case == "missing":
         assert item is None
         assert ready.read_bytes() == before
-        assert not queue.records.item_path(pool_module.record_store.CLAIMED, row["action_key"]).exists(
+        assert not queue.records.item_path(
+            pool_module.record_store.CLAIMED,
+            row["action_key"],
+        ).exists(
         )
         denials = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(queue.ledger().base) / pool_module.CLAIM_DENIALS).get("records", {})

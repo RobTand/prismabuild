@@ -210,7 +210,9 @@ def test_the_submission_publishes_the_consumer_and_no_mover_at_all(
     second = str(plan["phases"][1]["mover_row"]["action_key"])
     assert lead != second, "two phases sealed the same mover"
 
-    consumer = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, consumer_key))
+    consumer = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, consumer_key),
+    )
     assert consumer is not None, "the consumer row was not published"
     block = consumer.get("residency")
     assert isinstance(block, dict), "the consumer row carries no residency block"
@@ -244,7 +246,9 @@ def test_the_frozen_plan_rows_are_the_ones_sealed(
     for phase in plan["phases"]:
         sealed.append(str(phase["mover_row"]["action_key"]))
         sealed.append(str(phase["egress_row"]["action_key"]))
-        mover_row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, str(phase["mover_row"]["action_key"])))
+        mover_row = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.READY, str(phase["mover_row"]["action_key"])),
+        )
         if phase["name"] == "phase-0":
             assert mover_row is not None
             assert mover_row["residency"] == phase["mover_row"]["residency"], (
@@ -340,7 +344,9 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     # with -- the property #710 refused to break by rewriting in place.  The
     # loop publishes the row now, so the cycle comes before it is read.
     _tier_cycle(queue, tmp_path / "stage")
-    ledger_row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, str(mover["action_key"])))
+    ledger_row = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, str(mover["action_key"])),
+    )
     assert ledger_row is not None
     assert ledger_row["resources"][FILL_KIND] == 65
     blob = _receipt_blob(tmp_path, str(mover["action_key"]))
@@ -349,7 +355,9 @@ def test_a_superseded_window_reseals_at_the_tier_current_offer(
     command = blob["params"]["command"]
     assert command[command.index("--fill-mb-s-pool-side") + 1] == "65"
     assert command[command.index("--range-start-bytes") + 1] == "0"
-    consumer_row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, consumer_key))
+    consumer_row = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, consumer_key),
+    )
     assert consumer_row["residency"]["leads"] == [str(mover["action_key"])]
 
 
