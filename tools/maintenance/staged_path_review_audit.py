@@ -6,8 +6,8 @@ from collections import Counter
 import json
 from pathlib import Path
 import subprocess
-from staged_path_migrate import staged_inventory, staged_sources, staged_symbols, staged_references
-from staged_path_audit import staged_checks, staged_body
+from staged_path_migrate import staged_inventory, staged_symbols, staged_references
+from staged_path_audit import staged_checks
 
 REVIEW_BASE = 'ec634ac510c1a7465052f9111d51cfa928bb439d'
 ORIGINAL_BASE = 'a8ba9c0c7beeeb379908924a60c6933e997c8df6'
@@ -29,7 +29,7 @@ def review_sources(root, ref):
     return out
 
 
-def review_occurrences(sources):
+def staged_review_occurrences(sources):
     private, raw_writers, progress, definitions = [], [], [], []
     for path, source in sources.items():
         if path.startswith(('tests/compat/', 'tools/maintenance/')):
@@ -76,7 +76,7 @@ def review_cli():
               'head': subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip(),
               'root': str(root), 'snapshots': {}, 'comparisons': {}}
     for label, sources in [('a8', original), ('ec', previous), ('current', current)]:
-        rows = review_occurrences(sources)
+        rows = staged_review_occurrences(sources)
         result['snapshots'][label] = {'python_files': len(sources), **rows}
     for label, sources in [('a8', original), ('ec', previous)]:
         missing, changed = [], []

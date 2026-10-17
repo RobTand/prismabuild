@@ -1,7 +1,6 @@
 """Compare actual a8/current prune bytes and effects on the same private files."""
 from __future__ import annotations
 import argparse
-import hashlib
 import io
 import json
 import os
@@ -15,7 +14,7 @@ EPOCH_BASE = 'a8ba9c0c7beeeb379908924a60c6933e997c8df6'
 EPOCH_CHILD = r'''
 import base64,hashlib,json,os,sys
 from pathlib import Path
-from prismabuild import pool,reader_lease,residency_map
+from prismabuild import pool,reader_lease,residency_map,digest_primitives
 arm,work,mode,fragment_form,material_form,policy,operation = sys.argv[1:]
 if arm == 'a8':
     from prismabuild import stage_release as owner
@@ -38,7 +37,7 @@ if operation=='prepare':
     for name in ['keep','extra']:
         path=stage/name;payload=(name.encode()+b'-actual-payload')*4;path.write_bytes(payload)
         key=residency_map.residency_map_key('/origin/'+name,0)
-        row={'stage_path':str(path),'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),'offset':0}
+        row={'stage_path':str(path),'bytes':len(payload),'sha256':reader_lease.content_identity(str(path))["sha256"],'offset':0}
         entries[key]=row;material[key]={**row,'file_id':reader_lease.stat_identity(str(path))}
     if mode=='trim':entries={k:v for k,v in entries.items() if k.endswith('/keep')}
     else:(stage/'extra').unlink()
@@ -77,7 +76,7 @@ assert (stage/'keep').read_bytes()==payload
 assert reader_lease.stat_identity(str(stage/'keep'))==identity
 assert queue.tier(tier).holdings(mover)=={('ram_gib' if ram else 'stage_gib'):1}
 after={'fragment':wire(fpath),'material':wire(mpath)}
-print(json.dumps({'before':before,'after':after,'effects':effects,'receipt':{k:v for k,v in result.items() if k in ('retained_reason','entries_pruned','entries_absent','partial','pair_complete','errors')},'owner_file':owner.__file__,'owner_source_sha256':hashlib.sha256(Path(owner.__file__).read_bytes()).hexdigest()},sort_keys=True))
+print(json.dumps({'before':before,'after':after,'effects':effects,'receipt':{k:v for k,v in result.items() if k in ('retained_reason','entries_pruned','entries_absent','partial','pair_complete','errors')},'owner_file':owner.__file__,'owner_source_sha256':digest_primitives.raw_sha256(Path(owner.__file__).read_bytes())},sort_keys=True))
 '''
 
 
@@ -94,6 +93,8 @@ def epoch_replay(output: Path, *, observe: bool):
     if not (os.environ.get('PRISMABUILD_ACTION_SCOPE') or os.environ.get('PRISMABUILD_TEST_TIMEOUT_S')):
         raise SystemExit('run through published PB; admitted test children execute directly')
     checkout = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(checkout / 'src'))
+    from prismabuild import digest_primitives
     archive = subprocess.check_output(['git', '-C', str(checkout), 'archive', EPOCH_BASE, 'src', 'tools/fleet'])
     rows = []
     with tempfile.TemporaryDirectory(prefix='c09-epoch-', dir=os.environ.get('TMPDIR')) as temporary:
@@ -118,14 +119,14 @@ def epoch_replay(output: Path, *, observe: bool):
             rows.append({'case':list(case),'old':old_result,'current':current,'equal':equal})
     executable=Path(sys.executable).resolve();raw=executable.read_bytes()
     runtime={'version':sys.version,'executable':sys.executable,'resolved_executable':str(executable),
-        'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'affinity':sorted(os.sched_getaffinity(0)),
+        'bytes':len(raw),'sha256':digest_primitives.raw_sha256(raw),'affinity':sorted(os.sched_getaffinity(0)),
         'native_threads':{k:os.environ.get(k) for k in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS')}}
     report={'base':EPOCH_BASE,'cases':rows,'wire_and_effects_equal':all(r['equal'] for r in rows),'runtime':runtime}
     output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(report,indent=2)+'\n')
     output.with_suffix('.python-executable').write_bytes(raw)
     data=output.read_bytes();print(json.dumps({'wire_and_effects_equal':report['wire_and_effects_equal'],'cases':len(rows),
         'different_cases':[r['case'] for r in rows if not r['equal']],
-        'report':{'path':str(output),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()},'runtime':runtime}))
+        'report':{'path':str(output),'bytes':len(data),'sha256':digest_primitives.raw_sha256(data)},'runtime':runtime}))
     return 0 if observe or report['wire_and_effects_equal'] else 1
 
 
