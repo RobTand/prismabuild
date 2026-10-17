@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import json
 from pathlib import Path
@@ -27,6 +28,18 @@ def differences(before, after, path=""):
     return [] if before == after else [dict(path=path, before=before, after=after)]
 
 
+def runtime_source_pin(root):
+    core = ast.parse((root / 'src/prismabuild/core.py').read_bytes())
+    pins = [node for node in core.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == '_IMMUTABLE_FILES_SOURCE'
+                    for target in node.targets)]
+    raw = (root / 'src/prismabuild/immutable_files.py').read_bytes()
+    identity = dict(sha256=sha(raw), bytes=len(raw))
+    if len(pins) != 1 or ast.literal_eval(pins[0].value) != identity:
+        raise ValueError('capture source requires the exact immutable helper pin in Core')
+    return identity
+
+
 def refresh(args):
     root = args.root.resolve()
     data = root / "tests/compat"
@@ -45,6 +58,7 @@ def refresh(args):
     if not (not drift):
         raise ValueError(('capture source differs from current production/driver', drift))
     intent = args.profile == "upgrade-intent"
+    helper_identity = None if intent else runtime_source_pin(root)
     suffix = "rollout" if intent else "receipt"
     expected = ({"upgrade-intent/armed"} if intent else
                 {kind + "/" + variant for kind in
@@ -160,6 +174,8 @@ def refresh(args):
     result = dict(cases=len(expected), historical_rows_byte_exact=len(historical.splitlines()), source_identities=identities,
                   archive=str(archive.relative_to(root)), capture_source_parent=producer,
                   current_goldens_sha256=sha(prior.read_bytes()), differences=changes)
+    if helper_identity is not None:
+        result['immutable_helper_bound_by_core'] = helper_identity
     with args.report.open("x") as stream:
         stream.write(sorted_json(result) + "\n")
     print(json.dumps({key: result[key] for key in ("cases", "historical_rows_byte_exact", "archive", "current_goldens_sha256")}))
