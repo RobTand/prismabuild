@@ -1033,13 +1033,13 @@ def test_a_batch_retirement_replaces_the_checkpoint_once(
     assert _candidates(plan) == set(keys)
 
     written: list[str] = []
-    real_write = pool.record_store._write_bytes
+    real_write = pool.immutable_files.write_bytes_atomic
 
     def counted(path, data):  # type: ignore[no-untyped-def]
         written.append(path.name)
         return real_write(path, data)
 
-    monkeypatch.setattr(pool.record_store, '_write_bytes', counted)
+    monkeypatch.setattr(pool.immutable_files, 'write_bytes_atomic', counted)
     outcome = _sweep(plan)
     assert {str(row["key"]) for row in outcome["removed"]} == set(keys)
     # One initialization before the first archive plus one commit for the
