@@ -18,7 +18,9 @@ import tempfile
 import time
 import uuid
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'src'))
+_PB_ENTRYPOINT = Path(__file__).resolve()
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
 from prismabuild.resource_scope import ResourceScope
 
 LIMIT = 96 * 1024**2
