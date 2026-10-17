@@ -3126,3 +3126,543 @@ display: DisplaySink = discard_display) -> int:
             retry_safe=bool(retry_safe),
             resources=resources.demand(),
             tags=tags,
+            receipt=receipt,
+            claimed_by=host,
+            detail={"elapsed_s": 0.0},
+        )
+    emit_display(display, f"pbrun: cache_hit on {host} in 0s", channel="stderr", flush=True)
+    return 0
+
+
+def _unfiled_record(
+    exc: BaseException,
+    *,
+    key: str,
+    action,
+    cas,
+    record: str = "",
+    tool: str = "pbrun",
+    report=None,
+display: DisplaySink = discard_display) -> int:
+    """Report a record write that failed after the thing it records happened.
+
+    The lane writes every fact it keeps after the fact is already true: the
+    submission record after ``sbatch`` returned an id, the terminal record
+    after the receipt landed in the CAS. So a full mount or a queue directory
+    somebody tightened produces an ``OSError`` at a point where the job is
+    real and the work may be finished. Reported as a traceback, that told an
+    operator a temp file name and nothing else: not the job id, not whether
+    the work was done, not which command would file the ending.
+
+    Args:
+        exc: The failure the lane raised. ``exc.job_id`` names the accepted
+            job when the lane knew one; see ``slurm_lane._naming_job``.
+        key: The action key, for the prefix every fleet tool takes.
+        action: The sealed action, to ask the CAS whether the work is done.
+        cas: The CAS to ask.
+        record: The path that would not write, when the caller knows it and
+            the exception does not carry one.
+
+    Returns:
+        ``RECORD_WRITE_FAILED_EXIT``.
+    """
+
+    job_id = str(getattr(exc, "job_id", "") or "")
+    path = str(getattr(exc, "filename", "") or record or "")
+    # A ``SlurmLaneError`` carries its path inside its message and has no
+    # ``strerror``; an ``OSError`` carries both as fields.  Print whichever the
+    # failure actually has rather than a placeholder for the other.
+    reason = str(getattr(exc, "strerror", "") or exc)
+    where = f"  record:    {path}\n" if path else ""
+    try:
+        done = cas.lookup(action) is not None
+    except OSError:
+        # The mount that would not take the record may not answer this either.
+        done = None
+    if done:
+        advice = (
+            f"The receipt is in the CAS, so the work is done and re-running "
+            f"costs nothing.\n"
+            f"Clear what blocked the write, then run "
+            f"`tools/fleet/pbwait.py {key[:12]}` to file the ending."
+        )
+    else:
+        advice = (
+            ("The CAS could not be read, so receipt status is unknown.\n"
+             if done is None else
+             "No receipt is in the CAS, so the job may still be running.\n")
+            + f"Clear what blocked the write, then run "
+            f"`tools/fleet/pbwait.py {key[:12]}` "
+            f"to wait on it and file the ending, or "
+            f"`tools/fleet/pbrun.py --transport slurm --withdraw {key[:12]}` "
+            f"to stop it."
+        )
+    emit_display(display, 
+        f"{tool}: slurm took this action, but {tool} could not write its "
+        f"record.\n"
+        f"  slurm job: {job_id or '(none accepted)'}\n"
+        f"{where}"
+        f"  reason:    {reason}\n"
+        f"{advice}",
+        channel="stderr", flush=True)
+    if report is not None:
+        return report.finish(action_client.ClientUnavailable(key,
+            getattr(report.identity, 'published_unix', None), action_wait.WaitEnd.UNRETRIED))
+    return action_client.RECORD_WRITE_FAILED_EXIT
+
+
+def _lane_io_failure(exc, *, key: str, action, cas, tool="pbrun", job_id="", report=None, display: DisplaySink = discard_display) -> int:
+    """Separate stamped post-submission writes from other filesystem faults."""
+
+    if getattr(exc, "job_id", None):
+        return _unfiled_record(exc, key=key, action=action, cas=cas, tool=tool, report=report, display=display)
+    path = str(getattr(exc, "filename", "") or "")
+    reason = str(getattr(exc, "strerror", "") or exc)
+    emit_display(display, 
+        f"{tool}: filesystem access failed while processing slurm action {key[:12]}.\n"
+        f"  slurm job: {job_id or '(not identified; acceptance is unknown)'}\n"
+        f"  path:      {path or '(not supplied)'}\n"
+        f"  reason:    {reason}\n"
+        "Submission and receipt status could not be fully verified.\n"
+        f"Restore filesystem access, then run `tools/fleet/pbwait.py {key[:12]}` "
+        "to recover a recorded submission or ending; if nothing was submitted, "
+        "retry the original command.",
+        channel="stderr", flush=True,
+    )
+    if report is not None:
+        return report.finish(action_client.ClientUnavailable(key,
+            getattr(report.identity, 'published_unix', None), action_wait.WaitEnd.UNRETRIED))
+    return action_client.RECORD_WRITE_FAILED_EXIT
+
+
+def slurm_outcome(
+    action,
+    *,
+    cas,
+    request_path,
+    tags: list[str],
+    demand: dict,
+    exclusive: bool,
+    timeout_s: float | None,
+    wait_s: float,
+    retry_safe: bool,
+    max_attempts: int,
+    priority: int = 0,
+    priority_reason: str | None = None,
+    placement_notice: str = "",
+    anywhere: bool = False,
+    detach: bool = False,
+    runtime_root: Path | None = None,
+    lane_root=None,
+    queue_root=None,
+    report=None,
+    store: FleetStore, display: DisplaySink = discard_display, **lane_commands,
+) -> int:
+    """Run one sealed action through SLURM and report it the way the pool does.
+
+    The user-facing contract is this transport's whole point of contact: an
+    agent that submits with ``--transport slurm`` must read the same lines and
+    get the same exit codes it got from the queue, or the cutover is a change
+    to every caller rather than a change to one dispatcher.
+
+    So the verdict comes from the CAS, not from ``sbatch``.  A receipt means
+    the work was done -- whatever the job's exit status said afterwards -- and
+    no receipt means it was not, even from a job that exited zero.  That is the
+    rule ``PoolQueue.finish`` already applies; only the machinery underneath it
+    differs.
+
+    ``detach`` stops after ``sbatch`` accepted the job: the submission is
+    announced on stdout as one line of JSON and this returns 0.  No ending is
+    filed, because none has been observed -- whoever waits later files it, from
+    the same recorded submission ``--withdraw`` already builds a record out of.
+    """
+
+    report = report if report is not None else action_client.ClientReport()
+    runtime_root = store.runtime_root if runtime_root is None else runtime_root
+    key = str(action["action_key"])
+    if placement_notice:
+        # How wide this action is, said before anything is submitted, exactly
+        # as the pool path says it.  The pin a box-local checkout imposes is a
+        # consequence of a path rather than of a flag, and a submitter that is
+        # not told has narrowed the fleet to one box without knowing.
+        emit_display(display, placement_notice, channel="stderr", flush=True)
+    slots = int(demand.get("gpu", 0) or 0)
+    if exclusive and slots > 1:
+        # ``LaneResources.gres()`` answers ``gpu:1`` for an exclusive action
+        # whatever the count says, because ``gpu:N`` and ``shard:N`` are
+        # mutually exclusive requests against one device and exclusivity is the
+        # first.  On today's one-device boxes that is right and the count is
+        # redundant; on a two-GPU box it would silently hand back half of what
+        # was asked for.  Refusing is the honest answer either way -- the pool
+        # read the count off worker offers, and SLURM has no such thing here.
+        raise SubmissionRefused(
+            f"pbrun: --exclusive --gpu-capacity {slots} is not something this "
+            f"transport can express.\n"
+            "Under SLURM, exclusivity IS the whole device: the lane sends "
+            "--gres=gpu:1, and a count above one would have to name that many "
+            "whole devices, which nothing here derives or checks.\n"
+            "Drop --gpu-capacity to take one device exclusively, or drop "
+            "--exclusive and ask for --gpu-capacity slots (shards) instead."
+        )
+    resources = slurm_lane.LaneResources.from_demand(demand, exclusive=exclusive)
+    lane_commands.setdefault("on_stall", lambda report: _report_stall(key, report, display=display))
+    lane_commands.setdefault(
+        "on_notice",
+        lambda text: emit_display(display, f"pbrun: {text}", channel="stderr", flush=True))
+    # Say that the slot has no device, every time, on the line that announces
+    # the submission.  The mask is applied before the transport branch and it
+    # is also a silent narrowing: a suite that used to run its CUDA tests now
+    # skips them, and a skip that nobody announced reads as the same green.
+    masked = "" if slots else "  [no GPU: CUDA_VISIBLE_DEVICES='']"
+    queue = store.queue_root if queue_root is None else queue_root
+    # Ask the CAS before asking the scheduler for a node.  A key is a content
+    # hash, and asking for the same work again is the normal way to ask
+    # whether it is done; the answer is a receipt on the mount, readable from
+    # here.  ``--detach`` made this check from the start.  The attached path
+    # let the job discover it instead, which spent a job id, a materialized
+    # checkout and a node to learn what this process could have read -- so a
+    # campaign re-run through ``pbcampaign`` was free and a hand re-run of one
+    # of its rows was not.  The node still checks (``run-local`` looks the
+    # action up before it runs anything), so a receipt that lands between
+    # this check and the job's start costs a materialization, never a rerun.
+    # One lookup: it verifies the result blob, which on a rendered model is
+    # gigabytes hashed over NFS.
+    try:
+        receipt = None if detach else cas.lookup(action)
+    except OSError as exc:
+        return _lane_io_failure(exc, key=key, action=action, cas=cas, report=report, display=display)
+    if receipt is not None:
+        digest = receipt['result']['sha256']
+        report.publish_identity(action_client.CachedClientIdentity(key, Path(queue), Path(cas.root),
+            action_client.ClientTransport.SLURM, digest))
+        cached_outcome(
+            key,
+            receipt=receipt,
+            queue_root=queue,
+            resources=resources,
+            tags=tags,
+            retry_safe=retry_safe,
+            max_attempts=max_attempts,
+        display=display)
+        return report.finish(action_client.ClientExecution(key, None, 'cache_hit', None,
+            None, None, False, 0, action_client.CachedResult(digest), receipt_published=True))
+    # Attach to a run already in flight rather than start a second copy of it.
+    #
+    # A key is a content hash, so asking for the same work twice is the normal
+    # way to ask whether it is done.  The pull queue answered that with one
+    # ``ready/<key>.json`` and a claim: the second ask could not become a
+    # second execution.  SLURM has no claim, and this path submitted
+    # unconditionally -- so two attached ``pbrun``s of one key were two jobs of
+    # one action on the fleet, materializing the same checkout, taking the same
+    # GPU twice and racing to publish one receipt.
+    #
+    # ``--detach`` already made this check (it is the same
+    # ``live_submission``); it just never ran for a caller who waits.  Live
+    # means recorded, no ending covering that generation, and a job the
+    # controller still knows in a non-terminal state -- so a terminal or
+    # forgotten submission submits afresh here exactly as it does there.
+    attached = None
+    if not detach:
+        found = live_submission(
+            pool.PoolQueue(queue), key, lane_root=lane_root,
+            **{name: lane_commands[name]
+               for name in _QUERY_COMMANDS if name in lane_commands},
+        )
+        # A live *pool* item is not this transport's to wait on: it belongs to
+        # a worker, and ``resume`` reconstructs a SLURM submission record.
+        attached = found if found is not None and found[0] == "slurm" else None
+    submitted_job_ids = []
+
+    def announce_submission(job):
+        submitted_job_ids.append(job.job_id)
+        if report.identity is None:
+            report.publish_identity(action_client.SlurmClientIdentity(key, job.published_unix,
+                Path(queue), Path(cas.root), job.record_path, job.job_id,
+                action_client.ClientArrival.SUBMITTED))
+        emit_display(display, 
+            f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
+            f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
+            channel="stderr", flush=True)
+
+    # sbatch's own refusal is this transport's capability gate: an unknown
+    # Feature or an impossible GRES is rejected at submit time, which is the
+    # moment the pool path's ``capability_verdict`` spoke.  So it reaches the
+    # caller as the message SLURM wrote, in the shape that message had, rather
+    # than as a traceback.
+    try:
+        if attached is not None:
+            submission = attached[2]
+            job_id = str(submission.get("job_id") or "")
+            generation = _submission_generation(submission)
+            record_path = slurm_lane.submission_record_path(
+                Path(str(submission.get('directory') or '.')), published_unix=generation,
+                attempt=int(submission.get('attempt') or 1))
+            report.publish_identity(action_client.SlurmClientIdentity(key, generation,
+                Path(queue), Path(cas.root), record_path, job_id, action_client.ClientArrival.ATTACHED))
+            emit_display(display, f"pbrun: {key[:12]} is already running (slurm job {job_id}); "
+                  f"attaching to it rather than submitting a second copy"
+                  f"{masked}", channel="stderr", flush=True)
+            # ``resume`` files the ending ``run`` would have filed, off the
+            # recorded submission alone -- the same reconstruction
+            # ``--withdraw`` builds a terminal record from.  So the caller
+            # reads the same lines and gets the same exit code whether it
+            # submitted this job or joined it.
+            result = slurm_lane.resume(
+                submission,
+                action=action,
+                cas=cas,
+                queue_root=queue,
+                wait_s=wait_s,
+                **{name: value for name, value in lane_commands.items()
+                   if name in _RESUME_COMMANDS},
+            )
+        else:
+            result = slurm_lane.run(
+                action,
+                cas=cas,
+                request_path=request_path,
+                placement=tags,
+                resources=resources,
+                partition=slurm_lane.partition_for(
+                    resources, tags, anywhere=anywhere),
+                # ``--priority`` is a queue hint on either transport: the pool
+                # sorts its ready list on it, and SLURM subtracts the derived nice
+                # from the base priority its scheduler assigned.  Dropping it here
+                # is what let ``pool_reset``'s bulk ``--priority -10`` land
+                # alongside interactive work instead of behind it.
+                priority=priority,
+                priority_reason=priority_reason,
+                timeout_s=timeout_s,
+                worker_script=runtime_root / "tools" / "prismabuild_worker.py",
+                job_entry=runtime_root / "tools" / "fleet" / "slurm_job.py",
+                retry_safe=retry_safe,
+                max_attempts=max_attempts,
+                root=lane_root,
+                # Eleven fleet tools and Tessera's ``merge_suite`` read one action's
+                # ending out of this directory.  The lane files it there so the
+                # cutover is a change to one dispatcher and not to every reader.
+                queue_root=queue,
+                wait_s=wait_s,
+                detach=detach,
+                on_submit=announce_submission,
+                **lane_commands,
+            )
+    except slurm_lane.SubmissionFateUnknown as exc:
+        # Not a refusal, so not reported as one and not filed as one.  sbatch
+        # stopped answering and the controller could not settle whether it
+        # took the job, so a job of this action may be queued right now.  The
+        # exit code is the one that already means "no verdict yet".
+        emit_display(display, f"pbrun: the fate of this submission is unknown.\n  {exc}",
+              channel="stderr", flush=True)
+        return report.finish(action_client.ClientUnsettled(key,
+            getattr(report.identity, 'published_unix', None), action_client.UnsettledReason.SUBMISSION_FATE))
+    except slurm_lane.SlurmLaneError as exc:
+        if getattr(exc, "job_id", None):
+            # sbatch accepted this before the lane failed, so this is a record
+            # that would not write and not a refusal.  Reported as a refusal it
+            # told a submitter to fix the ``--tag`` of a job that was already
+            # queued, which is both wrong and expensive to act on.
+            return _unfiled_record(exc, key=key, action=action, cas=cas, report=report, display=display)
+        raise SubmissionRefused(
+            f"pbrun: slurm refused this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"  demand:        {demand}\n"
+            f"  {exc}\n"
+            f"Fix the --tag, or read `sinfo -N -l` for a node that offers it."
+        ) from exc
+    except OSError as exc:
+        return _lane_io_failure(
+            exc, key=key, action=action, cas=cas, report=report,
+            job_id=(str(attached[2].get("job_id") or "") if attached else
+                    str(submitted_job_ids[-1]) if submitted_job_ids else ""), display=display)
+
+    last = result.last
+    if last is None:                       # unreachable: run always submits
+        emit_display(display, "pbrun: nothing was submitted", channel="stderr")
+        return report.finish(action_client.ClientRefused(1, key))
+    job, outcome = last
+    if detach:
+        emit_display(display, sorted_json(action_client.detached_submission_record(
+            key,
+            transport="slurm",
+            status="submitted",
+            queue_root=queue,
+            published_unix=result.published_unix,
+            job_id=job.job_id,
+            submission=job.record_path,
+        )), flush=True)
+        return report.finish(action_client.ClientSubmitted(report.identity, job.record_path))
+
+    def execution(code, status, replay=None):
+        return report.finish(action_client.ClientExecution(key, result.published_unix, status,
+            outcome.exit_code, None, None, outcome.state == 'TIMEOUT', code, replay,
+            receipt_published=result.receipt is not None, transport_state=outcome.state,
+            transport_signal=outcome.signal))
+
+    total = len(result.attempts)
+    for index, (attempted, reported) in enumerate(result.attempts, start=1):
+        emit_display(display, f"pbrun: attempt {index}/{total} slurm job {attempted.job_id} "
+              f"{reported.state}", channel="stderr")
+        _echo(attempted.stdout_path, "stdout", display=display)
+        _echo(attempted.stderr_path, "stderr", display=display)
+
+    if result.receipt is not None:
+        if slurm_lane.job_was_cache_hit(job):
+            # The job started, read the receipt somebody else published, and
+            # ran nothing.  Saying "executed" here would attribute that
+            # somebody else's work to this job, with this job's elapsed time.
+            emit_display(display, f"pbrun: cache_hit -- slurm job {job.job_id} found "
+                  f"{key[:12]} already in the CAS and ran nothing",
+                  channel="stderr")
+            return execution(0, 'cache_hit',
+                action_client.CachedResult(result.receipt['result']['sha256']))
+        emit_display(display, f"pbrun: executed via slurm job {job.job_id} ({outcome.state})",
+              channel="stderr")
+        return execution(0, 'executed')
+    if outcome.state == "CANCELLED":
+        emit_display(display, f"pbrun: withdrawn -- slurm job {job.job_id} was cancelled",
+              channel="stderr")
+        return execution(action_client.WITHDRAWN_EXIT, 'withdrawn')
+    if outcome.state == slurm_lane.WAIT_TIMEOUT_STATE:
+        emit_display(display, f"pbrun: gave up waiting for {key[:12]}; slurm job "
+              f"{job.job_id} is still queued or running "
+              f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
+              channel="stderr")
+        return report.finish(action_client.ClientPatienceExpired(key, result.published_unix))
+    if outcome.state == slurm_lane.UNKNOWN_STATE:
+        # The controller answered that it knows no such job and there is no
+        # receipt.  That is not a failure and it is not filed as one: the job
+        # may have been purged past MinJobAge, or the controller's memory of
+        # it went with a restart while it runs on.  Same exit as giving up,
+        # because the truth is the same -- no verdict yet.
+        emit_display(display, f"pbrun: no scheduler command can describe slurm job "
+              f"{job.job_id} for {key[:12]} and it has published no receipt; "
+              f"it may still be running as slurm job {job.job_id}, or have "
+              f"been purged past MinJobAge; look under {job.directory}",
+              channel="stderr")
+        return report.finish(action_client.ClientUnsettled(key, result.published_unix,
+            action_client.UnsettledReason.SCHEDULER_UNKNOWN))
+    # Say the thing that is actually wrong.  A job that exits zero without
+    # publishing a receipt has not done the work, and reporting its status
+    # would report success for an action nothing can look up.
+    #
+    # `succeeded`, not `exit_code == 0`: SLURM reports a job it killed at the
+    # time limit as `ExitCode=0:15` -- exit code zero, signal fifteen -- so
+    # reading the code alone told an operator whose job was killed by the
+    # scheduler that it "exited 0 but published no receipt", which sends them
+    # to a job log that says nothing while the state that explains it,
+    # TIMEOUT, was already in hand.  Measured in fleet/slurm/smoke row 5 on
+    # 2026-09-04: state=TIMEOUT, returncode=0, signal=15.
+    if outcome.succeeded:
+        emit_display(display, f"pbrun: slurm job {job.job_id} exited 0 but published no "
+              f"receipt for {key[:12]}; see {job.stdout_path} and "
+              f"{job.stderr_path}", channel="stderr")
+        return execution(1, 'failed')
+    if outcome.state == "OUT_OF_MEMORY":
+        # The state alone sends an operator to a job log that a SIGKILLed
+        # process never got to write.  What decided the ending is the number
+        # this submission declared, which the log does not carry and the
+        # caller may not have typed at all -- `mem_gb` defaults to 4.
+        declared = int(demand.get("mem_gb", 0) or 0)
+        emit_display(display, f"pbrun: slurm job {job.job_id} exceeded the "
+              f"{declared} GiB it declared; raise it with "
+              f"--demand mem_gb={max(declared * 2, 8)} (or whatever the "
+              f"action really needs)", channel="stderr")
+    emit_display(display, f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
+          f"logs {job.stdout_path} and {job.stderr_path}", channel="stderr")
+    if isinstance(outcome.exit_code, int) and outcome.exit_code:
+        return execution(action_client.reported_exit(outcome.exit_code, key=key), 'failed')
+    return execution(1, 'failed')
+
+
+def _echo(path, stream, *, display: DisplaySink = discard_display) -> None:
+    """Print a job log if it is there, and say nothing when it is not.
+
+    An absent log is normal -- a job cancelled before it started never opened
+    one -- and turning that into an error would replace the reason the action
+    failed with a complaint about the file that would have explained it.
+    """
+
+    try:
+        emit_display(display, Path(path).read_text(encoding="utf-8", errors="replace"), channel=stream, end="")
+    except OSError:
+        return
+
+
+def withdraw_routed(
+    prefixes, *, transport: str, reason: str = "", by: str = "",
+    lane_root=None, queue_root=None, scancel: str = "scancel",
+    squeue: str = "squeue", queue=None,
+store: FleetStore, display: DisplaySink = discard_display) -> int:
+    """Send each prefix to the transport that recorded it.
+
+    An operator's shell need not name the transport.  A SLURM job has a
+    submission record under the lane root and a pull-queue item has none, so
+    the record decides where a prefix goes; ``--transport slurm`` still sends
+    every prefix to the lane.  Before this, ``--withdraw`` on a box whose
+    environment did not name the transport went to the pull queue, found
+    nothing there, and left the SLURM job running with exit status 2.
+    """
+
+    lane_prefixes, pool_prefixes = [], []
+    for prefix in prefixes:
+        if transport == "slurm" or slurm_lane.resolve_recorded(
+            str(prefix), root=lane_root
+        ):
+            lane_prefixes.append(prefix)
+        else:
+            pool_prefixes.append(prefix)
+    rc = 0
+    if lane_prefixes:
+        rc = max(rc, withdraw_slurm_main(
+            lane_prefixes, reason=reason, by=by, lane_root=lane_root,
+            queue_root=queue_root, scancel=scancel, squeue=squeue,
+        store=store, display=display))
+    if pool_prefixes:
+        if queue is None:
+            root = store.queue_root if queue_root is None else Path(queue_root)
+            queue = pool.PoolQueue(root)
+        rc = max(rc, withdraw_main(queue, pool_prefixes, reason=reason, by=by, store=store, display=display))
+    return rc
+
+
+def withdraw_slurm_main(
+    prefixes, *, reason: str = "", by: str = "", lane_root=None,
+    queue_root=None, scancel: str = "scancel", squeue: str = "squeue",
+store: FleetStore, display: DisplaySink = discard_display) -> int:
+    """Cancel every job under each named action, refusing an ambiguous prefix.
+
+    Same shape as the pool's withdrawal and for the same reasons: a prefix is
+    what an operator has, one bad name must not stop the other three, and a
+    prefix matching two actions is refused rather than guessed -- the wrong
+    guess here kills somebody else's work.
+
+    The marker and the terminal record are written *before* ``scancel``, as the
+    pool writes its marker before it signals anything.  Two things depend on
+    that order.  ``pool_reset`` skips a re-submission only on a marker or a
+    ``withdrawn_unix``, so a cancellation with neither is re-submitted by the
+    next bulk reset -- a decision undone by a tool that could not see it was a
+    decision.  And the submitting ``pbrun``, still blocked in ``wait``, will
+    file its own account of the same generation the moment the job reports
+    ``CANCELLED``; whichever arrives first is kept, and this one knows who
+    asked and why, which the other cannot.
+
+    Every job under the key's name is cancelled, not just the one
+    ``latest.json`` records.  The submitter cannot close the double-submit
+    window and ``slurm_lane.submit`` says so: two ``pbrun``s that look at the
+    same instant both find nothing in the CAS and both submit, and the
+    controller holds the second PENDING on ``Dependency``.  Cancelling the
+    recorded id alone left that sibling queued, and when the first job left the
+    singleton released it -- so it ran the action the marker on disk exists to
+    stop.  ``sibling_jobs`` is the listing, scoped to this user, and a
+    controller that will not answer it costs the enrichment rather than the
+    cancellation: the recorded id is always asked for.
+
+    A refusal is reported per job and the verb fails only when every cancel was
+    refused.  A sibling that finished between the listing and the cancel is the
+    ordinary case, and the operator still got the run stopped.
+    """
+
+    rc = 0
+    for prefix in prefixes:
+        found = slurm_lane.resolve_recorded(str(prefix), root=lane_root)
