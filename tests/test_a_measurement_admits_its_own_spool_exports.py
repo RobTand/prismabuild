@@ -23,6 +23,7 @@ measurement is claimed through the real adaptive path, so its holder carries
 the metadata a live measurement does.  Only the CPU sample is stated.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import hashlib
 from pathlib import Path
@@ -52,6 +53,8 @@ def _template(*, measurement: bool, command: list[str]) -> dict[str, object]:
     """A ``pbrun`` template, shaped as ``--measurement`` seals it or not."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     if measurement:
         scope = {"portability": "platform_keyed",
@@ -75,7 +78,7 @@ def _template(*, measurement: bool, command: list[str]) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": command, "cwd": "/home/rob",
                    "demand": dict(demand),
                    "placement": {"required_tags": [HOST]},
@@ -167,7 +170,7 @@ def _holding_measurement(tmp_path: Path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    measurement = pbrun.seal_action_from_template(
+    measurement = submit_core.seal(
         _template(measurement=True, command=["python", "stage_a.py"]))
     key = _publish(queue, cas, measurement, MEASUREMENT_DEMAND)
     assert adaptive_cpu.action_identity(
@@ -233,7 +236,7 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
     import pbrun
 
     queue, cas, measurement, holder, cpu_sampler = _holding_measurement(tmp_path, monkeypatch)
-    plain = pbrun.seal_action_from_template(
+    plain = submit_core.seal(
         _template(measurement=False, command=["python", "foreign.py"]))
     stranger = _export(queue, measurement, owner="c" * 64, batch_id="g-stranger")
     foreign = [_publish(queue, cas, plain, EXPORT_DEMAND),
@@ -274,7 +277,7 @@ def test_a_waiting_measurement_is_never_a_dependent(tmp_path, monkeypatch) -> No
     template = _template(measurement=True, command=["python", "second.py"])
     template["params"]["produced_spool"] = {"owner": holder, "batch_id": "x",
                                             "manifest_sha256": "d" * 64}
-    second = pbrun.seal_action_from_template(template)
+    second = submit_core.seal(template)
     key = _publish(queue, cas, second, EXPORT_DEMAND)
     assert adaptive_cpu.dependent_owner({"action_key": key, "cas_root": str(cas.root)}) is None
     # Idle, so the refusal is the holder's and not the busy host's.

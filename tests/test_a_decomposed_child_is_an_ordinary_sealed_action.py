@@ -16,6 +16,7 @@ submitter that named it some other way would seal a command that resolves to
 nothing.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -30,6 +31,7 @@ from prismabuild import decomposition as dc  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 EVIDENCE = "cas:sha256:" + "0" * 64
 COMMIT_DATE = "2026-09-11T00:00:00+00:00"
@@ -120,8 +122,8 @@ def _freeze_template(
     """
 
     work = _checkout(root)
-    monkeypatch.setattr(pbrun, "SH", root)
-    return pbrun.freeze_action_template(
+    patch_store(monkeypatch, client=pbrun, root=root)
+    return submit_core.freeze(
         command=request["common"]["argv"],
         cwd=work,
         logical_cwd=".",
@@ -135,14 +137,14 @@ def _freeze_template(
         transport="pool",
         pool_measurement_class=False,
         data_manifest_path=None,
-        checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
+        checkout_snapshot_max_bytes=submit_core.CHECKOUT_SNAPSHOT_MAX_BYTES,
         snapshot_refs=[],
         exclusive=False,
         gpu_memory_gb=None,
         execution_timeout_s=None,
         progress=None,
         profile=None,
-    )
+    store=pbrun.configured_store())
 
 
 class Decomposed:
@@ -154,7 +156,7 @@ class Decomposed:
         self.cas = self.template["cas"]
         self.frozen = dc.freeze_common(
             self.request["common"],
-            action_common=pbrun.template_action_common(self.template),
+            action_common=submit_core.template_action_common(self.template),
         )
         self.plan = dc.build_plan(self.request, self.frozen)
         self.roster_input = _ingest(
@@ -172,7 +174,7 @@ class Decomposed:
         )
         # Through the same call ``pbcampaign`` publishes with, so what is
         # pinned here is the body the fleet actually gets.
-        return pbrun.seal_decomposed_child(
+        return submit_core.seal_child(
             self.template,
             request=self.request,
             plan=self.plan,
@@ -205,7 +207,7 @@ def test_every_template_key_is_shared_or_the_submitters(
 
     template = _freeze_template(
         tmp_path, monkeypatch, dc.validate_logical_request(_request()))
-    assert set(template) - pbrun._TEMPLATE_SUBMITTER_KEYS == set(
+    assert set(template) - submit_core._TEMPLATE_SUBMITTER_KEYS == set(
         dc._ACTION_COMMON_KEYS
     ), (
         "a template key is either the half every child shares or a handle of "
@@ -231,7 +233,7 @@ def test_stage_a_freezes_a_template_that_declares_no_produced_output(
     )
     frozen = dc.freeze_common(
         request["common"],
-        action_common=pbrun.template_action_common(template),
+        action_common=submit_core.template_action_common(template),
     )
     assert "produced_output_template" not in frozen["action_common"], (
         "the sealed declaration lives in params; the top-level copy is the "
@@ -244,7 +246,7 @@ def test_a_childs_key_is_the_ordinary_hash_of_its_own_body(decomposed) -> None:
 
     child = decomposed.child(0)
     key = child.pop("action_key")
-    assert pbrun.pb.seal_action(child)["action_key"] == key
+    assert submit_core.pb.seal_action(child)["action_key"] == key
 
 
 def test_children_share_everything_the_template_froze(decomposed) -> None:
@@ -260,7 +262,7 @@ def test_children_share_everything_the_template_froze(decomposed) -> None:
         assert first["params"][field] == second["params"][field], field
     assert first["inputs"][0] == second["inputs"][0]
     assert (first["inputs"][0]["id"]
-            == pbrun.pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID), (
+            == submit_core.pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID), (
         "the worker's materialization reads the snapshot at inputs[0]"
     )
 
@@ -287,7 +289,7 @@ def test_a_child_differs_from_its_siblings_in_exactly_four_places(
                     dict(second["environment"]["variables"]))
     assert {name for name in set(ours) | set(theirs)
             if ours.get(name) != theirs.get(name)} == {
-        pbrun.CONTAINER_OWNER_ENV, pbrun.CONTAINER_MARKER_ENV}, (
+        submit_core.CONTAINER_OWNER_ENV, submit_core.CONTAINER_MARKER_ENV}, (
         "the environment varies in ownership and in nothing else"
     )
 
@@ -304,15 +306,15 @@ def test_each_child_owns_its_own_container_lifecycle(decomposed) -> None:
     """
 
     first, second = decomposed.child(0), decomposed.child(1)
-    owners = [child["environment"]["variables"][pbrun.CONTAINER_OWNER_ENV]
+    owners = [child["environment"]["variables"][submit_core.CONTAINER_OWNER_ENV]
               for child in (first, second)]
     assert owners[0] != owners[1]
     for child, owner in zip((first, second), owners):
         variables = dict(child["environment"]["variables"])
-        assert variables.pop(pbrun.CONTAINER_MARKER_ENV).endswith(
+        assert variables.pop(submit_core.CONTAINER_MARKER_ENV).endswith(
             f"{owner}.used")
-        assert variables.pop(pbrun.CONTAINER_OWNER_ENV) == owner
-        assert owner == pbrun.container_owner(
+        assert variables.pop(submit_core.CONTAINER_OWNER_ENV) == owner
+        assert owner == submit_core.container_owner(
             child["params"]["command"],
             child["params"]["cwd"],
             child["params"]["demand"],
@@ -375,7 +377,7 @@ def test_a_child_may_not_restate_what_the_template_froze(decomposed) -> None:
     """Otherwise a child could wear a template's identity and run elsewhere."""
 
     with pytest.raises(SystemExit, match="restate the frozen template's: cwd"):
-        pbrun.seal_action_from_template(
+        submit_core.seal(
             decomposed.template, extra_params={"cwd": "/somewhere-else"},
         )
 
