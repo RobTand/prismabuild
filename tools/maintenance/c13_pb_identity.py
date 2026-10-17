@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 import pytest
-from prismabuild import digest_primitives
+from prismabuild import digest_primitives, immutable_files
 
 
 @pytest.hookimpl(specname='pytest_addoption')
@@ -25,11 +25,8 @@ def pytest_c13_admitted_identity(session):
     directory = Path(session.config.getoption('--c13-runtime-evidence'))
     directory.mkdir(parents=True, exist_ok=True)
     captured = directory / digest
-    try:
-        with captured.open('xb') as stream:
-            stream.write(raw)
-    except FileExistsError:
-        assert captured.read_bytes() == raw
+    immutable_files.publish_exact(captured, raw, where='C13 admitted interpreter',
+                                  conflict_error=RuntimeError)
     print('c13-admitted-runtime: ' + json.dumps(dict(
         version=sys.version, version_info=list(sys.version_info[:3]),
         executable=sys.executable, resolved=str(executable), bytes=len(raw),
