@@ -39,7 +39,8 @@ LIVE_MOUNT = "/mnt/shared"
 #: The fleet tools whose module attributes ``conftest`` repoints, plus every
 #: other tool an operator runs.  Each is already imported by its own tests.
 FLEET_TOOLS = (
-    "fleet_submit", "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
+    pytest.param("prismabuild.fleet_submit", id="fleet_submit"),
+    "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
     "pbcampaign", "pbmcp",
     "pbtest", "worker_loop", "supervise", "require_pool", "seal_and_publish",
 )
