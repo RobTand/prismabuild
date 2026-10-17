@@ -26,6 +26,8 @@ settling, cancellation bounds, and pin charge).
 """
 from __future__ import annotations
 
+from prismabuild import funding
+
 import hashlib
 import json
 from pathlib import Path
@@ -198,7 +200,7 @@ def _move_args(queue: pool.PoolQueue, tmp_path: Path, manifest_path: Path,
 
 def _await_funded(queue: pool.PoolQueue, mover: str, *, cycles: int = 4) -> None:
     for _ in range(cycles):
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         if record is not None and record.get("state") == "transferring":
             names = record.get("tokens")
             held = {path.name for path in (queue.tier(TIER).paths.held / mover).glob('*-*')}
@@ -312,7 +314,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
           p0, P, 0, SPAN, ctx[ptag]["payloads"][f"{ptag}-p0.bin"], owner="w-pp")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
-        record = queue.read_funding(p1, TIER)
+        record = queue.funding.read_window(p1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     # The protected next claims with no new money: free is untouched.
@@ -350,7 +352,7 @@ def test_wedge_becomes_durable_progress(tmp_path: Path) -> None:
           q0, Q, 0, SPAN, ctx[qtag]["payloads"][f"{qtag}-p0.bin"], owner="w-pp")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
-        record = queue.read_funding(q1, TIER)
+        record = queue.funding.read_window(q1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, q1)
@@ -429,7 +431,7 @@ def test_fence_blocks_stealer_and_releases_once(tmp_path: Path) -> None:
           p0, P, 0, SPAN, ctx[ptag]["payloads"][f"{ptag}-p0.bin"], owner="w-fence")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
-        record = queue.read_funding(p1, TIER)
+        record = queue.funding.read_window(p1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, p1)
@@ -486,7 +488,7 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
           owner="w-cancel")
     for _ in range(4):
         tier_loop.residency_window(queue, tiers=tiers)
-        record = queue.read_funding(p1, TIER)
+        record = queue.funding.read_window(p1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, p1)
@@ -503,7 +505,7 @@ def test_cancellation_frees_fence_keeps_pin(tmp_path: Path) -> None:
     assert int(ledger.holdings(p0).get('stage_gib', 0)) == 1
     assert int(ledger.holdings(p1).get('stage_gib', 0)) == 0
     assert not queue.records.item_path(pool.record_store.READY, p1).exists()
-    record = queue.read_funding(p1, TIER)
+    record = queue.funding.read_window(p1, TIER)
     assert record is not None and record["state"] == "released"
     assert sum(int(e.get("released_gib", 0)) for e in events
                if e.get("event") == "advance-released") == 1
@@ -527,7 +529,7 @@ def test_pin_survives_window_cycles_until_egress(tmp_path: Path) -> None:
         tier_loop.residency_window(queue, tiers=tiers)
         # Pin intact and the next advance fenced beside it: exact split.
         assert int(ledger.holdings(p0).get('stage_gib', 0)) == 1
-        record = queue.read_funding(p1, TIER)
+        record = queue.funding.read_window(p1, TIER)
         assert record is not None and record.get("state") in (
             "reserved", "transferring")
         assert ledger.free_supply().get('stage_gib') == 1
@@ -832,23 +834,23 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
     # Crash residue: one token moved, the record still reserved.
     (ledger.paths.held / mover).mkdir(parents=True, exist_ok=True)
     _os.rename(str(ledger.paths.held / grant / names[0]), str(ledger.paths.held / mover / names[0]))
-    record = {"schema": pool.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
+    record = {"schema": funding.TIER_FUNDING_SCHEMA_V1, "tier_id": TIER,
               "consumer_action_key": consumer,
               "plan_sha256": residency_plan.plan_sha256(plan),
               "mover_action_key": mover, "range_start_bytes": 0,
               "range_end_bytes": SPAN, "kind": "stage_gib", "tokens": names,
               "generation": "a" * 32, "state": "reserved",
               "unix": 1.0, "published_unix": float(live["published_unix"])}
-    queue._write_funding_record_locked(record, expect_generation=None, binding="window")
+    queue.funding._write_locked(record, expect_generation=None, binding="window")
     protection = {"protected": {(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": 2, "phase": "phase-0",
         "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
-    events = tier_loop._settle_protected(queue, protection)
+    events = queue.funding.settle_windows( protection)
     # The remainder completed without touching free: 2 under the mover.
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
     assert int(ledger.holdings(grant).get('stage_gib', 0)) == 0
     assert ledger.free_supply().get('stage_gib') == 1
-    assert queue.read_funding(mover, TIER)["state"] == "transferring"
+    assert queue.funding.read_window(mover, TIER)["state"] == "transferring"
     assert [e for e in events if e.get("event") == "advance-handed-off"]
 
 
@@ -875,11 +877,11 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
               "mover_action_key": mover, "range_start_bytes": 0,
               "range_end_bytes": SPAN, "kind": "stage_gib",
               "published_unix": float(live["published_unix"])}
-    assert queue.reserve_fence(TIER, grant, fields, 1) is True
-    old = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 1) is True
+    old = queue.funding.read_window(mover, TIER)
     old_gen = str(old["generation"])
-    assert queue.transfer_fence(TIER, grant, mover) == 1
-    assert queue.advance_funding_state(
+    assert queue.funding._transfer_window(TIER, grant, mover) == 1
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=old_gen) is True
     # Unpublish without terminal (row withdrawn by hand): fence stranded.
@@ -895,14 +897,14 @@ def test_republish_recovery_through_tick(tmp_path: Path) -> None:
     live2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert float(live2["published_unix"]) != float(live["published_unix"])
     fields["published_unix"] = float(live2["published_unix"])
-    assert queue.reserve_fence(TIER, grant, fields, 1) is True
-    new = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 1) is True
+    new = queue.funding.read_window(mover, TIER)
     assert new is not None and new["state"] == "reserved"
     assert str(new["generation"]) != old_gen
     # No double hold: exactly the live fence is held, free is exact.
     assert ledger.free_supply().get('stage_gib') == 2
-    assert queue.transfer_fence(TIER, grant, mover) == 1
-    assert queue.advance_funding_state(
+    assert queue.funding._transfer_window(TIER, grant, mover) == 1
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=str(new["generation"])) is True
     got = queue.claim(tags=["dl380g10"], owner="w-repub",
@@ -933,8 +935,8 @@ def test_published_nexts_leave_no_unfunded_window(tmp_path: Path) -> None:
                 mover = ctx[tag]["movers"][ordinal]
                 if not queue.records.item_path(pool.record_store.READY, mover).exists():
                     continue
-                if queue.read_funding(mover, TIER) is not None:
-                    record = queue.read_funding(mover, TIER)
+                if queue.funding.read_window(mover, TIER) is not None:
+                    record = queue.funding.read_window(mover, TIER)
                     assert record is not None
                     assert record.get("state") == "transferring"
                     names = record.get("tokens")
@@ -997,7 +999,7 @@ def test_competing_claim_race_stays_exact(tmp_path: Path) -> None:
         assert queue.records.item_path(pool.record_store.READY, stealer).exists()
     for _ in range(6):
         tier_loop.residency_window(queue, tiers=tiers)
-        record = queue.read_funding(p1, TIER)
+        record = queue.funding.read_window(p1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, p1)
@@ -1039,7 +1041,7 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     w0, w1 = ctx[wtag]["movers"]
     # The blind advance take is already held: free 2 of 3, no publish gap.
     assert queue.tier(TIER).free_supply().get('stage_gib') == 2
-    record = queue.read_funding(w1, TIER)
+    record = queue.funding.read_window(w1, TIER)
     assert record is not None and record.get("state") in (
         "reserved", "transferring")
 
@@ -1051,7 +1053,7 @@ def test_cycle_drives_window_with_real_moves(tmp_path: Path) -> None:
     for _ in range(4):
         tier_loop.cycle(queue, host="testbox", source_pool="testpool",
                         receipts=receipts, discover=discover)
-        record = queue.read_funding(w1, TIER)
+        record = queue.funding.read_window(w1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, w1)
@@ -1116,7 +1118,7 @@ def test_two_fitting_windows_exact_each_once(tmp_path: Path) -> None:
           owner="w-tight")
     for _ in range(6):
         tier_loop.residency_window(queue, tiers=tiers)
-        record = queue.read_funding(a1, TIER)
+        record = queue.funding.read_window(a1, TIER)
         if record is not None and record.get("state") == "transferring":
             break
     _await_funded(queue, a1)

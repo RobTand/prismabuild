@@ -9,6 +9,8 @@ No function imports the tier loop.
 """
 from __future__ import annotations
 
+from prismabuild import funding
+
 import json
 import math
 import sys
@@ -477,8 +479,8 @@ def publish_declared(queue, tier_id: str, unit: Unit,
                    "start_bytes": int(leg["start_bytes"]),
                    "end_bytes": int(leg["end_bytes"]),
                    "stage_gib": int(leg["stage_gib"])}
-        outcome = prelaunch_group.publish_chunk(
-            queue, tier_id, unit.unit, unit.holder, unit.plan, funding,
+        outcome = queue.funding.bind_chunk(
+             tier_id, unit.unit, unit.holder, unit.plan, funding,
             published)
         for name in outcome.events:
             events.append(_unit_event(unit, tier_id, name, mover=mover,

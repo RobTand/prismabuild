@@ -31,6 +31,8 @@ the rest from the measurement.
 
 from __future__ import annotations
 
+from prismabuild import funding
+
 import argparse
 from contextlib import ExitStack, contextmanager
 import copy
@@ -963,7 +965,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
             return "none", "no filed consumer plan"
         consumer = candidates[0]
     else:
-        status, funding, reason = queue.read_funding_evidence(holder, tier_id)
+        status, funding, reason = queue.funding.window_evidence(holder, tier_id)
         if status == "unknown":
             return "unknown", reason
         if funding is None or funding["state"] not in ("reserved", "transferring"):
@@ -1032,7 +1034,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
         demand = int(leg["stage_gib"])
     if not locks.enter_context(queue.mover_transition_lock(mover, blocking=False)):
         return "unknown", "mover transition busy"
-    status, record, reason = queue.read_funding_evidence(mover, tier_id)
+    status, record, reason = queue.funding.window_evidence(mover, tier_id)
     if status == "unknown":
         return "unknown", reason
     if funding is not None and (record is None or
@@ -1069,7 +1071,7 @@ def _ram_credit_state(queue, tier_id, holder, *, current_epoch, locks):
                         for name in record["tokens"])):
             return "live", "bound grant before transfer"
     else:
-        covered, _generation = queue.funded_cover(tier_id, row, "ram_gib", demand)
+        covered, _generation = queue.funding.cover_window(tier_id, row, "ram_gib", demand)
         if covered == demand:
             return "live", "bound mover before claim"
     return "unknown", "unconsumed funding has incomplete token evidence"
@@ -1586,16 +1588,16 @@ def ram_residency_window(
         tier_of=lambda plan: (str(plan.get("ram_tier_id") or "")
                               if residency_plan.ram_mover_keys(plan) else ""),
         state_of=_ram_mover_state, horizon_of=ram_horizon_of, store=store)
-    ram_gated = ram_protection["gated"]
+    ram_gated = ram_protection.gated
     assert isinstance(ram_gated, dict)
-    ram_grants = ram_protection["grants"]
+    ram_grants = ram_protection.grants
     assert isinstance(ram_grants, dict)
-    ram_permitted = ram_protection.get("permitted")
+    ram_permitted = ram_protection.permitted
     assert isinstance(ram_permitted, dict)
-    ram_unknown_ready = bool(ram_protection.get("unknown_ready"))
-    ram_unknown_tiers = set(ram_protection.get("unknown_tiers") or ())
-    ram_unknown_consumers = set(ram_protection.get("unknown_consumers") or ())
-    events.extend(ram_protection["events"])  # type: ignore[arg-type]
+    ram_unknown_ready = bool(ram_protection.unknown_ready)
+    ram_unknown_tiers = set(ram_protection.unknown_tiers or ())
+    ram_unknown_consumers = set(ram_protection.unknown_consumers or ())
+    events.extend(ram_protection.events)  # type: ignore[arg-type]
     try:
         ram_cycle_consumers = live_consumers(queue, store=store)
     except (OSError, pool.PoolContractError) as exc:
@@ -1807,7 +1809,7 @@ def ram_residency_window(
                            "action_key": egress_key,
                            "mover": str(mover_row["action_key"]),  # type: ignore[index]
                            "tier_id": ram_tier_id})
-    events.extend(_settle_protected(queue, ram_protection))
+    events.extend(queue.funding.settle_windows( ram_protection))
     # Second pass binds what this cycle published: the blind pre-publish
     # take already holds the room, so the bind commits no new capacity and
     # no published row leaves this cycle unfunded.  The pass re-gates from
@@ -1817,8 +1819,8 @@ def ram_residency_window(
         tier_of=lambda plan: (str(plan.get("ram_tier_id") or "")
                               if residency_plan.ram_mover_keys(plan) else ""),
         state_of=_ram_mover_state, horizon_of=ram_horizon_of, store=store)
-    events.extend(ram_protection_again["events"])  # type: ignore[arg-type]
-    events.extend(_settle_protected(queue, ram_protection_again))
+    events.extend(ram_protection_again.events)  # type: ignore[arg-type]
+    events.extend(queue.funding.settle_windows( ram_protection_again))
     return events
 
 
@@ -3952,7 +3954,7 @@ def _commitment_census(queue: pool.PoolQueue,
             if need <= 0 or not isinstance(action, str):
                 continue
             try:
-                covered, _generation = queue.funded_cover(tier_id, item, kind, need)
+                covered, _generation = queue.funding.cover_window(tier_id, item, kind, need)
             except (OSError, pool.PoolContractError, ValueError, KeyError):
                 covered = 0
             if covered < need:
@@ -4001,7 +4003,7 @@ def _commitment_census(queue: pool.PoolQueue,
                     # (#929).  A funding record that does not read is not
                     # room either.
                     try:
-                        _funding, funded = queue.output_funding_file_state(
+                        _funding, funded = queue.funding.output_evidence(
                             holder, tier_id)
                     except (OSError, pool.PoolContractError, ValueError):
                         funded = "corrupt"
@@ -6050,7 +6052,7 @@ def window_pressure(
                     # funding record fully covers consumes its fence rather
                     # than free, so it commits no new capacity (#1594).
                     try:
-                        covered, _generation = queue.funded_cover(
+                        covered, _generation = queue.funding.cover_window(
                             tier_id, item, kind, row_gib)
                     except (OSError, pool.PoolContractError, ValueError,
                             KeyError):
@@ -6445,7 +6447,7 @@ def _bind_fence(queue: pool.PoolQueue, tier_id: str, kind: str,
               "range_start_bytes": start, "range_end_bytes": stop,
               "kind": str(kind), "published_unix": published_unix}
     try:
-        return bool(queue.reserve_fence(
+        return bool(queue.funding.reserve_window(
             str(tier_id), grant, fields, int(demand)))
     except (OSError, pool.PoolContractError, ValueError, KeyError, TypeError):
         return False
@@ -6682,10 +6684,7 @@ def _protect_tier_advances(
         events.append({"event": "advance-deferred-unknown-evidence",
                        "leg": mover_role,
                        "error": f"ready scan unreadable: {exc}"})
-        return {"gated": gated, "protected": protected, "grants": grants,
-                "permitted": permitted,
-                "unknown_ready": True, "unknown_tiers": unknown_tiers,
-                "unknown_consumers": unknown_consumers, "events": events}
+        return funding.AdvanceProtection(gated=gated, protected=protected, grants=grants, permitted=permitted, unknown_ready=True, unknown_tiers=unknown_tiers, unknown_consumers=unknown_consumers, events=events)
     by_tier: dict[str, list[dict[str, object]]] = {}
     for want in wants:
         by_tier.setdefault(str(want["tier_id"]), []).append(want)
@@ -6801,7 +6800,7 @@ def _protect_tier_advances(
         funded_rows: set[str] = set()
         for row_key, row_need in ready_rows:
             try:
-                covered, _generation = queue.funded_cover(
+                covered, _generation = queue.funding.cover_window(
                     tier_id, ready_by_key[row_key], kind, row_need)
             except (OSError, pool.PoolContractError, ValueError, KeyError):
                 continue
@@ -6847,7 +6846,7 @@ def _protect_tier_advances(
                     covered = 0
                 else:
                     try:
-                        covered, _generation = queue.funded_cover(
+                        covered, _generation = queue.funding.cover_window(
                             tier_id, row_item, kind, need_gib)
                     except (OSError, pool.PoolContractError, ValueError, KeyError):
                         covered = 0
@@ -7121,7 +7120,7 @@ def _protect_tier_advances(
             target_fence_live = False
             if mover_holds:
                 fence_status, fence_record, fence_reason = (
-                    queue.read_funding_evidence(mover, tier_id))
+                    queue.funding.window_evidence(mover, tier_id))
                 if fence_status == "unknown":
                     # The mover's holdings may be a live bound fence whose
                     # record cannot be read; reading them as landed bytes
@@ -7159,7 +7158,7 @@ def _protect_tier_advances(
                 continue
             if held_grant > 0:
                 record_status, record, record_reason = (
-                    queue.read_funding_evidence(mover, tier_id))
+                    queue.funding.window_evidence(mover, tier_id))
                 if record_status == "unknown":
                     # Unknown is not absent: a present-but-unreadable
                     # record may still bind the grant-held tokens, and
@@ -7219,7 +7218,7 @@ def _protect_tier_advances(
                             admitted_newcomers.discard(key)
                         continue
                     _reread_status, record, _reread_reason = (
-                        queue.read_funding_evidence(mover, tier_id))
+                        queue.funding.window_evidence(mover, tier_id))
                     if _reread_status != "record":
                         # The bind claims success but its record cannot be
                         # read back: deny publication and retain both the
@@ -7252,7 +7251,7 @@ def _protect_tier_advances(
                         held_total -= released
                     if record is not None and record.get("state") in (
                             "reserved", "transferring"):
-                        queue.advance_funding_state(
+                        queue.funding.advance_window(
                             mover, tier_id, expect=str(record.get("state")),
                             advance_to="released",
                             generation=(str(record.get("generation"))
@@ -7287,10 +7286,10 @@ def _protect_tier_advances(
                     released = queue.tier(tier_id).cancel_fence(grant)['released']
                     if released:
                         held_total -= released
-                    record = queue.read_funding(mover, tier_id)
+                    record = queue.funding.read_window(mover, tier_id)
                     if record is not None and record.get("state") in (
                             "reserved", "transferring"):
-                        queue.advance_funding_state(
+                        queue.funding.advance_window(
                             mover, tier_id, expect=str(record.get("state")),
                             advance_to="released",
                             generation=(str(record.get("generation"))
@@ -7571,7 +7570,7 @@ def _protect_tier_advances(
                         admitted_newcomers.discard(key)
                     continue
             try:
-                kept = queue.read_funding(mover, tier_id)
+                kept = queue.funding.read_window(mover, tier_id)
                 kept_generation = (str(kept.get("generation"))
                                    if isinstance(kept, dict)
                                    and isinstance(kept.get("generation"), str)
@@ -7599,7 +7598,7 @@ def _protect_tier_advances(
             if added_extra:
                 running_extra -= next_gib
             running_fence += max(0, int(demand) - grant_have)
-            bound = queue.read_funding(mover, tier_id)
+            bound = queue.funding.read_window(mover, tier_id)
             if (kept_generation is None or bound is None
                     or str(bound.get("generation")) != kept_generation
                     or bound.get("state") != "reserved"):
@@ -7697,696 +7696,24 @@ def _protect_tier_advances(
                 queue, empty_tier, empty_ledger, [], complete_census=True))
     # The census this pass admitted on, and what it would be taken over, so
     # the stage window can report on the same one (#930).
-    return {"gated": gated, "protected": protected, "grants": grants,
-            "permitted": permitted, "prelaunch_open": prelaunch_open,
-            "unknown_ready": unknown_ready, "unknown_tiers": unknown_tiers,
-            "unknown_consumers": unknown_consumers, "events": events,
-            "census": census,
-            "census_consumers": [(want["key"], want["consumer"], want["plan"],
-                                  want["tier_id"]) for want in wants],
-            "census_unknown": census_unknown}
+    return funding.AdvanceProtection(gated=gated, protected=protected, grants=grants, permitted=permitted, prelaunch_open=prelaunch_open, unknown_ready=unknown_ready, unknown_tiers=unknown_tiers, unknown_consumers=unknown_consumers, events=events, census=census, census_consumers=[(want["key"], want["consumer"], want["plan"],
+                                  want["tier_id"]) for want in wants], census_unknown=census_unknown)
 
 
-def _settle_live_row(queue: pool.PoolQueue,
-                     mover: str) -> dict[str, object] | None:
-    """One live ready or claimed row, or None when the key has none."""
-    row = pool.record_store.value_or_raise(queue.records.ready_first_live_row(mover))
-    return dict(row) if isinstance(row, Mapping) else None
 
 
-def _settle_terminal_is_stale(queue: pool.PoolQueue, mover: str,
-                              live_row: Mapping[str, object]) -> bool | None:
-    """Whether every terminal record predates one live row: stale, live, unknown.
-
-    True when each readable done/failed record finished before the live
-    row published: the terminal belongs to an earlier generation and the
-    live republication keeps its fence (#1690). False when any record
-    proves the live attempt itself ended. None when nothing proves the
-    order, and the caller settles as before.
-    """
-    try:
-        row_published = float(live_row.get("published_unix"))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    seen = False
-    for state in (pool.record_store.DONE, pool.record_store.FAILED):
-        try:
-            ended = pool.record_store.value_or_raise(queue.records.item(state, mover))
-        except (OSError, pool.PoolContractError):
-            return None
-        if ended is None:
-            continue
-        if not isinstance(ended, Mapping):
-            return None
-        seen = True
-        try:
-            finished = float(ended.get("finished_unix"))  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return None
-        if finished >= row_published:
-            return False
-    return True if seen else None
 
 
-def _settle_terminal_fence(queue: pool.PoolQueue, ledger, *, tier_id: str,
-                           mover_role: str, consumer: str | None,
-                           mover: str) -> list[dict[str, object]]:
-    """Release one terminal mover's exact unspent fence, never its physical.
-
-    Shared by the protected loop (mover terminal with a live entry) and the
-    funding scan below (mover terminal with no live entry -- a withdrawn or
-    failed consumer's stranded fence, which no protected entry visits).
-    ``consumed`` records are landed bytes: finish kept them on purpose and
-    only an egress may return them.  A ``transferring`` record whose
-    generation and token set match the terminal attempt's own
-    ``tier_funding`` proof is that attempt's fence-or-bytes, never free
-    credit.  Anything else releases only on an exact name match between the
-    bound tokens and what the mover holds; the record always closes.
-    A terminal record filed before the live row's own publication is an
-    earlier generation: the live republication keeps its fence (#1690).
-    Unreadable terminal, proof, or holder evidence defers with the record
-    named and leaves recoverable authority intact -- absence of proof is
-    never proof of absence.  Takes the mover's transition lock
-    non-blocking (a live claim wins, this defers), so both call sites
-    are safe locked or not.
-    """
-
-    events: list[dict[str, object]] = []
-    try:
-        with queue.action_transition_lock(mover, blocking=False) as acquired:
-            if not acquired:
-                return events
-            status, record, funding_reason = queue.read_funding_evidence(
-                mover, str(tier_id))
-            if status == "unknown":
-                # A present-but-unreadable record may still bind held
-                # tokens: name it and retain, never settle beside it.
-                events.append({"event": "advance-deferred-unknown-evidence",
-                               "consumer": consumer, "tier_id": str(tier_id),
-                               "leg": str(mover_role),
-                               "error": funding_reason
-                               or "funding record unreadable"})
-                return events
-            if status == "absent":
-                return events
-            state = str(record.get("state"))
-            if state in ("consumed", "released"):
-                return events
-            try:
-                live_row = _settle_live_row(queue, mover)
-                terminal = (bool(
-                    pool.record_store.value_or_raise(
-                        queue.records.item_presence(pool.record_store.DONE, mover),
-                    ),
-                )
-                            or bool(
-                                pool.record_store.value_or_raise(
-                                    queue.records.item_presence(pool.record_store.FAILED, mover),
-                                ),
-                            )
-                            or bool(
-                                pool.record_store.value_or_raise(
-                                    queue.records.item_presence(pool.record_store.WITHDRAWN, mover),
-                                ),
-                            ))
-            except (OSError, pool.PoolContractError) as exc:
-                events.append({"event": "advance-deferred-unknown-evidence",
-                               "consumer": consumer, "tier_id": str(tier_id),
-                               "leg": str(mover_role),
-                               "error": f"terminal census unreadable: {exc!r}"})
-                return events
-            if not terminal:
-                return events
-            if live_row is not None:
-                try:
-                    stale = _settle_terminal_is_stale(queue, mover, live_row)
-                except (OSError, pool.PoolContractError, ValueError):
-                    stale = None
-                if stale is True:
-                    return events
-            bound = record.get("tokens")
-            bound_names = (set(str(name) for name in bound)
-                           if isinstance(bound, list) and bound else set())
-            bound_generation = (str(record.get("generation"))
-                                if isinstance(record.get("generation"), str)
-                                else None)
-            if not bound_names or bound_generation is None:
-                return events
-            if state == "transferring":
-                bound_to_attempt = False
-                proof_unknown: Exception | None = None
-                proof_reason: str | None = None
-                for _state in (pool.record_store.DONE, pool.record_store.FAILED):
-                    try:
-                        ended = pool.record_store.value_or_raise(queue.records.item(_state, mover))
-                    except (OSError, pool.PoolContractError) as exc:
-                        # A terminal file that exists but cannot be read
-                        # may bind this fence: defer, do not free.
-                        try:
-                            if bool(
-                                pool.record_store.value_or_raise(
-                                    queue.records.item_presence(_state, mover),
-                                ),
-                            ):
-                                proof_unknown = exc
-                                break
-                        except (OSError, pool.PoolContractError) as exc2:
-                            proof_unknown = exc2
-                            break
-                        continue
-                    if ended is None:
-                        # ``_read_json`` answers ``None`` for ENOENT and
-                        # for a present-but-empty file.  Only ENOENT is
-                        # absence: a zero-byte proof is present and
-                        # unproved -- it may be this attempt's own torn
-                        # binding, so it defers like any unreadable one.
-                        try:
-                            if bool(
-                                pool.record_store.value_or_raise(
-                                    queue.records.item_presence(_state, mover),
-                                ),
-                            ):
-                                proof_reason = (
-                                    f"terminal proof present but empty: "
-                                    f"{queue.records.item_path(_state, mover)}")
-                                break
-                        except (OSError, pool.PoolContractError) as exc2:
-                            proof_unknown = exc2
-                            break
-                        continue
-                    if not isinstance(ended, Mapping):
-                        continue
-                    proof = ended.get("tier_funding")
-                    if not isinstance(proof, Mapping):
-                        continue
-                    tier_proof = proof.get(str(tier_id))
-                    if not isinstance(tier_proof, Mapping):
-                        continue
-                    try:
-                        proof_names = {
-                            str(name) for name in
-                            tier_proof.get("tokens") or []}
-                    except (TypeError, ValueError) as exc:
-                        # A malformed present proof is unknown evidence,
-                        # not positive absence of the binding.
-                        proof_unknown = exc
-                        break
-                    if (str(tier_proof.get("generation")) == bound_generation
-                            and proof_names == bound_names
-                            and proof_names):
-                        bound_to_attempt = True
-                        break
-                if bound_to_attempt:
-                    return events
-                if proof_unknown is not None or proof_reason is not None:
-                    events.append({"event": "advance-deferred-unknown-evidence",
-                                   "consumer": consumer,
-                                   "tier_id": str(tier_id),
-                                   "leg": str(mover_role),
-                                   "error": (
-                                       f"terminal proof unreadable: "
-                                       f"{proof_unknown!r}"
-                                       if proof_unknown is not None
-                                       else proof_reason)})
-                    return events
-            try:
-                # Error-visible census (the accepted #742 semantics):
-                # ``Path.glob`` hides an ``EACCES`` holder directory as an
-                # empty listing, which would silently strand a held fence
-                # while the record closes.  True absence (no holder
-                # directory) reads empty; unreadable defers below.
-                mover_names = ledger.holder_state(mover)
-            except (OSError, pool.PoolContractError, ValueError) as exc:
-                events.append({"event": "advance-deferred-unknown-evidence",
-                               "consumer": consumer, "tier_id": str(tier_id),
-                               "leg": str(mover_role),
-                               "error": f"holder census unreadable: {exc!r}"})
-                return events
-            if mover_names == bound_names:
-                released = queue.tier(tier_id).cancel_fence(mover)['released']
-                if released:
-                    events.append({"event": "advance-released",
-                                   "consumer": consumer,
-                                   "tier_id": str(tier_id),
-                                   "leg": str(mover_role),
-                                   "reason": "mover-terminal-fused",
-                                   "released_gib": released})
-            queue.advance_funding_state(
-                mover, str(tier_id), expect=state,
-                advance_to="released", generation=bound_generation)
-    except (OSError, pool.PoolContractError, ValueError):
-        pass
-    return events
 
 
-def _stranded_producer_dead(queue: pool.PoolQueue,
-                            record: Mapping[str, object]
-                            ) -> tuple[str, str]:
-    """The bound producer attempt's state, read by the lane's rule.
-
-    Returns ``(state, owner)``: ``dead``, ``succeeded``, ``live`` or
-    ``unknown`` over the instance the funding record names, through
-    ``_producer_attempt_state``. Any unreadable or disagreeing step
-    answers ``unknown`` and retains; a live or unreadable verdict
-    changes nothing.
-    """
-    from prismabuild import produced_output as _po
-
-    try:
-        owner = str(record.get("owner_action_key") or "")
-        nonce = str(record.get("owner_nonce") or "")
-        template_id = str(record.get("template_id") or "")
-        batch_id = str(record.get("batch_id") or "")
-        owner_scope = str(record.get("owner_scope_id") or "")
-    except (AttributeError, TypeError, ValueError):
-        return ("unknown", "")
-    if (not pool.record_store.key_shaped(owner) or not nonce or not template_id
-            or not batch_id or not owner_scope):
-        return ("unknown", owner)
-    try:
-        residency = queue.root / pool.record_store.RESIDENCY
-        scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
-        instance = oc.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
-        template = oc.validate_template(json.loads(
-            (residency / oc.OUTPUT_TEMPLATES_SUBDIR
-             / f"{template_id}.json").read_text()))
-    except (OSError, ValueError):
-        return ("unknown", owner)
-    attempt = instance.get("owner_attempt")
-    if (not isinstance(attempt, Mapping)
-            or bl.scope_dir(queue.root, instance) != scope
-            or str(attempt.get("nonce")) != nonce
-            or str(attempt.get("scope_id")) != owner_scope
-            or oc.template_sha256(template)
-            != instance.get("template_sha256")
-            or str(record.get("template_sha256"))
-            != instance.get("template_sha256")):
-        return ("unknown", owner)
-    try:
-        return (str(bl.producer_attempt_state(queue, instance)), owner)
-    except (OSError, ValueError, pool.PoolContractError):
-        return ("unknown", owner)
 
 
-def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
-                                    record: Mapping[str, object]
-                                    ) -> tuple[bool, str]:
-    """Whether every prewrite path of the bound batch is proven absent.
-
-    Returns ``(absent, reason)``. A present or unreadable path (any
-    ``lstat`` fault but ``ENOENT``), a missing or corrupt prewrite
-    record, or a record that fails validation answers absent False:
-    present or unprovable retains, only ``ENOENT`` on every named
-    path proves the mover never laid bytes.
-    """
-    from prismabuild import produced_output as _po
-
-    try:
-        owner = str(record.get("owner_action_key") or "")
-        nonce = str(record.get("owner_nonce") or "")
-        template_id = str(record.get("template_id") or "")
-        batch_id = str(record.get("batch_id") or "")
-        tier_id = str(record.get("tier_id") or "")
-        owner_scope = str(record.get("owner_scope_id") or "")
-    except (AttributeError, TypeError, ValueError):
-        return (False, "funding binding unreadable")
-    if (not pool.record_store.key_shaped(owner) or not nonce or not template_id
-            or not batch_id or not tier_id or not owner_scope):
-        return (False, "funding binding unreadable")
-    try:
-        residency = queue.root / pool.record_store.RESIDENCY
-        scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
-        instance = oc.validate_instance(
-            json.loads((scope / "instance.json").read_text()))
-    except (OSError, ValueError):
-        return (False, "producer instance unreadable")
-    attempt = instance.get("owner_attempt")
-    if (not isinstance(attempt, Mapping)
-            or bl.scope_dir(queue.root, instance) != scope
-            or str(attempt.get("nonce")) != nonce
-            or str(attempt.get("scope_id")) != owner_scope):
-        return (False, "funding, instance and attempt disagree")
-    try:
-        prewrite = bl.read_prewrite(
-            bl.prewrites_dir(queue.root, instance)
-            / f"{batch_id}.prewrite.json")
-    except oc.ProducedOutputError as exc:
-        return (False, f"prewrite unreadable: {exc}")
-    if prewrite is None:
-        return (False, "prewrite record absent")
-    if str(prewrite.get("tier")) != tier_id:
-        return (False, "prewrite names another tier")
-    if (str(prewrite.get("owner_action_key")) != owner
-            or dict(prewrite.get("owner_attempt", {}))
-            != dict(instance.get("owner_attempt", {}))):
-        return (False, "prewrite names another attempt")
-    for planned in (prewrite.get("paths", []) or []):
-        try:
-            os.lstat(str(planned))
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            return (False, f"prewrite path unreadable: {planned}: {exc!r}")
-        return (False, f"prewrite path present: {planned}")
-    return (True, "")
 
 
-def _reconcile_stranded_output_funding(queue: pool.PoolQueue,
-                                         path) -> list[dict[str, object]]:
-    """Roll back one never-started output intent through the pool (#1555).
-
-    Holds the mover's transition lock from the first re-read to the
-    token release, so a publication or claim between the proof and
-    the release cannot meet freed tokens: ``publish`` and ``claim``
-    take the same per-key lock, so a republished row either lands
-    before this lock (and the fresh census refuses) or after it
-    (and the new claim takes tokens this already returned). Acts
-    only when all hold under that lock: the producer attempt ended
-    in failure (``dead`` by ``_producer_attempt_state``; ``live``,
-    ``succeeded`` and ``unknown`` refuse), the mover is neither
-    ready nor claimed, the record is ``transferring`` or ``released``,
-    and every prewrite path of the bound batch is proven absent.
-    Present or unreadable paths retain the reservation.
-    The pool's nonexecution proof refuses committed batches, terminal
-    or claimed movers, staged bytes, and live leases.
-    Release tokens through ``TierLedger.release_unspent_best_effort`` first.
-    Verify that no tokens remain before the ordinary funding rollback.
-    A fault can leave ``transferring`` with no tokens; the next pass
-    completes the rollback under the same lock and fresh checks.
-    An old ``released`` record with held tokens follows the same proof.
-    A live or unreadable verdict changes nothing.
-    """
-    events: list[dict[str, object]] = []
-    stem = Path(str(path)).name
-    if not stem.endswith(".output-funding.json"):
-        return events
-    stem = stem[: -len(".output-funding.json")]
-    mover_name, dot, scan_tier = stem.rpartition(".")
-    if not dot or len(mover_name) != 64 or not scan_tier:
-        return events
-    try:
-        with queue.action_transition_lock(mover_name,
-                                      blocking=False) as acquired:
-            if not acquired:
-                return events
-            events.extend(_reconcile_stranded_output_funding_locked(
-                queue, mover_name, scan_tier))
-    except (OSError, pool.PoolContractError, ValueError):
-        pass
-    return events
 
 
-def _reconcile_stranded_output_funding_locked(queue: pool.PoolQueue,
-                                              mover_name: str, scan_tier: str
-                                              ) -> list[dict[str, object]]:
-    """Locked body of the stranded repair; the caller holds the lock."""
-    from prismabuild import pool as _pool_mod
-
-    events: list[dict[str, object]] = []
-
-    def defer(reason: str) -> list[dict[str, object]]:
-        events.append({"event": "output-funding-reconcile-deferred",
-                       "tier_id": str(scan_tier), "mover": mover_name,
-                       "error": reason})
-        return events
-
-    try:
-        for state in (_pool_mod.record_store.READY, _pool_mod.record_store.CLAIMED):
-            if _pool_mod.record_store.value_or_raise(
-                queue.records.item(state, mover_name),
-            ) is not None:
-                return events
-        withdrawn = _pool_mod.record_store.value_or_raise(
-            queue.records.item(_pool_mod.record_store.WITHDRAWN, mover_name),
-        )
-        if withdrawn is None:
-            return events
-    except (OSError, _pool_mod.PoolContractError, ValueError) as exc:
-        return defer(f"mover census unreadable: {exc!r}")
-    try:
-        record, file_state = queue.output_funding_file_state(
-            mover_name, scan_tier)
-    except (OSError, pool.PoolContractError, ValueError) as exc:
-        return defer(repr(exc))
-    if file_state == "absent":
-        return events
-    if file_state != "ok" or not isinstance(record, Mapping):
-        return defer(f"funding file state: {file_state}")
-    state = str(record.get("state"))
-    if state not in ("transferring", "released"):
-        return events
-    if (str(record.get("mover_action_key") or "") != mover_name
-            or str(record.get("tier_id") or "") != scan_tier):
-        return defer("funding record names another mover or tier")
-    producer, _owner = _stranded_producer_dead(queue, record)
-    if producer != "dead":
-        if producer == "unknown":
-            return defer("producer verdict unreadable")
-        return events
-    absent, why = _stranded_prewrite_paths_absent(queue, record)
-    if not absent:
-        if why.startswith("prewrite path present"):
-            return events
-        return defer(why)
-    try:
-        outcome = queue._output_funding_nonexecution_locked(record)
-    except (OSError, pool.PoolContractError, ValueError) as exc:
-        return defer(repr(exc))
-    if outcome is None:
-        return defer("nonexecution proof undecided")
-    if outcome is not True:
-        return events
-    try:
-        freed = int(queue.tier(scan_tier).release_unspent_best_effort(mover_name, authority=tier_holdings.Unspent.NEVER_STARTED))
-        # The ordinary release can swallow an I/O error or return after
-        # only some token moves. Its count is not proof of an empty holder.
-        if queue.tier(scan_tier).holder_state(mover_name):
-            return defer("token release incomplete")
-    except (OSError, pool.PoolContractError, ValueError) as exc:
-        return defer(repr(exc))
-    if freed:
-        events.append({"event": "output-funding-tokens-released",
-                       "tier_id": str(scan_tier), "mover": mover_name,
-                       "released_gib": freed})
-    if state == "transferring":
-        try:
-            outcome = queue._release_never_started_funding_locked(
-                mover_name, scan_tier,
-                generation=str(record.get("generation")))
-        except (OSError, pool.PoolContractError, ValueError) as exc:
-            return defer(repr(exc))
-        if outcome is None:
-            return defer("funding rollback undecided")
-        if outcome is not True:
-            return events
-        events.append({"event": "output-funding-reconcile-released",
-                       "tier_id": str(scan_tier), "mover": mover_name})
-    return events
 
 
-def _settle_protected(queue: pool.PoolQueue,
-                        protection: Mapping[str, object]) -> list[dict[str, object]]:
-    """Move held fences onto their published movers; release the moot ones.
-
-    Transfer runs under the mover's transition lock (never blocking: a busy
-    mover belongs to a live claim, which wins), so a ready claim racing the
-    coordinator cannot interleave mid-move.  ``transfer`` never lets a token
-    touch free, and a crash part-way leaves the sum split across the two
-    holders -- the next cycle completes the remainder by the same rule, which
-    is the whole partial-transfer recovery proof.  The mover's claim then
-    counts the fused fence toward its demand (funded-claim bookkeeping), so
-    nothing is ever charged twice.
-
-    Exact-set discipline throughout: a terminal mover releases only what
-    matches its funding record's names (anything fused beyond that belongs to
-    an owner path -- finish, withdrawal, egress -- which serves it, and
-    ``consumed`` stays owned for that reason); an unpublished, nonterminal
-    mover keeps its recoverable ``transferring`` record for a later
-    publication or the terminal scan -- the accepted state machine has no
-    transferring-to-reserved step.
-    """
-
-    events: list[dict[str, object]] = []
-    protected = protection.get("protected")
-    assert isinstance(protected, dict)
-    seen: set[tuple[str, str]] = set()
-    for (key, tier_id), entry in sorted(protected.items()):
-        assert isinstance(entry, dict)
-        if (key, tier_id) in seen:
-            continue
-        seen.add((key, tier_id))
-        ledger = queue.tier(str(tier_id))
-        grant = str(entry["grant"])
-        mover = str(entry["mover"])
-        kind = str(entry["kind"])
-        try:
-            locked = queue.action_transition_lock(mover, blocking=False)
-        except (OSError, pool.PoolContractError, ValueError):
-            continue
-        try:
-            with locked as acquired:
-                if not acquired:
-                    continue
-                record = queue.read_funding(mover, str(tier_id))
-                try:
-                    held_grant = int(ledger.holdings(grant).get(kind, 0))
-                    held_mover = int(ledger.holdings(mover).get(kind, 0))
-                except (OSError, pool.PoolContractError, ValueError):
-                    continue
-                try:
-                    terminal = (bool(
-                        pool.record_store.value_or_raise(
-                            queue.records.item_presence(pool.record_store.DONE, mover),
-                        ),
-                    )
-                                or bool(
-                                    pool.record_store.value_or_raise(
-                                        queue.records.item_presence(pool.record_store.FAILED, mover),
-                                    ),
-                                )
-                                or bool(
-                                    pool.record_store.value_or_raise(
-                                        queue.records.item_presence(pool.record_store.WITHDRAWN, mover),
-                                    ),
-                                ))
-                    rowed = (bool(
-                        pool.record_store.value_or_raise(
-                            queue.records.item_presence(pool.record_store.READY, mover),
-                        ),
-                    )
-                             or bool(
-                                 pool.record_store.value_or_raise(
-                                     queue.records.item_presence(pool.record_store.CLAIMED, mover),
-                                 ),
-                             ))
-                except (OSError, pool.PoolContractError):
-                    continue
-                bound = (record.get("tokens") if isinstance(record, dict)
-                         else None)
-                bound_names = (set(str(name) for name in bound)
-                               if isinstance(bound, list) and bound else set())
-                bound_generation = (str(record.get("generation"))
-                                    if isinstance(record, dict)
-                                    and isinstance(record.get("generation"),
-                                                   str) else None)
-                if terminal:
-                    # Owner paths serve whatever a terminal mover holds beyond
-                    # the fence; the exact unspent fence is decided in
-                    # _settle_terminal_fence (unknown evidence defers there).
-                    if held_grant > 0:
-                        released = queue.tier(tier_id).cancel_fence(grant)['released']
-                        if released:
-                            events.append({"event": "advance-released",
-                                           "consumer": key,
-                                           "tier_id": str(tier_id),
-                                           "leg": str(entry["leg"]),
-                                           "reason": "mover-terminal",
-                                           "released_gib": released})
-                    events.extend(_settle_terminal_fence(
-                        queue, ledger, tier_id=str(tier_id),
-                        mover_role=str(entry["leg"]), consumer=key,
-                        mover=mover))
-                    continue
-                if not rowed:
-                    # No queue row will ever claim this, yet the fence sits
-                    # transferred under its key: leave the record
-                    # ``transferring`` exactly as is.  That state is itself
-                    # the recoverable one -- a later publication claims
-                    # against it through the normal cover, and a terminal
-                    # mover is reaped by the terminal scan above -- because
-                    # the accepted state machine has no transferring-to-
-                    # reserved step, and inventing one here would strand a
-                    # permanently transferring record beside returned tokens.
-                    continue
-                if held_grant > 0:
-                    moved = queue.transfer_fence(str(tier_id), grant, mover)
-                    if moved:
-                        queue.advance_funding_state(
-                            mover, str(tier_id), expect="reserved",
-                            advance_to="transferring",
-                            generation=bound_generation)
-                        events.append({"event": "advance-handed-off",
-                                       "consumer": key, "tier_id": str(tier_id),
-                                       "leg": str(entry["leg"]), "mover": mover,
-                                       "moved_gib": moved})
-                    continue
-                # No fence under the grant: either never reserved (nothing to
-                # do) or the transfer landed without its mark (a crash between
-                # the move and the record write).  The latter is exactly
-                # recoverable: the bound names are all under the mover, so
-                # complete the marking instead of moving anything twice.
-                if (bound_names and record is not None
-                        and record.get("state") == "reserved"):
-                    try:
-                        mover_names = ledger.token_names(mover)
-                    except (OSError, pool.PoolContractError, ValueError):
-                        mover_names = set()
-                    if all(name in mover_names for name in bound_names):
-                        queue.advance_funding_state(
-                            mover, str(tier_id), expect="reserved",
-                            advance_to="transferring",
-                            generation=bound_generation)
-        except (OSError, pool.PoolContractError, ValueError):
-            continue
-    # Terminal movers with no live protected entry: a withdrawn or failed
-    # consumer's stranded fence is visited by nobody above, so its exact
-    # unspent tokens would leak until a sweep that spares plan members.
-    # Scan the funding records themselves; live and handled movers are
-    # skipped, everything else goes through the same terminal discipline.
-    handled: set[str] = set()
-    for (_key, _tier), _entry in sorted(protected.items()):
-        if isinstance(_entry, dict) and isinstance(_entry.get("mover"), str):
-            handled.add(str(_entry["mover"]))
-    try:
-        funding_dir = queue.root / pool.record_store.TIER_FUNDING
-        funding_files = sorted(funding_dir.glob("*.funding.json"))
-        funding_files += sorted(funding_dir.glob("*.output-funding.json"))
-    except (OSError, pool.PoolContractError, ValueError):
-        funding_files = []
-    for funding_path in funding_files:
-        stem = funding_path.name
-        if stem.endswith(".output-funding.json"):
-            events.extend(_reconcile_stranded_output_funding(
-                queue, funding_path))
-            continue
-        if not stem.endswith(".funding.json"):
-            continue
-        stem = stem[: -len(".funding.json")]
-        mover_name, dot, scan_tier = stem.rpartition(".")
-        if not dot or len(mover_name) != 64 or not scan_tier:
-            continue
-        if mover_name in handled:
-            continue
-        try:
-            scan_ledger = queue.tier(scan_tier)
-        except (OSError, pool.PoolContractError, ValueError):
-            continue
-        scan_status, scan_record, scan_reason = queue.read_funding_evidence(
-            mover_name, scan_tier)
-        if scan_status == "unknown":
-            # Unreadable record: nothing may settle against it.  Name it
-            # and keep the scan moving; the fence and record both retain.
-            events.append({"event": "advance-deferred-unknown-evidence",
-                           "consumer": None, "tier_id": str(scan_tier),
-                           "leg": "mover_row",
-                           "error": scan_reason
-                           or "funding record unreadable"})
-            continue
-        if (scan_status == "absent"
-                or scan_record.get("state") in ("consumed", "released")):
-            continue
-        scan_leg: str | None = None
-        for (_key, _tier), _entry in sorted(protected.items()):
-            if (str(_tier) == scan_tier and isinstance(_entry, dict)
-                    and isinstance(_entry.get("leg"), str)):
-                scan_leg = str(_entry["leg"])
-                break
-        events.extend(_settle_terminal_fence(
-            queue, scan_ledger, tier_id=scan_tier,
-            mover_role=scan_leg or "mover_row", consumer=None,
-            mover=mover_name))
-    return events
 
 
 #: Each stage tier's commitment totals as this cycle filed them (#960),
@@ -8517,10 +7844,10 @@ def _report_commitments(
                       if storage_tiers.capacity_kind_of(str(tier_id)) == kind)
     if not tier_ids:
         return []
-    gated = protection.get("gated") or {}
+    gated = protection.gated or {}
     given = census
-    census = protection.get("census")
-    consumers = protection.get("census_consumers")
+    census = protection.census
+    consumers = protection.census_consumers
     if ((not isinstance(census, Mapping)
             or any(tier_id not in census for tier_id in tier_ids))
             and isinstance(given, Mapping)
@@ -8530,7 +7857,7 @@ def _report_commitments(
             tier_id not in census for tier_id in tier_ids)):
         census = _commitment_census(
             queue, tiers, consumers=list(consumers),        # type: ignore[call-overload]
-            unknown=list(protection.get("census_unknown") or ()),  # type: ignore[call-overload]
+            unknown=list(protection.census_unknown or ()),  # type: ignore[call-overload]
             remember=False, store=store)
     events: list[dict[str, object]] = []
     for tier_id in tier_ids:
@@ -9093,17 +8420,17 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         tier_of=lambda plan: plan.get("tier_id"),
         state_of=_mover_state, horizon_of=horizon_of,
         claim_order=claim_order, store=store)
-    gated = protection["gated"]
-    prelaunch_open = protection.get("prelaunch_open") or set()
+    gated = protection.gated
+    prelaunch_open = protection.prelaunch_open or set()
     assert isinstance(gated, dict)
-    grants = protection["grants"]
+    grants = protection.grants
     assert isinstance(grants, dict)
-    permitted = protection.get("permitted")
+    permitted = protection.permitted
     assert isinstance(permitted, dict)
-    unknown_ready = bool(protection.get("unknown_ready"))
-    unknown_tiers = set(protection.get("unknown_tiers") or ())
-    unknown_consumers = set(protection.get("unknown_consumers") or ())
-    published.extend(protection["events"])  # type: ignore[arg-type]
+    unknown_ready = bool(protection.unknown_ready)
+    unknown_tiers = set(protection.unknown_tiers or ())
+    unknown_consumers = set(protection.unknown_consumers or ())
+    published.extend(protection.events)  # type: ignore[arg-type]
     published.extend(_report_commitments(queue, tiers, protection,
                                          census=census, claim_order=claim_order, store=store))
     try:
@@ -9628,7 +8955,7 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
     published.extend(publish_landing_expectations(
         queue, tiers=tiers, consumers=cycle_consumers, now=now,
         claim_order=claim_order))
-    published.extend(_settle_protected(queue, protection))
+    published.extend(queue.funding.settle_windows( protection))
     # Second pass binds what this cycle published: the blind pre-publish
     # take already holds the room, so the bind commits no new capacity and
     # no published row leaves this cycle unfunded.  The pass re-gates from
@@ -9638,8 +8965,8 @@ def residency_window(queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, 
         tier_of=lambda plan: plan.get("tier_id"),
         state_of=_mover_state, horizon_of=horizon_of,
         claim_order=claim_order, store=store)
-    published.extend(protection_again["events"])  # type: ignore[arg-type]
-    published.extend(_settle_protected(queue, protection_again))
+    published.extend(protection_again.events)  # type: ignore[arg-type]
+    published.extend(queue.funding.settle_windows( protection_again))
     return published
 
 
@@ -11451,7 +10778,7 @@ def _cycle(
     # spend a produced batch's fence has run.  Every finish that holds a tier
     # token reads the census, and a record nothing can count again only makes
     # that read longer (#747).
-    retired_funding = queue.retire_terminal_output_funding()
+    retired_funding = queue.funding.retire_output()
     if retired_funding.get("retired") or retired_funding.get("unreadable"):
         print(json.dumps({"unix": time.time(), "event": "output-funding-retired",
                           **retired_funding}), flush=True)
