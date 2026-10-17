@@ -11712,8 +11712,8 @@ the safe direction: the route works from any box, the tier host included.
 in-process route. Staged-copy containment has no fleet-tool import or
 `ImportError` fallback. Produced-output physical namespace constants live in
 `output_vocabulary`, below both owners; the staged-path owner does not import
-produced-output orchestration. The existing tier-host route still handles
-remote or unannounced tier execution by its original policy.
+produced-output orchestration. The existing tier-host route and its
+missing-announcement refusal keep their original policy.
 
 Four behaviours differ from the in-process route, all deliberate. The staged
 paths are filed on the still-live copy before the action is published, because

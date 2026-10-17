@@ -156,6 +156,8 @@ def staged_references(source, selected, *, local=None, exports=None):
     bare = {}
     dotted_patterns = {m: re.compile(rf"\b{m}\.({'|'.join(map(re.escape, sorted(names, key=len, reverse=True)))})\b")
                        for m, names in selected.items() if names}
+    colon_patterns = {m: re.compile(rf"\b(?:prismabuild\.)?{m}:({'|'.join(map(re.escape, sorted(names, key=len, reverse=True)))})\b")
+                      for m, names in selected.items() if names}
 
     def edit(node, text):
         edits.append((offsets[node.lineno - 1] + node.col_offset,
@@ -215,6 +217,9 @@ def staged_references(source, selected, *, local=None, exports=None):
             for module, pattern in dotted_patterns.items():
                 if module + "." in value:
                     value = pattern.sub(lambda match: f"{staged_destination(module)}.{STAGED_PUBLIC.get(match[1], match[1])}", value)
+                if module + ":" in value:
+                    value = colon_patterns[module].sub(
+                        lambda match: f"prismabuild.{staged_destination(module)}:{STAGED_PUBLIC.get(match[1], match[1])}", value)
             if "from prismabuild" in value and "\n" in value:
                 try:
                     value = staged_references(value, selected, exports=exports)
