@@ -331,6 +331,7 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
     # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
     # as a ready mover and staged nowhere.
     queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.ledger(RAM_TIER.split(":", 1)[1]).ensure_capacity({"mem_gb": 8})
     queue.tier(RAM_TIER).mint({'ram_gib': 8})
     assert queue.tier(STAGE_TIER).take(_hexkey('mover0'), {'stage_gib': 2})
     assert queue.tier(RAM_TIER).take(_hexkey('rampromote0'), {'ram_gib': 2})
