@@ -162,7 +162,7 @@ def _ram_range(queue: pool.PoolQueue, *, promotion: str, consumer: str,
             f"/pool/{manifest[:8]}/phase-{ordinal}/part-{index}.bin", 0)] = {
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
-    assert queue.tier_ledger(RAM_TIER).acquire(promotion, {"ram_gib": PHASE_GIB})
+    assert queue.tier(RAM_TIER).take(promotion, {'ram_gib': PHASE_GIB})
     residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": promotion,
@@ -206,8 +206,8 @@ class Box:
         for tier_id, root in ((TIER, self.stage), (RAM_TIER, self.ram)):
             assert stage_release.register_stage_root(
                 self.queue, tier_id=tier_id, stage_root=root) == "registered"
-        self.queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
-        self.queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
+        self.queue.tier(TIER).mint({'stage_gib': stage_gib})
+        self.queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
         # A RAM fill's host half lands in the storage host's ledger (#1258).
         mint_storage_host_ledger(self.queue)
         self.queue.announce_tier(self.ram_record())
@@ -215,7 +215,7 @@ class Box:
     def ram_record(self) -> dict[str, object]:
         """The tmpfs as the loop announces it: writable plus landed is the tier."""
 
-        held = int(self.queue.tier_ledger(RAM_TIER).held().get("ram_gib", 0))
+        held = int(self.queue.tier(RAM_TIER).holdings().get('ram_gib', 0))
         return {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier": "ram",
                 "tier_id": RAM_TIER, "host": "dl380g10",
                 "mountpoint": str(self.ram), "epoch": self.epoch,
@@ -271,7 +271,7 @@ class Box:
         return _promotion("promoter", 0)
 
     def held(self, tier_id: str, key: str) -> bool:
-        return bool(self.queue.tier_ledger(tier_id).holder_tokens(key))
+        return bool(self.queue.tier(tier_id).holdings(key))
 
 
 def _promoted(events: list[dict[str, object]]) -> list[str]:
@@ -308,9 +308,8 @@ def assert_ledgers_match_the_roots(box: Box) -> None:
                     int(receipt["range_end_bytes"])
                     - int(receipt["range_start_bytes"])))
     for tier_id, kind in ((TIER, "stage_gib"), (RAM_TIER, "ram_gib")):
-        ledger = box.queue.tier_ledger(tier_id)
-        held = {key: int(ledger.holder_tokens(key).get(kind, 0))
-                for key in ledger.held_keys()}
+        ledger = box.queue.tier(tier_id)
+        held = {key: int(ledger.holdings(key).get(kind, 0)) for key in ledger.holders()}
         held = {key: gib for key, gib in held.items() if gib
                 and box.queue.move_record(key) is not None}
         assert held == accounted[tier_id], (

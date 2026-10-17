@@ -56,9 +56,9 @@ def test_the_ram_window_publishes_into_its_own_fence(tmp_path: Path) -> None:
     plan = _plan(queue, 3, ram=True)
     _publish_consumer(queue, plan, CONSUMER)
     r0, r1, r2 = _movers(plan, "ram_mover_row")
-    stage_ledger = queue.tier_ledger(TIER)
+    stage_ledger = queue.tier(TIER)
     for ordinal, mover in ((0, _movers(plan)[0]), (1, _movers(plan)[1])):
-        assert stage_ledger.acquire(mover, {"stage_gib": 1}) is True
+        assert stage_ledger.take(mover, {'stage_gib': 1}) is True
         residency_publication.vouch_landed(
             queue, consumer_action_key=CONSUMER, mover_action_key=mover,
             tier_id=TIER, stage_root="/stage/prewarm",
@@ -76,6 +76,6 @@ def test_the_ram_window_publishes_into_its_own_fence(tmp_path: Path) -> None:
     # tmpfs has nothing left over: the fence moved, it was not doubled.
     _assert_one_live_advance(queue, RAM_TIER, "ram_gib", CONSUMER, plan, r1,
                              "phase-1", SPAN, 2 * SPAN)
-    ram_ledger = queue.tier_ledger(RAM_TIER)
-    assert ram_ledger.available().get("ram_gib") == 1
+    ram_ledger = queue.tier(RAM_TIER)
+    assert ram_ledger.free_supply().get('ram_gib') == 1
     assert window_credit.held_grants(ram_ledger) == []
