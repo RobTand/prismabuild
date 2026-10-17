@@ -100,21 +100,18 @@ def _publish_stage(queue: pool.PoolQueue, stage: Path, payload: bytes
     staged = stage / SHARD
     key = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
     digest = hashlib.sha256(payload).hexdigest()
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": STAGE_MOVER,
         "tier_id": "prismabuild-stage:dl380g10", "stage_root": str(stage),
         "manifest_sha256": MANIFEST_SHA,
         "entries": {key: {"stage_path": str(staged), "bytes": len(payload),
-                          "sha256": digest, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=STAGE_MOVER,
-        tier_id="prismabuild-stage:dl380g10", stage_root=str(stage),
-        manifest_sha256=MANIFEST_SHA,
+                          "sha256": digest, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={key: {"stage_path": str(staged), "bytes": len(payload),
+        material_entries={key: {"stage_path": str(staged), "bytes": len(payload),
                        "sha256": digest, "file_id": identity}})
 
 

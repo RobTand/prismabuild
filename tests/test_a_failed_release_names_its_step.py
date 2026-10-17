@@ -78,7 +78,10 @@ def world(tmp_path: Path):
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x01" * 4096)
     root = queue.root / pool.record_store.RESIDENCY
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
@@ -86,14 +89,9 @@ def world(tmp_path: Path):
         "entries": {residency_map.residency_map_key(SOURCE, 0): {
             "stage_path": str(staged), "bytes": 4096,
             "sha256": "b" * 64, "offset": 0}},
-    })
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+    },
         generation=reader_lease.mint_generation(),
-        entries={residency_map.residency_map_key(SOURCE, 0): {
+        material_entries={residency_map.residency_map_key(SOURCE, 0): {
             "stage_path": str(staged), "bytes": 4096, "sha256": "b" * 64,
             "file_id": identity}})
     return SimpleNamespace(queue=queue, stage=stage)

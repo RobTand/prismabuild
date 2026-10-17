@@ -147,18 +147,16 @@ def test_a_split_range_promotes_from_its_staged_shard_path(tmp_path: Path) -> No
     # What the stage mover filed before this promotion was ever published:
     # the promotion proves its source window against published material.
     residency = tmp_path / "residency"
-    residency_map.write_fragment(residency, {
+    staged_path.publish_vouch(
+        residency, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER_A, "mover_action_key": MOVER_B,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "0" * 64,
         "entries": stage_copier.staged,
-    })
-    reader_lease.write_material(
-        residency, consumer_action_key=CONSUMER_A, mover_action_key=MOVER_B,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="0" * 64,
+    },
         generation=reader_lease.mint_generation(),
-        entries=stage_copier.sidecar)
+        material_entries=stage_copier.sidecar)
 
     args = ram_promote.build_parser().parse_args([
         "--pool-root", str(tmp_path / "pool-root"),
