@@ -194,7 +194,7 @@ def operate(request, store, load):
             if family == "map" and variant.startswith("empty-"):
                 seed = store / "seed.map.json"
                 rm.write_map(seed, value)
-                value = load("tier_loop")._emptied_map(seed)
+                value = load("prismabuild.tier_cycle")._emptied_map(seed)
                 assert isinstance(value, dict) and not value["entries"]
             if family == "fragment":
                 path = rm.write_fragment(store, value)

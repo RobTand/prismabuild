@@ -19,7 +19,7 @@ def operate(request, store, load):
     if family == "storage-tier":
         tiers = load("prismabuild.storage_tiers")
         if writing and variant == "retired-writer":
-            pool, loop = load("prismabuild.pool"), load("tier_loop")
+            pool, loop = load("prismabuild.pool"), load("prismabuild.tier_cycle")
             queue = pool.PoolQueue(store / "queue")
             name = "prismabuild-stage:compat"
             queue.tier(name).mint({"stage_gib": 1})

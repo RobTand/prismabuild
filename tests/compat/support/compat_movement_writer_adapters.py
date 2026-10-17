@@ -25,7 +25,7 @@ def landing(request, store, load):
         value = maps.read_landing(path)
         assert len(value["ranges"]) == 1 and value["ranges"][0]["range_end_bytes"] == 8
         return value
-    rp, loop = load("prismabuild.residency_plan"), load("tier_loop")
+    rp, loop = load("prismabuild.residency_plan"), load("prismabuild.tier_cycle")
     queue = pool.PoolQueue(store / "queue")
     factory = runpy.run_path(str(Path(__file__).with_name("compat_plan_adapters.py")))["plan"]
     rp.freeze(queue, factory(rp, pool, "chunks"))

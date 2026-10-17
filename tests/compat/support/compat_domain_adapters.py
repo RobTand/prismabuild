@@ -51,7 +51,7 @@ def operate(request, store, load):
                      else campaign.decomposition_dir(cas, plan["parent_key"]))
         path = directory / "data-plans.json"
         declared["task_data_manifest"] = {"residency_tier": None, "residency_ram": "off", "mover_readers": 1, "mover_mem_gb": 1}
-        args = dict(request=declared, plan=plan, children=children, template={}, args=SimpleNamespace(), queue=None, cas=cas)
+        args = dict(request=declared, plan=plan, children=children, template={}, args=load("prismabuild.submission_types").SubmissionRequest(cwd="/compat/checkout"), queue=None, cas=cas)
         if request["op"] == "write":
             assert campaign.frozen_child_data_plans(**args) == [None]
             if variant == "replay":

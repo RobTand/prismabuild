@@ -9,7 +9,7 @@ def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     writing = request["op"] == "write"
     if family == "input-test-capabilities":
-        module = load("pbtest_capabilities")
+        module = load("prismabuild.pbtest_capabilities")
         value = {"schema": module.SCHEMA, "capabilities": {} if variant == "empty" else {"compat": {"tags": ["cpu"]}}}
 
         def reader(raw):
