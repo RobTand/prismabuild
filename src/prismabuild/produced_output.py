@@ -1336,7 +1336,7 @@ def _file_stat(path: Path | str) -> os.stat_result | None:
 
 
 def _file_version(path: Path | str) -> tuple[int, ...] | None:
-    """``(device, inode, size, mtime, ctime)``, or ``None`` when absent.
+    """The C11 file version, or ``None`` when absent.
 
     Any other failure to ``stat`` raises `ProducedOutputError`.
     """
@@ -1712,9 +1712,9 @@ def _newest_write_ns(version: object) -> int | None:
 
     def visit(item: object) -> None:
         nonlocal newest
-        if (isinstance(item, tuple) and len(item) == 5
-                and all(isinstance(part, int) for part in item)):
-            newest = item[3] if newest is None else max(newest, item[3])
+        if isinstance(item, kept_reads.FileVersion):
+            newest = (item.mtime_ns if newest is None
+                      else max(newest, item.mtime_ns))
             return
         if isinstance(item, tuple):
             for part in item:

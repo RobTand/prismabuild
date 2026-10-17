@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 import contextvars
 from dataclasses import dataclass
-from typing import Protocol
+from typing import NamedTuple, Protocol
 import os
 from pathlib import Path
 import select
@@ -35,7 +35,13 @@ def file_versions_enabled() -> bool:
     return _FILE_VERSION_SCOPE.get()
 
 
-FileVersion = tuple[int, int, int, int, int, int]
+class FileVersion(NamedTuple):
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    mode: int
 
 
 def metadata_version(info: "os.stat_result") -> FileVersion:
@@ -47,8 +53,8 @@ def metadata_version(info: "os.stat_result") -> FileVersion:
     file must not retain the publication proof produced while it was readable.
     """
 
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)), info.st_mode)
+    return FileVersion(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                       int(getattr(info, "st_ctime_ns", 0)), info.st_mode)
 
 
 #: The clock a local Linux filesystem stamps a directory's mtime and ctime
