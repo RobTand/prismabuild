@@ -3,6 +3,8 @@
 The fixture changes paths, not process or reconciliation functions. Private
 workers read their own receipt to isolate supervisor adoption from their
 independent idle upgrade. A removal control must replace the same idle loops.
+The real publisher stages sealed generations, and its pointer owner binds only
+the private mirror. This fixture does not qualify installed-reader activation.
 """
 from __future__ import annotations
 
@@ -89,17 +91,22 @@ def _write_roster(checkout: Path, shape: list[str]) -> None:
 
 
 def _publish(checkout: Path, fleet: Path, monkeypatch, *, remove: bool = False) -> Path:
-    argv = ["publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
+    argv = ["publish_runtime.py", "--stage-only", "--rollout", "rolling", "--rollout-reason",
             "private CPU adoption test", "--shape-gate-waiver",
-            "private CPU adoption test", "--no-canary"]
+            "private CPU adoption test"]
     if remove:
         argv += ["--drop-roster-option-by", "PB private test",
                  "--drop-roster-option-reason", "exercise the removal control"]
     with monkeypatch.context() as publication:
         publication.setattr(publish_runtime, "CHECKOUT", checkout)
         publication.setattr(publish_runtime, "MIRROR", fleet / "repo")
+        store = fleet / "runtime-generations"
+        before = set(store.iterdir()) if store.exists() else set()
         publication.setattr(sys, "argv", argv)
         assert publish_runtime.main() == 0
+        [created] = set(store.iterdir()) - before
+        generation, _receipt = publish_runtime._sealed_generation(created.name)
+        publish_runtime._activate(generation, migrate_directory=False)
     return (fleet / "repo").resolve(strict=True)
 
 

@@ -4,7 +4,9 @@
 the scripts it lists, so a missing entry makes it refuse every publication and
 every canary, including commands that never use the new option.  A box without
 a checkout runs only what the generation carries, so the check publishes the
-real tree and starts the commands from that copy alone.
+real tree and starts the commands from that copy alone. The fixture stages a
+sealed generation and uses the real pointer owner on its private mirror.
+It does not qualify installed-reader activation.
 """
 from __future__ import annotations
 
@@ -25,12 +27,17 @@ def _published(tmp_path, monkeypatch) -> Path:
     with monkeypatch.context() as publication:
         publication.setattr(publish_runtime, "CHECKOUT", ROOT)
         publication.setattr(publish_runtime, "MIRROR", mirror)
+        store = mirror.parent / "runtime-generations"
+        before = set(store.iterdir()) if store.exists() else set()
         publication.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
         publication.setattr(sys, "argv", [
-            "publish_runtime.py", "--rollout", "rolling", "--no-canary",
+            "publish_runtime.py", "--stage-only", "--rollout", "rolling",
             "--rollout-reason", "fixture publication",
             "--shape-gate-waiver", "fixture publication"])
         assert publish_runtime.main() == 0
+        [created] = set(store.iterdir()) - before
+        generation, _receipt = publish_runtime._sealed_generation(created.name)
+        publish_runtime._activate(generation, migrate_directory=False)
     return mirror.resolve()
 
 
