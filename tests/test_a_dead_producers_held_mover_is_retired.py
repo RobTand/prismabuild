@@ -54,7 +54,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from prismabuild import pool, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 from test_prepaid_writer_integration import (  # noqa: E402
     KIND, REPO, TIER, _announce_tier, _broker_control, _claim_mover,

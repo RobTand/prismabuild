@@ -52,7 +52,7 @@ import test_stale_material_done_owner_retires as stale  # noqa: E402
 from prismabuild import (  # noqa: E402
     adaptive_cpu, pool, reader_lease, residency_map, residency_plan)
 from prismabuild import stage_move  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 TIER = base.TIER
