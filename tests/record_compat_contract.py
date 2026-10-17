@@ -95,7 +95,7 @@ def protocol_group(kind):
     owner = kind.reader.split(":", 1)[0]
     if kind.name.startswith("dc-"):
         return "decomposition"
-    if owner in ("prismabuild.core", "prismabuild.client"):
+    if owner in ("prismabuild.core", "prismabuild.client", "prismabuild.data_manifest"):
         return "core"
     if owner == "prismabuild.pool":
         return "queue"
