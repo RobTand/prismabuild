@@ -6977,9 +6977,6 @@ def retire_batch(queue, instance: Mapping[str, object],
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         in_process = _egress_runs_in_process(tier_record)
-        stage_release = None
-        if in_process:
-            from prismabuild import stage_release
         if not in_process and tier_record is None:
             return {"ok": False,
                     "refusal": f"unknown-retain: tier-not-announced: {tier}"}
@@ -7003,7 +7000,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     # refusing a successor, and a failed or partial egress files nothing and
     # leaves the old materialization holding its own credit.
     if in_process:
-        assert stage_release is not None
+        assert staged_path is not None
         receipt = staged_path.evict(
             queue, target_mover, consumer_action_key=consumer,
             stage_root=str(stage_root), residency_root=str(residency_root))
@@ -7155,7 +7152,6 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
             selections[batch_id] = selection
     if not selections:
         return answers
-    from prismabuild import stage_release
     # --- No lock of this lane is held while the egresses run; see
     # `retire_batch` for why nothing needs it.
     receipts: dict[str, dict[str, object]] = {}

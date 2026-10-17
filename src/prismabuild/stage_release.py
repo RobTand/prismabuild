@@ -1282,8 +1282,6 @@ def _is_prelaunch_holder(value: str) -> bool:
     return str(value).startswith(prefix)
 
 
-def _is_action_key(value: str) -> bool:
-    return len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
 
 def _held_by_a_live_item(queue: pool.PoolQueue, key: str,
@@ -1302,7 +1300,7 @@ def _held_by_a_live_item(queue: pool.PoolQueue, key: str,
     if key.startswith(window_credit.GRANT_PREFIX):
         prefix = key[len(window_credit.GRANT_PREFIX):].split("-", 1)[0]
         return bool(prefix) and any(owner.startswith(prefix) for owner in owners)
-    if not _is_action_key(key):
+    if not staged_path.is_action_key(key):
         return False
     try:
         return any(not (not pool.record_store.value_or_raise(
@@ -1341,7 +1339,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     is a handful of reads per funded holder, and none for any other key.
     """
 
-    if not _is_action_key(mover):
+    if not staged_path.is_action_key(mover):
         return None
 
     def unknown(why: str) -> dict[str, object]:
@@ -1361,7 +1359,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
     batch_id = str(record.get("batch_id") or "")
     if (str(record.get("mover_action_key") or "") != mover
             or str(record.get("tier_id") or "") != tier_id
-            or not _is_action_key(owner) or not nonce or not template_id
+            or not staged_path.is_action_key(owner) or not nonce or not template_id
             or not batch_id):
         return unknown("its output funding record does not name this mover's batch")
     residency = queue.root / pool.record_store.RESIDENCY

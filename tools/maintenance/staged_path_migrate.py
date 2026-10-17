@@ -25,7 +25,7 @@ STAGED_MODULES = {
 }
 STAGED_RANGES = {
     "stage_release": ((138, 187), (239, 239), (253, 376), (408, 3413),
-                      (3470, 3515), (4496, 4529), (4812, 6239)),
+                      (3470, 3515), (4496, 4529), (4576, 4577), (4812, 6239)),
     "stage_move": ((83, 83), (91, 176), (343, 2944), (5097, 5115)),
     "tier_loop": ((2530, 2802),),
     "produced_output": ((142, 142), (186, 189)),
@@ -42,6 +42,7 @@ STAGED_PUBLIC = {
     "_cached_manifest_layout": "manifest_layout_for", "_prune_empty": "prune_empty",
     "_bounded_int": "bounded_int", "_validated_sealed_request": "validated_sealed_request",
     "_EgressReporter": "EgressReporter", "_EGRESS_RUN": "egress_run",
+    "_is_action_key": "is_action_key",
 }
 
 
@@ -175,6 +176,9 @@ def staged_extract(source, module):
         end = node.end_lineno
         text = "".join(lines[before:end])
         selected = any(lo <= node.lineno <= hi for lo, hi in STAGED_RANGES[module])
+        if selected and module == "stage_release" and getattr(node, "name", None) == "_is_action_key":
+            before = end
+            continue
         (moved if selected else remaining).append(text)
         before = end
     remaining.extend(lines[before:])

@@ -3443,7 +3443,7 @@ def _stage_mark(path: Path | str) -> tuple[str, str]:
             return "mark_unanswerable", ""
     else:
         mover = raw.decode("utf-8", "replace")
-        if not _is_action_key(mover):
+        if not is_action_key(mover):
             return "mark_unanswerable", ""
         return "mover_residue", mover
     marked = _marked_by_the_prewarm_stage(path)
@@ -5432,7 +5432,7 @@ def _divergent_detail(norm: str) -> str:
             f"digest for {norm}; refusing to invalidate its owner")
 
 
-def _is_action_key(value: object) -> bool:
+def is_action_key(value: object) -> bool:
     return (isinstance(value, str) and len(value) == 64
             and all(character in "0123456789abcdef" for character in value))
 
@@ -6278,9 +6278,9 @@ class StagedPublisher:
             judged: dict[tuple[str, str], dict[str, object]] = {}
             with ExitStack() as held:
                 consumers = sorted({c for c, _ in owners.pairs
-                                    if _is_action_key(c)})
+                                    if is_action_key(c)})
                 movers = sorted({m for _, m in owners.pairs
-                                 if _is_action_key(m)})
+                                 if is_action_key(m)})
                 for key in consumers:
                     if not held.enter_context(self.queue.action_transition_lock(
                             key, blocking=False)):
@@ -6391,7 +6391,7 @@ class StagedPublisher:
         the caller holds both keys' transition locks.
         """
 
-        if not (_is_action_key(consumer) and _is_action_key(mover)):
+        if not (is_action_key(consumer) and is_action_key(mover)):
             return False
         for key in ((mover,) if consumer == self.consumer
                     else (consumer, mover)):
@@ -6435,7 +6435,7 @@ class StagedPublisher:
         costs one or two more stats of its consumer's record.
         """
 
-        if not (_is_action_key(consumer) and _is_action_key(mover)):
+        if not (is_action_key(consumer) and is_action_key(mover)):
             return "uncertain", "its fragment does not name two action keys"
         if consumer != self.consumer:
             why = unended(self.queue, consumer)

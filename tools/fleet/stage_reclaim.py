@@ -37,7 +37,6 @@ from prismabuild.stage_marks import (  # noqa: E402
 )
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
-from prismabuild import stage_release  # noqa: E402
 from prismabuild import staged_path
   # noqa: E402
 
