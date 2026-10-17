@@ -91,7 +91,7 @@ def test_unknown_gate_parks_without_starting_or_claiming_epoch(scope, contents):
         scope.gate.write_text(contents)
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == []
-    assert markers(scope)[0].name.endswith("-unknown")
+    assert markers(scope) == []
 
 
 def test_gate_closes_during_layout_and_blocks_adoption(scope, monkeypatch):

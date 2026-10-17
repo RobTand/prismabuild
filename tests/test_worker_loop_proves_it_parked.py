@@ -176,7 +176,7 @@ def test_an_unwritable_root_parks_the_loop_anyway(tmp_path):
 
 
 def test_an_unreadable_gate_parks_under_a_key_no_reader_matches(tmp_path):
-    """A drain with no identity must not pass for the drain being waited on."""
+    """A drain with no identity parks without filing authoritative evidence."""
 
     gate = tmp_path / "maintenance.json"
     gate.write_text("{not json")
@@ -185,8 +185,8 @@ def test_an_unreadable_gate_parks_under_a_key_no_reader_matches(tmp_path):
 
     marker = loop.post_park_marker(loop.read_maintenance_gate())
 
-    assert marker is not None
-    assert marker.name.rsplit("-", 1)[1] == "unknown"
+    assert marker is None
+    assert list(loop.PARKED_ROOT.iterdir()) == []
 
 
 def _starttime_of_self() -> str:
