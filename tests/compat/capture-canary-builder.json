@@ -1,0 +1,33 @@
+{
+  "capture_name": "canary-builder-01-capture",
+  "capture_report_sha256": "2baa9448337e83a218ae5fb8a38367a37c7316a1f5d472b8d2d447f6e1afc5f8",
+  "excluded_cases": [],
+  "files": {
+    "goldens-canary-builder.jsonl": "ff5f82b1d206dc3cca2b1705a5c46cbe0a11135ad0584663033559fda7cead8b",
+    "historical-canary-builder.jsonl": "e06f6065f4f6bf892bdea674fbb795d6ba5568d47e8480a83ac5f8d306f5dc2e"
+  },
+  "finished_at": "2026-10-17T02:08:53.377780+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "core-manifest-v2/canary-builder"
+  ],
+  "source_git": {
+    "parents": [
+      "1200151df274b68dd871dcd50301ae6bd0afd0d8"
+    ],
+    "snapshot": "33593b0c65cb1170c11a0c9cc5dd4bd2ef373cc7",
+    "tree": "7dff9560e0b1009b92ce79bec91015ebdd915863"
+  },
+  "started_at": "2026-10-17T02:06:37.549258+00:00",
+  "verified_producer": {
+    "action_key": "b13202ba3d48adb55a010481bd49db25944a3cafd306a05b948494d1b25c93e1",
+    "receipt_sha256": "24c41f9f09242ae34adc7c6d1470f37d580298b7e880c28af1c159917007cbd3",
+    "request_sha256": "cf45eb65be6e5b03d5bd8942460cf64579e42b0cc984358dc2382bf0db7f7ba5",
+    "source_parent": "1200151df274b68dd871dcd50301ae6bd0afd0d8"
+  }
+}
