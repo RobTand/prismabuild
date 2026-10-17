@@ -69,8 +69,8 @@ it.
 """
 
 from __future__ import annotations
-from prismabuild import batch_ledger as bl
-from prismabuild import output_contract as oc
+from . import batch_ledger as bl
+from . import output_contract as oc
 
 from . import scratch_lifetime
 
