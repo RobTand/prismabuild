@@ -30,6 +30,16 @@ wanted={
  'test_publication_refusal_stops_the_range.py':{'_write_owner'},
  'test_the_ram_window_promotes_only_to_its_refill_horizon.py':{'_ram_range'},
  'test_uncharged_dead_owners_give_room_under_pressure.py':{'dead_owner'},
+ 'test_a_source_mark_copy_with_a_proven_original_is_reclaimed.py':{'test_a_pin_owner_never_moves'},
+ 'test_a_stale_donor_declines_and_current_material_is_reused.py':{'_publish_donor_record'},
+ 'test_acquire_reuses_unchanged_cover_documents.py':{'_publish'},
+ 'test_pb823_same_generation_republish.py':{'_republish'},
+ 'test_pb893_cover_lookup_reuses_unchanged_documents.py':{'_publish'},
+ 'test_ram_shared_source.py':{'_refile'},
+ 'test_reader_lease_lifetime.py':{'test_cover_proves_full_window_across_movers',
+     'test_open_revalidates_ram_epoch','test_resolve_window_covers_from_published_material',
+     'test_distinct_same_shape_files_never_share_a_pin','test_covers_for_keys_both_tiers_minimal',
+     'test_contradictory_covers_refuse'},
 }
 for filename,names in wanted.items():
  p=Path('tests')/filename;s=p.read_text();t=ast.parse(s);lines=s.splitlines(True);edits=[]
