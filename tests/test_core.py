@@ -784,6 +784,19 @@ def test_worker_core_has_no_unattested_repository_imports():
     runtime = pb._worker_runtime_identity(None)
     attested = {Path(value["resolved_path"]) for value in runtime.values()
                 if isinstance(value, dict) and "resolved_path" in value}
+    core_source = Path(runtime["core"]["resolved_path"]).read_bytes()
+    assert hashlib.sha256(core_source).hexdigest() == runtime["core"]["sha256"]
+    pins = [ast.literal_eval(node.value) for node in ast.parse(core_source).body
+            if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                and target.id == "_IMMUTABLE_FILES_SOURCE" for target in node.targets)]
+    assert len(pins) == 1
+    helper = pb._LOADED_WORKER_IMMUTABLE_IDENTITY
+    assert {key: helper[key] for key in pins[0]} == pins[0]
+    helper_path = Path(helper["resolved_path"])
+    assert helper_path == Path(pb.immutable_files.__file__).resolve()
+    assert hashlib.sha256(helper_path.read_bytes()).hexdigest() == pins[0]["sha256"]
+    assert helper_path.stat().st_size == pins[0]["bytes"]
+    attested.add(helper_path)
     repository_imports = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level:
