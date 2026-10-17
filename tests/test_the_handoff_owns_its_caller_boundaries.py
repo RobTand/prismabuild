@@ -278,7 +278,7 @@ def test_residency_stage_rows_refuses_when_its_locked_reap_finds_live_work(
     monkeypatch.setattr(
         residency_plan, "handoff_safe", claim_after_the_advisory_check)
 
-    with pytest.raises(SystemExit, match="has not ended"):
+    with pytest.raises(submit_core.SubmissionRefused, match="has not ended"):
         _stage_rows(built)
 
     assert residency_plan.read(queue, key) == stale["plan"], (
