@@ -2729,12 +2729,14 @@ class BatchLedger:
         # authorized only through the filed materialization list checked
         # above, and the record's own mover must still agree with the entry
         # (a changed mover in commitments authorizes nothing).
-        if (str(filed.get("mover_key")) != str(entry.get("mover_key"))
-                or (str(filed.get("mover_key")) != mover_key
-                    and not any(
-                        str(item.get("mover_key")) == mover_key
-                        for item in (entry.get("materializations") or [])
-                        if isinstance(item, Mapping)))):
+        if str(filed.get("mover_key")) != str(entry.get("mover_key")):
+            return False
+        try:
+            # The first mover also needs a known whole history. A malformed
+            # successor list cannot confer authority on any generation.
+            if mover_key not in BatchFacets(entry).movers:
+                return False
+        except oc.ProducedOutputError:
             return False
         return True
 
