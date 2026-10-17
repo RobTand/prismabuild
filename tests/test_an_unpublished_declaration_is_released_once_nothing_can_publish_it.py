@@ -50,7 +50,7 @@ import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild.record_store import Absent, RecordStore  # noqa: E402
-import deferred_release as dr  # noqa: E402
+from prismabuild import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from test_consumed_origin_retirement import (  # noqa: E402
