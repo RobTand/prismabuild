@@ -95,7 +95,7 @@ def test_classification_uses_the_single_terminal_interpreter_without_io(monkeypa
     (lifecycle.Transition.CANCEL, "ready"),
     (lifecycle.Transition.RELEASE_UNSTARTED, "failed"),
     (lifecycle.Transition.LATE, "done"),
-])
+], ids=["cancel-to-ready", "unstarted-to-failed", "late-to-done"])
 def test_legal_transitions_reject_unowned_destinations(transition, destination):
     with pytest.raises(pool.PoolContractError, match="illegal"):
         lifecycle._legal_destination(transition, destination)
