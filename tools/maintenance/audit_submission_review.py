@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -76,7 +75,7 @@ def main():
         if name in changed or name in {
                 "src/prismabuild/submission.py", "src/prismabuild/submission_types.py",
                 "src/prismabuild/d38_gate.py", "tools/fleet/submission_frontend.py"}:
-            inventory[name] = {"sha256": hashlib.sha256(raw).hexdigest(),
+            inventory[name] = {"git_blob": review_git(args.root, "hash-object", name).decode().strip(),
                                "bytes": len(raw), "occurrences": review_occurrences(tree)}
     forbidden = [name for name in changed if name.startswith("tests/fixtures/")
                  or "golden" in name or "schema" in Path(name).name]
