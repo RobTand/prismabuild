@@ -80,7 +80,7 @@ def test_publish_refuses_tier_demand_with_no_residency_block(
 def test_a_range_block_with_its_floor_still_admits(queue: pool.PoolQueue) -> None:
     """The refusal is about the missing block, not about tier demand itself."""
 
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
+    queue.tier(TIER).mint({'stage_gib': 2})
     _submit(queue, KEY_A, {"cpu": 1, STAGE: 2}, residency=_range_block(range_bytes=2))
     claimed = queue.claim(owner="mover", capacity={"cpu": 1})
     assert claimed is not None and claimed["action_key"] == KEY_A

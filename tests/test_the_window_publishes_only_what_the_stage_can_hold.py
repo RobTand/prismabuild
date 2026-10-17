@@ -90,7 +90,7 @@ def _plan(queue: pool.PoolQueue, *, gib_per_phase: int = 2,
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 5})
+    q.tier(TIER).mint({'stage_gib': 5})
     return q
 
 
@@ -287,8 +287,8 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
     _claim_consumer(queue, plan)
     ahead = _hexkey("mover3")
     # Drive the ledger into the state a finished, pinned phase-3 mover leaves.
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(ahead, {"stage_gib": 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(ahead, {'stage_gib': 2})
     queue.record_move(ahead, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                               "stage_root": str(stage), "complete": True,
                               "bytes_staged": 2 * GIB})
@@ -296,7 +296,7 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
 
     assert swept == []
-    assert ledger.holder_tokens(ahead) == {"stage_gib": 2}
+    assert ledger.holdings(ahead) == {'stage_gib': 2}
 
 
 def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> None:
@@ -304,8 +304,8 @@ def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> Non
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     orphan = _hexkey("orphan")
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(orphan, {"stage_gib": 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(orphan, {'stage_gib': 2})
     queue.record_move(orphan, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                                "stage_root": str(stage), "complete": True,
                                "bytes_staged": 2 * GIB})
@@ -313,7 +313,7 @@ def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> Non
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
 
     assert [record["reason"] for record in swept] == ["orphan-sweep"]
-    assert ledger.holder_tokens(orphan) == {}
+    assert ledger.holdings(orphan) == {}
 
 
 # -- the channel the consumer reads the map through -------------------------

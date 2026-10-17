@@ -81,7 +81,7 @@ def _plan(queue: pool.PoolQueue) -> dict[str, object]:
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": STAGE_CAPACITY_GIB})
+    q.tier(TIER).mint({'stage_gib': STAGE_CAPACITY_GIB})
     return q
 
 
@@ -192,10 +192,9 @@ def test_a_stalled_window_does_not_ask_the_sweep_for_room_it_will_not_use(
     tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                     "mountpoint": str(tmp_path / "stage")}}
     tier_loop.residency_window(queue, tiers=tiers)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     for ordinal in (0, 1):
-        assert ledger.acquire(_hexkey(f"mover{ordinal}"),
-                              {"stage_gib": PHASE_GIB[ordinal]})
+        assert ledger.take(_hexkey(f'mover{ordinal}'), {'stage_gib': PHASE_GIB[ordinal]})
 
     assert tier_loop.window_pressure(queue, tiers=tiers) == {}
 

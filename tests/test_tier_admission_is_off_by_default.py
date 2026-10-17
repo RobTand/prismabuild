@@ -27,6 +27,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import tier_holdings
 
 KEY = "c" * 64
 #: The live row's demand, tags and GPU flag, 2026-09-17.
@@ -69,12 +70,12 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     assert queue.ledger().held() == {"cpu": 1, "mem_gb": 2}
     # No tier ledger was created by admission: the root exists because
     # ``ensure_layout`` makes it, and it is empty.
-    assert queue.tier_ids() == []
-    assert queue.tier_holdings(KEY) == {}
+    assert tier_holdings.ids(queue.records) == []
+    assert tier_holdings.for_action(queue, KEY) == {}
 
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
-    assert queue.tier_ids() == []
+    assert tier_holdings.ids(queue.records) == []
     done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
     assert "tier_reservations" not in done and "residency_verdict" not in done
@@ -124,7 +125,7 @@ def test_the_running_campaigns_shape_still_admits(queue: pool.PoolQueue) -> None
     assert "tier_reservations" not in claimed
     assert "residency_verdict" not in claimed
     assert queue.ledger().held() == CAMPAIGN_RESOURCES
-    assert queue.tier_ids() == []
+    assert tier_holdings.ids(queue.records) == []
     queue.finish(key, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
 
@@ -195,8 +196,8 @@ def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
     # The host tokens went back: the host ledger was never the broken one.
     assert queue.ledger().held() == {}
     # And the helpers answer emptily rather than raising.
-    assert queue.tier_ids() == []
-    assert queue.release_tier_reservations(KEY) == 0
+    assert tier_holdings.ids(queue.records) == []
+    assert tier_holdings.release_unspent_all(queue, KEY, authority=tier_holdings.Unspent.NEVER_STARTED) == 0
 
 
 def test_without_the_containment_that_finish_loses_the_outcome(
