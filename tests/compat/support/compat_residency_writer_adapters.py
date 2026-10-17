@@ -73,7 +73,7 @@ def operate(request, store, load):
             staged = run.residency_stage_rows(template, consumer_action_key=C, tier=tier, args=args, queue=queue, cas=cas)
             assert staged["reused_frozen_plan"]
         if variant in ("pbrun-mover-writer", "pbrun-ram-writer"):
-            leg = next(rp.legs_over(staged["plan"], 0, 8, mover_role="ram_mover_row" if variant == "pbrun-ram-writer" else "mover_row"))
+            leg = rp.legs_over(staged["plan"], 0, 8, mover_role="ram_mover_row" if variant == "pbrun-ram-writer" else "mover_row")[0]
             row = leg["mover_row"]
             key = row["action_key"]
             path = queue.publish(**row)
