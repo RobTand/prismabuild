@@ -5,6 +5,7 @@ import argparse
 import ast
 import base64
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import gzip
@@ -27,6 +28,113 @@ from compat_references import module_paths, generation_reference
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
 _PRIOR_DRIVERS = None
+
+
+@dataclass(frozen=True)
+class ArchivalRuntime:
+    path: str
+    sha256: str
+    resolved_path: str
+    python: str
+    machine: str
+    bytes: int
+    elf_class: int
+    elf_data: int
+    elf_machine: int
+
+
+def archival_runtime():
+    configuration = json.loads((ROOT / "tests/pbtest_capabilities.json").read_bytes())
+    if configuration.get("schema") != "prismabuild.pbtest_capabilities.v1":
+        raise ValueError("archival replay requires the versioned PB capability declaration")
+    dependencies = configuration["capabilities"]["archival-replay"]["dependencies"]
+    if (not isinstance(dependencies, list) or len(dependencies) != 1
+            or not isinstance(dependencies[0], dict)
+            or set(dependencies[0]) != {"path", "sha256"}):
+        raise ValueError("archival replay requires exactly one explicit executable pin")
+    path, digest = dependencies[0]["path"], dependencies[0]["sha256"]
+    if (not isinstance(path, str) or not path.startswith("/") or "\x00" in path
+            or not isinstance(digest, str) or len(digest) != 64
+            or set(digest) - set("0123456789abcdef")):
+        raise ValueError("archival replay requires an absolute executable and exact SHA-256")
+    return ArchivalRuntime(**dependencies[0], resolved_path="/usr/bin/python3.14",
+                           python="3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+                           machine="x86_64", bytes=7477160, elf_class=2,
+                           elf_data=1, elf_machine=62)
+
+
+_ARCHIVAL_RUNTIME_PREFIX = "compat-archival-runtime: "
+_ENVIRONMENT_DOMAIN = "prismabuild.compat_environment.v1"
+_ARCHIVAL_BOOTSTRAP = r'''
+import hashlib, json, os, platform, runpy, sys
+from pathlib import Path
+expected = json.loads(sys.argv.pop(1))
+driver = sys.argv.pop(1)
+sys.argv[0] = driver
+running = Path("/proc/self/exe").read_bytes()
+environment = json.dumps(dict(os.environ), sort_keys=True, separators=(",", ":")).encode("ascii")
+environment_digest = {
+    "algorithm": "sha256", "domain": expected["environment_digest"]["domain"],
+    "encoding": "json-sort-keys-compact-ascii",
+    "sha256": hashlib.sha256(expected["environment_digest"]["domain"].encode("ascii") + b"\0" + environment).hexdigest(),
+}
+observed = {
+    "path": sys.executable,
+    "resolved_path": str(Path("/proc/self/exe").resolve()),
+    "sha256": hashlib.sha256(running).hexdigest(),
+    "python": sys.version,
+    "machine": platform.machine(),
+    "bytes": len(running),
+    "elf_class": running[4] if running[:4] == b"\x7fELF" else None,
+    "elf_data": running[5] if running[:4] == b"\x7fELF" else None,
+    "elf_machine": int.from_bytes(running[18:20], "little" if running[5] == 1 else "big")
+                   if running[:4] == b"\x7fELF" else None,
+    "environment_before_driver": {name: os.environ.get(name) for name in (
+        "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "TMPDIR", "TZ")},
+    "environment_digest": environment_digest,
+    "affinity": sorted(os.sched_getaffinity(0)),
+    "isolated": bool(sys.flags.isolated),
+    "no_site": bool(sys.flags.no_site),
+    "invocation_matches_running": Path(sys.executable).read_bytes() == running,
+}
+print("compat-archival-runtime: " + json.dumps(observed, sort_keys=True), flush=True)
+if observed != expected:
+    raise RuntimeError("archival replay runtime does not match its explicit qualification")
+runpy.run_path(driver, run_name="__main__")
+'''
+
+
+def archival_result(process, expected):
+    first, separator, payload = process.stdout.partition("\n")
+    observed = None
+    runtime_error = None
+    try:
+        if (not separator or not first.startswith(_ARCHIVAL_RUNTIME_PREFIX)
+                or _ARCHIVAL_RUNTIME_PREFIX in payload):
+            raise ValueError("expected exactly one leading archival runtime record")
+        observed = json.loads(first[len(_ARCHIVAL_RUNTIME_PREFIX):])
+        if observed != expected:
+            raise ValueError("archival runtime does not match its explicit qualification")
+        result = json.loads(payload)
+        if not isinstance(result, dict):
+            raise ValueError("expected exactly one isolation-driver result object")
+        interpreter = result.get("interpreter", {})
+        if not isinstance(interpreter, dict):
+            raise ValueError("isolation-driver interpreter must be an object")
+        if (result.get("python") != observed["python"]
+                or result.get("machine") != observed["machine"]
+                or result.get("affinity") != observed["affinity"]
+                or any(interpreter.get(key) != observed[key]
+                       for key in ("path", "resolved_path", "sha256"))):
+            raise ValueError("archival runtime and isolation-driver identities disagree")
+    except (ValueError, KeyError, TypeError) as exc:
+        runtime_error = str(exc)
+        result = {"stdout": process.stdout, "stderr": process.stderr,
+                  "attestation_error": runtime_error}
+    result["archival_runtime"] = {"role": "qualified-archival-replay",
+                                  "selected": expected, "observed": observed,
+                                  "error": runtime_error}
+    return result
 
 
 def pre_c13_drivers():
@@ -141,7 +249,20 @@ def historical_absence(root, case, manifest):
                        "wire ID and all declared reader/writer entries absent from the complete immutable generation; no codec credit")}
 
 
-def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter_path=None):
+def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter_path=None,
+           archival_runtime=None, runtime_observe=None):
+    def finish(result):
+        if runtime_observe is not None:
+            runtime_observe(result)
+        if evidence:
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            with evidence.open("x") as stream:
+                stream.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
+            evidence.chmod(0o444)
+        return result
+
+    if archival_runtime is not None and (raw is not None or manifest is None):
+        raise ValueError("archival replay runtime is only valid for a manifested historical write")
     kind = next(kind for kind in KINDS if kind.name == case.split("/", 1)[0])
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
@@ -153,6 +274,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
                "--store", str(store)]
     if manifest:
         command.extend(["--manifest", str(manifest)])
+    namespace = []
     if kind.stable_paths:
         bwrap = shutil.which("bwrap")
         if not bwrap:
@@ -170,14 +292,49 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         if manifest:
             namespace.extend(["--ro-bind", str(manifest), str(stable / "manifest.json")])
             command.extend(["--manifest", str(stable / "manifest.json")])
+    if archival_runtime is not None:
+        environment = json.dumps(dict(os.environ), sort_keys=True, separators=(",", ":")).encode("ascii")
+        expected = {**asdict(archival_runtime),
+                    "environment_before_driver": {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+                                                  "OPENBLAS_NUM_THREADS": "1", "TMPDIR": "/home/rob/pbt17",
+                                                  "TZ": os.environ.get("TZ")},
+                    "environment_digest": {"algorithm": "sha256", "domain": _ENVIRONMENT_DOMAIN,
+                                           "encoding": "json-sort-keys-compact-ascii",
+                                           "sha256": sha(_ENVIRONMENT_DOMAIN.encode("ascii") + b"\0" + environment)},
+                    "affinity": sorted(os.sched_getaffinity(0)),
+                    "isolated": True, "no_site": True, "invocation_matches_running": True}
+        command = [archival_runtime.path, "-I", "-S", "-c", _ARCHIVAL_BOOTSTRAP,
+                   json.dumps(expected, sort_keys=True), *command[3:]]
+    if namespace:
         command = namespace + ["--"] + command
-    process = subprocess.run(command, input=json.dumps(request), text=True,
-                             capture_output=True, timeout=45)
     try:
-        result = json.loads(process.stdout)
-    except ValueError:
-        result = {"stdout": process.stdout, "stderr": process.stderr}
+        process = subprocess.run(command, input=json.dumps(request), text=True,
+                                 capture_output=True, timeout=45)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result = {"returncode": 2, "process_returncode": None,
+                  "attestation_error": f"subprocess did not return a complete result: {type(exc).__name__}: {exc}"}
+        for field in ("stdout", "stderr"):
+            value = getattr(exc, field, None)
+            result[field] = value.decode(errors="replace") if isinstance(value, bytes) else value
+        if archival_runtime is None:
+            if runtime_observe is not None:
+                runtime_observe(result)
+            raise
+        result["archival_runtime"] = {"role": "qualified-archival-replay",
+                                      "selected": expected, "observed": None}
+        return finish(result)
+    if archival_runtime is not None:
+        result = archival_result(process, expected)
+        result["archival_runtime"]["driver_tmpdir"] = {
+            "value": str(Path(command[command.index("--store") + 1]) / "tmp"),
+            "basis": "source-derived from unchanged isolation driver; not observed"}
+    else:
+        try:
+            result = json.loads(process.stdout)
+        except ValueError:
+            result = {"stdout": process.stdout, "stderr": process.stderr}
     result["returncode"] = process.returncode
+    result["process_returncode"] = process.returncode
     if kind.stable_paths and result.get("affinity") != sorted(os.sched_getaffinity(0)):
         result["returncode"] = 2
         result["attestation_error"] = "private namespace did not preserve PB CPU affinity"
@@ -230,12 +387,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
                 or manifest and json.loads(manifest.read_bytes())["files"].get(str(source)) != digest):
             result["returncode"] = 2
             result["attestation_error"] = "configuration bytes do not match their immutable source provenance"
-    if evidence:
-        evidence.parent.mkdir(parents=True, exist_ok=True)
-        with evidence.open("x") as stream:
-            stream.write(json.dumps(result, sort_keys=True, indent=2) + "\n")
-        evidence.chmod(0o444)
-    return result
+    return finish(result)
 
 
 def accepted(result):

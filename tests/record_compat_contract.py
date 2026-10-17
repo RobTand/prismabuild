@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from functools import partial
 import hashlib
 import gzip
 import json
@@ -13,7 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from record_compat import accepted, decode_wire, historical_absence, historical_writer, invoke, probe_wire, retained, write
+from record_compat import accepted, archival_runtime, decode_wire, historical_absence, historical_writer, invoke, probe_wire, retained, write
 from prismabuild.record_kinds import KINDS
 from prismabuild.digest_primitives import canonical_sha256
 from compat_references import generation_reference
@@ -73,15 +74,50 @@ class WriterEvidence:
 
 
 WRITER_EVIDENCE = None
+RUNTIME_EVIDENCE = None
+
+
+class OperationRuntimeEvidence:
+    def __init__(self):
+        self.records = []
+
+    def observe(self, operation, generation, case, record, *, raw=None):
+        fields = ("returncode", "process_returncode", "isolated", "no_site", "python", "machine", "affinity",
+                  "interpreter", "archival_runtime", "compiled_source_code_verified", "catalogued_entry_verified",
+                  "catalogued_operation", "imports", "calls", "executing_code_sha256", "driver_sha256",
+                  "selected_adapter_sha256", "attestation_error", "entry_error", "error", "stdout", "stderr")
+        observed = {key: record[key] for key in fields if key in record}
+        if raw is None and isinstance(record.get("result"), dict) and "raw" in record["result"]:
+            raw = base64.b64decode(record["result"]["raw"])
+        observed.update(schema="prismabuild.compat_operation_runtime.v1", invocation=len(self.records),
+                        operation=operation, generation=generation, case=case,
+                        native=os.environ.get("PYTEST_CURRENT_TEST"),
+                        gate_runtime={"path": sys.executable, "python": sys.version},
+                        wire_sha256=hashlib.sha256(raw).hexdigest() if raw is not None else None)
+        self.records.append(observed)
+
+    def pytest_terminal_summary(self, terminalreporter):
+        for record in self.records:
+            raw = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+            encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode()
+            terminalreporter.write_line("compat-operation-runtime-proof: " + encoded)
+
+
+def runtime_observer(operation, generation, case, *, raw=None):
+    return partial(RUNTIME_EVIDENCE.observe, operation, generation, case, raw=raw)
 
 
 @pytest.fixture(scope="module")
 def generations(pytestconfig):
-    global WRITER_EVIDENCE
+    global WRITER_EVIDENCE, RUNTIME_EVIDENCE
     WRITER_EVIDENCE = pytestconfig.pluginmanager.get_plugin("compat-writer-evidence")
     if WRITER_EVIDENCE is None:
         WRITER_EVIDENCE = WriterEvidence()
         pytestconfig.pluginmanager.register(WRITER_EVIDENCE, "compat-writer-evidence")
+    RUNTIME_EVIDENCE = pytestconfig.pluginmanager.get_plugin("compat-operation-runtime-evidence")
+    if RUNTIME_EVIDENCE is None:
+        RUNTIME_EVIDENCE = OperationRuntimeEvidence()
+        pytestconfig.pluginmanager.register(RUNTIME_EVIDENCE, "compat-operation-runtime-evidence")
     with retained() as result:
         yield result
 
