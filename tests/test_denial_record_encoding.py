@@ -1,5 +1,6 @@
 """Wire records and observation order survive denial encoding extraction."""
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 import math
@@ -15,7 +16,7 @@ KEY = "a" * 64
 @pytest.fixture
 def queue(tmp_path, monkeypatch):
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "box")
-    monkeypatch.setattr(pool, "_now", lambda: 100.0)
+    FleetClock(source=lambda: 100.0).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.adaptive_snapshot, "publish", lambda *args: None)
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
@@ -32,7 +33,7 @@ def _latest(queue):
 
 def test_latest_and_transition_files_keep_exact_wire_records(queue, monkeypatch):
     moments = iter([40.0, 41.0])
-    monkeypatch.setattr(pool, "_now", lambda: next(moments))
+    FleetClock(source=lambda: next(moments)).install(monkeypatch, scope="pool")
     queue.record_denial(
         {"action_key": KEY, "published_unix": 2, "attempts": 7, "dependent_of": "producer"},
         "adaptive_cpu_refused", {"decision": {"reason": "host_pressure", "cpus": [2]}, "note": "λ"})
@@ -121,7 +122,7 @@ def test_bounding_precedes_the_latest_timestamp_after_the_ring(queue, monkeypatc
         events.append("clock")
         return float(len(events))
 
-    monkeypatch.setattr(pool, "_now", clock)
+    FleetClock(source=clock).install(monkeypatch, scope="pool")
     queue.record_denial({"action_key": KEY, "published_unix": 1.0}, "fixture", {"note": Observation()})
     assert events == ["clock", "bounded", "clock"]
     assert _latest(queue)["records"][f"{KEY}:1.0"]["denied_unix"] == 3.0
@@ -191,7 +192,7 @@ def test_newest_on_file_uses_last_timestamp_and_primes_the_memo(queue, monkeypat
         return 10.0
 
     monkeypatch.setattr(pool.record_store, '_read_json', read)
-    monkeypatch.setattr(pool, "_now", clock)
+    FleetClock(source=clock).install(monkeypatch, scope="pool")
     for _ in range(2):
         queue._record_denial_transition(
             {"action_key": KEY, "published_unix": 1.0}, host="box", reason="returning",
