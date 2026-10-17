@@ -50,7 +50,7 @@ EGRESS = _hexkey("r13egress0")
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
     q.records.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
 
 

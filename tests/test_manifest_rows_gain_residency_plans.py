@@ -234,7 +234,7 @@ def test_a_planned_row_is_staged_by_the_tier_loop(tmp_path):
     fleet = Fleet(tmp_path)
     key = _manifest_row(fleet, "row-staged",
                         annotations={"phases": phase_table(NAMED_FILES)})
-    fleet.queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 16})
+    fleet.queue.tier(STAGE_TIER).mint({'stage_gib': 16})
     assert manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, key)])[0]["outcome"] == "planned"
