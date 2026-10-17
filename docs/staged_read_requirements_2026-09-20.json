@@ -105,6 +105,12 @@
     "detail": "unknown",
     "state": "unknown"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "ID-02",
    "scoped_repair_1187": {
     "target": "Execution receipt read-back names this attempt's output, not another execution's canonical cache result.",
@@ -502,6 +508,12 @@
     "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
     "state": "yes"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "SM-01",
    "implementation": {
     "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:58bed81e040e (#794), cd7e1b97e5dc (#831), 44098612105d (#887) deployed; 5e0bdc037537 (#953), a12de512c6a0 (#962), f5ae2a06efc9 (#969) merged, not deployed",
@@ -664,6 +676,12 @@
    "deployment": {
     "detail": "2026-09-23 update (snapshot 13:50Z): #840 through #931 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #947, #951 and #956 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
     "state": "yes"
+   },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
    },
    "id": "INV-01",
    "implementation": {
@@ -1674,6 +1692,12 @@
     "detail": "unknown",
     "state": "unknown"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "ACC-02",
    "implementation": {
     "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
@@ -1784,6 +1808,12 @@
    "deployment": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
    },
    "id": "ACC-04",
    "implementation": {
