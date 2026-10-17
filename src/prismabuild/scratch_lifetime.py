@@ -5,13 +5,15 @@ exact durable owner; no claim, lease, or containment evidence is cached here.
 """
 from __future__ import annotations
 
+from . import claim_identity
+
 import os
 import socket
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 from . import contracts, core as pb, local_scratch as scratch_declarations
-from .record_store import Absent, Present, RecordStore, ScratchOwnerConflict, Unknown
+from .record_store import Absent, AmbiguousClaimHolder, Present, RecordStore, ScratchOwnerConflict, Unknown
 
 SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = "prismabuild.scratch_lifetime_selection.v1"
 SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = "prismabuild.scratch_lifetime_record.v1"
@@ -486,10 +488,8 @@ def register_attempt(
     queue, action_key: str, *, claim_snapshot: Mapping[str, object], env: Mapping[str, str],
 ) -> dict[str, object] | None:
     """Commit ownership through the existing claim/lease owner before launch."""
-    from .pool import _check_claim_lease_identity
-
     store = queue.records
-    with queue._transition_locked(str(action_key)):
+    with queue.action_transition_lock(str(action_key)):
         selected = selections(
             scratch_declarations._sealed_scratch_variables(claim_snapshot))
         if not selected:
@@ -498,7 +498,7 @@ def register_attempt(
         live = _scratch_record_value(store.claimed(action_key))
         if expected["action_key"] != action_key or scratch_declarations._scratch_claim_envelope(live) != expected:
             raise scratch_declarations.LocalScratchError("scratch lifetime claim envelope changed")
-        _check_claim_lease_identity(action_key, live, _scratch_record_value(store.lease(action_key)))
+        claim_identity.check_lease_identity(action_key, live, _scratch_record_value(store.lease(action_key)), invalid=AmbiguousClaimHolder)
         if _scratch_record_value(store.lease(action_key)) is None:
             raise scratch_declarations.LocalScratchError("scratch registration requires the worker lease")
         if (queue.resolve_claim_holder(action_key, live) != socket.gethostname()
@@ -575,8 +575,6 @@ def durable_owner(store: RecordStore, record: Mapping[str, object], *, scope_onl
 def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping[str, object],
                               *, scope_only=False, owner_path: Path | None = None) -> None:
     """Existing key lock held; preserve live/late ownership and heartbeat."""
-    from .pool import _check_claim_lease_identity
-
     field = SCRATCH_LIFETIME_FIELD
     checked = validate_record(evidence)
     if checked["claim_envelope"] != scratch_declarations._scratch_claim_envelope(record):
@@ -588,7 +586,7 @@ def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping
         raise scratch_declarations.LocalScratchError("scratch lifetime durable owner unavailable")
     lease = None if scope_only or path == store.lease_path(key) else _scratch_record_value(store.lease(key))
     if not scope_only:
-        _check_claim_lease_identity(key, live, lease)
+        claim_identity.check_lease_identity(key, live, lease, invalid=AmbiguousClaimHolder)
     if lease is not None:
         for field_name, identities in (
             ("resource_scope", ("action_key", "nonce", "scope_id")),
@@ -625,14 +623,12 @@ def finalize(queue, action_key: str, record: Mapping[str, object],
                                  *, export: object, scope_only=False,
                                  owner_path: Path | None = None) -> dict[str, object]:
     """Only stopped attempt descendants permit consuming owned scratch."""
-    from .pool import _same_claim
-
     store = queue.records
-    with queue._transition_locked(str(action_key)):
+    with queue.action_transition_lock(str(action_key)):
         field = SCRATCH_LIFETIME_FIELD
         _, durable = durable_owner(store,
             record, scope_only=scope_only, owner_path=owner_path)
-        if durable is not None and _same_claim(durable, record):
+        if durable is not None and claim_identity.same_claim(durable, record):
             if field in durable:
                 authoritative = validate_record(durable[field])
                 if isinstance(record, dict):
@@ -643,7 +639,7 @@ def finalize(queue, action_key: str, record: Mapping[str, object],
                 raise scratch_declarations.LocalScratchError("scratch cleanup lacks durable registration")
         if field not in record:
             return {"complete": True, "used": False}
-        if durable is None or not _same_claim(durable, record):
+        if durable is None or not claim_identity.same_claim(durable, record):
             raise scratch_declarations.LocalScratchError("scratch cleanup durable owner unavailable")
         evidence = validate_record(record[field])
         if (evidence["claim_envelope"] != scratch_declarations._scratch_claim_envelope(record)
@@ -662,7 +658,7 @@ def finalize(queue, action_key: str, record: Mapping[str, object],
             # Legacy payload cleanup can complete without a reader export.
             # A later scratch retry must re-query this exact stopped scope,
             # not permanently trust that legacy shortcut or infer emptiness.
-            scope = queue._scope_from_record(record)
+            scope = queue.scope_for_record(record)
             export = scope.export_stopped_verdict()
             valid, reason = reader_lease.export_verdict_proves_empty(export, scope_id=scope.unit)
         if not valid:

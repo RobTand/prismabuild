@@ -105,6 +105,8 @@ immediately. Execution deadlines and progress watches use local monotonic time.
 
 from __future__ import annotations
 
+from . import claim_identity
+
 from bisect import bisect_right
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
@@ -158,7 +160,7 @@ from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
 from . import immutable_files, record_store
-from .record_store import PoolError, PoolContractError, StaleAbsenceError
+from .record_store import AmbiguousClaimHolder, PoolError, PoolContractError, StaleAbsenceError
 from .record_store import (
     ATTEMPTS,
     CLAIMED,
@@ -194,7 +196,6 @@ from .record_store import (
     TOMBSTONE_SUFFIX,
     WITHDRAWN,
     WORKERS,
-    _CLAIM_IDENTITY,
     _STATES,
 )
 from . import progress as pb_progress
@@ -1033,8 +1034,6 @@ def tested_repository_of(record: object) -> str:
     return TESTED_REPOSITORY_UNKNOWN
 
 
-class AmbiguousClaimHolder(PoolContractError):
-    """Contradictory committed reservations forbid concluding a claim."""
 
 
 class WithdrawnActionError(PoolContractError):
@@ -3382,48 +3381,8 @@ def _reaped_children(
     }
 
 
-def _same_claim(
-    live: Mapping[str, object], snapshot: Mapping[str, object]
-) -> bool:
-    """Whether a live claimed record is the claim a worker actually ran.
-
-    Only fields the queue writes once per claim, so the guards that rewrite a
-    claimed record in place -- a container-cleanup retry, a withdrawal's
-    ``max_attempts`` poison, a pending stop -- do not read as a different
-    claim.
-    """
-
-    return all(
-        live.get(field) == snapshot.get(field) for field in _CLAIM_IDENTITY
-    )
 
 
-def _check_claim_lease_identity(
-    action_key: str, claim: Mapping[str, object], lease: Mapping[str, object] | None,
-) -> None:
-    """Refuse conflicting observations before replacing or cleaning ownership.
-
-    Host-level reservations do not distinguish attempts on the same box.
-    Missing legacy fields supply no extra proof; jointly stale reads remain
-    outside this consistency check.
-    """
-    if lease is None:
-        return
-    conflicts = [
-        claim_field for claim_field, lease_field in (
-            ("claimed_by", "owner"), ("claimed_host", "host"),
-            ("claimed_unix", "claimed_unix"),
-            ("published_unix", "published_unix"),
-        )
-        if claim.get(claim_field) is not None
-        and lease.get(lease_field) is not None
-        and claim[claim_field] != lease[lease_field]
-    ]
-    if conflicts:
-        raise AmbiguousClaimHolder(
-            f"contradictory claim and lease identity for {action_key}: "
-            f"{', '.join(conflicts)}; claim and reservations retained"
-        )
 
 
 def _acquisition_clock(holder: Path) -> float | None:
@@ -5191,7 +5150,7 @@ def _serialized_key(method):
     def invoke(self, *args, **kwargs):
         value = args[0] if args else kwargs[identity_parameter]
         key = value.get("action_key") if isinstance(value, Mapping) else value
-        with self._transition_locked(str(key)):
+        with self.action_transition_lock(str(key)):
             return method(self, *args, **kwargs)
     return invoke
 
@@ -5791,7 +5750,7 @@ class PoolQueue:
         if expect is None:
             return tombstone, True
         entombed = record_store.read_document(tombstone)
-        if entombed is not None and not _same_claim(entombed, expect):
+        if entombed is not None and not claim_identity.same_claim(entombed, expect):
             # The rename is what makes this decidable.  Comparing before it
             # tests a name another process can replace between the read and
             # the move; afterwards these bytes are held exclusively and can be
@@ -7087,7 +7046,7 @@ class PoolQueue:
                     or bool(
                         record_store.value_or_raise(self.records.item_presence(READY, action_key)),
                     )
-                    or (live is not None and not _same_claim(live, preempted_claim))
+                    or (live is not None and not claim_identity.same_claim(live, preempted_claim))
                     or not self._preemption_eligible(preempted_claim)):
                 raise PoolContractError("preemption handoff changed before requeue")
         if validated_produced_template is not None:
@@ -9448,7 +9407,7 @@ class PoolQueue:
                         continue
                     inspected += 1
                     after = name  # kept, unreadable and busy rows still advance
-                    with self._transition_locked(key, blocking=False) as acquired:
+                    with self.action_transition_lock(key, blocking=False) as acquired:
                         if not acquired:
                             continue
                         if (bool(
@@ -11951,15 +11910,16 @@ class PoolQueue:
             lease["progress_observation"] = dict(progress_observation)
         claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
         if (claim is None or claim.get("claimed_by") != owner
-                or (claim_snapshot is not None and not _same_claim(claim, claim_snapshot))):
+                or (claim_snapshot is not None and not claim_identity.same_claim(claim, claim_snapshot))):
             raise PoolContractError("claim changed before heartbeat publication")
         # A stale claim read must not erase the successor lease's ownership
         # evidence, including the evidence used by finish's cleanup guard.
-        _check_claim_lease_identity(
+        claim_identity.check_lease_identity(
             action_key,
             claim,
             record_store.read_document(self.records.lease_path(action_key)),
-        )
+           invalid=AmbiguousClaimHolder,
+       )
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
                       "claimed_unix", "published_unix", "scratch_declaration_record",
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
@@ -14270,7 +14230,7 @@ class PoolQueue:
                     return {"ok": False, "refusal": "tier-reservation-unavailable",
                             "available": ledger.available()}
                 selected = unspoken_names[:batch_gib]
-        with self._transition_locked(str(owner_key),
+        with self.action_transition_lock(str(owner_key),
                                      blocking=False) as owner_acquired:
             if not owner_acquired:
                 return {"ok": False, "refusal": "funding-race-deferred"}
@@ -14538,7 +14498,7 @@ class PoolQueue:
                             "available": ledger.available()}
                 selected = unspoken_names[:batch_gib]
         # Owner outer, mover inner (R1): serializes against owner finish.
-        with self._transition_locked(str(owner_key),
+        with self.action_transition_lock(str(owner_key),
                                      blocking=False) as owner_acquired:
             if not owner_acquired:
                 return {"ok": False, "refusal": "funding-race-deferred"}
@@ -14859,7 +14819,7 @@ class PoolQueue:
             exp_generation = str(probe.get("generation"))
         except (TypeError, ValueError, KeyError):
             return {"ok": False, "refusal": "unknown-retain: funding-binding"}
-        with self._transition_locked(owner_key, blocking=False) as owner_acquired:
+        with self.action_transition_lock(owner_key, blocking=False) as owner_acquired:
             if not owner_acquired:
                 return {"ok": False, "refusal": "funding-race-deferred"}
             with self.mover_transition_lock(mover, blocking=False) as mover_acquired:
@@ -15428,7 +15388,7 @@ class PoolQueue:
         the range is copied instead, which costs time and never correctness.
         """
 
-        return self._transition_locked(str(mover_action_key), blocking=blocking,
+        return self.action_transition_lock(str(mover_action_key), blocking=blocking,
                                        busy=busy)
 
     def staged_range_of(self, mover_action_key: str) -> dict[str, object] | None:
@@ -15799,7 +15759,7 @@ class PoolQueue:
         # grant; UNKNOWN census (unreadable/corrupt intent that may own
         # source-held names, including partial transfers) retains ALL held
         # tier tokens for reaper retry, preserving attribution.
-        with self._transition_locked(str(action_key), blocking=True):
+        with self.action_transition_lock(str(action_key), blocking=True):
             tier_released = 0
             # One census per conclusion, read only if some tier holds a token
             # for this key (see ``output_keep_names_for_owner``).
@@ -17902,12 +17862,12 @@ class PoolQueue:
                                holds: "_TransitionHolds | None"):
         """The claim pass's non-blocking transition lock, with its hold timed.
 
-        Yields what :meth:`_transition_locked` yields.  An acquired lock is
+        Yields what :meth:`action_transition_lock` yields.  An acquired lock is
         timed until the block ends, whether it ends by falling through,
         ``continue``, ``return`` or a raise, and added to ``holds`` (#1029).
         """
 
-        with self._transition_locked(action_key, blocking=False) as acquired:
+        with self.action_transition_lock(action_key, blocking=False) as acquired:
             if not acquired or holds is None:
                 yield acquired
                 return
@@ -17917,7 +17877,7 @@ class PoolQueue:
             finally:
                 holds.add(str(action_key), time.monotonic() - started)
 
-    def _transition_locked(self, action_key: str, *, blocking: bool = True,
+    def action_transition_lock(self, action_key: str, *, blocking: bool = True,
                            busy: dict[str, object] | None = None):
         """Serialize one key's ownership transitions, never independent keys.
 
@@ -17967,7 +17927,7 @@ class PoolQueue:
             "checked_unix": _now(),
         }
 
-    def _scope_from_record(self, record: Mapping[str, object]) -> resource_scope.ResourceScope:
+    def scope_for_record(self, record: Mapping[str, object]) -> resource_scope.ResourceScope:
         control = record.get("resource_scope")
         if not isinstance(control, dict):
             raise PoolContractError("resource scope control must be an object")
@@ -18026,14 +17986,15 @@ class PoolQueue:
         control = {**scope.control_record(), "create_recovered": True}
         path = self.records.item_path(CLAIMED, key)
         live = record_store.read_document(path)
-        if live is not None and _same_claim(live, record):
+        if live is not None and claim_identity.same_claim(live, record):
             # A recovered broker reply must not overwrite a successor before
             # the subsequent heartbeat detects its contradictory lease.
-            _check_claim_lease_identity(
+            claim_identity.check_lease_identity(
                 key,
                 live,
                 record_store.read_document(self.records.lease_path(key)),
-            )
+               invalid=AmbiguousClaimHolder,
+           )
             live["resource_scope"] = control
             self.records.replace_record_at(path, live)
             self.write_lease(key, owner=str(record.get("claimed_by") or ""),
@@ -18116,7 +18077,7 @@ class PoolQueue:
         lease = record_store.read_document(lease_path)
         if lease is None:
             raise local_scratch.LocalScratchError("scratch recording requires the worker's existing lease")
-        _check_claim_lease_identity(action_key, live, lease)
+        claim_identity.check_lease_identity(action_key, live, lease, invalid=AmbiguousClaimHolder)
         # The generic heartbeat guard predates exact scope evidence. This
         # new writer must not erase a contradictory recovery authority.
         for control_field, identities in (
@@ -18204,15 +18165,16 @@ class PoolQueue:
         )
         path = self.records.item_path(CLAIMED, key)
         live = record_store.read_document(path)
-        if live is None or not _same_claim(live, item):
+        if live is None or not claim_identity.same_claim(live, item):
             raise PoolContractError("claim changed before scope creation")
         # Heartbeat validation happens after the claim write. Refuse a stale
         # caller here so that write cannot first erase a successor's scope.
-        _check_claim_lease_identity(
+        claim_identity.check_lease_identity(
             key,
             live,
             record_store.read_document(self.records.lease_path(key)),
-        )
+           invalid=AmbiguousClaimHolder,
+       )
         intent = {"action_key": key, "nonce": scope.nonce,
                   "memory_max_bytes": scope.memory_max_bytes,
                   "socket_path": str(scope.socket_path), **gpu_kwargs}
@@ -18235,13 +18197,14 @@ class PoolQueue:
         control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         try:
             live = record_store.read_document(path)
-            if live is None or not _same_claim(live, item):
+            if live is None or not claim_identity.same_claim(live, item):
                 raise PoolContractError("claim changed before scope launch")
-            _check_claim_lease_identity(
+            claim_identity.check_lease_identity(
                 key,
                 live,
                 record_store.read_document(self.records.lease_path(key)),
-            )
+               invalid=AmbiguousClaimHolder,
+           )
             live["resource_scope"] = control
             self.records.replace_record_at(path, live)
             if isinstance(item, dict):
@@ -18388,7 +18351,7 @@ class PoolQueue:
                     pass
                 return
         try:
-            scope = self._scope_from_record(record)
+            scope = self.scope_for_record(record)
         except Exception:                                        # noqa: BLE001
             return
         if scope.nonce != nonce:
@@ -18456,7 +18419,7 @@ class PoolQueue:
                 live = record_store.value_or_raise(
                     self.records.item(CLAIMED, str(record["action_key"])),
                 )
-                if live is not None and not _same_claim(live, record):
+                if live is not None and not claim_identity.same_claim(live, record):
                     old = record.get("resource_scope") or record.get("resource_scope_intent")
                     if not isinstance(old, dict) or not old.get("nonce"):
                         raise PoolContractError("late finish has no exact scope authority")
@@ -18503,7 +18466,7 @@ class PoolQueue:
                     pass
                 return {"complete": True, "used": True, "removed": [], "remaining": [],
                         "resource_scope": prior}
-            scope = self._scope_from_record(record)
+            scope = self.scope_for_record(record)
             if scope_only:
                 scope.telemetry_path = (scope.telemetry_path.parent / "attempts"
                                         / scope.nonce / scope.telemetry_path.name)
@@ -18600,7 +18563,7 @@ class PoolQueue:
             key = str(record["action_key"])
             path = self.records.item_path(CLAIMED, key)
             live = record_store.read_document(path)
-            if not scope_only and live is not None and _same_claim(live, record):
+            if not scope_only and live is not None and claim_identity.same_claim(live, record):
                 live["resource_scope_cleanup"] = cleanup
                 self.records.replace_record_at(path, live)
             if isinstance(record, dict):
@@ -19827,7 +19790,7 @@ class PoolQueue:
             with self._admission_lock(controller):
                 for key, holder in sorted(_gang.backfill_holders(self, mine).items()):
                     proof = proofs.get(key)
-                    if (proof is not None and proof[2] and _same_claim(holder, proof[0])
+                    if (proof is not None and proof[2] and claim_identity.same_claim(holder, proof[0])
                             and self._preemption_proof_binding(holder) == proof[1]
                             and self.withdrawal_covers(holder, action_key=key) is None
                             and holder.get("finish_pending") is None
@@ -20077,7 +20040,7 @@ class PoolQueue:
                 continue
             proof = None if proofs is None else proofs.get(holder)
             if (holder_priority >= 0 or proof is None
-                    or not _same_claim(record, proof[0])
+                    or not claim_identity.same_claim(record, proof[0])
                     or self._preemption_proof_binding(record) != proof[1]
                     or not proof[2]):
                 continue
@@ -20111,7 +20074,7 @@ class PoolQueue:
         # Keep cancellation and replacement publication in one transition.
         # Waiters take this same key lock before following the cancellation,
         # so an intermediate marker cannot become a terminal verdict.
-        with self._transition_locked(holder, blocking=False) as acquired:
+        with self.action_transition_lock(holder, blocking=False) as acquired:
             if not acquired:
                 return None
             requeue = self._requeue_arguments(record, action_key=holder)
@@ -22586,7 +22549,7 @@ class PoolQueue:
         for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
             try:
-                with self._transition_locked(key, blocking=False) as acquired:
+                with self.action_transition_lock(key, blocking=False) as acquired:
                     if not acquired:
                         continue
                     record = record_store.read_document(path)
@@ -22694,7 +22657,7 @@ class PoolQueue:
         terminal_keys = self.terminal_keys()
         for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
-            with self._transition_locked(key, blocking=False) as acquired:
+            with self.action_transition_lock(key, blocking=False) as acquired:
                 if not acquired:
                     continue
                 record = record_store.read_document(path)
@@ -22788,11 +22751,12 @@ class PoolQueue:
                     # A host's token holder names the key, not its attempt. An
                     # expired lease can still contradict a stale claim read;
                     # refuse before payload cleanup or any ownership mutation.
-                    _check_claim_lease_identity(
+                    claim_identity.check_lease_identity(
                         key,
                         record,
                         record_store.read_document(self.records.lease_path(key)),
-                    )
+                       invalid=AmbiguousClaimHolder,
+                   )
                     holder = self.resolve_claim_holder(key, record)
                 except AmbiguousClaimHolder as exc:
                     print(f"pool reaper: {exc}", file=sys.stderr)
@@ -23088,7 +23052,7 @@ class PoolQueue:
             )
             if matched is None:
                 continue
-            with self._transition_locked(matched[1], blocking=False) as acquired:
+            with self.action_transition_lock(matched[1], blocking=False) as acquired:
                 if not acquired:
                     continue
                 try:
@@ -23174,7 +23138,7 @@ class PoolQueue:
             key = parts[0]
             if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
                 continue
-            with self._transition_locked(key, blocking=False) as acquired:
+            with self.action_transition_lock(key, blocking=False) as acquired:
                 if not acquired:
                     continue
                 if tombstone.name.endswith(LATE_FINISH_SUFFIX):
@@ -23395,7 +23359,7 @@ class PoolQueue:
         now = _now()
         for lease in self.records.claimed_lease_paths():
             key = lease.name[: -len(".lease")]
-            with self._transition_locked(key, blocking=False) as acquired:
+            with self.action_transition_lock(key, blocking=False) as acquired:
                 if not acquired:
                     continue
                 if bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key))):
@@ -23572,7 +23536,7 @@ class PoolQueue:
                 continue
             if age <= grace_s:
                 continue
-            with self._transition_locked(key, blocking=False) as acquired:
+            with self.action_transition_lock(key, blocking=False) as acquired:
                 if not acquired:
                     continue
                 try:
@@ -23652,7 +23616,7 @@ class PoolQueue:
         if not self.records.state_directory_present(READY):
             return filed
         for path in self.records.json_slot_paths(READY):
-            with self._transition_locked(path.stem, blocking=False) as acquired:
+            with self.action_transition_lock(path.stem, blocking=False) as acquired:
                 if not acquired:
                     continue
                 try:
@@ -24324,7 +24288,7 @@ class PoolQueue:
         saved = record_store.read_document(path)
         if saved is None:
             record["finish_pending"] = {"status": status, "detail": dict(detail or {})}
-            record["late_finish"] = {field: live.get(field) for field in _CLAIM_IDENTITY}
+            record["late_finish"] = {field: live.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
             # Persist authority and the completed payload's result before any
             # broker operation. A crash can then be retried by the same sweep
             # that already recovers interrupted finish tombstones.
@@ -24587,7 +24551,7 @@ class PoolQueue:
             with ExitStack() as held:
                 for lead in leads:
                     acquired = held.enter_context(
-                        self._transition_locked(lead, blocking=False))
+                        self.action_transition_lock(lead, blocking=False))
                     if not acquired:
                         self._gang_clear_terminal(item, key)
                         return False
@@ -24770,7 +24734,7 @@ class PoolQueue:
                     snapshot=claim_snapshot, live=ready,
                 )
         if (record is not None and claim_snapshot is not None
-                and not _same_claim(record, claim_snapshot)):
+                and not claim_identity.same_claim(record, claim_snapshot)):
             # Whatever is at ``claimed/<key>.json`` now is not the claim this
             # worker executed, so none of the code below may touch it.
             return self._finish_late(
@@ -24792,11 +24756,12 @@ class PoolQueue:
             # the lease names its successor. Refuse before action-wide Docker
             # cleanup or any claim/telemetry write; the later entomb comparison
             # cannot undo payload removal. Missing legacy fields add no proof.
-            _check_claim_lease_identity(
+            claim_identity.check_lease_identity(
                 action_key,
                 record,
                 record_store.read_document(self.records.lease_path(action_key)),
-            )
+               invalid=AmbiguousClaimHolder,
+           )
         read_claim = dict(record) if record is not None else None
         # Cleanup annotates this mapping with the completed scope evidence.
         # Keep the live record itself so the terminal retains that annotation;
@@ -24819,7 +24784,7 @@ class PoolQueue:
                 "status": status, "detail": dict(detail or {}),
             }
             live = record_store.read_document(src)
-            if live is not None and _same_claim(live, effective_record):
+            if live is not None and claim_identity.same_claim(live, effective_record):
                 self.records.replace_record_at(src, pending)
             return src
         scope_cleanup = container_cleanup.get("resource_scope") or {}
@@ -24843,9 +24808,9 @@ class PoolQueue:
             dst = self.records.item_path(WITHDRAWN, action_key)
             if read_claim is None:
                 return dst
-            with self._transition_locked(action_key):
+            with self.action_transition_lock(action_key):
                 live = record_store.read_document(src)
-                if live is None or not _same_claim(live, read_claim):
+                if live is None or not claim_identity.same_claim(live, read_claim):
                     return dst
                 decision = self.withdrawal_covers(record, action_key=action_key)
                 marker = record_store.read_document(dst)
@@ -24912,7 +24877,7 @@ class PoolQueue:
                     with suppress(OSError, ValueError, pb.PrismaBuildError):
                         self.records.replace_record_at(dst if current else archive, filed)
                     election = timing["election"]
-                    with self._transition_locked(election["action_key"], blocking=False) as acquired:
+                    with self.action_transition_lock(election["action_key"], blocking=False) as acquired:
                         if acquired:
                             with suppress(OSError, ValueError, pb.PrismaBuildError):
                                 _gang.note_backfill_preemption(self, election, timing)
@@ -25684,7 +25649,7 @@ class PoolQueue:
 
     def _withdraw_ready(self, key: str) -> dict[str, object] | None:
         """Examine captured READY bytes without losing an uncancelled successor."""
-        with self._transition_locked(key, blocking=False) as acquired:
+        with self.action_transition_lock(key, blocking=False) as acquired:
             if not acquired:
                 return None
             captured = self._capture_ready_transition(self.records.item_path(READY, key),
@@ -25909,7 +25874,7 @@ class PoolQueue:
         existing = record_store.read_document(withdrawn_path)
         record = record_store.read_document(claimed_path)
         if expected_claim is not None and (
-                record is None or not _same_claim(record, expected_claim)):
+                record is None or not claim_identity.same_claim(record, expected_claim)):
             # Admission selected one exact attempt before taking this key's
             # transition lock. A replacement must retain its own priority and
             # cancellation authority, even when it has the same action key.
@@ -25945,7 +25910,7 @@ class PoolQueue:
                     or snap["action_key"] != key):
                 raise PoolContractError(
                     f"membership handoff for {key[:12]} names another action")
-            if record is None or not _same_claim(record, snap):
+            if record is None or not claim_identity.same_claim(record, snap):
                 raise PoolContractError(
                     f"membership handoff claim changed for {key[:12]}: "
                     "the live claim is not the planned attempt")
@@ -25981,7 +25946,7 @@ class PoolQueue:
                 # absent-on-one-side mismatch, refuses: malformed is
                 # never read as "no scope".
                 try:
-                    self._scope_from_record(record)
+                    self.scope_for_record(record)
                 except PoolContractError as exc:
                     raise PoolContractError(
                         f"membership handoff for {key[:12]} has an invalid "
@@ -26191,7 +26156,7 @@ class PoolQueue:
             }
             if signal_child and host == socket.gethostname() and record.get("resource_scope") is not None:
                 try:
-                    scope = self._scope_from_record(record)
+                    scope = self.scope_for_record(record)
                     stopped = scope.terminate_owned("withdrawn")
                     signalled = {"scope_id": scope.unit, "nonce": scope.nonce,
                                  "signals": ["broker exact-attempt stop"],
@@ -26297,7 +26262,7 @@ class PoolQueue:
         if policy is not None:
             outcome.update(policy.as_record())
         if item.get("resource_scope") is not None:
-            telemetry = self._sample_resource_scope(self._scope_from_record(item))
+            telemetry = self._sample_resource_scope(self.scope_for_record(item))
             outcome["resource_telemetry"] = telemetry
             resource_failure = self._resource_failure(telemetry)
             if resource_failure:
@@ -27097,7 +27062,7 @@ class PoolQueue:
         """Return a broker-refused launch without recording an execution attempt."""
         key = str(item["action_key"])
         record = record_store.value_or_raise(self.records.item(CLAIMED, key))
-        if record is None or not _same_claim(record, item):
+        if record is None or not claim_identity.same_claim(record, item):
             return
         if record.get("resource_scope") is not None:
             raise PoolContractError("cannot defer an attempt that already owns a resource scope")
