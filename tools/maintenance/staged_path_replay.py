@@ -134,7 +134,8 @@ def staged_replay_capture(checkout: Path, data: Path):
             pruned = owner.prune_stale_mentions(
                 queue, fixture.OTHER_STAGE_MOVER, consumer_action_key=fixture.OTHER_CONSUMER,
                 stage=data / "stage", tier_id=fixture.STAGE_TIER, root=root, observed=observed)
-        assert pruned["complete"] and pruned["entries_pruned"] == 1 and pruned["document_pair_complete"], pruned
+        assert pruned["entries_pruned"] == 1 and pruned["document_pair_complete"], pruned
+        assert pruned["partial"] and pruned["charge_retained"] and not pruned["complete"] and not pruned["errors"], pruned
         assert queue.tier(fixture.STAGE_TIER).holdings(fixture.OTHER_STAGE_MOVER) == {"stage_gib": 1}
 
         phase[0] = "egress-stage"
