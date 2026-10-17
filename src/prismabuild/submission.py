@@ -6366,3 +6366,543 @@ display: DisplaySink = discard_display) -> None:
                       "report the declared reference.")
         if interpreter_line:
             remedy = (
+                "The interpreter path is part of the action's placement: a "
+                "worker must report it in its offer before the action can "
+                "run there. Install the interpreter on a box that offers "
+                "these tags, let its worker's next poll answer for the path, "
+                "and resubmit; submitting anyway would only queue a command "
+                "that dies with 127 on the first box to claim it.")
+        recorded_tags = queue.offered_tags(max_age_s=RECORDED_OFFER_MAX_AGE_S)
+        missing_code_tags = set(tags) - set(recorded_tags)
+        if capability_blocked:
+            missing_code_tags.add(contracts.CONTAINER_IMAGE_TAG)
+        guidance = contracts.contract_remedies(missing_code_tags)
+        if guidance:
+            remedy += "\n" + "\n".join(guidance)
+        raise SubmissionRefused(
+            f"pbrun: no recorded worker can run this action.\n"
+            f"  required tags: {tags or '(any box)'}\n"
+            f"{image_line}"
+            f"{interpreter_line}"
+            f"  demand:        {demand}\n"
+            f"{capacity_line}"
+            f"  offered on record: "
+            f"{recorded_tags}\n"
+            f"{remedy}"
+        )
+    producer_room_refusal = producer_allowance_room_refusal(queue, action)
+    if producer_room_refusal is not None:
+        raise SubmissionRefused(producer_room_refusal)
+    if capability_verdict is None:
+        if intent.get("container_images"):
+            # No worker has announced at all, so no inventory exists to place
+            # an image-pinned action against.  Submitting unchecked would put
+            # the action back in the exact position #714 describes: any old
+            # loop that matches the tags could claim it and fail inside the
+            # container.  Refused.
+            raise SubmissionRefused(
+                "pbrun: no worker offers on record, and this action declares "
+                "container image "
+                + ", ".join(intent["container_images"])
+                + ".\n"
+                "  An image requirement is checked against the claiming "
+                "worker's local Docker inventory, and no worker has announced "
+                "one. Start a worker whose loop offers "
+                f"{contracts.CONTAINER_IMAGE_TAG}, load the image on a box that "
+                "offers these tags, and resubmit."
+            )
+        emit_display(display, "pbrun: no worker offers on record; submitting unchecked",
+              channel="stderr", flush=True)
+    elif live_verdict is not True:
+        emit_display(display, 
+            "pbrun: no matching worker is live now; a recorded capable worker "
+            "is between announcements or offline.  Submitting so --wait-s "
+            f"{args.wait_s:g} owns how long to wait.",
+            channel="stderr", flush=True,
+        )
+
+    ceiling_notice = timeout_ceiling_notice(
+        queue, intent, requested=args.timeout_s if progress_policy is None else None)
+    if ceiling_notice:
+        emit_display(display, ceiling_notice, channel="stderr", flush=True)
+
+
+def interpreter_submission_verdict(queue, intent: Mapping[str, object]):
+    """``("present"|"absent"|"unknown", detail)`` for the sealed path (#1266).
+
+    One rule, asked where the caller is still watching: absent raises, naming
+    the path; unknown publishes with a notice, because a first submission is
+    unknown by construction and refusing it would deadlock the tool on its
+    own first use -- the claim-time stat remains the guard on every box.
+    """
+
+    interpreter = str(intent.get("interpreter") or "")
+    verdict = queue.interpreter_placement_verdict(
+        intent, interpreter, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    return verdict, interpreter
+
+
+def interpreter_of(command: Sequence[str]) -> str | None:
+    """The absolute interpreter a command names, when it names one (#1263).
+
+    ``argv[0]`` that is an absolute path to a ``python*`` binary.  Nothing is
+    guessed from a wrapper, a venv name or a tag: the item declares exactly
+    the bytes it will exec, and the fleet answers for that path or not at
+    all.  ``None`` keeps today's behaviour byte for byte.
+    """
+
+    if not command:
+        return None
+    first = str(command[0])
+    if not first.startswith("/"):
+        return None
+    name = first.rsplit("/", 1)[-1]
+    if not name.startswith("python"):
+        return None
+    return first
+
+
+def publication_row(
+    action: Mapping[str, object],
+    *,
+    args: SubmissionRequest,
+    queue,
+    max_attempts: int | None = None,
+    retry_safe: bool | None = None,
+    tested_repository: str | None = None,
+store: FleetStore) -> dict[str, object]:
+    """The queue row that submits one sealed action.
+
+    A queue row and the action it points at are two spellings of one
+    submission, so every field that describes the work is read off the sealed
+    body itself rather than off a template or a local the caller happens to
+    still be holding.  That matters most for the owner: the lifecycle cleanup
+    asks Docker for a label derived from it, so a row naming a different owner
+    than the body would query a label nothing carries.  It matters for the
+    rest because a decomposed child seals its own ``params``: reading the row
+    off the body is what makes a child's row describe the child.
+
+    Only the submitter's own handles -- priority, the attempt ceiling, retry
+    safety -- come from ``args``, and they are exactly the fields no action
+    body carries, because they say how hard to try rather than what to run.
+    The tested-repository tag (#1565) is the one caller-supplied field that
+    names the work: it arrives as an argument because it is frozen in the
+    template, which the sealed body must not carry, and a caller that cannot
+    name the tree it froze passes nothing.
+
+    ``pbcampaign`` publishes decomposed children through this too.  The
+    alternative is a second copy of the literal, which is how a row and a body
+    come to disagree about one action.
+    """
+
+    params = action["params"]
+    demand = params["demand"]
+    variables = action["environment"]["variables"]
+    row: dict[str, object] = {
+        "action_key": str(action["action_key"]),
+        "cas_root": str(store.cas_root),
+        "worker_script": str(store.runtime_root / "tools" / "prismabuild_worker.py"),
+        "tags": params["placement"]["required_tags"],
+        "needs_gpu": bool(demand.get("gpu")),
+        "priority": args.priority,
+        "resources": demand,
+        # ``args`` for the submitter's own work; overridden only by a movement
+        # node, whose idempotence is a property of the mover rather than of
+        # what the submitter asked for (#603).
+        "max_attempts": (args.max_attempts if max_attempts is None
+                         else int(max_attempts)),
+        "container_owner": str(variables[CONTAINER_OWNER_ENV]),
+        "checkout_snapshot": params["checkout_snapshot"],
+    }
+    priority_reason = getattr(args, "priority_reason", None)
+    if priority_reason is not None:
+        parameters = inspect.signature(queue.publish).parameters
+        if ("priority_reason" not in parameters
+                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
+                            for p in parameters.values())):
+            raise pool.PoolContractError(
+                "loaded queue runtime does not support priority_reason; "
+                "use a matching runtime or omit --priority-reason")
+        row["priority_reason"] = pool.normalize_priority_reason(priority_reason)
+    if tested_repository is not None:
+        # The template's frozen answer for the tree this action seals (#1565).
+        # Guarded like the annotation above: a loaded runtime that cannot
+        # carry the tag refuses rather than silently untagging the submission.
+        parameters = inspect.signature(queue.publish).parameters
+        if ("tested_repository" not in parameters
+                and not any(p.kind is inspect.Parameter.VAR_KEYWORD
+                            for p in parameters.values())):
+            raise pool.PoolContractError(
+                "loaded queue runtime does not support tested_repository; "
+                "use a matching runtime")
+        row["tested_repository"] = pool.normalize_tested_repository(
+            tested_repository)
+    if params.get("container_images"):
+        # Derived from the sealed body, never re-read from the caller: the row
+        # describes the action, so the action's own params are the authority.
+        row["container_images"] = list(params["container_images"])
+    if params.get("interpreter"):
+        row["interpreter"] = str(params["interpreter"])
+    for field in ("local_dependencies", "dependency_queries"):
+        if params.get(field):
+            row[field] = dict(params[field])
+    if params.get("gang"):
+        row["gang"] = dict(params["gang"])
+    if params.get("requires_files") and "requires_files" in (
+            inspect.signature(queue.publish).parameters):
+        # Derived from the sealed body like the interpreter (#1495), and
+        # guarded like retry_safe: in a mixed runtime window the row simply
+        # omits the field and the capability tag in the row's tags alone
+        # still fences every worker that cannot read the requirement.
+        row["requires_files"] = [
+            {"path": str(entry["path"]), "sha256": str(entry["sha256"])}
+            for entry in params["requires_files"]]
+    # The repo checkout can advance just before the atomic runtime generation
+    # rolls.  The previous PoolQueue already accepts the safety-critical bound,
+    # so keep that mixed window usable; add the explanatory annotation once the
+    # loaded runtime exposes it.  The sealed action params carry the full
+    # contract in both cases.
+    if "retry_safe" in inspect.signature(queue.publish).parameters:
+        row["retry_safe"] = (args.retry_safe if retry_safe is None
+                             else bool(retry_safe))
+    if params.get("resident_set") is not None:
+        row["resident_set"] = params["resident_set"]
+    return row
+
+
+_DEFERRED_PUBLICATION_ARGS = (
+    "priority", "priority_reason", "max_attempts", "retry_safe", "residency",
+    "residency_tier",
+    "residency_ram", "residency_share", "residency_mover_mem_gb",
+    "residency_mover_readers",
+    "residency_mover_max_attempts",
+    # The reader's declaration (#909), which a deferred consumer's plan must
+    # carry exactly as a direct submission's does.
+    "residency_prefetch_depth_gib", "residency_read_mb_s",
+    # D38 evidence the release checks again against the sealed key.
+    "d38_receipt", "d38_exception",
+)
+
+
+def check_supersession(q, old: str, *, new: str, new_kind: str) -> None:
+    """Refuse now what :func:`file_supersession_or_exit` would refuse, writing nothing (#1585).
+
+    For a submission that still has fallible work to do before its row can
+    publish: the record is immutable, so one filed for a replacement that then
+    refuses strands the old key at a successor that never existed.
+    """
+
+    try:
+        action_edges.check_supersession(q, old, new=new, new_kind=new_kind)
+    except action_edges.ActionEdgeError as exc:
+        raise SubmissionRefused(f"pbrun: --supersedes: {exc}") from None
+
+
+def file_supersession(q, old: str, *, new: str, new_kind: str, display: DisplaySink = discard_display) -> None:
+    """File that ``new`` replaces ``old``, or refuse the submission (#913)."""
+
+    try:
+        action_edges.file_supersession(q, old, new=new, new_kind=new_kind)
+    except action_edges.ActionEdgeError as exc:
+        raise SubmissionRefused(f"pbrun: --supersedes: {exc}") from None
+    emit_display(display, f"pbrun: {new[:12]} supersedes {old[:12]}; edges that name it "
+          f"follow this submission", channel="stderr", flush=True)
+
+
+def record_template(template: Mapping[str, object]) -> dict[str, object]:
+    """A frozen template as JSON: everything but the CAS handle (#913).
+
+    The CAS is the one live object a template carries; the release rebuilds
+    it from the recorded root.  The marker root is a path, recorded as text.
+    """
+
+    record = {name: value for name, value in template.items() if name != "cas"}
+    record["marker_root"] = str(template["marker_root"])
+    try:
+        return json.loads(json.dumps(record))
+    except (TypeError, ValueError) as exc:
+        raise SubmissionRefused(
+            f"pbrun: this submission cannot be deferred: its frozen template "
+            f"is not plain data ({exc})") from None
+
+
+def restore_template(record: Mapping[str, object], *,
+                         cas_root: str | Path) -> dict[str, object]:
+    """The frozen template a deferred record carries, ready to seal."""
+
+    template = dict(record)
+    template["cas"] = pb.PrismaBuildCAS(Path(cas_root))
+    template["marker_root"] = Path(str(record["marker_root"]))
+    return template
+
+
+def resolve_after_edges(q, cas_root: Path,
+                        texts: Sequence[str]) -> list[dict[str, str]]:
+    """Every ``--after`` edge, checked against what the queue has filed.
+
+    An unknown producer refuses: a key needs a readable row or terminal
+    record, a pending id a deferred record.  So does a producer that does
+    not declare the template, or a template that is not write-only.
+    """
+
+    edges: list[dict[str, str]] = []
+    for text in texts:
+        try:
+            edge = action_edges.parse_edge(text)
+            kind = action_edges.producer_kind(q, edge["producer"])
+            if kind == action_edges.PRODUCER_KEY:
+                declared = action_edges.declared_template_id(
+                    cas_root, edge["producer"])
+                if declared != edge["template_id"]:
+                    raise action_edges.ActionEdgeError(
+                        f"the producer declares template {declared!r}, not "
+                        f"{edge['template_id']!r}")
+                action_edges.require_write_only_template(
+                    q.root, edge["template_id"])
+            else:
+                deferred = action_edges.read_deferred(q.root, edge["producer"])
+                assert deferred is not None
+                produced = deferred["template"].get("produced_output_template")
+                if (not isinstance(produced, Mapping)
+                        or produced.get("template_id") != edge["template_id"]):
+                    raise action_edges.ActionEdgeError(
+                        "the deferred producer does not declare template "
+                        f"{edge['template_id']!r}")
+                if not produced.get("write_only"):
+                    raise action_edges.ActionEdgeError(
+                        f"template {edge['template_id']!r} is not write-only")
+        except action_edges.ActionEdgeError as exc:
+            raise SubmissionRefused(f"pbrun: --after {text}: {exc}") from None
+        edges.append({**edge, "kind": kind})
+    return edges
+
+
+def register_deferred(prepared: Mapping[str, object],
+                    args: SubmissionRequest, *, report=None, store: FleetStore, display: DisplaySink = discard_display):
+    """File this submission for release once its producers succeed (#913).
+
+    Everything ``prepare_submission`` checks has been checked: the checkout,
+    the environment, the demand and the placement, which is announced and
+    refused here exactly as for an ordinary submission.  What is left is
+    what depends on the producer's bytes -- the data manifest, the key, the
+    residency plan -- and the tiers loop's release does that.
+    """
+
+    report = report if report is not None else action_client.ClientReport()
+    template = prepared["template"]
+    d38_gate.refuse_deferred(args, template["params"], store=store, display=display)
+    cas = template["cas"]
+    q = pool.PoolQueue(store.queue_root)
+    edges = resolve_after_edges(q, Path(cas.root), args.after)
+    try:
+        action_edges.resolve_command(template["params"]["command"], "", "")
+    except action_edges.ActionEdgeError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from None
+    require_releasable_template(template, store=store)
+    static_input = None
+    if args.data_manifest is not None:
+        pb.load_data_manifest(args.data_manifest)
+        static_input, _ = cas.ingest_input(
+            args.data_manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        static, encoding = pb.read_data_manifest(cas.input_path(static_input))
+        if encoding != "identity":
+            raise SubmissionRefused(
+                "pbrun: a deferred submission's --data-manifest must be plain "
+                "JSON: the release rewrites it with the committed batches")
+        if static["schema"] == pb.DATA_MANIFEST_SCHEMA_V2:
+            require_deferred_read_plan(static, edges, args=args, store=store)
+        else:
+            require_declared_origin_batches(
+                static, transport=args.transport, queue_root=q.root)
+            if (args.residency == "stage"
+                    and not manifest_layout.manifest_phase_ranges(static)):
+                raise SubmissionRefused(
+                    "pbrun: --residency stage needs the static --data-manifest "
+                    "to declare its read order in phases; the release adds one "
+                    "phase per committed batch after them")
+    announce_placement(
+        prepared["offer_queue"](), {"params": template["params"]}, args=args,
+        cwd=prepared["cwd"], portable_checkout=prepared["portable_checkout"], display=display)
+    body = action_edges.deferred_body(
+        edges=edges, template=record_template(template), cas_root=cas.root,
+        static_manifest=static_input,
+        publication={name: getattr(args, name)
+                     for name in _DEFERRED_PUBLICATION_ARGS})
+    try:
+        pending_id, path = action_edges.file_deferred(q.root, body)
+    except action_edges.ActionEdgeError as exc:
+        raise SubmissionRefused(f"pbrun: cannot file the deferred submission: {exc}") from None
+    if args.supersedes is not None:
+        file_supersession(q, args.supersedes, new=pending_id,
+                                  new_kind=action_edges.PRODUCER_PENDING, display=display)
+    producers = ", ".join(f"{edge['producer'][:12]}:{edge['template_id']}"
+                          for edge in edges)
+    emit_display(display, f"pbrun: deferred {pending_id[:12]} until {producers} succeeds; the "
+          f"tiers loop seals and publishes it then", channel="stderr", flush=True)
+    if args.detach:
+        code = report.finish(action_client.ClientDeferredSubmitted(pending_id, path,
+            action_edges.published_path(q.root, pending_id)))
+        emit_display(display, sorted_json(action_client.reported_submission(report)), flush=True)
+        return code
+    # Returned, not run: ``main`` waits after the submission's used-
+    # filesystem growth allowance is released (#1483).
+    return functools.partial(functools.partial(await_release, store=store, display=display), q, pending_id, wait_s=args.wait_s,
+                             report=report, cas_root=Path(cas.root))
+
+
+def require_deferred_read_plan(static: Mapping[str, object],
+                               edges: Sequence[Mapping[str, object]], *,
+                               args: SubmissionRequest, store: FleetStore) -> None:
+    """Refuse a deferred v2 read plan the release could not place (#946).
+
+    The static plan names, under ``annotations.produced_output_slots``, the
+    read phase each ``--after`` edge fills (`action_edges.after_slots`). The
+    release puts the committed batches there, so what is checked here is
+    everything a submission of the placed plan would be checked for that
+    does not depend on those bytes: the published storage generation reads
+    v2, every read phase is a progress phase in order, and with
+    ``--residency stage`` the placed plan has a phase boundary to stage up
+    to. That last holds unless the plan's first phase reads nothing and fills
+    no slot, because a boundary at byte 0 ends no read.
+    """
+
+    if args.transport != "pool":
+        raise SubmissionRefused(
+            f"pbrun: --after needs the pull queue; --transport {args.transport} "
+            "has none")
+    try:
+        slots = action_edges.after_slots(static, edges)
+    except action_edges.ActionEdgeError as exc:
+        raise SubmissionRefused(f"pbrun: --after: {exc}") from None
+    require_deployed_read_plan_storage(store=store)
+    require_linear_read_plan_progress(static, args.progress_policy)
+    first = static["read_plan"]["phases"][0]
+    if (args.residency == "stage" and not first["entry_indices"]
+            and first["name"] not in {slot["phase"] for slot in slots}):
+        raise SubmissionRefused(
+            f"pbrun: --residency stage: read phase {first['name']!r} opens the "
+            "plan and reads nothing, so it ends no read to stage up to")
+
+
+def require_releasable_template(template: Mapping[str, object], *, store: FleetStore) -> None:
+    """Refuse a deferred submission that no release could seal (#913).
+
+    The tiers loop runs the published generation, and seals a deferred
+    consumer into the generation its template was frozen under: that one,
+    or a retained generation whose wrapper matches its receipt
+    (``sealing_runtime``).  A template frozen by a ``pbrun`` outside the
+    generation store, such as a development checkout's, is neither, and
+    would be held until superseded.  Refuse it at submission instead.
+    """
+
+    prefix = action_edges.template_wrapper(template)
+    try:
+        published = (store.root / "repo").resolve(strict=True)
+    except OSError as exc:
+        raise SubmissionRefused(
+            f"pbrun: --after: cannot read the published runtime: {exc}") from None
+    if prefix == str(published / "tools"):
+        return
+    try:
+        verify_retained_wrapper(prefix, where="--after", store=store)
+    except (OSError, ValueError, pb.PrismaBuildError) as exc:
+        raise SubmissionRefused(
+            f"pbrun: --after: no release could seal this submission ({exc}); "
+            f"submit it with the published {store.root / 'repo' / 'tools' / 'pbrun.py'}"
+        ) from None
+
+
+def await_release(q, pending_id: str, *, wait_s: float, report=None,
+                  cas_root: Path | None = None, store: FleetStore, display: DisplaySink = discard_display) -> int:
+    """Wait for a deferred submission's release, then for its action.
+
+    The release record names the key and the generation the tiers loop
+    published, which is what the ordinary wait is pinned to.  Waiting longer
+    than ``wait_s`` in total exits ``GAVE_UP_EXIT``; the submission stays
+    filed and is released whenever its producers succeed.
+    """
+
+    report = report if report is not None else action_client.ClientReport()
+    deadline = time.monotonic() + max(0.0, float(wait_s))
+    while True:
+        try:
+            published = action_edges.read_published(q.root, pending_id)
+        except action_edges.ActionEdgeError as exc:
+            emit_display(display, f"pbrun: {exc}", channel="stderr", flush=True)
+            return report.finish(action_client.ClientUnavailable(
+                None, None, action_wait.WaitEnd.UNRETRIED))
+        if published is not None:
+            key = str(published["action_key"])
+            generation = float(published['published_unix'])
+            report.publish_identity(action_client.PoolClientIdentity(key, generation, q.root,
+                cas_root if cas_root is not None else store.cas_root, None,
+                action_client.ClientArrival.SUBMITTED))
+            emit_display(display, f"pbrun: {pending_id[:12]} was released as {key[:12]}",
+                  channel="stderr", flush=True)
+            remaining = deadline - time.monotonic()
+            # ``report_pool_outcome`` reads ``wait_s=0`` as "observe once", with the
+            # full read budget.  A positive wait that ran out while the
+            # release was being read is not that request: clamping it to 0
+            # handed a caller past its deadline one more full read (#938).
+            if wait_s > 0 and remaining <= 0:
+                emit_display(display, f"pbrun: the wait ended before {key[:12]}'s outcome was "
+                      f"read; the action runs regardless. Run pbwait.py "
+                      f"{key[:12]} to follow it", channel="stderr", flush=True)
+                return report.finish(action_client.ClientPatienceExpired(key, generation))
+            return action_client.report_pool_outcome(
+                q, key, wait_s=max(0.0, remaining),
+                generation=generation, report=report)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            emit_display(display, f"pbrun: {pending_id[:12]} is still deferred; it stays filed "
+                  f"and is released when its producers succeed",
+                  channel="stderr", flush=True)
+            return report.finish(action_client.ClientDeferredTimeout(pending_id))
+        time.sleep(min(action_wait.POLL_S, remaining))
+
+
+def sealing_runtime(template: Mapping[str, object], *, store: FleetStore) -> dict[str, str]:
+    """The generation a deferred template is sealed into, proved present (#913).
+
+    It is the template's own: a consumer frozen by ``pbrun --after`` runs
+    under the generation that froze it, as an ordinary submission sealed
+    just before a publish does.  When that is this process's own generation,
+    the caller has already checked it is the published one.  Otherwise it
+    must be a retained generation whose wrapper matches its receipt, the
+    check ``--as-sealed-by`` makes.  Raises
+    ``action_edges.RuntimeGenerationUnavailable`` when it is not, so that
+    nothing is ever sealed into a different generation instead.
+    """
+
+    prefix = action_edges.template_wrapper(template)
+    if prefix == str(store.wrapper_dir):
+        root = store.runtime_root
+    else:
+        try:
+            root = verify_retained_wrapper(
+                prefix, where="deferred release", store=store).parent
+        except (OSError, ValueError, pb.PrismaBuildError) as exc:
+            raise action_edges.RuntimeGenerationUnavailable(
+                f"runtime-generation-unavailable: {exc}") from None
+    return {"root": str(root), "generation": action_edges.generation_name(root)}
+
+
+def _release_deferred(q, pending_id: str, record: Mapping[str, object], *,
+                     producers: Sequence[Mapping[str, object]] = ()
+                     , store: FleetStore, display: DisplaySink = discard_display) -> dict[str, object]:
+    """Seal and publish one deferred consumer whose producers succeeded (#913).
+
+    ``producers`` holds each edge's resolved ``{key, nonce, template_id}``.
+    The first release pins the batch refs, the manifest and the key in a
+    first-writer record before anything is published.  A release that finds
+    that record resumes from it: it never resolves the producers again, and
+    ``producers`` is not read.  After that it is ``main``'s own path: the CAS
+    request, the origin-consumer declarations (#914), the window and the
+    row.  A key the queue already carries -- published before a crash kept
+    the last step from being recorded -- is not published again; its
+    generation is recorded instead.  Last, the release records that
+    generation, which is what waiters and chains read.
+
+    Returns the event to log.  Raises ``ActionEdgeError`` (or ``SystemExit``
+    from pbrun's own refusals) when the consumer cannot be released yet.
+    """
