@@ -42,7 +42,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_uncharged_dead_owners_give_room_under_pressure as unc  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 TIER = unc.TIER
