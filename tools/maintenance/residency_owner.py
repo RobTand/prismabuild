@@ -175,6 +175,9 @@ def c21_replay(root, patch, patch_blob, tree):
     raw = patch.read_bytes()
     if c21_git(root, "hash-object", "--stdin", data=raw).decode().strip() != patch_blob:
         raise ValueError("the C21 patch differs from its reviewed Git object")
+    if (c21_git(root, "diff", "--name-only").strip()
+            or c21_git(root, "ls-files", "--others", "--exclude-standard").strip()):
+        raise ValueError("replay requires worktree bytes matching its index")
     actual = c21_git(root, "write-tree").decode().strip()
     if actual == tree:
         return dict(status="already applied", tree=actual)
