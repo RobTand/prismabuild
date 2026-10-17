@@ -21,6 +21,7 @@ import pytest
 
 from test_produced_spool import world
 from test_an_export_survives_a_delegation_recall import _landed, _recall_ctime, _recall_mtime
+from prismabuild import adaptive_snapshot
 from prismabuild import produced_spool as ps
 
 
@@ -45,6 +46,28 @@ def _tree(*roots):
                 entry += (hashlib.sha256(path.read_bytes()).hexdigest(),)
             seen[str(path)] = entry
     return seen
+
+
+@pytest.fixture
+def settle_publishers(monkeypatch):
+    publishers = []
+    publish = adaptive_snapshot.publish
+
+    def tracked(local, shared):
+        child = publish(local, shared)
+        if child is not None:
+            publishers.append(child)
+        return child
+
+    monkeypatch.setattr(adaptive_snapshot, "publish", tracked)
+
+    def settle():
+        # Admission returns before its real diagnostic child. A complete
+        # filesystem snapshot must start after this fixture's publishers.
+        while publishers:
+            assert publishers.pop(0).wait(timeout=10) == 0
+
+    return settle
 
 
 @pytest.fixture
@@ -80,11 +103,13 @@ def test_the_check_is_public_and_takes_only_the_three_documents():
                for p in parameters.values())
 
 
-def test_a_landed_export_is_accepted_and_nothing_moves(tmp_path, monkeypatch, request):
+def test_a_landed_export_is_accepted_and_nothing_moves(
+        tmp_path, monkeypatch, request, settle_publishers):
     spool = world(tmp_path)
     _, destination, _ = _landed(spool)
     receipt, manifest, record = _group_documents(spool)
     documents = copy.deepcopy((receipt, manifest, record))
+    settle_publishers()
     before = _tree(tmp_path)
     request.getfixturevalue("no_writes")
     assert ps.check_export_receipt(receipt, manifest, record) is None
@@ -96,12 +121,13 @@ def test_a_landed_export_is_accepted_and_nothing_moves(tmp_path, monkeypatch, re
 @pytest.mark.parametrize("recall", [_recall_ctime, _recall_mtime],
                          ids=["ctime", "mtime-and-ctime"])
 def test_a_timestamp_only_mismatch_is_a_public_refusal_not_a_repin(tmp_path, monkeypatch,
-                                                                    request, recall):
+                                                                    request, recall, settle_publishers):
     spool = world(tmp_path)
     _, destination, _ = _landed(spool)
     recorded, observed = recall(destination)
     receipt, manifest, record = _group_documents(spool)
     documents = copy.deepcopy((receipt, manifest, record))
+    settle_publishers()
     before = _tree(tmp_path)
     request.getfixturevalue("no_writes")
     with pytest.raises(ps.SpoolIdentityRefusal) as refused:
