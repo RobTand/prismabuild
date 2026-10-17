@@ -25,13 +25,13 @@ from . import data_manifest as manifest_codec
 from prismabuild.stage_marks import STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, source_identity
 
 
-def _date_vouch(root, fragment, generation, entries):
+def _date_vouch(root, fragment, generation, entries, *, material_epoch):
     return reader_lease.write_material(
         root, consumer_action_key=str(fragment["consumer_action_key"]),
         mover_action_key=str(fragment["mover_action_key"]),
         tier_id=str(fragment["tier_id"]), stage_root=str(fragment["stage_root"]),
         manifest_sha256=str(fragment["manifest_sha256"]),
-        generation=generation, entries=entries, epoch=fragment.get("epoch"))
+        generation=generation, entries=entries, epoch=material_epoch)
 
 
 def publish_vouch(root: str | Path, fragment: Mapping[str, object], *,
@@ -39,7 +39,8 @@ def publish_vouch(root: str | Path, fragment: Mapping[str, object], *,
                   material_entries: Mapping[str, object] | None = None) -> Path:
     """Date new coverage before publishing the fragment that vouches for it."""
     if material_entries:
-        _date_vouch(root, fragment, generation, material_entries)
+        _date_vouch(root, fragment, generation, material_entries,
+                    material_epoch=fragment.get("epoch"))
     return residency_map.write_fragment(root, fragment)
 
 
@@ -48,7 +49,8 @@ def reissue_vouch(root: str | Path, source: Mapping[str, object], *,
                   generation: str, material_entries: Mapping[str, object]) -> Path:
     """Date a shared copy before reissuing its fragment to another namespace."""
     _date_vouch(root, {**source, "consumer_action_key": consumer_action_key,
-                      "mover_action_key": mover_action_key}, generation, material_entries)
+                      "mover_action_key": mover_action_key}, generation, material_entries,
+                material_epoch=source.get("epoch"))
     return residency_map.write_fragment(root, residency_map.reissue(
         source, consumer_action_key=consumer_action_key, mover_action_key=mover_action_key))
 
@@ -61,14 +63,16 @@ class VouchShrink:
 
 
 def shrink_vouch(root: str | Path, fragment: Mapping[str, object], *,
-                 generation: str, material_entries: Mapping[str, object]) -> VouchShrink:
+                 generation: str, material_entries: Mapping[str, object],
+                 material_epoch: str | None) -> VouchShrink:
     """Withdraw mentions before trimming their dates, retaining partial results."""
     try:
         residency_map.write_fragment(root, fragment)
     except (OSError, ValueError, pb.PrismaBuildError) as exc:
         return VouchShrink(False, False, f"fragment rewrite: {exc}")
     try:
-        _date_vouch(root, fragment, generation, material_entries)
+        _date_vouch(root, fragment, generation, material_entries,
+                    material_epoch=material_epoch)
     except (OSError, ValueError, pb.PrismaBuildError) as exc:
         return VouchShrink(True, False, f"material rewrite: {exc}")
     return VouchShrink(True, True)
@@ -3176,7 +3180,8 @@ def prune_stale_mentions(
                 try:
                     _date_vouch(
                         root, current, str(material["generation"]),
-                        {key: material_entries[key] for key in entries})
+                        {key: material_entries[key] for key in entries},
+                        material_epoch=material.get("epoch"))
                 except (OSError, ValueError, pb.PrismaBuildError) as exc:
                     errors.append(f"material trim: {exc}")
                     return receipt(retained=total)
@@ -3257,7 +3262,7 @@ def prune_stale_mentions(
         document["entries"] = surviving
         rewritten = shrink_vouch(
             root, document, generation=str(material["generation"]),
-            material_entries=survivor_mentions)
+            material_entries=survivor_mentions, material_epoch=material.get("epoch"))
         if rewritten.error:
             errors.append(rewritten.error)
         return partial_receipt(fragment_committed=rewritten.fragment_committed,
