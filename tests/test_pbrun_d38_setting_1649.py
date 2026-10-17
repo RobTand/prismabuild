@@ -270,14 +270,15 @@ def _generation(tmp_path, layout):
     return root, directory
 
 
-FRESH_SUBMISSION = """
+FRESH_SUBMISSION = r"""
 import datetime, socket, sys
 from pathlib import Path
 root, directory, private, work, transport, intent = sys.argv[1:]
 sys.path[:0] = [str(Path(root) / 'src'), directory]
 import pbrun, d38_gate
+from prismabuild import submission as submit_core
 from prismabuild import pool
-pbrun.SH = Path(private)
+pbrun.configured_store = lambda: submit_core.FleetStore(Path(Path(private)), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
 pool.is_box_local_path = lambda _path: False
 socket.gethostname = lambda: 'sparky' if transport == 'pool' and intent == 'demand' else 'dl380g10'
 d38_gate.utc_now = lambda: datetime.datetime(2026, 10, 8, 16, 30, tzinfo=datetime.timezone.utc)

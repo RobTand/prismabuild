@@ -22,6 +22,7 @@ from prismabuild import core as pb  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import _paper_action, fleet  # noqa: E402
 
@@ -33,12 +34,12 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 def _run(tmp_path: Path, name: str, demand: dict) -> int:
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _paper_action(tmp_path, name)
-    return pbrun.slurm_outcome(
+    return submit_core.slurm_outcome(
         action, cas=cas, request_path=cas.publish_action_request(action),
         tags=[], demand=dict(demand), exclusive=False, timeout_s=600.0,
         wait_s=60.0, retry_safe=False, max_attempts=1,
         runtime_root=REPOSITORY, poll_s=0.0,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
 
 def test_an_out_of_memory_job_names_the_memory_it_declared(
