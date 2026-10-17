@@ -1,12 +1,17 @@
 """Synchronous outcome observation, immutable verification and reporting."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+import math
 from pathlib import Path
+import re
 import socket
 import sys
+from typing import assert_never
 
-from . import action_wait, core as pb, endings, pool
+from . import action_result, action_wait, core as pb, endings, pool
 from .digest_primitives import sorted_json
 
 #: What ``pbrun`` exits with when it stopped waiting before the work finished.
@@ -52,6 +57,342 @@ RESERVED_EXITS = frozenset(
 )
 
 
+class ClientArrival(Enum):
+    SUBMITTED = 'submitted'
+    ATTACHED = 'attached'
+
+
+class ClientTransport(Enum):
+    POOL = 'pool'
+    SLURM = 'slurm'
+
+
+class ReplayDiagnostic(Enum):
+    NOT_A_CACHE_HIT = 'result_was_not_cached'
+    NO_UNIQUE_ANNOUNCEMENT = 'no_unique_result_announcement'
+    INVALID_ANNOUNCEMENT = 'invalid_cached_result_announcement'
+    INVALID_IPC = 'invalid_cached_replay_metadata'
+
+
+@dataclass(frozen=True)
+class CachedResult:
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ReplayUnavailable:
+    reason: ReplayDiagnostic
+
+
+CachedReplay = CachedResult | ReplayUnavailable | None
+
+
+@dataclass(frozen=True)
+class CachedOutput:
+    text: str
+
+
+@dataclass(frozen=True)
+class CachedOutputUnavailable:
+    reason: str
+
+
+@dataclass(frozen=True)
+class PoolClientIdentity:
+    action_key: str
+    published_unix: float | None
+    queue_root: Path
+    cas_root: Path
+    submission: Path | None
+    arrival: ClientArrival
+
+
+@dataclass(frozen=True)
+class SlurmClientIdentity:
+    action_key: str
+    published_unix: float | None
+    queue_root: Path
+    cas_root: Path
+    submission: Path | None
+    job_id: str
+    arrival: ClientArrival
+
+
+@dataclass(frozen=True)
+class CachedClientIdentity:
+    action_key: str
+    queue_root: Path
+    cas_root: Path
+    transport: ClientTransport
+    result_sha256: str
+
+
+ClientIdentity = PoolClientIdentity | SlurmClientIdentity | CachedClientIdentity
+
+
+@dataclass(frozen=True)
+class ClientExecution:
+    action_key: str
+    published_unix: float | None
+    status: str
+    transport_returncode: int | None
+    action_returncode: int | None
+    action_signal: int | None
+    execution_timeout: bool
+    reported_returncode: int
+    replay: CachedReplay = None
+    receipt_published: bool | None = None
+    transport_state: str | None = None
+    transport_signal: int | None = None
+
+    @property
+    def cached_result_sha256(self) -> str | None:
+        return self.replay.sha256 if isinstance(self.replay, CachedResult) else None
+
+    @property
+    def cached_result_diagnostic(self) -> ReplayDiagnostic | None:
+        return self.replay.reason if isinstance(self.replay, ReplayUnavailable) else None
+
+
+@dataclass(frozen=True)
+class ClientUnreadable:
+    action_key: str
+    published_unix: float | None = None
+
+
+@dataclass(frozen=True)
+class ClientUnavailable:
+    action_key: str | None
+    published_unix: float | None
+    wait_end: action_wait.WaitEnd
+
+
+@dataclass(frozen=True)
+class ClientPatienceExpired:
+    action_key: str
+    published_unix: float | None
+
+
+@dataclass(frozen=True)
+class ClientSuperseded:
+    action_key: str
+    published_unix: float
+    successor_published_unix: float
+
+
+@dataclass(frozen=True)
+class ClientOfferTimeout:
+    pass
+
+
+@dataclass(frozen=True)
+class ClientRefused:
+    returncode: int
+    action_key: str | None = None
+    published_unix: float | None = None
+
+
+@dataclass(frozen=True)
+class ClientDeferredTimeout:
+    pending_id: str
+
+
+@dataclass(frozen=True)
+class ClientSubmitted:
+    identity: ClientIdentity
+    submission: Path | None = None
+
+
+@dataclass(frozen=True)
+class ClientDeferredSubmitted:
+    pending_id: str
+    submission: Path
+    release: Path
+
+
+class UnsettledReason(Enum):
+    SUBMISSION_FATE = 'submission_fate_unknown'
+    SCHEDULER_UNKNOWN = 'scheduler_cannot_describe_job'
+
+
+@dataclass(frozen=True)
+class ClientUnsettled:
+    action_key: str
+    published_unix: float | None
+    reason: UnsettledReason
+
+
+@dataclass(frozen=True)
+class ClientCommand:
+    returncode: int
+
+
+ClientVerdict = (ClientExecution | ClientUnavailable | ClientPatienceExpired
+                 | ClientSuperseded | ClientOfferTimeout | ClientUnreadable | ClientRefused
+                 | ClientDeferredTimeout | ClientSubmitted | ClientDeferredSubmitted
+                 | ClientUnsettled | ClientCommand)
+
+
+def _execution_exit_code(returncode: int) -> int:
+    return 1 if returncode in RESERVED_EXITS else returncode
+
+
+def client_exit(verdict: ClientVerdict) -> int:
+    if isinstance(verdict, ClientExecution):
+        return verdict.reported_returncode
+    if isinstance(verdict, ClientUnreadable):
+        return 1
+    if isinstance(verdict, ClientUnavailable):
+        return RECORD_WRITE_FAILED_EXIT
+    if isinstance(verdict, (ClientPatienceExpired, ClientDeferredTimeout, ClientUnsettled)):
+        return GAVE_UP_EXIT
+    if isinstance(verdict, ClientSuperseded):
+        return PUBLICATION_SUPERSEDED_EXIT
+    if isinstance(verdict, ClientOfferTimeout):
+        return 1
+    if isinstance(verdict, (ClientSubmitted, ClientDeferredSubmitted)):
+        return 0
+    if isinstance(verdict, (ClientRefused, ClientCommand)):
+        return verdict.returncode
+    assert_never(verdict)
+
+
+@dataclass(frozen=True)
+class ClientEnding:
+    verdict: ClientVerdict
+    readers: action_wait.ReaderHistory = action_wait.ReaderHistory()
+
+    @property
+    def exit_code(self) -> int:
+        return client_exit(self.verdict)
+
+
+def recovery_permitted(identity: ClientIdentity | None, ending: ClientEnding) -> bool:
+    return (isinstance(identity, PoolClientIdentity)
+            and identity.published_unix is not None
+            and math.isfinite(identity.published_unix)
+            and isinstance(ending.verdict, ClientUnavailable)
+            and ending.verdict.action_key == identity.action_key
+            and ending.readers.abandoned_count == 0
+            and ending.readers.complete)
+
+
+@dataclass
+class ClientReport:
+    identity: ClientIdentity | None = None
+    ending: ClientEnding | None = None
+    on_event: Callable[[ClientIdentity | ClientEnding], None] | None = field(
+        default=None, repr=False)
+
+    def publish_identity(self, identity: ClientIdentity) -> None:
+        if self.identity is not None or self.ending is not None:
+            raise RuntimeError('client identity must precede its one ending')
+        self.identity = identity
+        if self.on_event is not None:
+            self.on_event(identity)
+
+    def conclude(self, ending: ClientEnding) -> None:
+        if self.ending is not None:
+            raise RuntimeError('client already has an ending')
+        self.ending = ending
+        if self.on_event is not None:
+            self.on_event(ending)
+
+    def finish(self, verdict: ClientVerdict) -> int:
+        ending = ClientEnding(verdict, action_wait.client_reader_history())
+        self.conclude(ending)
+        return ending.exit_code
+
+
+#: Public detach records can be read by another published runtime generation.
+DETACH_SCHEMA_V1 = 'prismaquant.prismabuild.pbrun_detach.v1'
+
+
+def detached_submission_record(
+    key: str, *, transport: str, status: str, queue_root,
+    published_unix: float | None = None, job_id: str | None = None, submission=None,
+) -> dict:
+    """Build the public record rendered as one JSON line by pbrun.
+
+    Everything ``pbrun`` prints for a person goes to stderr, so stdout carries
+    this and nothing else: a caller reads one line of JSON instead of parsing
+    prose written to be read aloud.
+
+    ``status`` is one of ``submitted`` (this call put the work somewhere),
+    ``cache_hit`` (it was already in the CAS, so nothing was submitted) or
+    ``attached`` (it was already running under an earlier submission, which
+    this call joined rather than duplicated).  All three exit 0, and the last
+    two name a run this process did not start.
+
+    The generation travels in it because the terminal record a later wait looks
+    for is identified by generation and not by key.  An action key is a content
+    hash, so one key accumulates the records of every earlier run of the same
+    work, and a waiter given only the key cannot tell this run's ending from
+    the ending of a run that finished last week."""
+    queue = Path(queue_root)
+    return dict(schema=DETACH_SCHEMA_V1, action_key=str(key), transport=str(transport),
+        status=str(status), published_unix=published_unix,
+        job_id=str(job_id) if job_id is not None else None,
+        submission=str(submission) if submission is not None else None,
+        done=str(queue / pool.DONE / f'{key}.json'),
+        failed=str(queue / pool.FAILED / f'{key}.json'),
+        withdrawn=str(queue / pool.WITHDRAWN / f'{key}.json'))
+
+
+def reported_submission(report: ClientReport) -> dict | None:
+    ending = report.ending
+    if ending is None:
+        return None
+    verdict = ending.verdict
+    if isinstance(verdict, ClientDeferredSubmitted):
+        return dict(schema=DETACH_SCHEMA_V1, action_key=None, pending_id=verdict.pending_id,
+            transport='pool', status='deferred', published_unix=None, job_id=None,
+            submission=str(verdict.submission), release=str(verdict.release))
+    if not isinstance(verdict, ClientSubmitted):
+        return None
+    identity = verdict.identity
+    if isinstance(identity, CachedClientIdentity):
+        return detached_submission_record(identity.action_key, transport=identity.transport.value,
+            status='cache_hit', queue_root=identity.queue_root)
+    return detached_submission_record(identity.action_key,
+        transport='pool' if isinstance(identity, PoolClientIdentity) else 'slurm',
+        status='submitted' if identity.arrival is ClientArrival.SUBMITTED else 'attached',
+        queue_root=identity.queue_root, published_unix=identity.published_unix,
+        job_id=identity.job_id if isinstance(identity, SlurmClientIdentity) else None,
+        submission=verdict.submission if verdict.submission is not None else identity.submission)
+
+
+def read_cached_output(identity: ClientIdentity | None, ending: ClientEnding) -> (
+        CachedOutput | CachedOutputUnavailable | None):
+    if identity is None or not isinstance(ending.verdict, (ClientExecution, ClientSubmitted)):
+        return None
+    if isinstance(identity, CachedClientIdentity):
+        digest = identity.result_sha256
+    elif isinstance(ending.verdict, ClientExecution):
+        replay = ending.verdict.replay
+        if isinstance(replay, ReplayUnavailable):
+            return (None if replay.reason is ReplayDiagnostic.NOT_A_CACHE_HIT
+                    else CachedOutputUnavailable(replay.reason.value))
+        if not isinstance(replay, CachedResult):
+            return None
+        digest = replay.sha256
+    else:
+        return None
+    try:
+        cas = pb.PrismaBuildCAS(identity.cas_root)
+        action = cas.read_action_request(identity.action_key)
+        if action is None:
+            return CachedOutputUnavailable('the sealed action request is unavailable')
+        receipt = cas.lookup(action)
+        if receipt is None:
+            return CachedOutputUnavailable('the verified result receipt is unavailable')
+        if receipt['result']['sha256'] != digest:
+            return CachedOutputUnavailable('the verified result differs from the announced digest')
+        return CachedOutput(cas.result_path(receipt, action).read_text(errors='replace'))
+    except (OSError, pb.PrismaBuildError) as exc:
+        return CachedOutputUnavailable(str(exc))
+
+
 def bounded_outcome_observation(
     q, key: str, generation: float | None, *, budget_s: float,
 ) -> tuple[endings.ObservedEnding | None, float | None]:
@@ -62,7 +403,7 @@ def bounded_outcome_observation(
     the next poll must not rediscover a different generation from mutable
     queue rows.
 
-    The synchronous profile is ``await_outcome``'s opt-in (#630): a
+    The synchronous profile is ``report_pool_outcome``'s opt-in (#630): a
     complete payload from a reader that could not be reaped is used, because
     what follows it is verification and a printout, not a scheduler query.
     ``pbwait`` and the other readers keep the strict refusal.
@@ -158,7 +499,7 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
     own finite verification budget rather than borrowing or resetting the
     deadline that governed how long the caller waited for an ending to land.
 
-    The synchronous profile is ``await_outcome``'s opt-in, as with
+    The synchronous profile is ``report_pool_outcome``'s opt-in, as with
     observation: the verified summary feeds a printout and an exit status,
     so a complete payload from an unreaped reader is used (#630).
     ``diagnose_conflicts`` reports a verified-attempt/summary disagreement as
@@ -179,7 +520,58 @@ def bounded_outcome_render(q, outcome_path: Path, outcome: dict, *, budget_s: fl
     if not isinstance(value.get("summary"), dict) or not isinstance(value.get("attempts"), list):
         raise action_wait.OutcomeReadUnavailable("pool outcome verification returned an invalid summary")
     action_wait.require_execution_ending(value["summary"], where="execution verification IPC summary")
+    value['cached_replay'] = decode_replay_metadata(value, action_key=str(outcome.get('action_key') or ''))
     return value
+
+
+def decode_replay_metadata(value: Mapping[str, object], *, action_key: str) -> CachedReplay:
+    digest = value.get('cached_result_sha256')
+    announced_key = value.get('cached_result_action_key')
+    diagnostic = value.get('cached_result_diagnostic')
+    if digest is None and announced_key is None:
+        if diagnostic is None:
+            return None
+        try:
+            return ReplayUnavailable(ReplayDiagnostic(diagnostic))
+        except (TypeError, ValueError):
+            return ReplayUnavailable(ReplayDiagnostic.INVALID_IPC)
+    if (isinstance(digest, str) and re.fullmatch('[a-f0-9]{64}', digest)
+            and announced_key == action_key and diagnostic is None):
+        return CachedResult(digest)
+    return ReplayUnavailable(ReplayDiagnostic.INVALID_IPC)
+
+
+def _cached_replay_value(summary: dict, attempts: list[dict]) -> dict:
+    def no_replay_value(reason):
+        return dict(cached_result_sha256=None, cached_result_action_key=None,
+                    cached_result_diagnostic=reason.value if reason is not None else None)
+
+    adopted = summary['adopted']
+    if adopted is not None:
+        selected = [attempt for attempt in attempts if attempt.get('attempt') == adopted['attempt']]
+        if len(selected) != 1:
+            return no_replay_value(ReplayDiagnostic.NO_UNIQUE_ANNOUNCEMENT)
+        stdout = selected[0].get('stdout')
+    else:
+        stdout = summary['detail'].get('stdout')
+    if not isinstance(stdout, str):
+        return no_replay_value(ReplayDiagnostic.NO_UNIQUE_ANNOUNCEMENT)
+    try:
+        announcement = action_result.decode_result_announcement(stdout.encode('utf-8', errors='replace'))
+    except action_result.ActionResultError:
+        return no_replay_value(ReplayDiagnostic.NO_UNIQUE_ANNOUNCEMENT)
+    if announcement.get('status') != 'cache_hit':
+        return no_replay_value(ReplayDiagnostic.NOT_A_CACHE_HIT)
+    receipt = announcement['receipt']
+    if not isinstance(receipt, Mapping):
+        return no_replay_value(ReplayDiagnostic.INVALID_ANNOUNCEMENT)
+    result = receipt.get('result')
+    digest = result.get('sha256') if isinstance(result, Mapping) else None
+    if (receipt.get('action_key') != summary['action_key'] or not isinstance(digest, str)
+            or re.fullmatch('[a-f0-9]{64}', digest) is None):
+        return no_replay_value(ReplayDiagnostic.INVALID_ANNOUNCEMENT)
+    return dict(cached_result_sha256=digest, cached_result_action_key=summary['action_key'],
+                cached_result_diagnostic=None)
 
 
 def _diagnosed_outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
@@ -235,6 +627,7 @@ def _outcome_render_value(q, outcome_path: str, outcome: dict) -> dict:
         "attempts": attempts,
         "missing": missing,
         "total_attempts": outcome.get("attempts", len(attempts)),
+        **_cached_replay_value(summary, attempts),
     }
 
 
@@ -355,13 +748,58 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
     }
 
 
-def await_outcome(
-    q, key: str, *, wait_s: float, generation: float | None = None
-) -> int:
-    """Await one exact pool run through the shared synchronous profile."""
-    deadline = action_wait.time.monotonic() + wait_s
-    patience = (action_wait.ProbeOnce(deadline) if wait_s <= 0
-                else action_wait.WaitUntil(deadline))
+@dataclass(frozen=True)
+class PoolClientOutcome:
+    action_key: str
+    observed: (action_wait.Ready[endings.VerifiedExecution | endings.PublicationSupersession]
+               | action_wait.Unavailable | action_wait.Unreadable | action_wait.PatienceExpired)
+    ending: ClientEnding
+    submitter_host: str
+
+
+def _pool_client_verdict(key: str, result) -> ClientVerdict:
+    if isinstance(result, action_wait.Unreadable):
+        return ClientUnreadable(key)
+    if isinstance(result, action_wait.Unavailable):
+        return ClientUnavailable(key, result.fault.generation, result.ending)
+    if isinstance(result, action_wait.PatienceExpired):
+        return ClientPatienceExpired(key, result.generation)
+    completed = result.value
+    if isinstance(completed, endings.PublicationSupersession):
+        return ClientSuperseded(key, completed.published_unix, completed.successor_published_unix)
+    rendered = completed.rendered
+    summary = rendered['summary']
+    detail = summary['detail']
+
+    def numeric_fact(name):
+        value = detail.get(name)
+        return value if type(value) is int else None
+
+    receipt_published = detail.get('receipt_published')
+    return ClientExecution(key, result.generation, summary['status'],
+        numeric_fact('returncode'), numeric_fact('action_returncode'), numeric_fact('action_signal'),
+        summary['status'] == 'timeout',
+        _pool_execution_returncode(summary['status'], detail.get('returncode')),
+        rendered.get('cached_replay'), receipt_published=(
+            receipt_published if type(receipt_published) is bool else None))
+
+
+def _pool_execution_returncode(status: str, returncode: int | None) -> int:
+    if status == 'withdrawn':
+        return WITHDRAWN_EXIT
+    if status == 'cache_hit':
+        return 0
+    if isinstance(returncode, int):
+        return int(_execution_exit_code(returncode))
+    return 0 if status == 'executed' else 1
+
+
+def await_pool_outcome(
+    q, key: str, *, patience: action_wait.WaitUntil | action_wait.ProbeOnce,
+    generation: float | None = None,
+    notice: Callable | None = None,
+) -> PoolClientOutcome:
+    """Return the observed ending and client verdict without rendering them."""
     host = socket.gethostname()
 
     def observe(*, budget_s, generation, remaining_s):
@@ -384,25 +822,35 @@ def await_outcome(
         except action_wait.OutcomeReadUnavailable as exc:
             return action_wait.ReadFault(exc, selected, stage)
 
-    def notice(event):
-        error = event.fault.error
-        if isinstance(event, action_wait.FinalReadNotice):
-            print(f"pbrun: unavailable pool outcome for {key[:12]}: {error}",
-                  file=sys.stderr)
-            return
-        reaped = ('the reader has exited and was reaped, '
-                  if event.reader_reaped else '')
-        print(f"pbrun: pool outcome for {key[:12]} not observed yet "
-              f"({error}); {reaped}{event.count} consecutive unavailable "
-              "read(s), retrying inside --wait-s", file=sys.stderr, flush=True)
+    with action_wait.client_readers(join=True) as history:
+        result = action_wait.await_action(
+            observe, generation=generation, patience=patience,
+            profile=action_wait.AwaitProfile.SYNCHRONOUS,
+            tool='pbrun', subject=f'pool outcome for {key[:12]}',
+            notice=notice if notice is not None else lambda _event: None)
+        ending = ClientEnding(_pool_client_verdict(key, result), history.snapshot())
+    return PoolClientOutcome(key, result, ending, host)
 
-    result = action_wait.await_action(
-        observe, generation=generation, patience=patience,
-        profile=action_wait.AwaitProfile.SYNCHRONOUS,
-        tool='pbrun', subject=f'pool outcome for {key[:12]}', notice=notice)
+
+def report_pool_notice(key: str, event) -> None:
+    error = event.fault.error
+    if isinstance(event, action_wait.FinalReadNotice):
+        print(f"pbrun: unavailable pool outcome for {key[:12]}: {error}",
+              file=sys.stderr)
+        return
+    reaped = ('the reader has exited and was reaped, '
+              if event.reader_reaped else '')
+    print(f"pbrun: pool outcome for {key[:12]} not observed yet "
+          f"({error}); {reaped}{event.count} consecutive unavailable "
+          "read(s), retrying inside --wait-s", file=sys.stderr, flush=True)
+
+
+def render_pool_outcome(outcome: PoolClientOutcome) -> None:
+    """Render an already observed pool outcome with the existing CLI text."""
+    key, result, host = outcome.action_key, outcome.observed, outcome.submitter_host
     if isinstance(result, action_wait.Unreadable):
         print(f"pbrun: unreadable ending for {key[:12]}: {result.error}", file=sys.stderr)
-        return 1
+        return
     if isinstance(result, action_wait.Unavailable):
         error = result.fault.error
         if result.ending is action_wait.WaitEnd.RETAINED:
@@ -439,16 +887,16 @@ def await_outcome(
                   f"pbwait.py {key[:12]}", file=sys.stderr)
         else:
             print(f"pbrun: unavailable pool outcome for {key[:12]}: {error}", file=sys.stderr)
-        return RECORD_WRITE_FAILED_EXIT
+        return
     if isinstance(result, action_wait.PatienceExpired):
         print(f"pbrun: gave up waiting for {key[:12]}", file=sys.stderr)
-        return GAVE_UP_EXIT
+        return
     completed = result.value
     if isinstance(completed, endings.PublicationSupersession):
         print(f"pbrun: {key[:12]} publication {completed.published_unix!r} superseded by "
               f"publication {completed.successor_published_unix!r}; no execution verdict",
               file=sys.stderr)
-        return PUBLICATION_SUPERSEDED_EXIT
+        return
     outcome_path, outcome = completed.ending
     rendered = completed.rendered
     summary = rendered["summary"]
@@ -482,15 +930,16 @@ def await_outcome(
         why = str(summary.get("reason") or "").strip()
         print(f"pbrun: withdrawn by {who}"
               f"{' -- ' + why if why else ''}", file=sys.stderr)
-        return WITHDRAWN_EXIT
+        return
     print(f"pbrun: {outcome_headline(summary)}", file=sys.stderr)
     if status == "cache_hit":
-        return 0
+        return
     rc = detail.get("returncode")
     if isinstance(rc, int):
-        return reported_exit(rc, key=key)
+        reported_exit(rc, key=key)
+        return
     if status == "executed":
-        return 0
+        return
     # A failure the worker itself raised carries no returncode -- the argv's
     # status is inside the exception text.  Surface the text; the caller gets a
     # non-zero exit either way, but the text is what makes it actionable.
@@ -499,7 +948,21 @@ def await_outcome(
         print(f"pbrun: {error}", file=sys.stderr)
     print(f"pbrun: outcome filed under {outcome_path.parent.name} after "
           f"{rendered.get('total_attempts', '?')} attempt(s)", file=sys.stderr)
-    return 1
+    return
+
+
+def report_pool_outcome(q, key: str, *, wait_s: float, generation: float | None = None,
+                        report: ClientReport | None = None) -> int:
+    """Report one typed pool result at the shell boundary."""
+    deadline = action_wait.time.monotonic() + wait_s
+    patience = (action_wait.ProbeOnce(deadline) if wait_s <= 0
+                else action_wait.WaitUntil(deadline))
+    outcome = await_pool_outcome(q, key, patience=patience, generation=generation,
+        notice=lambda event: report_pool_notice(key, event))
+    render_pool_outcome(outcome)
+    if report is not None:
+        report.conclude(outcome.ending)
+    return outcome.ending.exit_code
 
 
 def action_status_suffix(detail: Mapping[str, object]) -> str:
@@ -618,10 +1081,11 @@ def reported_exit(returncode: int, *, key: str) -> int:
         ``pbrun`` did not reach.
     """
 
-    if returncode not in RESERVED_EXITS:
-        return returncode
+    selected = _execution_exit_code(returncode)
+    if selected == returncode:
+        return selected
     print(f"pbrun: {key[:12]} exited {returncode}, which is one of pbrun's own "
           f"exit codes; reporting it as 1 so it is not read as pbrun's "
           f"verdict. The run's own status is detail.returncode in the record.",
           file=sys.stderr)
-    return 1
+    return selected
