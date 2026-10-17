@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from generation_fixture import generation_receipt
+from receipt_reader_fixture import prepared_receipt_bridge
 
 spec = importlib.util.spec_from_file_location('upgrade_client', Path(__file__).parents[1] / 'tools/fleet/upgrade_client.py')
 upgrade = importlib.util.module_from_spec(spec)
@@ -62,9 +64,7 @@ def setup(tmp_path):
         (install / name).write_bytes((b'CLIENT_UPGRADE_PROTOCOL = 2\n'
                                      if name == 'upgrade_client.py' else b'')
                                     + ('old:' + name).encode())
-    (generation / 'RUNTIME_VERSION.json').write_text(json.dumps({
-        'schema': 'prismaquant.prismabuild.runtime_version.v1',
-        'generation': generation.name, 'commit': 'a' * 40, 'files': files}))
+    (generation / 'RUNTIME_VERSION.json').write_text(json.dumps(generation_receipt(generation.name, 'a' * 40, files)))
     gate = tmp_path / 'run' / 'maintenance.json'
     gate.parent.mkdir()
     gate.write_text(json.dumps({'draining': False}))
@@ -526,7 +526,7 @@ def test_legacy_updater_needs_bridge_then_new_dependency_converges(setup, tmp_pa
     (generation / 'RUNTIME_VERSION.json').write_bytes(old_receipt)
     (generation / 'tools/resource_broker.py').write_bytes(old_broker)
     # A bridge retains the old broker and carries only the new updater code.
-    bridge = Path(upgrade.__file__).read_bytes()
+    bridge = prepared_receipt_bridge()
     (generation / 'tools/upgrade_client.py').write_bytes(bridge)
     receipt = json.loads(old_receipt)
     receipt['files']['tools/upgrade_client.py'] = upgrade.digest(bridge)

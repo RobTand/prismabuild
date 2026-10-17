@@ -46,7 +46,6 @@
   "hashlib:src/prismabuild/reader_lease.py::ref_id_for",
   "hashlib:src/prismabuild/residency_plan.py::plan_sha256",
   "hashlib:src/prismabuild/resource_scope.py::ResourceScope.recover_create",
-  "hashlib:src/prismabuild/resource_scope.py::_sha256_file",
   "hashlib:src/prismabuild/slurm_lane.py::submit",
   "hashlib:src/prismabuild/stage_move.py::_Copier._copy_one",
   "hashlib:src/prismabuild/staged_path.py::StagedPublisher._content_proof",
@@ -95,7 +94,6 @@
   "hashlib:tools/fleet/shape_gate.py::ShapeGate.read_phase",
   "hashlib:tools/fleet/shape_gate.py::main",
   "hashlib:tools/fleet/shape_gate.py::write_sources",
-  "hashlib:tools/fleet/supervise.py::_sha256",
   "hashlib:tools/fleet/upgrade_client.py::digest",
   "hashlib:tools/prismabuild_worker.py::_capture_launched_source",
   "sorted-json:src/prismabuild/action_edges.py::_canonical",
@@ -402,8 +400,7 @@
   ],
   "_sha256": [
    "src/prismabuild/core.py",
-   "tools/fleet/publish_runtime.py",
-   "tools/fleet/supervise.py"
+   "tools/fleet/publish_runtime.py"
   ],
   "_start": [
    "tools/fleet/bench_tier_cold_start.py",

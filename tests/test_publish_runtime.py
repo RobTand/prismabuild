@@ -28,6 +28,8 @@ def _checkout(path: Path, generation: str) -> Path:
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text(f"GENERATION = {generation!r}\n")
     (package / "pool.py").write_text(f"GENERATION = {generation!r}\n")
+    for leaf in ("generation_receipt.py", "digest_primitives.py"):
+        (package / leaf).write_bytes((ROOT / "src/prismabuild" / leaf).read_bytes())
     # Phase-2 default-ON: every published generation is verified, so a plain
     # green canary driver ships with every test checkout.  Tests that care
     # about a verdict overwrite it with _write_canary_driver; tests that care

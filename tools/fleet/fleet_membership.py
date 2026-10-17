@@ -810,7 +810,8 @@ def qualify_host(
     receipt = (Path(runtime_root) if runtime_root is not None
                else RUNTIME_ROOT) / "RUNTIME_VERSION.json"
     try:
-        commit = json.loads(receipt.read_text()).get("commit") or ""
+        from prismabuild.generation_receipt import GenerationReceipt
+        commit = GenerationReceipt.capture(receipt.read_text()).document.get("commit") or ""
     except (OSError, ValueError):
         commit = ""
     checks["runtime_commit"] = commit

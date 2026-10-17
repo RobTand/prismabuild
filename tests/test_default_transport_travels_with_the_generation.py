@@ -213,6 +213,8 @@ def _checkout(path: Path) -> Path:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text("GENERATION = 'x'\n")
+    for leaf in ("generation_receipt.py", "digest_primitives.py"):
+        (package / leaf).write_bytes((ROOT / "src/prismabuild" / leaf).read_bytes())
     (package / "pool.py").write_text("GENERATION = 'x'\n")
     # Phase-2 default-ON canary: publication refuses without the driver, so
     # the tiny checkout ships the same bounded green-driver seam

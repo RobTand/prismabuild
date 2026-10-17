@@ -30,6 +30,7 @@ from . import (action_edges, adaptive_gpu, capability_eligibility, container_ima
     materialize, movement_actions, pool, residency_plan, slurm_lane, storage_tiers,
     local_dependencies, _bounded_reader, d38_gate, target_evidence)
 from .queue_publication import RowPublication
+from .generation_receipt import GenerationReceipt
 from . import data_manifest as manifest_codec
 from .digest_primitives import sorted_json
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
@@ -90,7 +91,7 @@ def published_commit(*, store: FleetStore) -> str:
     """The commit whose bytes are currently published, or "" if unknown."""
 
     try:
-        return str(json.loads(store.runtime_version.read_text()).get("commit") or "")
+        return str(GenerationReceipt.capture(store.runtime_version.read_text()).document.get("commit") or "")
     except (OSError, ValueError):
         return ""
 
@@ -2097,14 +2098,13 @@ def require_deployed_read_plan_storage(*, source_root: Path | None = None,
     source_root = store.runtime_root if source_root is None else source_root
     published_root = store.root / "repo" if published_root is None else published_root
     try:
-        receipt = json.loads((published_root / "RUNTIME_VERSION.json").read_text())
-        files = receipt["files"]
+        receipt = GenerationReceipt.capture((published_root / "RUNTIME_VERSION.json").read_text())
+        files = receipt.files
         for member in ("src/prismabuild/core.py", "src/prismabuild/manifest_layout.py",
                        "tools/fleet/prewarm_loop.py"):
             expected = hashlib.sha256((source_root / member).read_bytes()).hexdigest()
             if (files.get(member) != expected or
-                    hashlib.sha256((published_root / member).read_bytes()).hexdigest()
-                    != expected):
+                    not receipt.matches_bytes(member, (published_root / member).read_bytes())):
                 raise ValueError(f"{member} is not the compatible published bytecode")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SubmissionRefused(
@@ -3982,18 +3982,17 @@ def verify_retained_wrapper(prefix: str, *, where: str, store: FleetStore) -> Pa
         where=where,
         max_bytes=1024 * 1024,
     )
-    version = pb.digest_primitives.decode_strict_json(raw_version, where=where)
-    if (not isinstance(version, dict)
-            or version.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
-            or version.get("generation") != generation.name
-            or not isinstance(version.get("files"), dict)):
-        raise ValueError(f"{where}: invalid retained generation receipt")
+    version = GenerationReceipt(pb.digest_primitives.decode_strict_json(raw_version, where=where))
+    try:
+        version.require_generation(generation.name)
+    except ValueError as exc:
+        raise ValueError(f"{where}: invalid retained generation receipt") from exc
     shim = pb.immutable_files.read_immutable_file(
         wrapper / "docker",
         where=where,
         max_bytes=16 * 1024 * 1024,
     )
-    if hashlib.sha256(shim).hexdigest() != version["files"].get("tools/docker"):
+    if not version.matches_bytes("tools/docker", shim):
         raise ValueError(f"{where}: retained Docker wrapper differs from its receipt")
     return wrapper
 
@@ -6351,7 +6350,7 @@ def transport_default(*, store: FleetStore) -> str:
                 "Unset it or spell it the way the fleet does.")
         return configured
     try:
-        receipt = json.loads(store.runtime_version.read_text(encoding="utf-8"))
+        receipt = GenerationReceipt.read(store.runtime_version).document
     except (OSError, ValueError):
         return "pool"
     declared = receipt.get("default_transport")

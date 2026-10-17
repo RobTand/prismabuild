@@ -6,6 +6,7 @@ import pytest
 from client_proof_bridge_fixture import (
     PREBRIDGE, PREBRIDGE_UPDATER_SHA256, ROOT, _fresh, _sha, fixed_source_artifact, publication,
 )
+from receipt_reader_fixture import prepared_receipt_bridge
 
 
 def test_old_installed_reader_adopts_bridge_before_fresh_reader_introduces_proof(publication):
@@ -16,14 +17,14 @@ def test_old_installed_reader_adopts_bridge_before_fresh_reader_introduces_proof
     assert first["exception"] is None, first
     assert first["result"]["state"] == "updated", first
     assert "park_proof.py" not in first["result"]["desired"]["files"]
-    assert (install / "upgrade_client.py").read_bytes() == (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
+    assert (install / "upgrade_client.py").read_bytes() == prepared_receipt_bridge()
     assert not (install / "park_proof.py").exists()
     assert (generation / "RUNTIME_VERSION.json").read_bytes() == receipt
     assert (generation / "src/prismabuild/park_proof.py").read_bytes() == proof
 
     second = _fresh(publication)
     assert second["exception"] is None, second
-    assert second["executed_sha256"] == _sha((ROOT / "tools/fleet/upgrade_client.py").read_bytes())
+    assert second["executed_sha256"] == _sha(prepared_receipt_bridge())
     assert second["result"]["state"] == "updated", second
     assert second["result"]["desired"]["files"]["park_proof.py"] == _sha(proof)
     assert (install / "park_proof.py").read_bytes() == proof
@@ -34,7 +35,7 @@ def test_old_installed_reader_adopts_bridge_before_fresh_reader_introduces_proof
                                            ("missing-gpu", False)])
 def test_broker_loaded_identity_excludes_only_updater_owned_members(publication, fault, expected):
     _, install, _, _, backend_path, _ = publication
-    (install / "upgrade_client.py").write_bytes((ROOT / "tools/fleet/upgrade_client.py").read_bytes())
+    (install / "upgrade_client.py").write_bytes(prepared_receipt_bridge())
     (install / "park_proof.py").write_bytes((ROOT / "src/prismabuild/park_proof.py").read_bytes())
     backend = json.loads(backend_path.read_text())
     if fault == "proof-loaded":
@@ -50,7 +51,7 @@ def test_broker_loaded_identity_excludes_only_updater_owned_members(publication,
 @pytest.mark.parametrize("incapable", ["previous", "candidate"])
 def test_proof_transaction_requires_both_actual_reader_capabilities_before_mutation(publication, incapable):
     generation, install, state, _, backend_path, _ = publication
-    candidate = (ROOT / "tools/fleet/upgrade_client.py").read_bytes()
+    candidate = prepared_receipt_bridge()
     if incapable == "candidate":
         (install / "upgrade_client.py").write_bytes(candidate)
         candidate = fixed_source_artifact(

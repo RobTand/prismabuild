@@ -8,6 +8,7 @@ import sys
 from tempfile import TemporaryDirectory
 
 import pytest
+from receipt_reader_fixture import bind_current_receipt_reader
 
 from client_proof_bridge_fixture import (
     PROTOCOL_ONE_UPDATER, PROTOCOL_ONE_UPDATER_SHA256, ROOT, _fresh, _sha,
@@ -35,6 +36,7 @@ def tmp_path():
 
 @pytest.fixture
 def root_publication(publication):
+    bind_current_receipt_reader(publication)
     _, install, _, config_path, _, _ = publication
     root = install.parent
     assert root.parent == Path("/var/lib") and root.name.startswith("pb-proof-trust-")

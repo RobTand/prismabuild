@@ -13,6 +13,8 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
+from receipt_reader_fixture import prepared_receipt_bridge
+from generation_fixture import generation_receipt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -127,7 +129,8 @@ def pause(name):
 
 def replacement(source, target):
     name = Path(target).name
-    event = {'park_proof.py': 'leaf', 'upgrade_client.py': 'updater'}.get(name)
+    event = {'park_proof.py': 'leaf', 'upgrade_client.py': 'updater',
+             'digest_primitives.py': 'digest', 'generation_receipt.py': 'receipt'}.get(name)
     prefix = 'restore-' if phase['value'] == 'recover' else ''
     watched = Path(target).parent == install and event is not None
     if watched:
@@ -144,11 +147,17 @@ def replacement(source, target):
         pause(prefix + event + '-after-replace')
 
 def unlink(path, *args, **kwargs):
+    dependency = {'digest_primitives.py': 'digest', 'generation_receipt.py': 'receipt'}.get(path.name)
+    prefix = 'restore-' if phase['value'] == 'recover' else ''
+    if path.parent == install and dependency:
+        pause(prefix + dependency + '-before-absence')
     if path == install / 'park_proof.py':
         pause('restore-leaf-before-absence')
     if path == Path(config['state_dir']) / 'transaction.json':
         pause(('restore-' if phase['value'] == 'recover' else '') + 'journal-before-clear')
     result = original_unlink(path, *args, **kwargs)
+    if path.parent == install and dependency:
+        pause(prefix + dependency + '-after-absence')
     if path == install / 'park_proof.py':
         pause('restore-leaf-after-absence')
     return result
@@ -324,13 +333,12 @@ def make_publication(tmp_path):
                             ("src/prismabuild/role_session.py", "src/prismabuild/role_session.py")]:
         destination = generation / member
         destination.parent.mkdir(parents=True, exist_ok=True)
-        data = (ROOT / source).read_bytes()
+        data = (prepared_receipt_bridge() if member == "tools/upgrade_client.py"
+                else (ROOT / source).read_bytes())
         destination.write_bytes(data)
         files[member] = _sha(data)
     receipt = generation / "RUNTIME_VERSION.json"
-    receipt.write_text(json.dumps({
-        "schema": "prismaquant.prismabuild.runtime_version.v1",
-        "generation": generation.name, "commit": "a" * 40, "files": files}))
+    receipt.write_text(json.dumps(generation_receipt(generation.name, "a" * 40, files)))
     gate = run / "maintenance.json"
     gate.write_text(json.dumps({"draining": False}))
     config = tmp_path / "config.json"

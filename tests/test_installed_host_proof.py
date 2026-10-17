@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import pytest
+from receipt_reader_fixture import bind_current_receipt_reader
 
 import resource_broker
 
@@ -34,7 +35,7 @@ def host_publication(tmp_path):
     # the independent transaction's files in a separate private subtree.
     root = tmp_path / "upgrade"
     root.mkdir(mode=0o755)
-    publication = make_publication(root)
+    publication = bind_current_receipt_reader(make_publication(root))
     generation, install, _, config_path, _, _ = publication
     for path in (root, *root.rglob("*")):
         if path.is_dir():

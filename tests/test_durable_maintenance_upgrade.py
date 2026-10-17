@@ -23,15 +23,15 @@ def _set_candidate(generation, name, data):
 
 def _durable_installed(updater):
     (updater.install / 'resource_broker.py').write_bytes(
-        b'MAINTENANCE_DURABLE_PROTOCOL = 1\ninstalled durable broker')
+        b'MAINTENANCE_DURABLE_PROTOCOL = 1\n# installed durable broker')
 
 
 def test_durable_broker_refuses_candidate_with_pre_durable_updater(tmp_path):
     updater, backend, generation = fixture.setup.__wrapped__(tmp_path)
     _durable_installed(updater)
     _set_candidate(generation, 'resource_broker.py',
-                   b'MAINTENANCE_DURABLE_PROTOCOL = 1\ncandidate durable broker')
-    _set_candidate(generation, 'upgrade_client.py', b'CLIENT_UPGRADE_PROTOCOL = 2\nold updater')
+                   b'MAINTENANCE_DURABLE_PROTOCOL = 1\n# candidate durable broker')
+    _set_candidate(generation, 'upgrade_client.py', b'CLIENT_UPGRADE_PROTOCOL = 2\n# old updater')
     original = updater.rpc
     def rpc(endpoint, operation, **fields):
         reply = original(endpoint, operation, **fields)
@@ -47,8 +47,8 @@ def test_durable_source_refuses_missing_running_capability(tmp_path):
     updater, backend, generation = fixture.setup.__wrapped__(tmp_path)
     _durable_installed(updater)
     _set_candidate(generation, 'resource_broker.py',
-                   b'MAINTENANCE_DURABLE_PROTOCOL = 1\ncandidate durable broker')
-    _set_candidate(generation, 'upgrade_client.py', b'CLIENT_UPGRADE_PROTOCOL = 2\nold updater')
+                   b'MAINTENANCE_DURABLE_PROTOCOL = 1\n# candidate durable broker')
+    _set_candidate(generation, 'upgrade_client.py', b'CLIENT_UPGRADE_PROTOCOL = 2\n# old updater')
     with pytest.raises(ValueError, match='durable'):
         updater.run()
     assert backend.operations == ['maintenance_status']
@@ -58,9 +58,9 @@ def test_durable_broker_and_updater_can_converge_together(tmp_path):
     updater, backend, generation = fixture.setup.__wrapped__(tmp_path)
     _durable_installed(updater)
     _set_candidate(generation, 'resource_broker.py',
-                   b'MAINTENANCE_DURABLE_PROTOCOL = 1\ncandidate durable broker')
+                   b'MAINTENANCE_DURABLE_PROTOCOL = 1\n# candidate durable broker')
     _set_candidate(generation, 'upgrade_client.py',
-                   b'CLIENT_UPGRADE_PROTOCOL = 2\nCLIENT_UPGRADE_DURABLE_PROTOCOL = 1\nnew updater')
+                   b'CLIENT_UPGRADE_PROTOCOL = 2\nCLIENT_UPGRADE_DURABLE_PROTOCOL = 1\n# new updater')
     original = updater.rpc
 
     def rpc(endpoint, operation, **fields):

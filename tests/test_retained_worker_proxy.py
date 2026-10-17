@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import resource_scope  # noqa: E402
+from generation_fixture import generation_receipt
 
 KEY = "c" * 64
 NONCE = "b" * 32
@@ -47,9 +48,7 @@ def _copy_bytes(root: Path, rel: str, source: Path) -> None:
 
 
 def _seal_tree(root: Path, members: dict[str, str]) -> None:
-    (root / "RUNTIME_VERSION.json").write_text(json.dumps({
-        "schema": RECEIPT_SCHEMA, "generation": root.name,
-        "commit": COMMIT, "files": members}))
+    (root / "RUNTIME_VERSION.json").write_text(json.dumps(generation_receipt(root.name, COMMIT, members)))
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.exists():
             continue

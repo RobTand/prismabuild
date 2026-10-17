@@ -65,6 +65,7 @@ CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.par
 sys.path.insert(0, str(CHECKOUT / "src"))
 from prismabuild import fleet_roster  # noqa: E402
 from prismabuild.digest_primitives import raw_sha256  # noqa: E402
+from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
@@ -557,6 +558,8 @@ def _source_for(name: str) -> Path:
         return source if source.is_file() else CHECKOUT / "tools" / base
     if name in {f"tools/{script}" for script in TOP_LEVEL_SCRIPTS}:
         return CHECKOUT / name
+    if name in ("tools/generation_receipt.py", "tools/digest_primitives.py"):
+        return CHECKOUT / "src/prismabuild" / name.rsplit("/", 1)[1]
     if name.startswith("tools/"):
         base = name.rsplit("/", 1)[1]
         source = CHECKOUT / "tools" / "fleet" / base
@@ -606,6 +609,8 @@ def _publication_manifest() -> dict[str, str]:
     published: dict[str, str] = {}
     for source in sorted((CHECKOUT / "src" / "prismabuild").glob("*.py")):
         published[f"src/prismabuild/{source.name}"] = _sha256(source)
+    for name in ("generation_receipt.py", "digest_primitives.py"):
+        published[f"tools/{name}"] = published[f"src/prismabuild/{name}"]
     for name in FLEET_SCRIPTS:
         source = CHECKOUT / "tools" / "fleet" / name
         if not source.is_file():
@@ -1446,20 +1451,13 @@ def _sealed_generation(name):
     if root.resolve(strict=True) != root or root.stat().st_mode & 0o222:
         raise SystemExit(f"barrier generation is not sealed: {name}")
     try:
-        receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
-        if (not isinstance(receipt, dict)
-                or receipt.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
-                or receipt.get("generation") != name
-                or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("commit", ""))) is None
-                or not isinstance(receipt.get("files"), dict)):
-            raise ValueError("invalid generation receipt")
-        for member, expected in receipt["files"].items():
-            parts = Path(member).parts
-            if not parts or Path(member).is_absolute() or any(p in (".", "..") for p in parts):
-                raise ValueError("unsafe generation member path")
-            path = root / member
+        captured = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text())
+        receipt = captured.require_generation(name)
+        captured.require_commit()
+        for member in captured.files:
+            path = captured.member_path(root, member)
             if (path.resolve(strict=True) != path or not path.is_file()
-                    or path.stat().st_mode & 0o222 or _sha256(path) != expected):
+                    or path.stat().st_mode & 0o222 or not captured.matches_file(member, path)):
                 raise ValueError(f"unsealed or changed generation member: {member}")
         return root, receipt
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1473,8 +1471,13 @@ def _barrier_generation(name):
         agent_path = "tools/upgrade_client.py"
         if agent_path not in receipt["files"]:
             raise ValueError("no updater in generation")
-        if not re.search(rb"(?m)^CLIENT_UPGRADE_ROLLOUT_PROTOCOL[ \t]*=[ \t]*1[ \t]*$",
-                         (root / agent_path).read_bytes()):
+        source = GenerationReceipt(receipt).source_declarations(
+            agent_path, (root / agent_path).read_bytes())
+        try:
+            rollout_protocol = source.protocol("CLIENT_UPGRADE_ROLLOUT_PROTOCOL")
+        except ValueError as exc:
+            raise ValueError("generation has no rollout-aware updater; a rolling bridge is required") from exc
+        if rollout_protocol != 1:
             raise ValueError("generation has no rollout-aware updater; a rolling bridge is required")
         return root, receipt
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1794,7 +1797,7 @@ def _activate_existing_locked(
     # Rollback is the command that runs when everything else has failed, so a
     # short or damaged receipt has to be a sentence rather than a traceback.
     try:
-        receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+        receipt = GenerationReceipt.capture((generation / "RUNTIME_VERSION.json").read_text()).document
     except (OSError, ValueError) as exc:
         raise SystemExit(
             f"{generation}: receipt is not readable ({exc}); this is not a "

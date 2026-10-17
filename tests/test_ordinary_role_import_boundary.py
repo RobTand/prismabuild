@@ -178,6 +178,8 @@ def test_installed_leaf_import_needs_no_broad_owner(installed, tmp_path, leaf):
     """)
     expected = ROLE_MODULES if leaf == "role_session" else {
         "prismabuild", "prismabuild.progress", *([f"prismabuild.{leaf}"] if leaf else [])}
+    if leaf == "generation_receipt":
+        expected.add("prismabuild.digest_primitives")
     assert set(evidence) == expected
 
 

@@ -61,7 +61,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -82,6 +81,7 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
 from prismabuild import filesystem_capacity, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
+from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = fleet_roster.Roster.beside(__file__)
@@ -208,14 +208,6 @@ class PublishedGeneration:
     supervisor: Path
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _published_generation(
     root: Path | None = None, *, entrypoint: Path | None = None,
 ) -> PublishedGeneration | None:
@@ -234,17 +226,10 @@ def _published_generation(
         if (candidate.parent != store or candidate.name.startswith(".")
                 or candidate.name in ("", ".", "..")):
             return None
-        receipt = json.loads(
-            (candidate / "RUNTIME_VERSION.json").read_text(encoding="utf-8"))
-        if not isinstance(receipt, dict):
-            return None
-        commit = receipt.get("commit")
-        files = receipt.get("files")
-        if (receipt.get("schema") != RUNTIME_VERSION_SCHEMA
-                or receipt.get("generation") != candidate.name
-                or not isinstance(commit, str)
-                or re.fullmatch(r"[0-9a-f]{40}", commit) is None
-                or not isinstance(files, dict)):
+        receipt = GenerationReceipt.read(candidate / "RUNTIME_VERSION.json")
+        receipt.require_generation(candidate.name)
+        commit = receipt.require_commit()
+        if not isinstance(commit, str):
             return None
         supervisor = (
             candidate / "tools" / "supervise.py" if entrypoint is None
@@ -253,10 +238,8 @@ def _published_generation(
         relative = supervisor.relative_to(candidate).as_posix()
         if relative not in ("tools/supervise.py", "tools/fleet/supervise.py"):
             return None
-        expected = files.get(relative)
-        if (not isinstance(expected, str)
-                or re.fullmatch(r"[0-9a-f]{64}", expected) is None
-                or _sha256(supervisor) != expected):
+        receipt.member_digest(relative)
+        if not receipt.matches_file(relative, supervisor):
             return None
         return PublishedGeneration(candidate, candidate.name, commit, supervisor)
     except (OSError, ValueError, TypeError):
@@ -1239,7 +1222,7 @@ def _loop_commit(pid: int, roots: list[Path],
         if not script.is_relative_to(root):
             continue
         try:
-            receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
+            receipt = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text()).document
         except (OSError, ValueError):
             return ""
         commit = receipt.get("commit") if isinstance(receipt, dict) else None
@@ -1274,8 +1257,7 @@ def _published_receipt() -> dict:
     """The active generation's receipt, or ``{}`` when it cannot be read."""
 
     try:
-        value = json.loads(
-            (_current_root() / "RUNTIME_VERSION.json").read_text())
+        value = GenerationReceipt.capture((_current_root() / "RUNTIME_VERSION.json").read_text()).document
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -1362,8 +1344,7 @@ def _record_role_restart(host: str, role: str, entry: dict,
             if not script.is_relative_to(root):
                 continue
             try:
-                value = json.loads(
-                    (root / "RUNTIME_VERSION.json").read_text())
+                value = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text()).document
                 if isinstance(value, dict):
                     loaded_commit = str(value.get("commit") or "")
                     loaded_generation = str(value.get("generation") or "")
@@ -2097,9 +2078,8 @@ def _run_supervisor(stop_requested) -> int:
         # precisely when a supervisor is present -- which is always.
         published = ""
         try:
-            published = str(json.loads(
-                (_current_root() / "RUNTIME_VERSION.json").read_text()
-            ).get("commit") or "")
+            published = str(GenerationReceipt.capture(
+                (_current_root() / "RUNTIME_VERSION.json").read_text()).document.get("commit") or "")
         except (OSError, ValueError):
             pass
         stopped = cycle_stale(published)
@@ -2132,9 +2112,8 @@ def _run_supervisor(stop_requested) -> int:
     if args.cycle_stale:
         published = ""
         try:
-            published = str(json.loads(
-                (_current_root() / "RUNTIME_VERSION.json").read_text()
-            ).get("commit") or "")
+            published = str(GenerationReceipt.capture(
+                (_current_root() / "RUNTIME_VERSION.json").read_text()).document.get("commit") or "")
         except (OSError, ValueError):
             pass
         stopped = cycle_stale(published)

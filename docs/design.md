@@ -18854,6 +18854,59 @@ claim identity, retention rules, lock order and C05 record/trust ownership are
 unchanged. [The movement ownership note](c29_movement_package.md) records the
 boundary comparison and the remaining broader C29 integration work.
 
+## Captured generation receipts (C15, 2026-10-17)
+
+`generation_receipt.GenerationReceipt` owns one decoded receipt and named
+generation, commit, selected-member and source-declaration questions. Its
+constructor performs no I/O. Callers capture at their original receipt read;
+selected-member operations never scan unrelated files. The publisher explicitly
+checks the whole manifest. `digest_primitives` remains the digest owner.
+
+Identity observation, member integrity and root authority remain distinct.
+`observe`/`compare` preserve minimal legacy identities and typed unknowns.
+The retained wrapper does not acquire a commit requirement. Existing coercion,
+ordinary versus strict JSON, read budgets, conditional reads and error policies
+remain with their concrete callers. `runtime_publication` retains nonempty
+canonical manifests, custody, HMAC approval, protected copying, locks and stamp
+caches. A matching receipt grants no root authority. Core's attested single-file
+contract and SDK version 6 remain unchanged.
+
+Updater capability discovery uses captured source and unique module-level
+integer literals through `SourceDeclarations`, without executing target code.
+This deliberately replaces regex acceptance of embedded or ambiguous markers.
+The publisher rechecks the selected updater bytes against its captured receipt
+before parsing those declarations. Fixed old-source negatives distinguish that
+correction from the structural extraction.
+
+The standalone root updater loads the exact local `generation_receipt.py` and
+`digest_primitives.py` pair lazily after journal recovery. Both sources are
+captured and compiled before either executes; installed leaves retain bounded
+nofollow reads and root custody. Source layouts are explicit, and installed
+layouts have no missing-leaf fallback. Publication ships each owner in the
+package and beside standalone tools. Root installers copy dependencies before
+their importing consumers.
+
+Two literal declarations describe source transport:
+`CLIENT_UPGRADE_RECEIPT_MEMBER_PROTOCOL = 1` means the updater can journal,
+copy and recover the pair; `CLIENT_UPGRADE_RECEIPT_READER_PROTOCOL = 1` means
+the updater requires the pair. A candidate contains neither leaf or both.
+A reader requiring the pair cannot activate without both. Any transaction
+adding or removing the pair requires member protocol 1 in both updater sources.
+Present dependencies copy first, then the present updater, then absent optionals.
+C18's captured installed proof and previous proof metadata remain authoritative.
+
+A separately named, unpublished standalone bridge implements transport without
+using either new leaf. Forward transport is old to bridge without leaves, bridge
+to bridge with the pair, then final. Reverse transport restores the bridge while
+retaining the pair before removing it. The unaware old updater cannot refuse an
+unknown closure retroactively; the retained unsafe-direct-transition negative
+proves that limitation. Root's C31 preparation/deployment gates own refusing that
+source transition. Record readability alone does not establish transport safety.
+Prepared bridge source grants no live activation or rollback designation. The
+live and designated rollback generation remains a17477b2b206adf79d89e65c7b9d09584f0bfa34.
+See [the receipt architecture](c15_receipt_architecture.md) and the rerunnable
+source and evidence tools under `docs/evidence` for exact caller and ship maps.
+
 ## Supported-generation record compatibility (C31/B11, 2026-10-16)
 
 The local compatibility implementation uses `prismabuild.record_kinds` as pure
