@@ -9,7 +9,7 @@ import subprocess
 BASE = "b66becd2e55eebe623228c3eca90bf5fcf57506b"
 
 
-def migrate(checkout: Path) -> list[str]:
+def complete_residency_callers(checkout: Path) -> list[str]:
     def source(path):
         return subprocess.check_output(
             ["git", "-C", str(checkout), "show", BASE + ":" + path], text=True)
@@ -52,6 +52,11 @@ def migrate(checkout: Path) -> list[str]:
             after = before
             for start, end in sorted(edits, reverse=True):
                 after = after[:start] + "submit_core.SubmissionRequest" + after[end:]
+            if path == "tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py":
+                loop = "    for name, value in overrides.items():\n        setattr(args, name, value)"
+                assert after.count(loop) == 1 and "from dataclasses import" not in after
+                after = after.replace("import types\n", "import types\nfrom dataclasses import replace\n")
+                after = after.replace(loop, "    args = replace(args, **overrides)")
             replacements[path] = before, after
     assert len(replacements) == 12
     for path, (before, after) in replacements.items():
@@ -66,4 +71,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path)
     args = parser.parse_args()
-    print(json.dumps({"base": BASE, "migrated": migrate(args.checkout)}))
+    print(json.dumps({"base": BASE, "migrated": complete_residency_callers(args.checkout)}))
