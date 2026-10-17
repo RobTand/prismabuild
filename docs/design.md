@@ -4700,16 +4700,26 @@ and a generation-uniform rotation proof that includes this reader.
 
 `prismabuild.role_session` supplies operations rather than a serving loop.
 Each role owns its work, idle waits, error handling, one-shot exit policy and
-completion boundary. `stop_requests` supplies an Event and restores the exact
+completion boundary. `stop_requests` supplies a sticky `StopRequest` and restores the exact
 signal handlers each caller chose. The worker installs SIGTERM only. Tier,
 local tier, prewarm and metrics install SIGTERM and SIGINT. Prewarm passes
-that same Event to its readers. Worker loops remain multi-instance. Storage,
+that same stop request to its readers. Worker loops remain multi-instance. Storage,
 tiers and local tier keep their script-stem singleton locks. The
 metrics snapshot form `--once` keeps its existing singleton exemption.
 The kit names the shared deferral exit as `ROLE_DEFERRED_EXIT = 75`; each role
 chooses when to return it. Worker `--once` generation drift still exits 0.
 Worker idle paths that use `time.sleep` finish that interval after a stop
 request. Their timing remains role policy under D05.
+The stop context owns the process's native signal wakeup descriptor for its
+lifetime and restores the previous registration before closing its pipe. A
+competing `signal.set_wakeup_fd` user, including an asyncio event loop, must not
+run inside that context. Native notifications wake the wait before deferred
+Python signal dispatch; only the selected Python handlers request a stop.
+Unrelated notifications are drained without shortening the monotonic timeout.
+Each `StopRequest` supports one waiter, the role's main loop. Other threads may
+observe or request its stop. Forked readers detach the inherited native wakeup
+registration, and the inherited request cannot write to or close its parent's
+descriptors. This also protects a child that reuses either descriptor number.
 `generation_receipt` owns receipt parsing and identity comparison, while the
 stdlib-only `park_proof` owns gate parsing and marker bytes. Unknown receipt
 behavior and the roles required by each drain observer remain unchanged by

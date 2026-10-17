@@ -199,3 +199,49 @@ print('restored', flush=True)
 ''')
     assert code == 0, output.decode()
     assert output == b'restored\n'
+
+
+@pytest.mark.parametrize('threaded', [False, True], ids=['main-thread', 'worker-thread'])
+def test_a_forked_reader_cannot_write_a_reused_stop_descriptor(tmp_path, threaded):
+    target = tmp_path / 'reused-stop-descriptor.bin'
+    code, output = child_result(tmp_path, '''
+import traceback
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+results = []
+with stop_requests(signum) as stop:
+    def fork_reader():
+        pid = os.fork()
+        if pid == 0:
+            try:
+                inherited_writer = stop._write_fd
+                os.close(stop._read_fd)
+                os.close(inherited_writer)
+                opened = os.open(''' + repr(str(target)) + ''', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                if opened != inherited_writer:
+                    os.dup2(opened, inherited_writer)
+                    os.close(opened)
+                os.kill(os.getpid(), signum)
+                assert os.fstat(inherited_writer).st_size == 0, 'native signal wrote into the reader file'
+                os.close(inherited_writer)
+                os._exit(0)
+            except BaseException:
+                traceback.print_exc()
+                os._exit(1)
+        _, status = os.waitpid(pid, 0)
+        results.append(os.waitstatus_to_exitcode(status))
+    if ''' + repr(threaded) + ''':
+        reader = threading.Thread(target=fork_reader)
+        reader.start()
+        reader.join()
+    else:
+        fork_reader()
+    assert results == [0], results
+    assert not stop.is_set()
+    stop.set()
+    assert stop.wait(0) is True
+print('reused-fd-safe', flush=True)
+''')
+    assert code == 0, output.decode()
+    assert output == b'reused-fd-safe\n'
+    assert target.read_bytes() == b''
