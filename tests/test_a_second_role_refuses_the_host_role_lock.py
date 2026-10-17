@@ -58,7 +58,7 @@ TIERS = "tier_loop.py"
 
 #: The lock-file name the contract pins, independent of the generation a
 #: script was loaded from.
-LOCK_NAME = "prewarm_loop.lock"
+LOCK_NAME = "prismabuild.prewarm_loop.lock"
 
 
 def _lock_path(root: Path, script: str = STORAGE) -> Path:
@@ -103,7 +103,7 @@ receipt.write_text(json.dumps({{"commit": "c" * 40, "generation": "gen-test"}}))
 role_session.GENERATION_VERSION = receipt
 role_session.RUNTIME_VERSION = receipt
 role_session.read_maintenance_gate = lambda: None
-import prewarm_loop
+from prismabuild import prewarm_loop
 prewarm_loop.cycle = lambda *args, **kwargs: {{}}
 prewarm_loop.require_storage_pacing = lambda *args, **kwargs: None
 raise SystemExit(prewarm_loop.main({argv!r}))
@@ -399,7 +399,7 @@ def test_a_once_operator_cycle_also_refuses_a_held_lock(
     never runs behind a held lock.
     """
 
-    import prewarm_loop
+    from prismabuild import prewarm_loop
 
     lock_root = tmp_path / "role-locks"
     monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", lock_root)

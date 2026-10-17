@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 import pbmetrics  # noqa: E402
 from prismabuild import kept_reads
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 COARSE = kept_reads._COARSE_REALTIME
 TICK_NS = 1_000_000

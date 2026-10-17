@@ -27,10 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import manifest_layout
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
-from stage_move import _Copier  # noqa: E402
-import ram_promote  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild.stage_move import _Copier  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
 
 CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
