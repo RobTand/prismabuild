@@ -127,7 +127,7 @@ def migrate(path, members, source=None):
     if not changes:
         return text, []
     existing = {scope(node) for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
-                and node.module == 'prismabuild'
+                and (node.module == 'prismabuild' or node.module is None and node.level == 1)
                 and any(alias.name == 'data_manifest' and alias.asname == OWNER for alias in node.names)}
     assert not any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == OWNER
                    or isinstance(node, ast.arg) and node.arg == OWNER for node in ast.walk(tree)), path
@@ -138,7 +138,10 @@ def migrate(path, members, source=None):
             continue
         line_end = starts[node.end_lineno]
         indent = lines[node.lineno - 1][:node.col_offset]
-        changes.append((line_end, line_end, indent + IMPORT + '\n'))
+        directive = ('from . import data_manifest as manifest_codec'
+                     if path.parent.name == 'prismabuild' and path.parent.parent.name == 'src'
+                     else IMPORT)
+        changes.append((line_end, line_end, indent + directive + '\n'))
     updated = edit(text, changes)
     return updated, references
 
