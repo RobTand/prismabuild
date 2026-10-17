@@ -126,6 +126,7 @@ def _world(tmp_path: Path, *, entries: int = 1) -> tuple[
     total = entries * N_BYTES
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     (queue.root / "worker.py").write_text("import sys\n")
     plan = _plan(queue, digest, total)
     residency_plan.freeze(queue, plan)
