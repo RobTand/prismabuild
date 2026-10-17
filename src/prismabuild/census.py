@@ -13,6 +13,7 @@ import shlex
 import time
 from typing import Generic, Literal, TypeVar
 
+from . import tier_holdings
 from . import (core as pb, pool, produced_output, residency_map, residency_plan,
                storage_tiers, window_credit, slurm_lane as sl)
 from . import kept_reads
@@ -1516,7 +1517,7 @@ def _starvation_census_unreadable(queue: pool.PoolQueue, *, notes: list[str],
     try:
         report_paths.extend(("tier", tier_id, queue.root / pool.record_store.TIER_RESERVATIONS /
                              queue.records.check_tier_id(tier_id) / pool.CENSUS_UNREADABLE)
-                            for tier_id in queue.tier_ids())
+                            for tier_id in tier_holdings.ids(queue.records))
     except (OSError, ValueError, pool.PoolContractError) as exc:
         notes.append(f"starvation tier census reports: {exc}")
         unreadable.append(f"starvation tier census reports: {exc}")
