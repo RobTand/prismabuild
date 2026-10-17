@@ -102,7 +102,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
               "range_start_bytes": 0, "range_end_bytes": SPAN,
               "kind": "stage_gib",
               "published_unix": float(row["published_unix"])}  # type: ignore[arg-type]
-    assert queue.funding.reserve_window(TIER, grant, fields, 1) is True
+    assert queue.funding.reserve_window(TIER, grant, fields, 1).bound is True
     record = queue.funding.read_window(mover, TIER)
     assert record is not None
     generation = str(record["generation"])
@@ -163,7 +163,7 @@ def _funded_pair(queue, plan, mover, row, *, kind, gib, grant):
               "kind": kind,
               "published_unix": float(row["published_unix"])}
     tier = TIER
-    assert queue.funding.reserve_window(tier, grant, fields, gib) is True
+    assert queue.funding.reserve_window(tier, grant, fields, gib).bound is True
     record = queue.funding.read_window(mover, tier)
     assert record is not None
     generation = str(record["generation"])

@@ -205,7 +205,7 @@ def test_repro_reserve_defers_on_unknown_funding_record(
     path.write_text('{"schema": "placeholder"}')
     path.chmod(0o000)
     try:
-        assert q.funding.reserve_window(TIER, grant, fields, 2) is False, \
+        assert q.funding.reserve_window(TIER, grant, fields, 2).bound is False, \
             "an unreadable funding record must defer, never re-fence"
     finally:
         path.chmod(0o644)
@@ -215,7 +215,7 @@ def test_repro_reserve_defers_on_unknown_funding_record(
 
     # Present but empty: still unproved authority, never true absence.
     path.write_bytes(b"")
-    assert q.funding.reserve_window(TIER, grant, fields, 2) is False, \
+    assert q.funding.reserve_window(TIER, grant, fields, 2).bound is False, \
         "a present empty funding record must defer, never be replaced"
     assert path.read_bytes() == b""
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
@@ -225,7 +225,7 @@ def test_repro_reserve_defers_on_unknown_funding_record(
     # Eventual progress via true absence (operator removes the torn
     # record): a fresh fence binds normally -- no double-hold remains.
     path.unlink()
-    assert q.funding.reserve_window(TIER, grant, fields, 2) is True
+    assert q.funding.reserve_window(TIER, grant, fields, 2).bound is True
     record = q.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "reserved"
     assert int(ledger.holdings(grant).get('stage_gib', 0)) == 2
@@ -247,7 +247,7 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
         consumer, TIER, "mover_row", "phase-r4split")
     fields = _fields(q, plan, mover, row, kind="stage_gib")
     # Real handoff: fence reserved under the grant, moved onto the mover.
-    assert q.funding.reserve_window(TIER, grant, fields, 2) is True
+    assert q.funding.reserve_window(TIER, grant, fields, 2).bound is True
     generation = str(q.funding.read_window(mover, TIER)["generation"])
     assert q.funding._transfer_window(TIER, grant, mover) == 2
     assert q.funding.advance_window(
@@ -274,7 +274,7 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
     # short count.
     (ledger.paths.held / mover).chmod(320)
     try:
-        got = q.funding.reserve_window(TIER, grant, fields2, 2)
+        got = q.funding.reserve_window(TIER, grant, fields2, 2).bound
     finally:
         (ledger.paths.held / mover).chmod(493)
     assert got is False, "a short retry transfer must retain, never close"
@@ -292,7 +292,7 @@ def test_repro_split_rehome_retry_short_transfer(tmp_path: Path) -> None:
     # with no free interval, the record closed through the legal step and
     # rotated to a fresh reserved generation bound to the exact grant
     # names -- no duplicate credit anywhere.
-    assert q.funding.reserve_window(TIER, grant, fields2, 2) is True
+    assert q.funding.reserve_window(TIER, grant, fields2, 2).bound is True
     record2 = q.funding.read_window(mover, TIER)
     assert record2 is not None and record2["state"] == "reserved"
     assert str(record2["generation"]) != generation

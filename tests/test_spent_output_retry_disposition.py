@@ -69,7 +69,7 @@ def test_failed_copy_with_spent_credit_is_terminal(tmp_path, producer_terminal):
             pool.record_store.read_document(ended),
             KIND,
             1,
-        ) == (0, None)
+        ).credit == (0, None)
         assert w.q.claim(owner="retry-worker") is None
     assert ended.parent.name == pool.record_store.FAILED
     assert not w.q.records.item_path(pool.record_store.READY, mover).exists()

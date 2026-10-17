@@ -456,7 +456,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
 def test_released_record_with_held_tokens_recovers_after_restart(tmp_path):
     """Repair the unsafe state that the previous release order created."""
     q, mover, live_mover, _, *_ = _stranded_with_live_intent(tmp_path)
-    assert q.funding.release_output(mover, TIER)
+    assert q.funding.release_output(mover, TIER).released
     ledger = q.tier(TIER)
     assert ledger.holdings(mover).get(KIND, 0) == 1
     live_before = q.funding.read_output(live_mover, TIER)
@@ -471,7 +471,7 @@ def test_released_record_with_held_tokens_recovers_after_restart(tmp_path):
 def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeypatch):
     """Keep the old release's proof until its tokens return to free."""
     q, mover, live_mover, receipts, inst, *_ = _stranded_with_live_intent(tmp_path)
-    assert q.funding.release_output(mover, TIER)
+    assert q.funding.release_output(mover, TIER).released
     prewrite = bl.prewrites_dir(q.root, inst) / "fault.prewrite.json"
     release = pool.ResourceLedger.release
 
@@ -498,7 +498,7 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
     """A marker does not waive the proof of nonexecution or absent paths."""
     q, mover, live_mover, _, inst, _, descs = _stranded_with_live_intent(tmp_path)
     if state == "released":
-        assert q.funding.release_output(mover, TIER)
+        assert q.funding.release_output(mover, TIER).released
     if guard == "lease":
         pool.immutable_files.write_json_atomic(q.records.lease_path(mover), {"owner": "live-mover"})
     elif guard == "partial":
