@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 
 from . import core as pb
-from prismabuild import data_manifest as manifest_codec
+from . import data_manifest as manifest_codec
 from . import produced_output as po
 from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
 

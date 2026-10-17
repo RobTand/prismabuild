@@ -76,7 +76,7 @@ from . import manifest_layout
 from . import action_result as _action_result
 from . import contracts as _contracts
 from . import core as _core
-from prismabuild import data_manifest as manifest_codec
+from . import data_manifest as manifest_codec
 from . import local_scratch as _local_scratch
 from . import pool as _pool
 from . import produced_output as _produced_output

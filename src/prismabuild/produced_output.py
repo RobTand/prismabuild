@@ -4634,7 +4634,7 @@ def _producer_movement_template(queue, request: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
-    from prismabuild import data_manifest as manifest_codec
+    from . import data_manifest as manifest_codec
     from prismabuild import pool as pool_mod
 
     parent_inputs = [dict(entry) for entry in request.get("inputs") or ()
@@ -4782,7 +4782,7 @@ def _seal_output_mover(queue, checked_instance: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
-    from prismabuild import data_manifest as manifest_codec
+    from . import data_manifest as manifest_codec
     from prismabuild import movement_actions
     from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod
@@ -6093,7 +6093,7 @@ def place_origin_batches(queue_root: str | Path, static: Mapping[str, object],
     """
 
     from prismabuild import core as core_mod
-    from prismabuild import data_manifest as manifest_codec
+    from . import data_manifest as manifest_codec
 
     checked = manifest_codec.validate_data_manifest(static)
     if checked["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V2:
@@ -6180,7 +6180,7 @@ def verify_placed_origin_batches(queue_root: str | Path,
     """
 
     from prismabuild import core as core_mod
-    from prismabuild import data_manifest as manifest_codec
+    from . import data_manifest as manifest_codec
 
     checked = manifest_codec.validate_data_manifest(manifest)
     notes = dict(checked["annotations"])

@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import core as pb
-from prismabuild import data_manifest as manifest_codec
+from . import data_manifest as manifest_codec
 from . import immutable_files
 from .core import ActionContractError, canonical_sha256
 # The two sealed variables that carry container ownership.  Named here so the

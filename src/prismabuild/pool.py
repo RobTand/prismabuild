@@ -156,7 +156,7 @@ from .denial_records import (
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
-from prismabuild import data_manifest as manifest_codec
+from . import data_manifest as manifest_codec
 from . import immutable_files
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py

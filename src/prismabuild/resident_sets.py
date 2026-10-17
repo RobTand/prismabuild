@@ -16,7 +16,7 @@ import tempfile
 import time
 
 from . import core, posix_lock
-from prismabuild import data_manifest as manifest_codec
+from . import data_manifest as manifest_codec
 from . import immutable_files
 
 SET_SCHEMA = "prismabuild.resident_set.v1"
