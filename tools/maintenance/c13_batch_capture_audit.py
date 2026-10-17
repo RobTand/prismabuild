@@ -105,6 +105,14 @@ def c13_capture_main():
     for name in ("BatchLedger.capture", "BatchLedger.file"):
         codecs[name] = ast.dump(old[owner][name]) == ast.dump(new[owner][name])
         assert codecs[name], name
+    # Do not normalize a stale receiver into an apparent equivalence proof.
+    current_tree = ast.parse(c13_capture_source(args.after, owner))
+    current_facets = next(n for n in current_tree.body
+                          if isinstance(n, ast.ClassDef) and n.name == "BatchFacets")
+    stale = [n.lineno for n in ast.walk(current_facets)
+             if isinstance(n, ast.Attribute) and n.attr == "entry"
+             and isinstance(n.value, ast.Name) and n.value.id == "self"]
+    assert not stale, ("stale BatchFacets receiver", stale)
     facets = []
     for name, before in old[owner].items():
         if not name.startswith("BatchFacets."):

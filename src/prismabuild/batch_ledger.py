@@ -2217,11 +2217,11 @@ class BatchFacets:
 
     @property
     def kind(self) -> str:
-        return "origin" if self.entry.get("origin_only") is True else "staged"
+        return "origin" if self._entry.get("origin_only") is True else "staged"
 
     @property
     def origin_reclaimed(self) -> bool:
-        return bool(self.entry.get("origin_reclaimed"))
+        return bool(self._entry.get("origin_reclaimed"))
 
     @property
     def copies(self) -> list[dict[str, object]]:
