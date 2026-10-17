@@ -134,7 +134,8 @@ def reconcile(root, inventory, records):
                 for reference in references:
                     module, qualified = reference.split(":", 1)
                     paths = (["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
-                             ["tools/fleet/" + module + ".py", "tools/" + module + ".py"])
+                             ["tools/fleet/" + module + ".py", "tools/" + module + ".py",
+                              "tools/fleet/" + module, "tools/" + module])
                     for name, _, _, owner in record.get("calls", []):
                         if name in paths and name in actual and owner == qualified:
                             evidence.append({"record": identity, "reference": reference, "source_sha256": actual[name]})
