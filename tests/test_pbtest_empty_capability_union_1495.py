@@ -24,6 +24,7 @@ from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
     _FinishedProcess, pbtest,
 )
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
@@ -221,7 +222,7 @@ def test_a_nonempty_union_still_forwards_the_flag(tmp_path, monkeypatch):
 def test_a_standalone_empty_requires_files_is_still_refused(capsys):
     args = pbrun.parse_args(["--requires-files", "[]", "--", "true"])
     with pytest.raises(SystemExit) as excinfo:
-        pbrun.prepare_submission(args)
+        submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)
     assert excinfo.value.code == 2
     err = capsys.readouterr().err
     assert "--requires-files" in err and "nonempty" in err

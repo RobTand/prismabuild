@@ -7,6 +7,7 @@ before spending an attempt, and the submit-side verdict refuses a fleet that
 offers no capability at all.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import hashlib
 import importlib.util
@@ -309,16 +310,16 @@ def test_publication_row_carries_the_sealed_requirements(tmp_path):
     spec.loader.exec_module(pbrun)
 
     entry = _dependency(tmp_path)
-    row = pbrun.publication_row(
+    row = submit_core.publication_row(
         {"action_key": "6" * 64,
          "params": {"demand": {}, "placement": {"required_tags": [TAG]},
                     "checkout_snapshot": {},
                     "requires_files": [entry]},
-         "environment": {"variables": {pbrun.CONTAINER_OWNER_ENV:
+         "environment": {"variables": {submit_core.CONTAINER_OWNER_ENV:
                                       "publication-row-test"}}},
         args=type("Args", (), {"priority": 0, "max_attempts": 1,
                                "retry_safe": True, "priority_reason": None})(),
-        queue=pool.PoolQueue(tmp_path / "queue"))
+        queue=pool.PoolQueue(tmp_path / "queue"), store=pbrun.configured_store())
     assert row["requires_files"] == [entry]
     assert row["tags"] == [TAG]
 
