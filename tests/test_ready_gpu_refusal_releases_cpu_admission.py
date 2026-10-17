@@ -127,6 +127,9 @@ def test_a_gpu_waiting_on_its_residency_lead_releases_cpu_admission(
     for index in range(3):
         cpu = publish(f"cpu-beside-unlanded-lead-{index}", priority=1,
             cpu=1, gpu=0, mem_gb=3, tags=["gb10"])
-        assert claim() == cpu, denial(cpu)
+        admitted = claim()
+        if admitted is None:
+            assert denial(cpu)["reason"] == "deferred_for_ready_gpu", denial(cpu)
+        assert admitted == cpu, denial(cpu)
         queue.finish(cpu, status="executed")
         assert queue.item_path(pool.READY, gpu).exists()
