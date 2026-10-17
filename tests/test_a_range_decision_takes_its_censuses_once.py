@@ -266,7 +266,12 @@ def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
     # A quiet pool's claimed/: present and empty, so the claim census
     # reads an empty listing rather than failing one closed.
     queue.records.dir(pool.record_store.CLAIMED).mkdir(parents=True, exist_ok=True)
-    after_paths(monkeypatch, *destinations, destinations[0].parent, queue.records.dir(pool.record_store.CLAIMED))
+    after_paths(
+        monkeypatch,
+        *destinations,
+        destinations[0].parent,
+        queue.records.dir(pool.record_store.CLAIMED),
+    )
     successor, copier = base._key(), base._key()
     publisher = base._publisher(fleet, copier, successor, trust=trust)
     return publisher, destinations

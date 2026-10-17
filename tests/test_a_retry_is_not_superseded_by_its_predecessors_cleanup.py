@@ -117,7 +117,8 @@ def _assert_retry_survives(queue: pool.PoolQueue, tmp_path: Path, retry: str,
         f"(the lead's withdrawal: {withdrawn!r})")
     assert withdrawn is None, (
         "the failed attempt's cleanup withdrew a mover the retry's plan names")
-    assert queue.records.item_path(pool.record_store.READY, retry).exists(), "the retry is not queued"
+    assert queue.records.item_path(pool.record_store.READY, retry).exists(
+    ), "the retry is not queued"
     assert (queue.records.item_path(pool.record_store.READY, lead).exists()
             or queue.records.item_path(pool.record_store.CLAIMED, lead).exists()), (
         "the retry's lead is no longer queued")

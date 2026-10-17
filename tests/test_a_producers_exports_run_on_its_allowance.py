@@ -356,7 +356,9 @@ def test_an_export_published_without_the_hint_is_funded_from_its_sealed_owner(
 
     monkeypatch.setattr(spool.queue, "publish", as_older_generation)
     export_key = _export(spool, "g0")
-    row = pool.record_store.value_or_raise(spool.queue.records.item(pool.record_store.READY, export_key))
+    row = pool.record_store.value_or_raise(
+        spool.queue.records.item(pool.record_store.READY, export_key),
+    )
     assert "dependent_of" not in row
     cpu_sampler = _running(spool, monkeypatch, psi=0.12)
 

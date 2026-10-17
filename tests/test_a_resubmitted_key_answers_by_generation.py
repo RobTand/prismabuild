@@ -127,7 +127,11 @@ def test_the_current_ending_is_the_later_generation(
     assert answer["generation"] == pytest.approx(
         float(pair["second"]["published_unix"]))
     assert answer["ambiguous"] is False
-    assert sorted(answer["coexisting"]) == sorted([pool.record_store.DONE, pool.record_store.FAILED])
+    assert sorted(
+        answer["coexisting"],
+    ) == sorted(
+        [pool.record_store.DONE, pool.record_store.FAILED],
+    )
     assert [entry["state"] for entry in answer["history"]] == [first_state]
     assert [entry["generation"] for entry in answer["history"]] == [
         pytest.approx(float(pair["first"]["published_unix"]))]
