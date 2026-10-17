@@ -34,18 +34,16 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 UNKNOWN = "unknown"
 
 
+from fleet_world import Admission, FleetWorld
+
+
 def _row(queue: pool.PoolQueue, key: str) -> dict:
     return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text(
         encoding="utf-8"))
 
 
 def _admitted(tmp_path: Path) -> AdmittedQueueFixture:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"),
-        capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def test_detached_submission_tags_the_row_with_the_sealed_repository(

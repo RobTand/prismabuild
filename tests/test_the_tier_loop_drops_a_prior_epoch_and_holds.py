@@ -45,6 +45,9 @@ NEW_EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
 ENTRY_KEY = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
 
 
+from fleet_world import FleetWorld
+
+
 def _fragment(*, tier_id: str, root: str, mover: str,
               epoch: str | None = None) -> dict[str, object]:
     fragment: dict[str, object] = {
@@ -62,9 +65,7 @@ def _fragment(*, tier_id: str, root: str, mover: str,
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _ram_resident(queue: pool.PoolQueue, tmp_path: Path, *, epoch: str,
