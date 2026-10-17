@@ -1,4 +1,5 @@
 """Exercise the real submission boundaries called out by the C14 review."""
+from dataclasses import fields
 from pathlib import Path
 import hashlib
 import json
@@ -72,6 +73,16 @@ def test_mapping_and_cli_normalize_valid_options_identically(field, value):
     request = submission.request_from_mapping({field: value})
     submission.validate_request(request)
     assert getattr(request, field) == getattr(cli, field)
+
+
+def test_every_normalized_request_default_matches_the_cli():
+    request = SubmissionRequest()
+    cli = pbrun.request_from_args(pbrun.parse_args(["--transport", "pool"]))
+    for field in fields(request):
+        expected, actual = getattr(request, field.name), getattr(cli, field.name)
+        if isinstance(expected, (tuple, list)):
+            expected, actual = tuple(expected), tuple(actual)
+        assert actual == expected, field.name
 
 
 def test_preparation_argument_refusal_keeps_usage(tmp_path, monkeypatch, capsys):
