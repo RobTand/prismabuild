@@ -770,7 +770,7 @@ class PassCensus:
                 if not isinstance(chosen, dict) or chosen.get("host") != here:
                     continue
                 if not held.enter_context(
-                        self._queue._transition_locked(key, blocking=False)):
+                        self._queue.action_transition_lock(key, blocking=False)):
                     busy.add(key)
             held.enter_context(
                 self._queue._admission_lock(self._controller))
@@ -840,7 +840,7 @@ def locked_census(queue: PoolQueue, ledger: ResourceLedger, controller):
             busy: set[str] = set()
             for key in sorted(key for key, chosen in discovered["selections"].items()
                               if chosen["host"] == here):
-                if not held.enter_context(queue._transition_locked(key, blocking=False)):
+                if not held.enter_context(queue.action_transition_lock(key, blocking=False)):
                     busy.add(key)
             held.enter_context(queue._admission_lock(controller))
             current = census_reader.capture()

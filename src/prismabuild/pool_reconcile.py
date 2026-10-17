@@ -140,7 +140,7 @@ Normal wait, retry and terminal-record semantics do not read this supplement.
     _require(type(attempt) is int and attempt > 0, "attempt must be a positive integer")
     # Publication, reset, claim and withdrawal use the same per-key exclusion.
     # No host admission lock is held while verifying CAS bytes.
-    with q._transition_locked(key):
+    with q.action_transition_lock(key):
         _quiescent(q, key)
         terminal_path = q.records.item_path(pool.record_store.FAILED, key)
         record, terminal_raw = q.records.reconciliation_row_at(terminal_path)
