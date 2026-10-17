@@ -104,6 +104,14 @@ Membership also removes the missing-reader module census, its unused fallback
 constants and its two private helpers. The required reader owner's enumeration
 and existing unreadable-census refusal remain the production path.
 
+`pbtest` reads collection source from the imported package owner's file and
+carries those bytes under the existing embedded `pbtest_collection` identity.
+The shipped helpers' import hook binds the recorder's package import to that
+captured module, as it already does for the digest owner. Ordinary imports in
+the tested project retain their on-disk identity. The default capability data
+path remains `tests/pbtest_capabilities.json`; the migration rewrites module
+literals only in import and patch calls, leaving data filenames intact.
+
 `tools/fleet/tier_loop.py` remains the physical tier-role entry. It passes its
 resolved entry path to `tier_cycle.main`. That binding retains the original
 tool directory, RAM policy search, mover paths, singleton stem, argv, exits,

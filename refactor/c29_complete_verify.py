@@ -112,6 +112,21 @@ def audit(root):
         baseline = baseline.replace(old, new)
     assert (root / 'tests/fixtures/duplication_baseline.json').read_text() == baseline
     result['architecture_allowlist'] = 'exact existing owner substitutions only'
+    result['explicit_binding_corrections'] = [
+        {'path': 'tools/fleet/pbtest.py', 'symbol': 'SHARD_PROGRAM',
+         'old': 'embedded pbtest_collection import',
+         'current': 'helper-only prismabuild.pbtest_collection import binds to shipped_collection',
+         'controls': ['without_package', 'hostile_package']},
+        {'path': 'tools/fleet/pbtest.py', 'symbol': 'shard_entry',
+         'old': 'here.with_name("pbtest_collection.py")',
+         'current': 'Path(pbtest_collection.__file__)',
+         'reason': 'read the actual imported source owner, independent of patched dispatch RUNTIME_ROOT'},
+        {'path': 'tests/submission_support.py', 'symbol': 'sync_frontends',
+         'old': 'fleet/tools source-directory receiver selection',
+         'current': ['prismabuild.submission_frontend', 'prismabuild.deferred_release',
+                     'prismabuild.manifest_promotion', 'prismabuild.fleet_submit'],
+         'effect': 'same store receiver monkeypatches after owner relocation'},
+    ]
     result['entrypoint'] = {'old': 'tools/fleet/tier_loop.py', 'current': 'tools/fleet/tier_loop.py',
                             'owner': 'prismabuild.tier_cycle', 'body': 'main',
                             'binding': 'main(entrypoint=_PB_ENTRYPOINT)', 'lock_stem': 'tier_loop'}

@@ -68,7 +68,7 @@ from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, pool  # noqa: E402
-from prismabuild import dependency_digest  # noqa: E402
+from prismabuild import dependency_digest, pbtest_collection  # noqa: E402
 from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
@@ -749,14 +749,16 @@ def load(name):
     return module
 
 
-# Only shipped helper imports bind to the private owner. A later package
-# import loads its real on-disk module, preserving core's source identity.
+# Only shipped helper imports bind to their captured owners. A later package
+# import loads its real on-disk module, preserving that package's identity.
 shipped_owner = load(DIGEST_MODULE)
 
 
 def helper_import(name, globals=None, locals=None, fromlist=(), level=0):
     if name == "prismabuild.digest_primitives" and fromlist and level == 0:
         return shipped_owner
+    if name == "prismabuild.pbtest_collection" and fromlist and level == 0:
+        return shipped_collection
     return builtins.__import__(name, globals, locals, fromlist, level)
 
 
@@ -764,7 +766,7 @@ def helper_import(name, globals=None, locals=None, fromlist=(), level=0):
 HELPER_BUILTINS = dict(vars(builtins), __import__=helper_import)
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None
-load("pbtest_collection")
+shipped_collection = load("pbtest_collection")
 selection = None
 if @COLLECTION@:
     import json
@@ -935,7 +937,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     sources = {SHARD_DIGEST_MODULE:
                    Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
                "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
-               "pbtest_collection": (RUNTIME_ROOT / "src/prismabuild/pbtest_collection.py").read_text()}
+               "pbtest_collection": Path(pbtest_collection.__file__).read_text()}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
         # Carry its standalone source into any target project/interpreter.
@@ -1531,7 +1533,7 @@ def main() -> int:
     # declarations loads nothing and runs exactly as before.
     capabilities_path = (
         checkout / args.capabilities if args.capabilities is not None
-        else checkout / "tests" / "prismabuild.pbtest_capabilities.json")
+        else checkout / "tests" / "pbtest_capabilities.json")
     if args.capabilities is not None and not capabilities_path.is_file():
         sys.stderr.write(
             f"pbtest: --capabilities {args.capabilities!r} is not a file "

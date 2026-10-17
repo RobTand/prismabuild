@@ -41,8 +41,40 @@ if __name__ == "__main__":
 '''
 
 
+def module_literals(source: str) -> str:
+    """Retarget literal module addresses only in import and patch calls."""
+    raw = source.encode()
+    lines = raw.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    edits = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if ast.unparse(node.func) not in {
+                'import_module', 'importlib.import_module',
+                'patch', 'mock.patch', 'unittest.mock.patch',
+                'monkeypatch.setattr'}:
+            continue
+        literal = node.args[0]
+        if not isinstance(literal, ast.Constant) or not isinstance(literal.value, str):
+            continue
+        old = literal.value.split('.')[0]
+        if old not in OWNERS:
+            continue
+        start = offsets[literal.lineno - 1] + literal.col_offset
+        end = offsets[literal.end_lineno - 1] + literal.end_col_offset
+        value = raw[start:end].replace(old.encode(), ('prismabuild.' + OWNERS[old]).encode(), 1)
+        edits.append((start, end, value))
+    for start, end, value in sorted(edits, reverse=True):
+        raw = raw[:start] + value + raw[end:]
+    return raw.decode()
+
+
 def bindings(source: str) -> str:
     """Retarget actual imports, embedded imports and module patch strings."""
+    source = module_literals(source)
     for old, new in OWNERS.items():
         alias = f" as {old}" if new != old else ""
         source = re.sub(
@@ -53,11 +85,7 @@ def bindings(source: str) -> str:
         for quote in ('"', "'"):
             source = source.replace(quote + f'import {old}\\n',
                                     quote + f'from prismabuild import {new}{alias}\\n')
-        source = re.sub(rf"(import_module\([\"\x27]){old}([\"\x27])",
-                        rf"\1prismabuild.{new}\2", source)
-        # Dotted patch paths and conftest's module lookup are bindings, not logs.
-        source = re.sub(rf"([\"\x27]){old}(?=\.(?!py[\"\x27])[A-Za-z_]\w*(?:\.|[\"\x27]))",
-                        rf"\1prismabuild.{new}", source)
+        # The conftest table names modules explicitly; data filenames do not.
         source = source.replace(f'("{old}", "SH",', f'("prismabuild.{new}", "SH",')
     return source
 
@@ -206,7 +234,29 @@ def current_source(source: str, path: str) -> str:
                                 '    including an absent namespace. Anything else retains the fence:\n')
     if path == 'tools/fleet/pbtest.py':
         source = source.replace('here.with_name("pbtest_collection.py").read_text()',
-                                '(RUNTIME_ROOT / "src/prismabuild/pbtest_collection.py").read_text()')
+                                'Path(pbtest_collection.__file__).read_text()')
+        source = source.replace('from prismabuild import dependency_digest  # noqa: E402',
+                                'from prismabuild import dependency_digest, pbtest_collection  # noqa: E402')
+        source = source.replace('# Only shipped helper imports bind to the private owner. A later package\n'
+                                '# import loads its real on-disk module, preserving core\'s source identity.',
+                                '# Only shipped helper imports bind to their captured owners. A later package\n'
+                                '# import loads its real on-disk module, preserving that package\'s identity.')
+        if '        return shipped_collection\n' not in source:
+            source = source.replace('        return shipped_owner\n',
+                                    '        return shipped_owner\n'
+                                    '    if name == "prismabuild.pbtest_collection" and fromlist and level == 0:\n'
+                                    '        return shipped_collection\n', 1)
+        source = source.replace('\nload("pbtest_collection")\n',
+                                '\nshipped_collection = load("pbtest_collection")\n')
+    if path == 'tests/submission_support.py':
+        source = source.replace("        if Path(filename).parent.name not in {'fleet', 'tools'}:\n",
+                                "        if (Path(filename).parent.name not in {'fleet', 'tools'}\n"
+                                "                and getattr(module, '__name__', '') not in {\n"
+                                "                    'prismabuild.submission_frontend',\n"
+                                "                    'prismabuild.deferred_release',\n"
+                                "                    'prismabuild.manifest_promotion',\n"
+                                "                    'prismabuild.fleet_submit',\n"
+                                "                }):\n")
     if path == 'tools/fleet/seal_and_publish.py' and 'job_entry=Path(__file__)' not in source:
         source = source.replace('            transport=args.transport,\n',
                                 '            transport=args.transport,\n'

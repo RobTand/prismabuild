@@ -24,7 +24,13 @@ def sync_frontends(monkeypatch, store):
     import sys
     for module in list(sys.modules.values()):
         filename = getattr(module, '__file__', '') or ''
-        if Path(filename).parent.name not in {'fleet', 'tools'}:
+        if (Path(filename).parent.name not in {'fleet', 'tools'}
+                and getattr(module, '__name__', '') not in {
+                    'prismabuild.submission_frontend',
+                    'prismabuild.deferred_release',
+                    'prismabuild.manifest_promotion',
+                    'prismabuild.fleet_submit',
+                }):
             continue
         if hasattr(module, 'configured_store'):
             monkeypatch.setattr(module, 'configured_store', lambda: store)
