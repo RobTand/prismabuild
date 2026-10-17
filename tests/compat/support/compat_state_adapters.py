@@ -86,7 +86,7 @@ def operate(request, store, load):
             assert len(entries) == (0 if variant == "empty" else 1)
             return result
     elif family == "state-stage-root":
-        release, pool = load("stage_release"), load("prismabuild.pool")
+        release, pool = load("prismabuild.staged_path"), load("prismabuild.pool")
         queue = pool.PoolQueue(store / "queue")
         stage = store / "stage"
         stage.mkdir()

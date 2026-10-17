@@ -12,7 +12,7 @@ C, M, OTHER, D, TIER = "c" * 64, "a" * 64, "e" * 64, "9" * 64, "prismabuild-stag
 
 def operate(request, store, load):
     variant = request["case"].split("/", 1)[1]
-    pool, release, maps = (load(name) for name in ("prismabuild.pool", "stage_release", "prismabuild.residency_map"))
+    pool, release, maps = (load(name) for name in ("prismabuild.pool", "prismabuild.stage_release", "prismabuild.residency_map"))
     queue = pool.PoolQueue(store / "queue")
     queue.records.ensure_layout()
     if request["op"] == "read":
@@ -31,7 +31,7 @@ def operate(request, store, load):
     time.perf_counter = lambda: 100.0
     try:
         if variant == "root-refusal-writer":
-            value = release._refused_receipt(**common, refusal="private unregistered root", mover_action_key=M, consumer_action_key=C)
+            value = load("prismabuild.staged_path")._refused_receipt(**common, refusal="private unregistered root", mover_action_key=M, consumer_action_key=C)
         elif variant == "ledger-refusal-writer":
             value = release._ledger_unreadable_receipt(**common, skipped="private census", exc=OSError("private unreadable ledger"))
         elif variant == "receiptless-writer":
@@ -46,10 +46,10 @@ def operate(request, store, load):
         elif variant == "restore-writer":
             value = load("stage_reclaim").restore_run(queue, stage_root=str(stage), quarantine_root=str(store / "quarantine"), run_id="..")
         elif variant == "prune-writer":
-            value = release.prune_stale_mentions(queue, M, consumer_action_key=C, stage=stage, tier_id=TIER, root=root,
+            value = load("prismabuild.staged_path").prune_stale_mentions(queue, M, consumer_action_key=C, stage=stage, tier_id=TIER, root=root,
                                                  observed={"entries": {}})
         elif variant == "recover-writer":
-            value = release.recover_orphaned_range(queue, stage_root=str(stage), head_action_key=M, egress_action_key=OTHER)
+            value = load("prismabuild.staged_path").recover_orphaned_range(queue, stage_root=str(stage), head_action_key=M, egress_action_key=OTHER)
         elif variant == "sweep-refusal-writer":
             corrupt = maps.fragment_path(root, C, M)
             corrupt.parent.mkdir(parents=True, exist_ok=True)
@@ -71,9 +71,9 @@ def operate(request, store, load):
             value = load("prismabuild.produced_output")._tier_host_egress(queue, record={}, producer=C, cas_root=store / "cas",
                 batch_id="batch", generation=0, target_mover=M, consumer=C, stage_root=str(stage), residency_root=str(root))["answer"]["receipt"]
         else:
-            assert release.register_stage_root(queue, tier_id=TIER, stage_root=stage) == "registered"
+            assert load("prismabuild.staged_path").register_stage_root(queue, tier_id=TIER, stage_root=stage) == "registered"
             if variant == "reconcile-writer":
-                value = release.reconcile(queue, **common, wanted=set())
+                value = load("prismabuild.staged_path").reconcile(queue, **common, wanted=set())
             elif variant == "reclaim-writer":
                 value = load("stage_reclaim").reclaim_source_marks(queue, **common, mount_prefix=str(store / "origin"))
             elif variant == "shared-writer":
@@ -87,7 +87,7 @@ def operate(request, store, load):
                                   resources={"cpu": 1, "mem_gb": 1})
                 queue.publish(action_key=M, cas_root=store / "cas", checkout_root="/compat/checkout", worker_script="/compat/worker.py",
                               resources={"cpu": 1, "mem_gb": 1})
-                value = release.evict(queue, M, consumer_action_key=C, stage_root=str(stage))
+                value = load("prismabuild.staged_path").evict(queue, M, consumer_action_key=C, stage_root=str(stage))
                 assert value.get("interest_dropped"), value
             else:
                 target = stage / "weights"
@@ -102,7 +102,7 @@ def operate(request, store, load):
                         "sha256": digest, "file_id": lease.stat_identity(str(target))}})
                 queue.tier(TIER).mint({"stage_gib": 1})
                 assert queue.tier(TIER).take(M, {"stage_gib": 1})
-                value = release.evict(queue, M, consumer_action_key=C, stage_root=str(stage))
+                value = load("prismabuild.staged_path").evict(queue, M, consumer_action_key=C, stage_root=str(stage))
                 assert value["entries_deleted"] == 1 and not target.exists(), value
         assert isinstance(value, dict), value
         path = queue.record_move(M, value)

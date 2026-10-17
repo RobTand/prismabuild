@@ -45,7 +45,7 @@ def operate(request, store, load):
         return landing(request, store, load)
     pool, maps = load("prismabuild.pool"), load("prismabuild.residency_map")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if request["op"] == "read":
         raw = base64.b64decode(request["raw"])
         path = maps.fragment_path(queue.root / pool.RESIDENCY, C, M) if family == "fragment" else queue.move_path(M)
@@ -61,7 +61,7 @@ def operate(request, store, load):
         assert len(queue.move_records(schemas=(pool.POOL_MOVE_SCHEMA_V1,))) == 1
         return value
     mover, lease, release, tiers = (load(name) for name in (
-        "stage_move", "prismabuild.reader_lease", "stage_release", "prismabuild.storage_tiers"))
+        "prismabuild.stage_move", "prismabuild.reader_lease", "prismabuild.staged_path", "prismabuild.storage_tiers"))
     stage, ram, origin = store / "stage", store / "ram", store / "origin"
     for path in (stage, ram, origin):
         path.mkdir()
@@ -84,7 +84,7 @@ def operate(request, store, load):
               "--manifest-sha256", D, "--range-start-bytes", "0", "--range-end-bytes", "8",
               "--manifest", str(manifest_path), "--residency-root", str(root), "--readers", "1", "--max-readers", "1", "--block", "8"]
     if is_ram:
-        writer = load("ram_promote")
+        writer = load("prismabuild.ram_promote")
         if variant != "ram-refusal-writer":
             assert tiers.ensure_ram_epoch(ram, host="compat-host")
             target = stage / mover.stage_relative(str(source), 0, 8, mount_prefix=str(origin))

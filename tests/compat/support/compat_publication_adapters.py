@@ -58,7 +58,7 @@ def operate(request, store, load):
                 assert result is not None and result.successor_published_unix == 101.0
                 return {"predecessor": 100.0, "successor": result.successor_published_unix}
         elif writing:
-            mover = load("stage_move")
+            mover = load("prismabuild.stage_move")
             copier = SimpleNamespace(lock=threading.Lock(), bytes_staged=8 if variant == "landed" else 4,
                                      bytes_read=lambda: 8)
             report = mover._LandingReport(copier, queue, C, interval_s=1.0, range_bytes=8)

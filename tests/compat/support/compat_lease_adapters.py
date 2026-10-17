@@ -18,7 +18,7 @@ def operate(request, store, load):
         path = store / "pin.json"
         if request["op"] == "write":
             if variant == "acquired":
-                maps, release = load("prismabuild.residency_map"), load("stage_release")
+                maps, release = load("prismabuild.residency_map"), load("prismabuild.staged_path")
                 root, stage = queue.root / pool.RESIDENCY, store / "stage"
                 stage.mkdir()
                 staged = stage / "weights"
