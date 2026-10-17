@@ -55,7 +55,10 @@ def rebind_reviews(args):
         return subprocess.check_output(["git", "-C", str(root), "show", args.before_source + ":" + relative])
 
     inventory = [json.loads(line) for line in (args.scan / "inventory.jsonl").read_text().splitlines()]
-    observations = json.loads((args.scan / "observations.json").read_bytes())
+    observation_path = args.scan / "source-audit.json"
+    if not observation_path.is_file():
+        observation_path = args.scan / "observations.json"
+    observations = json.loads(observation_path.read_bytes())
     source_hashes = {row["path"]: row["sha256"] for row in observations["parsed_sources"]}
     constructors = [dict(wire_id=row["wire_id"], **site) for row in inventory
                     for site in row["schema_builders"] if site["scope"] == "production"]

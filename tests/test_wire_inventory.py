@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
@@ -93,3 +96,34 @@ def test_source_review_rebinding_compares_every_non_schema_expression():
     members = ["body", "schema"]
     assert reviewed_sites(old, "read", members, "resolved") == reviewed_sites(moved, "read", members, "resolved")
     assert reviewed_sites(old, "read", members, "resolved") != reviewed_sites(changed, "read", members, "resolved")
+
+
+@pytest.mark.parametrize("stale", ["source", "line"])
+def test_stale_source_review_retains_discovery_and_still_refuses(tmp_path, stale):
+    import hashlib
+    package = tmp_path / "src/prismabuild"
+    package.mkdir(parents=True)
+    source = package / "owner.py"
+    source.write_text("def normalize(schema):\n    return {'schema': schema, 'body': True}\n")
+    review = dict(path="src/prismabuild/owner.py", owner="normalize", line=2,
+                  schema="schema", fields=["body", "schema"], reason="Private source control",
+                  source_sha256=hashlib.sha256(source.read_bytes()).hexdigest())
+    if stale == "source":
+        review["source_sha256"] = "0" * 64
+    else:
+        review["line"] = 99
+    metadata = tmp_path / "tests/compat/dynamic_schema_dispositions.jsonl"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(json.dumps(review) + "\n")
+    original = metadata.read_bytes()
+    output = tmp_path / "audit"
+    result = subprocess.run([sys.executable, str(ROOT / "tests/compat/support/wire_inventory.py"),
+                             "--root", str(tmp_path), "--out", str(output), "--require-complete"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2, result.stderr
+    report = json.loads((output / "source-audit.json").read_bytes())
+    assert len(report["source_review_problems"]) == 1
+    assert len(report["unreviewed_dynamic_schema_builders"]) == 1
+    assert (output / "inventory.jsonl").is_file()
+    assert (output / "field_sets.json").is_file()
+    assert metadata.read_bytes() == original
