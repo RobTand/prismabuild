@@ -2889,7 +2889,7 @@ def read_footprint(plan: Mapping[str, object], accepted_phase: str | None, *,
     """The most tier GiB this consumer's window will publish at once (#907).
 
     The window's own answer, asked at every phase the consumer has still to
-    read: at each, the stage GiB :func:`window` publishes from an empty tier
+    read: at each, the stage GiB :attr:`ConsumerWindow.decision` publishes from an empty tier
     of ``capacity_gib`` with the refill horizon recomputed at that phase, and
     the largest of them.  So it is exactly the window's rule -- the phase
     being read, the in-horizon legs, and the #633 run-ahead bound, which
@@ -5009,7 +5009,7 @@ class ConsumerWindow:
         a sliding window's minimum is two chunks, never two phases.  A leg the
         submitter sealed without (``mover_role`` absent) contributes nothing.
         Raises :class:`ResidencyPlanError` for an unknown mover role, like
-        :func:`window`.
+        :attr:`ConsumerWindow.decision`.
 
         ``rowed`` names the movers with a queued ready row; ``staged`` the ones
         holding tokens for landed bytes; ``queued`` returns those ahead legs in
@@ -5021,7 +5021,7 @@ class ConsumerWindow:
         pre-publish take and the post-publish bind agree on.  The gate reads
         ``waiting``/``prior`` exactly as before.
 
-        ``horizon_end_bytes`` is :func:`window`'s refill horizon (#903), and it
+        ``horizon_end_bytes`` is :attr:`ConsumerWindow.decision`'s refill horizon (#903), and it
         bounds ``waiting`` the way it bounds the window's publication: a leg of
         a later phase that starts at or past it is not something this window
         will publish this cycle, so it is neither the current nor the next the

@@ -18934,3 +18934,14 @@ tolerant of foreign files; strict diagnostic fragment capture remains
 Plan and registry schemas, filenames, JSON bytes, hashing recipes, seal order,
 filing incarnation, generation authority, renewal and cancellation boundaries
 are unchanged. Historical readers continue to find the same files.
+
+
+The cycle-local residency question requires an explicit `WindowBudget.free_gib`
+for `ConsumerWindow.decision`. An absent budget raises `TypeError`; it grants
+no zero-capacity observation. `ConsumerWindow.advance` and the geometric
+`pre_progress_stage_reach` need no free-capacity probe. The stage and RAM,
+publication and pressure captures remain independent. Manifest promotion
+constructs `FilingOptions` and `RowPublication` directly. Its separate standard
+submission request serves only the unchanged C14 filesystem-floor context.
+Physical residency directory names belong to RecordStore; RP keeps the domain
+registry questions and interpretation above its captures.
