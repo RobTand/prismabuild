@@ -12,6 +12,8 @@ C, OWNER, TIER = "c" * 64, "compat-owner", "prismabuild-stage:compat"
 
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
+    if family == "q-outcome" and variant.endswith("writer"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_terminal_adapters.py")))["operate"](request, store, load)
     pool, core = load("prismabuild.pool"), load("prismabuild.core")
     queue = pool.PoolQueue(store / "queue")
     queue.ensure_layout()

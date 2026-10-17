@@ -42,6 +42,7 @@ def manifest(core, store, load, variant):
     batch = json.loads(path.read_bytes())
     if variant == "stage-builder":
         return po.build_stage_manifest(batch, str(store / "outputs"))
+    po._portable_identity_of = lambda info: {"ino": 2, "size": info.st_size, "mtime_ns": 3, "ctime_ns": 4}
     refs = [po.origin_batch_ref(instance, batch_id="batch", manifest_digest=po.output_manifest_sha256([descriptor]))]
     if variant == "origin-builder":
         return po.origin_batch_manifest(queue.root, refs)
