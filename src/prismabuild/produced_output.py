@@ -109,6 +109,14 @@ from __future__ import annotations
 
 from . import output_contract as oc
 from . import batch_ledger as bl
+
+# Documented module-level reader contract (#955), shared with the real owners.
+batch_record = bl.BatchLedger.record
+batch_records = bl.BatchLedger.records
+BATCH_STATE_COMMITTED = oc.BATCH_STATE_COMMITTED
+BATCH_STATE_RETIRING = oc.BATCH_STATE_RETIRING
+BATCH_STATE_RECLAIMED = oc.BATCH_STATE_RECLAIMED
+ProducedOutputError = oc.ProducedOutputError
 from . import pool as c13_pool
 _RENAMEAT2: list[object] = []
 _KEPT_PREWRITES: dict[str, tuple[tuple[object, ...], str]] = {}
@@ -6163,4 +6171,4 @@ def recover_batches(queue, instance: Mapping[str, object],
     return events
 
 
-__all__ = ['template_path', 'declare_template', 'bind_instance', 'reservation_holder', 'admit_funded_window', 'reserve_working_minimum', 'commit_batch', 'load_origin_batch', 'load_origin_batches', 'origin_batch_manifest', 'place_origin_batches', 'verify_placed_origin_batches', 'publish_prepaid_batch', 'refill_window', 'unheld_window_gib', 'build_stage_manifest', 'retire_batch', 'declare_origin_consumer', 'release_origin_consumer', 'origin_consumer_release', 'blocked_origin_batches', 'origin_retirement_tick', 'safe_release_instance', 'output_scope_tick', 'recover_batches', 'build_declaration', 'declared_template', 'bind_declared_instance']
+__all__ = ['batch_record', 'batch_records', 'BATCH_STATE_COMMITTED', 'BATCH_STATE_RETIRING', 'BATCH_STATE_RECLAIMED', 'ProducedOutputError', 'template_path', 'declare_template', 'bind_instance', 'reservation_holder', 'admit_funded_window', 'reserve_working_minimum', 'commit_batch', 'load_origin_batch', 'load_origin_batches', 'origin_batch_manifest', 'place_origin_batches', 'verify_placed_origin_batches', 'publish_prepaid_batch', 'refill_window', 'unheld_window_gib', 'build_stage_manifest', 'retire_batch', 'declare_origin_consumer', 'release_origin_consumer', 'origin_consumer_release', 'blocked_origin_batches', 'origin_retirement_tick', 'safe_release_instance', 'output_scope_tick', 'recover_batches', 'build_declaration', 'declared_template', 'bind_declared_instance']

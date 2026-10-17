@@ -3,8 +3,11 @@
 A client of PrismaBuild -- any program that runs as a PrismaBuild action, or
 that prepares work for one -- reaches PrismaBuild through the fleet tools
 (``pbrun``, ``pbtest``, ``pbcampaign``), the progress helper
-(:mod:`prismabuild.progress`), and this module.  Everything else under
-``prismabuild`` is internal and may change in any release without notice.
+(:mod:`prismabuild.progress`), and this module. The documented module-level
+exceptions are ``produced_output.batch_record`` and ``batch_records`` with
+their batch state constants and ``ProducedOutputError`` (#955), and
+``produced_spool.check_export_receipt`` (#1286). Other names outside these
+published surfaces are internal and may change in any release without notice.
 
 This module is versioned.  :data:`SDK_VERSION` names the contract, and
 ``tests/test_client_sdk_surface.py`` pins every name below: the set of names,

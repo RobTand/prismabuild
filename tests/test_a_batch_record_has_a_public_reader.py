@@ -60,6 +60,9 @@ def test_a_committed_batch_reads_back_whole(tmp_path: Path) -> None:
     assert sum(record["commitment"]["class_bytes"].values()) == len(PAYLOAD)
     assert str(path) in record["record"]["origin_identity"]
     assert po.batch_records(queue, instance, template) == [record]
+    assert bl.BatchLedger.record(
+        queue, instance, template, batch_id="b1") == record
+    assert bl.BatchLedger.records(queue, instance, template) == [record]
 
 
 def test_a_retained_batch_reports_its_lifetime(tmp_path: Path) -> None:
