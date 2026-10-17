@@ -1020,7 +1020,7 @@ class Session:
 
     def pb_status(self, call: Call, *, recent: int | None = None) -> dict:
         limit = self.recent if recent is None else int(recent)
-        census = call.read("pool", lambda: fleet_census.rows(self.queue_root).value)
+        census = call.read("pool", lambda: fleet_census.action_rows(self.queue_root).value)
         endings = call.read("endings",
                             lambda: fleet_census.endings(self.queue_root, limit=limit))
         reservations = call.read("reservations",
@@ -1767,7 +1767,7 @@ class Session:
         manifest = call.read(
             "manifest",
             lambda: pool.record_store.inspection_document(self.repo_link / "RUNTIME_VERSION.json"))
-        census = call.read("pool", lambda: fleet_census.rows(self.queue_root).value)
+        census = call.read("pool", lambda: fleet_census.action_rows(self.queue_root).value)
         rollout = call.read("rollout",
                             lambda: upgrade_client.read_rollout_summary(self.repo_link))
         nodes = (census or {}).get("nodes") or []

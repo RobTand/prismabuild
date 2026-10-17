@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 
 BASE = "8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7"
-OWNERS = {"pbstatus.read_pool": "census.rows.value",
+OWNERS = {"pbstatus.read_pool": "census.action_rows.value",
           "pbstatus.read_starvation": "census.starvation",
           "pbstatus.read_blocked_origins": "census.blocked_origins.value",
           "pbstatus.read_endings": "census.endings",

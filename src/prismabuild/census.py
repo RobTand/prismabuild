@@ -114,7 +114,9 @@ def movers(queue_root, *, view="live", limit=DEFAULT_MOVER_RECEIPTS, reader=None
            receipts=None, now=None, window_seconds=None) -> Section:
     inputs = {"queue_root": str(queue_root), "view": view}
     if view == "live":
-        return _section(_mover_live_rows(Path(queue_root)), inputs=inputs)
+        unreadable = []
+        value = _mover_live_rows(Path(queue_root), unreadable=unreadable)
+        return _section(value, inputs=inputs, errors=unreadable)
     if view == "filed":
         value = _filed_move_receipts(Path(queue_root), limit=limit)
         return _section(value, inputs=inputs, bound={"receipts": limit},
@@ -539,7 +541,7 @@ def offers(queue_root: str | Path, *, reader=None,
                     errors=unreadable)
 
 
-def rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
+def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
     """Read worker offers, active records and existing admission evidence.
 
     This is a non-atomic diagnostic census, never a new admission decision.
@@ -1594,7 +1596,7 @@ def starvation(queue_root: str | Path, *, now: float | None = None, reader=None)
 
     moment = time.time() if now is None else float(now)
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    census = rows(queue_root, reader=reader).value
+    census = action_rows(queue_root, reader=reader).value
     notes = list(census.get("notes", []))
     unreadable = list(census.get("queue", {}).get("unreadable", []))
     jobs = census.get("jobs", [])
@@ -1653,7 +1655,7 @@ def waits(queue_root, *, view="claims", jobs=None, consumers=None, plan_files=No
     if view != "claims":
         raise ValueError(f"unknown wait census view: {view}")
     if jobs is None:
-        jobs = rows(queue_root, reader=reader).value["jobs"]
+        jobs = action_rows(queue_root, reader=reader).value["jobs"]
     notes, unreadable = [], []
     waiting: list[dict] = []
     for job in jobs:
@@ -2359,7 +2361,7 @@ def _fresh(reader: KeptReads | None) -> KeptReads:
     fresh.begin()
     return fresh
 
-def _read_claim(queue: pool.PoolQueue, key: str,
+def claim_observation(queue: pool.PoolQueue, key: str,
                 reader: KeptReads | None = None) -> dict | None:
     return _fresh(reader).record(queue.records.dir(pool.record_store.CLAIMED), key)
 
@@ -2681,7 +2683,7 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
         slot["census"] = (fences, movers, ram_tier_id, inputs, census)
     return census
 
-def _mover_live_rows(queue_root: Path) -> list[dict]:
+def _mover_live_rows(queue_root: Path, *, unreadable=None) -> list[dict]:
     """Live actions whose residency block names a byte range: the movers.
 
     A mover row is the one whose residency block names a range; a consumer's
@@ -2699,6 +2701,8 @@ def _mover_live_rows(queue_root: Path) -> list[dict]:
         for key in pool.record_store.RecordStore(Path(queue_root)).inspection_keys(state):
             record = pool.record_store.RecordStore(Path(queue_root)).inspection_slot(state, key)
             if record is None:
+                if unreadable is not None:
+                    unreadable.append(f"movers {state}/{key}: unreadable or disappeared")
                 continue
             block = record.get("residency")
             if not isinstance(block, Mapping):

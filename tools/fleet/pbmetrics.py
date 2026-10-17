@@ -228,7 +228,7 @@ def _attempt_telemetry(
         host_attempts = _HostAttempts(jobs=len(jobs))
         for job in jobs:
             key = str(job.get("action_key") or "")
-            claim = fleet_census._read_claim(queue, key, reader)
+            claim = fleet_census.claim_observation(queue, key, reader)
             scope = claim.get("resource_scope") if isinstance(claim, dict) else None
             nonce = scope.get("nonce") if isinstance(scope, dict) else None
             record = reader.sidecar(
@@ -842,7 +842,7 @@ def _collect(
     metrics = Metrics()
     success = True
     try:
-        census = fleet_census.rows(root, reader=reader).value
+        census = fleet_census.action_rows(root, reader=reader).value
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         census = {"nodes": [], "jobs": [], "queue": {"ready": None, "claimed": None}}
         success = False

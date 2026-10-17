@@ -174,7 +174,6 @@
   "sorted-json:tools/fleet/pbrun.py::release_origin_consumer_cli",
   "sorted-json:tools/fleet/pbrun.py::result_and_stamp_names",
   "sorted-json:tools/fleet/pbsnapshot.py::main",
-  "sorted-json:tools/fleet/pbstatus.py::blocked_origin_remedies",
   "sorted-json:tools/fleet/pbstatus.py::main",
   "sorted-json:tools/fleet/pbsweep.py::main",
   "sorted-json:tools/fleet/pbtest_pins.py::check_pins",
@@ -331,10 +330,6 @@
   }
  ],
  "same_name_helpers": {
-  "_absent": [
-   "src/prismabuild/pool_reconcile.py",
-   "tools/fleet/pbmcp.py"
-  ],
   "_action_key": [
    "src/prismabuild/residency_map.py",
    "src/prismabuild/residency_plan.py"
@@ -412,7 +407,6 @@
    "src/prismabuild/box_window.py",
    "src/prismabuild/gpu_capacity.py",
    "src/prismabuild/pool_reconcile.py",
-   "tools/fleet/pbmetrics.py",
    "tools/fleet/upgrade_client.py"
   ],
   "_observe": [
@@ -436,10 +430,6 @@
    "src/prismabuild/adaptive_snapshot.py",
    "src/prismabuild/produced_spool.py",
    "tools/fleet/retire_worker.py"
-  ],
-  "_read_claim": [
-   "src/prismabuild/reader_lease.py",
-   "tools/fleet/pbmetrics.py"
   ],
   "_require": [
    "src/prismabuild/pool_reconcile.py",
