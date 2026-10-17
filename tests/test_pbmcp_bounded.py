@@ -49,7 +49,7 @@ def test_a_census_that_never_returns_is_reported_not_awaited(
     def never(_queue_root, *, reader=None):
         time.sleep(600)
 
-    monkeypatch.setattr(pbmcp.pbstatus, "read_pool", never)
+    monkeypatch.setattr(fleet_census, "rows", never)
     session = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root, repo_link=fleet.repo_link,
                             deadline_s=DEADLINE_S)
@@ -84,8 +84,8 @@ def test_a_timed_out_section_is_null_not_an_empty_collection(
     def never(*_args, **_kwargs):
         time.sleep(600)
 
-    for name in ("read_endings",):
-        monkeypatch.setattr(pbmcp.pbstatus, name, never)
+    for name in ("endings",):
+        monkeypatch.setattr(fleet_census, name, never)
     for name in ("_reservations", "_scan_actions", "_queue_view"):
         monkeypatch.setattr(pbmcp, name, never)
     monkeypatch.setattr(pbmcp.pool.record_store.RecordStore, "inspection_records", never)

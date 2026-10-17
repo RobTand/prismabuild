@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 from prismabuild import pool  # noqa: E402
 import pbmcp  # noqa: E402
 import pbmcp_fixture as fx  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 DEADLINE_S = 1.0
@@ -74,7 +75,7 @@ def test_the_gap_names_what_is_staged_ahead_of_the_cursor(
     body = session.call("pb_cursors")
     gap = body["cursors"][0]["cursor_gap"]
     assert gap["accepted_phase"] == "phase-0000"
-    assert gap["live_byte_cursor"] == pbstatus.NOT_OBSERVABLE
+    assert gap["live_byte_cursor"] == fleet_census.NOT_OBSERVABLE
     assert gap["stage"]["remaining_phases"] == 2
     assert gap["stage"]["staged_phases"] == 1
     assert gap["stage"]["unstaged_phases"] == ["phase-0001"]
@@ -176,7 +177,7 @@ def test_a_census_that_never_returns_is_null_not_an_empty_list(
     def never(*_args, **_kwargs):
         time.sleep(600)
 
-    monkeypatch.setattr(pbmcp, "_cursor_census", never)
+    monkeypatch.setattr(census, "_cursor_census", never)
     bounded = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link,
