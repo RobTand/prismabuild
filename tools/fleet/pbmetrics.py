@@ -22,12 +22,15 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-import pbstatus  # noqa: E402
+from runtime_paths import generation_root  # noqa: E402
+
+RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import census as fleet_census, pool  # noqa: E402
 from prismabuild import kept_reads
 
-pool = pbstatus.pool
 
-DEFAULT_QUEUE_ROOT = pbstatus.DEFAULT_QUEUE_ROOT
+DEFAULT_QUEUE_ROOT = fleet_census.DEFAULT_QUEUE_ROOT
 DEFAULT_LISTEN = "127.0.0.1"
 DEFAULT_PORT = 9469
 DEFAULT_CACHE_SECONDS = 10.0
@@ -66,16 +69,6 @@ RESOURCE_NAMES = {
 }
 
 
-def _number(value: object) -> float | None:
-    if type(value) not in (int, float):
-        return None
-    try:
-        result = float(value)
-    except (OverflowError, ValueError):
-        return None
-    return result if math.isfinite(result) and result >= 0 else None
-
-
 def _host(value: object) -> str | None:
     text = str(value or "")
     return text if HOST.fullmatch(text) else None
@@ -102,7 +95,7 @@ class Family:
     samples: list[tuple[dict[str, str], float]] = field(default_factory=list)
 
     def add(self, value: object, **labels: str) -> None:
-        number = _number(value)
+        number = fleet_census.nonnegative_number(value)
         if number is not None:
             self.samples.append((dict(labels), number))
 
@@ -141,7 +134,7 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
     result: list[tuple[str, float]] = []
     for source, value in values.items():
         mapping = RESOURCE_NAMES.get(str(source))
-        number = _number(value)
+        number = fleet_census.nonnegative_number(value)
         if mapping is not None and number is not None:
             result.append((mapping[0], number * mapping[1]))
     return result
@@ -153,7 +146,7 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 #
 # A scrape used to read the queue from nothing: every state directory listed,
 # every terminal record and movement receipt stat-ed, every residency plan
-# parsed and censused.  ``KeptReads`` is what one exporter keeps between
+# parsed and censused.  ``fleet_census.KeptReads`` is what one exporter keeps between
 # scrapes instead, under the fences the tier loop's census already trusts
 # (#992): a directory is not listed again while its ``lstat`` version equals
 # a stamp taken before its last listing (``kept_reads.filesystem_trust.directory_before``), and a record is not read again while its file version holds
@@ -168,355 +161,6 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # anything no longer on disk is dropped when its directory is next listed.
 # A listing that could not ``stat`` every entry fails the scrape exactly as
 # the plain walk's raise does, and is not kept either.
-
-
-class KeptReads:
-    """What one exporter keeps from one scrape to the next (#1020).
-
-    ``MetricsCache`` holds one for the life of the server, and a one-shot
-    collection takes a fresh one, which reads everything exactly as the
-    plain census does.  :meth:`begin` starts a scrape and :meth:`end`
-    finishes one: a directory's version is read at most once per scrape, a
-    directory is read at most once per scrape, and whatever the scrape did
-    not touch is dropped at its end, so what is kept is bounded by what is
-    on disk now.
-
-    Counters, exported per scrape by :meth:`scrape_counts`: ``listed`` and
-    ``kept`` count directories listed and directories answered from a kept
-    listing, ``parsed`` the records ``DirectoryRecords`` read, and
-    ``computed``/``reused`` the per-file, per-record and per-plan values
-    computed from bytes and reused.
-
-    The history directories -- ``done/``, ``failed/``, ``withdrawn/`` and
-    ``movers/``, 50,000 names on the live queue and growing -- are kept by
-    fixed Store history questions instead of ``DirectoryRecords``: one ``scandir`` and one
-    ``stat`` per name when the directory changed, exactly the plain walk's
-    cost, so a changed scrape costs no more than a fresh one.
-    """
-
-    def __init__(self, *, trust=None) -> None:
-        self.trust = kept_reads.filesystem_trust if trust is None else trust
-        self.records = kept_reads.DirectoryRecords(trust=self.trust)
-        self._histories = kept_reads.DirectoryCaptures(self.trust)
-        self._stores: dict[str, pool.record_store.RecordStore] = {}
-        self._derived_values: dict[tuple[str, int], object] = {}
-        self._at_begin: tuple[int, ...] = (0, 0, 0, 0, 0)
-        #: path -> opaque directory evidence and a derived single-file value.
-        self._files: dict[str, tuple[kept_reads.DirectoryEvidence, object]] = {}
-        #: memo key -> ``(fence, value)`` for derived values.
-        self._memos: dict[object, tuple[kept_reads.EvidenceSet, object]] = {}
-        self._view = self.trust.scrape_view()
-        self._reads: dict[str, tuple[object, object, list]] = {}
-        self._named: set[str] = set()
-        self._touched: set[object] = set()
-        #: Entries whose derived value the previous scrape used, by kind.
-        self._derived_now: dict[str, dict[int, pool.record_store.HistoryEntry]] = {}
-        self._derived_entries: dict[str, dict[int, pool.record_store.HistoryEntry]] = {}
-        self.computed = 0
-        self.reused = 0
-
-    # -- scrape boundaries -------------------------------------------------
-
-    def _totals(self) -> tuple[int, ...]:
-        return (self.records.listed + sum(store.history_listed for store in self._stores.values()),
-                self.records.kept + sum(store.history_kept for store in self._stores.values()),
-                self.records.parsed, self.computed, self.reused)
-
-    def scrape_counts(self) -> dict[str, int]:
-        """What this scrape has done so far: listed, kept, parsed, computed, reused."""
-
-        return {name: now - then for name, now, then in zip(
-            ("listed", "kept", "parsed", "computed", "reused"),
-            self._totals(), self._at_begin)}
-
-    def begin(self) -> None:
-        self._view = self.trust.scrape_view()
-        for store in self._stores.values():
-            store.begin_read()
-        self._reads = {}
-        self._named = set()
-        self._touched = set()
-        self._derived_now = {}
-        self._at_begin = self._totals()
-
-    def end(self) -> None:
-        # A directory this scrape did not read -- a withdrawal decision's,
-        # once the decision is gone -- is forgotten with its records.
-        wanted = set(self._reads) | self._named
-        for store in self._stores.values():
-            wanted.update(store.history_directories())
-            store.end_read()
-        self.records.retain(wanted)
-        self._histories.retain(wanted)
-        for name in [name for name in self._files if name not in self._touched]:
-            del self._files[name]
-        for key in [key for key in self._memos if key not in self._touched]:
-            del self._memos[key]
-        # A value derived for an entry the scrape did not use is dropped:
-        # the newest-first windows move on, and an entry that has left them
-        # must not keep its row for the rest of the fleet's history.
-        for kind, previous in self._derived_entries.items():
-            current = self._derived_now.get(kind, {})
-            for ident, entry in previous.items():
-                if ident not in current:
-                    self._derived_values.pop((kind, ident), None)
-        self._derived_entries = self._derived_now
-
-    def used(self, kind: str, entry: pool.record_store.HistoryEntry) -> None:
-        """Record that this scrape used the value for ``entry`` under ``kind``."""
-
-        self._derived_now.setdefault(kind, {})[id(entry)] = entry
-
-    def derive(self, kind: str, entry: pool.record_store.HistoryEntry, compute, *, keep=None):
-        """``compute()`` of ``entry``'s bytes, kept by its identity while it lasts.
-
-        The entry is replaced whenever its file's version changes, so a value
-        kept under its identity is a value of the bytes now on disk.  ``keep(value)``
-        false (a read that failed) is returned and computed again next time.
-        """
-
-        self.used(kind, entry)
-        cached = self._derived_values.get((kind, id(entry)))
-        if cached is not None:
-            self.reused += 1
-            return cached
-        value = compute()
-        self.computed += 1
-        if keep is None or keep(value):
-            self._derived_values[(kind, id(entry))] = value
-        return value
-
-    # -- fences ------------------------------------------------------------
-
-    def available(self, directory: Path | str) -> bool:
-        return self._view.available(directory)
-
-    def fence(self, directory: Path) -> kept_reads.DirectoryEvidence | None:
-        return self.trust.ancestor_evidence(directory)
-
-    def holds(self, fences) -> bool:
-        return self._view.holds(fences)
-
-    def still(self, fences) -> bool:
-        return self.trust.holds(fences)
-
-    def memo(self, key: object, make_fences, compute, *, keep=None):
-        """``compute()``, reused while every fence ``make_fences()`` took holds.
-
-        The fences are taken before ``compute`` runs and checked again after
-        it, and only a value with every fence trusted and unmoved across the
-        computation is kept -- the protocol ``DirectoryRecords`` keeps for a
-        listing.  ``make_fences`` returns ``None`` when no fence can be
-        trusted, and the value is then computed every scrape.
-        """
-
-        self._touched.add(key)
-        kept = self._memos.pop(key, None)
-        if kept is not None and self.holds(kept[0]):
-            self._memos[key] = kept
-            self.reused += 1
-            # A fenced directory is unchanged, so what ``DirectoryRecords``
-            # keeps for it is still good: it must survive this scrape's end
-            # even though nothing read it.
-            self._named.update(fence.directory for fence in kept[0])
-            return kept[1]
-        # Nothing is kept while ``compute`` runs: one that raises leaves no
-        # value behind, stale or otherwise.
-        fences = make_fences()
-        value = compute()
-        self.computed += 1
-        if (fences is not None and self.still(fences)
-                and (keep is None or keep(value))):
-            self._memos[key] = (fences, value)
-        else:
-            self._memos.pop(key, None)
-        return value
-
-    def fences(self, directories) -> kept_reads.EvidenceSet | None:
-        """A trusted fence on each of ``directories``, or ``None``."""
-
-        taken = tuple(self.fence(Path(directory)) for directory in directories)
-        return (None if any(fence is None for fence in taken) else
-                kept_reads.EvidenceSet(taken))
-
-    def ledger_fences(self, ledger: pool.ResourceLedger) -> kept_reads.EvidenceSet | None:
-        """Fences on everything a tier ledger's tokens are read from.
-
-        ``free/``, ``held/`` and each holder directory under ``held/``: a
-        token moves by rename between them, and a holder appears or leaves
-        by rename into or out of ``held/``.  The holders are listed after
-        ``held/``'s stamp is taken, so the list is the one that stamp
-        covers.  Taken at most once a scrape, and kept while it holds.
-        """
-
-        key = ("ledger-fences", os.fspath(ledger.base))
-        self._touched.add(key)
-        kept = self._memos.get(key)
-        if kept is not None and self.holds(kept[0]):
-            return kept[0]
-        free = self.fence(ledger.free_dir)
-        held = self.fence(ledger.held_dir)
-        if free is None or held is None:
-            self._memos.pop(key, None)
-            return None
-        try:
-            holders = sorted(os.listdir(held.directory)) if held.directory == os.fspath(
-                ledger.held_dir) else []
-        except OSError:
-            self._memos.pop(key, None)
-            return None
-        taken = (free, held, *(self.fence(Path(held.directory) / name)
-                               for name in holders))
-        if any(fence is None for fence in taken):
-            self._memos.pop(key, None)
-            return None
-        evidence = kept_reads.EvidenceSet(taken)
-        self._memos[key] = (evidence, None)
-        return evidence
-
-    # -- reads ---------------------------------------------------------------
-
-
-    def sidecar(self, path: Path) -> dict | None | Exception:
-        """One small record by path, reused while its directory's stamp holds.
-
-        What ``pbstatus._pool_sidecar`` returns: the record, ``None`` when
-        it is absent, or the failure.  A failure is never kept.
-        """
-
-        name = os.fspath(path)
-        self._touched.add(name)
-        kept = self._files.get(name)
-        if kept is not None and self._view.holds(kept[0]):
-            self.reused += 1
-            return kept[1].record
-        fence = self.fence(Path(name).parent)
-        parsed = pool.record_store.RecordStore.diagnostic_sidecar_at(Path(name))
-        value = parsed.error if parsed.error is not None else parsed.record
-        self.computed += 1
-        if (fence is not None and not isinstance(value, Exception)
-                and self.still(fence)):
-            self._files[name] = (fence, parsed)
-        else:
-            self._files.pop(name, None)
-        return value
-
-    # -- the pbstatus census's explicit reads ------------------------------
-
-    def pool_records(self, directory: Path) -> tuple[dict[str, dict | None], list[str]]:
-        """``pbstatus._pool_records``, from the kept listing."""
-
-        try:
-            listed = self.queue_records(Path(directory))
-        except OSError as exc:
-            return {}, [f"pool {directory}: {pbstatus._unreadable_reason(exc)}"]
-        records: dict[str, dict | None] = {}
-        notes: list[str] = []
-        for path, parsed in listed:
-            if parsed.error is not None:
-                records[path.stem] = None
-                notes.append(f"pool {path}: {parsed.error}")
-            else:
-                records[path.stem] = parsed.record
-        return records, notes
-
-    def endings(self, queue_root: Path, limit: int) -> list[dict]:
-        """``pbstatus.read_endings``, from the kept terminal listings.
-
-        The same rows and projections, without the per-key currency marking
-        ``pbstatus.read_endings`` adds (#1178): resolving which of a key's
-        terminal generations is current needs the opposite slot, and serving
-        that from the kept listings would either read outside their retained
-        versions or pin an answer beside a slot that has since been
-        replaced.  The exporter's gauges do not consume the marking, so the
-        limit is stated here rather than paid for on every scrape.
-        """
-
-        return _kept_endings(self, queue_root, limit)
-
-    def record(self, directory: Path, key: str) -> dict | None:
-        """One record of an already-read state directory, or ``None``."""
-
-        try:
-            listed = self.queue_records(directory)
-        except OSError:
-            return None
-        wanted = f"{key}.json"
-        for path, parsed in listed:
-            if path.name == wanted:
-                return parsed.record
-        return None
-
-
-    def queue_store(self, root: Path):
-        name = os.fspath(root)
-        store = self._stores.get(name)
-        if store is None:
-            store = pool.record_store.RecordStore.kept(
-                root, records=self.records, history=self._histories)
-            store.begin_read()
-            self._stores[name] = store
-        return store
-
-    def _from_store(self, directory: Path, meaning: str, read):
-        name = os.fspath(directory)
-        done = self._reads.get(name)
-        if done is not None:
-            if done[0] != meaning:
-                raise AssertionError(f"{name} read under two meanings")
-            return done[2]
-        out = read()
-        self._reads[name] = (meaning, None, out)
-        return out
-
-    def queue_records(self, directory: Path):
-        store = self.queue_store(directory.parent)
-        return self._from_store(directory, 'queue',
-                                lambda: store.diagnostic_records_at(directory))
-
-    def tier_records(self, queue):
-        store = self.queue_store(queue.root)
-        directory = store.tier_directory()
-        return self._from_store(directory, 'tier-records',
-                                lambda: store.diagnostic_json_at(directory))
-
-    def plan_entries(self, queue):
-        store = self.queue_store(queue.root)
-        return self._from_store(queue.root / pool.record_store.RESIDENCY_PLANS, 'plan-entries',
-                                store.plan_entries)
-
-    def tier_directories(self, queue):
-        store = self.queue_store(queue.root)
-        return self._from_store(queue.root / pool.record_store.TIER_RESERVATIONS, 'tier-directories',
-                                store.tier_directories)
-
-    def mover_entries(self, queue):
-        return self.queue_store(queue.root).mover_entries()
-
-    def released_claim_filings(self, queue_root):
-        self._named.add(os.fspath(Path(queue_root) / pool.record_store.WITHDRAWN / 'superseded'))
-        return self.queue_store(Path(queue_root)).released_claim_filings()
-
-    def claim_denial_hosts(self, queue):
-        directory = queue.root / pool.RESERVATIONS
-        store = self.queue_store(queue.root)
-        return self._from_store(directory, 'claim-denial-hosts',
-                                lambda: store.claim_denial_hosts_at(directory))
-
-
-def _fresh(reader: KeptReads | None) -> KeptReads:
-    """``reader``, or a reader that keeps nothing: one read of everything."""
-
-    if reader is not None:
-        return reader
-    fresh = KeptReads()
-    fresh.begin()
-    return fresh
-
-
-def _read_claim(queue: pool.PoolQueue, key: str,
-                reader: KeptReads | None = None) -> dict | None:
-    return _fresh(reader).record(queue.records.dir(pool.record_store.CLAIMED), key)
 
 
 @dataclass
@@ -555,7 +199,7 @@ def _attempt_telemetry(
     queue: pool.PoolQueue,
     live_jobs: Mapping[str, list[Mapping[str, object]]],
     now: float,
-    reader: KeptReads | None = None,
+    reader: fleet_census.KeptReads | None = None,
 ) -> dict[str, _HostAttempts]:
     """Read each live claim's resource-scope telemetry, by claiming host.
 
@@ -578,22 +222,22 @@ def _attempt_telemetry(
     is what tells those apart, and that is done by the caller, which is the only
     party that has a previous reading.
     """
-    reader = _fresh(reader)
+    reader = fleet_census._fresh(reader)
     answer: dict[str, _HostAttempts] = {}
     for host, jobs in live_jobs.items():
         host_attempts = _HostAttempts(jobs=len(jobs))
         for job in jobs:
             key = str(job.get("action_key") or "")
-            claim = _read_claim(queue, key, reader)
+            claim = fleet_census._read_claim(queue, key, reader)
             scope = claim.get("resource_scope") if isinstance(claim, dict) else None
             nonce = scope.get("nonce") if isinstance(scope, dict) else None
             record = reader.sidecar(
                 queue.root / pool.RESERVATIONS / host / "telemetry" / f"{key}.json")
             record = None if isinstance(record, Exception) else record
-            sampled = _number(record.get("sampled_unix")) if isinstance(record, dict) else None
-            cpu_seconds = _number(record.get("cpu_seconds")) if isinstance(record, dict) else None
-            wall_seconds = _number(record.get("wall_seconds")) if isinstance(record, dict) else None
-            current = _number(record.get("memory_current_bytes")) if isinstance(record, dict) else None
+            sampled = fleet_census.nonnegative_number(record.get("sampled_unix")) if isinstance(record, dict) else None
+            cpu_seconds = fleet_census.nonnegative_number(record.get("cpu_seconds")) if isinstance(record, dict) else None
+            wall_seconds = fleet_census.nonnegative_number(record.get("wall_seconds")) if isinstance(record, dict) else None
+            current = fleet_census.nonnegative_number(record.get("memory_current_bytes")) if isinstance(record, dict) else None
             # Age is reported for any record whose timestamp is credible, even
             # one too old for the aggregate -- that is precisely the reading a
             # reader wants when the aggregate is missing.
@@ -618,7 +262,7 @@ def _attempt_telemetry(
             host_attempts.counters[(key, str(nonce))] = (cpu_seconds, wall_seconds)
             host_attempts.cpu += cpu_seconds / wall_seconds
             host_attempts.memory_bytes += current
-            peak = _number(record.get("memory_peak_bytes"))
+            peak = fleet_census.nonnegative_number(record.get("memory_peak_bytes"))
             if peak is not None:
                 host_attempts.peaks["memory_peak_bytes"] = max(
                     host_attempts.peaks.get("memory_peak_bytes", peak), peak)
@@ -626,7 +270,7 @@ def _attempt_telemetry(
             if isinstance(measured_io, Mapping):
                 for source, name in (("read_bytes", "io_read_bytes"),
                                      ("write_bytes", "io_write_bytes")):
-                    moved = _number(measured_io.get(source))
+                    moved = fleet_census.nonnegative_number(measured_io.get(source))
                     if moved is not None:
                         host_attempts.peaks[name] = (
                             host_attempts.peaks.get(name, 0.0) + moved)
@@ -680,25 +324,6 @@ def _recent_cores(
     return answer
 
 
-def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]:
-    queue_root = Path(queue_root)
-    store = reader.queue_store(queue_root)
-    def project():
-        chosen = store.recent_ending_paths(limit)
-        rows = [reader.derive("ending", entry,
-                              lambda entry=entry: pbstatus.ending_row(entry, queue_root),
-                              keep=lambda row: not row.get("unreadable"))
-                for entry in chosen]
-        rows.sort(key=lambda row: row["finished_unix"], reverse=True)
-        return rows, chosen
-    rows, used = reader.memo(
-        ("endings", os.fspath(queue_root), int(limit)), store.ending_fences, project,
-        keep=lambda value: not any(row.get("unreadable") for row in value[0]))
-    for entry in used:
-        reader.used("ending", entry)
-    return list(rows)
-
-
 def _terminal_metrics(
     metrics: Metrics,
     queue_root: Path,
@@ -706,19 +331,19 @@ def _terminal_metrics(
     now: float,
     window_seconds: float,
     limit: int,
-    reader: KeptReads | None = None,
+    reader: fleet_census.KeptReads | None = None,
 ) -> bool:
-    reader = _fresh(reader)
+    reader = fleet_census._fresh(reader)
     # A state directory that is not there, or is not a directory, makes the
     # window unproven.  The plain reader listed each one to find out; its
     # version answers the same question for one ``lstat``, and a directory
     # that exists but cannot be listed still fails the read below.
     accessible = all(reader.available(Path(queue_root) / state)
                      for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN))
-    endings = pbstatus.read_endings(queue_root, limit=limit, reader=reader)
+    endings = fleet_census.endings(queue_root, limit=limit, reader=reader)
     selected = [
         row for row in endings
-        if (age := _number(now - float(row.get("finished_unix", -math.inf)))) is not None
+        if (age := fleet_census.nonnegative_number(now - float(row.get("finished_unix", -math.inf)))) is not None
         and age <= window_seconds
     ]
     complete = (
@@ -755,9 +380,9 @@ def _terminal_metrics(
         # ``read_endings`` already projected these fields from its bounded
         # read. Opening the complete record again doubled both NFS traffic and
         # the allocation spike from rows that embedded action logs.
-        published = _number(row.get("published_unix"))
-        claimed = _number(row.get("claimed_unix"))
-        finished = _number(row.get("timing_finished_unix"))
+        published = fleet_census.nonnegative_number(row.get("published_unix"))
+        claimed = fleet_census.nonnegative_number(row.get("claimed_unix"))
+        finished = fleet_census.nonnegative_number(row.get("timing_finished_unix"))
         if published is not None and claimed is not None and claimed >= published:
             timings[(host, "queue_wait")].append(claimed - published)
         if claimed is not None and finished is not None and finished >= claimed:
@@ -835,7 +460,7 @@ def _box_window_peaks(metrics: Metrics, rows: Iterable[Mapping[str, object]]) ->
             ("io_write_bytes", "io_write_bytes"),
             ("io_read_bytes", "io_read_bytes"),
         ):
-            value = _number(row.get(field))
+            value = fleet_census.nonnegative_number(row.get(field))
             if value is None:
                 continue
             key = (host, metric, scope if metric in _SCOPED_BOX_WINDOW_METRICS else "")
@@ -855,7 +480,7 @@ def _release_metrics(
     now: float,
     window_seconds: float,
     limit: int,
-    reader: KeptReads | None = None,
+    reader: fleet_census.KeptReads | None = None,
 ) -> bool:
     """Count the unstarted-claim releases each box produced in the window.
 
@@ -871,7 +496,7 @@ def _release_metrics(
     is readable in ``ready`` the record no longer says who was holding it.
     The filing under ``withdrawn/superseded/`` does: ``RecordStore.file_superseded`` is
     called with the claimed record, before the pops.  So the per-box series is
-    read there and the queue-wide one from the census.
+    read there and the queue-wide one from the fleet_census.
 
     Bounded exactly as ``_terminal_metrics`` is, and for the same reason: this
     directory keeps every release this fleet has ever filed, and a scrape that
@@ -879,7 +504,7 @@ def _release_metrics(
     whether the window was proved rather than truncated.
     """
 
-    reader = _fresh(reader)
+    reader = fleet_census._fresh(reader)
     directory = Path(queue_root) / pool.record_store.WITHDRAWN / "superseded"
     selected: list[tuple[float, str]] = []
     readable = True
@@ -921,54 +546,13 @@ def _release_metrics(
     return readable
 
 
-def _tiers(reader: KeptReads, queue: pool.PoolQueue) -> list[dict[str, object]]:
-    """``PoolQueue.tiers``, from the kept ``tiers/`` read.
-
-    The same records in the same order, and the first unreadable one raises
-    as the plain read raises it.
-    """
-
-    records = []
-    for path, parsed in reader.tier_records(queue):
-        if parsed.error is not None:
-            raise parsed.error
-        record = parsed.record
-        if isinstance(record, dict) and record.get("tier_id") == path.stem:
-            records.append(record)
-    return records
-
-
-def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
-    """``PoolQueue.tier_ids``, from a kept listing; any failure reads empty."""
-
-    try:
-        return sorted(path.name for path in reader.tier_directories(queue))
-    except OSError:
-        return []
-
-
-def _ledger_counts(reader: KeptReads, queue: pool.PoolQueue, tier_id: str):
-    """``(capacity, available)`` of one tier ledger, or the failure raised."""
-
-    ledger = queue.tier_ledger(tier_id)
-
-    def count():
-        try:
-            return ledger.capacity(), ledger.available()
-        except Exception as exc:  # noqa: BLE001 -- reported, as the plain read did
-            return exc
-
-    return reader.memo(("ledger", tier_id), lambda: reader.ledger_fences(ledger),
-                       count, keep=lambda value: not isinstance(value, Exception))
-
-
 def _starvation_metrics(
     metrics: Metrics,
     queue_root: Path,
     *,
     now: float,
     window_seconds: float,
-    reader: KeptReads | None = None, census_reader=None) -> bool:
+    reader: fleet_census.KeptReads | None = None, census_reader=None) -> bool:
     """Fleet starvation gauges: tier fill, denials, mover depth (issue #661).
 
     Read-only derivation from records the fleet already files, following this
@@ -977,26 +561,12 @@ def _starvation_metrics(
     snapshot that reports its failure rather than dropping the scrape.
     """
 
-    reader = _fresh(reader)
-    ok = True
     try:
-        queue = pool.PoolQueue(queue_root)
+        tier_facts = fleet_census.tiers(queue_root, view="tokens", now=now, reader=reader)
     except Exception:
         return False
-
-    # -- per-tier fill supply and token occupancy -------------------------
-    try:
-        announced = {str(record.get("tier_id")): record
-                     for record in _tiers(reader, queue)
-                     if isinstance(record, dict) and record.get("tier_id")}
-    except Exception:
-        announced = {}
-        ok = False
-    try:
-        tier_ids = _tier_ids(reader, queue)
-    except Exception:
-        tier_ids = sorted(announced)
-        ok = False
+    ok = tier_facts.completeness == "complete"
+    announced = tier_facts.value["announced"]
     fill = metrics.family(
         "prismabuild_tier_fill_supply_mb_s",
         "Learned pool-side fill bandwidth per tier from the tier loop's latest announcement; "
@@ -1016,59 +586,26 @@ def _starvation_metrics(
         "idle or mid-cycle, keeps it below pool.OFFER_TIMEOUT_S; a loop stuck inside a cycle "
         "stops writing and it grows past that (#1115). Absent where no record was announced.",
     )
-    for tier_id in sorted(set(tier_ids) | set(announced)):
-        record = announced.get(tier_id)
+    for tier_id, record in announced.items():
         if isinstance(record, Mapping):
-            stamped = _number(record.get("announced_unix"))
+            stamped = fleet_census.nonnegative_number(record.get("announced_unix"))
             if stamped is not None:
                 announce_age.add(max(0.0, now - stamped), tier=tier_id)
         supply = record.get("fill_supply") if isinstance(record, Mapping) else None
         if isinstance(supply, Mapping):
             fill.add(supply.get("best_mb_s"), tier=tier_id, stat="best")
             fill.add(supply.get("ceiling_mb_s"), tier=tier_id, stat="ceiling")
-            fill.add(supply.get("probe_offer_mb_s"), tier=tier_id,
-                     stat="probe_offer")
-        try:
-            counted = _ledger_counts(reader, queue, tier_id)
-        except Exception as exc:  # noqa: BLE001 -- as the plain read's failure
-            counted = exc
-        if isinstance(counted, Exception):
-            ok = False
-            continue
-        capacity, available = counted
-        if not isinstance(capacity, dict) or not isinstance(available, dict):
-            ok = False
-            continue
-        for kind in sorted(set(capacity) | set(available)):
-            held_back = _number(capacity.get(kind, 0))
-            free_back = _number(available.get(kind, 0))
-            if held_back is None or free_back is None:
-                ok = False
-                continue
-            tokens.add(held_back, tier=tier_id, resource=str(kind), state="capacity")
-            tokens.add(free_back, tier=tier_id, resource=str(kind), state="available")
-            tokens.add(held_back - free_back, tier=tier_id, resource=str(kind), state="held")
+            fill.add(supply.get("probe_offer_mb_s"), tier=tier_id, stat="probe_offer")
+    for tier_id, kind, total, free, held in tier_facts.value["tokens"]:
+        tokens.add(total, tier=tier_id, resource=kind, state="capacity")
+        tokens.add(free, tier=tier_id, resource=kind, state="available")
+        tokens.add(held, tier=tier_id, resource=kind, state="held")
 
     # -- per-host denial counts by reason, windowed ------------------------
-    try:
-        denials, _denial_notes = pbstatus._pool_claim_denials(queue, reader=census_reader)
-    except Exception:
-        denials = []
-        ok = False
-    counts: dict[tuple[str, str], int] = defaultdict(int)
-    for denial in denials:
-        if not isinstance(denial, dict):
-            ok = False
-            continue
-        host = _host(denial.get("host"))
-        reason = denial.get("reason")
-        reason = reason if isinstance(reason, str) and reason else "unknown"
-        age = _number(now - float(denial.get("denied_unix", -math.inf)))
-        if host is None or age is None:
-            ok = False
-            continue
-        if age <= window_seconds:
-            counts[(host, reason)] += 1
+    denial_facts = fleet_census.denials(queue_root, profile="metrics", now=now,
+                                         window_seconds=window_seconds, reader=census_reader)
+    ok = denial_facts.completeness == "complete" and ok
+    counts = denial_facts.value
     metrics.family(
         "prismabuild_claim_denial_window_seconds",
         "Configured lookback window for the per-host claim-denial gauges.",
@@ -1090,25 +627,10 @@ def _starvation_metrics(
         "prismabuild_mover_queue_depth",
         "Active actions with movement-node shape (a residency range to stage), by queue state.",
     )
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        movers = 0
-        try:
-            listed = reader.queue_records(Path(queue_root) / state)
-        except OSError:
-            ok = False
-            continue
-        for _path, parsed in listed:
-            record = parsed.record
-            if record is None:
-                ok = False
-                continue
-            if not isinstance(record, dict):
-                ok = False
-                continue
-            residency = record.get("residency")
-            if isinstance(residency, Mapping) and "range_start_bytes" in residency:
-                movers += 1
-        depth.add(movers, state=state)
+    mover_facts = fleet_census.movers(queue_root, view="counts", reader=reader)
+    for state, count in mover_facts.value.items():
+        depth.add(count, state=state)
+    ok = mover_facts.completeness == "complete" and ok
     return ok
 
 
@@ -1125,15 +647,6 @@ _MOVE_RECEIPT_CAP = 1000
 _UNKNOWN_TIER = "unknown"
 
 
-def _tier(value: object) -> str | None:
-    text = value if isinstance(value, str) else None
-    # The shape ``record_store.RecordStore.check_tier_id`` enforces: a tier id names one
-    # tier, never a demand kind and never a path.
-    if not text or text.startswith(".") or "/" in text or "@" in text:
-        return None
-    return text
-
-
 #: A record that could not be read or did not parse: never kept, so it is read
 #: again next scrape.
 _UNREADABLE = object()
@@ -1141,485 +654,59 @@ _UNREADABLE = object()
 _NOT_A_RECEIPT = object()
 
 
-def _receipt_projection(entry: pool.record_store.HistoryEntry):
-    """The six numbers the move gauges read from one receipt.
-
-    Kept by the exporter under the entry's identity, because 7,500
-    receipts' records are tens of megabytes an exporter has no use for.
-    """
-
-    try:
-        record = pool.record_store.read_document(Path(entry.path))
-    except (OSError, ValueError):
-        record = None
-    if not isinstance(record, dict):
-        return _UNREADABLE
-    if record.get("schema") != pool.POOL_MOVE_SCHEMA_V1:
-        return _NOT_A_RECEIPT
-    pacing = record.get("disk_pacing")
-    pacing = pacing if isinstance(pacing, Mapping) else {}
-    return (
-        _number(record.get("unix")),
-        _tier(record.get("tier_id")) or _UNKNOWN_TIER,
-        # One definition of "this window measured the pool": the same share
-        # test the fill fold prices from, so the gauge and the mint cannot
-        # disagree about which receipts count.
-        bool(pbstatus.storage_tiers._measured_the_pool(record)),
-        _number(pacing.get("mean_pool_read_mb_s")),
-        _number(record.get("bytes_staged")),
-        _number(pacing.get("pool_read_bytes")),
-    )
-
-
-@dataclass(frozen=True)
-class _PlanCensus:
-    """What the plan gauges take from one ``pbstatus._starvation_plan_entry``.
-
-    ``legs`` is ``None`` when the entry carried no cursor gap mapping, and a
-    leg's counts are ``None`` when its gap was malformed; both fail the
-    collection, as they did when the gauges read the entry directly.
-    """
-
-    valid: bool
-    unreadable: bool
-    tier_id: str = ""
-    state: str = ""
-    legs: tuple | None = None
-
-
-def _plan_slot(reader: KeptReads, entry: pool.record_store.HistoryEntry) -> dict:
-    reader.used("plan", entry)
-    key = ("plan", id(entry))
-    slot = reader._derived_values.get(key)
-    if slot is None:
-        slot = {}
-        reader._derived_values[key] = slot
-    return slot
-
-
-def _plan_tier(reader: KeptReads, entry: pool.record_store.HistoryEntry):
-    """The tier a filed plan names; ``None`` for an empty file.
-
-    ``_UNREADABLE`` for a plan that cannot be read or does not validate.  A
-    plan file is written once (``residency_plan.freeze``), so its tier is
-    kept for as long as the file's version holds.
-    """
-
-    slot = _plan_slot(reader, entry)
-    if "tier" in slot:
-        reader.reused += 1
-        return slot["tier"]
-    reader.computed += 1
-    try:
-        raw = pool.record_store.read_document(Path(entry.path))
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError):
-        return _UNREADABLE
-    if raw is None:
-        return None
-    try:
-        tier_id = str(pbstatus.residency_plan.validate_plan(raw)["tier_id"])
-    except (ValueError, KeyError):
-        return _UNREADABLE
-    slot["tier"] = tier_id
-    return tier_id
-
-
-def _project_plan(entry: Mapping[str, object], unreadable: list[str]) -> _PlanCensus:
-    """``_promotion_metrics``' reading of one plan entry, as numbers."""
-
-    if not entry.get("valid"):
-        return _PlanCensus(valid=False, unreadable=bool(unreadable))
-    gap = entry.get("cursor_gap")
-    legs: tuple | None = None
-    if isinstance(gap, Mapping):
-        counted = []
-        for leg in ("stage", "ram"):
-            leg_gap = gap.get(leg)
-            if not isinstance(leg_gap, Mapping):
-                counted.append((leg, None))
-                continue
-            staged = leg_gap.get("staged_phases")
-            phases = leg_gap.get("unstaged_phases")
-            missing = leg_gap.get("unstaged_bytes")
-            if (type(staged) is not int or not isinstance(phases, list)
-                    or type(missing) not in (int, float)):
-                counted.append((leg, None))
-                continue
-            counted.append((leg, (staged, len(phases), float(missing))))
-        legs = tuple(counted)
-    return _PlanCensus(valid=True, unreadable=bool(unreadable),
-                       tier_id=str(entry["tier_id"]), state=str(entry["state"]),
-                       legs=legs)
-
-
-def _plan_inputs(
-    reader: KeptReads,
-    queue: pool.PoolQueue,
-    key: str,
-    movers: frozenset[str],
-    ram_tier_id: str | None,
-    *,
-    ready: set[str],
-    claimed: set[str],
-    claimed_listed: set[str],
-    announced: Mapping[str, Mapping[str, object]],
-    receipts: Mapping[str, pool.record_store.HistoryEntry] | None,
-    census_reader=None,
-) -> tuple | None:
-    """Everything one plan's census reads outside its fenced directories.
-
-    ``pbstatus._starvation_plan_entry`` reads, besides the plan itself, the
-    fragment directory and the tier ledgers (fenced by their stamps), and:
-
-    * the consumer's queue state and, when it is claimed, the phase its
-      lease accepted -- the only thing it takes from the lease;
-    * whether each of the plan's movers is ready or claimed, and whether a
-      claim file is listed for it at all (``resident_movers`` asks the
-      filesystem, which also sees a claim too torn to parse);
-    * each mover's receipt in ``movers/``, compared by the kept entry, which
-      is replaced whenever its file's version changes;
-    * for a ram leg, the announced tier's ``epoch`` and ``mountpoint``, the
-      two fields ``residency_plan.resident_movers`` reads from it.  The
-      record itself is re-announced every tier-loop cycle, so its version
-      would miss every scrape.
-
-    ``None`` when one of them could not be read, which is never kept.  Each
-    is read from this scrape's listings, and the census reads them afresh
-    when it runs, so a change between the two is caught the scrape after:
-    the listing then differs from what was kept.
-    """
-
-    if receipts is None:
-        return None
-    state = ("claimed" if key in claimed else "ready" if key in ready else "absent")
-    accepted = None
-    if state == "claimed":
-        lease = pbstatus._pool_sidecar(queue.records.lease_path(key), reader=census_reader)
-        if isinstance(lease, Exception):
-            return None
-        accepted = pbstatus._starvation_accepted_phase(lease)
-    ram = None
-    if ram_tier_id is not None:
-        record = announced.get(ram_tier_id)
-        ram = (None if record is None
-               else (record.get("epoch"), record.get("mountpoint")))
-    ordered = sorted(movers)
-    return (state, accepted, frozenset(movers & ready), frozenset(movers & claimed),
-            frozenset(movers & claimed_listed),
-            tuple(receipts.get(mover) for mover in ordered), ram_tier_id, ram)
-
-
-def _plan_fences(reader: KeptReads, queue: pool.PoolQueue, key: str,
-                 tiers: list[str | None]) -> kept_reads.EvidenceSet | None:
-    """Fences on the fragment directory and the ledgers one plan's census reads.
-
-    ``None`` when any of them cannot be trusted; the census is then taken
-    every scrape.
-    """
-
-    fragments = reader.fence(queue.records.residency_fragment_root() / key)
-    if fragments is None:
-        return None
-    taken = [fragments]
-    for tier in tiers:
-        if tier is None:
-            continue
-        try:
-            ledger = queue.tier_ledger(tier)
-        except (OSError, ValueError, pool.PoolContractError):
-            return None
-        ledger_fences = reader.ledger_fences(ledger)
-        if ledger_fences is None:
-            return None
-        taken.extend(ledger_fences)
-    return kept_reads.EvidenceSet(tuple(taken))
-
-
-def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
-                 entry: pool.record_store.HistoryEntry, *, ready: set[str], claimed: set[str],
-                 claimed_listed: set[str],
-                 announced: Mapping[str, Mapping[str, object]],
-                 receipts: Mapping[str, pool.record_store.HistoryEntry] | None,
-                 now: float, census_reader=None) -> _PlanCensus:
-    """One plan's census, reused while nothing it read has changed.
-
-    The census (``pbstatus._starvation_plan_entry``) lists the consumer's
-    fragment directory, reads every fragment, counts each mover's ledger
-    tokens and reads their receipts: on the live queue, 330 plans and 97 MB
-    of plan documents every scrape.  It is kept on the plan's entry with a
-    fence on the fragment directory and on the ledgers of the plan's tiers
-    (:meth:`KeptReads.ledger_fences`), and with :func:`_plan_inputs`, and is
-    reused while all of them hold.  ``now`` is passed through; the census
-    does not read it.
-    """
-
-    slot = _plan_slot(reader, entry)
-    key = path.stem
-    kept = slot.get("census")
-    if kept is not None:
-        fences, movers, ram_tier_id, inputs, census = kept
-        if (_plan_inputs(reader, queue, key, movers, ram_tier_id, ready=ready,
-                         claimed=claimed, claimed_listed=claimed_listed,
-                         announced=announced,
-                         receipts=receipts, census_reader=census_reader) == inputs
-                and reader.holds(fences)):
-            reader.reused += 1
-            return census
-        slot.pop("census", None)
-    reader.computed += 1
-    observation = queue.records.diagnostic_sidecar_at(path)
-    raw = observation.error if observation.error is not None else observation.record
-    if isinstance(raw, Exception):
-        return _PlanCensus(valid=False, unreadable=True)
-    fences = inputs = movers = ram_tier_id = None
-    try:
-        plan = pbstatus.residency_plan.validate_plan(raw) if isinstance(raw, Mapping) else None
-    except ValueError:
-        plan = None
-    if plan is not None:
-        movers = frozenset(pbstatus.residency_plan.mover_keys(plan))
-        ram = plan.get("ram_tier_id")
-        ram_tier_id = str(ram) if isinstance(ram, str) else None
-        fences = _plan_fences(reader, queue, key,
-                              [str(plan["tier_id"]), ram_tier_id])
-        inputs = _plan_inputs(reader, queue, key, movers, ram_tier_id, ready=ready,
-                              claimed=claimed, claimed_listed=claimed_listed,
-                              announced=announced,
-                              receipts=receipts, census_reader=census_reader)
-    notes: list[str] = []
-    unreadable: list[str] = []
-    census = _project_plan(pbstatus._starvation_plan_entry(
-        queue, key, raw, ready=ready, claimed=claimed, notes=notes,
-        unreadable=unreadable, now=now, reader=census_reader), unreadable)
-    # Only a census with nothing to report is kept: a ledger holder that
-    # could not be read is a note, not an unreadable plan, and its ``False``
-    # must be read again rather than kept.
-    if (census.valid and not census.unreadable and not notes
-            and fences is not None and inputs is not None
-            and reader.still(fences)):
-        slot["census"] = (fences, movers, ram_tier_id, inputs, census)
-    return census
-
-
-def _promotion_metrics(
-    metrics: Metrics,
-    queue_root: Path,
-    *,
-    now: float,
-    window_seconds: float,
-    reader: KeptReads | None = None, census_reader=None) -> bool:
-    """Per-tier promotion lag, mover depth, and delivery (issue #660 backend).
-
-    Read-only derivation from records the fleet already files, following this
-    module's conventions: restart-safe gauges (never counters), absent rather
-    than zero where nothing was measured, no action-key labels, and a partial
-    snapshot that reports its failure rather than dropping the scrape.
-
-    Three questions feed the ``pb_starvation`` / ``pb_cursors`` / ``pb_movers``
-    observation tools: how many movers are queued per tier and state, how long
-    the oldest waiter on each tier has waited for its data, and what the
-    tier's recent movers reported delivering. Waiting reuses
-    :mod:`pbstatus`' quiet/grace rule so the gauge and the ``--starvation``
-    blob cannot disagree about who is waiting; the cursor-gap backlog reuses
-    its plan census for the same reason. The per-tier move series are what
-    the fill fold prices from: jobs beside measured jobs is the resident-hit
-    share (adoption served resident versus windows that read the pool), and
-    the best pool-side rate is the demonstrated delivery.
-
-    Costs one walk over the active queue, one bounded walk over the newest
-    mover receipts, one lease read per claimed consumer, and one plan census
-    over the filed residency plans (leases plus fragments per plan, exactly
-    as ``read_starvation`` reads them).
-    """
-
-    reader = _fresh(reader)
-    ok = True
-    try:
-        queue = pool.PoolQueue(queue_root)
-    except Exception:
+def _promotion_metrics(metrics: Metrics, queue_root: Path, *, now: float,
+                       window_seconds: float, reader: fleet_census.KeptReads | None = None,
+                       census_reader=None) -> bool:
+    facts = fleet_census.promotion(queue_root, now=now, window_seconds=window_seconds,
+                                   reader=reader, census_reader=census_reader)
+    if facts.value is None:
         return False
-
-    try:
-        announced = {str(record.get("tier_id")): record
-                     for record in _tiers(reader, queue)
-                     if isinstance(record, dict) and record.get("tier_id")}
-    except Exception:
-        announced = {}
-        ok = False
-    try:
-        tier_ids = _tier_ids(reader, queue)
-    except Exception:
-        tier_ids = sorted(announced)
-        ok = False
-    tiers = sorted(set(tier_ids) | set(announced))
-
-    # -- one active-queue walk: per-tier mover depth, consumer candidates --
-    depth: dict[tuple[str, str], int] = defaultdict(int)
-    ready: set[str] = set()
-    claimed: set[str] = set()
-    claimed_listed: set[str] = set()
-    consumers: list[str] = []
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        try:
-            listed = reader.queue_records(Path(queue_root) / state)
-        except OSError:
-            ok = False
-            continue
-        for path, parsed in listed:
-            key = path.name[:-len(".json")]
-            if state == pool.record_store.CLAIMED:
-                claimed_listed.add(key)
-            record = parsed.record
-            if not isinstance(record, dict) or record.get("action_key") != key:
-                # The census sets below classify plans; a row nobody could
-                # read classifies nothing, exactly as read_pool treats it.
-                if not isinstance(record, dict):
-                    ok = False
-                continue
-            (claimed if state == pool.record_store.CLAIMED else ready).add(key)
-            residency = record.get("residency")
-            if not isinstance(residency, Mapping):
-                continue
-            if "range_start_bytes" in residency:
-                depth[(_tier(residency.get("tier_id")) or _UNKNOWN_TIER,
-                       state)] += 1
-            elif state == pool.record_store.CLAIMED and residency.get("leads"):
-                consumers.append(key)
+    ok = facts.completeness == "complete"
     tier_depth = metrics.family(
         "prismabuild_mover_queue_depth_tier",
         "Active actions with movement-node shape (a residency range to stage), "
         "by tier and queue state. Known tiers always read, zero included; the "
         "single unknown tier reads only when a record names no usable tier.",
     )
-    for tier_id in tiers:
+    for tier_id in facts.value["tiers"]:
         for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-            tier_depth.add(depth.get((tier_id, state), 0),
+            tier_depth.add(facts.value["depth"].get((tier_id, state), 0),
                            tier=tier_id, state=state)
-    for (tier_id, state), count in sorted(depth.items()):
-        if tier_id not in tiers:
+    for (tier_id, state), count in sorted(facts.value["depth"].items()):
+        if tier_id not in facts.value["tiers"]:
             tier_depth.add(count, tier=tier_id, state=state)
-
-    # -- waiting consumers per tier: the promotion lag ----------------------
-    # The tier join is the consumer's frozen plan: a waiting claim names its
-    # leads, the plan names the tier. A waiter with no readable plan still
-    # counts, under the unknown tier, because "waiting and tierless" is the
-    # signal, not a reason to drop the row.
-    plan_root = queue.root / pool.record_store.RESIDENCY_PLANS
-    try:
-        plan_listing = reader.plan_entries(queue)
-        plan_listing_error: OSError | None = None
-    except OSError as exc:
-        plan_listing, plan_listing_error = [], exc
-    # A plan that could not be stat-ed is counted below as an unreadable
-    # plan, which is what main's read of it reported; it names no tier here.
-    plan_files = {path.name: entry for path, entry in plan_listing
-                  if entry is not None}
-    waiting: dict[str, int] = defaultdict(int)
-    quiet_max: dict[str, float] = {}
-    for key in consumers:
-        lease = pbstatus._pool_sidecar(queue.records.lease_path(key), reader=census_reader)
-        if isinstance(lease, Exception):
-            ok = False
-            continue
-        quiet, grace = pbstatus._starvation_quiet(
-            lease if isinstance(lease, dict) else None)
-        child = pbstatus._starvation_child(
-            lease if isinstance(lease, dict) else None)
-        is_waiting, _rule = pbstatus._starvation_waiting(quiet, grace, child)
-        if not is_waiting:
-            continue
-        # No plan filed is the ordinary answer for a consumer the coordinator
-        # never staged, which still counts as a waiter whose tier is unknown
-        # rather than as a read failure.
-        plan_entry = plan_files.get(queue.records.residency_plan_path(key).name)
-        tier_id = _UNKNOWN_TIER
-        if plan_entry is not None:
-            named = _plan_tier(reader, plan_entry)
-            if isinstance(named, str):
-                tier_id = named
-            elif named is _UNREADABLE:
-                ok = False
-        waiting[tier_id] += 1
-        if quiet is not None:
-            quiet_max[tier_id] = max(quiet_max.get(tier_id, quiet), quiet)
     waiting_family = metrics.family(
         "prismabuild_starvation_waiting_consumers",
         "Claimed consumers the quiet/grace rule reads as waiting on data, by "
         "the tier their frozen plan names. Known tiers always read, zero "
         "included; the unknown tier counts waiters with no readable plan.",
     )
-    for tier_id in tiers:
-        waiting_family.add(waiting.get(tier_id, 0), tier=tier_id)
-    for tier_id, count in sorted(waiting.items()):
-        if tier_id not in tiers:
+    for tier_id in facts.value["tiers"]:
+        waiting_family.add(facts.value["waiting"].get(tier_id, 0), tier=tier_id)
+    for tier_id, count in sorted(facts.value["waiting"].items()):
+        if tier_id not in facts.value["tiers"]:
             waiting_family.add(count, tier=tier_id)
     quiet_family = metrics.family(
         "prismabuild_starvation_waiting_quiet_max_seconds",
         "Longest progress quiet among the tier's waiting consumers; absent, "
         "not zero, where none is waiting.",
     )
-    for tier_id, value in sorted(quiet_max.items()):
+    for tier_id, value in sorted(facts.value["quiet_max"].items()):
         quiet_family.add(value, tier=tier_id)
-
-    # -- plan backlog per tier: the cursor-gap census as gauges --------------
-    plans: dict[tuple[str, str], int] = defaultdict(int)
-    staged_phases: dict[tuple[str, str], int] = defaultdict(int)
-    unstaged_phases: dict[tuple[str, str], int] = defaultdict(int)
-    unstaged_bytes: dict[tuple[str, str], float] = defaultdict(float)
-    invalid_plans = 0
-    unreadable = False
-    # ``DirectoryRecords`` reads an absent directory as empty: no staged
-    # consumer has ever filed a plan.
-    if plan_listing_error is not None:
-        ok = False
-    try:
-        receipts = {entry.name[:-len(".json")]: entry for entry
-                    in reader.mover_entries(queue)}
-    except OSError:
-        receipts = None
-    for path, entry in plan_listing:
-        if entry is None:
-            invalid_plans += 1
-            unreadable = True
-            continue
-        census = _plan_census(reader, queue, path, entry, ready=ready,
-                              claimed=claimed, claimed_listed=claimed_listed,
-                              announced=announced,
-                              receipts=receipts, now=now, census_reader=census_reader)
-        unreadable = unreadable or census.unreadable
-        if not census.valid:
-            invalid_plans += 1
-            continue
-        plans[(census.tier_id, census.state)] += 1
-        if census.legs is None:
-            ok = False
-            continue
-        for leg, counted in census.legs:
-            if counted is None:
-                ok = False
-                continue
-            staged, phases, missing = counted
-            staged_phases[(census.tier_id, leg)] += staged
-            unstaged_phases[(census.tier_id, leg)] += phases
-            unstaged_bytes[(census.tier_id, leg)] += missing
-    if unreadable:
-        ok = False
     plans_family = metrics.family(
         "prismabuild_residency_plans",
         "Filed residency plans by tier and consumer queue state; the invalid "
         "state counts unreadable or rejected plans under the unknown tier.",
     )
-    for tier_id in tiers:
+    for tier_id in facts.value["tiers"]:
         for state in ("claimed", "ready", "absent"):
-            plans_family.add(plans.get((tier_id, state), 0),
+            plans_family.add(facts.value["plans"].get((tier_id, state), 0),
                              tier=tier_id, state=state)
-    for (tier_id, state), count in sorted(plans.items()):
-        if tier_id not in tiers:
+    for (tier_id, state), count in sorted(facts.value["plans"].items()):
+        if tier_id not in facts.value["tiers"]:
             plans_family.add(count, tier=tier_id, state=state)
-    if invalid_plans:
-        plans_family.add(invalid_plans, tier=_UNKNOWN_TIER, state="invalid")
+    if facts.value["invalid_plans"]:
+        plans_family.add(facts.value["invalid_plans"], tier=_UNKNOWN_TIER, state="invalid")
     staged_family = metrics.family(
         "prismabuild_residency_staged_phases",
         "Plan phases at or behind the read cursor the tier ledger says are "
@@ -1634,59 +721,14 @@ def _promotion_metrics(
         "prismabuild_residency_unstaged_bytes",
         "Bytes in the promotion backlog, by tier and leg.",
     )
-    for tier_id in tiers:
+    for tier_id in facts.value["tiers"]:
         for leg in ("stage", "ram"):
-            staged_family.add(staged_phases.get((tier_id, leg), 0),
+            staged_family.add(facts.value["staged_phases"].get((tier_id, leg), 0),
                               tier=tier_id, leg=leg)
-            unstaged_family.add(unstaged_phases.get((tier_id, leg), 0),
+            unstaged_family.add(facts.value["unstaged_phases"].get((tier_id, leg), 0),
                                 tier=tier_id, leg=leg)
-            backlog_family.add(unstaged_bytes.get((tier_id, leg), 0.0),
+            backlog_family.add(facts.value["unstaged_bytes"].get((tier_id, leg), 0.0),
                                tier=tier_id, leg=leg)
-
-    # -- mover receipts per tier: demonstrated delivery in the window --------
-    # Bounded by newest file modification time, windowed by content unix: the
-    # receipts directory is append-only, one JSON per movement node, and a
-    # scrape that reads all of them to report a handful is the slow path.
-    # The pool-read sum can exceed the staged sum: it counts every pool
-    # reader's sectors during each mover's window, not one copy's bytes, so
-    # the adoption signal is jobs beside measured jobs, never the byte
-    # ratio. Byte sums gate on receipts carrying BOTH counters, so each sum
-    # covers one population, not two.
-    # Store's mover history reads an absent directory as empty: no mover has
-    # ever filed a receipt.  Any other failure, a receipt that could not be
-    # stat-ed included, is main's: no window, and an incomplete scrape.
-    if receipts is None:
-        receipts = {}
-        ok = False
-    candidates = heapq.nlargest(_MOVE_RECEIPT_CAP,
-                                ((entry.mtime, entry.path, entry)
-                                 for entry in receipts.values()))
-    move_complete = len(receipts) <= _MOVE_RECEIPT_CAP
-    move_jobs: dict[str, int] = defaultdict(int)
-    measured_jobs: dict[str, int] = defaultdict(int)
-    move_staged: dict[str, float] = defaultdict(float)
-    move_pool_read: dict[str, float] = defaultdict(float)
-    move_rates: dict[str, list[float]] = defaultdict(list)
-    for _mtime, _path, entry in candidates:
-        receipt = reader.derive("receipt", entry,
-                                lambda entry=entry: _receipt_projection(entry),
-                                keep=lambda projected: projected is not _UNREADABLE)
-        if receipt is _UNREADABLE:
-            ok = False
-            continue
-        if receipt is _NOT_A_RECEIPT:
-            continue
-        stamped, tier_id, measured, rate, staged, pool_read = receipt
-        if stamped is None or not -_SKEW_S <= now - stamped <= window_seconds:
-            continue
-        move_jobs[tier_id] += 1
-        if measured:
-            measured_jobs[tier_id] += 1
-        if rate is not None and rate > 0:
-            move_rates[tier_id].append(rate)
-        if staged is not None and pool_read is not None:
-            move_staged[tier_id] += staged
-            move_pool_read[tier_id] += pool_read
     metrics.family(
         "prismabuild_tier_move_window_seconds",
         "Configured lookback window for the per-tier movement receipt gauges.",
@@ -1695,16 +737,16 @@ def _promotion_metrics(
         "prismabuild_tier_move_window_complete",
         "Whether the mover-receipt scan proved the window was not truncated "
         "by its file cap and every selected receipt was readable.",
-    ).add(1 if move_complete and ok else 0)
+    ).add(1 if facts.value["move_complete"] and ok else 0)
     move_jobs_family = metrics.family(
         "prismabuild_tier_move_jobs",
         "Movement receipts filed in the window, by tier; a restart-safe "
         "gauge, not a counter.",
     )
-    for tier_id in tiers:
-        move_jobs_family.add(move_jobs.get(tier_id, 0), tier=tier_id)
-    for tier_id, count in sorted(move_jobs.items()):
-        if tier_id not in tiers:
+    for tier_id in facts.value["tiers"]:
+        move_jobs_family.add(facts.value["move_jobs"].get(tier_id, 0), tier=tier_id)
+    for tier_id, count in sorted(facts.value["move_jobs"].items()):
+        if tier_id not in facts.value["tiers"]:
             move_jobs_family.add(count, tier=tier_id)
     measured_family = metrics.family(
         "prismabuild_tier_move_measured_jobs",
@@ -1712,17 +754,17 @@ def _promotion_metrics(
         "by tier, under the fill fold's own share test; the remainder is "
         "adoption served resident. Jobs beside measured is the hit rate.",
     )
-    for tier_id in tiers:
-        measured_family.add(measured_jobs.get(tier_id, 0), tier=tier_id)
-    for tier_id, count in sorted(measured_jobs.items()):
-        if tier_id not in tiers:
+    for tier_id in facts.value["tiers"]:
+        measured_family.add(facts.value["measured_jobs"].get(tier_id, 0), tier=tier_id)
+    for tier_id, count in sorted(facts.value["measured_jobs"].items()):
+        if tier_id not in facts.value["tiers"]:
             measured_family.add(count, tier=tier_id)
     staged_bytes_family = metrics.family(
         "prismabuild_tier_move_staged_bytes",
         "Bytes movers reported staging in the window, by tier, over receipts "
         "carrying both byte counters; absent, not zero, where none did.",
     )
-    for tier_id, value in sorted(move_staged.items()):
+    for tier_id, value in sorted(facts.value["move_staged"].items()):
         staged_bytes_family.add(value, tier=tier_id)
     pool_read_family = metrics.family(
         "prismabuild_tier_move_pool_read_bytes",
@@ -1731,7 +773,7 @@ def _promotion_metrics(
         "reader, not one copy's bytes, so it can exceed the staged sum; "
         "read it beside measured jobs, never as a ratio's denominator.",
     )
-    for tier_id, value in sorted(move_pool_read.items()):
+    for tier_id, value in sorted(facts.value["move_pool_read"].items()):
         pool_read_family.add(value, tier=tier_id)
     rate_family = metrics.family(
         "prismabuild_tier_move_pool_rate_mb_s",
@@ -1743,7 +785,7 @@ def _promotion_metrics(
         "prismabuild_tier_move_rate_jobs",
         "Receipts contributing to the tier's pool-rate gauge in the window.",
     )
-    for tier_id, rates in sorted(move_rates.items()):
+    for tier_id, rates in sorted(facts.value["move_rates"].items()):
         rate_family.add(max(rates), tier=tier_id, stat="best")
         rate_family.add(sum(rates) / len(rates), tier=tier_id, stat="mean")
         rate_jobs_family.add(len(rates), tier=tier_id)
@@ -1757,7 +799,7 @@ def collect_metrics(
     terminal_window_seconds: float = DEFAULT_TERMINAL_WINDOW_SECONDS,
     terminal_limit: int = DEFAULT_TERMINAL_LIMIT,
     previous: dict[tuple[str, str], tuple[float, float]] | None = None,
-    reader: KeptReads | None = None,
+    reader: fleet_census.KeptReads | None = None,
 ) -> str:
     """Collect one non-atomic, read-only snapshot in Prometheus text format.
 
@@ -1774,7 +816,7 @@ def collect_metrics(
     each other's readings.
     """
     started = time.monotonic()
-    reader = KeptReads() if reader is None else reader
+    reader = fleet_census.KeptReads() if reader is None else reader
     reader.begin()
     try:
         return _collect(queue_root, now=now,
@@ -1792,7 +834,7 @@ def _collect(
     terminal_window_seconds: float,
     terminal_limit: int,
     previous: dict[tuple[str, str], tuple[float, float]] | None,
-    reader: KeptReads,
+    reader: fleet_census.KeptReads,
     started: float,
 ) -> str:
     sampled = time.time() if now is None else float(now)
@@ -1800,7 +842,7 @@ def _collect(
     metrics = Metrics()
     success = True
     try:
-        census = pbstatus.read_pool(root, reader=reader)
+        census = fleet_census.rows(root, reader=reader).value
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         census = {"nodes": [], "jobs": [], "queue": {"ready": None, "claimed": None}}
         success = False
@@ -1822,7 +864,7 @@ def _collect(
     )
     for state in ("ready", "claimed"):
         count = queue_summary.get(state) if isinstance(queue_summary, Mapping) else None
-        if _number(count) is None:
+        if fleet_census.nonnegative_number(count) is None:
             success = False
             continue
         queue_items.add(count, state=state)
@@ -1832,7 +874,7 @@ def _collect(
         if not state_jobs:
             oldest.add(0, state=state)
         else:
-            ages = [_number(row.get("age_s")) for row in state_jobs]
+            ages = [fleet_census.nonnegative_number(row.get("age_s")) for row in state_jobs]
             if all(age is not None for age in ages):
                 oldest.add(max(ages), state=state)
             else:
@@ -1899,7 +941,7 @@ def _collect(
         fresh = state in {"live", "draining"}
         worker_up.add(1 if fresh else 0, host=host)
         worker_retired.add(1 if state == "retired" else 0, host=host)
-        age = _number(node.get("age_s"))
+        age = fleet_census.nonnegative_number(node.get("age_s"))
         if age is not None:
             offer_age.add(age, host=host)
         else:
@@ -1923,7 +965,7 @@ def _collect(
                     }
                     for domain in sorted(normalized):
                         memory_domain.add(1, host=host, domain=domain)
-                available_gib = _number(detail.get("mem_available_gb"))
+                available_gib = fleet_census.nonnegative_number(detail.get("mem_available_gb"))
                 if available_gib is not None:
                     memory_available.add(available_gib * GIB, host=host)
             # A pre-#254 offer carries no count.  That is a missing series and
@@ -1940,7 +982,7 @@ def _collect(
                 sample = admission.get(resource)
                 if not isinstance(sample, Mapping) or sample.get("state") == "not applicable":
                     continue
-                age = _number(sample.get("age_s"))
+                age = fleet_census.nonnegative_number(sample.get("age_s"))
                 if age is not None:
                     evidence_age.add(age, host=host, resource=resource)
                 record = sample.get("record")
@@ -1949,7 +991,7 @@ def _collect(
                     is_plateau = isinstance(feedback, Mapping) and feedback.get("status") == "plateau"
                     plateau.add(1 if is_plateau else 0, host=host, resource="gpu")
 
-    claimed_known = _number(queue_summary.get("claimed")) is not None
+    claimed_known = fleet_census.nonnegative_number(queue_summary.get("claimed")) is not None
     active = metrics.family(
         "prismabuild_active_jobs",
         "Claims with fresh leases by host and mutually exclusive cpu or gpu job kind.",
@@ -2014,7 +1056,7 @@ def _collect(
             if host is None:
                 continue
             pinned_by_host[host] += 1
-            age = _number(job.get("cleanup_pending_s"))
+            age = fleet_census.nonnegative_number(job.get("cleanup_pending_s"))
             # A record written before #288 carries no first-failure stamp.
             # That is a missing series, never a zero one: reporting 0 would
             # say "just started" about a cleanup that may have been pending
@@ -2137,7 +1179,7 @@ def _collect(
 #: directories.
 RESIDENT_CEILING_BYTES = 680 * 1024 * 1024
 
-#: The per-scrape counters of :meth:`KeptReads.scrape_counts`.
+#: The per-scrape counters of :meth:`fleet_census.KeptReads.scrape_counts`.
 SCRAPE_READ_KINDS = ("listed", "kept", "parsed", "computed", "reused")
 
 #: The families this module adds about its own work, none of them a reading
@@ -2169,7 +1211,7 @@ def _resident_bytes() -> tuple[float | None, float | None]:
     return found.get(b"VmRSS"), found.get(b"VmHWM")
 
 
-def _exporter_metrics(metrics: Metrics, reader: KeptReads, started: float) -> None:
+def _exporter_metrics(metrics: Metrics, reader: fleet_census.KeptReads, started: float) -> None:
     """What this snapshot cost, and what the exporter holds (#1020).
 
     The kept reads are justified by these, not by the fixture: a scrape's
@@ -2220,7 +1262,7 @@ class MetricsCache:
         self.previous: dict[tuple[str, str], tuple[float, float]] = {}
         # What this server keeps between scrapes (#1020): on the queue's own
         # filesystem an unchanged queue costs one ``lstat`` per directory.
-        self.reader = KeptReads()
+        self.reader = fleet_census.KeptReads()
         self._lock = threading.Lock()
         self._expires = 0.0
         self._text = ""

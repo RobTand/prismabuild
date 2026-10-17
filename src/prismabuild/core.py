@@ -6373,6 +6373,11 @@ def _read_json_mapping(path: Path, *, where: str) -> Mapping[str, object]:
     return value
 
 
+def compact_diagnostic_json(value: object) -> str:
+    """Sorted compact diagnostic text, retaining non-finite and ASCII defaults."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def write_new_json(path: Path, value: Mapping[str, object]) -> None:
     if path.exists() or path.is_symlink():
         raise ActionContractError(f"output already exists: {path}")
