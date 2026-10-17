@@ -133,8 +133,8 @@ def _world(tmp_path: Path, *, entries: int = 1) -> tuple[
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": digest, "manifest_bytes": total,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
     (queue.root / "stage").mkdir(parents=True, exist_ok=True)
     ram = queue.root / "ram"
     ram.mkdir(parents=True, exist_ok=True)
@@ -186,7 +186,7 @@ def _reserve(queue: pool.PoolQueue, digest: str, total: int) -> None:
             "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
             "manifest_sha256": digest, "manifest_bytes": total,
             "range_start_bytes": 0, "range_end_bytes": total})
-    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {"stage_gib": 1})
+    assert queue.tier(STAGE_TIER).take(MOVER, {'stage_gib': 1})
 
 
 def _cycles(queue: pool.PoolQueue, count: int = CYCLES) -> list[dict]:
@@ -268,7 +268,7 @@ def test_a_reservation_before_any_copy_publishes_no_ram(tmp_path: Path) -> None:
 
     assert _promotions(_cycles(queue)) == [], "a booking is not bytes"
     assert not queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
-    assert queue.tier_ledger(RAM_TIER).held().get("ram_gib", 0) == 0
+    assert queue.tier(RAM_TIER).holdings().get('ram_gib', 0) == 0
 
     plan = _filed(queue)
     assert residency_plan.resident_movers(queue, plan, STAGE_TIER) == set()
@@ -345,7 +345,7 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
     assert promotion.get("refusal") is None, promotion
     assert promotion["complete"] is True
     queue.record_move(RAM_MOVER, promotion)
-    assert queue.tier_ledger(RAM_TIER).acquire(RAM_MOVER, {"ram_gib": 1})
+    assert queue.tier(RAM_TIER).take(RAM_MOVER, {'ram_gib': 1})
 
     promoted = queue.root / "ram" / stage_move.stage_relative(
         str(paths[0]), 0, paths[0].stat().st_size,
@@ -368,7 +368,7 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
         residency_root=str(queue.root / pool.record_store.RESIDENCY))
     assert not released.get("errors"), released
     assert not promoted.exists()
-    assert queue.tier_ledger(RAM_TIER).held().get("ram_gib", 0) == 0
+    assert queue.tier(RAM_TIER).holdings().get('ram_gib', 0) == 0
     assert residency_plan.resident_movers(
         queue, _filed(queue), RAM_TIER) == set(), (
             "released bytes are not resident")

@@ -181,7 +181,7 @@ def test_the_minted_supply_is_zero_when_the_resample_hits_the_inode_floor(
         writable_reader=read, cap=discovery_window)
     assert minted["writable"] == 0, minted
     assert minted["supply"] == 0, minted
-    assert int(queue.tier_ledger(tier_id).available().get(kind, 0)) == 0
+    assert int(queue.tier(tier_id).free_supply().get(kind, 0)) == 0
 
 
 def test_ram_tier_refuses_inode_exhaustion_with_free_bytes(tmp_path):

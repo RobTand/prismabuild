@@ -101,9 +101,9 @@ def _charged_orphan(fleet) -> tuple[str, str]:
     queue.finish(mover, status="executed", detail={"returncode": 0})
     # The whole tier is this orphan's: a window that needs one GiB finds none
     # free, so the pressure pass must evict it.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 1})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1}) is True
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    queue.tier(TIER).mint({'stage_gib': 1})
+    assert queue.tier(TIER).take(mover, {'stage_gib': 1}) is True
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 0
     return consumer, mover
 
 
@@ -148,8 +148,8 @@ def test_a_rate_only_export_does_not_block_an_orphan_under_pressure(fleet) -> No
     assert [entry.get("reason") for entry in own
             if entry.get("complete") is True] == ["orphan-sweep"], own
     assert not any((stage / name).exists() for name in NAMES)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 1
+    assert queue.tier(TIER).holdings(mover) == {}
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 1
 
 
 @pytest.mark.parametrize("resources", [
