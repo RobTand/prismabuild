@@ -377,7 +377,7 @@ def test_every_ownership_census_retains_what_it_names(
         monkeypatch.setattr(getattr(stage_release, module), name,
                             lambda *a, **k: (held, []))
     else:
-        monkeypatch.setattr(stage_release, census, lambda *a, **k: (held, []))
+        monkeypatch.setattr(staged_path, {'_claimed_paths': 'claimed_paths', '_claimed_source_paths': 'claimed_source_paths'}.get(census, census), lambda *a, **k: (held, []))
 
     got = _recover(fleet, apply=True)
     assert _staged(stage, NAMES[0]).exists()
@@ -492,7 +492,7 @@ def test_an_unreadable_census_refuses_before_mutating(
         monkeypatch.setattr(getattr(stage_release, module), name,
                             lambda *a, **k: (empty, ["unreadable"]))
     else:
-        monkeypatch.setattr(stage_release, census,
+        monkeypatch.setattr(staged_path, {'_claimed_paths': 'claimed_paths', '_claimed_source_paths': 'claimed_source_paths'}.get(census, census),
                             lambda *a, **k: (empty, ["unreadable"]))
 
     got = _recover(fleet, apply=True)

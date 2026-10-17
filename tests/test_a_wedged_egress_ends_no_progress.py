@@ -548,7 +548,7 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
 
 #: An egress wedged inside its own hold, before its drain: the stage's lock
 #: taken the way ``stage_release`` takes it, then nothing.
-HOLDER = textwrap.dedent('\n    import sys, time\n    sys.path.insert(0, {source!r})\n    from prismabuild import stage_release\n    from prismabuild import pool\n    queue = pool.PoolQueue({queue!r})\n    with staged_path.ownership(queue, {stage!r}, role="egress"):\n        with open({marker!r}, "w") as stream:\n            stream.write("held")\n        time.sleep(3600)\n')
+HOLDER = textwrap.dedent('\n    import sys, time\n    sys.path.insert(0, {source!r})\n    from prismabuild import stage_release\n    from prismabuild import pool\n    from prismabuild import staged_path\n    queue = pool.PoolQueue({queue!r})\n    with staged_path.ownership(queue, {stage!r}, role="egress"):\n        with open({marker!r}, "w") as stream:\n            stream.write("held")\n        time.sleep(3600)\n')
 
 
 def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(

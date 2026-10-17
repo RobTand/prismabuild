@@ -149,13 +149,13 @@ def test_an_unchanged_claim_is_derived_once_across_many_checks(
     norm = _norm(stage, entries[1]["path"], 0, SIZE)
 
     derivations: list[int] = []
-    real_stage_relative = stage_release.stage_relative
+    real_stage_relative = staged_path.stage_relative
 
     def counting(*args, **kwargs):
         derivations.append(1)
         return real_stage_relative(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "stage_relative", counting)
+    monkeypatch.setattr(staged_path, 'stage_relative', counting)
 
     checks = 5
     for _ in range(checks):
