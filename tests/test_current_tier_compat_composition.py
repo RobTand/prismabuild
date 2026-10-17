@@ -66,6 +66,8 @@ def test_current_port_preserves_actual_bytes_and_both_retained_read_directions(
     first_result = invoke(ROOT, case, tmp_path / 'first', adapter_path=current_driver)
     first = base64.b64decode(accepted(first_result)['raw'])
     writer_evidence.observe(first_result, first)
+    writer_evidence.records[case].update({key: first_result[key] for key in
+                                         ('adapters_sha256', 'python', 'machine', 'affinity')})
     second = base64.b64decode(current(tmp_path / 'second')['raw'])
     assert first == second == base64.b64decode(GOLDENS[case]['raw'])
     for generation, source, manifest in reader_controls:
