@@ -7821,7 +7821,6 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
     answers ``unknown`` and retains; a live or unreadable verdict
     changes nothing.
     """
-    from prismabuild import produced_output as _po
 
     try:
         owner = str(record.get("owner_action_key") or "")
@@ -7871,7 +7870,6 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
     present or unprovable retains, only ``ENOENT`` on every named
     path proves the mover never laid bytes.
     """
-    from prismabuild import produced_output as _po
 
     try:
         owner = str(record.get("owner_action_key") or "")

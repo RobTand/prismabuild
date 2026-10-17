@@ -4983,7 +4983,6 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
             raise SubmissionRefused(
                 "pbrun: --produced-output-template needs the pull queue: "
                 "tier working-window reservations live in the pool ledgers")
-        from prismabuild import produced_output as produced_mod
 
         # Bounded pre-read for demand derivation only; freeze captures once
         # and cross-checks, so a file swapped between here and there fails

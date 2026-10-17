@@ -30,8 +30,8 @@ The three new controls interrupt the real tick before unlink and check the
 public state and consumer refusal for absent, corrupt-empty and filed intents.
 
 Root also expanded collapsed expressions without changing their syntax trees,
-removed eight unused orchestration imports and three obsolete import-only
-error adapters, reused the existing scope/prewrite address owners, and corrected
+removed eight unused orchestration imports, including three with obsolete
+import-only error adapters, reused the existing scope/prewrite address owners, and corrected
 current owner references in comments and docstrings. The final executed source
 is `1840aa0f0c4b53866a5363a7766399a63381e424`. The source audit checks every changed
 module after the declared substitutions; error, lock, authority and file-effect

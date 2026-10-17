@@ -162,7 +162,6 @@ def export_rate_key(template_sha256, family=None):
     """
     if family is None:
         return template_sha256 if _is_key(template_sha256) else None
-    from . import produced_output
     try:
         return EXPORT_RATE_FAMILY_PREFIX + oc.validate_export_rate_family(family)
     except oc.ProducedOutputError:

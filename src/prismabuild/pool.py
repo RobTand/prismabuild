@@ -13853,7 +13853,6 @@ class PoolQueue:
         except (KeyError, TypeError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         try:
-            from . import produced_output as produced_mod2
             checked_template = oc.validate_template(template)
             window = int(checked_template["working_demands"][tier]["window_gib"])
         except Exception as exc:
