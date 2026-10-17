@@ -33,8 +33,12 @@ MEMBERS = {
 OPTIONAL_MEMBERS = {
     'gpu_capacity.py': 'src/prismabuild/gpu_capacity.py',
     'park_proof.py': 'src/prismabuild/park_proof.py',
+    'digest_primitives.py': 'src/prismabuild/digest_primitives.py',
+    'generation_receipt.py': 'src/prismabuild/generation_receipt.py',
 }
-UPDATER_ONLY_MEMBERS = frozenset({'upgrade_client.py', 'park_proof.py'})
+UPDATER_ONLY_MEMBERS = frozenset({'upgrade_client.py', 'park_proof.py',
+                                  'digest_primitives.py', 'generation_receipt.py'})
+RECEIPT_READER_MEMBERS = frozenset({'digest_primitives.py', 'generation_receipt.py'})
 SERVICE = 'prismabuild-resource-broker.service'
 #: The holder this agent claims on a drain it opens. It must stay stable across
 #: client generations: a transaction opens a drain under one generation and can
@@ -57,6 +61,8 @@ CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2
 MAINTENANCE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_DURABLE_PROTOCOL = 1
 CLIENT_UPGRADE_ROLLOUT_PROTOCOL = 1
+CLIENT_UPGRADE_RECEIPT_MEMBER_PROTOCOL = 1
+CLIENT_UPGRADE_RECEIPT_READER_PROTOCOL = 1
 #: Where the fleet records a rollout, beside the generation store rather than
 #: inside it: a sealed generation is immutable, and these files are written
 #: while one is being replaced.
@@ -437,6 +443,52 @@ def previous_proof_metadata(transaction, previous):
     return ProofFileMetadata(**value)
 
 
+def receipt_owner():
+    """Capture the exact local stdlib closure, after bootstrap-safe recovery."""
+    source = Path(__file__).absolute()
+    if source.parent.name == 'fleet' and source.parent.parent.name == 'tools':
+        directory = source.parents[2] / 'src/prismabuild'
+        installed = False
+    elif source.parent.name == 'tools':
+        directory = source.parents[1] / 'src/prismabuild'
+        installed = False
+    else:
+        directory = trusted(source.parent)
+        installed = True
+    if not installed and source.lstat().st_uid == 0:
+        trusted(source)
+        directory = trusted(directory)
+        installed = True
+    code = {}
+    for leaf in ('digest_primitives', 'generation_receipt'):
+        path = directory / (leaf + '.py')
+        snapshot = read_proof_file(path)
+        if snapshot is None:
+            raise ValueError('missing installed receipt dependency: ' + leaf)
+        if installed and (snapshot.metadata.uid != 0 or snapshot.metadata.mode & 0o022):
+            raise ValueError('installed receipt dependency is not root-trusted: ' + leaf)
+        code[leaf] = compile(snapshot.data, str(path), 'exec')
+    namespace = '_prismabuild_receipt_' + uuid.uuid4().hex
+    package = ModuleType(namespace)
+    package.__path__ = []
+    sys.modules[namespace] = package
+    loaded = [namespace]
+    try:
+        for leaf in ('digest_primitives', 'generation_receipt'):
+            path = directory / (leaf + '.py')
+            name = namespace + '.' + leaf
+            module = ModuleType(name)
+            module.__file__ = str(path)
+            module.__package__ = namespace
+            sys.modules[name] = module
+            loaded.append(name)
+            exec(code[leaf], module.__dict__)
+        return module
+    finally:
+        for name in reversed(loaded):
+            sys.modules.pop(name, None)
+
+
 def desired(config):
     # Root enrollment explicitly delegates publication authority to this store.
     # The manifest hashes detect mixed copies; they are not signatures.
@@ -444,11 +496,12 @@ def desired(config):
     store = Path(config['generation_store']).resolve(strict=True)
     if root.parent != store or root.name.startswith('.'):
         raise ValueError('published runtime is not an authorized sealed generation')
-    receipt = json.loads(bounded_read(root / 'RUNTIME_VERSION.json', 1024 * 1024))
-    if (receipt.get('schema') != 'prismaquant.prismabuild.runtime_version.v1'
-            or receipt.get('generation') != root.name
-            or not re.fullmatch('[0-9a-f]{40}', str(receipt.get('commit', '')))):
-        raise ValueError('invalid published runtime receipt')
+    raw = bounded_read(root / 'RUNTIME_VERSION.json', 1024 * 1024)
+    captured = receipt_owner().GenerationReceipt.capture(raw)
+    try:
+        receipt = captured.require_identity(root.name)
+    except ValueError as exc:
+        raise ValueError('invalid published runtime receipt') from exc
     blobs = {}
     selected = {**MEMBERS, **{name: member for name, member in OPTIONAL_MEMBERS.items()
                               if member in receipt['files']}}
@@ -457,7 +510,7 @@ def desired(config):
         if source.resolve(strict=True) != source:
             raise ValueError(f'published client member is a symlink: {member}')
         data = bounded_read(source, MAX_MEMBER)
-        if digest(data) != receipt['files'].get(member):
+        if not captured.matches_bytes(member, data):
             raise ValueError(f'published client hash mismatch: {member}')
         blobs[name] = data
     return {'generation': root.name, 'commit': receipt['commit'],
@@ -1426,7 +1479,10 @@ class Upgrader:
 
     def copy_files(self, source, files, *, proof_metadata=None):
         self.validate_files(files)
-        for name, expected in files.items():
+        ordered = sorted(files, key=lambda name: (files[name] is None,
+                                                  name == 'upgrade_client.py', name))
+        for name in ordered:
+            expected = files[name]
             target = self.install / name
             if expected is None:
                 # Only an explicitly journaled optional member may be absent.
@@ -1654,18 +1710,23 @@ class Upgrader:
         # by an older reader of only /run.  Check before staging or closing
         # admission; the installed updater is the downgrade fence after its
         # bridge generation has converged.
-        durable_marker = rb'(?m)^MAINTENANCE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        updater_marker = rb'(?m)^CLIENT_UPGRADE_DURABLE_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        if re.search(durable_marker, installed_bytes['resource_broker.py']) is not None:
+        owner = receipt_owner()
+        declarations = {}
+
+        def protocol(code, name):
+            if code not in declarations:
+                declarations[code] = owner.SourceDeclarations.capture(code)
+            return declarations[code].protocol(name)
+
+        if protocol(installed_bytes['resource_broker.py'], 'MAINTENANCE_DURABLE_PROTOCOL') == 1:
             running = self.call('status')
             if running.get('maintenance_durable_protocol') != MAINTENANCE_DURABLE_PROTOCOL:
                 raise ValueError('durable maintenance broker capability is missing or stale')
-            if (re.search(durable_marker, blobs['resource_broker.py']) is None
-                    or re.search(updater_marker, blobs['upgrade_client.py']) is None):
+            if (protocol(blobs['resource_broker.py'], 'MAINTENANCE_DURABLE_PROTOCOL') != 1
+                    or protocol(blobs['upgrade_client.py'], 'CLIENT_UPGRADE_DURABLE_PROTOCOL') != 1):
                 raise ValueError('durable maintenance broker refuses non-durable candidate')
-        rollout_marker = rb'(?m)^CLIENT_UPGRADE_ROLLOUT_PROTOCOL[ \t]*=[ \t]*1[ \t]*$'
-        if (re.search(rollout_marker, installed_bytes['upgrade_client.py'])
-                is not None and re.search(rollout_marker, blobs['upgrade_client.py']) is None):
+        if (protocol(installed_bytes['upgrade_client.py'], 'CLIENT_UPGRADE_ROLLOUT_PROTOCOL') == 1
+                and protocol(blobs['upgrade_client.py'], 'CLIENT_UPGRADE_ROLLOUT_PROTOCOL') != 1):
             raise ValueError('rollout-aware updater refuses an epoch-unaware candidate')
         # Keep an explicit union so additions and removals both carry their
         # previous existence through failures and process restarts.
@@ -1674,16 +1735,24 @@ class Upgrader:
             # A crash can execute the newly copied updater while this journal
             # still exists. Never replace it with a pre-bridge recovery reader
             # during a transaction that records optional member existence.
-            pattern = rb'(?m)^CLIENT_UPGRADE_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
             for code in (blobs['upgrade_client.py'],
                          installed_bytes['upgrade_client.py']):
-                if re.search(pattern, code) is None:
+                if protocol(code, 'CLIENT_UPGRADE_PROTOCOL') != 2:
                     raise ValueError('optional client transaction requires dependency-aware recovery protocol 2')
         if 'park_proof.py' in names:
-            pattern = rb'(?m)^CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL[ \t]*=[ \t]*2[ \t]*$'
             for code in (blobs['upgrade_client.py'], installed_bytes['upgrade_client.py']):
-                if re.search(pattern, code) is None:
+                if protocol(code, 'CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL') != 2:
                     raise ValueError('proof client transaction requires proof-member recovery protocol 2')
+        present = set(version['files']) & RECEIPT_READER_MEMBERS
+        if present and present != RECEIPT_READER_MEMBERS:
+            raise ValueError('incomplete receipt reader dependency closure')
+        if (protocol(blobs['upgrade_client.py'], 'CLIENT_UPGRADE_RECEIPT_READER_PROTOCOL') == 1
+                and present != RECEIPT_READER_MEMBERS):
+            raise ValueError('receipt reader requires both installed dependencies')
+        if set(names) & RECEIPT_READER_MEMBERS:
+            for code in (blobs['upgrade_client.py'], installed_bytes['upgrade_client.py']):
+                if protocol(code, 'CLIENT_UPGRADE_RECEIPT_MEMBER_PROTOCOL') != 1:
+                    raise ValueError('receipt client transaction requires receipt-member recovery protocol 1')
         previous = {name: installed.get(name) for name in names}
         target_files = {name: version['files'].get(name) for name in names}
         self.validate_files(target_files)

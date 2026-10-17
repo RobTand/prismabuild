@@ -58,6 +58,11 @@ if [ ! -f "$owner" ]; then
     echo 'digest_primitives.py must sit beside this installer' >&2
     exit 1
 fi
+reader="$source_dir/generation_receipt.py"
+if [ ! -f "$reader" ]; then
+    echo 'generation_receipt.py must sit beside this installer' >&2
+    exit 1
+fi
 # Root custody is the point: refuse an install under an ancestor that anyone
 # else can write or that is a link.
 for ancestor in /opt /etc /var/lib; do
@@ -71,8 +76,9 @@ install -d -o root -g root -m 0755 /opt/prismabuild
 install -d -o root -g root -m 0755 /opt/prismabuild/movement-generations
 install -d -o root -g root -m 0755 /etc/prismabuild
 install -d -o root -g root -m 0755 /var/lib/prismabuild-movement-publish
-install -o root -g root -m 0644 "$module" /opt/prismabuild/runtime_publication.py
 install -o root -g root -m 0644 "$owner" /opt/prismabuild/digest_primitives.py
+install -o root -g root -m 0644 "$reader" /opt/prismabuild/generation_receipt.py
+install -o root -g root -m 0644 "$module" /opt/prismabuild/runtime_publication.py
 printf '%s\n' "$approval_key" > /etc/prismabuild/movement-approval.key
 chmod 0400 /etc/prismabuild/movement-approval.key
 chown root:root /etc/prismabuild/movement-approval.key
