@@ -104,15 +104,14 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
                          "file_id": reader_lease.stat_identity(str(path))}
         entries[key] = {"stage_path": str(path), "bytes": size,
                         "sha256": DIGEST, "offset": 0}
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
-        generation="c" * 32, entries=mentions)
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": MANIFEST, "entries": entries})
+        "manifest_sha256": MANIFEST, "entries": entries},
+        generation="c" * 32,
+        material_entries=mentions)
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": MANIFEST,

@@ -120,18 +120,16 @@ def _write_owner(queue, stage, consumer, mover, path, digest, *, key=None):
     """
 
     key = key or residency_map.residency_map_key(str(path), 0)
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "a" * 64,
         "entries": {key: {"stage_path": str(path), "bytes": SIZE,
-                          "sha256": digest, "offset": 0}}})
-    reader_lease.write_material(
-        queue.records.residency_fragment_root(), consumer_action_key=consumer,
-        mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
-        manifest_sha256="a" * 64, generation="a" * 32,
-        entries={key: {"stage_path": str(path), "bytes": SIZE,
+                          "sha256": digest, "offset": 0}}},
+        generation="a" * 32,
+        material_entries={key: {"stage_path": str(path), "bytes": SIZE,
                        "sha256": digest, "file_id": _identity(path)}})
     return key
 

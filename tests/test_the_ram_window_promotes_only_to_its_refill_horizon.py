@@ -164,16 +164,14 @@ def _ram_range(queue: pool.PoolQueue, *, promotion: str, consumer: str,
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
     assert queue.tier(RAM_TIER).take(promotion, {'ram_gib': PHASE_GIB})
-    residency_map.write_fragment(queue.records.residency_fragment_root(), {
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": promotion,
         "tier_id": RAM_TIER, "stage_root": str(ram), "manifest_sha256": manifest,
-        "epoch": epoch, "entries": entries})
-    reader_lease.write_material(
-        queue.records.residency_fragment_root(), consumer_action_key=consumer,
-        mover_action_key=promotion, tier_id=RAM_TIER, stage_root=str(ram),
-        manifest_sha256=manifest, generation="b" * 32, epoch=epoch,
-        entries={key: {**mention,
+        "epoch": epoch, "entries": entries},
+        generation="b" * 32,
+        material_entries={key: {**mention,
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}
                  for key, mention in entries.items()})
