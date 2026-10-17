@@ -124,6 +124,16 @@ class TierLedger:
     def holder_names(self) -> set[str]:
         return {path.name for path in self._ledger._census_scan(self._ledger.held_dir)}
 
+    def uses_tier_census(self) -> bool:
+        return self._ledger._strict_census()
+
+    def mint_history(self) -> tuple[set[str], set[str]]:
+        return self._ledger._minted_and_dead_names()
+
+    @property
+    def mint_issues(self):
+        return self._ledger.last_census_report
+
     def mint_supply(self) -> dict[str, int]:
         return self._ledger.capacity()
 

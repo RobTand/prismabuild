@@ -530,41 +530,6 @@ def cancel_due(*, consumer_live: bool, superseded: bool,
     return None
 
 
-def cancel(ledger, grant: str) -> dict[str, int]:
-    """Release a fence: safe in every direction, twice included.
-
-    A pure ledger release, never a funding-record effect: it moves no
-    generations and edits no bindings, so it needs no mover lock of its
-    own.  Every caller in the frozen wiring either holds the mover's
-    transition lock already (settle, non-blocking) or names a grant key no
-    claim ever verifies against (pre-pass cancel of an unhanded fence).
-    Releasing only frees capacity (under-protection stalls, never
-    over-admits) and a second release of an absent holder returns ``0``.
-    Funding-record closure beside a release always goes through
-    ``PoolQueue.advance_funding_state``, which serializes on the lock.
-    """
-
-    try:
-        return {"released": int(ledger.release(grant))}
-    except (OSError, ValueError):
-        return {"released": 0}
-
-
-def held_grants(ledger) -> list[str]:
-    """Every fence holder on this ledger.  Stateless recovery reads this.
-
-    Read-only listing: no mutation, no lock needed.  Callers reconcile what
-    they find against funding records (which carry the generations) rather
-    than acting on names alone.
-    """
-
-    try:
-        keys = ledger.held_keys()
-    except (OSError, ValueError):
-        return []
-    return sorted(key for key in keys if str(key).startswith(GRANT_PREFIX))
-
-
 def decision_needs(plan: Mapping[str, object], accepted_phase: str | None,
                    published: object, *, mover_role: str = "mover_row",
                    ) -> dict[str, object]:

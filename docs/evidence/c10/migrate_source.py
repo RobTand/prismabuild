@@ -40,6 +40,8 @@ RAW = {
     "retire_held": "retire_duplicate", "holder_census": "holder_observations",
     "_mutation_locked": "mutation_lock", "last_token_shortage": "shortage",
     "_census_glob": "token_paths", "_census_scan": "entry_paths",
+    "_strict_census": "uses_tier_census", "_minted_and_dead_names": "mint_history",
+    "last_census_report": "mint_issues",
     "census_report_path": "census_report",
 }
 AGGREGATE = {"tier_ids": "ids", "tier_holdings": "for_action",

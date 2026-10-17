@@ -133,7 +133,7 @@ def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected, 
         if change == "rename-holder":
             assert held.holdings(OTHER) == {KIND: 1}
         if change == "retire-held":
-            assert held._minted_and_dead_names()[1]
+            assert held.mint_history()[1]
 
 
 @pytest.mark.parametrize("filesystem", ["nfs", "nfs4", None])
@@ -215,7 +215,7 @@ def test_an_unreadable_namespace_cannot_authorize_minting(
             with pytest.raises(OSError, match="ledger census unreadable"):
                 held.holder_state(MOVER)
             assert held.trim_supply({KIND: 2}) == {KIND: 2}
-            assert held.last_census_report is not None
+            assert held.mint_issues is not None
             assert len(real(held.paths.held / MOVER)) == 1
 
 
@@ -313,7 +313,7 @@ def test_host_ledgers_and_reads_outside_the_cycle_are_fresh(ledger):
     host = queue.ledger("test-host")
     host.ensure_capacity({"cpu": 2})
     assert not host._strict_census()
-    assert held._strict_census()
+    assert held.uses_tier_census()
     with pool.tier_ledger_names_from(_names(reader)):
         with host._mutation_locked() as acquired:
             assert acquired
