@@ -145,7 +145,7 @@ def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
     the fill's hold returns."""
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-    import tier_loop  # noqa: E402
+    from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()

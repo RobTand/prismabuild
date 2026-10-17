@@ -229,7 +229,7 @@ def test_ram_tier_mutations_go_through_the_pool_primitive() -> None:
     """
 
     root = Path(__file__).resolve().parents[1]
-    for name in ("tools/fleet/tier_loop.py", "tools/fleet/stage_release.py"):
+    for name in ("src/prismabuild/tier_cycle.py", "src/prismabuild/stage_release.py"):
         tree = ast.parse((root / name).read_text(), filename=name)
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)
