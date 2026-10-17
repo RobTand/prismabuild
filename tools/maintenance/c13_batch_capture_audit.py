@@ -82,6 +82,22 @@ def c13_capture_identity(node):
     return C13ContractIdentity().visit(copy.deepcopy(node))
 
 
+class C13LedgerAddress(ast.NodeTransformer):
+    """Normalize a ledger module binding and its caller's root receiver."""
+
+    def __init__(self, root_receiver):
+        self.root_receiver = root_receiver
+
+    def visit_Attribute(self, node):
+        node = self.generic_visit(node)
+        if isinstance(node.value, ast.Name) and node.value.id == "bl":
+            return ast.Name(id=node.attr, ctx=ast.Load())
+        if (isinstance(node.value, ast.Name)
+                and node.value.id == self.root_receiver and node.attr == "root"):
+            return ast.Name(id="queue_root", ctx=ast.Load())
+        return node
+
+
 def c13_capture_body(fn, *, bound=False):
     body = copy.deepcopy(fn.body)
     if (body and isinstance(body[0], ast.Expr)
@@ -174,15 +190,7 @@ def c13_capture_main():
                  if isinstance(n, ast.Try) and any(isinstance(x, ast.Attribute)
                      and x.attr == "capture" for x in ast.walk(n)))
     body = copy.deepcopy(before.body[index:])
-    class PoolOwner(ast.NodeTransformer):
-        def visit_Attribute(self, node):
-            node = self.generic_visit(node)
-            if isinstance(node.value, ast.Name) and node.value.id == "bl":
-                return ast.Name(id=node.attr, ctx=ast.Load())
-            if isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr == "root":
-                return ast.Name(id="queue_root", ctx=ast.Load())
-            return node
-    before_node = PoolOwner().visit(ast.Module(body=body, type_ignores=[]))
+    before_node = C13LedgerAddress("self").visit(ast.Module(body=body, type_ignores=[]))
     before = ast.dump(c13_capture_identity(before_node))
     after_fn = new[owner]["BatchLedger.authorizes_mover"]
     after = c13_capture_body(after_fn)

@@ -10,7 +10,7 @@ import subprocess
 
 from c13_contract_names import C13_LEAF_NAMES, C13_OWNER_NAMES
 from c13_batch_capture_audit import (
-    c13_capture_functions, c13_capture_source, c13_capture_identity,
+    c13_capture_functions, c13_capture_source, c13_capture_identity, C13LedgerAddress,
 )
 
 C13_DAC = "dac2006656264b4bd55e4e3837331205a9740fd3"
@@ -24,7 +24,7 @@ C13_PUBLIC = {
 }
 
 
-class C13CompletionIdentity(ast.NodeTransformer):
+class C13CompletionIdentity(C13LedgerAddress):
     """Exact leaf definitions, module aliases and pure bound scope addresses."""
     def visit_Name(self, node):
         node.id = {v: k for k, v in C13_LEAF_NAMES.items()}.get(node.id, node.id)
@@ -35,20 +35,10 @@ class C13CompletionIdentity(ast.NodeTransformer):
         node.name = {v: k for k, v in C13_OWNER_NAMES.items()}.get(node.name, node.name)
         return self.generic_visit(node)
 
-    def visit_Attribute(self, node):
-        node = self.generic_visit(node)
-        if isinstance(node.value, ast.Name) and node.value.id == "bl":
-            return ast.Name(id=node.attr, ctx=ast.Load())
-        if (isinstance(node.value, ast.Name) and node.value.id == "queue"
-                and node.attr == "root"):
-            return ast.Name(id="queue_root", ctx=ast.Load())
-        return node
-
-
 def c13_completion_ast(nodes):
     if isinstance(nodes, list):
         nodes = ast.Module(body=nodes, type_ignores=[])
-    return ast.dump(C13CompletionIdentity().visit(c13_capture_identity(nodes)))
+    return ast.dump(C13CompletionIdentity("queue").visit(c13_capture_identity(nodes)))
 
 
 def c13_completion_with(fn):
