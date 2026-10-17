@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import test_pbrun_residency_stage_submission as submission  # noqa: E402
 
