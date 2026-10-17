@@ -5257,19 +5257,6 @@ _READY_PLACEMENT: contextvars.ContextVar[
         "pool_ready_placement", default=None)
 
 
-def _claimed_blocks(names: Iterable[str], key: str) -> bool:
-    """Whether a listing of ``claimed/`` refuses a claim of ``key``.
-
-    Its claim record, or a finish mark for it: a tombstone or a late-finish
-    record, whose names start ``<key>.`` and end in their suffix.
-    """
-
-    record = f"{key}.json"
-    prefix = f"{key}."
-    return any(name == record
-               or (name.startswith(prefix)
-                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX)))
-               for name in names)
 
 
 @contextmanager
@@ -5571,8 +5558,7 @@ class _ClaimScanReads:
         self.has_gpu = has_gpu
         self._host_verdicts: Mapping[str, object] | None = None
         self._bootstrap_authority: list[bool] = []
-        self._claimed_listed: set[str] | None = None
-        self._claimed_marks: list[str] = []
+        self._claimed_names: record_store.ClaimedNames | None = None
         self.reader_plans: dict[str, dict[str, object]] = {}
         self.dead_input_hints: dict[str, KeyStanding] = {}
 
@@ -5597,17 +5583,12 @@ class _ClaimScanReads:
         return self._bootstrap_authority[0]
 
     def claimed_hint(self, key: str) -> bool:
-        if self._claimed_listed is None:
-            names = os.listdir(self.queue.records.dir(CLAIMED))
-            self._claimed_listed = set(names)
-            self._claimed_marks = [
-                name for name in names
-                if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))]
-        return (f"{key}.json" in self._claimed_listed
-                or _claimed_blocks(self._claimed_marks, key))
+        if self._claimed_names is None:
+            self._claimed_names = self.queue.records.claimed_names()
+        return self._claimed_names.blocks(key)
 
     def renamed_into_claimed(self) -> None:
-        self._claimed_listed = None
+        self._claimed_names = None
         self.reader_plans.clear()
 
 
@@ -6489,7 +6470,7 @@ class PoolQueue:
         """
 
         ready = self.records.dir(READY)
-        if not ready.is_dir() or os.access(ready, os.W_OK):
+        if not self.records.state_directory_present(READY) or os.access(ready, os.W_OK):
             return
         fenced = self.fence()
         if fenced is None:
@@ -7624,7 +7605,7 @@ class PoolQueue:
         taken under the key's transition lock just before the rename, with
         the check the per-candidate listing made: the key is refused on its
         claim record, ``<key>.json``, or on either finish mark,
-        ``<key>.*.tombstone`` or ``<key>.*.late-finish`` (:func:`_claimed_blocks`).
+        ``<key>.*.tombstone`` or ``<key>.*.late-finish`` (:meth:`RecordStore.claim_blocked`).
         ``os.rename`` replaces its destination, so a claim record filed since
         the pass listing would be lost; and ``sweep_finish_tombstones``
         completes a predecessor's cleanup only while no successor is
@@ -7639,10 +7620,10 @@ class PoolQueue:
         """
 
         try:
-            names = os.listdir(self.records.dir(CLAIMED))
+            blocked = self.records.claim_blocked(key)
         except OSError as exc:
             return True, f"claimed/ could not be listed: {exc}"
-        return _claimed_blocks(names, key), None
+        return blocked, None
 
     def _aged_for(self, ready: list[dict[str, object]], *,
                   tags: frozenset[str], has_gpu: bool,
@@ -7762,9 +7743,9 @@ class PoolQueue:
 
         ordered: list[tuple[tuple[int, int, float], dict[str, object]]] = []
         ready = self.records.dir(READY)
-        if not ready.is_dir():
+        if not self.records.state_directory_present(READY):
             return []
-        for path in sorted(ready.glob("*.json")):
+        for path in self.records.json_slot_paths(READY):
             try:
                 # An item claimed out from under this listing is one this poll
                 # does not offer, which is the answer ``None`` already gives.
@@ -8207,7 +8188,7 @@ class PoolQueue:
         digest = str(entry["archive_sha256"])
         path = self.records.mover_archive_path(digest)
         try:
-            raw = path.read_bytes()
+            raw = self.records.raw_record_at(path)
         except OSError as exc:
             raise PoolContractError(
                 f"retired receipt {action_key} has no readable archive "
@@ -8256,7 +8237,7 @@ class PoolQueue:
         digest = hashlib.sha256(body).hexdigest()
         archive = self.records.mover_archive_path(digest)
         try:
-            present = archive.read_bytes()
+            present = self.records.raw_record_at(archive)
         except FileNotFoundError:
             present = None
         except OSError as exc:
@@ -9719,25 +9700,7 @@ class PoolQueue:
         parse is skipped, and a missing directory is no events.
         """
 
-        events: list[dict[str, object]] = []
-        try:
-            names = sorted(os.listdir(self.records.consumer_events_dir(action_key)))
-        except OSError:
-            return events
-        for name in names:
-            if not name.endswith(".jsonl"):
-                continue
-            try:
-                text = (self.records.consumer_events_dir(action_key) / name).read_text()
-            except OSError:
-                continue
-            for line in text.splitlines():
-                try:
-                    value = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(value, dict):
-                    events.append(value)
+        events = self.records.consumer_event_records(action_key)
         events.sort(key=lambda value: float(value.get("unix", 0.0))
                     if isinstance(value.get("unix"), (int, float)) else 0.0)
         return events if limit is None else events[-limit:]
@@ -9754,29 +9717,7 @@ class PoolQueue:
         skipped, and a missing file or directory is no events.
         """
 
-        events: list[dict[str, object]] = []
-        directory = self.records.host_events_dir()
-        if host is None:
-            try:
-                names = sorted(os.listdir(directory))
-            except OSError:
-                return events
-        else:
-            names = [f"{host}.jsonl"]
-        for name in names:
-            if not name.endswith(".jsonl"):
-                continue
-            try:
-                text = (directory / name).read_text()
-            except OSError:
-                continue
-            for line in text.splitlines():
-                try:
-                    value = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(value, dict):
-                    events.append(value)
+        events = self.records.host_event_records(host)
         events.sort(key=lambda value: float(value.get("unix", 0.0))
                     if isinstance(value.get("unix"), (int, float)) else 0.0)
         return events if limit is None else events[-limit:]
@@ -10473,7 +10414,7 @@ class PoolQueue:
         """One awaited child's queue state, with durable CAS as durable."""
 
         try:
-            if self._queued_child_finish_marked(child_key):
+            if self.records.claimed_finish_marked(child_key):
                 # A cleanup tombstone or a late-finish leaf: owner-defined
                 # custody, neither credited nor released.
                 return "held", "cleanup holds the claim"
@@ -10762,17 +10703,6 @@ class PoolQueue:
             members[key] = batch
         return members, ""
 
-    def _queued_child_finish_marked(self, child_key: str) -> bool:
-        """Whether a finish mark holds this key's claim aside (#1666)."""
-
-        prefix = f"{child_key}."
-        try:
-            names = os.listdir(self.records.dir(CLAIMED))
-        except OSError:
-            return False
-        return any(name.startswith(prefix)
-                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
-                   for name in names)
 
     def _queued_child_durable(self, child_key: str, *, cas_root: object,
                               request: Mapping[str, object],
@@ -13556,7 +13486,7 @@ class PoolQueue:
         """
 
         try:
-            raw_bytes = self._read_output_funding_bytes(
+            raw_bytes = self.records.output_funding_bytes(
                 mover_action_key, tier_id, max_bytes=None)
             if raw_bytes is None:
                 return None
@@ -13582,7 +13512,7 @@ class PoolQueue:
         """
 
         try:
-            raw_bytes = self._read_output_funding_bytes(
+            raw_bytes = self.records.output_funding_bytes(
                 mover_action_key, tier_id, max_bytes=1024 * 1024)
         except OSError:
             return (None, "corrupt")
@@ -13603,25 +13533,6 @@ class PoolQueue:
         except (PoolContractError, ValueError):
             return (None, "corrupt")
 
-    def _read_output_funding_bytes(
-            self, mover_action_key: str, tier_id: str, *,
-            max_bytes: int | None) -> bytes | None:
-        """Read live or ENOENT-selected retired bytes; None proves absence."""
-
-        try:
-            try:
-                handle = open(self.records.funding_output_path(
-                    mover_action_key, tier_id), "rb")
-            except FileNotFoundError:
-                # Retirement moves terminal funding out of the census, not
-                # out of the address used by per-mover decisions.
-                handle = open(self.records.funding_output_retired_path(
-                    mover_action_key, tier_id), "rb")
-            with handle:
-                return (handle.read() if max_bytes is None
-                        else handle.read(max_bytes + 1))
-        except FileNotFoundError:
-            return None
 
     def write_output_funding(self, record: Mapping[str, object], *,
                              expect_generation: str | None = None) -> Path:
@@ -16127,10 +16038,9 @@ class PoolQueue:
 
         path = self.records.tier_commitment_path(tier_id)
         try:
-            text = path.read_text()
+            record = self.records.text_document_at(path)
         except FileNotFoundError:
             return None
-        record = json.loads(text)
         if (not isinstance(record, dict) or record.get("tier_id") != tier_id
                 or record.get("schema") != TIER_COMMITMENT_SCHEMA_V1):
             raise ValueError(f"tier commitment record {path.name} is not one")
@@ -16624,7 +16534,7 @@ class PoolQueue:
         """
 
         out: dict[str, int] = {}
-        for path in immutable_files.match_optional(self.records.dir(CLAIMED), "*.json"):
+        for path in self.records.optional_claim_paths():
             row = record_store.read_document(path)
             if not isinstance(row, Mapping):
                 continue
@@ -17272,15 +17182,7 @@ class PoolQueue:
         """
 
         newest: tuple[str, str] | None = None
-        directory = self.records.superseded_dir()
-        if fresh:
-            paths = [directory / name for name in os.listdir(directory)
-                     if fnmatch.fnmatchcase(name, f"{action_key}.*.json")]
-        else:
-            paths = immutable_files.match_optional(directory, f"{action_key}.*.json")
-        read_record = record_store.read_confirmed_document if fresh else record_store.read_document
-        for path in paths:
-            record = read_record(path)
+        for path, record in self.records.superseded_records(action_key, fresh=fresh):
             if not isinstance(record, Mapping):
                 continue
             status = record.get("status")
@@ -22419,8 +22321,8 @@ class PoolQueue:
 
         host = socket.gethostname() if host is None else host
         pids: set[int] = set()
-        for claim in immutable_files.match_optional(self.records.dir(CLAIMED), "*.json"):
-            lease = claim.with_suffix(".lease")
+        for claim in self.records.optional_claim_paths():
+            lease = self.records.lease_path(claim.stem)
             record = record_store.read_document(lease)
             if record is None:
                 if not record_store.value_or_raise(
@@ -22599,9 +22501,9 @@ class PoolQueue:
             return []
         retried: list[str] = []
         claimed = self.records.dir(CLAIMED)
-        if not claimed.is_dir():
+        if not self.records.state_directory_present(CLAIMED):
             return retried
-        for path in sorted(claimed.glob("*.json")):
+        for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
             try:
                 with self._transition_locked(key, blocking=False) as acquired:
@@ -22707,10 +22609,10 @@ class PoolQueue:
         grace_s = HEARTBEAT_S
         requeued: list[str] = []
         claimed = self.records.dir(CLAIMED)
-        if not claimed.is_dir():
+        if not self.records.state_directory_present(CLAIMED):
             return requeued
         terminal_keys = self.terminal_keys()
-        for path in sorted(claimed.glob("*.json")):
+        for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
@@ -23179,12 +23081,11 @@ class PoolQueue:
 
         swept: list[str] = []
         claimed = self.records.dir(CLAIMED)
-        if not claimed.is_dir():
+        if not self.records.state_directory_present(CLAIMED):
             return swept
         self._sweep_orphan_requeue_staging(claimed, grace_s=grace_s)
         now = _now()
-        for tombstone in sorted([*claimed.glob(f"*{TOMBSTONE_SUFFIX}"),
-                                 *claimed.glob(f"*{LATE_FINISH_SUFFIX}")]):
+        for tombstone in self.records.finishing_paths():
             parts = tombstone.name.split(".", 2)
             key = parts[0]
             if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
@@ -23238,8 +23139,8 @@ class PoolQueue:
                         generation = record["published_unix"]
                         decision = self.publication_ending(key, generation=generation)
                         covered = covered or decision is not None
-                        if (not covered and f"{key}.json" not in os.listdir(claimed)
-                                and f"{key}.json" in os.listdir(self.records.dir(READY))):
+                        if (not covered and not self.records.listed_item_present(CLAIMED, key)
+                                and self.records.listed_item_present(READY, key)):
                             archived = self.archived_generation_outcomes(key, generation=generation)
                             if archived:
                                 covered = True
@@ -23291,7 +23192,7 @@ class PoolQueue:
                 # READY bytes while completing the predecessor's cleanup.
                 # A claimed successor, however, owns the key now; none of its
                 # resources or lease belongs to this old tombstone.
-                if f"{key}.json" not in os.listdir(claimed):
+                if not self.records.listed_item_present(CLAIMED, key):
                     try:
                         holders = self.claim_reservation_hosts(key)
                         if len(holders) > 1 or (record is None and holders):
@@ -23405,10 +23306,10 @@ class PoolQueue:
 
         swept: list[str] = []
         claimed = self.records.dir(CLAIMED)
-        if not claimed.is_dir():
+        if not self.records.state_directory_present(CLAIMED):
             return swept
         now = _now()
-        for lease in sorted(claimed.glob("*.lease")):
+        for lease in self.records.claimed_lease_paths():
             key = lease.name[: -len(".lease")]
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
@@ -23487,7 +23388,7 @@ class PoolQueue:
                 else:
                     evidence.unlink()
                 return None
-        raw = evidence.read_bytes()
+        raw = self.records.raw_record_at(evidence)
         self.records.file_superseded(
             None, key=key, kind="unreadable", state=READY,
             status="unreadable_record",
@@ -23598,7 +23499,7 @@ class PoolQueue:
                     # List first: a negatively cached missing name must not
                     # hide a successor or a terminal publication on NFS.
                     present = {
-                        state: f"{key}.json" in os.listdir(self.records.dir(state))
+                        state: self.records.listed_item_present(state, key)
                         for state in (READY, CLAIMED, DONE, FAILED)
                     }
                     superseded = present[READY] or present[CLAIMED]
@@ -23664,9 +23565,9 @@ class PoolQueue:
 
         filed: list[str] = []
         ready = self.records.dir(READY)
-        if not ready.is_dir():
+        if not self.records.state_directory_present(READY):
             return filed
-        for path in sorted(ready.glob("*.json")):
+        for path in self.records.json_slot_paths(READY):
             with self._transition_locked(path.stem, blocking=False) as acquired:
                 if not acquired:
                     continue
@@ -25416,19 +25317,7 @@ class PoolQueue:
         "would turn a broken mount into a confident wrong verdict".
         """
 
-        keys: set[str] = set()
-        for state in (DONE, FAILED):
-            try:
-                names = os.listdir(self.records.dir(state))
-            except FileNotFoundError:
-                # Absence only.  A queue whose layout has not been created yet
-                # legitimately has no ``done`` and no ``failed``, and that is
-                # the one reading of "no names" this method may make.
-                continue
-            keys.update(
-                name[: -len(".json")] for name in names if name.endswith(".json")
-            )
-        return frozenset(keys)
+        return self.records.terminal_keys()
 
     def terminal_outcome_covers(
         self,
@@ -25641,12 +25530,7 @@ class PoolQueue:
         listing or entry is unknown, not absence.
         """
 
-        try:
-            names = os.listdir(self.records.released_origin_consumers_dir())
-        except FileNotFoundError:
-            return frozenset()
-        return frozenset(name[:64] for name in names
-                         if name.endswith(".json") and name[64:65] == ".")
+        return self.records.released_origin_consumer_keys()
 
     def _refuse_released_origin_consumer(self, item: Mapping[str, object],
                                          key: str) -> bool:
@@ -26034,16 +25918,7 @@ class PoolQueue:
         if any(character not in "0123456789abcdef" for character in wanted.lower()):
             raise PoolContractError(
                 f"an action key is a hex digest; {wanted!r} is not a prefix of one")
-        seen: set[str] = set()
-        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
-            for path in immutable_files.match_optional(self.records.dir(state), f"{wanted}*.json"):
-                seen.add(path.stem)
-        for directory in immutable_files.match_optional(
-            self.records.dir(WITHDRAWN) / "decisions",
-            f"{wanted}*",
-        ):
-            if directory.is_dir() and immutable_files.match_optional(directory, "*.json"):
-                seen.add(directory.name)
+        seen = set(self.records.cancellation_prefix(wanted))
         if not seen:
             raise PoolContractError(f"no action in the queue starts with {wanted!r}")
         if len(seen) > 1:

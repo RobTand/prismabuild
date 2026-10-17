@@ -7,9 +7,10 @@ and impose no deadline.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 import errno
+import fnmatch
 import json
 import math
 import os
@@ -231,7 +232,7 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
     (``tools/fleet/qualify_record_visibility.py``, #808).  A produced-output
     owner waited that out on every staged group, after a copy that took 4 s.
 
-    ``slurm_lane._read_json_object`` and ``pbrun.terminal_record`` follow the
+    ``RecordStore.wait_terminal_at`` follows the
     same rule by listing the parent.  Opening it is used here because these
     reads are polled several times a second and a listing costs what the
     directory holds (``done`` held 17,117 names when this was written): an
@@ -1637,6 +1638,580 @@ class RecordStore:
             return stream.readlines()
 
 
+    def cancellation_prefix(self, wanted: str) -> list[str]:
+        seen: set[str] = set()
+        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+            for path in immutable_files.match_optional(self.dir(state), f"{wanted}*.json"):
+                seen.add(path.stem)
+        for directory in immutable_files.match_optional(
+            self.dir(WITHDRAWN) / "decisions",
+            f"{wanted}*",
+        ):
+            if directory.is_dir() and immutable_files.match_optional(directory, "*.json"):
+                seen.add(directory.name)
+        return sorted(seen)
+
+    def wait_prefix(self, text: str) -> list[str]:
+        found: set[str] = set()
+        for state in (READY, CLAIMED, DONE, FAILED,
+                      WITHDRAWN):
+            try:
+                names = os.listdir(self.dir(state))
+            except FileNotFoundError:
+                continue
+            found.update(
+                entry[: -len(".json")] for entry in names
+                if entry.startswith(text) and entry.endswith(".json")
+            )
+        decisions = self.dir(WITHDRAWN) / "decisions"
+        try:
+            decision_names = os.listdir(decisions)
+        except FileNotFoundError:
+            decision_names = []
+        for name in decision_names:
+            if not name.startswith(text):
+                continue
+            try:
+                entries = os.listdir(decisions / name)
+            except FileNotFoundError:
+                continue
+            if any(entry.endswith(".json") for entry in entries):
+                found.add(name)
+        return sorted(found)
+
+    def inspection_keys(self, state: str) -> list[str]:
+        directory = self.dir(state)
+        try:
+            with os.scandir(directory) as entries:
+                return sorted(entry.name[:-5] for entry in entries
+                              if entry.name.endswith(".json") and entry.is_file())
+        except OSError as error:
+            if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+                return []
+            raise
+
+    def inspection_prefix(self, prefix: str) -> list[str]:
+        """Every action key under this prefix, across live and terminal states.
+
+        A prefix rather than a key because that is what an operator and an agent
+        both hold: ``pbstatus`` prints twelve characters and ``pbrun`` says
+        ``pb-<key12>``.  An ambiguous prefix is answered with its candidates
+        rather than with the first match: picking one would be a guess, and the
+        caller can disambiguate with two more characters.
+        """
+
+        found: set[str] = set()
+        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+            found.update(key for key in self.inspection_keys(state)
+                         if key.startswith(prefix))
+        decisions = self.root / WITHDRAWN / "decisions"
+        try:
+            with os.scandir(decisions) as entries:
+                found.update(entry.name for entry in entries
+                             if entry.is_dir() and entry.name.startswith(prefix))
+        except OSError as error:
+            if not isinstance(error, (FileNotFoundError, NotADirectoryError)):
+                raise
+        try:
+            with os.scandir(self.root / ATTEMPTS) as entries:
+                found.update(entry.name for entry in entries
+                             if entry.is_dir() and entry.name.startswith(prefix))
+        except OSError as error:
+            if not isinstance(error, (FileNotFoundError, NotADirectoryError)):
+                raise
+        return sorted(found)
+
+    def recent_ending_paths(self, limit: int) -> list[os.DirEntry]:
+        """The ``limit`` newest terminal records by modification time.
+
+        Only the directory entries are stat'ed here.  Reading every record on the
+        shared mount to print twenty rows is the slow path this exists to avoid,
+        and an absent directory is a fleet that has not run under that transport
+        rather than an error.
+        """
+
+        entries: list[tuple[float, os.DirEntry]] = []
+        withdrawal_mtimes: dict[str, float] = {}
+        for state in (DONE, FAILED, WITHDRAWN):
+            directory = self.root / state
+            try:
+                with os.scandir(directory) as scan:
+                    for entry in scan:
+                        if not entry.name.endswith(".json") or not entry.is_file():
+                            continue
+                        entries.append((entry.stat().st_mtime, entry))
+                        if state == WITHDRAWN:
+                            withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
+            except FileNotFoundError:
+                try:
+                    directory.stat()
+                except FileNotFoundError:
+                    continue
+                # A predicate would also return False on EACCES/EIO in Python 3.14.
+                # Only a second ENOENT proves this optional directory is absent.
+                raise  # The directory exists, but a selected entry was not readable.
+        # A cancellation is durable before its visible summary is written. Keep
+        # that ending visible if the operator crashed between the two writes.
+        decisions = self.root / WITHDRAWN / "decisions"
+        try:
+            with os.scandir(decisions) as scan:
+                directories = [entry for entry in scan if entry.is_dir()]
+        except FileNotFoundError:
+            directories = []
+        for directory in directories:
+            with os.scandir(directory.path) as scan:
+                candidates = [(entry.stat().st_mtime, entry) for entry in scan
+                              if entry.name.endswith(".json")]
+            if candidates:
+                newest = max(candidates, key=lambda pair: pair[0])
+                if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
+                    entries.append(newest)
+        entries.sort(key=lambda pair: pair[0], reverse=True)
+        return [entry for _, entry in entries[: max(0, int(limit))]]
+
+    def selected_ending(self, entry: os.DirEntry, *, max_bytes: int) -> object:
+        """Read one selected terminal record without an unbounded allocation."""
+
+        if entry.stat().st_size > max_bytes:
+            raise EndingRecordTooLarge
+        path = Path(entry.path)
+        if path.parent.parent.name == "decisions":
+            return self.withdrawal_decision(path)
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise EndingRecordTooLarge
+        return json.loads(raw)
+
+    def inspection_records(self, key: str) -> dict[str, JsonRecord]:
+        records: dict[str, JsonRecord] = {}
+        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+            record = inspection_document(self.item_path(state, key))
+            if record is not None:
+                records[state] = record
+        return records
+
+
+    def inspection_slot(self, state: str, key: str) -> JsonRecord | None:
+        return inspection_document(self.item_path(state, key))
+
+    def inspection_live_records(self, key: str) -> dict[str, JsonRecord]:
+        records: dict[str, JsonRecord] = {}
+        for state in (READY, CLAIMED):
+            record = self.inspection_slot(state, key)
+            if record is not None:
+                records[state] = record
+        return records
+
+
+    @staticmethod
+    def wait_terminal_at(path: Path) -> ReadResult[JsonRecord]:
+        try:
+            if path.name not in os.listdir(path.parent):
+                return Absent()
+        except OSError:
+            return Absent()
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return Absent()
+        except (OSError, ValueError) as exc:
+            reason = "unreadable" if isinstance(exc, OSError) else "not valid JSON"
+            return Unknown(reason, path, exc)
+        if not isinstance(record, dict):
+            return Unknown("not a JSON object", path)
+        return Present(record)
+
+    def wait_ending_addresses(self, key: str) -> list[Path]:
+        return [self.item_path(state, key) for state in (DONE, FAILED, WITHDRAWN)]
+
+    @staticmethod
+    def wait_notice_at(path: Path) -> object:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def published_records(self, key: str, published_at: Path) -> Iterator[JsonRecord]:
+        candidates = [published_at]
+        for state in (CLAIMED, DONE, FAILED):
+            candidates.append(self.item_path(state, key))
+        for path in candidates:
+            value = self.wait_notice_at(path)
+            if isinstance(value, dict):
+                yield value
+
+    def successor_records(self, key: str) -> Iterator[JsonRecord]:
+        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
+            value = self.wait_notice_at(self.item_path(state, key))
+            if isinstance(value, dict):
+                yield value
+
+    def live_submission_records(self, key: str) -> Iterator[JsonRecord]:
+        for state in (READY, CLAIMED):
+            value = self.wait_notice_at(self.item_path(state, key))
+            if isinstance(value, dict):
+                yield value
+
+    def finishing_submission_records(self, key: str) -> Iterator[JsonRecord]:
+        try:
+            names = os.listdir(self.dir(CLAIMED))
+        except OSError:
+            names = []
+        for name in names:
+            if not (name.startswith(f"{key}.")
+                    and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))):
+                continue
+            value = self.wait_notice_at(self.dir(CLAIMED) / name)
+            if isinstance(value, dict) and value.get("action_key") == key:
+                yield value
+
+
+    @staticmethod
+    def polled_object_at(path: Path) -> JsonRecord | None:
+        observation = RecordStore.wait_terminal_at(path)
+        return observation.value if isinstance(observation, Present) else None
+
+    @staticmethod
+    def listed_slot(path: Path) -> bool:
+        return path.name in os.listdir(path.parent)
+
+    def sibling_ending_records(self, path: Path) -> Iterator[JsonRecord]:
+        for state in (DONE, FAILED, WITHDRAWN):
+            sibling = self.dir(state) / path.name
+            try:
+                present = self.listed_slot(sibling)
+            except FileNotFoundError:
+                present = False
+            if not present or sibling == path:
+                continue
+            value = self.polled_object_at(sibling)
+            if value is not None:
+                yield value
+
+    def filed_ending_index(self) -> dict[str, list[tuple[str, Path]]]:
+        index: dict[str, list[tuple[str, Path]]] = {}
+        for state in (DONE, FAILED, WITHDRAWN):
+            directory = self.dir(state)
+            try:
+                names = os.listdir(directory)
+            except OSError:
+                continue
+            for name in names:
+                if name.endswith(".json"):
+                    index.setdefault(name[:-len(".json")], []).append(
+                        (state, directory / name))
+        return index
+
+    @staticmethod
+    def lane_unreadable_dir(path: Path) -> Path:
+        return path.parent / "unreadable"
+
+
+    @staticmethod
+    def text_document_at(path: Path) -> object:
+        """Required default-text JSON; preserve its BOM/Unicode/error profile."""
+        return json.loads(path.read_text())
+
+    def text_item(self, state: str, key: str) -> object:
+        return self.text_document_at(self.item_path(state, key))
+
+    def text_lease(self, key: str) -> object:
+        return self.text_document_at(self.lease_path(key))
+
+    def item_metadata(self, state: str, key: str) -> os.stat_result:
+        return self.item_path(state, key).stat()
+
+    def lease_file_metadata(self, key: str) -> os.stat_result:
+        return self.lease_path(key).lstat()
+
+    def claim_occupancy(self, key: str) -> ReadResult[bool]:
+        for state in (READY, CLAIMED):
+            path = self.item_path(state, key)
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                return Unknown("occupancy-unreadable", path, exc)
+            return Present(True)
+        directory = self.dir(CLAIMED)
+        try:
+            names = os.listdir(directory)
+        except FileNotFoundError:
+            return Absent()
+        except OSError as exc:
+            return Unknown("occupancy-unreadable", directory, exc)
+        occupied = any(name.startswith(f"{key}.")
+                       and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
+                       for name in names)
+        return Present(True) if occupied else Absent()
+
+    def successor_document(self, key: str) -> ReadResult[object]:
+        path = self.item_path(READY, key)
+        try:
+            raw = path.read_text()
+        except FileNotFoundError:
+            return Absent()
+        except OSError as exc:
+            return Unknown("successor-unreadable", path, exc)
+        try:
+            return Present(json.loads(raw))
+        except ValueError as exc:
+            return Unknown("successor-corrupt", path, exc)
+
+    def membership_claims(self) -> Iterator[RecordObservation]:
+        directory = self.dir(CLAIMED)
+        if not directory.is_dir():
+            yield RecordObservation(QueueAddress(directory, CLAIMED, None),
+                                    Unknown("claimed-directory-unreadable", directory))
+            return
+        try:
+            with os.scandir(directory) as entries:
+                names = sorted(entry.name for entry in entries
+                               if entry.name.endswith(".json"))
+        except OSError as exc:
+            yield RecordObservation(QueueAddress(directory, CLAIMED, None),
+                                    Unknown("claimed-directory-unlistable", directory, exc))
+            return
+        for name in names:
+            path = directory / name
+            try:
+                value = self.text_document_at(path)
+            except (OSError, ValueError) as exc:
+                result = Unknown("record-unreadable", path, exc)
+            else:
+                result = (Present(value) if isinstance(value, dict)
+                          else Unknown("non-object-record", path))
+            yield RecordObservation(QueueAddress(path, CLAIMED, name[:-5]), result)
+
+
+    def claimed_names(self) -> ClaimedNames:
+        names = os.listdir(self.dir(CLAIMED))
+        return ClaimedNames(frozenset(names), tuple(
+            name for name in names
+            if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))))
+
+    def claim_blocked(self, key: str) -> bool:
+        return _claimed_name_blocks(os.listdir(self.dir(CLAIMED)), key)
+
+    def require_terminal_directory(self, state: str) -> None:
+        directory = self.dir(state)
+        if not statmod.S_ISDIR(os.stat(directory).st_mode):
+            raise NotADirectoryError(
+                errno.ENOTDIR, "terminal directory is not a directory", str(directory))
+
+    def item_entry_present(self, state: str, key: str) -> bool:
+        try:
+            os.lstat(self.item_path(state, key))
+        except FileNotFoundError:
+            return False
+        return True
+
+    def required_slot_paths(self, state: str) -> list[Path]:
+        with os.scandir(self.dir(state)) as entries:
+            return sorted(Path(entry.path) for entry in entries
+                          if entry.name.endswith(".json"))
+
+    def host_event_writers(self) -> list[str]:
+        return [name[:-len(".jsonl")]
+                for name in sorted(os.listdir(self.host_events_dir()))
+                if name.endswith(".jsonl")]
+
+    def movement_metadata(self, key: str) -> os.stat_result:
+        return os.stat(self.move_path(key))
+
+    def superseded_records(self, action_key: str, *, fresh: bool = False
+                           ) -> Iterator[tuple[Path, object]]:
+        directory = self.superseded_dir()
+        if fresh:
+            paths = [directory / name for name in os.listdir(directory)
+                     if fnmatch.fnmatchcase(name, f"{action_key}.*.json")]
+        else:
+            paths = immutable_files.match_optional(directory, f"{action_key}.*.json")
+        read_record = read_confirmed_document if fresh else read_document
+        for path in paths:
+            yield path, read_record(path)
+
+    def consumer_event_records(self, action_key: str) -> list[JsonRecord]:
+        events: list[dict[str, object]] = []
+        try:
+            names = sorted(os.listdir(self.consumer_events_dir(action_key)))
+        except OSError:
+            return events
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                text = (self.consumer_events_dir(action_key) / name).read_text()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+        return events
+
+    def host_event_records(self, host: str | None = None) -> list[JsonRecord]:
+        events: list[dict[str, object]] = []
+        directory = self.host_events_dir()
+        if host is None:
+            try:
+                names = sorted(os.listdir(directory))
+            except OSError:
+                return events
+        else:
+            names = [f"{host}.jsonl"]
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                text = (directory / name).read_text()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+        return events
+
+    def claimed_finish_marked(self, child_key: str) -> bool:
+        """Whether a finish mark holds this key's claim aside (#1666)."""
+
+        prefix = f"{child_key}."
+        try:
+            names = os.listdir(self.dir(CLAIMED))
+        except OSError:
+            return False
+        return any(name.startswith(prefix)
+                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
+                   for name in names)
+
+
+    def state_directory_present(self, state: str) -> bool:
+        return self.dir(state).is_dir()
+
+    def json_slot_paths(self, state: str) -> list[Path]:
+        return sorted(self.dir(state).glob("*.json"))
+
+    def optional_claim_paths(self) -> list[Path]:
+        return immutable_files.match_optional(self.dir(CLAIMED), "*.json")
+
+    def claimed_lease_paths(self) -> list[Path]:
+        return sorted(self.dir(CLAIMED).glob("*.lease"))
+
+    def finishing_paths(self) -> list[Path]:
+        directory = self.dir(CLAIMED)
+        return sorted([*directory.glob(f"*{TOMBSTONE_SUFFIX}"),
+                       *directory.glob(f"*{LATE_FINISH_SUFFIX}")])
+
+    def listed_item_present(self, state: str, key: str) -> bool:
+        return f"{key}.json" in os.listdir(self.dir(state))
+
+    @staticmethod
+    def raw_record_at(path: Path) -> bytes:
+        """Whole historical bytes at a captured or canonical Store address."""
+        return path.read_bytes()
+
+    def attachment_item_address(self, key: str) -> Path:
+        """Best-effort display address, preserving its historical optional hint."""
+        ready = self.item_path(READY, key)
+        return ready if ready.exists() else self.item_path(CLAIMED, key)
+
+    def released_origin_index_names(self, consumer: str) -> list[str]:
+        return sorted(name for name in os.listdir(self.released_origin_consumers_dir())
+                      if name.startswith(f"{consumer}.") and name.endswith(".json"))
+
+    def required_plan_paths(self) -> list[Path]:
+        with os.scandir(self.root / RESIDENCY_PLANS) as entries:
+            return sorted(Path(entry.path) for entry in entries
+                          if entry.name.endswith(".json"))
+
+    def terminal_keys(self) -> frozenset[str]:
+        """Every action key with a worker-filed outcome.
+
+        List rather than ``stat`` for the same NFS reason as
+        :meth:`withdrawn_keys`: a negatively cached absence must not make a
+        worker execute a ready copy after another box has filed its outcome.
+        The record's generation is checked separately, so an old outcome does
+        not blacklist this content-addressed name.
+
+        **Loud on anything but absence.**  This set is the evidence
+        ``terminal_outcome_covers`` decides on, and every ``OSError`` used to
+        answer it the same way an empty directory does.  ``ESTALE`` on a
+        cached directory handle is the ordinary way a listing fails on this
+        mount -- ``record_store.read_document`` treats it as a first-class event (#208) and
+        ``quarantine_orphans`` re-raises every errno that is not ``ESTALE``
+        rather than swallowing the class -- so one stale handle reported "no
+        outcomes have been filed" for a queue full of them.  ``reap_stale``
+        then found no filed outcome for a generation that had one and put it
+        back in ``ready``, which is the one thing this method's own caller
+        says a CAS hit does not license.  ``record_store.read_document`` states the rule:
+        answering "absent" without the evidence that the directory is live
+        "would turn a broken mount into a confident wrong verdict".
+        """
+
+        keys: set[str] = set()
+        for state in (DONE, FAILED):
+            try:
+                names = os.listdir(self.dir(state))
+            except FileNotFoundError:
+                # Absence only.  A queue whose layout has not been created yet
+                # legitimately has no ``done`` and no ``failed``, and that is
+                # the one reading of "no names" this method may make.
+                continue
+            keys.update(
+                name[: -len(".json")] for name in names if name.endswith(".json")
+            )
+        return frozenset(keys)
+    def released_origin_consumer_keys(self) -> frozenset[str]:
+        """Every consumer key with an entry in the release index (#954).
+
+        The claim's placement bypass asks this once per scan, so a released
+        key reaches the lock on a box that cannot place the row and any box
+        may file the refusal.  It is deliberately **not** the refusal's
+        authority: a release that lands after this listing would be missed,
+        so :meth:`_refuse_released_origin_consumer` lists the directory
+        fresh under the key's transition lock (#964).  An entry is a lead,
+        never a release: ``produced_output.origin_consumer_release``
+        confirms it against the release record it names, and an unreadable
+        listing or entry is unknown, not absence.
+        """
+
+        try:
+            names = os.listdir(self.released_origin_consumers_dir())
+        except FileNotFoundError:
+            return frozenset()
+        return frozenset(name[:64] for name in names
+                         if name.endswith(".json") and name[64:65] == ".")
+    def output_funding_bytes(
+            self, mover_action_key: str, tier_id: str, *,
+            max_bytes: int | None) -> bytes | None:
+        """Read live or ENOENT-selected retired bytes; None proves absence."""
+
+        try:
+            try:
+                handle = open(self.funding_output_path(
+                    mover_action_key, tier_id), "rb")
+            except FileNotFoundError:
+                # Retirement moves terminal funding out of the census, not
+                # out of the address used by per-mover decisions.
+                handle = open(self.funding_output_retired_path(
+                    mover_action_key, tier_id), "rb")
+            with handle:
+                return (handle.read() if max_bytes is None
+                        else handle.read(max_bytes + 1))
+        except FileNotFoundError:
+            return None
+
+
+
 
 def _write_json(
     path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
@@ -1747,3 +2322,44 @@ def key_shaped(value: object) -> bool:
 #: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
 #: one writer, the host's tier loop, and a reader is not it.
 RELEASE_EVENTS_SUFFIX = "-reader-release.jsonl"
+
+
+class EndingRecordTooLarge(ValueError):
+    pass
+
+
+def inspection_document(path: Path) -> dict | None:
+    try:
+        return read_document(path)
+    except OSError as error:
+        if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+            return None
+        raise
+    except (ValueError, PoolContractError):
+        return None
+
+
+def _claimed_name_blocks(names: Iterable[str], key: str) -> bool:
+    """Whether a listing of ``claimed/`` refuses a claim of ``key``.
+
+    Its claim record, or a finish mark for it: a tombstone or a late-finish
+    record, whose names start ``<key>.`` and end in their suffix.
+    """
+
+    record = f"{key}.json"
+    prefix = f"{key}."
+    return any(name == record
+               or (name.startswith(prefix)
+                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX)))
+               for name in names)
+
+
+@dataclass(frozen=True)
+class ClaimedNames:
+    names: frozenset[str]
+    finishes: tuple[str, ...]
+
+    def blocks(self, key: str) -> bool:
+        return f"{key}.json" in self.names or _claimed_name_blocks(self.finishes, key)
+
+

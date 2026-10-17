@@ -7456,9 +7456,7 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
     consumer = _hex64(key, where="consumer action key")
     directory = queue.records.released_origin_consumers_dir()
     try:
-        names = sorted(name for name in os.listdir(directory)
-                       if name.startswith(f"{consumer}.")
-                       and name.endswith(".json"))
+        names = queue.records.released_origin_index_names(consumer)
     except FileNotFoundError:
         return None
     except OSError as exc:

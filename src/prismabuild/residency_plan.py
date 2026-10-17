@@ -739,7 +739,7 @@ def read(queue, consumer_action_key: str, *,
             on_unreadable(error)
 
     try:
-        raw = Path(queue.records.residency_plan_path(consumer_action_key)).read_text()
+        raw = queue.records.text_document_at(Path(queue.records.residency_plan_path(consumer_action_key)))
     except FileNotFoundError:
         return None                       # the ordinary answer: none was filed
     except OSError as error:
@@ -752,7 +752,7 @@ def read(queue, consumer_action_key: str, *,
         refused(error)
         return None
     try:
-        return validate_plan(json.loads(raw))
+        return validate_plan(raw)
     except ValueError as error:
         refused(error)
         return None
@@ -1270,7 +1270,7 @@ def window_owned(queue, consumer_action_key: str, *,
     for state in (_pool.record_store.CLAIMED, _pool.record_store.READY):
         path = queue.records.item_path(state, key)
         try:
-            path.stat()
+            queue.records.item_metadata(state, key)
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -1559,7 +1559,7 @@ def _filed_keys(queue, consumer_action_key: str,
         if kept is not None and kept[0] == before:
             return kept[1], ""
         try:
-            raw = path.read_bytes()
+            raw = queue.records.raw_record_at(path)
         except FileNotFoundError:
             return frozenset(), ""
         except OSError as exc:
@@ -1650,9 +1650,8 @@ def plan_interest(queue, mover_action_key: str, *,
             ended, unreadable = False, False
             for terminal in (_pool.record_store.FAILED, _pool.record_store.WITHDRAWN, _pool.record_store.DONE):
                 try:
-                    os.lstat(queue.records.item_path(terminal, key))
-                except FileNotFoundError:
-                    continue
+                    if not queue.records.item_entry_present(terminal, key):
+                        continue
                 except OSError:
                     unreadable = True
                     break

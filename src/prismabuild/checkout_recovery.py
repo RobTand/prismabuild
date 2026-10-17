@@ -161,11 +161,7 @@ def _selections(entries: object, local: Path, bank: Path) -> list[dict]:
 def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> tuple[dict, dict]:
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         path = queue.records.item_path(state, key)
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            pass
-        else:
+        if queue.records.item_entry_present(state, key):
             _checkout_recovery_refuse(f'{key} is present in {state}')
     capture = queue.records.terminal_candidates(key, max_bytes=MAX_JSON_BYTES)
     ending = queue.resolve_ending(capture)
@@ -214,7 +210,7 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
                 or float(heartbeat) > time.time() - pool.LEASE_TIMEOUT_S):
             _checkout_recovery_refuse('present lease is malformed or live')
         lifetime['lease'] = dict(sha256=lease_sha,
-                                identity=_checkout_recovery_identity(queue.records.lease_path(key).lstat()))
+                                identity=_checkout_recovery_identity(queue.records.lease_file_metadata(key)))
     pids = set()
     for source in (record, lease or {}):
         for field in ('pid', 'child_pid'):
