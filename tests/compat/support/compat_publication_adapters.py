@@ -18,8 +18,9 @@ def operate(request, store, load):
     if family == "shape-table":
         gate, core = load("shape_gate"), load("prismabuild.core")
         if writing:
-            fixture = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["manifest"]
-            manifest = fixture(core, "read-plan", True)
+            helpers = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))
+            codec = helpers["manifest_owner"](core, load)
+            manifest = helpers["manifest"](codec, "read-plan", True)
             if variant == "hashed":
                 manifest["entries"][0]["sha256"] = "a" * 64
             raw = gate.table_bytes(gate.table_from_manifest(manifest, manifest_sha256="b" * 64))

@@ -135,7 +135,7 @@ def operate(request, store, load):
     if family == "q-offer":
         item = {"tags": ["cpu"], "resources": {"cpu": 1, "mem_gb": 1}}
         if variant == "capabilities":
-            item.update(interpreter="/usr/bin/python3", requires_files=[{"path": "/compat/input"}])
+            item.update(interpreter="/usr/bin/python3", requires_files=[{"path": "/compat/input", "sha256": "a" * 64}])
         result = queue._matching_offers(item, live=queue.offers())
         assert len(result) == 1 and result[0]["host"] == "compat-host", "offer did not remain discoverable"
     elif family == "q-intent":

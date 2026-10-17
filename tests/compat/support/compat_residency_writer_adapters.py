@@ -46,7 +46,8 @@ def operate(request, store, load):
         run.SH = store
         cas = core.PrismaBuildCAS(store / "cas")
         body = fixture("compat_core_adapters.py", "action_body")(core, store)
-        manifest = fixture("compat_core_adapters.py", "manifest")(core, "phased", False)
+        codec = fixture("compat_core_adapters.py", "manifest_owner")(core, load)
+        manifest = fixture("compat_core_adapters.py", "manifest")(codec, "phased", False)
         entry, _ = cas.ingest_bytes(core._canonical_file_bytes(manifest), input_id="data_manifest")
         snapshot, _ = cas.ingest_bytes(b"unexecuted private snapshot declaration", input_id=core.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID)
         body["inputs"] = [snapshot, entry]
