@@ -37,7 +37,7 @@ def operate(request, store, load):
             if not output and variant in ("prelaunch-birth", "prelaunch-binding", "reserve-fence"):
                 uuid.uuid4 = lambda: uuid.UUID(G)
                 if variant == "reserve-fence":
-                    queue.mint_tier_capacity("stage:compat", {"stage_gib": 1})
+                    queue.tier("stage:compat").mint({"stage_gib": 1})
                     assert queue.reserve_fence("stage:compat", C, value, 1)
                 else:
                     group = load("prismabuild.prelaunch_group")

@@ -14,7 +14,7 @@ def operate(request, store, load):
     variant = request["case"].split("/", 1)[1]
     pool, release, maps = (load(name) for name in ("prismabuild.pool", "stage_release", "prismabuild.residency_map"))
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if request["op"] == "read":
         path = queue.move_path(M)
         path.write_bytes(base64.b64decode(request["raw"]))
