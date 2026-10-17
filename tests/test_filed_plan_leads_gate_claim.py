@@ -101,7 +101,11 @@ def test_derived_leads_use_the_same_map_gates_and_only_the_first_phase(tmp_path,
     assert fleet.queue.residency_verdict(item)["state"] == "resident"
     # Later phase movers remain absent: only the published first phase gates.
     for phase in plan["phases"][1:]:
-        assert not fleet.queue.records.item_path(pool.record_store.DONE, phase["mover_row"]["action_key"]).exists()
+        assert not fleet.queue.records.item_path(
+            pool.record_store.DONE,
+            phase["mover_row"]["action_key"],
+        ).exists(
+        )
 
 
 def test_a_movers_range_block_is_not_turned_into_a_consumer(tmp_path):

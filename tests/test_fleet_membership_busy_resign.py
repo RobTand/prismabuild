@@ -709,7 +709,9 @@ def _operator_resubmits_then_holder_concludes(queue: pool.PoolQueue, key: str, s
         queue.publish(action_key=key, cas_root=queue.root / "cas", checkout_root=queue.root / "co",
                       worker_script=queue.root / "worker.py", resources={"cpu": 1},
                       max_attempts=1, retry_safe=True, tags=["x86"])
-        published.append(json.loads(queue.records.item_path(pool.record_store.READY, key).read_text()))
+        published.append(
+            json.loads(queue.records.item_path(pool.record_store.READY, key).read_text()),
+        )
         try:
             queue.finish(key, status="failed", detail={"termination_reason": "resign-withdrawn"},
                          claim_snapshot=snapshot)

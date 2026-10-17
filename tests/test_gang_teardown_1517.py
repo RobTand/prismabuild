@@ -95,7 +95,9 @@ def test_the_barrier_releases_when_every_member_is_claimed(gang_fleet):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, first, second = _both_claimed(queue, publish, finish, gclaim, members, skew_s=0.5)
     for key in (first, second):
-        record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
+        record = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, key),
+        )
         assert queue._gang_start_barrier(record, owner="test", heartbeat_s=60.0) is None
     assert _gang.teardown(queue, group) is None
 
@@ -134,7 +136,8 @@ def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatc
     queue.write_lease(first, owner=str(record.get("claimed_by") or ""), claim_snapshot=record)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
     queue.reap_stale()
-    assert queue.records.item_path(pool.record_store.FAILED, second).exists(), "the lost member was not failed"
+    assert queue.records.item_path(pool.record_store.FAILED, second).exists(
+    ), "the lost member was not failed"
     queue.sweep_gangs()
     torn = _gang.teardown(queue, group)
     assert torn is not None and second[:12] in torn["reason"], torn
@@ -155,7 +158,9 @@ def test_two_equal_priority_gangs_never_split_the_two_hosts(gang_fleet):
     assert gclaim("sparklina") is None
     assert denial(g1[0], "sparklina")["reason"] == "gang_group_incomplete"
     assert denial(g2[0], "sparklina")["reason"] == "gang_waiting_for_peers"
-    _gang.publish_group(queue, group1, [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
+    _gang.publish_group(queue, group1, [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    )
                                         for key in g1])
     assert gclaim("sparky") is None, "sparky committed the lower-ranked gang"
     assert denial(g1[1], "sparky")["reason"] == "gang_waiting_for_peers"
