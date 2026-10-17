@@ -18,11 +18,23 @@ def c12_runtime_source(root):
     return len(files), c12_runtime_digest(raw)
 
 
+def c12_runtime_witnesses(text, marker):
+    records = []
+    for line in text.splitlines():
+        before, separator, value = line.partition(marker + ': ')
+        if separator and value.startswith('{'):
+            record, _ = json.JSONDecoder().raw_decode(value)
+            records.append(record)
+    return records
+
+
 def c12_runtime_audit(evidence, phase):
     plan = json.loads((evidence / (phase + '-plan.json')).read_bytes())
     verified = json.loads((evidence / phase / 'verified.json').read_bytes())
     assert verified['all_verified'] and verified['source_head'] == plan['pin']
     selected = set(plan['files'])
+    results = json.loads((evidence / phase / 'results.json').read_bytes())
+    action_files = {row['action_key']: set(row['files']) for row in results}
     source_count, source_hash = c12_runtime_source(Path(plan['checkout']))
     observed, missing = [], []
     for action in verified['actions']:
@@ -39,10 +51,8 @@ def c12_runtime_audit(evidence, phase):
         raw = Path(log['source']).read_bytes()
         assert len(raw) == log['bytes'] and c12_runtime_digest(raw) == log['sha256']
         text = raw.decode()
-        standard = [json.loads(line.removeprefix('pbtest-runtime: '))
-                    for line in text.splitlines() if line.startswith('pbtest-runtime: ')]
-        older = [json.loads(line.removeprefix('c13-interpreter: '))
-                 for line in text.splitlines() if line.startswith('c13-interpreter: ')]
+        standard = c12_runtime_witnesses(text, 'pbtest-runtime')
+        older = c12_runtime_witnesses(text, 'c13-interpreter')
         report = dict(action_key=action['action_key'], host=action['host'],
                       scope={key: physical[key] for key in
                              ('scope_id', 'empty', 'ok', 'settled', 'released',
@@ -52,6 +62,7 @@ def c12_runtime_audit(evidence, phase):
             witness = standard[0]
             assert witness['source_files'] == source_count
             assert witness['source_sha256'] == source_hash
+            assert set(witness['selected_files']) == action_files[action['action_key']]
             assert set(witness['selected_files']) <= selected
             assert witness['selected_files']
             native = witness['native_bounds']
