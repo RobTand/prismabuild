@@ -164,3 +164,93 @@ def test_known_complete_observations_trim_and_release_orphans(tmp_path: Path):
     assert tier.holdings(MOVER) == {"ram_gib": 2}
     assert data.read_bytes() == b"still staged"
     assert tier.reconcile_mirror(()) == {"events": [], "converged": True}
+
+
+def test_a_failed_mirror_trim_stays_unconverged_until_retry(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tier, host, data = _occupied(tmp_path)
+    assert host.acquire(MIRROR, {"mem_gb": 1})
+    directory = host.held_dir / MIRROR
+    host_names = _names(directory)
+    real_rename = os.rename
+    faults = []
+
+    def denied(source, target, *args, **kwargs):
+        if Path(source).parent == directory and Path(target).parent == host.free_dir:
+            faults.append(Path(source).name)
+            raise PermissionError(errno.EACCES, "mirror trim rename denied", str(source))
+        return real_rename(source, target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", denied)
+        verdict = tier.reconcile_mirror(())
+
+    assert faults
+    assert _names(directory) == host_names
+    assert tier.holdings(MOVER) == {"ram_gib": 2}
+    assert data.read_bytes() == b"still staged"
+    assert verdict["converged"] is False
+    retry = tier.reconcile_mirror(())
+    assert retry["converged"] is True
+    assert retry["events"] == [
+        {"reason": "ram-host-hold-trimmed", "holder": MIRROR, "released_gib": 1}]
+    assert host.holder_tokens(MIRROR) == {"mem_gb": 2}
+
+
+def test_a_partial_orphan_release_stays_unconverged_until_retry(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tier, host, _data = _occupied(tmp_path)
+    assert tier._ledger.release(MOVER) == 2
+    directory = host.held_dir / MIRROR
+    retained_name = min(_names(directory))
+    real_rename = os.rename
+    faults = []
+
+    def denied(source, target, *args, **kwargs):
+        if Path(source) == directory / retained_name and Path(target).parent == host.free_dir:
+            faults.append(Path(source).name)
+            raise PermissionError(errno.EACCES, "orphan rename denied", str(source))
+        return real_rename(source, target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "rename", denied)
+        verdict = tier.reconcile_mirror(())
+
+    assert faults
+    assert _names(directory) == {retained_name}
+    assert verdict["converged"] is False
+    assert verdict["events"] == [
+        {"reason": "orphan_ram_host_hold", "holder": MIRROR, "released_gib": 1}]
+    retry = tier.reconcile_mirror(())
+    assert retry["converged"] is True
+    assert retry["events"] == [
+        {"reason": "orphan_ram_host_hold", "holder": MIRROR, "released_gib": 1}]
+    assert _names(directory) == set()
+    assert tier.reconcile_mirror(()) == {"events": [], "converged": True}
+
+
+def test_an_unreadable_orphan_mirror_retains_its_token_names(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    tier, host, _data = _occupied(tmp_path)
+    assert tier._ledger.release(MOVER) == 2
+    directory = host.held_dir / MIRROR
+    host_names = _names(directory)
+    real_scandir = os.scandir
+    faults = []
+
+    def unreadable(path):
+        if not isinstance(path, int) and os.fspath(path) == str(directory):
+            faults.append(str(path))
+            raise PermissionError(errno.EACCES, "orphan mirror scan denied", str(path))
+        return real_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "scandir", unreadable)
+        verdict = tier.reconcile_mirror(())
+
+    assert _names(directory) == host_names
+    assert verdict["converged"] is False
+    assert faults, "orphan deletion needs a real error-visible holder scan"
+    assert verdict["events"] == []
+    assert tier.reconcile_mirror(())["converged"] is True
+    assert _names(directory) == set()
