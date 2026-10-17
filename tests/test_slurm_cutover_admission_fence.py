@@ -27,6 +27,7 @@ and the ``chmod`` tests need no privilege because the directory is the test's
 own.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import json
 import os
@@ -485,7 +486,7 @@ def test_pbrun_surfaces_the_refusal_as_a_line_not_a_traceback(
         encoding="utf-8")
     (queue.root / pool.READY).chmod(0o2555)
 
-    with pytest.raises(SystemExit) as exit_status:
+    with pytest.raises(submit_core.SubmissionRefused) as exit_status:
         submit_core.publish_or_refuse(queue, _publication(tmp_path))
 
     message = str(exit_status.value)

@@ -1,4 +1,5 @@
 """#1430: missing seal verbs and the distinct binary-streaming pack boundary."""
+from submission_support import refusal_value
 from pathlib import Path
 import subprocess
 import sys
@@ -31,7 +32,7 @@ def test_remaining_snapshot_verbs_identify_operation(monkeypatch, tmp_path, argv
         return subprocess.CompletedProcess(args, 17, stdout="", stderr="controlled fault\n")
 
     monkeypatch.setattr(pb, "_git_run", failed)
-    with pytest.raises(SystemExit) as caught:
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
         submit_core._snapshot_git(tmp_path, argv)
     assert str(caught.value) == f"pbrun: cannot snapshot checkout: Git {' '.join(argv)} failed: controlled fault"
 
@@ -87,7 +88,7 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
     if failure == "success":
         submit_core.write_deterministic_bundle(tmp_path, bundle, refs, git_dir=git_dir, environment=environment)
     else:
-        with pytest.raises(SystemExit) as caught:
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
             submit_core.write_deterministic_bundle(tmp_path, bundle, refs, git_dir=git_dir, environment=environment)
         assert caught.value.__cause__ is transport_error
         assert caught.value.__suppress_context__ is (transport_error is not None)
@@ -112,7 +113,7 @@ def test_snapshot_text_transport_preserves_explicit_cause(
         raise transport_error
 
     def invoke():
-        with pytest.raises(SystemExit) as caught:
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
             submit_core._snapshot_git(tmp_path, argv)
         return caught.value
 
@@ -141,7 +142,7 @@ def test_snapshot_nonzero_does_not_promote_callers_exception_to_cause(monkeypatc
     try:
         raise caller_error
     except OSError:
-        with pytest.raises(SystemExit) as caught:
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
             submit_core._snapshot_git(tmp_path, ["rev-parse", "HEAD"])
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is caller_error

@@ -150,7 +150,7 @@ def test_driver_image_canary_reaches_real_sealing_and_ready(tmp_path, monkeypatc
         slots.mint(q.root, action, run_id=run_id)
 
     key, detached = pbcanary.submit_leg(
-        {"pbrun": Path(submission.__file__),
+        {"pbrun": Path(pbrun.__file__),
          "published_src": Path(__file__).resolve().parents[1] / "src",
          "publication_canary_authorizer": grant},
         {"name": "leg-2", "argv": ["/bin/true"],

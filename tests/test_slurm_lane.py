@@ -19,6 +19,7 @@ makes -- that an action executed under SLURM is the same execution the pull
 queue would have performed -- and only an end-to-end run can support it.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 from submission_support import patch_store
 
 import hashlib
@@ -1627,7 +1628,7 @@ def test_a_refusal_from_sbatch_reaches_the_caller_as_a_refusal(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _paper_action(tmp_path, "refused")
     request = cas.publish_action_request(action)
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(submit_core.SubmissionRefused) as refusal:
         submit_core.slurm_outcome(
             action, cas=cas, request_path=request, tags=["nosuchbox"],
             demand={"cpu": 1, "mem_gb": 4}, exclusive=False, timeout_s=600.0,
