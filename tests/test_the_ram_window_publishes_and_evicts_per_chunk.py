@@ -20,6 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
+from prismabuild import census as fleet_census
+
 import pbstatus  # noqa: E402
 import residency_publication  # noqa: E402
 
@@ -256,7 +258,7 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
         manifest_sha256=MANIFEST, range_start_bytes=0,
         range_end_bytes=GIB, epoch=EPOCH)
 
-    entry = pbstatus._starvation_plan_entry(
+    entry = fleet_census._starvation_plan_entry(
         queue, CONSUMER, plan, ready={CONSUMER}, claimed=set("#"),
         notes=[], unreadable=[], now=0.0)
 

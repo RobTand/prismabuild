@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import endings, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -45,7 +46,7 @@ def test_a_huge_stdout_stays_readable_in_the_ending(queue):
                  detail={"returncode": 0, "stdout": HUGE},
                  claim_snapshot=claim)
 
-    rows = pbstatus.read_endings(queue.root)
+    rows = fleet_census.endings(queue.root)
     mine = next(row for row in rows if row.get("action_key") == KEY)
     assert not mine.get("unreadable"), mine.get("unreadable")
 
@@ -83,7 +84,7 @@ def test_pbstatus_degrades_one_legacy_oversized_record_per_row(tmp_path):
     (root / "done" / f"{KEY}.json").write_text(json.dumps(small))
     (root / "done" / f"{LEGACY_KEY}.json").write_text(json.dumps(legacy))
 
-    rows = pbstatus.read_endings(root)
+    rows = fleet_census.endings(root)
     assert len(rows) == 2
     good = next(row for row in rows if row.get("action_key") == KEY)
     bad = next(row for row in rows if row.get("action_key") == LEGACY_KEY)
