@@ -638,7 +638,7 @@ def announced_submission(said: str) -> dict | None:
         except ValueError:
             continue
         if (isinstance(value, dict)
-                and value.get("schema") == pbrun.DETACH_SCHEMA_V1
+                and value.get("schema") == pbrun.action_client.DETACH_SCHEMA_V1
                 and isinstance(value.get("action_key"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", value["action_key"])
                 and value.get("transport") in ("pool", "slurm")

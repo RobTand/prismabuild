@@ -239,7 +239,7 @@ from runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import action_wait  # noqa: E402
+from prismabuild import action_client, action_wait  # noqa: E402
 from prismabuild import immutable_files  # noqa: E402
 from prismabuild import (  # noqa: E402
     core as pb, decomposition as dc, pool, residency_plan,
@@ -808,18 +808,12 @@ def submit_row(row, *, transport: str = "") -> dict:
                          f"line: {type(exc).__name__}: {exc}",
                 "flags": flags}
     saved = sys.argv
-    captured = io.StringIO()
+    report = action_client.ClientReport()
     sys.argv = ["pbrun.py", *flags]
     code, refusal = 0, ""
     try:
-        with contextlib.redirect_stdout(captured):
-            code = pbrun.main()
-    except pbrun.OfferDiscoveryTimedOut as exc:
-        # Still a refusal, so the submit-all and decomposed paths count it as
-        # one.  The marker lets a windowed controller retry the row, because
-        # pbrun published no runnable item before the offer scan (#560).
-        return {"status": "refused", "retryable": OFFER_DISCOVERY_TIMED_OUT,
-                "error": str(exc.code), "flags": flags}
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = pbrun.main(report=report)
     except SystemExit as exc:
         # ``pbrun`` refuses by raising ``SystemExit`` with the explanation as
         # its argument, so the text IS the diagnosis -- which tag no box
@@ -833,11 +827,13 @@ def submit_row(row, *, transport: str = "") -> dict:
                 "flags": flags}
     finally:
         sys.argv = saved
-    lines = [line for line in captured.getvalue().splitlines() if line.strip()]
-    if code != 0 or len(lines) != 1:
+    if report.ending is not None and isinstance(report.ending.verdict, action_client.ClientOfferTimeout):
+        return {"status": "refused", "retryable": OFFER_DISCOVERY_TIMED_OUT,
+                "error": refusal or f"pbrun exited {code}", "flags": flags}
+    published = action_client.reported_submission(report)
+    if code != 0 or published is None:
         return {"status": "refused",
                 "error": refusal or f"pbrun exited {code}", "flags": flags}
-    published = json.loads(lines[0])
     published["flags"] = flags
     return published
 
@@ -1128,20 +1124,20 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
     key = str(child["action_key"])
     cas.publish_action_request(child)
     if cas.lookup(child) is not None:
-        return json.loads(pbrun.detach_line(
+        return action_client.detached_submission_record(
             key, transport=args.transport, status="cache_hit",
             queue_root=queue.root,
-        ))
+        )
     try:
         live = pbrun.bounded_attachment(queue, key)
     except (action_wait.OutcomeReadUnavailable, OSError) as exc:
         raise SystemExit(f"pbrun: unavailable detached attachment for {key[:12]}: {exc}")
     if live is not None:
-        return json.loads(pbrun.detach_line(
+        return action_client.detached_submission_record(
             key, transport=live["transport"], status="attached",
             queue_root=queue.root, published_unix=live["generation"],
             submission=live["submission"],
-        ))
+        )
     # The attachment read above answers before the publication, which is what
     # ``--detach`` needs, but the queue can take the key between the two.  The
     # publication's own refusal is the exact answer, so a child that lost that
@@ -1175,17 +1171,17 @@ def child_record(child, *, args, queue, cas, staged_plan=None) -> dict:
             generation = pbrun.published_generation(queue, key, queued)
     if queued is None:
         ready = queue.item_path(pool.READY, key)
-        return json.loads(pbrun.detach_line(
+        return action_client.detached_submission_record(
             key, transport="pool", status="attached", queue_root=queue.root,
             published_unix=generation,
             submission=ready if ready.exists() else queue.item_path(
                 pool.CLAIMED, key),
-        ))
-    return json.loads(pbrun.detach_line(
+        )
+    return action_client.detached_submission_record(
         key, transport="pool", status="submitted", queue_root=queue.root,
         published_unix=generation,
         submission=queued,
-    ))
+    )
 
 
 def frozen_child_data_plans(request, plan, children, *, template, args, queue, cas):

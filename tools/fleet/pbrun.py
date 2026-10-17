@@ -85,7 +85,8 @@ SH = Path("/mnt/shared/prismabuild-fleet")
 SHARED_ROOT = Path("/mnt/shared")
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import action_client, action_wait, endings  # noqa: E402
+from prismabuild import action_client, action_wait, client_channel, endings  # noqa: E402
+from prismabuild.digest_primitives import sorted_json
 from prismabuild import contracts
 from prismabuild import manifest_layout
 from prismabuild import (  # noqa: E402
@@ -138,10 +139,6 @@ CONTENT_TRANSFORM_ATTRIBUTES = frozenset(
 )
 
 
-#: The one line ``--detach`` prints.  Versioned because ``pbcampaign`` and
-#: ``pbwait`` parse it, and a fleet runs a published runtime generation that
-#: may be older than the tool reading its output.
-DETACH_SCHEMA_V1 = "prismaquant.prismabuild.pbrun_detach.v1"
 #: The receipt ``publish_runtime`` leaves for which bytes the fleet is serving.
 #: A worker loop holds the module it imported at start, so this is the only
 #: thing that says whether a given box's loop can see a withdrawal at all.
@@ -2680,51 +2677,7 @@ def pin_notice(
     return "pbrun: " + "  ".join(notes)
 
 
-def detach_line(
-    key: str,
-    *,
-    transport: str,
-    status: str,
-    queue_root,
-    published_unix: float | None = None,
-    job_id: str | None = None,
-    submission=None,
-) -> str:
-    """One line saying where a detached submission went, for a machine to read.
 
-    Everything ``pbrun`` prints for a person goes to stderr, so stdout carries
-    this and nothing else: a caller reads one line of JSON instead of parsing
-    prose written to be read aloud.
-
-    ``status`` is one of ``submitted`` (this call put the work somewhere),
-    ``cache_hit`` (it was already in the CAS, so nothing was submitted) or
-    ``attached`` (it was already running under an earlier submission, which
-    this call joined rather than duplicated).  All three exit 0, and the last
-    two name a run this process did not start.
-
-    The generation travels in it because the terminal record a later wait looks
-    for is identified by generation and not by key.  An action key is a content
-    hash, so one key accumulates the records of every earlier run of the same
-    work, and a waiter given only the key cannot tell this run's ending from
-    the ending of a run that finished last week.
-    """
-
-    queue = Path(queue_root)
-    return json.dumps(
-        {
-            "schema": DETACH_SCHEMA_V1,
-            "action_key": str(key),
-            "transport": str(transport),
-            "status": str(status),
-            "published_unix": published_unix,
-            "job_id": str(job_id) if job_id is not None else None,
-            "submission": str(submission) if submission is not None else None,
-            "done": str(queue / pool.DONE / f"{key}.json"),
-            "failed": str(queue / pool.FAILED / f"{key}.json"),
-            "withdrawn": str(queue / pool.WITHDRAWN / f"{key}.json"),
-        },
-        sort_keys=True,
-    )
 
 
 def published_generation(q, key: str, path) -> float | None:
@@ -3371,6 +3324,7 @@ def _unfiled_record(
     cas,
     record: str = "",
     tool: str = "pbrun",
+    report=None,
 ) -> int:
     """Report a record write that failed after the thing it records happened.
 
@@ -3433,14 +3387,17 @@ def _unfiled_record(
         f"  reason:    {reason}\n"
         f"{advice}",
         file=sys.stderr, flush=True)
+    if report is not None:
+        return report.finish(action_client.ClientUnavailable(key,
+            getattr(report.identity, 'published_unix', None), action_wait.WaitEnd.UNRETRIED))
     return action_client.RECORD_WRITE_FAILED_EXIT
 
 
-def _lane_io_failure(exc, *, key: str, action, cas, tool="pbrun", job_id="") -> int:
+def _lane_io_failure(exc, *, key: str, action, cas, tool="pbrun", job_id="", report=None) -> int:
     """Separate stamped post-submission writes from other filesystem faults."""
 
     if getattr(exc, "job_id", None):
-        return _unfiled_record(exc, key=key, action=action, cas=cas, tool=tool)
+        return _unfiled_record(exc, key=key, action=action, cas=cas, tool=tool, report=report)
     path = str(getattr(exc, "filename", "") or "")
     reason = str(getattr(exc, "strerror", "") or exc)
     print(
@@ -3454,6 +3411,9 @@ def _lane_io_failure(exc, *, key: str, action, cas, tool="pbrun", job_id="") -> 
         "retry the original command.",
         file=sys.stderr, flush=True,
     )
+    if report is not None:
+        return report.finish(action_client.ClientUnavailable(key,
+            getattr(report.identity, 'published_unix', None), action_wait.WaitEnd.UNRETRIED))
     return action_client.RECORD_WRITE_FAILED_EXIT
 
 
@@ -3477,6 +3437,7 @@ def slurm_outcome(
     runtime_root: Path = RUNTIME_ROOT,
     lane_root=None,
     queue_root=None,
+    report=None,
     **lane_commands,
 ) -> int:
     """Run one sealed action through SLURM and report it the way the pool does.
@@ -3498,6 +3459,7 @@ def slurm_outcome(
     the same recorded submission ``--withdraw`` already builds a record out of.
     """
 
+    report = report if report is not None else action_client.ClientReport()
     key = str(action["action_key"])
     if placement_notice:
         # How wide this action is, said before anything is submitted, exactly
@@ -3549,9 +3511,12 @@ def slurm_outcome(
     try:
         receipt = None if detach else cas.lookup(action)
     except OSError as exc:
-        return _lane_io_failure(exc, key=key, action=action, cas=cas)
+        return _lane_io_failure(exc, key=key, action=action, cas=cas, report=report)
     if receipt is not None:
-        return cached_outcome(
+        digest = receipt['result']['sha256']
+        report.publish_identity(action_client.CachedClientIdentity(key, Path(queue), Path(cas.root),
+            action_client.ClientTransport.SLURM, digest))
+        cached_outcome(
             key,
             receipt=receipt,
             queue_root=queue,
@@ -3560,6 +3525,8 @@ def slurm_outcome(
             retry_safe=retry_safe,
             max_attempts=max_attempts,
         )
+        return report.finish(action_client.ClientExecution(key, None, 'cache_hit', None,
+            None, None, False, 0, action_client.CachedResult(digest), receipt_published=True))
     # Attach to a run already in flight rather than start a second copy of it.
     #
     # A key is a content hash, so asking for the same work twice is the normal
@@ -3589,6 +3556,10 @@ def slurm_outcome(
 
     def announce_submission(job):
         submitted_job_ids.append(job.job_id)
+        if report.identity is None:
+            report.publish_identity(action_client.SlurmClientIdentity(key, job.published_unix,
+                Path(queue), Path(cas.root), job.record_path, job.job_id,
+                action_client.ClientArrival.SUBMITTED))
         print(
             f"pbrun: submitted {key[:12]} as slurm job {job.job_id} "
             f"(attempt {job.attempt}) tags={tags} demand={demand}{masked}",
@@ -3603,6 +3574,12 @@ def slurm_outcome(
         if attached is not None:
             submission = attached[2]
             job_id = str(submission.get("job_id") or "")
+            generation = _submission_generation(submission)
+            record_path = slurm_lane.submission_record_path(
+                Path(str(submission.get('directory') or '.')), published_unix=generation,
+                attempt=int(submission.get('attempt') or 1))
+            report.publish_identity(action_client.SlurmClientIdentity(key, generation,
+                Path(queue), Path(cas.root), record_path, job_id, action_client.ClientArrival.ATTACHED))
             print(f"pbrun: {key[:12]} is already running (slurm job {job_id}); "
                   f"attaching to it rather than submitting a second copy"
                   f"{masked}", file=sys.stderr, flush=True)
@@ -3658,14 +3635,15 @@ def slurm_outcome(
         # exit code is the one that already means "no verdict yet".
         print(f"pbrun: the fate of this submission is unknown.\n  {exc}",
               file=sys.stderr, flush=True)
-        return action_client.GAVE_UP_EXIT
+        return report.finish(action_client.ClientUnsettled(key,
+            getattr(report.identity, 'published_unix', None), action_client.UnsettledReason.SUBMISSION_FATE))
     except slurm_lane.SlurmLaneError as exc:
         if getattr(exc, "job_id", None):
             # sbatch accepted this before the lane failed, so this is a record
             # that would not write and not a refusal.  Reported as a refusal it
             # told a submitter to fix the ``--tag`` of a job that was already
             # queued, which is both wrong and expensive to act on.
-            return _unfiled_record(exc, key=key, action=action, cas=cas)
+            return _unfiled_record(exc, key=key, action=action, cas=cas, report=report)
         raise SystemExit(
             f"pbrun: slurm refused this action.\n"
             f"  required tags: {tags or '(any box)'}\n"
@@ -3675,17 +3653,17 @@ def slurm_outcome(
         ) from exc
     except OSError as exc:
         return _lane_io_failure(
-            exc, key=key, action=action, cas=cas,
+            exc, key=key, action=action, cas=cas, report=report,
             job_id=(str(attached[2].get("job_id") or "") if attached else
                     str(submitted_job_ids[-1]) if submitted_job_ids else ""))
 
     last = result.last
     if last is None:                       # unreachable: run always submits
         print("pbrun: nothing was submitted", file=sys.stderr)
-        return 1
+        return report.finish(action_client.ClientRefused(1, key))
     job, outcome = last
     if detach:
-        print(detach_line(
+        print(sorted_json(action_client.detached_submission_record(
             key,
             transport="slurm",
             status="submitted",
@@ -3693,8 +3671,15 @@ def slurm_outcome(
             published_unix=result.published_unix,
             job_id=job.job_id,
             submission=job.record_path,
-        ), flush=True)
-        return 0
+        )), flush=True)
+        return report.finish(action_client.ClientSubmitted(report.identity, job.record_path))
+
+    def execution(code, status, replay=None):
+        return report.finish(action_client.ClientExecution(key, result.published_unix, status,
+            outcome.exit_code, None, None, outcome.state == 'TIMEOUT', code, replay,
+            receipt_published=result.receipt is not None, transport_state=outcome.state,
+            transport_signal=outcome.signal))
+
     total = len(result.attempts)
     for index, (attempted, reported) in enumerate(result.attempts, start=1):
         print(f"pbrun: attempt {index}/{total} slurm job {attempted.job_id} "
@@ -3710,20 +3695,21 @@ def slurm_outcome(
             print(f"pbrun: cache_hit -- slurm job {job.job_id} found "
                   f"{key[:12]} already in the CAS and ran nothing",
                   file=sys.stderr)
-            return 0
+            return execution(0, 'cache_hit',
+                action_client.CachedResult(result.receipt['result']['sha256']))
         print(f"pbrun: executed via slurm job {job.job_id} ({outcome.state})",
               file=sys.stderr)
-        return 0
+        return execution(0, 'executed')
     if outcome.state == "CANCELLED":
         print(f"pbrun: withdrawn -- slurm job {job.job_id} was cancelled",
               file=sys.stderr)
-        return action_client.WITHDRAWN_EXIT
+        return execution(action_client.WITHDRAWN_EXIT, 'withdrawn')
     if outcome.state == slurm_lane.WAIT_TIMEOUT_STATE:
         print(f"pbrun: gave up waiting for {key[:12]}; slurm job "
               f"{job.job_id} is still queued or running "
               f"(pbrun --transport slurm --withdraw {key[:12]} stops it)",
               file=sys.stderr)
-        return action_client.GAVE_UP_EXIT
+        return report.finish(action_client.ClientPatienceExpired(key, result.published_unix))
     if outcome.state == slurm_lane.UNKNOWN_STATE:
         # The controller answered that it knows no such job and there is no
         # receipt.  That is not a failure and it is not filed as one: the job
@@ -3735,7 +3721,8 @@ def slurm_outcome(
               f"it may still be running as slurm job {job.job_id}, or have "
               f"been purged past MinJobAge; look under {job.directory}",
               file=sys.stderr)
-        return action_client.GAVE_UP_EXIT
+        return report.finish(action_client.ClientUnsettled(key, result.published_unix,
+            action_client.UnsettledReason.SCHEDULER_UNKNOWN))
     # Say the thing that is actually wrong.  A job that exits zero without
     # publishing a receipt has not done the work, and reporting its status
     # would report success for an action nothing can look up.
@@ -3751,7 +3738,7 @@ def slurm_outcome(
         print(f"pbrun: slurm job {job.job_id} exited 0 but published no "
               f"receipt for {key[:12]}; see {job.stdout_path} and "
               f"{job.stderr_path}", file=sys.stderr)
-        return 1
+        return execution(1, 'failed')
     if outcome.state == "OUT_OF_MEMORY":
         # The state alone sends an operator to a job log that a SIGKILLed
         # process never got to write.  What decided the ending is the number
@@ -3765,8 +3752,8 @@ def slurm_outcome(
     print(f"pbrun: failed ({outcome.state}) after {total} attempt(s); "
           f"logs {job.stdout_path} and {job.stderr_path}", file=sys.stderr)
     if isinstance(outcome.exit_code, int) and outcome.exit_code:
-        return action_client.reported_exit(outcome.exit_code, key=key)
-    return 1
+        return execution(action_client.reported_exit(outcome.exit_code, key=key), 'failed')
+    return execution(1, 'failed')
 
 
 def _echo(path, stream) -> None:
@@ -4105,7 +4092,7 @@ def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
     """Withdraw each named action and say what happened to it.
 
     Takes the queue rather than building one, for the same reason
-    ``await_outcome`` does: the part worth testing is the reporting and the
+    ``report_pool_outcome`` does: the part worth testing is the reporting and the
     prefix resolution, and neither should need a live fleet to exercise.
 
     Keys are accepted as prefixes because a prefix is what an operator has --
@@ -5999,6 +5986,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                     "--transport or the published generation's default; the "
                     "result does not depend on which."
     )
+    ap.add_argument("--client-events-fd", type=int, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--demand", default="",
                     help="resource demand, e.g. gpu=1,mem_gb=16")
     ap.add_argument("--gpu", action="store_true",
@@ -7358,7 +7346,7 @@ def resolve_after_edges(q, cas_root: Path,
 
 
 def submit_deferred(prepared: Mapping[str, object],
-                    args: argparse.Namespace):
+                    args: argparse.Namespace, *, report=None):
     """File this submission for release once its producers succeed (#913).
 
     Everything ``prepare_submission`` checks has been checked: the checkout,
@@ -7368,6 +7356,7 @@ def submit_deferred(prepared: Mapping[str, object],
     residency plan -- and the tiers loop's release does that.
     """
 
+    report = report if report is not None else action_client.ClientReport()
     template = prepared["template"]
     d38_gate.refuse_deferred(args, template["params"])
     cas = template["cas"]
@@ -7419,21 +7408,14 @@ def submit_deferred(prepared: Mapping[str, object],
     print(f"pbrun: deferred {pending_id[:12]} until {producers} succeeds; the "
           f"tiers loop seals and publishes it then", file=sys.stderr, flush=True)
     if args.detach:
-        print(json.dumps({
-            "schema": DETACH_SCHEMA_V1,
-            "action_key": None,
-            "pending_id": pending_id,
-            "transport": "pool",
-            "status": "deferred",
-            "published_unix": None,
-            "job_id": None,
-            "submission": str(path),
-            "release": str(action_edges.published_path(q.root, pending_id)),
-        }, sort_keys=True), flush=True)
-        return 0
+        code = report.finish(action_client.ClientDeferredSubmitted(pending_id, path,
+            action_edges.published_path(q.root, pending_id)))
+        print(sorted_json(action_client.reported_submission(report)), flush=True)
+        return code
     # Returned, not run: ``main`` waits after the submission's used-
     # filesystem growth allowance is released (#1483).
-    return functools.partial(await_release, q, pending_id, wait_s=args.wait_s)
+    return functools.partial(await_release, q, pending_id, wait_s=args.wait_s,
+                             report=report, cas_root=Path(cas.root))
 
 
 def require_deferred_read_plan(static: Mapping[str, object],
@@ -7498,7 +7480,8 @@ def require_releasable_template(template: Mapping[str, object]) -> None:
         ) from None
 
 
-def await_release(q, pending_id: str, *, wait_s: float) -> int:
+def await_release(q, pending_id: str, *, wait_s: float, report=None,
+                  cas_root: Path | None = None) -> int:
     """Wait for a deferred submission's release, then for its action.
 
     The release record names the key and the generation the tiers loop
@@ -7507,19 +7490,25 @@ def await_release(q, pending_id: str, *, wait_s: float) -> int:
     filed and is released whenever its producers succeed.
     """
 
+    report = report if report is not None else action_client.ClientReport()
     deadline = time.monotonic() + max(0.0, float(wait_s))
     while True:
         try:
             published = action_edges.read_published(q.root, pending_id)
         except action_edges.ActionEdgeError as exc:
             print(f"pbrun: {exc}", file=sys.stderr, flush=True)
-            return action_client.RECORD_WRITE_FAILED_EXIT
+            return report.finish(action_client.ClientUnavailable(
+                None, None, action_wait.WaitEnd.UNRETRIED))
         if published is not None:
             key = str(published["action_key"])
+            generation = float(published['published_unix'])
+            report.publish_identity(action_client.PoolClientIdentity(key, generation, q.root,
+                cas_root if cas_root is not None else SH / 'cas', None,
+                action_client.ClientArrival.SUBMITTED))
             print(f"pbrun: {pending_id[:12]} was released as {key[:12]}",
                   file=sys.stderr, flush=True)
             remaining = deadline - time.monotonic()
-            # ``await_outcome`` reads ``wait_s=0`` as "observe once", with the
+            # ``report_pool_outcome`` reads ``wait_s=0`` as "observe once", with the
             # full read budget.  A positive wait that ran out while the
             # release was being read is not that request: clamping it to 0
             # handed a caller past its deadline one more full read (#938).
@@ -7527,16 +7516,16 @@ def await_release(q, pending_id: str, *, wait_s: float) -> int:
                 print(f"pbrun: the wait ended before {key[:12]}'s outcome was "
                       f"read; the action runs regardless. Run pbwait.py "
                       f"{key[:12]} to follow it", file=sys.stderr, flush=True)
-                return action_client.GAVE_UP_EXIT
-            return action_client.await_outcome(
+                return report.finish(action_client.ClientPatienceExpired(key, generation))
+            return action_client.report_pool_outcome(
                 q, key, wait_s=max(0.0, remaining),
-                generation=float(published["published_unix"]))
+                generation=generation, report=report)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             print(f"pbrun: {pending_id[:12]} is still deferred; it stays filed "
                   f"and is released when its producers succeed",
                   file=sys.stderr, flush=True)
-            return action_client.GAVE_UP_EXIT
+            return report.finish(action_client.ClientDeferredTimeout(pending_id))
         time.sleep(min(action_wait.POLL_S, remaining))
 
 
@@ -7857,70 +7846,114 @@ def release_origin_consumer_cli(batch_ref: str, consumer_key: str, *,
     return 0
 
 
-def main(*, publication_canary_intent=None, authorize_canary=None) -> int:
-    args = parse_args()
-    # Internal publisher handoff only; there is no public self-authorizing
-    # switch. PoolQueue independently checks the publisher's exact-key grant.
-    if publication_canary_intent is not None:
-        if (not callable(authorize_canary) or args.transport != "pool"
-                or not args.detach or args.after or args.withdraw
-                or args.release_origin_consumer is not None):
-            raise SystemExit("pbrun: publication canary requires a bounded publisher handoff")
-    if args.withdraw:
-        # Withdrawing is not a submission and must not need one: the operator
-        # cancelling four suites has no command to give and no checkout to
-        # stamp, so this returns before any of the submit machinery runs.
-        if [c for c in args.command if c != "--"]:
-            raise SystemExit("pbrun: --withdraw takes no command")
+def main(*, publication_canary_intent=None, authorize_canary=None, report=None) -> int:
+    report = report if report is not None else action_client.ClientReport()
+    writer = None
+    previous_observer = report.on_event
+    with action_wait.client_readers():
         try:
-            who = getpass.getuser()
-        except Exception:                                        # noqa: BLE001
-            who = "unknown"      # no passwd entry is not a reason to refuse
-        return withdraw_routed(
-            args.withdraw, transport=args.transport, reason=args.reason,
-            by=f"{who}@{socket.gethostname()}",
-        )
-    if args.release_origin_consumer is not None:
-        # Like a withdrawal, an operator's release is not a submission.
-        if [c for c in args.command if c != "--"]:
-            raise SystemExit("pbrun: --release-origin-consumer takes no command")
-        try:
-            who = getpass.getuser()
-        except Exception:                                        # noqa: BLE001
-            who = "unknown"
-        return release_origin_consumer_cli(
-            *args.release_origin_consumer, reason=args.reason,
-            by=f"{who}@{socket.gethostname()}")
-    # The used-filesystem floor (#1483): check what this submission writes,
-    # and hold its growth allowance on the shared store while the snapshot,
-    # CAS objects and queue record are written.  Released, whatever ends the
-    # submission, before an attached pool or ``--after`` wait begins.  The
-    # SLURM lane submits and waits in one call, so it holds no growth (its
-    # used paths are still checked).  ``off`` (the default) reads only the
-    # mode.
-    try:
-        with filesystem_floor.operation(
-                SH / "pb-queue", label="pbrun",
-                used_paths=[getattr(args, "cwd", None) or os.getcwd(), SH / "cas",
-                            SH / "pb-queue", tempfile.gettempdir()],
-                growth_gib=({SH / "cas": args.filesystem_growth_gib}
-                            if args.transport == "pool" else {})):
-            submitted = submit_and_publish(
-                args, publication_canary_intent=publication_canary_intent,
-                authorize_canary=authorize_canary)
-    except filesystem_floor.FloorRefused as exc:
-        raise SystemExit(f"pbrun: a used filesystem is below its floor; nothing "
-                         f"submitted: {exc}") from None
-    return submitted() if callable(submitted) else submitted
+            args = parse_args()
+            fd = getattr(args, 'client_events_fd', None)
+            if fd is not None:
+                try:
+                    writer = client_channel.ClientEventWriter(fd)
+                except client_channel.ClientProtocolError as exc:
+                    raise SystemExit(f'pbrun: {exc}') from None
+
+                def send(event):
+                    writer.send(event)
+                    if previous_observer is not None:
+                        previous_observer(event)
+
+                report.on_event = send
+            # Internal publisher handoff only; there is no public self-authorizing
+            # switch. PoolQueue independently checks the publisher's exact-key grant.
+            if publication_canary_intent is not None:
+                if (not callable(authorize_canary) or args.transport != "pool"
+                        or not args.detach or args.after or args.withdraw
+                        or args.release_origin_consumer is not None):
+                    raise SystemExit("pbrun: publication canary requires a bounded publisher handoff")
+            if args.withdraw:
+                # Withdrawing is not a submission and must not need one: the operator
+                # cancelling four suites has no command to give and no checkout to
+                # stamp, so this returns before any of the submit machinery runs.
+                if [c for c in args.command if c != "--"]:
+                    raise SystemExit("pbrun: --withdraw takes no command")
+                try:
+                    who = getpass.getuser()
+                except Exception:                                        # noqa: BLE001
+                    who = "unknown"      # no passwd entry is not a reason to refuse
+                return report.finish(action_client.ClientCommand(withdraw_routed(
+                    args.withdraw, transport=args.transport, reason=args.reason,
+                    by=f"{who}@{socket.gethostname()}",
+                )))
+            if args.release_origin_consumer is not None:
+                # Like a withdrawal, an operator's release is not a submission.
+                if [c for c in args.command if c != "--"]:
+                    raise SystemExit("pbrun: --release-origin-consumer takes no command")
+                try:
+                    who = getpass.getuser()
+                except Exception:                                        # noqa: BLE001
+                    who = "unknown"
+                return report.finish(action_client.ClientCommand(release_origin_consumer_cli(
+                    *args.release_origin_consumer, reason=args.reason,
+                    by=f"{who}@{socket.gethostname()}")))
+            # The used-filesystem floor (#1483): check what this submission writes,
+            # and hold its growth allowance on the shared store while the snapshot,
+            # CAS objects and queue record are written.  Released, whatever ends the
+            # submission, before an attached pool or ``--after`` wait begins.  The
+            # SLURM lane submits and waits in one call, so it holds no growth (its
+            # used paths are still checked).  ``off`` (the default) reads only the
+            # mode.
+            try:
+                with filesystem_floor.operation(
+                        SH / "pb-queue", label="pbrun",
+                        used_paths=[getattr(args, "cwd", None) or os.getcwd(), SH / "cas",
+                                    SH / "pb-queue", tempfile.gettempdir()],
+                        growth_gib=({SH / "cas": args.filesystem_growth_gib}
+                                    if args.transport == "pool" else {})):
+                    submitted = submit_and_publish(
+                        args, publication_canary_intent=publication_canary_intent,
+                        authorize_canary=authorize_canary, report=report)
+            except filesystem_floor.FloorRefused as exc:
+                raise SystemExit(f"pbrun: a used filesystem is below its floor; nothing "
+                                 f"submitted: {exc}") from None
+            code = submitted() if callable(submitted) else submitted
+            if report.ending is None:
+                raise RuntimeError('submission returned without a typed client ending')
+            return code
+        except OfferDiscoveryTimedOut:
+            if report.ending is None:
+                report.finish(action_client.ClientOfferTimeout())
+            raise
+        except SystemExit as exc:
+            if report.ending is None:
+                if isinstance(exc.code, int) and exc.code not in {0, 1, 2}:
+                    raise
+                code = (exc.code if isinstance(exc.code, int)
+                        else 0 if exc.code is None else 1)
+                if code == 0:
+                    report.finish(action_client.ClientCommand(code))
+                else:
+                    identity = report.identity
+                    report.finish(action_client.ClientRefused(code,
+                        identity.action_key if identity is not None else None,
+                        getattr(identity, 'published_unix', None)))
+            raise
+        finally:
+            report.on_event = previous_observer
+            if writer is not None:
+                writer.close()
 
 
 def submit_and_publish(args, *, publication_canary_intent=None,
-                       authorize_canary=None):
+                       authorize_canary=None, report=None):
     """Seal, publish and submit; an attached wait is returned, not run."""
 
+    report = report if report is not None else action_client.ClientReport()
     prepared = prepare_submission(args)
     if args.after:
-        return submit_deferred(prepared, args)
+        return submit_deferred(prepared, args, report=report)
     template = prepared["template"]
     cwd = prepared["cwd"]
     portable_checkout = prepared["portable_checkout"]
@@ -7957,7 +7990,11 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         authorize_canary(action)
     request_path = cas.publish_action_request(action)
 
-    if args.detach and cas.lookup(action) is not None:
+    cached = cas.lookup(action) if args.detach else None
+    if cached is not None:
+        identity = action_client.CachedClientIdentity(key, SH / 'pb-queue', Path(cas.root),
+            action_client.ClientTransport(args.transport), cached['result']['sha256'])
+        report.publish_identity(identity)
         # Nothing to submit and nothing to wait for.  The attached path lets
         # the worker discover this and file an ending, which is right when
         # somebody is holding the terminal open; detached, that ending would be
@@ -7966,13 +8003,13 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         # row a hit, no new job ids.
         print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
               file=sys.stderr, flush=True)
-        print(detach_line(
+        print(sorted_json(action_client.detached_submission_record(
             key,
             transport=args.transport,
             status="cache_hit",
             queue_root=SH / "pb-queue",
-        ), flush=True)
-        return 0
+        )), flush=True)
+        return report.finish(action_client.ClientSubmitted(identity))
 
     if args.detach:
         # Not in the CAS, but perhaps already running: a campaign whose waiter
@@ -7983,15 +8020,24 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         except (action_wait.OutcomeReadUnavailable, OSError) as exc:
             print(f"pbrun: unavailable detached attachment for {key[:12]}: {exc}",
                   file=sys.stderr, flush=True)
-            return action_client.RECORD_WRITE_FAILED_EXIT
+            return report.finish(action_client.ClientUnavailable(
+                key, None, action_wait.WaitEnd.UNRETRIED))
         if live is not None:
             transport, generation = live["transport"], live["generation"]
             record, job_id = live["submission"], live["job_id"]
+            identity = (action_client.PoolClientIdentity(key, generation, SH / 'pb-queue',
+                Path(cas.root), Path(record) if record is not None else None,
+                action_client.ClientArrival.ATTACHED)
+                if transport == 'pool' else action_client.SlurmClientIdentity(
+                    key, generation, SH / 'pb-queue', Path(cas.root),
+                    Path(record) if record is not None else None, job_id,
+                    action_client.ClientArrival.ATTACHED))
+            report.publish_identity(identity)
             print(f"pbrun: {key[:12]} is already running "
                   f"({transport}{' job ' + job_id if job_id else ''}); "
                   f"attaching to it rather than submitting a second copy",
                   file=sys.stderr, flush=True)
-            print(detach_line(
+            print(sorted_json(action_client.detached_submission_record(
                 key,
                 transport=transport,
                 status="attached",
@@ -7999,8 +8045,8 @@ def submit_and_publish(args, *, publication_canary_intent=None,
                 published_unix=generation,
                 job_id=job_id or None,
                 submission=record,
-            ), flush=True)
-            return 0
+            )), flush=True)
+            return report.finish(action_client.ClientSubmitted(identity))
 
     # D38: new GPU work needs preflight evidence before anything runnable is
     # published, on every transport.  There is no liveness or cache exemption
@@ -8019,12 +8065,16 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             except (action_wait.OutcomeReadUnavailable, OSError):
                 live = None
             if live is not None and live["transport"] == "pool":
+                report.publish_identity(action_client.PoolClientIdentity(key, live['generation'],
+                    SH / 'pb-queue', Path(cas.root),
+                    Path(live['submission']) if live['submission'] is not None else None,
+                    action_client.ClientArrival.ATTACHED))
                 print(f"pbrun: {key[:12]} is already running on the pool; "
                       f"waiting on that run, and publishing nothing, because "
                       f"D38 evidence is missing", file=sys.stderr, flush=True)
                 return functools.partial(
-                    action_client.await_outcome, pool.PoolQueue(SH / "pb-queue"), key,
-                    wait_s=args.wait_s, generation=live["generation"])
+                    action_client.report_pool_outcome, pool.PoolQueue(SH / "pb-queue"), key,
+                    wait_s=args.wait_s, generation=live["generation"], report=report)
         raise d38_gate.refusal_exit(verdict, action)
 
     if args.transport == "slurm":
@@ -8065,6 +8115,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             priority_reason=args.priority_reason,
             anywhere=args.anywhere,
             detach=args.detach,
+            report=report,
         )
 
     q = pool.PoolQueue(SH / "pb-queue")
@@ -8116,6 +8167,10 @@ def submit_and_publish(args, *, publication_canary_intent=None,
         queued_path, generation = publish_consumer_row(
             q, action, template, key=key, args=args, cas=cas,
             before_publish=supersede)
+    identity = action_client.PoolClientIdentity(key, generation, q.root, Path(cas.root),
+        queued_path, (action_client.ClientArrival.SUBMITTED if queued_path is not None
+                      else action_client.ClientArrival.ATTACHED))
+    report.publish_identity(identity)
     # Say that the slot has no device, every time.  The mask is correct and it
     # is also a silent narrowing: a suite that used to run its CUDA tests now
     # skips them, and a skip that nobody announced reads as the same green.
@@ -8142,28 +8197,28 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             # this process started nothing, so it reports where the run it
             # joined lives rather than a submission of its own.
             ready = q.item_path(pool.READY, key)
-            print(detach_line(
+            display_path = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+            print(sorted_json(action_client.detached_submission_record(
                 key,
                 transport="pool",
                 status="attached",
                 queue_root=q.root,
                 published_unix=generation,
-                submission=ready if ready.exists() else q.item_path(
-                    pool.CLAIMED, key),
-            ), flush=True)
-            return 0
-        print(detach_line(
+                submission=display_path,
+            )), flush=True)
+            return report.finish(action_client.ClientSubmitted(identity, display_path))
+        print(sorted_json(action_client.detached_submission_record(
             key,
             transport="pool",
             status="submitted",
             queue_root=q.root,
             published_unix=generation,
             submission=queued_path,
-        ), flush=True)
-        return 0
+        )), flush=True)
+        return report.finish(action_client.ClientSubmitted(identity))
 
-    return functools.partial(action_client.await_outcome, q, key, wait_s=args.wait_s,
-                             generation=generation)
+    return functools.partial(action_client.report_pool_outcome, q, key, wait_s=args.wait_s,
+                             generation=generation, report=report)
 
 
 if __name__ == "__main__":

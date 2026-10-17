@@ -319,7 +319,7 @@ def original(root, late_status, stale_claim_read=False, *, stack, real_scope=Fal
 
     def follow():
         try:
-            outcome.append(action_client.await_outcome(q, key, wait_s=480 if real_scope else 120,
+            outcome.append(action_client.report_pool_outcome(q, key, wait_s=480 if real_scope else 120,
                                               generation=first["published_unix"]))
         except BaseException as exc:
             errors.append(repr(exc))
