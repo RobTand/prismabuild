@@ -84,7 +84,8 @@ def epoch_cases():
     cases = [(mode, f, m, 'stage') for mode in ('trim', 'shrink')
              for f in ('absent', 'none', 'empty') for m in ('absent', 'none', 'empty')]
     cases += [(mode, 'current', 'current', policy) for mode in ('trim', 'shrink')
-              for policy in ('ram', 'ram-mismatch', 'tier-mismatch')]
+              for policy in ('ram', 'ram-mismatch')]
+    cases += [(mode, 'absent', 'absent', 'tier-mismatch') for mode in ('trim', 'shrink')]
     return cases
 
 
