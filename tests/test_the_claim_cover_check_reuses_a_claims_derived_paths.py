@@ -131,7 +131,7 @@ def test_an_unchanged_claim_is_derived_once_across_many_checks(
         fleet, monkeypatch) -> None:
     """O(checks x entries) collapses to O(entries) when nothing changes.
 
-    ``stage_release.stage_relative`` runs exactly once per manifest entry
+    ``staged_path.stage_relative`` runs exactly once per manifest entry
     inside a derivation that actually resolves a claim's window (the memo
     skips the whole window computation on a hit), so counting its calls
     across repeated, unchanged checks is the direct measure of how many
@@ -152,7 +152,10 @@ def test_an_unchanged_claim_is_derived_once_across_many_checks(
     real_stage_relative = staged_path.stage_relative
 
     def counting(*args, **kwargs):
-        derivations.append(1)
+        # The old role-module binding did not observe the legacy helper's
+        # internal call. The merged owner shares that binding.
+        if sys._getframe(1).f_code is not staged_path.pre_range_stage_relative.__code__:
+            derivations.append(1)
         return real_stage_relative(*args, **kwargs)
 
     monkeypatch.setattr(staged_path, 'stage_relative', counting)
