@@ -1884,6 +1884,16 @@ internal refactor that would change any of these fails that test. Changing the
 contract, including adding a name, bumps `SDK_VERSION` and updates this section
 in the same change.
 
+`PoolQueue` is exported as the queue handle used by the documented SDK calls.
+Its construction and those calls' behavior remain supported. Exporting the
+type does not version every scheduler, storage or path helper reachable as a
+Python attribute. This refactor moves those implementation operations to
+`queue.funding`, `queue.tier(...)` and `queue.records`, and migrates their
+callers. A queue method with an explicit supported client contract still
+requires a version or deprecation decision before that contract changes.
+An empty caller census does not remove that obligation. In particular,
+SDK6 retains the documented first-time allocation performed by `commit_batch`.
+
 **How a client loads it.** Inside an action, PrismaBuild injects
 `PRISMABUILD_READER_HELPER_ROOT`, the immutable root of the executing runtime
 generation. A client imports `prismabuild.client` from `<root>/src`, so the
