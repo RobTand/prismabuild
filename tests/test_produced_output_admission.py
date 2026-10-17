@@ -6,6 +6,7 @@ existing ledger channel, and runtime binding from the sealed queue item.
 No prewrite/commit/retire/release/funding bodies, no mover copy, no GPU.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -326,10 +327,12 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     import subprocess
 
     import pbrun as pbrun_mod
+    from prismabuild import submission
+    from submission_support import patch_store
 
     # Redirect the submitter's shared handles into the fixture: freeze seals
     # against SH, so without this the test would ingest into the live CAS.
-    monkeypatch.setattr(pbrun_mod, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -348,7 +351,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     _write_template(tpath, template)
     terms = po.owner_demand_terms(template)
     demand = {"cpu": 1, "mem_gb": 1, **terms}
-    frozen = pbrun_mod.freeze_action_template(
+    frozen = submit_core.freeze(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -359,14 +362,14 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
         checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
         exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
         progress=None, profile=None, container_image_refs=(),
-        wrapper_dir=tmp_path / "wrapper")
+        wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
     assert frozen["produced_output_template"]["template_id"] == "pbrun-path-v1"
     assert pb.PRODUCED_OUTPUT_TEMPLATE_PARAM in frozen["params"]
-    sealed = pbrun_mod.seal_action_from_template(frozen)
+    sealed = submit_core.seal(frozen)
     key = sealed["action_key"]
     # A second template seals a different key.
     _write_template(tpath, _template(str(out_prefix), "pbrun-path-v2"))
-    frozen2 = pbrun_mod.freeze_action_template(
+    frozen2 = submit_core.freeze(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand={"cpu": 1, "mem_gb": 1,
                 **po.owner_demand_terms(
@@ -380,13 +383,13 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
         checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
         exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
         progress=None, profile=None, container_image_refs=(),
-        wrapper_dir=tmp_path / "wrapper")
-    assert (pbrun_mod.seal_action_from_template(frozen2)["action_key"]
+        wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
+    assert (submit_core.seal(frozen2)["action_key"]
             != key)
     # The sealed row publishes and claims against the real ledgers.
     queue = _queue(tmp_path / "q2")
     args = pbrun_mod.parse_args(["--cpus", "1", "--", "true"])
-    row = pbrun_mod.publication_row(sealed, args=args, queue=queue)
+    row = submit_core.publication_row(sealed, args=args, queue=queue, store=pbrun.configured_store())
     row["produced_output_template"] = frozen["produced_output_template"]
     queue.publish(**row)
     assert queue.claim(owner="w-seal") is not None
