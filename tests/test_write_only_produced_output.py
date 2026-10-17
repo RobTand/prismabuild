@@ -32,6 +32,7 @@ member devices); the export runs through ``PoolQueue.execute`` as in
 ``test_produced_spool``.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -50,6 +51,7 @@ from prismabuild import core, pool, produced_output as po  # noqa: E402
 from prismabuild import produced_spool as ps, reader_lease  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import stage_move  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
@@ -396,8 +398,8 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -439,7 +441,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     _instance, path, _desc, committed = _direct_batch(queue, template, "wo-tamper")
     ref = committed["ref"]
     manifest = po.origin_batch_manifest(queue.root, [ref])
-    check = pbrun.require_declared_origin_batches
+    check = submit_core.require_declared_origin_batches
     assert check(manifest, transport="pool", queue_root=queue.root) is None
 
     def tampered(**changes):
@@ -473,8 +475,8 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -533,5 +535,5 @@ def test_a_manifest_that_declares_no_batches_is_never_checked_against_the_queue(
     for manifest in ({}, {"annotations": None},
                      {"annotations": {"phases": [{"name": "p", "bytes": 1,
                                                   "cumulative_bytes": 1}]}}):
-        assert pbrun.require_declared_origin_batches(
+        assert submit_core.require_declared_origin_batches(
             manifest, transport="slurm", queue_root=tmp_path / "absent") is None
