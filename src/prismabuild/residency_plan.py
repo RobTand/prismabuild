@@ -4740,7 +4740,7 @@ class LegObservation:
 
 @dataclass(frozen=True, kw_only=True)
 class WindowBudget:
-    free_gib: int = 0
+    free_gib: int
     capacity_gib: int | None = None
     runahead_cap_gib: int | None = None
     withdrawn: Sequence[str] = ()
@@ -4758,7 +4758,7 @@ class ConsumerWindow:
     plan: Mapping[str, object]
     accepted_phase: str | None
     leg: LegObservation
-    budget: WindowBudget = WindowBudget()
+    budget: WindowBudget | None = None
 
     @cached_property
     def decision(self) -> dict[str, object]:
@@ -4840,6 +4840,8 @@ class ConsumerWindow:
         leg publishes in read order, outside free room, and the streaming legs
         follow the rules above as if the declared phases were absent.
         """
+        if self.budget is None:
+            raise TypeError("window decision requires a captured free_gib budget")
         plan, accepted_phase = self.plan, self.accepted_phase
         published, staged = self.leg.published, self.leg.staged
         mover_role, withdrawn = self.leg.mover_role, self.budget.withdrawn
