@@ -8,11 +8,10 @@ entries with ``path``, ``bytes`` and ``sha256``; the lifetime; the
 commitments entry; and the state -- ``committed``, ``retiring`` or
 ``reclaimed``.  An unreadable record raises and is never read as empty.
 
-Fixture concessions: owners, batches and the reclaim are the real
-``PoolQueue`` and ``produced_output`` calls.  ``retiring`` is filed onto the
-commitments entry the way ``origin_retirement_tick`` files its decision
-before it deletes anything, because a real tick that could not finish its
-deletes leaves exactly that entry.
+Fixture concessions: owners, commits, failures and reclamation use the real
+queue and batch owners. The retiring state comes from a real orphan-retirement
+tick interrupted immediately before its first unlink, after the owner has filed
+its delete intent. No batch flags are forged for the reader controls.
 """
 from __future__ import annotations
 from prismabuild import batch_ledger as bl
@@ -74,13 +73,18 @@ def test_a_retained_batch_reports_its_lifetime(tmp_path: Path) -> None:
     assert record["lifetime"] == oc.ORIGIN_LIFETIME_RETAIN
 
 
-def test_a_retiring_batch_says_so(tmp_path: Path) -> None:
+def test_a_retiring_batch_says_so(tmp_path: Path, monkeypatch) -> None:
     queue, template, instance, _path, _committed_ = _committed(tmp_path)
-    commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
-    commitments = bl.BatchLedger(commitments_path).capture()
-    commitments["batches"]["b1"]["retiring"] = {"reason": "orphan",
-                                               "consumers": []}
-    bl.BatchLedger(commitments_path).file(commitments)
+    class PausedRetirement(BaseException):
+        pass
+
+    def pause_before_unlink(*args, **kwargs):
+        raise PausedRetirement()
+
+    queue.finish(instance["owner_action_key"], status="failed")
+    monkeypatch.setattr(po, "_unlink_if_committed", pause_before_unlink)
+    with pytest.raises(PausedRetirement):
+        po.origin_retirement_tick(queue)
 
     record = po.batch_record(queue, instance, template, batch_id="b1")
 

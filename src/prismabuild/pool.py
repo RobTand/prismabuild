@@ -11974,7 +11974,7 @@ class PoolQueue:
         One exception, which keeps the rule's point: a produced-output step
         that claims or deletes an origin path holds the locks of its output
         prefix and of every filed template prefix that overlaps it
-        (``produced_output._output_prefix_locks``, #1063).  It asks for them
+        (``batch_ledger.path_locks``, #1063).  It asks for them
         all at once, sorted by absolute path, and for no other lock of this
         family while it holds them; every other caller holds one and asks
         for no other.  A holder only ever waits for a lock that sorts after
@@ -13402,7 +13402,7 @@ class PoolQueue:
         (no scope/template scans, no unbounded reads): instance at
         `scopes/{owner}/{template_id}.{nonce}/instance.json` (bounded 64KB),
         template at `produced-output-templates/{template_id}.json` (bounded
-        1MB), commitments via existing `_read_commitments`, batch file via
+        1MB), commitments via `BatchLedger.capture`, batch file via
         the loader. A missing/unreadable/mismatched commit is unknown (no
         credit); a failed loader never downgrades to prewrite authorization.
         Validates exact instance/template/batch/range using existing
@@ -13499,7 +13499,7 @@ class PoolQueue:
         """Durable-prewrite authority for drive/fund recovery (R2).
 
         Deterministic instance path (no scan), bounded prewrite read (64KB
-        via `_read_prewrite` helper which reads one file; prewrites are
+        via `BatchLedger.prewrite` which reads one file; prewrites are
         tiny). Checks tier/owner/attempt match + class_bytes total == intent
         range total. Used by drive (transfer remainder before commit) and
         fund (creation); NEVER by cover/claim (which requires filed commit
@@ -13789,7 +13789,7 @@ class PoolQueue:
 
         Exact subset transfer, never a second reservation from free.
         Validates authority from LIVE precommit records via
-        ``produced_output.describe_output_precommit_for_funding`` (bound
+        ``batch_ledger.BatchLedger.precommit`` (bound
         template/live owner/prewrite/descriptors/manifest; filed batch NOT
         required) plus live mover publication; caller hashes prove nothing.
 

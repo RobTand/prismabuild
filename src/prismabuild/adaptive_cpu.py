@@ -156,7 +156,7 @@ def export_rate_key(template_sha256, family=None):
     ``family:<name>``, so a Stage B row -- its own template -- inherits what
     the family's earlier rows measured.  ``None`` means none is declared, and
     the key is the template's digest, as #999 keyed every producer.  A family
-    that is not an identifier (``produced_output.validate_export_rate_family``)
+    that is not an identifier (``output_contract.validate_export_rate_family``)
     or, undeclared, a digest that is not a key has no key: nothing is learned
     or read under it, so no malformed value lands on another producer's entry.
     """

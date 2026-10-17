@@ -70,11 +70,6 @@ def scopes_root(queue_root: str | Path) -> Path:
     return Path(queue_root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
 
 
-def template_file(queue_root: str | Path, template_id: str) -> Path:
-    return (Path(queue_root) / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
-            / f"{template_id}.json")
-
-
 def scope_dir(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
     checked = oc.validate_instance(instance)
     attempt = checked["owner_attempt"]

@@ -788,7 +788,7 @@ class ProducedSpool:
         retried export can still replace a landed copy, so an identity taken
         then may not be the one that lasts.  The descriptors must name
         exactly the files the export landed, with their sizes and digests,
-        and `produced_output.commit_origin_batch` commits them against the
+        and `batch_ledger.BatchLedger.commit_origin` commits them against the
         identities the receipt recorded.  ``lifetime`` is that commit's
         (#914): ``retain`` by default, or ``consumed`` for a handoff that PB
         retires once its declared consumers succeed.  Returns that commit's
@@ -1921,7 +1921,7 @@ def _retire_group(queue, directory, group, owner):
 def retire_namespace(queue, directory):
     """Retire one namespace whose owner attempt ended, or say why not.
 
-    The owner attempt has ended when ``produced_output._producer_attempt_state``
+    The owner attempt has ended when ``batch_ledger.producer_attempt_state``
     reads ``dead`` or ``succeeded``: its latest generation is terminal, or a
     retry under a new nonce holds the claim.  A new attempt writes a new
     namespace (the nonce is in its name) and never reads this one, so the

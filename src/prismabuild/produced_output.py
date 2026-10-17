@@ -11,10 +11,10 @@ WRITE-ONLY (#912): a template marked ``write_only`` declares outputs its own
 action never reads again. It reserves no stage window (every tier's minimum
 and window are zero, so `owner_demand_terms` is empty and admission charges
 no stage token), and its batches commit at their origin through
-`commit_origin_batch`: no mover, no stage copy, no funding. A later action
+`BatchLedger.commit_origin`: no mover, no stage copy, no funding. A later action
 declares such a batch in its data manifest (`origin_batch_manifest`) and
 stages it through the ordinary input path. The durable charge and the path
-ownership of an origin-only batch last until `reclaim_origin` proves its
+ownership of an origin-only batch last until `BatchLedger.reclaim` proves its
 origin gone, as for a staged batch. A template without ``write_only`` hashes
 exactly as before.
 
@@ -30,7 +30,7 @@ whose producer attempt is dead.
 READ-BACK ORIGIN COMMIT (#1034): a read-back owner that reads a group back
 from its own local spool publishes no stage copy, so it commits the group at
 its origin too, through `ProducedSpool.commit_origin_group` once the export is
-acknowledged (`commit_origin_batch` with ``landed``). That ends the prewrite
+acknowledged (`BatchLedger.commit_origin` with ``landed``). That ends the prewrite
 and charges the actual bytes. No consumer can declare such a batch, so a
 ``consumed`` one is swept once its owner attempt has ended, success included. Every retirement checks each file against
 the identity its commit recorded, and every unknown keeps the batch.
@@ -742,7 +742,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
 # dispatcher and no v2 record: a materialization reuses the published
 # first-publisher helpers, the pool's prepaid funding, the existing strict SDK,
 # the existing egress and the existing recovery. A write-only template's
-# origin-only batch (`commit_origin_batch`, #912) is not re-materialized here;
+# origin-only batch (`BatchLedger.commit_origin`, #912) is not re-materialized here;
 # a consumer stages it as an input instead.
 
 
@@ -2099,7 +2099,7 @@ def _file_origin_repins(queue_root: str | Path,
                         ) -> None:
     """File the re-pins lockless checks made, under each instance's prefix lock (#1111).
 
-    Per instance: the output-prefix lock `commit_origin_batch` and the
+    Per instance: the output-prefix lock `BatchLedger.commit_origin` and the
     retirement take, the commitments document read again, each origin
     stat'ed again and required to still be the identity its content check
     hashed (`_apply_origin_repins`), and one write. The lock holds no read of
@@ -2700,7 +2700,7 @@ def _select_retirement_locked(queue, checked_instance: Mapping[str, object],
         return {"answer": {"ok": False, "refusal": str(exc)}}
     if entry.kind == 'origin' and filed.get('origin_only') is True:
         # Nothing was staged, so there is no copy to evict and no window
-        # to return (#912). The origin is `reclaim_origin`'s.
+        # to return (#912). The origin is `BatchLedger.reclaim`'s.
         return {"answer": {"ok": True, "batch_id": batch_id,
                            "origin_only": True, "staged": False}}
     mover = str(filed.get("mover_key") or "")
@@ -2803,7 +2803,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     (`_select_retirement_locked`); run the existing egress with NO lock of
     this lane held; reacquire, revalidate the exact same
     manifest/mover/generation, and file `retired` for a complete error-free
-    receipt naming that mover and namespace (`_file_retirement_locked`). The
+    receipt naming that mover and namespace (`BatchCapture.file_retirement`). The
     egress takes the mover transition lock and then the stage root's
     ownership lock, so running it underneath this instance's ownership lock
     would nest two locks of one family with a blocking transition wait
@@ -2815,7 +2815,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     them.
 
     Durable-origin quota is NOT freed here -- origin files still exist; see
-    `reclaim_origin`. Charge (durable) and window (tier) accounting
+    `BatchLedger.reclaim`. Charge (durable) and window (tier) accounting
     stay distinct at every step, and a failed or partial egress files
     nothing and leaves the old materialization holding its own credit.
     """
@@ -2955,7 +2955,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
 
     * Recorded but not retired cannot happen.  Phase three marks a batch
       only for a complete, error-free egress receipt of this batch's exact
-      selection (the same `_file_retirement_locked` checks as
+      selection (the same `BatchCapture.file_retirement` checks as
       `retire_batch`), and the one write that records it is made after
       every such receipt is in hand.  A batch whose egress was incomplete,
       was deferred, or whose selection moved is left out of the write, not
@@ -3745,7 +3745,7 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
     name aside and deletes only the file it moved if that is the committed
     one, so a writer's ``rename`` onto the name that lands at any point is
     never deleted. Afterwards ``origin_reclaimed`` frees its durable class
-    bytes and its paths, as `reclaim_origin` does.
+    bytes and its paths, as `BatchLedger.reclaim` does.
     """
 
     verified: dict[str, dict[str, object]] = {}
