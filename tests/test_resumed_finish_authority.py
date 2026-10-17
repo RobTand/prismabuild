@@ -1,4 +1,5 @@
 """A real recovered finisher must not publish after its marker was retired."""
+from fleet_world import Clock as FleetClock
 import json
 import os
 import select
@@ -39,7 +40,7 @@ def test_a_restored_finisher_cannot_replace_a_later_generations_terminal(
     tmp_path, monkeypatch, latest_status,
 ):
     clock = Clock(now=time.time() - 120)
-    monkeypatch.setattr(pool, "_now", lambda: clock.now)
+    FleetClock(source=lambda: clock.now).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     _publication(queue, tmp_path)
     first = queue.claim(owner="first", capacity={"cpu": 1})
@@ -154,7 +155,7 @@ def test_restoration_before_mark_capture_retains_the_recovered_claim(tmp_path, m
 @pytest.mark.parametrize("observation", ["replacement", "unknown"])
 def test_publication_retains_an_unverified_finishing_mark(tmp_path, monkeypatch, observation):
     clock = Clock(now=time.time())
-    monkeypatch.setattr(pool, "_now", lambda: clock.now)
+    FleetClock(source=lambda: clock.now).install(monkeypatch, scope="pool")
     queue, item = _new_claim(tmp_path)
     release = queue._release_reservation
     identity = queue.records.finishing_mark_identity

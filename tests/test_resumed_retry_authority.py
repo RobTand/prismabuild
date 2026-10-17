@@ -1,4 +1,5 @@
 """A recovered retry finisher cannot reset a later claim's attempt history."""
+from fleet_world import Clock as FleetClock
 import json
 import os
 import signal
@@ -15,7 +16,7 @@ from test_resumed_finish_authority import _resumed_finish_exit, _resumed_finish_
 @pytest.mark.parametrize("prior_attempts", [0, 1])
 def test_a_resumed_retry_preserves_the_later_attempt_counter(tmp_path, monkeypatch, prior_attempts):
     clock = Clock(now=time.time() - 120)
-    monkeypatch.setattr(pool, "_now", lambda: clock.now)
+    FleetClock(source=lambda: clock.now).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas", checkout_root=tmp_path / "checkout",
                   worker_script=tmp_path / "worker.py", resources={"cpu": 1},

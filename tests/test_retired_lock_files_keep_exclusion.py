@@ -203,10 +203,6 @@ def test_retire_finishes_a_retirement_cut_off_before_its_unlink(tmp_path, monkey
 # --------------------------------------------------------------------------
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 def _file(queue: pool.PoolQueue, state: str, key: str, *, age_s: float) -> None:
     path = queue.records.item_path(state, key)
     path.write_text(json.dumps({"action_key": key, "published_unix": 1.0}))
@@ -221,7 +217,7 @@ def _lock_names(queue: pool.PoolQueue) -> set[str]:
 def test_one_gc_leaves_exactly_the_live_lock_files(tmp_path):
     """1,000 terminal keys and 10 live ones: one gc leaves exactly the 10."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     old = pool.LEASE_TIMEOUT_S + 60
     terminal = [_key(f"terminal-{index}") for index in range(1000)]
     live = [_key(f"live-{index}") for index in range(10)]
@@ -259,7 +255,7 @@ def test_one_gc_leaves_exactly_the_live_lock_files(tmp_path):
 
 
 def test_a_young_ending_keeps_its_lock_and_an_apply_needs_the_acknowledgement(tmp_path):
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     young, old = _key("young"), _key("old")
     _file(queue, pool.record_store.DONE, young, age_s=1)
     _file(queue, pool.record_store.DONE, old, age_s=pool.LEASE_TIMEOUT_S + 60)
@@ -284,7 +280,7 @@ def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
     not its fragments remain; a namespace only when its directory is empty.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     old = pool.LEASE_TIMEOUT_S + 60
     residency = queue.records.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
@@ -339,7 +335,7 @@ def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
 def test_a_tombstone_after_the_survey_keeps_the_namespace_as_the_survey_would(tmp_path):
     """The re-check under the lock uses the survey's liveness rule, not the row alone."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     residency = queue.records.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
     key = _key("mid-transition")
@@ -362,7 +358,7 @@ def test_a_tombstone_after_the_survey_keeps_the_namespace_as_the_survey_would(tm
 def test_a_consumer_queued_again_after_the_survey_keeps_its_namespace(tmp_path):
     """The removal re-reads the consumer under its transition lock."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     residency = queue.records.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
     key = _key("resubmitted")
@@ -440,7 +436,7 @@ def _hold_repeatedly(root: str, keys: list[str], marks: str, stop_at: float,
 def test_a_holder_racing_the_gc_keeps_mutual_exclusion(tmp_path):
     """Four processes take terminal keys' locks while the gc retires them."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     keys = [_key(f"race-{index}") for index in range(8)]
     for key in keys:
         _file(queue, pool.record_store.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
