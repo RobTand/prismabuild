@@ -79,10 +79,6 @@ def _payload() -> bytes:
     return bytes([index % 251 + 1 for index in range(SIZE)])
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return FleetWorld(tmp_path).queue
-
-
 def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
     origin = tmp_path / "origin"
     origin.mkdir(parents=True, exist_ok=True)
@@ -210,7 +206,7 @@ def _charged(queue: pool.PoolQueue, mover: str = MOVER_A) -> None:
 def _world(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path, str, Path]:
     """Queue, stage root, staged file, manifest sha, manifest path."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, _body = _manifest(tmp_path)
     stage = _stage_root(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)

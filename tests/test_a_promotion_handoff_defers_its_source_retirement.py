@@ -20,6 +20,7 @@ promotion row -> claim -> ram_promote.promote; then stage_release.evict.  Runs
 under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import hashlib
 import json
@@ -91,15 +92,6 @@ def fleet(tmp_path: Path):
     return queue, stage
 
 
-def _publish(queue: pool.PoolQueue, key: str, resources: dict,
-             residency: dict) -> None:
-    queue.publish(action_key=key, cas_root=str(queue.root / "cas"),
-                  checkout_root=str(queue.root / "co"),
-                  worker_script=str(queue.root / "worker.py"),
-                  resources=resources, residency=residency,
-                  max_attempts=1, retry_safe=False)
-
-
 def _claim(queue: pool.PoolQueue, key: str) -> None:
     claimed = queue.claim(owner=WORKER, capacity=dict(HOST_CAP),
                           tags=["dl380g10"])
@@ -129,11 +121,23 @@ def _stage_mover(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
                  mover: str, consumer: str, size: int) -> dict:
     """The actual mover lifecycle: publish -> claim -> copy -> finish."""
 
-    _publish(queue, mover,
-             {"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
-             {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-              "manifest_sha256": MANIFEST_SHA, "manifest_bytes": size,
-              "range_start_bytes": 0, "range_end_bytes": size})
+    ActionRows(queue).publish(
+        mover,
+        cas_root=str(queue.root / 'cas'),
+        checkout_root=str(queue.root / 'co'),
+        worker_script=str(queue.root / 'worker.py'),
+        resources={'cpu': 1, 'mem_gb': 1, f'{KIND}@{TIER}': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST_SHA,
+            'manifest_bytes': size,
+            'range_start_bytes': 0,
+            'range_end_bytes': size,
+        },
+        max_attempts=1,
+        retry_safe=False,
+    )
     _claim(queue, mover)
     receipt = stage_move.move(
         _move_args(queue, stage, manifest_path, mover, consumer, size))
@@ -188,11 +192,23 @@ def _promotion_claim(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
     key = str(action["action_key"])
     cas.publish_action_request(action)
     digest = str(manifest_input["sha256"])
-    _publish(queue, key,
-             {"cpu": 1, "mem_gb": 1, f"{RAM_KIND}@{RAM_TIER}": 1},
-             {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
-              "manifest_sha256": digest, "manifest_bytes": size,
-              "range_start_bytes": 0, "range_end_bytes": size})
+    ActionRows(queue).publish(
+        key,
+        cas_root=str(queue.root / 'cas'),
+        checkout_root=str(queue.root / 'co'),
+        worker_script=str(queue.root / 'worker.py'),
+        resources={'cpu': 1, 'mem_gb': 1, f'{RAM_KIND}@{RAM_TIER}': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': RAM_TIER,
+            'manifest_sha256': digest,
+            'manifest_bytes': size,
+            'range_start_bytes': 0,
+            'range_end_bytes': size,
+        },
+        max_attempts=1,
+        retry_safe=False,
+    )
     _claim(queue, key)
     return key, digest
 
