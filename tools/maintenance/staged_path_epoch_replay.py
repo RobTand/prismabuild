@@ -32,6 +32,7 @@ if operation=='prepare':
     queue.records.ensure_layout();stage.mkdir(parents=True)
     owner.register_stage_root(queue,tier_id=tier,stage_root=stage)
     kind='ram_gib' if ram else 'stage_gib'
+    if ram:queue.ledger(tier.split(':',1)[1]).ensure_capacity({'mem_gb':2})
     queue.tier(tier).mint({kind:2});assert queue.tier(tier).take(mover,{kind:1})
     entries={};material={}
     for name in ['keep','extra']:
@@ -103,7 +104,9 @@ def epoch_replay(output: Path, *, observe: bool):
             root = old if arm == 'a8' else checkout
             env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root/'src'),str(root/'tools/fleet')]))
             result = subprocess.run([sys.executable, '-c', EPOCH_CHILD, arm, str(work), *case, operation],
-                cwd=root, env=env, capture_output=True, text=True, check=True)
+                cwd=root, env=env, capture_output=True, text=True)
+            if result.returncode:
+                raise RuntimeError(f'{arm} {case} {operation}: {result.stderr}')
             return json.loads(result.stdout.splitlines()[-1])
         for index, case in enumerate(epoch_cases()):
             work=temporary/f'case-{index}'
