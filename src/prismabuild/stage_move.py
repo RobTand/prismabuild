@@ -2197,12 +2197,8 @@ def move(args, *, stop: threading.Event | None = None) -> dict[str, object]:
         # fragment goes and the receipt says why.
         receipt["refusal"] = "residency_overran_reservation"
         receipt["complete"] = False
-        residency_map.fragment_path(
-            residency_root, args.consumer_action_key,
-            args.action_key).unlink(missing_ok=True)
-        reader_lease.material_path(
-            residency_root, args.consumer_action_key,
-            args.action_key).unlink(missing_ok=True)
+        staged_path.withdraw_vouch(
+            None, residency_root, args.consumer_action_key, args.action_key)
     elif copier.staged:
         publish(copier.staged, copier.sidecar, force=True)
     # Layer 2, after every measurement of layer 1 has been taken.  The warm

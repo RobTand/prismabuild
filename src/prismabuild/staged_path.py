@@ -1041,14 +1041,16 @@ def claimed_paths_attributed(queue: pool.PoolQueue, tier_id: str,
     return paths, tainted, own_paths
 
 
-def withdraw_vouch(queue: pool.PoolQueue, root: Path, namespace: str,
+def withdraw_vouch(queue: pool.PoolQueue | None, root: Path, namespace: str,
                 mover_action_key: str) -> None:
     """Remove one namespace's fragment, material and retiring mark for a mover.
 
     The documents only, never a file: what they vouch for is someone else's
     to delete.  Fragment first, because it is what composes a map and names
     a path to the dead-owner sweep; a material left by an interruption dates
-    nothing a fragment names.
+    nothing a fragment names. A retiring mark goes after the material.
+    ``queue=None`` discards an overrun mover's unpublished pair, preserving
+    its strict material-error behavior and touching no retiring mark.
     """
 
     residency_map.fragment_path(root, namespace,
@@ -1057,10 +1059,12 @@ def withdraw_vouch(queue: pool.PoolQueue, root: Path, namespace: str,
         reader_lease.material_path(root, namespace,
                                    mover_action_key).unlink(missing_ok=True)
     except OSError:
-        pass
-    reader_lease.clear_retiring(
-        reader_lease.leases_root(queue, root),
-        consumer_action_key=namespace, mover_action_key=mover_action_key)
+        if queue is None:
+            raise
+    if queue is not None:
+        reader_lease.clear_retiring(
+            reader_lease.leases_root(queue, root),
+            consumer_action_key=namespace, mover_action_key=mover_action_key)
 
 
 def shared_interest(
@@ -2330,17 +2334,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # namespace's fragment for the next one to find the others by.
         for namespace in same_namespaces:
             withdraw_vouch(queue, root, namespace, mover_action_key)
-        fragment_path.unlink(missing_ok=True)
-        reader_lease.clear_retiring(
-            reader_lease.leases_root(queue, root),
-            consumer_action_key=consumer_action_key,
-            mover_action_key=mover_action_key)
-        try:
-            reader_lease.material_path(
-                root, consumer_action_key,
-                mover_action_key).unlink(missing_ok=True)
-        except OSError:
-            pass
+        withdraw_vouch(queue, root, consumer_action_key, mover_action_key)
     return {
         "schema": pool.POOL_EGRESS_SCHEMA_V1,
         "action_key": mover_action_key,
@@ -7554,8 +7548,10 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
        so it files no terminal record; ``adopted_from`` plus the ledger is what
        ``residency_verdict`` reads instead.
 
-    Under the old mover's transition lock, non-blocking, because the one party
-    that could be acting on the same range at the same time is its egress.
+    Both mover transition locks are non-blocking. A live or unknown mover
+    retains its authority. The donor pair is read again under ownership;
+    an unknown or different successor pair is retained there as well.
+    The existing stage lock still orders publication against egress.
     Declining costs a copy; proceeding against an egress mid-delete would cost
     the consumer its bytes.
     """
@@ -7567,10 +7563,22 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         "tier_id": tier_id, "mover": new_key, "adopted_from": old_key,
     }
     ledger = queue.tier(tier_id)
-    with queue.mover_transition_lock(old_key, blocking=False) as acquired:
+    with ExitStack() as transitions:
+        acquired = transitions.enter_context(
+            queue.mover_transition_lock(old_key, blocking=False))
         if not acquired:
             # Its egress holds the lock, which means its bytes are going.
             return {**outcome, "reason": "range_busy"}
+        if not transitions.enter_context(
+                queue.mover_transition_lock(new_key, blocking=False)):
+            return {**outcome, "reason": "range_busy"}
+        for mover in (old_key, new_key):
+            live, unreadable = residency_plan.live_state(queue, mover)
+            if unreadable:
+                return {**outcome, "reason": "range_state_unreadable", "error": unreadable}
+            if live is not None:
+                return {**outcome, "reason": "range_in_use", "active_mover": mover,
+                        "state": live}
         before = ledger.holdings(old_key)
         if not before:
             return {**outcome, "reason": "no_longer_resident"}
@@ -7642,6 +7650,15 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 # has been published yet: the successor's fragment and
                 # material land only under this lock.
                 return {**outcome, "reason": "ownership_busy"}
+            try:
+                current_source = residency_map.validate_fragment(json.loads(
+                    pb.immutable_files.read_stable_file(
+                        source_path, where="adoption donor fragment")))
+            except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                return {**outcome, "reason": "donor_documents_changed", "error": repr(exc)}
+            current_material = _read_material_nofollow(residency_root, old_consumer, old_key)
+            if current_source != source or current_material != old_material:
+                return {**outcome, "reason": "donor_documents_changed"}
             if isinstance(old_material, dict):
                 # A partial prune can leave the fragment a strict subset of
                 # the complete range its historical receipt declares (#853).
@@ -7723,6 +7740,33 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
             successor = residency_map.reissue(
                 source, consumer_action_key=consumer_action_key,
                 mover_action_key=new_key)
+            successor_path = residency_map.fragment_path(
+                residency_root, consumer_action_key, new_key)
+            try:
+                try:
+                    current_successor = residency_map.validate_fragment(json.loads(
+                        pb.immutable_files.read_stable_file(
+                            successor_path, where="adoption successor fragment")))
+                except FileNotFoundError:
+                    if not pb.immutable_files.confirmed_metadata_absence(successor_path):
+                        return {**outcome, "reason": "successor_ownership_uncertain"}
+                    current_successor = None
+                successor_material = _read_material_nofollow(
+                    residency_root, consumer_action_key, new_key)
+                if successor_material is None:
+                    if (current_successor is not None or not
+                            pb.immutable_files.confirmed_metadata_absence(
+                                reader_lease.material_path(residency_root, consumer_action_key, new_key))):
+                        return {**outcome, "reason": "successor_ownership_uncertain"}
+                elif not isinstance(successor_material, dict):
+                    return {**outcome, "reason": "successor_ownership_uncertain"}
+                elif successor_material != {**old_material,
+                        "consumer_action_key": consumer_action_key, "mover_action_key": new_key}:
+                    return {**outcome, "reason": "successor_already_named"}
+                if current_successor is not None and current_successor != successor:
+                    return {**outcome, "reason": "successor_already_named"}
+            except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                return {**outcome, "reason": "successor_ownership_uncertain", "error": repr(exc)}
             # The sidecar before the fragment it dates, as the movers and
             # the shared-range fan-out write them (#1087): an interruption
             # leaves a date no vouch cites, which every reader ignores,
@@ -7745,13 +7789,7 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 # resident, so the next cycle asks again and finishes the move.
                 return {**outcome, "reason": "partial_transfer",
                         "tokens_moved": moved, "tokens_expected": expected}
-            source_path.unlink(missing_ok=True)
-            try:
-                reader_lease.material_path(
-                    residency_root, old_consumer,
-                    old_key).unlink(missing_ok=True)
-            except OSError:
-                pass
+            withdraw_vouch(queue, residency_root, old_consumer, old_key)
         entries = dict(source["entries"])                # type: ignore[arg-type]
         # The successor's own phase boundaries, which the descriptor match
         # already proved equal to the range this copy made resident.  Taken

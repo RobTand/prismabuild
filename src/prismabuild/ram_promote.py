@@ -317,12 +317,8 @@ def promote(args, *, stop=None) -> dict[str, object]:
     if overran:
         receipt["refusal"] = "residency_overran_reservation"
         receipt["complete"] = False
-        residency_map.fragment_path(
-            Path(args.residency_root), args.consumer_action_key,
-            args.action_key).unlink(missing_ok=True)
-        reader_lease.material_path(
-            residence, args.consumer_action_key,
-            args.action_key).unlink(missing_ok=True)
+        staged_path.withdraw_vouch(
+            None, Path(args.residency_root), args.consumer_action_key, args.action_key)
     elif copier.staged:
         # Once, at the end, on purpose: see the module docstring.  The
         # sidecar goes first, then the fragment it dates -- the stage
