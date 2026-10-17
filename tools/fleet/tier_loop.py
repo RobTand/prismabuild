@@ -10,4 +10,4 @@ sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
 from prismabuild.tier_cycle import main
 
 if __name__ == "__main__":
-    raise SystemExit(main(entrypoint=__file__))
+    raise SystemExit(main(entrypoint=_PB_ENTRYPOINT))

@@ -10578,7 +10578,7 @@ def main(argv: list[str] | None = None, *, entrypoint: str | Path | None = None)
 
     global ENTRYPOINT, MOVER_TOOLS_ROOT
     if entrypoint is not None:
-        ENTRYPOINT = Path(entrypoint).resolve(strict=True)
+        ENTRYPOINT = Path(entrypoint)
         MOVER_TOOLS_ROOT = str(ENTRYPOINT.parent)
     args = _parser().parse_args(argv)
     if args.interval_s <= 0:
