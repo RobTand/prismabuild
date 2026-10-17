@@ -96,7 +96,7 @@ def test_a_ram_take_charges_the_host_before_tier_occupancy(tmp_path, monkeypatch
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
     queue.ledger(HOST).ensure_capacity({"mem_gb": 2})
-    queue.mint_tier_capacity(TIER, {"ram_gib": 2})
+    queue.tier(TIER).mint({'ram_gib': 2})
     original = pool.ResourceLedger.acquire
     observed = []
 
@@ -106,7 +106,7 @@ def test_a_ram_take_charges_the_host_before_tier_occupancy(tmp_path, monkeypatch
         return original(ledger, holder, demand)
 
     monkeypatch.setattr(pool.ResourceLedger, "acquire", observe)
-    assert queue.tier_ledger(TIER).acquire(GRANT, {"ram_gib": 2})
+    assert queue.tier(TIER).take(GRANT, {'ram_gib': 2})
     assert observed == [{"mem_gb": 2}]
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 2}
 
@@ -117,7 +117,7 @@ def test_an_unspent_conclusion_returns_its_ram_host_mirror(tmp_path):
 
     assert queue._release_reservation(GRANT, host=None) == 2
 
-    assert queue.tier_ledger(TIER).holder_tokens(GRANT) == {}
+    assert queue.tier(TIER).holdings(GRANT) == {}
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {}
 
 
@@ -125,16 +125,16 @@ def test_named_handover_moves_only_the_ram_occupancy_mirror(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     seeded(queue, 2)
     rate = pool.storage_tiers.FILL_KIND
-    queue.mint_tier_capacity(TIER, {"ram_gib": 2, rate: 3})
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(GRANT, {rate: 3})
-    names = pool.held_names_visible(ledger, GRANT)
+    queue.tier(TIER).mint({'ram_gib': 2, rate: 3})
+    ledger = queue.tier(TIER)
+    assert ledger.take(GRANT, {rate: 3})
+    names = ledger.holder_state(GRANT)
     chosen = [min(name for name in names if name.startswith(kind + "-"))
               for kind in ("ram_gib", rate)]
 
-    assert ledger.transfer_tokens(GRANT, MOVER, chosen) == 2
+    assert ledger.handover_named(GRANT, MOVER, chosen) == 2
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
     assert queue.ledger(HOST).holder_tokens("ram-host:" + MOVER) == {"mem_gb": 1}
-    assert ledger.transfer_tokens(GRANT, MOVER, chosen) == 2
+    assert ledger.handover_named(GRANT, MOVER, chosen) == 2
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
     assert queue.ledger(HOST).holder_tokens("ram-host:" + MOVER) == {"mem_gb": 1}
