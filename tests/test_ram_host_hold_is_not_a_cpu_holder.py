@@ -40,7 +40,7 @@ def _queue_with_ram_fill(tmp_path, gib):
     ledger.configure_cpu_tiers(TIERS)
     ledger.ensure_capacity(CAPACITY)
     # The real writer, on the host the claim will read.
-    assert queue.hold_tier_host_memory(ledger.host, GRANT, gib) == ('taken', '')
+    assert queue.tier('ram:' + str(ledger.host))._hold_host(GRANT, gib) == ('taken', '')
     return queue
 
 
@@ -82,7 +82,7 @@ def test_the_memory_the_fill_holds_is_still_counted(tmp_path, monkeypatch):
     cpu_sampler = _idle_host(monkeypatch)
     _publish(queue, tmp_path, 'd' * 64, {'cpu': 1, 'mem_gb': 2})
     assert queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
-    assert queue.release_tier_host_memory(queue.ledger().host, GRANT) == 7
+    assert queue.tier('ram:' + str(queue.ledger().host))._release_host(GRANT) == 7
     claimed = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed and claimed['action_key'] == 'd' * 64
 

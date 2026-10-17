@@ -307,7 +307,7 @@ def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
     assert ledger.mint_supply().get(KIND) == 2
     assert ledger.free_supply().get(KIND) == 1
     assert result["census_unreadable"] is None
-    assert not ledger.census_report_path.exists()
+    assert not ledger.census_report.exists()
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
@@ -429,7 +429,7 @@ def test_retire_counts_an_unreadable_holder_as_held_in_its_own_ledger(
     assert not well.census_report_path.exists()
     other = queue.tier(other_tier)
     assert other.free_supply() == {KIND: 2}
-    assert not other.census_report_path.exists()
+    assert not other.census_report.exists()
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)

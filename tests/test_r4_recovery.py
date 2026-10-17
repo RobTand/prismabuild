@@ -98,7 +98,7 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
     # Readable terminal file with positively no tier_funding proof: only
     # the holder census is unknown here.
     done.write_text('{"status": "executed"}')
-    held = ledger.held_dir / mover
+    held = ledger.paths.held / mover
     held.chmod(0o000)  # real EACCES for a non-root worker
     try:
         events = tier_loop._settle_terminal_fence(
@@ -108,7 +108,7 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
         held.chmod(0o755)
     # Unknown holder census retains: token still held, record still open,
     # a named unknown reason is emitted.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1, \
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1, \
         "unreadable holder census must not release or strand the fence"
     record = q.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
@@ -122,7 +122,7 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
             q, tiers={TIER: {"tier_id": TIER}})
     finally:
         held.chmod(0o755)
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     record = q.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert [e for e in window_events
@@ -133,7 +133,7 @@ def test_repro_unreadable_holder_dir_retains_terminal_fence(
     settled = tier_loop._settle_terminal_fence(
         q, ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
     record = q.read_funding(mover, TIER)
     assert record is not None and record["state"] == "released"
     assert [e for e in settled if e.get("event") == "advance-released"]
@@ -148,7 +148,7 @@ def test_repro_empty_terminal_proof_retains_terminal_fence(
     events = tier_loop._settle_terminal_fence(
         q, ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1, \
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1, \
         "a present empty proof must not become unused authority"
     record = q.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
@@ -158,7 +158,7 @@ def test_repro_empty_terminal_proof_retains_terminal_fence(
     # The real cycle caller defers identically (no free, no close).
     window_events = tier_loop.residency_window(
         q, tiers={TIER: {"tier_id": TIER}})
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     record = q.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert [e for e in window_events
@@ -173,7 +173,7 @@ def test_repro_empty_terminal_proof_retains_terminal_fence(
     tier_loop._settle_terminal_fence(
         q, ledger, tier_id=TIER, mover_role="mover_row",
         consumer=None, mover=mover)
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     record = q.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
 

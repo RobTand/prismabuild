@@ -1845,10 +1845,10 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
     pool.record_store._write_json(q.records.item_path(pool.record_store.READY, owner), done)
 
     blanket: list[str] = []
-    released = pool.PoolQueue.release_tier_reservations
+    released = tier_holdings.release_unspent_all
     monkeypatch.setattr(
-        pool.PoolQueue, "release_tier_reservations",
-        lambda self, key: (blanket.append(str(key)), released(self, key))[1])
+        tier_holdings, "release_unspent_all",
+        lambda self, key, **kwargs: (blanket.append(str(key)), released(self, key, **kwargs))[1])
     selective: list[str] = []
     concluding = pool.PoolQueue._release_reservation
 

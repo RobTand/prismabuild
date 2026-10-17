@@ -1996,10 +1996,10 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     assert _tier_census(ledger) == occupied
 
     blanket: list[str] = []
-    released = pool.PoolQueue.release_tier_reservations
+    released = tier_holdings.release_unspent_all
     monkeypatch.setattr(
-        pool.PoolQueue, "release_tier_reservations",
-        lambda self, key: (blanket.append(str(key)), released(self, key))[1])
+        tier_holdings, "release_unspent_all",
+        lambda self, key, **kwargs: (blanket.append(str(key)), released(self, key, **kwargs))[1])
 
     refusals: list[dict] = []
     acquire = pool.PoolQueue._begin_tier_acquire
@@ -2039,7 +2039,7 @@ def test_refill_does_not_block_spending_held_credit(
     inst = _bind(q, template, owner, cas_root)
     ledger = q.tier(TIER)
     _announce_tier(q, tmp_path / "stage")
-    assert ledger.release_count(owner, {KIND: 1}) == {KIND: 1}
+    assert ledger.release_unspent(owner, counts={KIND: 1}, authority=tier_holdings.Unspent.NEVER_STARTED) == {KIND: 1}
     if contended:
         # The production nonblocking mint guard makes begin_acquire return
         # None under contention, even when the availability read was >0.
@@ -2087,7 +2087,7 @@ def test_refill_without_held_minimum_still_refuses(
     q = _queue(tmp_path)
     inst = _bind(q, template, owner, cas_root)
     ledger = q.tier(TIER)
-    ledger.release_count(owner, {KIND: 2 - held})
+    ledger.release_unspent(owner, counts={KIND: 2 - held}, authority=tier_holdings.Unspent.NEVER_STARTED)
     assert ledger.take(_hexkey('squatter'), {KIND: 4 - held})
     before = _tier_census(ledger)
     result = po.refill_window(q, inst, template, tier=TIER)

@@ -122,7 +122,7 @@ def test_orphan_host_holds_are_reconciled_by_name(tmp_path: Path) -> None:
     assert host.acquire("c" * 64, {"mem_gb": 48}) is True
     # The crash shape: the host half of an advance landed, the tier half
     # never did.
-    state, _detail = queue.hold_tier_host_memory(HOST, "a" * 64, 30)
+    state, _detail = queue.tier('ram:' + str(HOST))._hold_host('a' * 64, 30)
     assert state == "taken"
     assert queue.rows_host_memory_held(HOST) == 48
 
@@ -153,11 +153,11 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     queue.tier(RAM_TIER).mint({'ram_gib': 60})
     host = queue.ledger(HOST)
     assert host.acquire("c" * 64, {"mem_gb": 48}) is True
-    state, detail = queue.hold_tier_host_memory(HOST, "d" * 64, 40)
+    state, detail = queue.tier('ram:' + str(HOST))._hold_host('d' * 64, 40)
     assert state == "taken"
     assert detail == ""
     # 256 - 48 - 40 = 168 free: 240 does not fit, and that is short.
-    state, detail = queue.hold_tier_host_memory(HOST, "e" * 64, 240)
+    state, detail = queue.tier('ram:' + str(HOST))._hold_host('e' * 64, 240)
     assert state == "short"
     # An unreadable host ledger is unknown, never a free pool.  The ledger
     # wrapper is constructed per call, so the refusal is installed on the
@@ -165,7 +165,7 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     def _boom(self, holder: str, demand: dict) -> bool:
         raise OSError("boom: host census unreadable")
     monkeypatch.setattr(pool.ResourceLedger, "acquire", _boom)
-    state, detail = queue.hold_tier_host_memory(HOST, "f" * 64, 8)
+    state, detail = queue.tier('ram:' + str(HOST))._hold_host('f' * 64, 8)
     assert state == "unknown"
     assert "boom" in detail
     # The advance defers on the same tri-state, for either half failing.
@@ -204,7 +204,7 @@ def test_the_rows_read_subtracts_every_ram_host_holder_by_prefix(
     state, _ = queue.tier(RAM_TIER).take_advance('d' * 64, 60, 'ram_gib')
     assert state == "taken"
     assert queue.transfer_fence(RAM_TIER, "d" * 64, "b" * 64) == 60
-    state, _ = queue.hold_tier_host_memory(HOST, "e" * 64, 30)
+    state, _ = queue.tier('ram:' + str(HOST))._hold_host('e' * 64, 30)
     assert state == "taken"
     # Fills under grant, mover and orphan names all subtract; rows stay 48.
     assert queue.rows_host_memory_held(HOST) == 48
@@ -247,7 +247,7 @@ def test_ram_tier_mutations_go_through_the_pool_primitive() -> None:
                 raise AssertionError(
                     f"{name}: {attr}() outside the pool primitive")
     # And the primitive exists to route through.
-    source = (root / "src/prismabuild/pool.py").read_text()
-    for primitive in ("take_tier_advance", "cancel_tier_fence",
-                      "release_tier_holder", "reconcile_ram_host_holds"):
+    source = (root / "src/prismabuild/tier_holdings.py").read_text()
+    for primitive in ("take_advance", "cancel_fence",
+                      "release_unspent", "reconcile_mirror"):
         assert f"def {primitive}(" in source, primitive
