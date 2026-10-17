@@ -5161,6 +5161,14 @@ class ResourceLedger:
 
         return self.holder_census().token_counts(action_key)
 
+    def holder_state(self, action_key: str) -> set[str]:
+        """Observed token names; unreadable holders never prove empty."""
+        try:
+            return {path.name for path in self._glob_names(
+                self.held_dir / action_key, "*-*", strict=True)}
+        except (FileNotFoundError, NotADirectoryError):
+            return set()
+
     def holds_gpu(self, action_key: str) -> bool:
         """Whether one holder reserves this box's GPU (#1085).
 

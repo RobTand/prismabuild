@@ -16182,6 +16182,8 @@ The mover protocol keeps readable rows, reports incomplete coverage through its
 existing envelope and leaves full depth null. Prometheus count maps receive
 zero defaults only from complete sections; incomplete population counts are
 withheld. Raw observed counts remain available inside their independent section.
+Holder presence uses the ledger owner's strict `holder_state` observation;
+the legacy tolerant token-count query is insufficient evidence of absence.
 
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.

@@ -826,7 +826,7 @@ def _starvation_holders(queue: pool.PoolQueue, tier_id: str,
     staged: dict[str, bool | None] = {}
     for key in keys:
         try:
-            staged[key] = bool(ledger.holder_tokens(key))
+            staged[key] = bool(ledger.holder_state(key))
         except (OSError, ValueError, pool.PoolContractError) as exc:
             notes.append(f"starvation tier ledger {tier_id} holder {key[:12]}: {exc}")
             staged[key] = None
