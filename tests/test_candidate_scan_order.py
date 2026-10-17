@@ -134,22 +134,23 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
 
     queue = pool.PoolQueue(tmp_path / "queue")
     capacity = {"cpu": 2, "gpu": 1}
+    local_tags = [pool.socket.gethostname()]
     holder, head, busy, tail = (digit * 64 for digit in "0abc")
     monkeypatch.setattr(pool, "_now", lambda: 1000.0)
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
     assert ledger.acquire(holder, capacity)
     if whole_box_already_held:
-        publish(queue, head, resources={"cpu": 2}, priority=10)
+        publish(queue, head, resources={"cpu": 2}, priority=10, tags=local_tags)
         for _ in range(pool.STARVATION_FLOOR - 1):
             queue.record_pass(head)
     publish(queue, busy, resources={"cpu": 1, "gpu": 1}, dependent_of=holder, priority=0)
-    publish(queue, tail, resources={"cpu": 1}, priority=-10)
+    publish(queue, tail, resources={"cpu": 1}, priority=-10, tags=local_tags)
     item = json.loads(queue.item_path(pool.READY, busy).read_text())
     queue.record_denial(item, "reservation_unavailable_withholding", {"withhold": {
         "withhold": True, "mode": "tokens", "withhold_age_s": pool.WITHHOLD_CEILING_S + 1.0}})
     record = queue.record_denial
-    carried_lookup = queue._host_denial_records
+    carried_lookup = queue._carried_withhold
     room_lookup = queue._ready_gpu_row_room
     observations = []
 
@@ -159,22 +160,21 @@ def test_busy_row_distinguishes_expired_carry_from_a_whole_box_hold(
             assert reason == "reservation_unavailable_withholding"
             ledger.release(holder)
 
-    def carry():
+    def carry(records, row, **kwargs):
         observations.append(("carry", busy))
-        records = carried_lookup()
         if not whole_box_already_held:
             ledger.release(holder)
-        return records
+        return carried_lookup(records, row, **kwargs)
 
     def room(row, **kwargs):
         observations.append(("room", row["action_key"]))
         return room_lookup(row, **kwargs)
 
     monkeypatch.setattr(queue, "record_denial", deny)
-    monkeypatch.setattr(queue, "_host_denial_records", carry)
+    monkeypatch.setattr(queue, "_carried_withhold", carry)
     monkeypatch.setattr(queue, "_ready_gpu_row_room", room)
     with held_transition(queue, busy):
-        claimed = queue.claim(capacity=capacity)
+        claimed = queue.claim(has_gpu=True, capacity=capacity, tags=local_tags)
     path = adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     records = json.loads(path.read_text())["records"].values()
     busy_denial = next(row for row in records if row["action_key"] == busy)

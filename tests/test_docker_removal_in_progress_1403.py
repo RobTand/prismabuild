@@ -88,7 +88,7 @@ def claimed(tmp_path: Path):
     queued = pool._read_json(queue.item_path(pool.READY, KEY))
     queued["container_owner"] = OWNER
     pool._write_json_atomic(queue.item_path(pool.READY, KEY), queued)
-    record = queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    record = queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     assert record is not None and record["action_key"] == KEY
     marker = queue.root / "container-owners" / f"{OWNER}.used"
     marker.parent.mkdir(parents=True)

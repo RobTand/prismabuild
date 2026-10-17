@@ -75,7 +75,7 @@ def test_diagnostic_failure_does_not_change_a_claim_or_passes(tmp_path, monkeypa
             raise OSError("full")
         return original_write(path, value)
     monkeypatch.setattr(adaptive_cpu, "write_json", fail_denial)
-    assert queue.claim(capacity={"gpu": 2})["action_key"] == KEY_B
+    assert queue.claim(has_gpu=True, capacity={"gpu": 2})["action_key"] == KEY_B
     assert queue.passes(KEY_A) == 0
 
 
@@ -113,13 +113,13 @@ def test_unfunded_denial_distinguishes_withholding_from_past_ceiling(tmp_path):
     assert ledger.acquire("0" * 64, {"gpu": 2})
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(KEY_A)
-    assert queue.claim(capacity={"gpu": 4}) is None
+    assert queue.claim(has_gpu=True, capacity={"gpu": 4}) is None
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_withholding"
     sidecar = json.loads(queue.passes_path(KEY_A).read_text())
     sidecar["first_unix"] -= pool.WITHHOLD_CEILING_S + 1
     queue.passes_path(KEY_A).write_text(json.dumps(sidecar))
-    assert queue.claim(capacity={"gpu": 4})["action_key"] == KEY_B
+    assert queue.claim(has_gpu=True, capacity={"gpu": 4})["action_key"] == KEY_B
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_past_ceiling"
 
