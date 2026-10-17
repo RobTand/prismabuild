@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
-from types import SimpleNamespace
 
 C, G = "c" * 64, "7" * 32
 TIERS = {"preferred": [0, 1], "fallback": []}
@@ -44,14 +42,14 @@ def operate(request, store, load):
         if family == "host-cpu-map":
             path = ledger.base / "cpu-map.json"
             if writing:
-                ledger.ensure_cpu_tiers(TIERS)
+                ledger.configure_cpu_tiers(TIERS)
                 if variant == "replay":
-                    assert ledger.ensure_cpu_tiers(TIERS) == TIERS
+                    assert ledger.configure_cpu_tiers(TIERS) == TIERS
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(base64.b64decode(request["raw"]))
                 request["_consumer_boundary"]()
-                return ledger.ensure_cpu_tiers(TIERS, initialize=False)
+                return ledger.configure_cpu_tiers(TIERS, initialize=False)
         else:
             gpu = load("prismabuild.adaptive_gpu")
             if family == "host-cpu-metadata":

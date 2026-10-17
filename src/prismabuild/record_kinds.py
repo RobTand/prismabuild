@@ -40,7 +40,7 @@ KINDS = (
                ("first", "replay", "ordinary", "measurement"),
                ("invalid counters degrade to zero; old writer keeps its actual drain-note API",), negative_field="passes"),
     RecordKind("host-cpu-map", None, "private host reservation cpu-map.json", "closed",
-               "prismabuild.pool:ResourceLedger.ensure_cpu_tiers", ("prismabuild.pool:ResourceLedger.ensure_cpu_tiers",),
+               "prismabuild.pool:ResourceLedger.configure_cpu_tiers", ("prismabuild.pool:ResourceLedger.configure_cpu_tiers",),
                ("initial", "replay"), ("an existing map must exactly match; no topology remap or physical affinity change",), negative_field="preferred"),
     RecordKind("host-cpu-metadata", None, "private held/<key>/.adaptive.json", "additive",
                "prismabuild.adaptive_cpu:Controller.decision", ("prismabuild.pool:ResourceLedger.begin_acquire",),
