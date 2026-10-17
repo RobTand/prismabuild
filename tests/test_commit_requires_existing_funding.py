@@ -1,10 +1,11 @@
-"""Current commits reconcile funding; older allocated intents still recover."""
+"""SDK6 first commits acquire; allocated intents recover without a second take."""
 import json
 
 import pytest
 
 from prismabuild import batch_ledger as bl, output_contract as oc
 from prismabuild import produced_output as po, tier_holdings
+from prismabuild.legacy_funding import LegacyFunding
 from test_produced_output_scope import _queue, _template, _bind, STAGE_TIER, STAGE_BARE
 
 
@@ -42,23 +43,45 @@ def _commit(world):
 
 
 def test_no_pool_or_legacy_intent_refuses_without_minting(tmp_path, capsys):
+    """Retain the candidate native ID while pinning the SDK6 acquisition promise."""
     world = _world(tmp_path)
-    queue, _, instance, _, _, namespace, funding = world
+    queue, _, instance, _, manifest, namespace, funding = world
     ledger = queue.tier(STAGE_TIER)
     free = ledger.free_supply()
-    result = _commit(world)
+    takes, files = [], []
+    real_take, real_file = tier_holdings.TierLedger.take, LegacyFunding.file
+
+    def take_once(source, holder, need):
+        takes.append((holder, dict(need)))
+        return real_take(source, holder, need)
+
+    def file_allocated(source, record):
+        real_file(source, record)
+        files.append((source.path, source.path.read_text(),
+                      ledger.holdings(namespace), ledger.holdings('a' * 64)))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(tier_holdings.TierLedger, 'take', take_once)
+        patch.setattr(LegacyFunding, 'file', file_allocated)
+        result = _commit(world)
     effects = dict(result=result, free_before=free, free_after=ledger.free_supply(),
                    holder=ledger.holdings(namespace), mover=ledger.holdings('a' * 64),
                    intent_present=funding.exists())
     with capsys.disabled():
         print('funding-new-mint-control: ' + json.dumps(effects, sort_keys=True), flush=True)
-    assert result == {'ok': False, 'refusal': 'prepaid-funding-required'}
-    assert ledger.free_supply() == free
+    assert result['ok'] is True, result
+    assert result['funding'] == 'legacy'
+    assert takes == [(namespace, {STAGE_BARE: 1})]
+    expected_intent = dict(batch_id='batch', tier=STAGE_TIER, mover_key='a' * 64,
+                           batch_gib=1, manifest_digest=manifest)
+    assert files == [(funding, json.dumps(expected_intent, sort_keys=True) + '\n',
+                      {STAGE_BARE: 1}, {})]
+    assert ledger.free_supply() == {**free, STAGE_BARE: free[STAGE_BARE] - 1}
     assert ledger.holdings(namespace) == {}
-    assert ledger.holdings('a' * 64) == {}
+    assert ledger.holdings('a' * 64) == {STAGE_BARE: 1}
     assert not funding.exists()
-    assert (bl.prewrites_dir(queue.root, instance) / 'batch.prewrite.json').exists()
-    assert bl.BatchLedger.for_instance(queue.root, instance).capture()['batches'] == {}
+    assert not (bl.prewrites_dir(queue.root, instance) / 'batch.prewrite.json').exists()
+    assert 'batch' in bl.BatchLedger.for_instance(queue.root, instance).capture()['batches']
 
 
 @pytest.mark.parametrize('moved', [0, 1, 2], ids=['allocated', 'split', 'handed-over'])

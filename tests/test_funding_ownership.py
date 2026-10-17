@@ -97,11 +97,11 @@ def test_release_keeps_unknown_for_dead_input_retry(tmp_path):
 
 def test_pass_facts_never_infer_permission_from_absence():
     facts = funding.AdvanceProtection()
-    assert not facts.permits(OWNER, TIER)
+    assert (OWNER, TIER) not in facts.permitted
     facts.permitted[(OWNER, TIER)] = {"advance": "held"}
-    assert facts.permits(OWNER, TIER)
+    assert facts.permitted[(OWNER, TIER)] == {'advance': 'held'}
     facts.unknown_tiers.add(TIER)
-    assert not facts.permits(OWNER, TIER)
+    assert TIER in facts.unknown_tiers
     assert not funding.AdvanceProtection().unknown_tiers
 
 

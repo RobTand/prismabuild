@@ -10149,17 +10149,23 @@ census over the live records only.
 `produced_output.publish_prepaid_batch` is the one production call per
 finished batch: sealed reference -> real CAS request for the stage mover
 (params carry the reference) -> `stage_output_intent` -> `publish` ->
-`fund_output_batch` (exact transfer of the owner's existing window) ->
+`FundingLedger.fund_output` (exact transfer of the owner's existing window) ->
 `commit_batch`. `commit_batch` reconciles the pool record (drives a
-`reserved` remainder through `drive_output_funding`, requires
+`reserved` remainder through `FundingLedger.drive_output`, requires
 `transferring` with the mover holding the full token set) and files the
-batch with no second acquisition; the legacy per-batch
-`{batch_id}.funding.json` path survives only as in-flight recovery for
-batches that already filed it. Liveness, closed with the integration:
-`release_output_funding` refuses once `_output_batch_authority` holds
+batch with no second acquisition in this prepaid path. The public SDK6
+`commit_batch` also retains its documented direct first-commit path: when
+pool funding and a legacy intent are both absent, it acquires exact tokens
+from free under the batch holder, files the per-batch
+`{batch_id}.funding.json` intent, and transfers whole to the mover. An
+existing intent recovers already allocated tokens without another acquire.
+Production writers continue using `publish_prepaid_batch`. Retiring direct
+acquisition needs a separate SDK contract/version decision.
+Liveness, closed with the integration:
+`FundingLedger.release_output` refuses once `_output_batch_authority` holds
 (committed batches are recovery, not cancellation); `abort_prewrite`
 refuses while an owner intent cites the prewrite (`prepaid-intent-exists-
-retain`; retire the intent first); `stage_output_intent`/`fund_output_batch`
+retain`; retire the intent first); `FundingLedger.stage_output`/`FundingLedger.fund_output`
 never select a token name already promised to another outstanding intent
 of the same owner (`tier-reservation-unavailable` instead of a wedged
 transfer-short). `admit_funded_window` reports the delivered binding
@@ -18839,11 +18845,11 @@ inside those locks before `BatchLedger.publish_stage` publishes and cleans up.
 Wire schemas, token names, publication bindings, native observations and the
 legacy in-flight recovery lane retain their existing contracts.
 
-C12 changes the current positive-byte first-commit protocol: without prepaid
-pool funding or an existing legacy intent, `commit_batch` returns
-`{"ok": false, "refusal": "prepaid-funding-required"}` and acquires no tokens.
-Direct SDK6 callers must fund first or call `publish_prepaid_batch`.
-Zero-token commits, corrupt/mismatched/unknown-holdings diagnostics, positive
-existing legacy recovery and publication cleanup order are unchanged.
-Old and rollback writers can still create legacy intents, whose readers remain;
-this source change establishes no writer exclusion, drain or deployment fact.
+C12 preserves SDK6 first-commit acquisition as well as prepaid publication.
+The proposed `c12.r04` new-acquire refusal is disagreed with for this refactor
+and deferred pending a separate SDK version/deprecation decision. An empty
+live-file census cannot exclude future valid public SDK6 calls. The proposed
+patch and causal evidence remain retained as future-proposal material.
+Zero-credit behavior, corrupt/mismatched/unknown-holdings diagnostics,
+positive existing-intent recovery and publication cleanup order are unchanged.
+No writer exclusion, drain, deployment or workload fact is established.

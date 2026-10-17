@@ -780,8 +780,8 @@ def admit_funded_window(queue, instance: Mapping[str, object],
     Fully validates the window request (bound instance + template match,
     permitted tiers, positive-integer needs, need within window demand and
     within minted tier capacity). With the funded-claim primitive family
-    delivered (the prepaid-output lane: ``reserve_fence`` /
-    ``transfer_tokens`` / ``funded_cover`` on ``PoolQueue``), this is the
+    delivered (the prepaid-output lane: ``FundingLedger.reserve_window``,
+    ``ResourceLedger.transfer_tokens`` and ``FundingLedger.cover_window``), this is the
     supported window binding: the producer action reserves its window ONCE
     as its own tier demand (``owner_demand_terms`` at submit), and every
     batch funds from those holdings by exact transfer -- never a second
@@ -835,8 +835,8 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         # the producer must declare -- the owner action's own tier demand
         # (reserved once at its claim). It does NOT verify that any owner
         # physically holds window tokens right now; the authority is the
-        # per-batch funding itself (stage_output_intent ->
-        # publish_prepaid_batch/fund_output_batch -> commit_batch), which
+        # per-batch funding itself (FundingLedger.stage_output ->
+        # publish_prepaid_batch/FundingLedger.fund_output -> commit_batch), which
         # moves exact names owner->mover and never re-acquires from free.
         return {"ok": True, "mode": "prepaid-per-batch",
                 "declaration_only": True,
@@ -863,12 +863,9 @@ def commit_batch(queue, instance: Mapping[str, object],
                  template: Mapping[str, object],
                  descriptors: list[Mapping[str, object]], *, batch_id: str,
                  tier: str, mover_key: str) -> dict[str, object]:
-    """Check, reconcile allocated funding, then file one immutable batch.
-
-    An unfunded positive-byte first commit refuses with
-    ``prepaid-funding-required``. Existing legacy intents still recover;
-    zero-token commits and the public SDK6 signature are unchanged.
-    """
+    """Commit one immutable batch: check, prewrite-match, acquire exact under
+    the batch holder, TRANSFER whole to mover ownership (no free interval),
+    file the batch record. All-or-nothing with typed refusals."""
 
     from prismabuild import pool as pool_mod
     from prismabuild import storage_tiers as tiers_mod

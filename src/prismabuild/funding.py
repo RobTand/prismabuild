@@ -192,11 +192,6 @@ class AdvanceProtection:
     census_consumers: list = field(default_factory=list)
     census_unknown: list = field(default_factory=list)
 
-    def permits(self, key: str, tier_id: str) -> bool:
-        return (not self.unknown_ready and tier_id not in self.unknown_tiers
-                and (key, tier_id) not in self.unknown_consumers
-                and (key, tier_id) not in self.gated
-                and (key, tier_id) in self.permitted)
 
 
 @dataclass(frozen=True)
@@ -4132,8 +4127,8 @@ class FundingLedger:
                 return CommitFunding(funding_path, prepaid, {"ok": False, "refusal": "transfer-short",
                         "moved": mover_now, "expected": batch_gib})
         else:
-            # Legacy in-flight recovery only: the per-batch intent names
-            # tokens acquired from free under the batch namespace.
+            # SDK6 direct commits acquire under the batch namespace; an
+            # existing intent recovers those tokens without acquiring again.
             try:
                 funding = LegacyFunding(funding_path).read()
             except oc.ProducedOutputError as exc:
@@ -4155,8 +4150,16 @@ class FundingLedger:
                     # A previous attempt moved some tokens and crashed before
                     # filing the batch; the remainder is gone to unknown hands.
                     return CommitFunding(funding_path, prepaid, {"ok": False, "refusal": "unknown-retain: funded tokens lost"})
-                return CommitFunding(funding_path, prepaid, {
-                    "ok": False, "refusal": "prepaid-funding-required"})
+                if not ledger.take(batch_ns, {kind: batch_gib}):
+                    return CommitFunding(funding_path, prepaid, {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()})
+                # Intent names allocated tokens only: nothing is recorded
+                # before the ledger holds it, so a crash before this line
+                # retries clean and a crash after it resumes from the record.
+                LegacyFunding(funding_path).file({
+                    "batch_id": batch_id, "tier": tier,
+                    "mover_key": mover, "batch_gib": batch_gib,
+                    "manifest_digest": manifest_digest})
+                holder_now = batch_gib
             if holder_now > 0:
                 self.queue.tier(tier).handover(batch_ns, mover)
                 mover_now = ledger.holdings(mover).get(kind, 0)
