@@ -85,6 +85,24 @@ def test_unreadable_live_mover_input_cannot_prove_an_empty_population(tmp_path):
     assert section.errors
 
 
+def test_unreadable_tier_listing_cannot_prove_an_empty_population(tmp_path):
+    for name in ("ready", "claimed", "workers", "tiers"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "tier-reservations").symlink_to("tier-reservations", target_is_directory=True)
+    for reader in (None, census.KeptReads()):
+        if reader is not None:
+            reader.begin()
+        try:
+            for view in ("diagnostics", "tokens", "sources"):
+                assert census.tiers(tmp_path, view=view, reader=reader).completeness == "partial"
+        finally:
+            if reader is not None:
+                reader.end()
+    assert census.starvation(tmp_path, now=100.0)["complete"] is False
+    assert pbmetrics._starvation_metrics(pbmetrics.Metrics(), tmp_path, now=100.0,
+                                         window_seconds=20.0) is False
+
+
 def test_blocked_origin_commands_keep_the_original_json_spelling():
     ref = {"unicode": "é", "nested": {"z": float("nan"), "a": 1}}
     expected = json.dumps(ref, sort_keys=True, separators=(",", ":"))

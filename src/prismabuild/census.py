@@ -68,7 +68,7 @@ def tiers(queue_root, *, view="announcements", now=None, reader=None) -> Section
     if view == "diagnostics":
         notes, unreadable = [], []
         value = _starvation_tiers(queue, now=time.time() if now is None else now,
-                                  notes=notes, unreadable=unreadable)
+                                  notes=notes, unreadable=unreadable, reader=reader)
         return _section({"tiers": value, "notes": notes, "unreadable": unreadable},
                         inputs=inputs, errors=unreadable)
     if view not in {"tokens", "sources"}:
@@ -1117,7 +1117,7 @@ def _starvation_cursor_gap(names: list[str], accepted_index: int | None,
     return gap
 
 def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
-                      notes: list[str], unreadable: list[str]) -> list[dict]:
+                      notes: list[str], unreadable: list[str], reader=None) -> list[dict]:
     """What each tier currently offers and holds: announcement plus ledger."""
 
     try:
@@ -1129,7 +1129,7 @@ def _starvation_tiers(queue: pool.PoolQueue, *, now: float,
         unreadable.append(f"starvation tiers: {exc}")
         announced = {}
     try:
-        tier_ids = queue.tier_ids()
+        tier_ids = _tier_ids(reader, queue)
     except OSError as exc:
         notes.append(f"starvation tier ledgers: {exc}")
         unreadable.append(f"starvation tier ledgers: {exc}")
@@ -2397,13 +2397,12 @@ def _tiers(reader: KeptReads, queue: pool.PoolQueue) -> list[dict[str, object]]:
             records.append(record)
     return records
 
-def _tier_ids(reader: KeptReads, queue: pool.PoolQueue) -> list[str]:
-    """``PoolQueue.tier_ids``, from a kept listing; any failure reads empty."""
+def _tier_ids(reader: KeptReads | None, queue: pool.PoolQueue) -> list[str]:
+    """Observed tier names; a failed listing cannot prove there are none."""
 
-    try:
-        return sorted(path.name for path in reader.tier_directories(queue))
-    except OSError:
-        return []
+    paths = (queue.records.tier_directories() if reader is None
+             else reader.tier_directories(queue))
+    return sorted(path.name for path in paths)
 
 def _ledger_counts(reader: KeptReads, queue: pool.PoolQueue, tier_id: str):
     """``(capacity, available)`` of one tier ledger, or the failure raised."""

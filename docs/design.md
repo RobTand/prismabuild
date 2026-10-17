@@ -16171,6 +16171,11 @@ current-key claim. Tier, lifecycle and residency owners retain their decisions.
 Census observes their facts without admitting, publishing, locking or resolving
 lifecycle transitions.
 
+Tier observation uses Store's strict directory capture. `Queue.tier_ids` retains
+its release/reaper policy of tolerating failed scans; that fallback cannot prove
+an empty observed tier population. A failed census scan retains partial coverage
+and marks the existing starvation/scrape completeness false.
+
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.
 Starvation uses retained latest observations without a time gate and joins them
