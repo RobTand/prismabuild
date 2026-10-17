@@ -25,23 +25,15 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 KEY_A = "a" * 64
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1})
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1})).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def test_the_claim_records_the_bytes_the_rename_moved(
@@ -58,7 +50,7 @@ def test_the_claim_records_the_bytes_the_rename_moved(
     waiter on the new one never saw an ending.
     """
 
-    _publish(queue, KEY_A, priority=0)
+    ActionRows(queue).publish(KEY_A, priority=0)
     first = json.loads(
         queue.records.item_path(pool.record_store.READY, KEY_A).read_text(encoding="utf-8")
     )
@@ -67,7 +59,7 @@ def test_the_claim_records_the_bytes_the_rename_moved(
 
     def resubmit_then_rename(src: object, dst: object) -> None:
         if str(src).endswith(f"{pool.record_store.READY}/{KEY_A}.json"):
-            _publish(queue, KEY_A, priority=7)
+            ActionRows(queue).publish(KEY_A, priority=7)
         return real_rename(src, dst)
 
     monkeypatch.setattr(pool.os, "rename", resubmit_then_rename)
@@ -93,12 +85,12 @@ def test_replacement_is_admitted_against_its_own_requirements(
     queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
     replacement: dict[str, object],
 ) -> None:
-    _publish(queue, KEY_A, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'cpu': 1})
     real_rename = os.rename
 
     def resubmit_then_rename(src: object, dst: object) -> None:
         if str(src).endswith(f"{pool.record_store.READY}/{KEY_A}.json"):
-            _publish(queue, KEY_A, **replacement)
+            ActionRows(queue).publish(KEY_A, **replacement)
         return real_rename(src, dst)
 
     with monkeypatch.context() as patch:
