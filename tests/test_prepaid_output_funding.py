@@ -1647,7 +1647,7 @@ def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path, broker) -
     chain = _real_cas_chain(tmp_path, "rc7", broker=broker)
     q, ledger, mover = chain["q"], chain["ledger"], chain["mover"]
     _exhaust_free(ledger, chain["squatter"])
-    free0 = ledger.available().get(KIND, 0)
+    free0 = ledger.free_supply().get(KIND, 0)
     claimed = q.claim(owner="w-rc7-mover")
     assert claimed is not None, "real-CAS prepaid cover must admit the claim"
     assert claimed["action_key"] == mover
@@ -1655,9 +1655,9 @@ def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path, broker) -
     assert isinstance(entry, dict) and entry.get("variant") == "output"
     # The cover, not free credit, admitted it: fence stays on the mover,
     # nothing new was taken from free, and the record is consumed once.
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
-    assert ledger.available().get(KIND, 0) == free0
-    assert ledger.holder_tokens(chain["owner"]).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
+    assert ledger.free_supply().get(KIND, 0) == free0
+    assert ledger.holdings(chain['owner']).get(KIND, 0) == 1
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     assert q.records.item_path(pool.record_store.CLAIMED, mover).exists()
@@ -1738,10 +1738,10 @@ def test_filed_request_corrupt_after_funding_never_claims(
     os.chmod(request_path, 0o644)
     request_path.write_bytes(b"{not-json")
     _exhaust_free(ledger, chain["squatter"])
-    free0 = ledger.available().get(KIND, 0)
+    free0 = ledger.free_supply().get(KIND, 0)
     assert q.claim(owner="w-cr7-mover") is None
     assert q.records.item_path(pool.record_store.READY, mover).exists()
-    assert ledger.available().get(KIND, 0) == free0
+    assert ledger.free_supply().get(KIND, 0) == free0
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
 
@@ -1762,10 +1762,10 @@ def test_real_cas_contradictory_projection_drops_cover(tmp_path: Path, broker) -
     row["produced_output_batch"] = other
     pool.immutable_files.write_json_atomic(ready_path, row)
     _exhaust_free(ledger, chain["squatter"])
-    free0 = ledger.available().get(KIND, 0)
+    free0 = ledger.free_supply().get(KIND, 0)
     assert q.claim(owner="w-cx7-mover") is None
     assert ready_path.exists()
-    assert ledger.available().get(KIND, 0) == free0
+    assert ledger.free_supply().get(KIND, 0) == free0
 
 
 def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) -> None:
@@ -1783,10 +1783,10 @@ def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) ->
     del row["produced_output_batch"]
     pool.immutable_files.write_json_atomic(ready_path, row)
     _exhaust_free(ledger, chain["squatter"])
-    free0 = ledger.available().get(KIND, 0)
+    free0 = ledger.free_supply().get(KIND, 0)
     assert q.claim(owner="w-pl7-mover") is None
     assert ready_path.exists()
-    assert ledger.available().get(KIND, 0) == free0
+    assert ledger.free_supply().get(KIND, 0) == free0
     rec = q.read_output_funding(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
 

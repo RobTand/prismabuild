@@ -140,7 +140,7 @@ class _World:
         assert not self.q.records.item_path(pool.record_store.READY, self.mover).exists()
         assert self.q.move_record(self.mover) is None
         # Neither the failure nor the withdrawal released the prepaid token.
-        assert self.ledger.holder_tokens(self.mover) == {KIND: 1}
+        assert self.ledger.holdings(self.mover) == {KIND: 1}
 
     def fail_the_producer(self) -> None:
         self.q.finish(self.owner, status="failed", detail={"returncode": 1})
@@ -198,7 +198,7 @@ def test_a_succeeded_producer_that_left_its_batch_staged_is_retired(
     retired = _about(world.sweep(IDLE), world.mover)
     assert [entry.get("producer_state") for entry in retired] == ["succeeded"]
     assert retired[0]["complete"] is True, retired
-    assert world.ledger.holder_tokens(world.mover) == {}
+    assert world.ledger.holdings(world.mover) == {}
 
 
 def test_a_withdrawn_mover_of_a_live_producer_is_kept(tmp_path) -> None:
@@ -208,11 +208,11 @@ def test_a_withdrawn_mover_of_a_live_producer_is_kept(tmp_path) -> None:
     world.strand_the_mover()
     receipts = world.sweep(UNMET)
     assert not _about(receipts, world.mover), receipts
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
     assert world.batch_entry().get("retired") is not True
     # The producer's own window is named by its own live claim: it is not
     # reported as a holder nobody can place, under pressure or otherwise.
-    assert world.ledger.holder_tokens(world.owner) == {KIND: 1}
+    assert world.ledger.holdings(world.owner) == {KIND: 1}
     assert not _about(receipts, world.owner), receipts
     assert not _about(world.sweep(IDLE), world.owner)
 
@@ -225,7 +225,7 @@ def test_a_queued_mover_of_a_dead_producer_is_kept(tmp_path) -> None:
     world.fail_the_producer()
     receipts = world.sweep(UNMET)
     assert not _about(receipts, world.mover), receipts
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
 
 
 def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
@@ -254,7 +254,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
         "range_start_bytes": 0, "range_end_bytes": len(PAYLOAD),
         "bytes_staged": len(PAYLOAD), "complete": True})
     world.q.finish(world.mover, status="executed")
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
 
     # The joint-commitment census does not offer its tokens as room either.
     tiers = {TIER: next(record for record in world.q.tiers()
@@ -265,7 +265,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
     receipts = world.sweep(UNMET)
     assert not [entry for entry in _about(receipts, world.mover)
                 if entry.get("tokens_released")], receipts
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
     assert staged.read_bytes() == PAYLOAD
 
 
@@ -287,7 +287,7 @@ def test_an_unresolvable_produced_holder_is_reported_once_and_kept(
         UNRESOLVED_EVENT], first
     assert "template" in " ".join(first[0]["errors"]), first
     assert first[0]["tier_id"] == TIER
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
     # The same reason again is not news.
     assert not _about(world.sweep(IDLE), world.mover)
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}

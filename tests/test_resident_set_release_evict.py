@@ -239,11 +239,11 @@ def test_eviction_recovers_persisted_state_with_all_three_trees(tmp_path, monkey
         tree.mkdir(parents=True)
         (tree / "weights").write_bytes(b"weights")
     ledger = queue.tier('local:test-host')
-    original_release = type(ledger).release
+    original_release = type(ledger).release_unspent
     def release(instance, owner, *args, **kwargs):
         assert not any(tree.exists() for tree in trees)
         return original_release(instance, owner, *args, **kwargs)
-    monkeypatch.setattr(type(ledger), "release", release)
+    monkeypatch.setattr(type(ledger), 'release_unspent', release)
     result = local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=201)
     assert result["state"] == "absent" and result["bytes"] == 0
     assert not any(tree.exists() for tree in trees)
@@ -275,7 +275,7 @@ def test_close_preserves_pinned_bytes_and_eviction_deletes_every_tree_before_tok
     ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
     tokens = ledger.holder_state(set_id)
     original_delete = local_resident.shutil.rmtree
-    original_release = type(ledger).release
+    original_release = type(ledger).release_unspent
     def delete(tree):
         assert ledger.holder_state(set_id) == tokens
         assert store.read_copy(set_id, "test-host")["state"] == "evicting"
@@ -286,7 +286,7 @@ def test_close_preserves_pinned_bytes_and_eviction_deletes_every_tree_before_tok
         assert not any(tree.exists() for tree in trees)
         return original_release(instance, owner, *args, **kwargs)
     monkeypatch.setattr(local_resident.shutil, "rmtree", delete)
-    monkeypatch.setattr(type(ledger), "release", release)
+    monkeypatch.setattr(type(ledger), 'release_unspent', release)
     with pytest.raises(OSError, match="delete interrupted"):
         local_resident.evict_resident_copy(store, set_id, "test-host", spec, now=123)
     assert store.read_copy(set_id, "test-host")["state"] == "evicting"

@@ -252,7 +252,7 @@ class _Producer:
             stage_root=str(self.fleet.stage),
             residency_root=po.output_fragment_root(q.root / pool.record_store.RESIDENCY))
         assert receipt.get("complete") is True, receipt
-        assert self.fleet.ledger.holder_tokens(mover) == {}
+        assert self.fleet.ledger.holdings(mover) == {}
         assert not staged.exists()
         funding = q.read_output_funding(mover, TIER)
         assert funding is not None and funding["state"] == "consumed"
