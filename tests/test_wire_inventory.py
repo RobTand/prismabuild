@@ -8,6 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from wire_inventory import audit
+from rebind_source_reviews import reviewed_sites
 
 
 def test_closed_field_sets_remain_pinned():
@@ -83,3 +84,12 @@ def test_inventory_follows_transitive_module_owners_without_importing_them(tmp_p
     record = next(row for row in rows if row["wire_id"] == "example.transitive.v1")
     assert [(row["path"], row["owner"]) for row in record["reader_checks"]] == [
         ("src/prismabuild/caller.py", "read"), ("src/prismabuild/caller.py", "read_export")]
+
+
+def test_source_review_rebinding_compares_every_non_schema_expression():
+    old = b"def read():\n    return {'schema': old_owner.SCHEMA, 'body': record}\n"
+    moved = old.replace(b"old_owner", b"new_owner")
+    changed = moved.replace(b"'body': record", b"'body': other")
+    members = ["body", "schema"]
+    assert reviewed_sites(old, "read", members, "resolved") == reviewed_sites(moved, "read", members, "resolved")
+    assert reviewed_sites(old, "read", members, "resolved") != reviewed_sites(changed, "read", members, "resolved")
