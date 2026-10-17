@@ -123,7 +123,10 @@ def prune_dry_run(live: pool.PoolQueue, funding: Path) -> dict:
         why = None
         if record.get("state") not in ("consumed", "released"):
             why = f"state-{record.get('state')}"
-        elif any(live.records.item_path(s, mover).exists() for s in (pool.record_store.READY, pool.record_store.CLAIMED)):
+        elif any(
+            (live.records.item_path(s, mover).exists(
+            ) for s in (pool.record_store.READY, pool.record_store.CLAIMED)),
+        ):
             why = "mover-queued-or-claimed"
         elif not any(live.records.item_path(s, mover).exists()
                      for s in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)):

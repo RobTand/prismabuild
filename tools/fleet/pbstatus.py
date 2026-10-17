@@ -681,7 +681,9 @@ def _pool_records(directory: Path, *, reader=None) -> tuple[dict[str, dict | Non
     if reader is not None:
         return reader.pool_records(directory)
     try:
-        listed = pool.record_store.RecordStore(directory.parent).required_diagnostic_records_at(directory)
+        listed = pool.record_store.RecordStore(directory.parent).required_diagnostic_records_at(
+            directory,
+        )
     except OSError as exc:
         return {}, [f"pool {directory}: {_unreadable_reason(exc)}"]
     records: dict[str, dict | None] = {}
@@ -986,7 +988,10 @@ def read_pool(queue_root: str | Path, *, reader=None) -> dict:
     queue = pool.PoolQueue(Path(queue_root).absolute())
     workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS, reader=reader)
     ready, ready_notes = _pool_records(queue.records.dir(pool.record_store.READY), reader=reader)
-    claimed, claim_notes = _pool_records(queue.records.dir(pool.record_store.CLAIMED), reader=reader)
+    claimed, claim_notes = _pool_records(
+        queue.records.dir(pool.record_store.CLAIMED),
+        reader=reader,
+    )
     admission = {}
     for host, offer in workers.items():
         if _valid_pool_offer(host, offer):
@@ -995,13 +1000,22 @@ def read_pool(queue_root: str | Path, *, reader=None) -> dict:
             base = queue.root / pool.RESERVATIONS / host / "adaptive"
             admission[host] = {
                 'cpu': _pool_sidecar(base / 'cpu-sample.json', reader=reader),
-                'gpu': _pool_sidecar(base / 'gpu-state.json', reader=reader) if offer.get('has_gpu') else None,
+                'gpu': _pool_sidecar(
+                    base / 'gpu-state.json',
+                    reader=reader,
+                ) if offer.get(
+                    'has_gpu',
+                ) else None,
             }
     sidecars = {}
     for state, records in ((pool.record_store.READY, ready), (pool.record_store.CLAIMED, claimed)):
         for key, record in records.items():
             if _valid_pool_item(key, record):
-                path = queue.records.passes_path(key) if state == pool.record_store.READY else queue.records.lease_path(key)
+                path = queue.records.passes_path(
+                    key,
+                ) if state == pool.record_store.READY else queue.records.lease_path(
+                    key,
+                )
                 sidecars[state, key] = _pool_sidecar(path, reader=reader)
     prewarms = {key: _pool_sidecar(queue.records.prewarm_path(key), reader=reader)
                 for key, record in ready.items() if _valid_pool_item(key, record)}
@@ -1108,7 +1122,9 @@ def read_pool(queue_root: str | Path, *, reader=None) -> dict:
                            submitted_host=record.get('published_by'),
                            tested_repository=pool.tested_repository_of(record),
                            unstarted_releases=_releases(record),
-                           age_s=_age(record.get('claimed_unix') if state == pool.record_store.CLAIMED
+                           age_s=_age(record.get(
+                               'claimed_unix',
+                           ) if state == pool.record_store.CLAIMED
                                       else record.get('published_unix'), now))
                 row['admission_denials'] = _claim_denials_for(record, denial_records, now=now)
                 if state == pool.record_store.READY:
@@ -1247,8 +1263,6 @@ STARVATION_QUIET_FRACTION = 0.5
 #: Payload silence corroborating a quiet claim.  Same standing as the
 #: fraction above: a number this blob reports beside the verdict, not a gate.
 STARVATION_CHILD_SILENT_S = 30.0
-
-
 
 
 def _starvation_accepted_phase(lease: Mapping[str, object] | None) -> str | None:
@@ -2170,7 +2184,10 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None, reader=
         if job.get("state") != "CLAIMED":
             continue
         key = str(job.get("action_key"))
-        claim = _pool_sidecar(queue.records.item_path(pool.record_store.CLAIMED, key), reader=reader)
+        claim = _pool_sidecar(
+            queue.records.item_path(pool.record_store.CLAIMED, key),
+            reader=reader,
+        )
         if isinstance(claim, Exception) or not isinstance(claim, dict):
             notes.append(f"starvation claim {key[:12]}: {claim}")
             unreadable.append(f"starvation claim {key[:12]}: {claim}")
@@ -2330,8 +2347,6 @@ def recent_ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]
     return pool.record_store.RecordStore(queue_root).recent_ending_paths(limit)
 
 
-
-
 def _transport(record: Mapping[str, object]) -> str:
     """Which transport filed one ending, read from the schema it was filed under.
 
@@ -2385,10 +2400,6 @@ def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
         "claimed_unix": None,
         "path": entry.path,
     }
-
-
-
-
 
 
 def _unreadable_reason(exc: Exception) -> str:

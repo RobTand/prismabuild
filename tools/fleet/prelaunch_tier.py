@@ -144,8 +144,16 @@ def _declared_legs(plan: Mapping[str, object]) -> list[dict]:
 def _mover_live(queue, mover_key: str) -> bool:
     """True when one mover row stands ready or claimed now."""
     try:
-        return (bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, mover_key)))
-                or bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, mover_key))))
+        return (bool(
+            pool.record_store.value_or_raise(
+                queue.records.item_presence(pool.record_store.READY, mover_key),
+            ),
+        )
+                or bool(
+                    pool.record_store.value_or_raise(
+                        queue.records.item_presence(pool.record_store.CLAIMED, mover_key),
+                    ),
+                ))
     except OSError:
         return False
 

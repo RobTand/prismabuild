@@ -2776,9 +2776,15 @@ def detach_line(
             "published_unix": published_unix,
             "job_id": str(job_id) if job_id is not None else None,
             "submission": str(submission) if submission is not None else None,
-            "done": str(pool.record_store.RecordStore(queue).item_path(pool.record_store.DONE, key)),
-            "failed": str(pool.record_store.RecordStore(queue).item_path(pool.record_store.FAILED, key)),
-            "withdrawn": str(pool.record_store.RecordStore(queue).item_path(pool.record_store.WITHDRAWN, key)),
+            "done": str(
+                pool.record_store.RecordStore(queue).item_path(pool.record_store.DONE, key),
+            ),
+            "failed": str(
+                pool.record_store.RecordStore(queue).item_path(pool.record_store.FAILED, key),
+            ),
+            "withdrawn": str(
+                pool.record_store.RecordStore(queue).item_path(pool.record_store.WITHDRAWN, key),
+            ),
         },
         sort_keys=True,
     )
@@ -3730,7 +3736,9 @@ def _live_submission_records(q, key: str, *, lane_root=None):
         if not job_id:
             return None
         return found
-    if bool(pool.record_store.value_or_raise(q.records.item_presence(pool.record_store.READY, key))):
+    if bool(
+        pool.record_store.value_or_raise(q.records.item_presence(pool.record_store.READY, key)),
+    ):
         return found
     age = q.lease_age(key)
     if age is not None and age < pool.LEASE_TIMEOUT_S:

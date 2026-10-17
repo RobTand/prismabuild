@@ -50,7 +50,7 @@ OUTCOMES = frozenset({
     "executed", "cache_hit", "failed", "timeout", "withdrawn", "reset",
     "finish_lost_race", "unreadable", "unknown",
 })
-#: What ``_file_superseded`` names an unstarted-claim release: the action key,
+#: What ``RecordStore.file_superseded`` names an unstarted-claim release: the action key,
 #: the epoch second it was filed at, and the kind.  The timestamp is IN the
 #: name, so the window can be applied without stat'ing a record the scan is
 #: about to discard -- the same reason ``_ending_paths`` stats entries rather
@@ -170,51 +170,6 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
 # the plain walk's raise does, and is not kept either.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class KeptReads:
     """What one exporter keeps from one scrape to the next (#1020).
 
@@ -234,7 +189,7 @@ class KeptReads:
 
     The history directories -- ``done/``, ``failed/``, ``withdrawn/`` and
     ``movers/``, 50,000 names on the live queue and growing -- are kept by
-    :meth:`history` instead of ``DirectoryRecords``: one ``scandir`` and one
+    fixed Store history questions instead of ``DirectoryRecords``: one ``scandir`` and one
     ``stat`` per name when the directory changed, exactly the plain walk's
     cost, so a changed scrape costs no more than a fresh one.
     """
@@ -254,7 +209,7 @@ class KeptReads:
         self._reads: dict[str, tuple[object, object, list]] = {}
         self._named: set[str] = set()
         self._touched: set[object] = set()
-        #: Entries whose ``derived`` value the previous scrape used, by kind.
+        #: Entries whose derived value the previous scrape used, by kind.
         self._derived_now: dict[str, dict[int, pool.record_store.HistoryEntry]] = {}
         self._derived_entries: dict[str, dict[int, pool.record_store.HistoryEntry]] = {}
         self.computed = 0
@@ -308,15 +263,15 @@ class KeptReads:
         self._derived_entries = self._derived_now
 
     def used(self, kind: str, entry: pool.record_store.HistoryEntry) -> None:
-        """Record that this scrape used ``entry.derived`` under ``kind``."""
+        """Record that this scrape used the value for ``entry`` under ``kind``."""
 
         self._derived_now.setdefault(kind, {})[id(entry)] = entry
 
     def derive(self, kind: str, entry: pool.record_store.HistoryEntry, compute, *, keep=None):
-        """``compute()`` of ``entry``'s bytes, kept on the entry while it lasts.
+        """``compute()`` of ``entry``'s bytes, kept by its identity while it lasts.
 
         The entry is replaced whenever its file's version changes, so a value
-        kept on it is a value of the bytes now on disk.  ``keep(value)``
+        kept under its identity is a value of the bytes now on disk.  ``keep(value)``
         false (a read that failed) is returned and computed again next time.
         """
 
@@ -420,21 +375,6 @@ class KeptReads:
         return evidence
 
     # -- reads ---------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
     def sidecar(self, path: Path) -> dict | None | Exception:
@@ -562,9 +502,6 @@ class KeptReads:
         store = self.queue_store(queue.root)
         return self._from_store(directory, 'claim-denial-hosts',
                                 lambda: store.claim_denial_hosts_at(directory))
-
-
-#: The ``_reads`` meaning of a :meth:`KeptReads.history` listing.
 
 
 def _fresh(reader: KeptReads | None) -> KeptReads:
@@ -762,12 +699,6 @@ def _kept_endings(reader: KeptReads, queue_root: Path, limit: int) -> list[dict]
     return list(rows)
 
 
-
-
-
-
-
-
 def _terminal_metrics(
     metrics: Metrics,
     queue_root: Path,
@@ -938,7 +869,7 @@ def _release_metrics(
     The box is not on the requeued item.  ``_shape_as_ready_item`` pops every
     claim-scoped field, ``claimed_host`` included, so by the time the counter
     is readable in ``ready`` the record no longer says who was holding it.
-    The filing under ``withdrawn/superseded/`` does: ``_file_superseded`` is
+    The filing under ``withdrawn/superseded/`` does: ``RecordStore.file_superseded`` is
     called with the claimed record, before the pops.  So the per-box series is
     read there and the queue-wide one from the census.
 
@@ -1213,7 +1144,7 @@ _NOT_A_RECEIPT = object()
 def _receipt_projection(entry: pool.record_store.HistoryEntry):
     """The six numbers the move gauges read from one receipt.
 
-    Kept on the receipt's entry instead of the record, because 7,500
+    Kept by the exporter under the entry's identity, because 7,500
     receipts' records are tens of megabytes an exporter has no use for.
     """
 
@@ -1323,11 +1254,20 @@ def _project_plan(entry: Mapping[str, object], unreadable: list[str]) -> _PlanCe
                        legs=legs)
 
 
-def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
-                 movers: frozenset[str], ram_tier_id: str | None, *,
-                 ready: set[str], claimed: set[str], claimed_listed: set[str],
-                 announced: Mapping[str, Mapping[str, object]],
-                 receipts: Mapping[str, pool.record_store.HistoryEntry] | None, census_reader=None) -> tuple | None:
+def _plan_inputs(
+    reader: KeptReads,
+    queue: pool.PoolQueue,
+    key: str,
+    movers: frozenset[str],
+    ram_tier_id: str | None,
+    *,
+    ready: set[str],
+    claimed: set[str],
+    claimed_listed: set[str],
+    announced: Mapping[str, Mapping[str, object]],
+    receipts: Mapping[str, pool.record_store.HistoryEntry] | None,
+    census_reader=None,
+) -> tuple | None:
     """Everything one plan's census reads outside its fenced directories.
 
     ``pbstatus._starvation_plan_entry`` reads, besides the plan itself, the
@@ -1712,7 +1652,7 @@ def _promotion_metrics(
     # the adoption signal is jobs beside measured jobs, never the byte
     # ratio. Byte sums gate on receipts carrying BOTH counters, so each sum
     # covers one population, not two.
-    # ``KeptReads.history`` reads an absent directory as empty: no mover has
+    # Store's mover history reads an absent directory as empty: no mover has
     # ever filed a receipt.  Any other failure, a receipt that could not be
     # stat-ed included, is main's: no window, and an incomplete scrape.
     if receipts is None:

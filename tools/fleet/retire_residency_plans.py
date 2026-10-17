@@ -39,13 +39,23 @@ def candidates(queue: pool.PoolQueue) -> list[str]:
     """Consumer keys with a filed plan and no ready or claimed consumer row."""
 
     keys = []
-    for path in sorted(immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS)):
+    for path in sorted(
+        immutable_files.scan_optional(queue.root / pool.record_store.RESIDENCY_PLANS),
+    ):
         key = path.stem
         if path.suffix != ".json" or not path.is_file():
             continue
-        if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.READY, key))):
+        if bool(
+            pool.record_store.value_or_raise(
+                queue.records.item_presence(pool.record_store.READY, key),
+            ),
+        ):
             continue
-        if bool(pool.record_store.value_or_raise(queue.records.item_presence(pool.record_store.CLAIMED, key))):
+        if bool(
+            pool.record_store.value_or_raise(
+                queue.records.item_presence(pool.record_store.CLAIMED, key),
+            ),
+        ):
             continue
         keys.append(key)
     return keys
