@@ -37,7 +37,7 @@ def context(store, load):
     claim.update(claimed_by="compat", claimed_host="compat-host", claimed_unix=100.,
                  resource_scope={"action_key": owner, "nonce": G, "scope_id": scope})
     published.unlink()
-    queue.records.replace_record_at(queue.item_path(pool.CLAIMED, owner), claim)
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, owner), claim)
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=owner, claim_snapshot=claim,
         env={core.ACTION_KEY_ENV: owner, core.ACTION_NONCE_ENV: G, core.ACTION_SCOPE_ENV: scope})
@@ -86,7 +86,7 @@ def operate(request, store, load):
             if record is None:
                 producer.submit_group("batch", entries, paced=False)
                 record = spool._export_record(group, producer.owner)
-            queue.records.replace_record_at(queue.item_path(pool.CLAIMED, record["export_key"]), {"claimed_host": "compat-host"})
+            queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, record["export_key"]), {"claimed_host": "compat-host"})
             counter = itertools.count()
             time.monotonic = lambda: float(next(counter))
             persist, writes = spool._write, []
@@ -164,7 +164,7 @@ def operate(request, store, load):
             action = core.seal_action(action)
             record.update(action=action, export_key=action["action_key"], manifest_sha256=digest)
             spool._write(group / "export.json", record)
-            queue.records.replace_record_at(queue.item_path(pool.CLAIMED, record["export_key"]), {"claimed_host": "compat-host"})
+            queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, record["export_key"]), {"claimed_host": "compat-host"})
         request["_consumer_boundary"]()
         if variant.startswith("reservation"):
             result = producer._reservation(group)

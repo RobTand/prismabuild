@@ -19,7 +19,7 @@ def operate(request, store, load):
     if family == "measurement-election":
         election = load("prismabuild._measurement_reservation")
         item = {"action_key": C, "published_unix": 50., "priority": 10}
-        path = queue.passes_path(C)
+        path = queue.records.passes_path(C)
         if writing:
             census = {"elections": {}, "gang_elections": {}, "measurements": {C: [item]},
                       "opportunities": {M: {"host": "compat-host", "claimed_unix": 99.,

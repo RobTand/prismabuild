@@ -35,7 +35,7 @@ def operate(request, store, load):
                 host="compat-host", tier=TIER, kind="stage_gib", gib=1, manifest_digest="9" * 64, total=8,
                 retry_policy={"max_attempts": 2, "retry_safe": True})
             assert result["published"], result
-            path = queue.item_path(pool.READY, M)
+            path = queue.records.item_path(pool.READY, M)
         else:
             rows = bl.BatchLedger.due_mover_rows(queue, instance, template, residency_schema=pool.RESIDENCY_SCHEMA_V1)
             assert len(rows) == 1, rows
@@ -83,7 +83,7 @@ def operate(request, store, load):
             row = leg["mover_row"]
             key = row["action_key"]
             path = queue.publish(**row)
-            assert path == queue.item_path(pool.READY, key)
+            assert path == queue.records.item_path(pool.READY, key)
         elif variant == "campaign-writer":
             child = run.seal(template)
             plan = {**staged["plan"], "consumer_action_key": child["action_key"]}
@@ -98,7 +98,7 @@ def operate(request, store, load):
             finally:
                 campaign.store_for = prior_store
             assert report["status"] == "submitted", report
-            path = queue.item_path(pool.READY, child["action_key"])
+            path = queue.records.item_path(pool.READY, child["action_key"])
         else:
             path = queue.publish(action_key=C, cas_root=cas.root, worker_script="/compat/worker.py", checkout_root="/compat/checkout",
                 resources={"cpu": 1, "mem_gb": 1}, residency=staged["residency"])

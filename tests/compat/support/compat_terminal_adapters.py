@@ -23,7 +23,7 @@ def operate(request, store, load):
     status = {"unreadable-writer": "unreadable_record", "orphan-writer": "orphaned_stub",
               "lost-claim-writer": "finish_lost_race", "slurm-withdrawal-writer": "withdrawn",
               "origin-release-writer": "origin_consumer_released", "dead-input-writer": "failed"}[variant]
-    path = queue.item_path(pool.WITHDRAWN if variant == "slurm-withdrawal-writer" else pool.FAILED, key)
+    path = queue.records.item_path(pool.WITHDRAWN if variant == "slurm-withdrawal-writer" else pool.FAILED, key)
     if request["op"] == "read":
         path.write_bytes(base64.b64decode(request["raw"]))
         request["_consumer_boundary"]()
@@ -42,7 +42,7 @@ def operate(request, store, load):
         fixture = runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["committed"]
         po, _, _, queue, template, instance, descriptor, _ = fixture(store, load, "staged")
         owner = str(instance["owner_action_key"])
-        claim_path = queue.item_path(pool.CLAIMED, owner)
+        claim_path = queue.records.item_path(pool.CLAIMED, owner)
         claim = json.loads(claim_path.read_bytes())
         # The setup's scope was a supplied identity, never a broker scope.
         # Exercise the supported legacy unscoped terminal API for this fixture.
@@ -62,11 +62,11 @@ def operate(request, store, load):
             "reference": ref, "origin_exists": Path(descriptor["path"]).exists()}
         assert queue.fail_dead_input_dependency(item, key)
     elif variant == "unreadable-writer":
-        ready = queue.item_path(pool.READY, key)
+        ready = queue.records.item_path(pool.READY, key)
         ready.write_bytes(b"{unparseable fixture")
         assert load("prismabuild.lifecycle")._file_unreadable(queue, ready, reason="private syntax fixture") == key
     elif variant == "orphan-writer":
-        queue.item_path(pool.READY, key).write_text(json.dumps({"action_key": key}))
+        queue.records.item_path(pool.READY, key).write_text(json.dumps({"action_key": key}))
         assert queue.quarantine_orphans() == [key]
     elif variant == "lost-claim-writer":
         assert queue.finish(key, status="failed", detail={"returncode": 1}) == path

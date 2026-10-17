@@ -13,7 +13,7 @@ def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     lease, pool = load("prismabuild.reader_lease"), load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if family == "lease-pin":
         path = store / "pin.json"
         if request["op"] == "write":

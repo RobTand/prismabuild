@@ -16,7 +16,7 @@ def operate(request, store, load):
         return runpy.run_path(str(Path(__file__).with_name("compat_terminal_adapters.py")))["operate"](request, store, load)
     pool, core = load("prismabuild.pool"), load("prismabuild.core")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     write = request["op"] == "write"
 
     def publish():
@@ -68,12 +68,12 @@ def operate(request, store, load):
             queue.announce(host="compat-host", tags=["cpu"], has_gpu=False, capacity={"cpu": 2, "mem_gb": 2},
                            runtime_commit="1" * 40, **kw)
     elif family == "q-intent":
-        path = queue.item_path(pool.INTENT, C)
+        path = queue.records.item_path(pool.INTENT, C)
         if write:
             queue._write_claim_intent(C, owner=OWNER)
     elif family == "q-lease":
-        path = queue.lease_path(C)
-        pool._write_json_atomic(queue.item_path(pool.CLAIMED, C),
+        path = queue.records.lease_path(C)
+        queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, C),
                                 {"action_key": C, "claimed_by": OWNER, "claimed_host": "compat-host"})
         if write:
             kw = {} if variant == "idle" else {"child_pid": 2}
@@ -92,7 +92,7 @@ def operate(request, store, load):
         links = queue.archive_attempt(record, attempt=1, status=status, disposition=disposition,
                                       detail={"stdout": "compat \u03bb\n", "stderr": "", "returncode": 0 if disposition == pool.DONE else 1})
         record.update(attempts=1, attempt_history=links)
-        path = queue.attempt_path(record, 1)
+        path = queue.records.attempt_path(record, 1)
     elif family == "q-outcome":
         _, record = publish()
         key = record["action_key"]
@@ -100,26 +100,26 @@ def operate(request, store, load):
             if variant in ("withdrawn", "preempted"):
                 queue.withdraw(key, reason="compat", by="compat",
                                preempted_by=C if variant == "preempted" else None, signal_child=False)
-                path = queue.item_path(pool.WITHDRAWN, key)
+                path = queue.records.item_path(pool.WITHDRAWN, key)
             else:
                 # A valid legacy unscoped claim, made only in this private
                 # store. No physical broker proof is fabricated or bypassed.
-                queue.item_path(pool.READY, key).unlink()
+                queue.records.item_path(pool.READY, key).unlink()
                 record.update(claimed_by=OWNER, claimed_host="compat-host", claimed_unix=100.0)
-                pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), record)
+                queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), record)
                 path = queue.finish(key, status=variant, detail={"returncode": 0 if variant != "failed" else 1,
                                                                "stdout": "compat", "stderr": ""})
         else:
-            path = queue.item_path(pool.WITHDRAWN if variant in ("withdrawn", "preempted") else
+            path = queue.records.item_path(pool.WITHDRAWN if variant in ("withdrawn", "preempted") else
                                    pool.FAILED if variant == "failed" else pool.DONE, key)
     elif family == "q-tier-commitment":
-        path = queue.tier_commitment_path(TIER)
+        path = queue.records.tier_commitment_path(TIER)
         if write:
             queue.file_tier_commitment({"tier_id": TIER, "waiting": [C], "admitted": []})
     elif family == "q-stage-holder":
         stage = store / "stage"
         stage.mkdir()
-        path = queue.stage_ownership_holder_path(stage)
+        path = queue.records.stage_ownership_holder_path(stage)
         if write:
             with queue.stage_ownership_lock(str(stage)):
                 queue.write_stage_ownership_holder(stage, role="compat", action_key=C if variant == "action" else None)

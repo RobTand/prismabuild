@@ -10,7 +10,7 @@ def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     writing = request["op"] == "write"
     if family == "host-spool-offer":
         scratch = load("prismabuild.local_scratch")
@@ -45,7 +45,7 @@ def operate(request, store, load):
             assert value["cycles"] == count + 1 and value["first_unix"] == 100.0
             return value
     else:
-        path = queue.move_pricing_log_path()
+        path = queue.records.move_pricing_log_path()
         if writing:
             queue.record_move(M, {"bytes_staged": 8, "seconds": 1.0, "complete": True, "unix": 100.0})
             if variant == "read-repair":
@@ -55,7 +55,7 @@ def operate(request, store, load):
             return {"raw": base64.b64encode(raw).decode()}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(request["raw"]))
-        queue.move_path(M).write_bytes(b"unreadable private fallback receipt")
+        queue.records.move_path(M).write_bytes(b"unreadable private fallback receipt")
         request["_consumer_boundary"]()
         values = queue.move_records()
         assert len(values) == 1 and values[0]["bytes_staged"] == 8

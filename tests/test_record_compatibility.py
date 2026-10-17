@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
-from record_compat import accepted, historical_absence, invoke, retained, write
+from record_compat import accepted, driver_for, historical_absence, invoke, retained, write
 from record_compat_contract import DATA, GOLDENS, decoded, evidence, generations
 
 
@@ -200,8 +200,8 @@ def test_a_missing_adapter_cannot_hide_an_existing_wire_kind(generations, tmp_pa
 
 
 def test_introduced_publication_namespace_is_not_a_codec_pass_for_an_old_queue_reader(generations, tmp_path):
-    adapter = ROOT / "tests/compat/support/compat_absence_adapters.py"
     for generation, old, manifest in generations:
+        adapter = driver_for(old) / "compat_absence_adapters.py"
         store = tmp_path / generation
         store.mkdir()
         (store / "introduced-ending.json").write_bytes(decoded(GOLDENS["publication-ending/initial"]))

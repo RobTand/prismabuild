@@ -34,7 +34,7 @@ def operate(request, store, load):
         queue = pool.PoolQueue(store / "queue")
         if family == "publication-ending":
             original = {"action_key": C, "published_unix": 100.0}
-            path = queue.publication_ending_path(original)
+            path = queue.records.publication_ending_path(original)
             if writing:
                 clock = time.time
                 time.time = lambda: 101.0
@@ -65,9 +65,9 @@ def operate(request, store, load):
             report.write()
             if variant == "repeated":
                 report.write()
-            raw = queue.mover_landing_path(C).read_bytes()
+            raw = queue.records.mover_landing_path(C).read_bytes()
         else:
-            path = queue.mover_landing_path(C)
+            path = queue.records.mover_landing_path(C)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(request["raw"]))
             request["_consumer_boundary"]()

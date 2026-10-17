@@ -36,7 +36,7 @@ def landing(request, store, load):
             consumers=[{"action_key": C, "state": pool.CLAIMED}], now=100.0) == []
     finally:
         time.monotonic = original
-    return {"raw": base64.b64encode(maps.landing_path(queue.residency_fragment_root(), C).read_bytes()).decode()}
+    return {"raw": base64.b64encode(maps.landing_path(queue.records.residency_fragment_root(), C).read_bytes()).decode()}
 
 
 def operate(request, store, load):
@@ -48,7 +48,7 @@ def operate(request, store, load):
     queue.records.ensure_layout()
     if request["op"] == "read":
         raw = base64.b64decode(request["raw"])
-        path = maps.fragment_path(queue.root / pool.RESIDENCY, C, M) if family == "fragment" else queue.move_path(M)
+        path = maps.fragment_path(queue.root / pool.RESIDENCY, C, M) if family == "fragment" else queue.records.move_path(M)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
         request["_consumer_boundary"]()

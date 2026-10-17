@@ -63,7 +63,7 @@ def operate(request, store, load):
             assert value and value["state"] == expected, "funding reader refused binding"
             return value
     elif family in ("q-denials", "q-denial-transitions"):
-        path = (queue.denial_transitions_path(M) if family == "q-denial-transitions" else
+        path = (queue.records.denial_transitions_path(M) if family == "q-denial-transitions" else
                 pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS)
         if write:
             tick = [100.0]

@@ -8,19 +8,19 @@ import runpy
 
 def mover_store(pool, store, variant):
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     baseline = queue.begin_mover_retirement_batch()
     if variant != "bootstrap":
         key = "c" * 64
         queue.record_move(key, {"status": "executed", "bytes": 8, "elapsed_s": 1.0})
-        version = queue._receipt_version(queue.move_path(key))
+        version = queue._receipt_version(queue.records.move_path(key))
         entry = queue.prepare_move_retirement(key, expected_version=version)
         assert isinstance(entry, dict), entry
         keys, identity, refusal = queue.commit_move_retirements([entry], expected_baseline=baseline)
         assert keys == [key] and identity is not None and not refusal
         if variant in ("replay", "recovered"):
             if variant == "recovered":
-                queue.mover_retirement_state_path().unlink()
+                queue.records.mover_retirement_state_path().unlink()
             assert queue.commit_move_retirements([entry], expected_baseline=identity) == ([key], identity, "")
     return queue
 
@@ -34,9 +34,9 @@ def operate(request, store, load):
             queue = mover_store(pool, store, variant)
         else:
             queue = pool.PoolQueue(store / "queue")
-            queue.ensure_layout()
-        path = (queue.mover_retirement_checkpoint_path() if family.endswith("checkpoint")
-                else queue.mover_retirement_state_path())
+            queue.records.ensure_layout()
+        path = (queue.records.mover_retirement_checkpoint_path() if family.endswith("checkpoint")
+                else queue.records.mover_retirement_state_path())
         if not write:
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists():

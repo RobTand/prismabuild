@@ -76,7 +76,7 @@ def operate(request, store, load):
     if request["op"] == "write":
         if family == "plan":
             rp.freeze(queue, plan(rp, pool, variant))
-            path = queue.residency_plan_path(C)
+            path = queue.records.residency_plan_path(C)
         else:
             namespace, key = shared(rp, pool, queue, variant)
             path = rp.shared_range_path(queue, namespace) if family == "shared-range" else rp.shared_mover_path(queue, key)
@@ -84,7 +84,7 @@ def operate(request, store, load):
     raw = base64.b64decode(request["raw"])
     body = json.loads(raw)
     if family == "plan":
-        key, path, reader = C, queue.residency_plan_path(C), rp.read
+        key, path, reader = C, queue.records.residency_plan_path(C), rp.read
     elif family == "shared-range":
         key = body["share_namespace"]
         path, reader = rp.shared_range_path(queue, key), rp.read_shared_range

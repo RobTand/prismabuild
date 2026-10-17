@@ -284,11 +284,11 @@ def operate(request, store, load):
                     path = queue.record_move(M, value)
             else:
                 if family == "prewarm":
-                    destination = queue.prewarm_path(M)
+                    destination = queue.records.prewarm_path(M)
                 elif family == "export":
-                    destination = queue.export_path(M)
+                    destination = queue.records.export_path(M)
                 else:
-                    destination = queue.move_path(M)
+                    destination = queue.records.move_path(M)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(path.read_bytes())
                 request["_consumer_boundary"]()
@@ -306,7 +306,7 @@ def operate(request, store, load):
                 return value
         elif family in ("staged-wait", "export-wait", "progress"):
             progress = load("prismabuild.progress")
-            destination = queue.action_progress_path(M)
+            destination = queue.records.action_progress_path(M)
             os.environ[progress.ACTION_PROGRESS_PATH_ENV] = str(destination)
             os.environ[progress.ACTION_PROGRESS_TOKEN_ENV] = TOKEN
             if family == "staged-wait":

@@ -13,9 +13,9 @@ def operate(request, store, load):
     writing = request["op"] == "write"
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if family == "q-passes":
-        path = queue.passes_path(C)
+        path = queue.records.passes_path(C)
         if writing:
             ordinary = {"blocked_unix": 90., "epoch_unix": 95.} if variant == "ordinary" else {}
             measurement = {"foreign_unix": 91., "measurement_until_unix": 110.} if variant == "measurement" else {}

@@ -109,3 +109,23 @@ def test_port_is_idempotent_and_preserves_the_generic_floor_ledger(current_drive
     floor = (current_driver.parent / 'compat_floor_adapters.py').read_text()
     assert 'ledger = pool.ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS' in floor
     assert 'assert ledger.acquire(holder, {"filesystem_gib": amount})' in floor
+
+
+
+def test_shared_driver_port_preserves_the_complete_private_copy_on_repeat(tmp_path):
+    root = tmp_path / 'source'
+    support = root / 'tests/compat/support'
+    shutil.copytree(DATA / 'support', support,
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    shutil.copyfile(DATA / 'drivers-before-c13.tar.gz',
+                    root / 'tests/compat/drivers-before-c13.tar.gz')
+    before = {str(path.relative_to(root)): path.read_bytes()
+              for path in root.rglob('*') if path.is_file()}
+    first = port(root)
+    second = port(root)
+    assert first['current_only'] and not first['historical_driver_changed']
+    assert second['current_only'] and not second['historical_driver_changed']
+    assert first['files'] == second['files']
+    assert all(not row['changed'] for row in first['files'])
+    assert before == {str(path.relative_to(root)): path.read_bytes()
+                      for path in root.rglob('*') if path.is_file()}

@@ -39,7 +39,7 @@ def operate(request, store, load):
     claim = json.loads(path.read_bytes())
     claim.update(claimed_by="compat", claimed_host="compat-host", claimed_unix=100.)
     path.unlink()
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), claim)
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), claim)
     queue.finish(key, status="failed", detail={"termination_reason": "private wire fixture"}, claim_snapshot=claim)
     local, bank, proc = (store / name for name in ("checkouts", "bank", "proc"))
     for directory in (local, bank, proc):

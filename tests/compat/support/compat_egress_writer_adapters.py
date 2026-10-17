@@ -16,7 +16,7 @@ def operate(request, store, load):
     queue = pool.PoolQueue(store / "queue")
     queue.records.ensure_layout()
     if request["op"] == "read":
-        path = queue.move_path(M)
+        path = queue.records.move_path(M)
         path.write_bytes(base64.b64decode(request["raw"]))
         request["_consumer_boundary"]()
         value = queue.move_record(M)

@@ -34,7 +34,7 @@ def operate(request, store, load):
                                discover=lambda **kwargs: {}, supply_reader_for=lambda *args: None)
             finally:
                 time.monotonic = original
-            return {"raw": base64.b64encode(queue.tier_record_path(name).read_bytes()).decode(),
+            return {"raw": base64.b64encode(queue.records.tier_record_path(name).read_bytes()).decode(),
                     "fixture_output": printed.getvalue(),
                     "fixture_facts": ["private tier retirement with supplied absent discovery/supply; no real hardware or root registration"]}
         if writing and variant.startswith("ram"):

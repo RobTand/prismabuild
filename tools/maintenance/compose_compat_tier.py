@@ -103,10 +103,13 @@ def require_retained_selector(root):
     driver = root / 'tests/compat/support/record_compat.py'
     tree = ast.parse(driver.read_bytes())
     functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-    if not {'pre_c13_drivers', 'invoke'} <= functions.keys():
+    if not {'pre_c13_drivers', 'driver_for', 'invoke'} <= functions.keys():
         raise ValueError('Compose the qualified C13 retained/current driver selector first')
     calls = [node for node in ast.walk(functions['invoke']) if isinstance(node, ast.Call)]
-    if not any(isinstance(node.func, ast.Name) and node.func.id == 'pre_c13_drivers' for node in calls):
+    selector_calls = [node for node in ast.walk(functions['driver_for']) if isinstance(node, ast.Call)]
+    if (not any(isinstance(node.func, ast.Name) and node.func.id == 'driver_for' for node in calls)
+            or not any(isinstance(node.func, ast.Name) and node.func.id == 'pre_c13_drivers'
+                       for node in selector_calls)):
         raise ValueError('invoke does not select the retained driver')
     with tarfile.open(root / 'tests/compat/drivers-before-c13.tar.gz') as archive:
         names = [member.name for member in archive.getmembers()]

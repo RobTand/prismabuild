@@ -30,7 +30,7 @@ def claim(store, load, *, versioned=False, persistent=False):
     scope = {"action_key": key, "nonce": nonce, "scope_id": po._broker_scope_id(key, nonce)}
     record.update(claimed_by="compat-owner", claimed_host="compat-host", claimed_unix=100.0, resource_scope=scope)
     path.unlink()
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, key), record)
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, key), record)
     queue.write_lease(key, owner="compat-owner", claim_snapshot=record)
     env = {core.ACTION_KEY_ENV: key, core.ACTION_NONCE_ENV: nonce, core.ACTION_SCOPE_ENV: scope["scope_id"]}
     return scratch, pool, core, queue, record, env, selection
@@ -77,7 +77,7 @@ def operate(request, store, load):
                     lifetime.register_attempt(queue, record["action_key"], claim_snapshot=record, env=env)
             finally:
                 lifetime._prepare_scratch_directory = prepare
-            enclosing = queue.item_path(pool.CLAIMED, record["action_key"]).read_bytes()
+            enclosing = queue.records.item_path(pool.CLAIMED, record["action_key"]).read_bytes()
             raw = runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["extract"](enclosing, lifetime.SCRATCH_LIFETIME_FIELD)
         else:
             request["_consumer_boundary"]()
@@ -86,7 +86,7 @@ def operate(request, store, load):
         scratch.record_ephemeral_scratch_declarations(queue, claim_snapshot=record, env=env)
         if variant == "repeated":
             scratch.record_ephemeral_scratch_declarations(queue, claim_snapshot=record, env=env)
-        enclosing = queue.item_path(pool.CLAIMED, record["action_key"]).read_bytes()
+        enclosing = queue.records.item_path(pool.CLAIMED, record["action_key"]).read_bytes()
         extract = runpy.run_path(str(Path(__file__).with_name("compat_batch_adapters.py")))["extract"]
         raw = extract(enclosing, "scratch_declaration_record")
         if family == "scratch-ephemeral":
