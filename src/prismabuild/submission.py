@@ -2586,3 +2586,543 @@ def outstanding_submission(q, key: str, *, lane_root=None):
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("pool", float(generation), item))
     if not candidates:
+        return None
+    return max(candidates, key=lambda entry: entry[1])
+
+
+def publish_or_refuse(q, publication: Mapping[str, object]):
+    """Enqueue one submission, or say why the queue would not take it.
+
+    ``PoolQueue.publish`` refuses a fenced queue: ``fleet/slurm/cutover.sh``
+    removes the write bit on ``pb-queue/ready`` while it retires the pull
+    queue's execution plane, so a rename into that directory fails with
+    EACCES rather than leaving an accepted action in a queue whose workers are
+    being stopped.  That refusal is the caller's to read -- the submitter is
+    the one who can resubmit through SLURM or wait -- so it arrives as a line
+    rather than as a traceback.
+
+    ``ActionAlreadyLiveError`` is not such a refusal and is re-raised
+    unchanged: the queue is already carrying this key, which is an answer the
+    caller acts on by attaching to the live generation (``publish_or_attach``
+    below), not a reason to stop.
+    """
+
+    try:
+        return q.publish(**publication)
+    except pool.ActionAlreadyLiveError:
+        raise
+    except pool.PoolContractError as exc:
+        raise SubmissionRefused(f"pbrun: {exc}") from exc
+
+
+def publish_or_attach(q, publication: Mapping[str, object], *, key: str, display: DisplaySink = discard_display):
+    """Submit this key, or report the live generation already running it.
+
+    Returns ``(queued_path, generation)``.  ``queued_path`` is ``None`` when
+    the queue refused the publication because it is already carrying the key;
+    the caller then waits on ``generation`` rather than submitting a second
+    copy of the same content-addressed work.
+
+    This is the whole of the duplicate-submission answer, and it is the pool's
+    to give.  ``live_submission``/``bounded_attachment`` ask the same question
+    from outside the queue, which is right for ``--detach`` -- it has to decide
+    what to print without publishing anything -- but between that read and the
+    publication the state can change, and for identical submissions made at
+    the same moment it reliably does (#812).  ``PoolQueue.publish`` reads and
+    writes inside the key's transition lock, so its answer cannot be stale.
+
+    ``generation`` may be ``None`` when the queue's own read-back finds no
+    stamp, which keeps its historical meaning: wait for any ending for the
+    key rather than pretend to know which run it belongs to.
+
+    A queue from a runtime generation that predates ``refuse_if_live`` is
+    asked in the way it understands, for the same reason ``publication_row``
+    feature-detects ``retry_safe``: a checkout can advance just before the
+    atomic runtime generation rolls, and the older behaviour -- restamp, then
+    wait on whatever the read-back says -- is what this client had before.
+    """
+
+    if "refuse_if_live" in inspect.signature(q.publish).parameters:
+        publication = {**publication, "refuse_if_live": True}
+    try:
+        queued_path = publish_or_refuse(q, publication)
+    except pool.ActionAlreadyLiveError as exc:
+        emit_display(display, f"pbrun: {key[:12]} is already {exc.state} on the pool; "
+              f"attaching to that run rather than submitting a second copy",
+              channel="stderr", flush=True)
+        return None, exc.generation
+    return queued_path, published_generation(q, key, queued_path)
+
+
+def live_submission(q, key: str, *, lane_root=None, **lane_commands):
+    """The submission this key is still running under, or ``None``.
+
+    A key is a content hash, so asking for the same work twice is the normal
+    way to ask whether it is done -- and while the first ask is still running,
+    the second must attach to it rather than start a second copy of it.  Two
+    copies is not merely waste: they materialize the same checkout, take the
+    same GPU twice and race to publish one receipt.
+
+    Live means three things together: something was recorded, no ending covers
+    that generation, and the thing that carries it still exists -- a job the
+    controller still knows in a non-terminal state, an item nobody has claimed,
+    or a claim whose lease is still being refreshed.  A forgotten job or a dead
+    lease is not live, and the caller submits afresh, which is what the pull
+    queue's own reaper would arrange for anyway.
+    """
+
+    found = _live_submission_records(q, key, lane_root=lane_root)
+    if found is not None and found[0] == "slurm":
+        if not _slurm_submission_live(str(found[2]["job_id"]), **lane_commands):
+            return None
+    return found
+
+
+def _slurm_submission_live(job_id: str, **lane_commands) -> bool:
+    state = slurm_lane.query_state(job_id, **lane_commands)
+    return state is not None and state[0] not in slurm_lane.TERMINAL_STATES
+
+
+def _live_submission_records(q, key: str, *, lane_root=None):
+    """Read shared liveness evidence; leave SLURM controller queries to the parent."""
+
+    found = outstanding_submission(q, key, lane_root=lane_root)
+    if found is None:
+        return None
+    transport, generation, submission = found
+    if action_wait.await_ending(q, key, wait_s=0.0, generation=generation) is not None:
+        return None
+    if transport == "slurm":
+        job_id = str(submission.get("job_id") or "")
+        if not job_id:
+            return None
+        return found
+    if q.item_path(pool.READY, key).exists():
+        return found
+    age = q.lease_age(key)
+    if age is not None and age < pool.LEASE_TIMEOUT_S:
+        return found
+    return None
+
+
+def _attachment_value(q, key: str, *, lane_root=None):
+    found = _live_submission_records(q, key, lane_root=lane_root)
+    if found is None:
+        return None
+    transport, generation, submission = found
+    if transport == "slurm":
+        directory = Path(str(submission.get("directory") or "."))
+        record = slurm_lane.submission_record_path(
+            directory, published_unix=generation,
+            attempt=int(submission.get("attempt") or 1))
+        job_id = str(submission.get("job_id") or "")
+    else:
+        ready = q.item_path(pool.READY, key)
+        record = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+        job_id = ""
+    return {"transport": transport, "generation": generation,
+            "job_id": job_id, "submission": str(record)}
+
+
+def bounded_attachment(q, key: str, *, lane_root=None, **lane_commands):
+    """Discover an attachment without letting a queue read park the submitter.
+
+    The child only reads. Its reply includes the display path so rendering
+    cannot re-read READY in the parent. Scheduler commands have their existing
+    timeouts and run in the parent, keeping their process ownership unchanged.
+    Existing tolerant record parsing and liveness rules remain in force.
+    """
+
+    value = action_wait.read_observation(
+        "attachment discovery",
+        lambda: _attachment_value(q, key, lane_root=lane_root),
+        budget_s=ATTACHMENT_READ_TIMEOUT_S)
+    if value is None:
+        return None
+    if (not isinstance(value, dict)
+            or value.get("transport") not in {"pool", "slurm"}
+            or not isinstance(value.get("generation"), (int, float))
+            or isinstance(value.get("generation"), bool)
+            or not math.isfinite(value["generation"])
+            or not isinstance(value.get("job_id"), str)
+            or not isinstance(value.get("submission"), str)
+            or not value["submission"]):
+        raise action_wait.OutcomeReadUnavailable("attachment discovery returned an invalid payload")
+    if value["transport"] == "slurm":
+        if not value["job_id"]:
+            raise action_wait.OutcomeReadUnavailable("attachment discovery returned no SLURM job id")
+        if not _slurm_submission_live(value["job_id"], **lane_commands):
+            return None
+    return value
+
+
+def _report_stall(key: str, report, *, display: DisplaySink = discard_display) -> None:
+    """Say that a running job has not moved.  Say it; do nothing about it.
+
+    The lane decides *when* (``STALL_WINDOW_S`` of unchanged samples, repeated
+    at ``STALL_REPORT_EVERY_S``); this decides the words.  The job is still
+    running and keeps running: a stall is evidence for a person, and the only
+    thing that ends it is that person's ``--withdraw`` or a ``--timeout-s``
+    they asked for.  Wall-clock is never evidence of death.
+    """
+
+    minutes = int(report.stalled_for_s // 60)
+    where = report.node or "an unknown node"
+    emit_display(display, f"pbrun: {key[:12]} slurm job {report.job_id} has shown no progress "
+          f"for {minutes} min on {where}; it is still running. Withdraw with "
+          f"pbrun --withdraw {key[:12]} if it is dead.",
+          channel="stderr", flush=True)
+
+
+_QUERY_COMMANDS = frozenset({"sacct", "scontrol", "squeue"})
+
+
+_RESUME_COMMANDS = frozenset({
+    "poll_s", "sacct", "scontrol", "squeue", "sstat", "sleep", "clock",
+    "on_stall", "on_notice",
+})
+
+
+SEALED_ARGV0 = movement_actions.SEALED_ARGV0
+
+
+def detached_attempts_refusal(max_attempts: int) -> str:
+    """Why a detached submission cannot carry more than one attempt.
+
+    A retry is a second submission made after somebody watched the first one
+    fail.  Detaching means nobody is watching, so the choice is between
+    silently running one attempt for a caller who asked for three, and saying
+    so.  A function rather than a literal because ``pbcampaign`` submits every
+    row detached and has to refuse the same row for the same reason, at
+    manifest load; two copies of the sentence would be two policies.
+    """
+
+    return (
+        f"pbrun: --detach submits one attempt and returns, so it cannot "
+        f"honour --max-attempts greater than 1 (this asks for {int(max_attempts)}); "
+        f"submit it attached, or detach with a single attempt"
+    )
+
+
+def require_gpu_memory_scope(*, gpu_memory_gb, gpu: bool, transport: str) -> None:
+    """Share GPU-budget scope refusals with campaign manifest preflight."""
+
+    if gpu_memory_gb is not None and not gpu:
+        raise ValueError("--gpu-memory-gb requires GPU demand")
+    if gpu_memory_gb is not None and transport == "slurm":
+        raise ValueError(
+            "--gpu-memory-gb requires pool transport; SLURM VRAM budgets are not supported"
+        )
+
+
+def require_disk_metadata_scope(demand: Mapping[str, object], *, transport: str) -> None:
+    """Refuse a ``disk_metadata`` reservation on a transport with nothing to enforce it.
+
+    ``disk_metadata`` (#1008 item 4) is a host-ledger consumable a pull-queue
+    worker can opt into offering one of (default zero); a full-demand claim
+    charges it at admission. This serializes declaring actions on the same
+    host ledger, not ordinary work, tier egress or external I/O. The SLURM lane's
+    translation (``slurm_lane.LaneResources.from_demand``) reads only ``cpu``,
+    ``gpu`` and ``mem_gb`` -- it has no GRES for directory/file metadata
+    throughput -- so a ``disk_metadata`` demand sealed there would never be
+    enforced, and two such jobs could still land on the same node.  Sealing
+    that would be worse than refusing it, the same reasoning
+    :func:`require_progress_scope` states for the stall watchdog: the action
+    would be admitted on a cooperative reservation that lane cannot enforce.
+    """
+
+    if demand.get("disk_metadata") and transport != "pool":
+        raise SubmissionRefused(
+            f"pbrun: --demand disk_metadata needs the pull queue: it is a "
+            f"host-ledger reservation, and --transport {transport} has no "
+            "way to enforce it")
+
+
+def require_progress_scope(*, progress: Mapping[str, object] | None,
+                          transport: str) -> None:
+    """Refuse a progress contract on a transport with nothing to enforce it.
+
+    The stall watchdog is ``pool.execute``'s: it holds the progress file, mints
+    the launch token, and samples on the heartbeat cadence.  The SLURM lane
+    runs the same sealed action through the same launcher, but the enforcement
+    it has is ``--time``, sent only when ``--timeout-s`` was given -- a total
+    duration, which is the policy #480 exists to stop standing in for progress.
+
+    Sealing the contract there would be worse than not offering it.  The action
+    would be admitted on the promise that its own advancement bounds it, and
+    then run under no watchdog at all and, absent ``--timeout-s``, under no
+    deadline either: unbounded, which is the outcome the contract's fifth point
+    forbids.  ``core._progress_environment`` refuses the same launch from the
+    other end; this is the refusal at the moment the submitter is still
+    watching.
+    """
+
+    if progress is not None and transport != "pool":
+        raise ValueError(
+            "--progress-phase requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration (--timeout-s becomes --time).  Submit this action "
+            "to the pool, or bound it there with --timeout-s and no phases"
+        )
+
+
+def require_awaited_batch_scope(
+        *, awaited: Mapping[str, object] | None,
+        progress: Mapping[str, object] | None, transport: str) -> None:
+    """Refuse an awaited batch without progress phases on pool transport (#1666).
+
+    The credit moves the stall deadline, so without a progress policy it
+    credits against no allowance. The stall watchdog is the pull-queue
+    worker's, so the SLURM lane cannot enforce it either.
+    """
+
+    if awaited is None:
+        return
+    if progress is None:
+        raise ValueError(
+            "--awaited-batch requires --progress-phase: the credit moves the "
+            "stall deadline, and without a policy it credits no allowance")
+    if transport != "pool":
+        raise ValueError(
+            "--awaited-batch requires pool transport: the stall watchdog is "
+            "the pull-queue worker's, and the SLURM lane can only enforce a "
+            "total duration")
+
+
+def require_host_class_scope(
+    *, measurement: bool, host_class: str | None, transport: str, anywhere: bool = False
+) -> None:
+    """Refuse a scope the design cannot honour, before anything is sealed."""
+
+    if measurement and transport == "pool" and anywhere:
+        if host_class is not None:
+            raise SubmissionRefused("pbrun: --host-class already scopes pool measurement placement; "
+                             "drop --anywhere")
+        raise SubmissionRefused(
+            "pbrun: pool measurements run on the submitting host whose "
+            "platform/toolchain is sealed; --anywhere contradicts that placement."
+        )
+
+    if measurement and host_class is None and transport != "pool":
+        raise SubmissionRefused(
+            "pbrun: --measurement requires --host-class CLASS.\n"
+            "A measurement's numerics do not transfer across architectures, "
+            "so its result is keyed on the host class that produced it "
+            "(docs/design.md, \"Cache/action-key semantics\"); a portable "
+            "measurement would let any box's KL stand in for another's."
+        )
+    if host_class is not None and transport != "slurm" and not (
+        transport == "pool" and measurement
+    ):
+        raise SubmissionRefused(
+            "pbrun: --host-class needs --transport slurm or pool --measurement.\n"
+            "A host_class_keyed action is attested through the SLURM "
+            "controller (docs/design.md, \"Worker preflight and execution "
+            "attestation\"); a pull-queue worker refuses it at preflight, so "
+            "submitting it there queues work that cannot run."
+        )
+
+
+TARGET_EVIDENCE_MAX_BYTES = 64 * 1024
+
+
+_TARGET_EVIDENCE_CLASSES = {
+    "gb10": lambda evidence, platform_key: (
+        platform_key == "linux-aarch64-sm121"
+        and all(row["name"] == "NVIDIA GB10" and row["compute_capability"] == "12.1"
+                for row in evidence["accelerators"])),
+}
+
+
+class TargetEvidence(dict):
+    """A vetted packet's evidence, plus the worker's argv[0] toolchain fields.
+
+    It compares equal to the plain evidence mapping, so everything that reads
+    the evidence is unchanged.  ``argv0`` is what the class seals for argv[0]:
+    the WORKER's executable identity, never the submitting box's (#1598).
+    """
+
+    argv0: dict[str, str]
+    recorder: dict[str, str] | None = None
+
+
+def load_target_evidence(path: str, *, host_class: str) -> dict[str, object]:
+    """Read and vet one target-evidence packet for ``host_class`` (#1598).
+
+    ``pbevidence.py`` prints the packet on a worker of the class.  It replaces
+    the local probe a class-scoped pool measurement makes, so a box without an
+    accelerator can seal the class facts.  Nothing here is an attestation: each
+    worker checks the declared facts against its own live facts before it
+    runs, so a wrong packet fails closed there.  This function refuses the
+    packets that could never seal a class -- not local, no accelerator, no
+    device identity, mixed models, or a platform the class does not have --
+    before anything is sealed.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(TARGET_EVIDENCE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise SubmissionRefused(f"pbrun: cannot read --target-evidence {path}: {exc}") from None
+    if len(raw) > TARGET_EVIDENCE_MAX_BYTES:
+        raise SubmissionRefused(
+            f"pbrun: --target-evidence {path} exceeds {TARGET_EVIDENCE_MAX_BYTES} "
+            "bytes: a packet is one worker's facts, not a payload")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SubmissionRefused(f"pbrun: --target-evidence {path} is not JSON: {exc}") from None
+    try:
+        evidence = target_evidence.vet(value)
+    except target_evidence.PacketError as exc:
+        raise SubmissionRefused(f"pbrun: --target-evidence {path}: {exc}") from None
+    rule = _TARGET_EVIDENCE_CLASSES.get(host_class)
+    if rule is None:
+        raise SubmissionRefused(
+            f"pbrun: --target-evidence {path}: no rule for class {host_class!r}; "
+            f"a packet can stand for {', '.join(sorted(_TARGET_EVIDENCE_CLASSES))}")
+    try:
+        argv0 = target_evidence.argv0_contract(value)
+        recorder = target_evidence.recorder_contract(value)
+    except target_evidence.PacketError as exc:
+        raise SubmissionRefused(f"pbrun: --target-evidence {path}: {exc}") from None
+    try:
+        platform_key = pb._platform_key_from_evidence(evidence)
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(f"pbrun: --target-evidence {path}: {exc}") from None
+    if not rule(evidence, platform_key):
+        raise SubmissionRefused(
+            f"pbrun: --target-evidence {path} disagrees with class {host_class}: "
+            f"it reports {platform_key}")
+    vetted = TargetEvidence(evidence)
+    vetted.argv0 = argv0
+    vetted.recorder = recorder
+    return vetted
+
+
+def host_class_scope(
+    host_class: str | None, *, measurement: bool = False, transport: str = "slurm",
+    target_evidence: Mapping[str, object] | None = None,
+) -> tuple[dict[str, object], dict[str, str]]:
+    """The execution scope and the toolchain a submission seals.
+
+    Ordinary portable generation declares no toolchain. Pool measurements
+    seal the submitting platform and toolchain; main pins their placement to
+    that host unless an explicit class asserts shared external dependencies.
+    A class-scoped pool measurement remains platform-keyed and additionally
+    binds actual device models. A SLURM host-class-keyed action is
+    nonportable, and the core requires a nonportable action to bind the
+    executable behind argv[0] and the ABI and accelerator facts of the box
+    that runs it -- facts pbrun can read only from the box it runs on.  So a
+    class-keyed submission carries this box's facts, and a worker of the
+    class verifies each of them at preflight; a submission from a box of
+    another class is refused there, naming the field that differs.
+    """
+
+    if target_evidence is not None and not (
+            measurement and transport == "pool" and host_class is not None):
+        raise ValueError(
+            "target_evidence stands for a class-scoped pool measurement only")
+    if measurement and transport == "pool":
+        # A pool worker can attest its platform and executable/ABI directly.
+        # A class is placement intent, not a forged SLURM attestation. The
+        # actual platform, ABI, driver and device models constrain numerics;
+        # physical UUIDs and the selected worker remain receipt provenance.
+        # A vetted target-evidence packet stands in for the local probe when
+        # the submitting box has no accelerator (#1598): the worker still
+        # checks every declared fact against its own live facts.
+        evidence = (target_evidence if target_evidence is not None else
+                    pb._collect_worker_evidence(
+                        **({"attest_accelerator_identity": True}
+                           if host_class is not None else {})))
+        # The class's executable identity is the WORKER's: a submitter of another
+        # architecture has a different /bin/bash, and the worker refuses a
+        # declared size that is not its own (#1598).
+        if target_evidence is not None:
+            argv0 = getattr(target_evidence, "argv0", None)
+            if not argv0:
+                raise ValueError(
+                    "target_evidence carries no worker argv0 identity; "
+                    "load it with load_target_evidence")
+        else:
+            argv0 = pb.executable_toolchain_contract(SEALED_ARGV0)
+        toolchain = {
+            **argv0,
+            **pb.live_platform_toolchain_contract(evidence=evidence),
+        }
+        if host_class is not None:
+            toolchain["accelerator_models.sha256"] = pb.accelerator_models_contract(evidence)
+        return (
+            {"portability": "platform_keyed",
+             "platform_key": pb._platform_key_from_evidence(evidence),
+             "host_class": None},
+            toolchain,
+        )
+    if host_class is None:
+        return (
+            {"portability": "portable", "platform_key": None, "host_class": None},
+            {},
+        )
+    toolchain = {
+        **pb.executable_toolchain_contract(SEALED_ARGV0),
+        **pb.live_platform_toolchain_contract(),
+    }
+    return (
+        {
+            "portability": "host_class_keyed",
+            "platform_key": None,
+            "host_class": host_class,
+        },
+        toolchain,
+    )
+
+
+def cached_outcome(
+    key: str,
+    *,
+    receipt,
+    queue_root,
+    resources,
+    tags: list[str],
+    retry_safe: bool,
+    max_attempts: int,
+display: DisplaySink = discard_display) -> int:
+    """Report receipted work as a finished run, submitting nothing.
+
+    Prints the lines a pull-queue cache hit printed and exits 0.  A ``done/``
+    record is filed only when the key has none: the record of the run that
+    did the work is the one every reader wants, and a re-run has nothing to
+    add to it.  With no record at all -- a receipt published from another
+    store, or a record moved aside -- the fleet's readers still get an ending,
+    with ``status=cache_hit`` as the pull queue filed one.
+
+    Args:
+        key: The action key.
+        receipt: The CAS receipt ``lookup`` returned.
+        queue_root: The queue whose ``done/`` is consulted and, if empty for
+            this key, written.
+        resources: The lane resources the submission would have carried.
+        tags: The sealed placement tags.
+        retry_safe: The retry policy, recorded as the pool recorded it.
+        max_attempts: Likewise.
+
+    Returns:
+        0, always: the work is done.
+    """
+
+    emit_display(display, f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
+          channel="stderr", flush=True)
+    host = socket.gethostname()
+    existing = Path(queue_root) / pool.DONE / f"{key}.json"
+    if not existing.exists():
+        slurm_lane.publish_outcome(
+            queue_root=queue_root,
+            action_key=key,
+            published_unix=time.time(),
+            published_by=host,
+            status="cache_hit",
+            attempts=0,
+            max_attempts=int(max_attempts),
+            retry_safe=bool(retry_safe),
+            resources=resources.demand(),
+            tags=tags,
