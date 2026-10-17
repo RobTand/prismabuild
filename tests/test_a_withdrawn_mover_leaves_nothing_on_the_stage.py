@@ -83,7 +83,7 @@ def test_a_withdrawn_movers_verified_shards_and_partials_are_both_evicted(fleet)
         4096)
     _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     # Withdrawn: no item in the queue names this mover, and its tokens are back.
-    assert not queue.tier_ledger(TIER).held_keys()
+    assert not queue.tier(TIER).holders()
 
     events = _sweep(queue, stage)
     assert len(events) == 1, events
@@ -208,13 +208,13 @@ def test_the_sweep_still_evicts_a_held_orphan_by_its_fragment(fleet):
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
         "bytes_staged": 8192, "range_start_bytes": 0, "range_end_bytes": 8192,
         "stage_root": str(stage), "unix": 10.0})
-    ledger = queue.tier_ledger(TIER)
-    ledger.ensure_capacity({"stage_gib": 4})
-    assert ledger.acquire(MOVER, {"stage_gib": 1})
-    assert MOVER in ledger.held_keys()
+    ledger = queue.tier(TIER)
+    ledger.grow_supply({'stage_gib': 4})
+    assert ledger.take(MOVER, {'stage_gib': 1})
+    assert MOVER in ledger.holders()
 
     events = _sweep(queue, stage)
     reasons = [str(event.get("reason")) for event in events]
     assert "orphan-sweep" in reasons
     assert not shard.exists()
-    assert MOVER not in queue.tier_ledger(TIER).held_keys()
+    assert MOVER not in queue.tier(TIER).holders()

@@ -121,7 +121,7 @@ def test_a_waiter_the_commitment_refuses_says_which_decision(tmp_path: Path) -> 
     so the refusal is ``_commitment_decision``'s own.
     """
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(_hexkey("static"), {"stage_gib": 10})
+    assert queue.tier(TIER).take(_hexkey('static'), {'stage_gib': 10})
     _reader(queue, stage)
     newcomer = Consumer(queue, stage, "n")
     skipped: list[dict[str, object]] = []

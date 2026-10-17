@@ -160,7 +160,7 @@ class Consumer:
                reported_unix=now - REPORTED_AGO_S)
 
     def held(self, ordinal: int) -> bool:
-        return bool(self.queue.tier_ledger(TIER).holder_tokens(self.mover(ordinal)))
+        return bool(self.queue.tier(TIER).holdings(self.mover(ordinal)))
 
     def lead_published(self) -> bool:
         return (self.queue.records.item_path(pool.record_store.READY, self.mover(0)).exists()
@@ -471,7 +471,7 @@ def test_a_holder_nothing_can_evict_is_committed(tmp_path: Path) -> None:
     """
 
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(_hexkey("static"), {"stage_gib": 10})
+    assert queue.tier(TIER).take(_hexkey('static'), {'stage_gib': 10})
     _reader(queue, stage)
     newcomer = Consumer(queue, stage, "n")
 
@@ -499,7 +499,7 @@ def test_a_lone_newcomer_beside_holders_that_never_grow_is_admitted(
     monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
     monkeypatch.setattr(po, "unheld_window_gib", _owes(owed))
     queue, stage = _fixture_queue(tmp_path, 20)
-    assert queue.tier_ledger(TIER).acquire(_hexkey("static"), {"stage_gib": 10})
+    assert queue.tier(TIER).take(_hexkey('static'), {'stage_gib': 10})
     newcomer = Consumer(queue, stage, "n")
 
     events = tier_loop.residency_window(queue, tiers=_tiers(stage))
@@ -689,8 +689,7 @@ def _live_r12(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
 
 def _lead_published(queue: pool.PoolQueue, label: str, lead: str) -> bool:
     mover = replay._mover(label, lead)
-    return (queue.records.item_path(pool.record_store.READY, mover).exists()
-            or bool(queue.tier_ledger(TIER).holder_tokens(mover)))
+    return (queue.records.item_path(pool.record_store.READY, mover).exists() or bool(queue.tier(TIER).holdings(mover)))
 
 
 def test_the_capture_beside_r12_passes_the_commitment(tmp_path: Path) -> None:
@@ -782,8 +781,7 @@ def test_three_stage_b_quanta_fit_beside_r12_and_a_fourth_waits(
         entry for entry in replay.DATA["r12"]["landed"]
         if entry["phase"] not in replay.PAST])
     queue, stage = _live_r12(tmp_path)
-    assert sum(queue.tier_ledger(TIER).holder_tokens(key).get("stage_gib", 0)
-               for key in queue.tier_ledger(TIER).held_keys()) == 264
+    assert sum((queue.tier(TIER).holdings(key).get('stage_gib', 0) for key in queue.tier(TIER).holders())) == 264
     quanta = []
     for n in range(4):
         label = f"quantum{n}"

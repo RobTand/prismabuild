@@ -29,6 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import tier_holdings
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE = f"stage_gib@{TIER}"
@@ -106,7 +107,7 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
 
     _as_host(monkeypatch, "dl380g10")
     minter = _queue(shared_root)
-    minter.mint_tier_capacity(TIER, {"stage_gib": 40, "fill_mb_s_pool_side": 242})
+    minter.tier(TIER).mint({'stage_gib': 40, 'fill_mb_s_pool_side': 242})
 
     _as_host(monkeypatch, "sparky")
     sparky = _queue(shared_root)
@@ -136,16 +137,16 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     assert shortage["demand"] == {"stage_gib": 30, "fill_mb_s_pool_side": 200}
     assert shortage["capacity_total"] == {"stage_gib": 40, "fill_mb_s_pool_side": 242}
     # Refused, not admitted blind, and not admitted on half a reservation.
-    assert sparklina.tier_holdings(loser) == {}
+    assert tier_holdings.for_action(sparklina, loser) == {}
     # Its own box's tokens went straight back: a cluster-scoped shortage must
     # not idle a box that has work it can do.
     assert sparklina.ledger("sparklina").held() == {}
     assert sparklina.passes(loser) == 0
 
     # Nothing was lost or double-counted: held plus free equals what was minted.
-    ledger = sparklina.tier_ledger(TIER)
-    held = ledger.held()
-    free = ledger.available()
+    ledger = sparklina.tier(TIER)
+    held = ledger.holdings()
+    free = ledger.free_supply()
     assert held == {"stage_gib": 30, "fill_mb_s_pool_side": 200}
     assert {kind: held.get(kind, 0) + free.get(kind, 0) for kind in
             set(held) | set(free)} == {"stage_gib": 40, "fill_mb_s_pool_side": 242}
@@ -153,13 +154,12 @@ def test_the_second_box_is_refused_the_gigabytes_the_first_took(
     # And when the winner finishes, the loser is admitted on the other box.
     _as_host(monkeypatch, "sparky")
     sparky.finish(winner, status="executed", claim_snapshot=first)
-    assert sparky.tier_holdings(winner) == {}
+    assert tier_holdings.for_action(sparky, winner) == {}
     _as_host(monkeypatch, "sparklina")
     second = sparklina.claim(owner="sparklina-worker", capacity={"cpu": 8})
     assert second is not None and second["action_key"] == loser
     assert second["claimed_host"] == "sparklina"
-    assert sparklina.tier_holdings(loser) == {
-        TIER: {"stage_gib": 30, "fill_mb_s_pool_side": 200}}
+    assert tier_holdings.for_action(sparklina, loser) == {TIER: {'stage_gib': 30, 'fill_mb_s_pool_side': 200}}
 
 
 def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
@@ -168,7 +168,7 @@ def test_a_tier_shortage_on_one_box_does_not_hold_the_other_boxs_tokens(
     """The refused box keeps claiming everything else it can seat."""
 
     _as_host(monkeypatch, "dl380g10")
-    _queue(shared_root).mint_tier_capacity(TIER, {"stage_gib": 1})
+    _queue(shared_root).tier(TIER).mint({'stage_gib': 1})
 
     _as_host(monkeypatch, "sparky")
     sparky = _queue(shared_root)
@@ -194,7 +194,7 @@ def test_a_demand_no_tier_can_ever_meet_says_so_rather_than_waiting(
     shared_root: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _as_host(monkeypatch, "dl380g10")
-    _queue(shared_root).mint_tier_capacity(TIER, {"stage_gib": 4})
+    _queue(shared_root).tier(TIER).mint({'stage_gib': 4})
     _as_host(monkeypatch, "sparky")
     sparky = _queue(shared_root)
     _publish(sparky, ON_SPARKY, {"cpu": 1, STAGE: 5},

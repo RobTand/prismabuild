@@ -202,7 +202,7 @@ def _standing_mover(tmp_path: Path):
     queue, item = _claimed(tmp_path, mode="scripted", seconds=0,
                            policy=_policy(0.4, 0.4, 0.4),
                            source='raise AssertionError("use the process script")\n')
-    queue.mint_tier_capacity(TIER, {"stage_gib": 16})
+    queue.tier(TIER).mint({'stage_gib': 16})
     item["residency"] = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": "9" * 64, "manifest_bytes": 4 * GIB,
                          "range_start_bytes": 2 * GIB,
