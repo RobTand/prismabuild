@@ -38,6 +38,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
+from prismabuild.funding import AdvanceProtection
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
@@ -842,9 +843,9 @@ def test_crash_prefix_split_transfer_completes(tmp_path: Path) -> None:
               "generation": "a" * 32, "state": "reserved",
               "unix": 1.0, "published_unix": float(live["published_unix"])}
     queue.funding._write_locked(record, expect_generation=None, binding="window")
-    protection = {"protected": {(consumer, TIER): {
+    protection = AdvanceProtection(protected={(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": 2, "phase": "phase-0",
-        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
+        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}})
     events = queue.funding.settle_windows( protection)
     # The remainder completed without touching free: 2 under the mover.
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2

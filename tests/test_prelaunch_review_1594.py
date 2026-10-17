@@ -229,7 +229,7 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
     unit, movers = _declared_movers(queue, consumer)
     assert unit.demand_gib == 8 and len(movers) == 1
     mover = movers[0]
-    real = pg._advance_record
+    real = queue.funding._chunk_advance_record
     calls: list[str] = []
 
     def interrupted(*args, **kwargs):
@@ -238,7 +238,7 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
             raise OSError("stopped after the token transfer")
         return False
 
-    monkeypatch.setattr(pg, "_advance_record", interrupted)
+    monkeypatch.setattr(queue.funding, "_chunk_advance_record", interrupted)
     for _ in range(6):
         try:
             tier_loop.residency_window(queue, tiers=tiers)
@@ -250,7 +250,7 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
     ledger = queue.tier(TIER)
     assert len(ledger.holder_state(mover)) == 8
     assert queue.funding.read_window(mover, TIER)["state"] == "reserved"
-    monkeypatch.setattr(pg, "_advance_record", real)
+    monkeypatch.setattr(queue.funding, "_chunk_advance_record", real)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
     record = queue.funding.read_window(mover, TIER)

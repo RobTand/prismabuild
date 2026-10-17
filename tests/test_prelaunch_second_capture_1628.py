@@ -141,18 +141,18 @@ def test_a_deferred_rotation_moves_nothing_and_the_retry_completes(
     the group's holder, so the next cycle finds nothing held and publishes.
     """
     queue, tiers, second, unit, movers = _first_then_second(tmp_path)
-    real = pg._rotate_record
+    real = queue.funding._chunk_rotate_record
     calls = {"n": 0}
     deferred: list[str] = []
 
     def flaky(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            deferred.append(str(args[1]))      # (queue, mover, tier, old, new)
+            deferred.append(str(args[0]))      # (mover, tier, old, new)
             return None
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(pg, "_rotate_record", flaky)
+    monkeypatch.setattr(queue.funding, "_chunk_rotate_record", flaky)
     group_before = _holder_tokens(queue, unit.holder)
     for _ in range(10):                    # the group begins, then publishes
         tier_loop.residency_window(queue, tiers=tiers)
@@ -259,8 +259,8 @@ def test_same_consumer_deferred_rotation_preserves_exact_custody(
         _same_consumer_republication(tmp_path, retained))
     mover = movers[0]
     before = _custody(queue)
-    real = pg._rotate_record
-    monkeypatch.setattr(pg, "_rotate_record", lambda *args, **kwargs: None)
+    real = queue.funding._chunk_rotate_record
+    monkeypatch.setattr(queue.funding, "_chunk_rotate_record", lambda *args, **kwargs: None)
     outcome = queue.funding.bind_chunk(
          TIER, unit.unit, unit.holder, plan, leg, row["published_unix"])
     assert outcome.status == "deferred"
@@ -268,7 +268,7 @@ def test_same_consumer_deferred_rotation_preserves_exact_custody(
         "same-consumer deferred rotation changed token custody")
     assert outcome.moved == 0
     assert queue.funding.read_window(mover, TIER) == old
-    monkeypatch.setattr(pg, "_rotate_record", real)
+    monkeypatch.setattr(queue.funding, "_chunk_rotate_record", real)
     seen = _publish_until_bound(queue, tiers, movers)
     assert not [event for event in seen
                 if "prelaunch-mover-occupied" in str(event)]

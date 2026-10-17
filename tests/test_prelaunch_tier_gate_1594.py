@@ -100,7 +100,7 @@ def test_fresh_declared_newcomers_admit_one_then_stall(tmp_path) -> None:
     assert bound is not None
     assert (bound["retained_gib"], bound["peak_gib"]) == (90, 170)
     result = _protect(queue, tiers)
-    gated = result["gated"]
+    gated = result.gated
     assert len(gated) == 1
     (key, _), entry = next(iter(gated.items()))
     assert key in (first, second)
@@ -108,7 +108,7 @@ def test_fresh_declared_newcomers_admit_one_then_stall(tmp_path) -> None:
     assert entry["permanent"] is False
     assert entry["need_gib"] == 170
     other = second if key == first else first
-    assert (other, TIER) in result["permitted"]
+    assert (other, TIER) in result.permitted
 
 
 def test_second_declared_newcomer_waits_on_commitment(tmp_path) -> None:
@@ -127,8 +127,8 @@ def test_second_declared_newcomer_waits_on_commitment(tmp_path) -> None:
     assert 90 + 80 + 170 > 210
     _publish_leg(queue, plan_first, _mover_of(plan_first, "p0"))
     result = _protect(queue, tiers)
-    assert (first, TIER) not in result["gated"]
-    entry = result["gated"][(second, TIER)]
+    assert (first, TIER) not in result.gated
+    entry = result.gated[(second, TIER)]
     assert entry["reason"] == "joint-commitment-stall"
     assert entry["permanent"] is False
     assert entry["need_gib"] == 170
@@ -162,7 +162,7 @@ def test_declared_peak_past_capacity_refuses_for_good(tmp_path) -> None:
     assert window_credit.prelaunch_footprint_gib(230, owned) == 205
     result = _protect(queue, {TIER: {"tier_id": TIER, "tier": "stage",
                                      "mountpoint": str(stage)}})
-    entry = result["gated"][(consumer, TIER)]
+    entry = result.gated[(consumer, TIER)]
     assert entry["reason"] == "joint-fit-oversize"
     assert entry["permanent"] is True
     assert entry["need_gib"] == 205
@@ -201,22 +201,22 @@ def test_undeclared_newcomer_waits_then_proceeds(tmp_path) -> None:
     units = _units(queue, declared)
     _reserve(queue, units)
     first = _protect(queue, tiers)
-    entry = first["gated"][(plain, TIER)]
+    entry = first.gated[(plain, TIER)]
     assert entry["reason"] == "joint-fit-stall"
     assert entry["permanent"] is False
-    assert (declared, TIER) not in first["gated"]
+    assert (declared, TIER) not in first.gated
     # The declared consumer ends.  Its leads are not resident, so a claim is
     # refused by design; a withdrawal is how a waiting window ends.
     queue.withdraw(declared, reason="test: the declared consumer ended")
     released = pt.release_terminal(queue, TIER, units, shared_owned=[])
     assert any(event["event"] == "prelaunch-group-released"
                for event in released)
-    grant = first["grants"].get((declared, TIER))
+    grant = first.grants.get((declared, TIER))
     if grant is not None:
         assert queue.tier(TIER).cancel_fence(grant)['released'] == 40
     again = _protect(queue, tiers)
-    assert (plain, TIER) not in again["gated"]
-    assert (plain, TIER) in again["permitted"]
+    assert (plain, TIER) not in again.gated
+    assert (plain, TIER) in again.permitted
     assert queue.tier(TIER).free_supply().get('stage_gib') == 170
     live = {consumer["action_key"]
             for consumer in tier_loop.live_consumers(queue)}
@@ -244,7 +244,7 @@ def test_undeclared_queue_gates_like_a_direct_call(tmp_path) -> None:
                                          staged=[])
     assert (needs["current_min_gib"], needs["next_min_gib"]) == (40, 40)
     result = _protect(queue, _tiers(stage))
-    entry = result["gated"][(consumer, TIER)]
+    entry = result.gated[(consumer, TIER)]
     gib, enforced, _, error = tier_loop.output_obligation(queue, TIER)
     assert not error
     direct = window_credit.gate_newcomer(
@@ -254,9 +254,9 @@ def test_undeclared_queue_gates_like_a_direct_call(tmp_path) -> None:
     assert entry["reason"] == direct["reason"]
     assert entry["permanent"] == direct["permanent"]
     assert all(not str(event.get("event", "")).startswith("prelaunch")
-               for event in result["events"])
+               for event in result.events)
     assert all(permit.get("advance") != "prelaunch"
-               for permit in result["permitted"].values())
+               for permit in result.permitted.values())
 
 
 # ------------------------------------------------- holdings admit
@@ -278,8 +278,8 @@ def test_declared_holder_is_no_newcomer(tmp_path) -> None:
     assert bound is not None
     assert (bound["retained_gib"], bound["peak_gib"]) == (90, 100)
     fresh = _protect(queue, _tiers(stage))
-    assert fresh["gated"][(consumer, TIER)]["reason"] == "joint-fit-stall"
-    assert fresh["gated"][(consumer, TIER)]["need_gib"] == 100
+    assert fresh.gated[(consumer, TIER)]["reason"] == "joint-fit-stall"
+    assert fresh.gated[(consumer, TIER)]["need_gib"] == 100
     units = _units(queue, consumer)
     _reserve(queue, units)
     held = _held(queue)
@@ -289,9 +289,9 @@ def test_declared_holder_is_no_newcomer(tmp_path) -> None:
     assert totals == {TIER: 10}
     assert detail[consumer]["obligation_gib"] == 10
     result = _protect(queue, _tiers(stage))
-    assert (consumer, TIER) not in result["gated"]
-    assert (consumer, TIER) in result["permitted"]
-    assert result["permitted"][(consumer, TIER)]["advance"] != "prelaunch"
+    assert (consumer, TIER) not in result.gated
+    assert (consumer, TIER) in result.permitted
+    assert result.permitted[(consumer, TIER)]["advance"] != "prelaunch"
 
 
 # ------------------------------------------------- retention
@@ -405,7 +405,7 @@ def test_complete_census_releases_an_orphan_holder(tmp_path) -> None:
     holder = _orphan(queue, "gone")
     _plain_live(queue, "gone")
     result = _protect(queue, _tiers(stage))
-    assert [event["event"] for event in result["events"]
+    assert [event["event"] for event in result.events
             if event.get("holder") == holder] == ["prelaunch-dangling-released"]
     assert queue.tier(TIER).holdings(holder).get('stage_gib', 0) == 0
     assert queue.tier(TIER).free_supply().get('stage_gib') == 8
@@ -431,9 +431,9 @@ def test_incomplete_census_withholds_the_release(tmp_path) -> None:
     result = _protect(queue, _tiers(stage))
     assert queue.tier(TIER).holdings(holder).get('stage_gib', 0) == 2
     assert all(event.get("event") != "prelaunch-dangling-released"
-               for event in result["events"])
+               for event in result.events)
     assert any(event.get("event") == "advance-deferred-unknown-evidence"
-               for event in result["events"])
+               for event in result.events)
 
 
 def test_live_holders_survive_the_dangling_pass(tmp_path) -> None:
@@ -449,6 +449,6 @@ def test_live_holders_survive_the_dangling_pass(tmp_path) -> None:
     _reserve(queue, units)
     live_holder = units[0].holder
     result = _protect(queue, _tiers(stage))
-    assert [event.get("holder") for event in result["events"]
+    assert [event.get("holder") for event in result.events
             if event.get("event") == "prelaunch-dangling-released"] == [holder]
     assert queue.tier(TIER).holdings(live_holder).get('stage_gib', 0) == 2

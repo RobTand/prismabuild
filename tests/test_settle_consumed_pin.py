@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
+from prismabuild.funding import AdvanceProtection
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
@@ -131,9 +132,9 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     assert queue.funding.read_window(mover, TIER)["state"] == "consumed"
 
-    protection = {"protected": {(consumer, TIER): {
+    protection = AdvanceProtection(protected={(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": 1, "phase": "phase-0",
-        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
+        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}})
     events = queue.funding.settle_windows( protection)
     # Credit reconciliation frees nothing from the mover: no fused release,
     # tokens still held, record still consumed.
@@ -175,9 +176,9 @@ def _funded_pair(queue, plan, mover, row, *, kind, gib, grant):
 
 
 def _protection(consumer, mover, grant, *, gib):
-    return {"protected": {(consumer, TIER): {
+    return AdvanceProtection(protected={(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": gib, "phase": "phase-0",
-        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
+        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}})
 
 
 def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
