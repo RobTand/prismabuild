@@ -64,7 +64,7 @@ def _uncontained_claim_with_a_container(queue: pool.PoolQueue) -> dict:
     marker.write_text("")
     record = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     record["container_owner"] = OWNER
-    pool.record_store._write_json(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, KEY), record)
     return record
 
 
