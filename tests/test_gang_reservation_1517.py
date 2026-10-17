@@ -68,7 +68,7 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
         checkout = tmp_path / "checkout"
         rows = []
         for index, host in enumerate(HOSTS):
-            clock[0] += 0.001
+            clock.now += 0.001
             gang = {"group": group, "size": len(HOSTS), "index": index}
             member_inputs = list(inputs or [])
             params: dict = {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang}
@@ -218,7 +218,7 @@ def test_a_stale_ready_mark_does_not_commit_the_peer(gang_fleet):
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     # sparklina's loop goes quiet; its ready mark ages past freshness.
-    clock[0] += _gang.READY_FRESH_S + 5
+    clock.now += _gang.READY_FRESH_S + 5
     finish(incumbents["sparky"], "sparky")
     assert gclaim("sparky") is None, "committed against a stale peer ready mark"
     assert denial(second, "sparky")["reason"] == "gang_waiting_for_peers"

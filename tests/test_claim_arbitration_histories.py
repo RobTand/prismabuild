@@ -120,7 +120,7 @@ def test_a_gang_reservation_denial_is_published_while_H_is_held(gang_fleet, monk
 
     queue, clock, publish, finish, claim, denial, members = gang_fleet
     group, (member, peer) = members("under-H-denial", priority=10)
-    election = _elect(queue, group, member, "sparklina", clock[0])
+    election = _elect(queue, group, member, "sparklina", clock.now)
     key = publish("fenced-under-H", priority=0, tags=["sparklina"])
     real_denial = queue.record_denial
     seen = []
@@ -154,7 +154,7 @@ def test_an_existing_election_skips_resident_and_prelaunch_observation(
     group, (key, peer) = members("standing-election")
     target = peer if existing == "sibling" else key
     election = _elect(queue, group, target,
-                      "sparky" if existing == "foreign" else "sparklina", clock[0])
+                      "sparky" if existing == "foreign" else "sparklina", clock.now)
     row = _row(queue, key)
     row["resident_set"] = "a" * 64
     pool.immutable_files.write_json_atomic(queue.records.item_path(pool.READY, key), row)
@@ -188,7 +188,7 @@ def test_resident_preference_precedes_prelaunch_and_keeps_its_fallback(
 
     def resident_hold(*args, **kwargs):
         events.append("resident")
-        assert args[5] == clock[0]
+        assert args[5] == clock.now
         if outcome == "error_fallback":
             raise AttributeError("resident observation unreadable")
         return hold if outcome == "hold" else None
@@ -215,7 +215,7 @@ def test_resident_preference_precedes_prelaunch_and_keeps_its_fallback(
 def test_a_ranked_gang_skips_all_later_election_observers(gang_fleet, monkeypatch):
     queue, clock, publish, finish, claim, denial, members = gang_fleet
     ahead, (first, _) = members("higher-ranked", priority=10)
-    election = _elect(queue, ahead, first, "sparklina", clock[0])
+    election = _elect(queue, ahead, first, "sparklina", clock.now)
     group, (key, peer) = members("ranked-behind", priority=10)
     monkeypatch.setattr(_gang, "resident_hold", _unexpected)
     monkeypatch.setattr(queue, "_gang_prelaunch_blocker", _unexpected)
@@ -229,8 +229,8 @@ def test_a_ranked_gang_skips_all_later_election_observers(gang_fleet, monkeypatc
 def test_an_aged_shortfall_never_asks_for_a_backfill_proof(gang_fleet, monkeypatch):
     queue, clock, publish, finish, claim, denial, members = gang_fleet
     group, (member, peer) = members("reserved-shortfall", priority=-10)
-    _elect(queue, group, member, "sparklina", clock[0])
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    _elect(queue, group, member, "sparklina", clock.now)
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     key = publish("shortfall-is-no-loan", priority=-10, retry_safe=True, tags=["sparklina"])
     monkeypatch.setattr(_gang, "backfill_enabled", _unexpected)
     monkeypatch.setattr(queue, "_preemption_eligible", _unexpected)
@@ -247,11 +247,11 @@ def test_backfill_proofs_stop_at_the_first_refusal(gang_fleet, monkeypatch):
     elections = []
     for index in range(3):
         group, (member, peer) = members(f"ordered-backfill-{index}", priority=10)
-        elections.append(_elect(queue, group, member, "sparklina", clock[0]))
+        elections.append(_elect(queue, group, member, "sparklina", clock.now))
         record = _gang.read_group(queue, group)
         row = _row(queue, member)
         _gang.mark_ready(queue, record, _gang.member(record, row, row["gang"]),
-                         "sparklina", clock[0])
+                         "sparklina", clock.now)
     elections.sort(key=lambda entry: entry["action_key"])
     elections = [_census_election(queue, entry) for entry in elections]
     key = publish("partly-loanable", priority=-10, retry_safe=True, tags=["sparklina"])

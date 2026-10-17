@@ -47,10 +47,10 @@ def test_an_equal_priority_reservation_shortfall_never_becomes_a_backfill_loan(g
     assert claim("sparky") == incumbent
     group, keys = members("aged-equal-priority", priority=-10)
     assert claim("sparklina") is None
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     assert claim("sparklina") is None
     election = _gang.elections(queue, group, 2)[0]
-    assert _gang.backfill_allowed(queue, election, clock[0])
+    assert _gang.backfill_allowed(queue, election, clock.now)
     key = backfill(publish)
     assert queue._preemption_eligible(
         pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)),
@@ -113,7 +113,7 @@ def test_peer_ready_preempts_before_token_gate_and_records_release(gang_fleet):
     assert not (_gang.state_dir(queue, group) / "ready-0.json").exists()
     finish(incumbent, "sparky")
     assert claim("sparky") is None
-    requested = clock[0]
+    requested = clock.now
     assert claim("sparklina") is None
     decisions = queue.records.withdrawal_decisions(key)
     assert len(decisions) == 1, "token-gate trap never requested gang backfill preemption"
@@ -134,10 +134,10 @@ def test_peer_ready_preempts_before_token_gate_and_records_release(gang_fleet):
     # Explicitly settle the private holder. No assumed kill timeout returns
     # capacity. Once settled, each member commits in at most two claim passes.
     finish(key, "sparklina")
-    released = clock[0]
+    released = clock.now
     assert claim("sparklina") == keys[0]
     assert claim("sparky") == keys[1]
-    assert clock[0] - released < _gang.READY_FRESH_S
+    assert clock.now - released < _gang.READY_FRESH_S
     election = _gang.elections(queue, group, 2)[0]
     timing = election["backfill_preemptions"][0]
     assert timing["tokens_returned_unix"] is not None
@@ -159,7 +159,7 @@ def test_failed_cleanup_is_visible_and_never_grants_capacity(gang_fleet, monkeyp
     monkeypatch.setattr(queue, "cleanup_action_containers", lambda *a, **k:
                         {"complete": False, "error": "GPU/container settlement unproved"})
     queue.finish(key, status="withdrawn")
-    clock[0] += _gang.DEFAULT_SKEW_S + _gang.READY_FRESH_S
+    clock.now += _gang.DEFAULT_SKEW_S + _gang.READY_FRESH_S
     assert claim("sparklina") is None
     assert denial(keys[0], "sparklina")["reason"] == "gang_waiting_for_backfill_release"
     assert queue.ledger("sparklina").held_keys() == [key]
@@ -193,7 +193,7 @@ def test_backfill_on_both_hosts_reclaims_without_any_fresh_ready_mark(gang_fleet
             queue.records.item_path(pool.record_store.CLAIMED, holders[index]),
             holder,
         )
-    clock[0] += _gang.READY_FRESH_S + 1
+    clock.now += _gang.READY_FRESH_S + 1
     for host, key in zip(("sparklina", "sparky"), holders):
         assert claim(host) is None
         assert queue.records.withdrawal_decisions(
@@ -248,13 +248,13 @@ def test_a_startable_gang_never_lends_its_fresh_ready_host(
     finish(incumbent, "sparky")
     record = _gang.read_group(queue, group)
     if peer_state == "ready":
-        _gang.mark_ready(queue, record, record["members"][1], "sparky", clock[0])
+        _gang.mark_ready(queue, record, record["members"][1], "sparky", clock.now)
     else:
         assert claim("sparky") == keys[1]
     ready = pool.record_store.read_document(_gang.state_dir(queue, group) / "ready-0.json")
-    assert 0 <= clock[0] - ready["ready_unix"] <= _gang.READY_FRESH_S
+    assert 0 <= clock.now - ready["ready_unix"] <= _gang.READY_FRESH_S
     assert _gang.sibling_readiness(queue, record, record["members"][0],
-                                  "sparklina", clock[0])["complete"]
+                                  "sparklina", clock.now)["complete"]
     key = backfill(publish)
     assert claim_backfill_snapshot(queue, key, fleet[5], monkeypatch,
         cpu_sampler=lambda: cpu_sample(fleet[1], fleet[2]),
@@ -275,7 +275,7 @@ def test_a_stale_ready_member_never_lends_its_host(gang_fleet, fleet, monkeypatc
     queue, clock, publish, finish, claim, denial, members = gang_fleet
     group, keys, incumbent = waiting(gang_fleet)
     ready = pool.record_store.read_document(_gang.state_dir(queue, group) / "ready-0.json")
-    clock[0] = ready["ready_unix"] + _gang.READY_FRESH_S + 1
+    clock.now = ready["ready_unix"] + _gang.READY_FRESH_S + 1
     key = backfill(publish)
     assert claim_backfill_snapshot(queue, key, fleet[5], monkeypatch,
         cpu_sampler=lambda: cpu_sample(fleet[1], fleet[2]),
@@ -355,13 +355,13 @@ def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
     group, keys, incumbent = waiting(gang_fleet)
     election = _gang.elections(queue, group, 2)[0]
     timing = {"election": election, "holder": "a" * 64, "generation": "b" * 64,
-              "published_unix": clock[0], "requested_unix": clock[0],
+              "published_unix": clock.now, "requested_unix": clock.now,
               "tokens_returned_unix": None}
     if writer == "observe":
         _gang.note_backfill_preemption(queue, election, timing)
         pool.immutable_files.write_json_atomic(queue.records.superseded_dir() /
                                f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json",
-                               {"gang_backfill_release": {**timing, "tokens_returned_unix": clock[0] + 1}})
+                               {"gang_backfill_release": {**timing, "tokens_returned_unix": clock.now + 1}})
     path = _gang.state_dir(queue, group) / "elect-0.json"
     before = pool.record_store.read_document(path)
     entered, release = threading.Event(), threading.Event()
@@ -395,7 +395,7 @@ def test_election_updates_defer_to_the_member_transition(gang_fleet, writer):
     elif writer == "note":
         assert after["backfill_preemptions"][0]["requested_unix"] == timing["requested_unix"]
     else:
-        assert after["backfill_preemptions"][0]["tokens_returned_unix"] == clock[0] + 1
+        assert after["backfill_preemptions"][0]["tokens_returned_unix"] == clock.now + 1
 
 
 def test_a_late_request_observation_cannot_erase_the_token_return(gang_fleet):
@@ -403,14 +403,14 @@ def test_a_late_request_observation_cannot_erase_the_token_return(gang_fleet):
     group, keys, incumbent = waiting(gang_fleet)
     election = _gang.elections(queue, group, 2)[0]
     timing = {"election": election, "holder": "a" * 64, "generation": "b" * 64,
-              "published_unix": clock[0], "requested_unix": clock[0],
+              "published_unix": clock.now, "requested_unix": clock.now,
               "tokens_returned_unix": None}
     _gang.note_backfill_preemption(queue, election, timing)
-    _gang.note_backfill_preemption(queue, election, {**timing, "tokens_returned_unix": clock[0] + 1})
-    _gang.note_backfill_preemption(queue, election, {**timing, "requested_unix": clock[0] + 2})
+    _gang.note_backfill_preemption(queue, election, {**timing, "tokens_returned_unix": clock.now + 1})
+    _gang.note_backfill_preemption(queue, election, {**timing, "requested_unix": clock.now + 2})
     observed = _gang.elections(queue, group, 2)[0]["backfill_preemptions"][0]
-    assert observed["tokens_returned_unix"] == clock[0] + 1, "late request erased a completed release"
-    assert observed["requested_unix"] == clock[0]
+    assert observed["tokens_returned_unix"] == clock.now + 1, "late request erased a completed release"
+    assert observed["requested_unix"] == clock.now
 
 
 def test_an_unfenced_minus_ten_row_needs_no_preemption_eligibility_read(
