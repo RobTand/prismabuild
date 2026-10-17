@@ -143,7 +143,7 @@ def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
     _kernel_holds_the_reader_until(
         monkeypatch, release_at=time.monotonic() + 2.0, on_release=land)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=60) == 0
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         out, err = capsys.readouterr()
         assert "7 passed" in out
         assert "reader has exited and was reaped" in err
@@ -175,7 +175,7 @@ def test_a_long_wait_on_a_retained_reader_is_not_silent(
     _kernel_holds_the_reader_until(
         monkeypatch, release_at=time.monotonic() + 1.5, on_release=land)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=60) == 0
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         err = capsys.readouterr().err
         assert "its reader is still retained after" in err
         assert f'"pid": {readers.forked[0]}' in err
@@ -197,7 +197,7 @@ def test_a_reader_still_retained_at_the_deadline_ends_the_wait_naming_it(
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
     try:
         started = time.monotonic()
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=1.0) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         assert time.monotonic() - started < 1.0 + pbrun.action_wait.POLL_S
         err = capsys.readouterr().err
         assert "still retained when --wait-s ran out" in err
@@ -249,7 +249,7 @@ def test_a_retained_wait_uses_its_clock_above_real_monotonic(monkeypatch, capsys
     monkeypatch.setattr(owner._reader, '_reap_within', held)
     monkeypatch.setattr(pbrun.action_client, 'bounded_outcome_observation', observation)
 
-    assert pbrun.action_client.await_outcome(object(), KEY, wait_s=2.0) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
+    assert pbrun.action_client.report_pool_outcome(object(), KEY, wait_s=2.0) == pbrun.action_client.RECORD_WRITE_FAILED_EXIT
     assert len(calls) == 1
     assert clock.now - 10**12 == pytest.approx(2.0, abs=0.0001)
     assert reaped and all(event == (4242, 0) for event in reaped)
@@ -318,7 +318,7 @@ def test_a_failed_reader_that_cannot_be_reaped_still_ends_at_once(
     monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda pid, grace_s: False)
     try:
         started = time.monotonic()
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=5) == \
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=5) == \
             pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         assert time.monotonic() - started < 3
         err = capsys.readouterr().err
@@ -402,7 +402,7 @@ def test_a_retained_verification_reader_is_waited_out_too(
     monkeypatch.setattr(pbrun.action_client, "bounded_outcome_render", verify)
     monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", reap_within)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=60) == 0
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         out, err = capsys.readouterr()
         assert "7 passed" in out
         assert "pool outcome verification timed out" in err
@@ -441,7 +441,7 @@ def test_a_reader_reaped_at_the_deadline_starts_no_new_read(
     started = time.monotonic()
     _hold_one_reader(monkeypatch, readers, index=0, release_at=started + 0.9)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=1.0) == \
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == \
             pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         err = capsys.readouterr().err
         assert "when the wait ended" in err
@@ -475,7 +475,7 @@ def test_the_retained_reader_notice_keeps_its_interval(
     _kernel_holds_the_reader_until(
         monkeypatch, release_at=started + 1.5, on_release=land)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=60) == 0
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         elapsed = time.monotonic() - started
         err = capsys.readouterr().err
         notices = err.count("its reader is still retained after")
@@ -503,7 +503,7 @@ def test_the_read_after_a_reap_waits_out_the_poll_interval(
     _hold_one_reader(monkeypatch, readers, index=0,
                      release_at=time.monotonic() + 0.1, on_release=land)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=60) == 0
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         assert len(readers.forked) >= 2
         assert readers.forked_at[1] - readers.forked_at[0] >= 0.9
     finally:
@@ -522,7 +522,7 @@ def test_the_final_74_states_the_seconds_and_the_host_once(
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=0.6) == \
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0.6) == \
             pbrun.action_client.RECORD_WRITE_FAILED_EXIT
         err = capsys.readouterr().err
         final = [line for line in err.splitlines()
@@ -548,7 +548,7 @@ def test_a_delivered_snapshot_reader_is_reaped_later_not_left_a_zombie(
     # Its two reap attempts inside ``pbstatus`` miss (a starved parent).
     _hold_one_reader(monkeypatch, readers, index=0, calls=2)
     try:
-        assert pbrun.action_client.await_outcome(queue, KEY, wait_s=60) == 0
+        assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=60) == 0
         err = capsys.readouterr().err
         assert "using the delivered snapshot" in err
         assert readers.forked[0] in readers.reaped

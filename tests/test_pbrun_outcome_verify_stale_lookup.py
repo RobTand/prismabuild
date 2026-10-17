@@ -124,14 +124,16 @@ def test_a_landed_ending_is_reported_when_the_key_is_stale_until_listed(
     # Stale in every forked reader until that reader lists attempts/.
     StaleName(queue, monkeypatch, lambda shim: shim.listed == 0)
 
-    rc = pbrun.action_client.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    report = pbrun.action_client.ClientReport()
+    rc = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=30.0,
+        generation=generation, report=report)
     lines = _lines(capsys)
 
     assert rc == 0, lines
     # pbtest reports this shard with its own pytest summary, not as
     # OUTCOME UNOBSERVED.
     assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
-    assert pbtest.unobserved_outcome(lines) is None
+    assert not isinstance(report.ending.verdict, pbrun.action_client.ClientUnavailable)
 
 
 def test_a_landed_ending_is_reported_after_one_enoent(
@@ -147,7 +149,7 @@ def test_a_landed_ending_is_reported_after_one_enoent(
         return calls["n"] == 1
 
     StaleName(queue, monkeypatch, once)
-    rc = pbrun.action_client.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 0, lines
     assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
@@ -160,7 +162,7 @@ def test_a_failed_ending_keeps_its_own_exit_status(
 
     generation = _landed(queue, status="failed", returncode=1)
     StaleName(queue, monkeypatch, lambda shim: shim.listed == 0)
-    rc = pbrun.action_client.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 1, lines
     assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
@@ -180,7 +182,7 @@ def test_a_name_listed_but_still_stale_is_read_again_inside_the_wait(
     generation = _landed(queue)
     clears_at = time.monotonic() + 0.5
     StaleName(queue, monkeypatch, lambda _shim: time.monotonic() < clears_at)
-    rc = pbrun.action_client.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 0, lines
     assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
@@ -194,10 +196,13 @@ def test_a_stale_name_at_zero_patience_stays_unobserved(
 
     generation = _landed(queue)
     StaleName(queue, monkeypatch, lambda _shim: True)
-    rc = pbrun.action_client.await_outcome(queue, KEY, wait_s=0, generation=generation)
+    report = pbrun.action_client.ClientReport()
+    rc = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+        generation=generation, report=report)
     lines = _lines(capsys)
     assert rc == pbrun.action_client.RECORD_WRITE_FAILED_EXIT, lines
-    assert pbtest.unobserved_outcome(lines) == KEY[:12]
+    assert isinstance(report.ending.verdict, pbrun.action_client.ClientUnavailable)
+    assert report.ending.verdict.action_key[:12] == KEY[:12]
 
 
 def test_an_attempt_that_is_really_missing_is_never_a_pass(
@@ -212,7 +217,7 @@ def test_an_attempt_that_is_really_missing_is_never_a_pass(
     generation = _landed(queue)
     shutil.rmtree(queue.root / pool.ATTEMPTS / KEY)
     started = time.monotonic()
-    rc = pbrun.action_client.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == pbrun.action_client.RECORD_WRITE_FAILED_EXIT, lines
     assert time.monotonic() - started < 20.0

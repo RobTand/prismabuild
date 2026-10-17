@@ -105,7 +105,7 @@ def test_the_cli_wait_reports_the_recovered_generation(queue, monkeypatch) -> No
     _run(queue, status="executed", returncode=0, stdout="later run\n")
     assert second != first
 
-    assert pbrun.action_client.await_outcome(
+    assert pbrun.action_client.report_pool_outcome(
         queue, KEY, wait_s=30.0, generation=first) == 0
 
 

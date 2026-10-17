@@ -1,6 +1,6 @@
 """A wait whose deadline has passed starts no read (#938).
 
-``await_outcome`` used to fall back to the full ``OUTCOME_READ_TIMEOUT_S``
+``report_pool_outcome`` used to fall back to the full ``OUTCOME_READ_TIMEOUT_S``
 when a positive ``wait_s`` had already run out before the first read.  A
 caller past its deadline then got a longer read than any caller still inside
 it, whose read gets ``min(OUTCOME_READ_TIMEOUT_S, remaining)``.  The time a
@@ -74,7 +74,7 @@ def test_a_wait_whose_deadline_passed_before_the_first_read_starts_none(
     clock = FakeClock(jumps={1: 2.0})
     budgets = _observe(monkeypatch, clock)
 
-    code = pbrun.action_client.await_outcome(object(), KEY, wait_s=1.0)
+    code = pbrun.action_client.report_pool_outcome(object(), KEY, wait_s=1.0)
     expired_at = 1002.0
 
     assert code == pbrun.action_client.GAVE_UP_EXIT
@@ -100,7 +100,7 @@ def test_no_read_gets_more_than_the_caller_has_left(
     clock = FakeClock(jumps={1: late_s})
     budgets = _observe(monkeypatch, clock)
 
-    assert pbrun.action_client.await_outcome(object(), KEY, wait_s=wait_s) == pbrun.action_client.GAVE_UP_EXIT
+    assert pbrun.action_client.report_pool_outcome(object(), KEY, wait_s=wait_s) == pbrun.action_client.GAVE_UP_EXIT
     assert budgets == pytest.approx(expected)
 
 
@@ -109,14 +109,14 @@ def _released(monkeypatch, clock: FakeClock) -> list[dict]:
 
     waits: list[dict] = []
 
-    def await_outcome(_q, key, *, wait_s, generation=None):
+    def report_pool_outcome(_q, key, *, wait_s, generation=None, report=None):
         waits.append({"key": key, "wait_s": wait_s})
         return 0
 
     monkeypatch.setattr(pbrun, "time", clock)
     monkeypatch.setattr(pbrun.action_edges, "read_published", lambda _root, _pending: {
         "action_key": KEY, "published_unix": 1.0})
-    monkeypatch.setattr(pbrun.action_client, "await_outcome", await_outcome)
+    monkeypatch.setattr(pbrun.action_client, "report_pool_outcome", report_pool_outcome)
     return waits
 
 
