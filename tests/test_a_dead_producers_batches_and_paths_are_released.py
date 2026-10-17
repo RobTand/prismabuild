@@ -123,7 +123,7 @@ class _Fleet:
         self.prefix = Path(self.template["output_prefix"])
         self.prefix.mkdir(parents=True, exist_ok=True)
         self.q = _queue(tmp_path, gib=8)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         self.stage = tmp_path / "stage"
         _announce_tier(self.q, self.stage)
         po.declare_template(self.q.root, self.template)

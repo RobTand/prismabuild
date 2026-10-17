@@ -89,7 +89,7 @@ class _World:
         self.template = _template(str(tmp_path / "outputs"))
         self.owner = _producer_request(tmp_path, self.cas_root, self.template)
         self.q = _queue(tmp_path)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         # One attempt, as the live producer had: its failure is terminal.
         self.q.publish(action_key=self.owner, cas_root=str(self.cas_root),
                        worker_script=str(REPO / "tools" / "prismabuild_worker.py"),

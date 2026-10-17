@@ -218,7 +218,7 @@ class _World:
                        "manifest_bytes": self.total,
                        "leads": residency_plan.leads_for(self.plan)})
         # Room for the old owner's charge and this mover's one token.
-        queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+        queue.tier(TIER).mint({'stage_gib': 4})
         self.tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(stage)}}
 
@@ -239,7 +239,7 @@ class _World:
             tags=["dl380g10"], owner=f"{socket.gethostname()}:1:stage",
             capacity={"cpu": 4, "mem_gb": 16}, ready=ready)
         assert claimed is not None and claimed["action_key"] == self.copier
-        assert self.queue.tier_ledger(TIER).holder_tokens(self.copier), (
+        assert self.queue.tier(TIER).holdings(self.copier), (
             "control: the claim must take the mover's tier tokens")
         self.claimed = claimed
 
@@ -305,8 +305,7 @@ def test_an_ended_owner_is_invalidated_and_the_mover_is_not_republished(
         f"complete={receipt.get('complete')!r}, errors={receipt.get('errors')}")
     assert rc == 0 and receipt["complete"] is True, receipt.get("errors")
     assert "refusal" not in receipt, receipt.get("refusal")
-    assert queue.tier_ledger(TIER).holder_tokens(world.copier) == {
-        "stage_gib": 1}
+    assert queue.tier(TIER).holdings(world.copier) == {'stage_gib': 1}
     for staged_name, payload in world.payloads.items():
         assert _staged(stage, staged_name).read_bytes() == payload
     # The ended owner's copy was invalidated: a fresh inode, so its sidecar's
@@ -370,9 +369,9 @@ def test_a_live_owner_is_a_terminal_conflict_naming_both_owners(
         queue.records.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
         queue.records.residency_fragment_root(), consumer, mover).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     # The refused mover holds nothing, and its window is retired by name.
-    assert queue.tier_ledger(TIER).holder_tokens(world.copier) == {}
+    assert queue.tier(TIER).holdings(world.copier) == {}
     assert receipt["plan_superseded"] is True
     marker = residency_plan.superseded(queue, world.plan)
     assert marker is not None and marker["movers"] == [world.copier]

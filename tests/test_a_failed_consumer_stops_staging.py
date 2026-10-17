@@ -161,8 +161,8 @@ def test_a_finished_mover_is_left_for_adoption_not_withdrawn(
     finished = _hexkey("firstmover0")
     stage = tmp_path / "stage"
     stage.mkdir()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
-    assert queue.tier_ledger(TIER).acquire(finished, {"stage_gib": PHASE_GIB})
+    queue.tier(TIER).mint({'stage_gib': 8})
+    assert queue.tier(TIER).take(finished, {'stage_gib': PHASE_GIB})
     queue.record_move(finished, {
         "consumer_action_key": FIRST, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -175,7 +175,7 @@ def test_a_finished_mover_is_left_for_adoption_not_withdrawn(
 
     assert [event for event in events
             if event.get("event") == "dead-consumer-mover-withdrawn"] == []
-    assert finished in queue.tier_ledger(TIER).held_keys()
+    assert finished in queue.tier(TIER).holders()
     # The dead consumer's plan is residue once nothing names it (#708): it is
     # archived, and the resident range keeps its tokens for adoption.
     assert residency_plan.read(queue, FIRST) is None
