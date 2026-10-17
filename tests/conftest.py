@@ -62,6 +62,23 @@ from threading import local
 
 import pytest
 
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Bind each shard's qualification to the interpreter that actually ran."""
+    import json
+
+    executable = Path(sys.executable).resolve()
+    running = Path("/proc/self/exe").read_bytes()
+    record = dict(version=list(sys.version_info[:3]), description=sys.version,
+        executable=dict(path=sys.executable, resolved_path=str(executable),
+            bytes=len(running), sha256=pb_core.raw_sha256(running)),
+        executable_path_matches_running=executable.read_bytes() == running,
+        files=list(config.args), affinity=sorted(os.sched_getaffinity(0)),
+        native_threads={name: os.environ.get(name) for name in (
+            "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
+        conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()))
+    terminalreporter.write_line("pbtest-runtime: " + json.dumps(record))
+
 # The status reader already owns the fleet's bounded fork-and-abandon contract.
 # Reuse it here rather than adding a second timeout shape for a hard-mounted
 # store. The root conftest adds ``src``; this test-only hook also needs the

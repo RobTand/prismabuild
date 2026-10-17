@@ -18945,3 +18945,13 @@ constructs `FilingOptions` and `RowPublication` directly. Its separate standard
 submission request serves only the unchanged C14 filesystem-floor context.
 Physical residency directory names belong to RecordStore; RP keeps the domain
 registry questions and interpretation above its captures.
+
+The pure `residency_plan.pre_progress_stage_reach` question takes only its
+plan and accepted phase. It supplies no invented staging observation. Manifest
+promotion captures its filesystem-floor request before checking the movement
+template, preserving the original current-directory read and refusal order.
+Qualification shards use explicit interpreter paths. The test conftest records
+the running executable bytes, actual Python version, assigned affinity, native
+thread bounds and selected files in each shard's real log. The retained-data
+qualifier checks those facts against the sealed plan. A generic interpreter
+pathname alone establishes no version claim.
