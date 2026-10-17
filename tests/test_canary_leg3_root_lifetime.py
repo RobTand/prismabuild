@@ -8,7 +8,7 @@ import pytest
 from test_canary_leg3_staged_read import (
     CONSUMER, _build_fleet, _child_env, leg3, pool, reader_lease,
 )
-import stage_release
+from prismabuild import stage_release
 
 
 def _configure(monkeypatch, fleet):
