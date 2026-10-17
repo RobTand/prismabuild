@@ -290,7 +290,7 @@ def test_prewarm_sigterm_interrupts_idle_wait(boundary, monkeypatch, gate_closed
     entered = CONTEXT.Event()
     cycles = CONTEXT.Value("i", 0, lock=False)
 
-    class ObservedEvent(threading.Event):
+    class ObservedEvent(role_session.StopRequest):
         def wait(self, timeout=None):
             entered.set()
             return super().wait(timeout)
@@ -300,7 +300,7 @@ def test_prewarm_sigterm_interrupts_idle_wait(boundary, monkeypatch, gate_closed
         return {}
 
     args = fleet.args(once=False, poll_s=3600, dry_run=True)
-    monkeypatch.setattr(role_session, "threading", SimpleNamespace(Event=ObservedEvent))
+    monkeypatch.setattr(role_session, "StopRequest", ObservedEvent)
     monkeypatch.setattr(prewarm_loop, "cycle", cycle)
     monkeypatch.setattr(prewarm_loop, "_parser", lambda: SimpleNamespace(parse_args=lambda _: args))
     process = CONTEXT.Process(target=_run_role,

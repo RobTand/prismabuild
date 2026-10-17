@@ -86,6 +86,7 @@ def test_wait_without_stop_expires_without_requesting_stop(tmp_path):
 with stop_requests(signum) as stop:
     assert stop.wait(0) is False
     assert stop.wait(0.01) is False
+    assert stop.wait(-1) is False
     assert not stop.is_set()
 print('expired', flush=True)
 ''')

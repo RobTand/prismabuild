@@ -18384,6 +18384,12 @@ This ownership change does not change queue records or the reserved-exit clamp.
 The private client channel and package recovery follow the bounded protocol
 above. C05 read-port reconciliation and integrated qualification remain required.
 
+Role stop requests use a sticky flag and a nonblocking wake pipe. The signal
+handler takes no wait lock, so a request delivered during wait setup wakes the
+same wait. The role context restores its prior handlers before closing both
+pipe descriptors. Idle waits retain their existing deadlines and completion
+boundaries.
+
 
 
 ### Capability evidence and live qualification (C03)

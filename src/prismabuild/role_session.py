@@ -9,10 +9,10 @@ from contextlib import contextmanager
 import fcntl
 import os
 from pathlib import Path
+import select
 import signal
 import socket
 import stat
-import threading
 import time
 
 from . import generation_receipt, park_proof
@@ -30,18 +30,51 @@ GENERATION_DRIFT_DIR = "generation-drift"
 GENERATION_DRIFT_SCHEMA = "prismaquant.prismabuild.generation_drift.v1"
 
 
+class StopRequest:
+    """A sticky stop flag whose signal handler never takes a waiter's lock."""
+
+    def __init__(self):
+        self._requested = False
+        self._read_fd, self._write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+
+    def is_set(self) -> bool:
+        return self._requested
+
+    def set(self) -> None:
+        self._requested = True
+        try:
+            os.write(self._write_fd, b"\0")
+        except BlockingIOError:
+            pass
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if not self._requested:
+            select.select([self._read_fd], [], [],
+                          None if timeout is None else max(0.0, timeout))
+        return self._requested
+
+    def _close(self) -> None:
+        try:
+            os.close(self._write_fd)
+        finally:
+            os.close(self._read_fd)
+
+
 @contextmanager
 def stop_requests(*signals: int):
     """Request cooperative stop and restore the caller's signal handlers."""
-    stop = threading.Event()
+    stop = StopRequest()
     previous = {}
     try:
         for signum in signals:
             previous[signum] = signal.signal(signum, lambda *_: stop.set())
         yield stop
     finally:
-        for signum, handler in reversed(tuple(previous.items())):
-            signal.signal(signum, handler)
+        try:
+            for signum, handler in reversed(tuple(previous.items())):
+                signal.signal(signum, handler)
+        finally:
+            stop._close()
 
 
 ROLE_LOCK_ROOT = Path(f"/tmp/prismabuild-roles-{os.getuid()}")
