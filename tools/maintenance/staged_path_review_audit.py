@@ -6,27 +6,11 @@ from collections import Counter
 import json
 from pathlib import Path
 import subprocess
-from staged_path_migrate import staged_inventory, staged_symbols, staged_references
+from staged_path_migrate import staged_inventory, staged_symbols, staged_references, staged_sources, staged_exports, staged_alias_bindings, staged_reference_module, STAGED_PUBLIC
 from staged_path_audit import staged_checks
 
 REVIEW_BASE = 'ec634ac510c1a7465052f9111d51cfa928bb439d'
 ORIGINAL_BASE = 'a8ba9c0c7beeeb379908924a60c6933e997c8df6'
-
-
-def review_sources(root, ref):
-    paths = [p for p in subprocess.check_output(
-        ['git', '-C', str(root), 'ls-tree', '-r', '--name-only', ref], text=True).splitlines()
-        if p.endswith('.py')]
-    raw = subprocess.run(['git', '-C', str(root), 'cat-file', '--batch'],
-        input=''.join(ref + ':' + p + '\n' for p in paths).encode(), capture_output=True, check=True).stdout
-    out, offset = {}, 0
-    for path in paths:
-        end = raw.index(b'\n', offset)
-        size = int(raw[offset:end].split()[-1])
-        offset = end + 1
-        out[path] = raw[offset:offset + size].decode()
-        offset += size + 1
-    return out
 
 
 def staged_review_occurrences(sources):
@@ -67,8 +51,8 @@ def review_cli():
     p.add_argument('--freeze', action='store_true')
     args = p.parse_args()
     root = args.root.resolve()
-    original = review_sources(root, ORIGINAL_BASE)
-    previous = review_sources(root, REVIEW_BASE)
+    original = staged_sources(root, ORIGINAL_BASE, include_historical=True)
+    previous = staged_sources(root, REVIEW_BASE, include_historical=True)
     paths = subprocess.check_output(['git', '-C', str(root), 'ls-files', '*.py'], text=True).splitlines()
     current = {f: (root / f).read_text() for f in paths}
     selected = staged_symbols(original)

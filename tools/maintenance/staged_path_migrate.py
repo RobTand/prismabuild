@@ -46,10 +46,22 @@ STAGED_PUBLIC = {
 }
 
 
-def staged_sources(root, ref):
-    paths = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", ref], cwd=root, text=True).splitlines()
-    return {p: subprocess.check_output(["git", "show", f"{ref}:{p}"], cwd=root, text=True)
-            for p in paths if p.endswith(".py") and not p.startswith("tests/compat/")}
+def staged_sources(root, ref, *, include_historical=False):
+    """Read one immutable Git source generation without loading product code."""
+    paths = [p for p in subprocess.check_output(
+        ['git', '-C', str(root), 'ls-tree', '-r', '--name-only', ref], text=True).splitlines()
+        if p.endswith('.py') and (include_historical or not p.startswith('tests/compat/'))]
+    raw = subprocess.run(['git', '-C', str(root), 'cat-file', '--batch'],
+        input=''.join(ref + ':' + p + '\n' for p in paths).encode(),
+        capture_output=True, check=True).stdout
+    out, offset = {}, 0
+    for path in paths:
+        end = raw.index(b'\n', offset)
+        size = int(raw[offset:end].split()[-1])
+        offset = end + 1
+        out[path] = raw[offset:offset + size].decode()
+        offset += size + 1
+    return out
 
 
 def staged_symbols(sources):
@@ -539,6 +551,12 @@ from prismabuild.stage_marks import STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, sourc
             if new != (args.root / path).read_text():
                 (args.root / path).write_text(new)
                 changed.append(path)
+        public = args.root / "src/prismabuild/produced_output.py"
+        public_source = public.read_text()
+        binding = "from .output_vocabulary import (\n" + "".join(
+            "    " + name + ",\n" for name in sorted(selected["produced_output"])) + ")\n"
+        public.write_text(public_source.replace("from prismabuild import output_vocabulary, staged_path\n",
+            "from prismabuild import output_vocabulary, staged_path\n" + binding, 1))
         result["changed"] = changed
     else:
         result["files"] = {p: staged_inventory(p, (args.root / p).read_text()) for p in members if (args.root / p).exists()}
