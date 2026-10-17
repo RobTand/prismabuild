@@ -43,6 +43,7 @@ from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import prewarm_loop  # noqa: E402
 import stage_move  # noqa: E402
 from test_deferred_action_edges import (  # noqa: E402
@@ -83,7 +84,7 @@ def _progress_worker(queue: pool.PoolQueue, monkeypatch) -> list[str]:
                    has_gpu=True, capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
                    progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1])
     consulted: list[str] = []
-    monkeypatch.setattr(pbrun, "require_deployed_read_plan_storage",
+    monkeypatch.setattr(submit_core, "require_deployed_read_plan_storage",
                         lambda: consulted.append("v2"))
     return consulted
 
@@ -254,7 +255,7 @@ def test_a_deferred_plan_reads_the_batch_at_the_phase_it_names(
     # One mechanism: the release built what an ordinary submitter builds, and
     # what pbrun accepts from one.
     assert manifest == _placed(tmp_path, queue, committed["ref"])
-    pbrun.require_declared_origin_batches(
+    submit_core.require_declared_origin_batches(
         manifest, transport="pool", queue_root=queue.root)
     assert (po._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists(), "declared against the batch (#914)"
@@ -291,19 +292,19 @@ def test_a_crashed_v2_release_resumes_as_pinned(
     _path, committed = _commit(queue, template, instance, "b1", PAYLOAD)
     queue.finish(producer, status="executed")
 
-    publish = pbrun.publish_consumer_row
+    publish = submit_core.publish_consumer_row
 
     def crash(*_args, **_kwargs):
         raise OSError("the tier host lost power")
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", crash)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", crash)
     [refusal] = [event for event in dr.release_tick(queue)
                  if event["event"] == dr.REFUSED_EVENT]
     assert "lost power" in refusal["reason"]
     pinned = ae.read_release(queue.root, pending)
     assert pinned is not None and ae.read_published(queue.root, pending) is None
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", publish)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", publish)
     [resumed] = _released(dr.release_tick(queue))
     assert resumed["resumed"] is True
     assert resumed["action_key"] == pinned["action_key"]
@@ -509,5 +510,5 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
         **static["annotations"],
         po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "head", "refs": [committed["ref"]]}]}}
     with pytest.raises(SystemExit, match="only a data_manifest.v2 has"):
-        pbrun.require_declared_origin_batches(
+        submit_core.require_declared_origin_batches(
             slotted, transport="pool", queue_root=queue.root)

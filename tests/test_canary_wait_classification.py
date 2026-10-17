@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import pbcanary
 import pbrun
+from prismabuild import submission as submit_core
 import publish_runtime
 from pbcanary_legs import leg3
 from pbcanary_verdict import verdict
@@ -97,9 +98,9 @@ def test_staging_evidence_binds_the_generation_and_latest_attempt(
         tmp_path, monkeypatch, same_generation, latest_wait):
     marker = json.dumps({"schema": leg3.LEG3_SCHEMA, "ok": False,
                          "not_verified": "staging_wait"})
-    monkeypatch.setattr(pbrun.action_client, "bounded_outcome_observation", lambda *a, **k: (
+    monkeypatch.setattr(submit_core.action_client, "bounded_outcome_observation", lambda *a, **k: (
         (tmp_path / "failed.json", {}), 1234.5 if same_generation else 1235.0))
-    monkeypatch.setattr(pbrun.action_client, "bounded_outcome_render", lambda *a, **k: {
+    monkeypatch.setattr(submit_core.action_client, "bounded_outcome_render", lambda *a, **k: {
         "summary": {"action_key": KEY, "status": "failed", "detail": {}},
         "attempts": [{"stdout": marker}, {"stdout": marker if latest_wait else "bad digest"}]})
     expected = latest_wait if same_generation else None

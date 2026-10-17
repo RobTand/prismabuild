@@ -24,6 +24,7 @@ receipts, so there is nothing honest to price it off, and pricing it off the
 movers' copy receipts would measure the wrong node entirely (#655's lesson).
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -84,6 +85,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -95,7 +98,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -137,14 +140,14 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, ram=False, **overrides):
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
+    tier = submit_core.resolve_stage_tier(queue, None)
     if ram:
         # The ram leg is exercised through the resolver, not through a second
         # discovered tier: what is under test is the row it seals, not the
         # loop that announces the mountpoint.
         monkey_target = overrides.pop("monkeypatch", None)
         if monkey_target is not None:
-            monkey_target.setattr(pbrun, "resolve_ram_tier",
+            monkey_target.setattr(submit_core, "resolve_ram_tier",
                                   lambda queue_, stage_tier: _ram_tier(tmp_path))
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,
@@ -153,10 +156,10 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, ram=False, **overrides):
     for name, value in overrides.items():
         setattr(args, name, value)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
+    staged = submit_core.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+        cas=cas, store=pbrun.configured_store())
     staged["cas"] = cas
     return staged
 

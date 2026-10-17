@@ -15,6 +15,7 @@ from c26_native_support import (EXIT_BLOCK, ROOT, consume, dispatch, mq, pbtest,
                                 record, repository)
 from prismabuild import core, materialize, pool
 import pbrun
+from prismabuild import submission as submit_core
 import shape_gate
 
 FILES = ['tests/test_one.py']
@@ -233,11 +234,11 @@ def gate_receipt(tmp_path, monkeypatch, fault):
         + "pathlib.Path('gate.log').write_bytes(result.stdout)\n"
         + 'raise SystemExit(result.returncode)\n')
     for args in (['add', 'runner.py'], ['commit', '-qm', 'native runner']):
-        done = pbrun.subprocess.run(['git', *args], cwd=root, capture_output=True, text=True)
+        done = submit_core.subprocess.run(['git', *args], cwd=root, capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
-    commit = pbrun.subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+    commit = submit_core.subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     cas = core.PrismaBuildCAS(tmp_path / 'cas')
-    snapshot = pbrun.build_git_checkout_snapshot(root, cas=cas, max_bytes=16 << 20)
+    snapshot = submit_core.snapshot_checkout(root, cas=cas, max_bytes=16 << 20)
     action = core.seal_action({'schema': core.ACTION_SCHEMA_V2,
         'task': {'definition_id': 'tests/c26-native-gate', 'definition_version': 'v1',
             'task_class': 'generation', 'determinism': 'deterministic',

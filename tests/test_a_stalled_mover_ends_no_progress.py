@@ -16,6 +16,7 @@ The landing record prices a claimed copy from the same report.
 Everything runs on ``tmp_path`` queues, stages and sources (#628).
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -84,6 +85,8 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
     """
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
@@ -102,7 +105,7 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = dict(pbrun.resolve_stage_tier(queue, None))
+    tier = dict(submit_core.resolve_stage_tier(queue, None))
     tier["tokens"] = {}
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,
@@ -112,10 +115,10 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
     if measured_mb_s is not None:
         records.append(_landed(digest, measured_mb_s, movers=movers))
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
+    staged = submit_core.residency_stage_rows(
         _template(digest, manifest_path.stat().st_size),
         consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas, movement_receipts=records)
+        cas=cas, movement_receipts=records, store=pbrun.configured_store())
     return staged, cas, digest
 
 
