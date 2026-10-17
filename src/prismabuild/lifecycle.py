@@ -576,26 +576,9 @@ def _worker_finish(
                     or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
                 queue.records.file_superseded(record, key=action_key,
                                       kind="scratch-declarations-after-withdrawal", when=pool._now())
-            tombstone, mine = queue._entomb_claim(action_key, expect=read_claim)
-            if not mine or tombstone is None:
-                return dst
-            queue.records.lease_path(action_key).unlink(missing_ok=True)
-            queue._release_reservation(action_key, host=holder)
-            if isinstance(decision.get("gang_backfill_preemption"), Mapping):
-                from . import _gang
-                timing = {**decision["gang_backfill_preemption"], "tokens_returned_unix": pool._now()}
-                filed["gang_backfill_release"] = timing
-                # The decision stays immutable; the worker's conclusion
-                # records when its exact released reservation came back.
-                with suppress(OSError, ValueError, pb.PrismaBuildError):
-                    queue.records.replace_record_at(dst if current else archive, filed)
-                election = timing["election"]
-                with queue.action_transition_lock(election["action_key"], blocking=False) as acquired:
-                    if acquired:
-                        with suppress(OSError, ValueError, pb.PrismaBuildError):
-                            _gang.note_backfill_preemption(queue, election, timing)
-            tombstone.unlink(missing_ok=True)
-            return dst
+            return _commit_claim(queue, CancelledClaim(
+                action_key, record, read_claim, holder, dst, decision, filed,
+                dst if current else archive))
     if record is None:
         # A reaper concluded this claim while the work was still running,
         # so the claim file is gone and the item has already been filed
@@ -773,46 +756,9 @@ def _worker_finish(
     # Another cleanup retry can finish and re-claim this key during the
     # archive write. Compare the original identity at the atomic move,
     # not just at entry, before touching the lease or reservation.
-    tombstone, mine = queue._entomb_claim(action_key, expect=read_claim)
-    if not mine or tombstone is None:
-        return queue.records.attempt_path(record, attempts)
-    queue.records.lease_path(action_key).unlink(missing_ok=True)
-    # Capacity is released before the item is filed, so the next worker to
-    # look sees the tokens free rather than racing this rename.  A mover
-    # that staged what it declared keeps its *tier* tokens: they stand for
-    # bytes that are still on the stage, and only an egress that deletes
-    # them may give them back.
-    queue._release_reservation(
-        action_key, host=holder,
-        keep_tier=queue.pin_holds_tier_tokens(record, action_key))
-    # A republished key ends with one terminal record (#1117): an earlier
-    # generation's record in the other terminal state is archived first,
-    # named on the new record, and leaves its state directory only after
-    # the new record is filed, so the key is never without an ending.
-    retired = (lifecycle._archive_earlier_terminal(queue, record, str(disposition))
-               if disposition in {DONE, FAILED} else None)
-    if retired is not None:
-        record["supersedes_terminal"] = retired[1]
-    if disposition in {DONE, FAILED}:
-        queue.records.replace_record_at(dst, record)
-    else:
-        dst = queue._publish_requeued_claim(
-            record, action_key=action_key, tombstone=tombstone,
-            superseded_kind="retry-superseded",
-            superseded_reason="a newer publication already owns ready "
-                              "after an earlier claim ended",
-        )
-    if retired is not None:
-        with suppress(FileNotFoundError):
-            retired[0].unlink()
-    if tombstone is None:
-        src.unlink(missing_ok=True)
-    else:
-        tombstone.unlink(missing_ok=True)
-    if disposition in {DONE, FAILED}:
-        queue.retire_residency_plan(action_key)
-    return dst
-
+    return _commit_claim(queue, ClaimCommit(
+        Transition.FINISH, action_key, record, read_claim, holder, dst,
+        str(disposition), attempts, adopted))
 
 
 def conclude(queue, policy: WorkerFinish) -> Path:
@@ -821,3 +767,97 @@ def conclude(queue, policy: WorkerFinish) -> Path:
         return _worker_finish(queue, policy.action_key, status=policy.status,
                               detail=policy.detail, claim_snapshot=policy.claim_snapshot)
     raise TypeError(f"unsupported conclusion policy: {type(policy).__name__}")
+
+
+@dataclass(frozen=True)
+class CancelledClaim:
+    action_key: str
+    record: dict[str, object]
+    original: Mapping[str, object]
+    holder: str | None
+    destination: Path
+    decision: Mapping[str, object]
+    filed: dict[str, object]
+    proof_path: Path
+
+
+def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
+    """Retire the exact owner before publishing its chosen next home.
+
+    Policies retain their conditional reads and historical retention rules.
+    The original claim, not the projected outcome, is crash recovery authority.
+    """
+    from . import pool
+
+    key, record, destination = plan.action_key, plan.record, plan.destination
+    cancelled = isinstance(plan, CancelledClaim)
+    transition = Transition.CANCEL if cancelled else plan.transition
+    disposition = WITHDRAWN if cancelled else plan.disposition
+    target = disposition if disposition in {DONE, FAILED, WITHDRAWN} else READY
+    _legal_destination(transition, target)
+    tombstone, mine = queue._entomb_claim(key, expect=plan.original)
+    if not mine or tombstone is None:
+        return (queue.records.attempt_path(record, plan.attempt)
+                if transition is Transition.FINISH else None)
+    queue.records.lease_path(key).unlink(missing_ok=True)
+    if transition is Transition.EXPIRE and disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
+        with suppress(Exception):
+            queue.note_fill_borrow_end(record)
+    keep_tier = False
+    if transition is Transition.FINISH:
+        keep_tier = queue.pin_holds_tier_tokens(record, key)
+    elif transition is Transition.EXPIRE:
+        keep_tier = (plan.adopted.get("output_retry_stopped") is True
+                     and queue.pin_holds_tier_tokens(record, key))
+    queue._release_reservation(key, host=plan.holder, keep_tier=keep_tier)
+    if cancelled:
+        if isinstance(plan.decision.get("gang_backfill_preemption"), Mapping):
+            from . import _gang
+            timing = {**plan.decision["gang_backfill_preemption"], "tokens_returned_unix": pool._now()}
+            plan.filed["gang_backfill_release"] = timing
+            with suppress(OSError, ValueError, pb.PrismaBuildError):
+                queue.records.replace_record_at(plan.proof_path, plan.filed)
+            election = timing["election"]
+            with queue.action_transition_lock(election["action_key"], blocking=False) as acquired:
+                if acquired:
+                    with suppress(OSError, ValueError, pb.PrismaBuildError):
+                        _gang.note_backfill_preemption(queue, election, timing)
+        tombstone.unlink(missing_ok=True)
+        return destination
+    retired = (_archive_earlier_terminal(queue, record, str(disposition))
+               if transition is Transition.FINISH and disposition in {DONE, FAILED} else None)
+    if retired is not None:
+        record["supersedes_terminal"] = retired[1]
+    try:
+        if disposition in {DONE, FAILED}:
+            queue.records.replace_record_at(destination, record)
+        else:
+            if transition is Transition.DEFER:
+                queue._shape_as_ready_item(record, action_key=key)
+                record["maintenance_deferred_unix"] = pool._now()
+            kind, reason = {
+                Transition.RELEASE_UNSTARTED: (
+                    "unstarted-requeue", "a newer publication already owns ready after unstarted claim release"),
+                Transition.DEFER: (
+                    "maintenance-deferred", "a newer publication already owns ready after maintenance deferral"),
+            }.get(transition, ("retry-superseded", "a newer publication already owns ready after an earlier claim ended"))
+            destination = queue._publish_requeued_claim(
+                record, action_key=key, tombstone=tombstone,
+                superseded_kind=kind, superseded_reason=reason)
+    except (OSError, pb.PrismaBuildError):
+        if transition not in {Transition.EXPIRE, Transition.RELEASE_UNSTARTED}:
+            raise
+        try:
+            os.link(tombstone, queue.records.item_path(CLAIMED, key))
+        except OSError:
+            pass
+        else:
+            tombstone.unlink(missing_ok=True)
+        return None
+    if retired is not None:
+        with suppress(FileNotFoundError):
+            retired[0].unlink()
+    tombstone.unlink(missing_ok=True)
+    if transition is Transition.FINISH and disposition in {DONE, FAILED}:
+        queue.retire_residency_plan(key)
+    return destination
