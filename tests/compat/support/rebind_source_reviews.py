@@ -51,6 +51,13 @@ def reviewed_sites(raw, owner, members, wire=None):
 
 def rebind_reviews(args):
     root = args.root.resolve()
+    mappings = {}
+    for item in json.loads(args.owner_map.read_bytes()) if args.owner_map else []:
+        key = item["before"]["path"], item["before"]["owner"]
+        if key in mappings:
+            raise ValueError(('duplicate reviewed owner mapping', key))
+        mappings[key] = item["after"]
+    used_mappings = set()
     def old_file(relative):
         return subprocess.check_output(["git", "-C", str(root), "show", args.before_source + ":" + relative])
 
@@ -72,6 +79,10 @@ def rebind_reviews(args):
         before = [json.loads(line) for line in before_raw.decode().splitlines()]
         after = []
         for row in before:
+            origin = row["path"], row["owner"]
+            target = mappings.get(origin, {"owner": row["owner"]})
+            if origin in mappings:
+                used_mappings.add(origin)
             prior_source = old_file(row["path"])
             if review_source_hash(prior_source) != row["source_sha256"]:
                 raise ValueError(('declared baseline does not own the original review', row))
@@ -81,7 +92,9 @@ def rebind_reviews(args):
             rank = [line for line, shape in prior_sites if shape == fingerprint].index(row["line"])
             matched = []
             for candidate in current:
-                if any(candidate[key] != row[key] for key in ("owner", "fields", discriminator)):
+                if any(candidate[key] != row[key] for key in ("fields", discriminator)):
+                    continue
+                if any(candidate[key] != value for key, value in target.items()):
                     continue
                 raw = (root / candidate["path"]).read_bytes()
                 if review_source_hash(raw) != source_hashes.get(candidate["path"]):
@@ -94,7 +107,8 @@ def rebind_reviews(args):
             if len(matched) != 1:
                 raise ValueError(('reviewed constructor changed or moved ambiguously; explicit review required', row))
             candidate, raw = matched[0]
-            updated = dict(row, path=candidate["path"], line=candidate["line"], source_sha256=review_source_hash(raw))
+            updated = dict(row, path=candidate["path"], owner=candidate["owner"],
+                           line=candidate["line"], source_sha256=review_source_hash(raw))
             changes.append(dict(file=relative, before=row, after=updated,
                                 constructor_ast_equal_after_wire_identity=True, resolved_schema_wire=wire))
             after.append(updated)
@@ -103,8 +117,11 @@ def rebind_reviews(args):
         if present not in (before_raw, replacement):
             raise ValueError(('metadata differs from both the baseline and verified replacement', relative))
         replacements[relative] = replacement
+    if used_mappings != mappings.keys():
+        raise ValueError('owner mapping must name an actual reviewed source owner')
     report = dict(before_source=args.before_source, scan=str(args.scan), applied=args.apply,
-                  review_count=len(changes), all_constructor_asts_equal_after_wire_identity=True, rows=changes)
+                  owner_mappings=list(mappings.items()), review_count=len(changes),
+                  all_constructor_asts_equal_after_wire_identity=True, rows=changes)
     with args.report.open("x") as stream:
         stream.write(json.dumps(report, indent=2) + "\n")
     if args.apply:
@@ -119,6 +136,8 @@ def source_review_main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--before-source", required=True)
     parser.add_argument("--scan", type=Path, required=True)
+    parser.add_argument("--owner-map", type=Path,
+                        help='JSON list of {"before":{"path":...,"owner":...},"after":{"path":...,"owner":...}}')
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--apply", action="store_true")
     rebind_reviews(parser.parse_args())
