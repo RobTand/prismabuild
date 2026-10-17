@@ -37,7 +37,7 @@ def test_incomplete_legacy_baseline_proof_is_not_measured(fleet, baseline):
     verdict["drain_until_unix"] = first["measurement_drain_until_unix"]
     verdict.pop("unmeasured_until_unix", None)
     verdict.pop("measurement_unmeasured", None)
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
     assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 

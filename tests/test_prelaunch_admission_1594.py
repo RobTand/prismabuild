@@ -173,7 +173,7 @@ def _gang_pair(gang_fleet, tmp_path, name, *, declare_manifest: bool,
     keys = []
     leads = []
     for index in range(2):
-        clock[0] += 0.001
+        clock.now += 0.001
         key, lead = _seal_member(
             cas, checkout, queue, group, index, name,
             declare_manifest=declare_manifest, declare_plan=declare_plan,
@@ -189,7 +189,7 @@ def _gang_pair(gang_fleet, tmp_path, name, *, declare_manifest: bool,
 
 def _publish_lead(queue, clock, lead: str, sha: str) -> None:
     """Publish one movement node for the plan's phase 0."""
-    clock[0] += 0.001
+    clock.now += 0.001
     queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
