@@ -79,6 +79,12 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import box_capacity  # noqa: E402
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+def configured_store():
+    return store_for(__file__)
+
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
@@ -540,7 +546,8 @@ class ShapeGate:
                  host_profile: Mapping[str, object] = HOST_PROFILE,
                  require_chunk_edge: bool = True,
                  seed: int = 965) -> None:
-        import pbrun
+        from prismabuild import submission
+        from prismabuild import submission
         import tier_loop
 
         if storage_tiers.GIB * int(shape["scale"]) != 1 << 30:     # type: ignore[arg-type]
@@ -548,12 +555,7 @@ class ShapeGate:
                 "unit_mismatch",
                 f"storage_tiers.GIB is {storage_tiers.GIB}, but a shape scaled by "
                 f"{shape['scale']} needs {(1 << 30) // int(shape['scale'])}")  # type: ignore[arg-type]
-        if Path(pbrun.SH) != Path(shared_root):
-            raise ShapeGateFailure(
-                "shared_root_mismatch",
-                f"pbrun seals against {pbrun.SH}, not {shared_root}; a mover "
-                f"sealed there would run against another queue")
-        self.pbrun = pbrun
+        self.store = store_for(__file__, root=shared_root)
         self.tier_loop = tier_loop
         self.require_chunk_edge = require_chunk_edge
         self.shape = shape
@@ -714,7 +716,6 @@ class ShapeGate:
         ``seal_action_from_template`` adds them for a released consumer.
         """
 
-        pbrun = self.pbrun
         snapshot = {"id": pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID,
                     "sha256": hashlib.sha256(b"shape-gate-checkout").hexdigest(),
                     "bytes": 4096}
@@ -727,7 +728,7 @@ class ShapeGate:
                      "artifact_family": "generic", "artifact_kind": "generic",
                      "working_directory": "."},
             "inputs": [snapshot],
-            "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+            "code_closure": submission.build_stamp_closure("pbrun.stamp", "{}"),
             "params": {"command": ["true"], "cwd": str(self.root),
                        "demand": {"cpu": 1, "mem_gb": 1},
                        "placement": {"required_tags": []},
@@ -762,7 +763,7 @@ class ShapeGate:
                    "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
                    "content_encoding": "gzip"}
         template = self._template()
-        action = self.pbrun.seal_action_from_template(
+        action = submission.seal(
             template, command=["true"], extra_inputs=[manifest_input],
             extra_params={"data_manifest": summary})
         sealed = {**template,
@@ -770,12 +771,12 @@ class ShapeGate:
                   "inputs": [*template["inputs"], manifest_input]}  # type: ignore[misc]
         self.cas.publish_action_request(action)
         key = str(action["action_key"])
-        args = self.pbrun.parse_args(
-            ["--residency", "stage", "--priority", "-10", "--", "true"])
+        args = SubmissionRequest(residency="stage", priority=-10, command=("true",))
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            self.pbrun.publish_consumer_row(
-                self.queue, action, sealed, key=key, args=args, cas=self.cas)
+            submission.publish_consumer_row(
+                self.queue, action, sealed, key=key, args=args, cas=self.cas,
+                store=self.store, display=render_submission)
         self.submit_log = stderr.getvalue()
         return key
 
@@ -822,7 +823,7 @@ class ShapeGate:
                 stack.enter_context(contextlib.redirect_stdout(buffer))
                 try:
                     code = module.main(argv)
-                except SystemExit as exc:
+                except SubmissionRefused as exc:
                     code = exc.code
                     print(f"SystemExit: {exc}")
         finally:

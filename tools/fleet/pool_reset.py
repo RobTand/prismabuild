@@ -86,7 +86,14 @@ RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
 import fleet_submit  # noqa: E402
-import pbrun  # noqa: E402
+from prismabuild import submission
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+def configured_store():
+    return store_for(__file__, root=SH)
+
+from prismabuild import submission
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 #: The submitter this tool re-submits through, under whichever layout the
@@ -638,7 +645,7 @@ def announced_submission(said: str) -> dict | None:
         except ValueError:
             continue
         if (isinstance(value, dict)
-                and value.get("schema") == pbrun.action_client.DETACH_SCHEMA_V1
+                and value.get("schema") == submission.action_client.DETACH_SCHEMA_V1
                 and isinstance(value.get("action_key"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", value["action_key"])
                 and value.get("transport") in ("pool", "slurm")
