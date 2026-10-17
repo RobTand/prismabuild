@@ -32,11 +32,11 @@ _OBSERVATION_IDENTITY = (("action_key", "action_key"), ("owner", "claimed_by"),
                          ("published_unix", "published_unix"))
 _DRAIN_OWNER_DISPLAY = 200
 _DRAIN_REASON_DISPLAY = 1000
-STARVATION_SCHEMA_V1 = "prismabuild.starvation.v1"
+STARVATION_SCHEMA_V1 = "prismabuild.pbstatus.starvation.v1"
 NOT_OBSERVABLE = "not_observable"
 STARVATION_QUIET_FRACTION = 0.5
 STARVATION_CHILD_SILENT_S = 30.0
-BLOCKED_ORIGINS_SCHEMA_V1 = "prismabuild.blocked_origins.v1"
+BLOCKED_ORIGINS_SCHEMA_V1 = "prismabuild.pbstatus.blocked_origins.v1"
 ORPHANED_PREWRITE_REMEDY = produced_output.ORPHANED_PREWRITE_REMEDY
 _UNKNOWN_TIER = "unknown"
 _UNREADABLE = object()

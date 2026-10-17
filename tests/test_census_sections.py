@@ -164,6 +164,7 @@ values, schedules = {}, {}
 questions = [
     ("rows", lambda: census.action_rows(root).value if current else pbstatus.read_pool(root)),
     ("starvation", lambda: census.starvation(root, now=moment) if current else pbstatus.read_starvation(root, now=moment)),
+    ("blocked_origins", lambda: census.blocked_origins(root).value if current else pbstatus.read_blocked_origins(root)),
     ("cursors", lambda: census.plans(root, now=moment).value if current else pbmcp._cursor_census(root, now=moment)),
     ("tiers", lambda: census.tiers(root).value if current else pbmcp._tier_rows(root)),
     ("movers", lambda: census.movers(root).value if current else pbmcp._mover_live_rows(root)),
