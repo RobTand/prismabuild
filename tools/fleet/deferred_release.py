@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import contextlib
+from dataclasses import replace
 import hashlib
 import io
 import json
@@ -50,10 +51,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from prismabuild import submission
 from submission_frontend import store_for, render_submission
-from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
-
-
-from prismabuild import submission
+from prismabuild.submission_types import SubmissionRefused
 
 from prismabuild import action_edges  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
@@ -76,8 +74,7 @@ MAX_RELEASES_PER_CYCLE = 8
 _QUIET_STATES = frozenset({"live", "pending"})
 
 #: What a record or a release can raise that the tick reports and keeps.
-#: ``SystemExit`` is ``pbrun``'s refusal: its sealing and publication helpers
-#: refuse by raising it with the reason as its message.
+#: Package refusals retain the reason without stopping the tier loop.
 _CONTAINED = (action_edges.ActionEdgeError, produced_output.ProducedOutputError,
               pool.PoolContractError, pb.PrismaBuildError, OSError, ValueError,
               KeyError, TypeError, SubmissionRefused)
@@ -166,7 +163,8 @@ def release_tick(queue, *, deadline: float | None = None,
         return events
     try:
         published_root = published_runtime_root()
-        loop_root = store_for(__file__).runtime_root.resolve(strict=True)
+        store = replace(store_for(__file__), queue_root=queue.root)
+        loop_root = store.runtime_root.resolve(strict=True)
     except OSError as exc:
         event = _report_once("", {"event": REFUSED_EVENT,
                                   "reason": f"published-runtime-unreadable: {exc}"})
@@ -224,7 +222,8 @@ def release_tick(queue, *, deadline: float | None = None,
             # they travel inside this release's event instead.
             with contextlib.redirect_stderr(notices):
                 event = submission.release_deferred(
-                    queue, pending_id, record, producers=producers, store=store_for(__file__), display=render_submission)
+                    queue, pending_id, record, producers=producers,
+                    store=store, display=render_submission)
         except action_edges.RuntimeGenerationUnavailable as exc:
             # Never sealed into another generation instead: held, and the
             # remedy is a resubmission, which freezes under today's.
