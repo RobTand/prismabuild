@@ -163,12 +163,12 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         return _observe_free_scan(path, pattern, real_visible(path, pattern))
 
     monkeypatch.setattr(pool.immutable_files, 'match_required', _hooked_visible)
-    real_reclaim = pool.PoolQueue._reclaim_dead_markers
+    real_reclaim = tier_holdings.TierLedger._reclaim_mint
 
     def _hooked_reclaim(self, ledger, wanted):
         outcome = real_reclaim(self, ledger, wanted)
         if str(ledger.base) == str(queue.root / pool.record_store.TIER_RESERVATIONS / TIER):
-            probe_ledger = self.tier(TIER)
+            probe_ledger = queue.tier(TIER)
             observed["prefix_free"] = int(probe_ledger.free_supply().get(KIND, 0))
             # The REAL claim boundary, in its own thread: same-thread
             # execution would re-acquire the held guard and mask
@@ -176,7 +176,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
             claim_out: dict = {}
 
             def _claimant() -> None:
-                claim_out["row"] = self.claim(
+                claim_out["row"] = queue.claim(
                     owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
                     tags=["dl380g10"])
 
@@ -188,7 +188,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         return outcome
 
     monkeypatch.setattr(
-        pool.PoolQueue, "_reclaim_dead_markers", _hooked_reclaim)
+        tier_holdings.TierLedger, "_reclaim_mint", _hooked_reclaim)
     _publish_claimant(queue)
     result = queue.tier(TIER).mint(dict(WANTED))
     observed["result"] = result
