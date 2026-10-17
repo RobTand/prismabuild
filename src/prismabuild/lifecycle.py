@@ -775,9 +775,9 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
             return destination
         return (queue.records.attempt_path(record, plan.attempt)
                 if transition is Transition.FINISH else None)
-    terminal_publication = (transition in {Transition.FINISH, Transition.EXPIRE}
-                            and disposition in {DONE, FAILED})
-    if terminal_publication:
+    guarded_publication = (transition is Transition.FINISH
+                           or (transition is Transition.EXPIRE and disposition in {DONE, FAILED}))
+    if guarded_publication:
         try:
             mark_identity = queue.records.finishing_mark_identity(tombstone)
         except (OSError, PoolContractError) as exc:
@@ -815,7 +815,7 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                         _gang.note_backfill_preemption(queue, election, timing)
         tombstone.unlink(missing_ok=True)
         return destination
-    if terminal_publication:
+    if guarded_publication:
         with queue.action_transition_lock(key, blocking=True):
             try:
                 owned = queue.records.finishing_mark_identity(tombstone) == mark_identity

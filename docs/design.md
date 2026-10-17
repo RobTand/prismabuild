@@ -18850,19 +18850,21 @@ lock through fresh claim and decision reads, proof filing and release. Reaping
 retains its original lock and both pending-finish checks, including the
 acted-from read. Late results control only their saved exact scope.
 
-For DONE or FAILED publication, conclusion captures the exact ordinary
-finishing mark's device and inode immediately after entomb. After returning
+For worker result publication, including a READY retry, and terminal reaping,
+conclusion captures the exact ordinary finishing mark's device and inode immediately after entomb. After returning
 the reservation, it takes the action transition lock and rechecks that same
 regular mark. An absent, replaced or unreadable mark grants no publication or
 historical unlink. A worker whose mark recovery already restored returns its
 existing immutable attempt address, as a lost entomb does. Unknown metadata
 retains recovery authority and is reported.
 
-The lock then covers prior-terminal archive, outcome replacement, prior-terminal
-unlink, mark removal and residency-plan retirement. Recovery cannot restore
+The lock then covers prior-terminal archive, outcome replacement or retry
+publication, prior-terminal unlink, mark removal and residency-plan retirement. Recovery cannot restore
 the mark or retire a terminal between those operations. This prevents an old
 finisher resumed after restoration and reaper adoption from replacing or
-unlinking a newer generation's terminal. READY requeue still uses its existing
+unlinking a newer generation's terminal, or resetting a later same-generation
+retry's attempt counter. Broker-deferred and never-started requeues retain
+their existing outer key exclusion. READY publication keeps its existing
 non-clobbering link protocol. No record schema, filename, host admission lock,
 scope cleanup rule or attempt identity changes.
 
