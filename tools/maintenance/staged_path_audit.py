@@ -209,7 +209,8 @@ def staged_audit_cli():
             all_parse_errors.append([path, str(exc)])
         if path.startswith(("tests/compat/", "tools/maintenance/")):
             continue
-        if staged_references(source, selected, exports=current_exports) != source:
+        local = next((m for m, p in STAGED_MODULES.items() if p == path), None)
+        if staged_references(source, selected, local=local, exports=current_exports) != source:
             remaining_rewrites.append(path)
     original_assertions, current_assertions = Counter(), Counter()
     for population, counter in ((sources, original_assertions), (all_sources, current_assertions)):

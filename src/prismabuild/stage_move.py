@@ -569,7 +569,7 @@ class _Copier:
             except FileNotFoundError:
                 # The directory made above is still empty until this file
                 # lands in it, so an egress's empty-directory prune
-                # (``stage_release._prune_empty``) can remove it in the gap
+                # (``staged_path.prune_empty``) can remove it in the gap
                 # (#1008 item 2).  One prune removes a directory once; a
                 # second would need a second sweep inside this window -- the
                 # same race and the same single retry
@@ -1356,7 +1356,7 @@ def _shared_consumers(args) -> list[str] | None:
     A shared mover (#1026) files under its range's share namespace rather
     than under a consumer, so the consumer its reads serve is every live
     consumer still interested in the range
-    (``stage_release.shared_interest``).  ``None`` for an ordinary mover;
+    (``staged_path.shared_interest``).  ``None`` for an ordinary mover;
     an empty list when the range is shared and nobody's interest reads.
     """
 
@@ -2270,7 +2270,7 @@ def prior_move_record(queue: pool.PoolQueue,
 
 
 def bound_unproven_endings(receipt: dict[str, object], queue: pool.PoolQueue,
-                           publisher: "_StagedPublisher", prior: object, *,
+                           publisher: 'staged_path.StagedPublisher', prior: object, *,
                            consumer: str, mover: str) -> None:
     """Count this run's unproven refusals; refuse terminally at the bound.
 

@@ -140,6 +140,11 @@ def staged_references(source, selected, *, local=None, exports=None):
                   and n.body and isinstance(n.body[0], ast.Expr)
                   and isinstance(n.body[0].value, ast.Constant)
                   and isinstance(n.body[0].value.value, str)}
+    annotation_strings = {id(value) for node in ast.walk(tree)
+                          for annotation in (getattr(node, "annotation", None),
+                                             getattr(node, "returns", None))
+                          if annotation is not None for value in ast.walk(annotation)
+                          if isinstance(value, ast.Constant) and isinstance(value.value, str)}
     lines = source.splitlines(keepends=True)
     offsets = [0]
     for line in lines:
@@ -199,6 +204,14 @@ def staged_references(source, selected, *, local=None, exports=None):
                     needs.add(destination)
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
             value = node.value
+            if id(node) in annotation_strings:
+                tokens = []
+                for token in tokenize.generate_tokens(io.StringIO(value).readline):
+                    if token.type == tokenize.NAME and token.string in bare:
+                        needs.add(bare[token.string].split(".")[0])
+                        token = token._replace(string=bare[token.string])
+                    tokens.append(token)
+                value = tokenize.untokenize(tokens)
             for module, pattern in dotted_patterns.items():
                 if module + "." in value:
                     value = pattern.sub(lambda match: f"{staged_destination(module)}.{STAGED_PUBLIC.get(match[1], match[1])}", value)

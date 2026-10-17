@@ -2780,7 +2780,7 @@ def prune_stale_mentions(
       unknown ownership and retains the whole owner.  Only a missing leaf is
       ``absent``;
     * positive staleness for an existing regular file is inode difference,
-      exactly as :meth:`stage_move._StagedPublisher._proof_candidate` reads it
+      exactly as :meth:`staged_path.StagedPublisher._proof_candidate` reads it
       (#755).  Same-inode size/time change is divergence, not permission.  A
       co-owner fragment protects its physical file, so that entry and its date
       stay untouched;
@@ -4907,12 +4907,12 @@ def pre_range_stage_relative(path: str, offset: int, size: int, *,
 #: with wide margin; a publisher slower than this still converges, through
 #: the stall policy's retry, never through replacement.  A name under
 #: positive absence whose bytes hash to the trusted digest is adopted at
-#: once and never waits for it (#1081, :meth:`_StagedPublisher._content_proof`).
+#: once and never waits for it (#1081, :meth:`StagedPublisher._content_proof`).
 _PUBLISH_GRACE_S = 30.0
 _PUBLISH_POLL_S = 0.25
 
-#: The four ways :meth:`_StagedPublisher._decide` can make a publication wait
-#: for another publisher, spelled exactly as :meth:`_StagedPublisher.publish`
+#: The four ways :meth:`StagedPublisher._decide` can make a publication wait
+#: for another publisher, spelled exactly as :meth:`StagedPublisher.publish`
 #: totals them onto the receipt's ``publish_waits`` (#994): a fragment vouches
 #: for the name without a usable date, a live mover claim covers it, a
 #: sibling copy is in flight, or nothing names it yet and it has not been
@@ -5311,7 +5311,7 @@ STAGED_DESTINATION_UNPROVEN = "staged_destination_unproven"
 #: outcome record (#798's legacy shape), two outcomes, an outcome or a
 #: fragment that does not parse, a key that is not an action key.  The only
 #: benign reason to see one is a record the shared mount has not shown this
-#: host yet (``stage_release._unended_owner``).  The span below is what
+#: host yet (``staged_path.unended_owner``).  The span below is what
 #: excludes that lag; the count makes the terminal verdict rest on three
 #: separate claims of the mover, each with its own reads, rather than on one
 #: unlucky pass (a choice, recorded in #1004).  A queued, claimed or leased
@@ -5412,7 +5412,7 @@ def unproven_streak(prior: object, unproven: Sequence[Mapping[str, object]],
 class _Owners:
     """Who a proof search found naming one staged path it found divergent.
 
-    Filled by :meth:`_StagedPublisher._proof_search` when one is passed in:
+    Filled by :meth:`StagedPublisher._proof_search` when one is passed in:
     every ``(consumer, mover)`` whose fragment names the path and whose
     record is not a date for a superseded incarnation, except the
     publisher's own pair.  ``complete`` is false when a fragment or a child
@@ -5481,7 +5481,7 @@ class PhaseClock:
 
     ``publish_waits`` (#994) totals, by :data:`PUBLISH_WAIT_OWNED`-family
     kind, how many entries waited under it and the real elapsed seconds spent
-    waiting -- :meth:`_StagedPublisher.publish` credits an entry once, when
+    waiting -- :meth:`StagedPublisher.publish` credits an entry once, when
     its own wait ends, not once per poll, so ``entries`` counts distinct
     entries and ``seconds`` is the total time this mover spent parked in
     that kind of wait.  Reported for the receipt's own ``publish_waits``
@@ -5750,7 +5750,7 @@ class StagedPublisher:
         #: ``_arbitration_lock``.
         self.unproven: list[dict[str, object]] = []
         # The claim census memo for this publisher's whole run (#1089).
-        # ``stage_release._claimed_paths`` derives a claimed range mover's
+        # ``staged_path.claimed_paths`` derives a claimed range mover's
         # staged paths from its sealed request and its data manifest, both
         # immutable under their digests -- so once derived for a claim key
         # the answer cannot go stale, and a memo may keep it for as long as
@@ -5759,9 +5759,7 @@ class StagedPublisher:
         # each claim record: ``_claimed_paths`` reads both fresh on every
         # call, so a claim that appears, ends or changes is still seen at
         # once -- the memo only skips re-deriving paths for a claim it has
-        # already seen unchanged.  Imported here, not at module scope,
-        # because ``stage_release`` imports from this module (see
-        # :meth:`_live_claim_cover`'s own deferred import).
+        # already seen unchanged. The census and publisher share this owner.
         # Every copy worker thread shares one publisher and can reach
         # ``_live_claim_cover`` concurrently.  No lock is taken around the
         # census: ``_claimed_paths`` touches this memo only through single
@@ -6406,7 +6404,7 @@ class StagedPublisher:
 
         ``ended`` needs both facts below, each a queue record rather than a
         clock.  The consumer is neither queued nor claimed and has exactly
-        one outcome (``stage_release._unended_owner``, the proof the
+        one outcome (``staged_path.unended_owner``, the proof the
         dead-owner sweep uses).  The fragment's mover is neither queued nor
         claimed (``residency_plan.live_state``).  Both reads count any entry
         under ``claimed/`` -- the record, its lease, its status sidecar --
@@ -6721,7 +6719,7 @@ class StagedPublisher:
     def _live_claim_cover(self, norm: str) -> tuple[bool | None, str]:
         """Whether another live mover claim covers one staged name.
 
-        The existing containment authority: ``stage_release`` attributes
+        The staged-path containment census attributes
         in-flight copies from their sealed claims, which exist before any
         fragment does.  This mover's own claim is excluded, so a mover
         never defers to itself.  ``None`` means unknowable (fail closed);
