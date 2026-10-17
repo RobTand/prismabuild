@@ -41,6 +41,7 @@ under its grant before the cycle's publication and binds it to the advance's
 own queued row; the free assertion below measures that reservation.
 """
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 
 from pathlib import Path
@@ -97,8 +98,7 @@ def _plan(queue: pool.PoolQueue, consumer: str, *,
 
 
 def _queue(tmp_path: Path, *, capacity_gib: int = 5) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
+    q = FleetWorld(tmp_path).queue
     q.tier(TIER).mint({'stage_gib': capacity_gib})
     return q
 
