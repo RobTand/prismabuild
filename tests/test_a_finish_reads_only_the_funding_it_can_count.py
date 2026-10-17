@@ -34,6 +34,7 @@ MOVER = "c" * 64
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "q")
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 8})
     queue.tier(STAGE).mint({'stage_gib': 4})
     queue.tier(RAM).mint({'ram_gib': 4})
     return queue

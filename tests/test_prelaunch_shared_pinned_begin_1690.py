@@ -476,13 +476,13 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
     real_ledger = queue.tier
 
     def busy_ledger(tier_id: str):
-        found = real_ledger(tier_id)
-
         @contextlib.contextmanager
-        def refused(*, blocking: bool = True):
+        def refused(self, *, blocking: bool = True):
             yield False
 
-        found._mutation_guard = refused
+        with monkeypatch.context() as patch:
+            patch.setattr(tier_holdings.TierLedger, "mutation_lock", refused)
+            found = real_ledger(tier_id)
         return found
 
     monkeypatch.setattr(queue, 'tier', busy_ledger)
