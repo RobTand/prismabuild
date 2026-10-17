@@ -6,6 +6,7 @@ Every binding and optional epoch must agree before a pair can be composed.
 import argparse
 import os
 import ast
+import subprocess
 from pathlib import Path
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -41,6 +42,29 @@ wanted={
      'test_distinct_same_shape_files_never_share_a_pin','test_covers_for_keys_both_tiers_minimal',
      'test_contradictory_covers_refuse'},
 }
+def staged_fixture_apply(path, source, tree, edits):
+    """Apply source edits without losing literal guards or duplicate occurrences."""
+    changes = list({(a, b): text for a, b, text in edits}.items())
+    if not changes:
+        return 0
+    lines = source.splitlines(True)
+    for (a, b), text in sorted(changes, reverse=True):
+        lines[a:b] = [text]
+    new = ''.join(lines)
+    if not any(isinstance(n, ast.ImportFrom) and n.module == 'prismabuild'
+               and any(a.name == 'staged_path' for a in n.names) for n in tree.body):
+        at = next(n.lineno - 1 for n in tree.body if isinstance(n, ast.ImportFrom)
+                  and (n.module or '').startswith('prismabuild'))
+        lines = new.splitlines(True)
+        lines.insert(at, 'from prismabuild import staged_path\n')
+        new = ''.join(lines)
+    ast.parse(new)
+    if not args.check:
+        path.write_text(new)
+    print(str(path), len(changes))
+    return len(changes)
+
+
 for filename,names in wanted.items():
  p=Path('tests')/filename;s=p.read_text();t=ast.parse(s);lines=s.splitlines(True);edits=[]
  for f in ast.walk(t):
@@ -65,17 +89,40 @@ for filename,names in wanted.items():
     new=pad+'staged_path.publish_vouch(\n'+pad+'    '+ast.get_source_segment(s,frag.args[0])+', '+ast.get_source_segment(s,frag.args[1])+',\n'+pad+'    generation='+ast.get_source_segment(s,kw['generation'])+',\n'+pad+'    material_entries='+ast.get_source_segment(s,kw['entries'])+')\n'
     edits.append((first.lineno-1,first.end_lineno,''))
     edits.append((second.lineno-1,second.end_lineno,new))
- # Nested visitors may see the same block twice. Occurrences remain unique.
- edits=list({(a,b):c for a,b,c in edits}.items())
- for (a,b),new in sorted(edits,reverse=True):lines[a:b]=[new]
- if edits:
-  new=''.join(lines)
-  if 'from prismabuild import staged_path' not in new:
-   at=next(n.lineno-1 for n in t.body if isinstance(n,ast.ImportFrom) and (n.module or '').startswith('prismabuild'))
-   rows=new.splitlines(True);rows.insert(at,'from prismabuild import staged_path\n');new=''.join(rows)
-  ast.parse(new)
-  remaining += len(edits) // 2
-  if not args.check:p.write_text(new)
- if edits:print(filename, len(edits) // 2)
+ remaining += staged_fixture_apply(p, s, t, edits)
+
+# An adjacent pair-only withdrawal has the same exact path, missing-file and
+# OSError behavior as queue=None. Partial or reordered fault inputs stay raw.
+for filename in subprocess.check_output(['git', 'ls-files', 'tests/*.py'], text=True).splitlines():
+    if filename.startswith('tests/compat/'):
+        continue
+    p = Path(filename);s = p.read_text();t = ast.parse(s);edits = []
+    for block in ast.walk(t):
+        body = getattr(block, 'body', None)
+        if not isinstance(body, list):
+            continue
+        for first, second in zip(body, body[1:]):
+            if not all(isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+                       and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == 'unlink'
+                       and isinstance(n.value.func.value, ast.Call) for n in (first, second)):
+                continue
+            fragment, material = first.value.func.value, second.value.func.value
+            if (ast.unparse(fragment.func) != 'residency_map.fragment_path'
+                    or ast.unparse(material.func) != 'reader_lease.material_path'
+                    or len(fragment.args) != 3 or fragment.keywords or material.keywords
+                    or [ast.dump(a) for a in fragment.args] != [ast.dump(a) for a in material.args]):
+                continue
+            fk = {k.arg: k.value for k in first.value.keywords}
+            mk = {k.arg: k.value for k in second.value.keywords}
+            if set(fk) - {'missing_ok'} or set(mk) - {'missing_ok'}:
+                continue
+            missing = fk.get('missing_ok', ast.Constant(False))
+            if ast.dump(missing) != ast.dump(mk.get('missing_ok', ast.Constant(False))):
+                continue
+            pad = ' ' * first.col_offset
+            new = (pad + 'staged_path.withdraw_vouch(None, ' + ', '.join(ast.unparse(a) for a in fragment.args)
+                   + ', missing_ok=' + ast.unparse(missing) + ')\n')
+            edits.append((first.lineno - 1, second.end_lineno, new))
+    remaining += staged_fixture_apply(p, s, t, edits)
 
 if args.check and remaining:raise SystemExit(f"{remaining} positive pairs still need migration")
