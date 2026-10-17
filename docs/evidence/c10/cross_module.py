@@ -60,6 +60,10 @@ def exported_shape(shape, fields, seen=frozenset()):
 
 
 def analyze(root):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+    head, tree_id = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
+    assert not git("status", "--porcelain"), "census requires clean immutable source"
     move = runpy.run_path(str(root / "docs/evidence/c10/migrate_source.py"))
     paths = subprocess.check_output(
         ["git", "ls-files", "src", "tools", "tests"], cwd=root, text=True).splitlines()
@@ -151,7 +155,8 @@ def analyze(root):
             bound = move["bound_tier"](node.value, unit["aliases"][unit["scopes"][node]])
             if bound and node.attr not in known:
                 unknown.append(dict(path=path, line=node.lineno, name=node.attr))
-    return dict(source_only=True, passes=passes, files=len(units),
+    assert git("rev-parse", "HEAD") == head and not git("status", "--porcelain")
+    return dict(source_only=True, head=head, tree=tree_id, passes=passes, files=len(units),
                 bindings=list(bindings.values()), unknown_tier_attributes=unknown,
                 aliases=aliases,
                 seeds={path: {name: sorted(values) for name, values in unit["seeds"].items()}

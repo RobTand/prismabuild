@@ -117,6 +117,9 @@ def main():
     args = parser.parse_args()
     baseline = json.loads(args.baseline.read_text())
     closure = json.loads(args.closure.read_text()) if args.closure else {}
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.root, text=True).strip()
+    if closure.get("head"):
+        assert closure["head"] == head
     explicit = json.loads((args.root / "docs/evidence/c10/predicate_moves.json").read_text())
     assert explicit["base"] == baseline["revision"]
     migration = runpy.run_path(str(args.root / "docs/evidence/c10/migrate_source.py"))
@@ -229,6 +232,7 @@ def main():
                   explicit_moved_owner_predicates=explicit["moves"],
                   residual_retired_apis=residual, unknown_tier_attributes=dict(unknown),
                   parse_errors=parse_errors, commits=commits, oversized_commits=oversize)
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.root, text=True).strip() == head
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: report[key] for key in ("head", "original_assertions", "automatically_mapped_assertions")}))
     print(json.dumps({"predicate_files": list(predicate_changes),
