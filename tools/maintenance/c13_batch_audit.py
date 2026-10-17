@@ -61,7 +61,8 @@ def c13_inventory(revision):
                 kind = fields.get(type(node))
                 if kind:
                     item = node.test if isinstance(node,(ast.If,ast.IfExp)) else node
-                    rows.append({'kind':kind,'line':node.lineno,'scope':'.'.join(self.scope),
+                    line = node.target.lineno if isinstance(node,ast.comprehension) else node.lineno
+                    rows.append({'kind':kind,'line':line,'scope':'.'.join(self.scope),
                                  'ast':ast.dump(item,include_attributes=False)})
                 elif isinstance(node,ast.Constant) and isinstance(node.value,str):
                     rows.append({'kind':'quoted','line':node.lineno,'scope':'.'.join(self.scope),'value':node.value})
