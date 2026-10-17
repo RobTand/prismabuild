@@ -225,7 +225,7 @@ def _pinned_status(scoped_fixture, monkeypatch):
 def test_pbstatus_says_how_hard_and_for_how_long(scoped, monkeypatch):
     queue, key = _pinned_status(scoped, monkeypatch)
 
-    rows = {job["action_key"]: job for job in fleet_census.rows(queue.root).value["jobs"]}
+    rows = {job["action_key"]: job for job in fleet_census.action_rows(queue.root).value["jobs"]}
     row = rows[key]
 
     assert row["cleanup_pending"] is True

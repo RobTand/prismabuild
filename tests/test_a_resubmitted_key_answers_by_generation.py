@@ -569,7 +569,7 @@ def test_pbstatus_marks_current_only_when_path_and_generation_match(
                 "published_unix": 10.0, "finished_unix": 10.0}))
         return row
 
-    monkeypatch.setattr(census, "ending_row", racing)
+    monkeypatch.setattr(fleet_census, "ending_row", racing)
 
     rows = fleet_census.endings(queue.root, limit=10)
     row = next(one for one in rows if one["action_key"] == KEY)

@@ -250,7 +250,7 @@ def test_pbstatus_reads_the_published_gpu_snapshot_from_the_shared_path(gpu_rig,
     publish(1)
     assert claim()
     _await_publishers()
-    result = fleet_census.rows(queue.root).value
+    result = fleet_census.action_rows(queue.root).value
     node = next(n for n in result['nodes'] if n['node'] == host)
     assert node['state'] == 'live'
     gpu = node['admission']['gpu']

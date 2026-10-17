@@ -139,7 +139,7 @@ def test_status_keeps_two_hosts_and_rejects_old_or_future_evidence(tmp_path):
         path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {host: {
             "action_key": KEY_A, "published_unix": generation, "host": host,
             "reason": "fixture", "evidence": {}, "denied_unix": stamp}}}))
-    row = next(row for row in fleet_census.rows(queue.root).value["jobs"] if row["action_key"] == KEY_A)
+    row = next(row for row in fleet_census.action_rows(queue.root).value["jobs"] if row["action_key"] == KEY_A)
     assert [record["host"] for record in row["admission_denials"]] == ["one", "two"]
 
 
