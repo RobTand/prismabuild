@@ -9,6 +9,7 @@ from prismabuild import action_edges, filesystem_floor, pool, submission
 from submission_support import patch_store
 from local_resident_space import roomy_disk
 from test_prepaid_writer_integration import _isolated_synthetic_launch_context
+from test_filesystem_floor_1483 import ample_space
 
 
 def test_deferred_release_uses_its_private_queue_for_gates_and_publication(tmp_path, monkeypatch, capsys):
@@ -91,3 +92,26 @@ def test_resident_freeze_and_publication_share_one_bounded_growth_holder(tmp_pat
     assert effects == ["freeze", "descriptor"]
     assert queue.records.item_path(pool.READY, row["action_key"]).exists()
     assert not active
+
+
+@pytest.mark.parametrize("operation", ["copy", "adopt"])
+def test_resident_operation_fits_one_real_gib_of_growth_headroom(tmp_path, monkeypatch, roomy_disk, ample_space, operation):
+    from test_local_resident_commands import _dispatch_fixture
+    from test_filesystem_floor_1483 import _register, _stable
+    resident, record, spec, queue, tier, template = _dispatch_fixture(tmp_path, monkeypatch)
+    patch_store(monkeypatch, root=tmp_path)
+    _stable(tmp_path)
+    _register(queue, tmp_path, filesystem_gib=1, filesystem_ledger="review-growth")
+    ledger = pool.ResourceLedger(queue.root / filesystem_floor.FILESYSTEM_RESERVATIONS,
+                                 host="review-growth")
+    monkeypatch.setenv(filesystem_floor.MODE_ENV, "enforce")
+    if operation == "copy":
+        rows = pbresident.submit_copies(resident, record["set_id"],
+            policy_path="/policy.json", checkout=str(tmp_path))
+        row = rows["test-host"]["copy"]
+    else:
+        row = pbresident.submit_adoption(resident, record["set_id"], host="test-host",
+            source=str(tmp_path / "manual"), policy_path="/policy.json", checkout=str(tmp_path))
+    assert queue.records.item_path(pool.READY, row["action_key"]).exists()
+    assert ledger.held().get("filesystem_gib", 0) == 0
+    assert not list((ledger.base / "operations").glob("*.json"))
