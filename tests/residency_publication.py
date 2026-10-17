@@ -61,7 +61,7 @@ def publish_landed_files(
     named: dict[str, dict[str, object]] = {}
     material: dict[str, dict[str, object]] = {}
     for index in range(entries):
-        declared = f"/in/{name}-{index}.bin"
+        declared = f"/in/{name}-{range_start_bytes}-{index}.bin"
         path = root / "model" / mover_action_key / f"{name}-{index}.bin"
         path.parent.mkdir(parents=True, exist_ok=True)
         size = each + (remainder if index == entries - 1 else 0)
