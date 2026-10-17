@@ -95,7 +95,7 @@ def released(tmp_path, monkeypatch):
 
 
 def _row(queue, key):
-    census = fleet_census.rows(queue.root).value
+    census = fleet_census.action_rows(queue.root).value
     return next(job for job in census["jobs"] if job["action_key"] == key)
 
 
@@ -118,7 +118,7 @@ def test_pbstatus_says_it_in_the_reason_an_operator_reads(released):
 
 def test_the_job_table_has_a_releases_column(released):
     queue, _ = released
-    census = fleet_census.rows(queue.root).value
+    census = fleet_census.action_rows(queue.root).value
     lines = pbstatus.pool_job_lines(census["jobs"], census["queue"])
     assert "RELEASES" in lines[0]
     column = lines[0].index("RELEASES")

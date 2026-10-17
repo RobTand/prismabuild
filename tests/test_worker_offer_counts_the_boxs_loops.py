@@ -147,7 +147,7 @@ def test_the_census_and_the_activation_gate_share_one_rule():
     census = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(census)
 
-    assert fleet_census.box_capacity.worker_loops is box_capacity.worker_loops
+    assert census.box_capacity.worker_loops is box_capacity.worker_loops
 
 
 # --- the offer --------------------------------------------------------------
@@ -197,7 +197,7 @@ def _queue_with_offers(tmp_path: Path) -> Path:
 
 def test_status_carries_the_count_and_marks_an_uncounted_box_unknown(tmp_path):
     root = _queue_with_offers(tmp_path)
-    nodes = {node["node"]: node for node in fleet_census.rows(root).value["nodes"]}
+    nodes = {node["node"]: node for node in fleet_census.action_rows(root).value["nodes"]}
 
     assert nodes["sparky"]["loops"] == 5
     assert nodes["dl380"]["loops"] is None
