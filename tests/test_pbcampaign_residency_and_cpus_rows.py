@@ -117,7 +117,10 @@ def test_the_argv_pbrun_is_given_is_the_hand_typed_submission(
            **{field: value for field, (value, _) in FIELDS.items()}}
 
     assert pbcampaign.submit_row(row, transport="pool")["status"] == "submitted"
-    assert seen == [submission.request_from_mapping(row, detach=True, transport="pool")]
+    assert seen == [submission.SubmissionRequest(detach=True, transport="pool",
+        cwd="/home/rob/tree", data_manifest="/home/rob/manifest.json", residency="stage",
+        residency_ram="off", residency_prefetch_depth_gib=8, residency_read_mb_s=400,
+        cpus=4, command=["./reader.sh"])]
 
 
 # -- the staged read path, end to end ----------------------------------------
