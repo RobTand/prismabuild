@@ -60,11 +60,8 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
-from prismabuild.stage_move import (  # noqa: E402
-    _Copier, _StagedPublisher, _delta, bound_unproven_endings, cpu_seconds,
-    load_manifest, own_action_key, prior_move_record, proc_io,
-    retire_conflicted_window, stage_relative,
-)
+from prismabuild.stage_move import _Copier, _delta, bound_unproven_endings, cpu_seconds, load_manifest, prior_move_record, proc_io, retire_conflicted_window
+from prismabuild import staged_path
 
 
 def _refused(args, reason: str, **extra) -> dict[str, object]:
@@ -188,7 +185,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
     destinations: dict[str, str] = {}
     for entry in window:
         path, offset = str(entry["path"]), int(entry["offset"])
-        relative = stage_relative(path, offset, int(entry["bytes"]),
+        relative = staged_path.stage_relative(path, offset, int(entry["bytes"]),
                                   mount_prefix=mount_prefix)
         # The staged name is taken from the proof, never recomputed on
         # trust: a replace between the proof and this loop must refuse,
@@ -231,7 +228,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
         # retryable.  Without it a promotion whose destination held a dead
         # owner's different bytes refused retryably and was republished
         # into the same refusal every window cycle.
-        publisher=_StagedPublisher(
+        publisher=staged_path.StagedPublisher(
             queue=queue, stage_root=Path(args.ram_root),
             residency_root=residence,
             mover_action_key=str(args.action_key),
@@ -423,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    args.action_key = own_action_key(args.action_key)
+    args.action_key = staged_path.own_action_key(args.action_key)
     if args.residency_root is None:
         args.residency_root = str(Path(args.pool_root) / pool.record_store.RESIDENCY)
 

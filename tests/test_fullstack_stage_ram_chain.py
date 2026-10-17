@@ -25,6 +25,7 @@ from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 
 from fullstack_fixtures import corpus  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 WHOLE_MOVER = "a" * 64
@@ -164,7 +165,7 @@ def _run_chain(tmp_path: Path):
 def _staged(name: str, offset: int, size: int) -> str:
     """The stage's (and the promotion's) name for one ``model/`` range."""
 
-    return stage_move.stage_relative(f"/m/model/{name}", offset, size,
+    return staged_path.stage_relative(f"/m/model/{name}", offset, size,
                                      mount_prefix="/m")
 
 def test_whole_and_split_ranges_stage_byte_identical(tmp_path: Path) -> None:

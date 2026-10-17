@@ -64,6 +64,7 @@ from test_a_dead_producers_origin_files_survive_every_sweep import (  # noqa: E4
     _dead_consumed_batch, _interpose, _private, _successor_rename,
 )
 from test_consumed_origin_retirement import _bind_owner  # noqa: E402
+from prismabuild import output_vocabulary
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -127,7 +128,7 @@ def _while_a_retirement_holds_the_lock(monkeypatch, queue, prefix: str,
 
 def _filed(queue, instance: dict, batch_id: str) -> dict:
     return json.loads((Path(queue.root) / "residency"
-                       / po.OUTPUT_BATCHES_SUBDIR
+                       / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                        / po.instance_namespace(instance)
                        / f"{batch_id}.json").read_text())
 

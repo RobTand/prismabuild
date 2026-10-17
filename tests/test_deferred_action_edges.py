@@ -60,6 +60,7 @@ from test_pbrun_residency_stage_submission import (  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     KIND, TIER, _descriptor, _prewrite, _queue, _template,
 )
+from prismabuild import staged_path
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -841,7 +842,7 @@ def test_a_burst_of_releases_is_bounded_per_cycle_and_after_the_windows(
         queue.tier(TIER).mint({KIND: 8})
         stage = tmp_path / "stage"
         stage.mkdir(exist_ok=True)
-        stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+        staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
         with contextlib.redirect_stdout(out):
             tier_loop.cycle(queue, host="sparky", source_pool="storage_pool",
                             receipts=tier_loop.ReceiptCache(),

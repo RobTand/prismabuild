@@ -53,6 +53,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 #: The campaign's range size, the shape the issue prices (#1028).
 NAMES = 2048
@@ -421,7 +422,7 @@ def test_a_pin_gaining_a_ref_between_names_is_read_by_the_second_name(
     assert second["ref_id"] != first["ref_id"]
     parsed_refs.clear()  # Observe the publisher, not acquire's validation.
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, pinned, copier)
     assert "every owner has ended, but it is live-pinned by" in str(refused.value)
     assert {first["ref_id"], second["ref_id"]} in parsed_refs, (
@@ -634,17 +635,17 @@ def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
     written, digest, _identity_ = _replace(publisher, free, copier)
     assert (written, digest) == (SIZE, NEW_DIGEST)
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, pinned, copier)
     assert "every owner has ended, but it is live-pinned by" in \
         str(refused.value), str(refused.value)
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, destinations[2], copier)
     assert "every owner has ended, but another live mover claim covers it" \
         in str(refused.value), str(refused.value)
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, in_flight, copier)
     assert "every owner has ended, but a copy is in flight" in \
         str(refused.value), str(refused.value)

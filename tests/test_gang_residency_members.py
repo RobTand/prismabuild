@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import manifest_promotion  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 ROOT = Path(__file__).resolve().parents[1]
 TIER = "prismabuild-stage:sparklina"
@@ -288,7 +289,7 @@ def test_teardown_supersedes_the_members_plan_and_leaves_the_leads_to_the_tier_l
     # longer name, and then the sweep is what releases the tokens: no live
     # item names the mover any more, so it is an orphan and its tokens go back.
     tier_loop.withdraw_dead_consumer_movers(queue)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert ledger.holdings(lead) == {}, {
         "swept": swept,

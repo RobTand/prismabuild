@@ -59,6 +59,7 @@ from test_pbrun_residency_stage_submission import (  # noqa: E402
 )
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import output_vocabulary
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -275,7 +276,7 @@ def test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite(
     prewrites = po._prewrites_dir(queue.root, spool.instance)
     assert not list(prewrites.glob("*.prewrite.json")), (
         "the commit consumes the prewrite")
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    record = json.loads((queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                          / po.instance_namespace(spool.instance)
                          / "b1.json").read_text())
     assert record["origin_only"] is True and record["mover_key"] is None

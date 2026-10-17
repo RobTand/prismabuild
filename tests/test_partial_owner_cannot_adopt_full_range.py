@@ -5,6 +5,7 @@ from test_stale_material_done_owner_retires import (
 )
 import json
 import tier_loop
+from prismabuild import staged_path
 
 
 def test_partial_fragment_cannot_be_adopted_as_the_original_full_range(fleet):
@@ -21,7 +22,7 @@ def test_partial_fragment_cannot_be_adopted_as_the_original_full_range(fleet):
     old_tokens = queue.tier(TIER).holdings(mover)
     old_bytes = (stage / staged_name(NAMES[0])).read_bytes()
     successor, copier = base._key(), base._key()
-    outcome = tier_loop.adopt(
+    outcome = staged_path.adopt(
         queue, old_key=mover, new_key=copier,
         consumer_action_key=successor, tier_id=TIER, phase='head',
         range_start_bytes=0, range_end_bytes=len(NAMES) * SIZE,

@@ -41,6 +41,7 @@ from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "d" * 64
@@ -155,7 +156,7 @@ def _world(tmp_path: Path, *, entries: int = 1) -> tuple[
     # Both roots belong to this queue, exactly as the tier loop marks them
     # before it publishes a mover -- an egress refuses an unregistered root.
     for tier, root in ((STAGE_TIER, queue.root / "stage"), (RAM_TIER, ram)):
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             queue, tier_id=tier, stage_root=root) == "registered"
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
@@ -350,7 +351,7 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
     queue.record_move(RAM_MOVER, promotion)
     assert queue.tier(RAM_TIER).take(RAM_MOVER, {'ram_gib': 1})
 
-    promoted = queue.root / "ram" / stage_move.stage_relative(
+    promoted = queue.root / "ram" / staged_path.stage_relative(
         str(paths[0]), 0, paths[0].stat().st_size,
         mount_prefix=str(tmp_path / "mnt"))
     assert promoted.read_bytes() == paths[0].read_bytes(), "exact bytes"
@@ -365,7 +366,7 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
 
     # ...and the range releases cleanly: files gone, tokens back, and the
     # shared predicate stops calling it resident.
-    released = stage_release.evict(
+    released = staged_path.evict(
         queue, RAM_MOVER, consumer_action_key=CONSUMER,
         stage_root=str(queue.root / "ram"),
         residency_root=str(queue.root / pool.record_store.RESIDENCY))

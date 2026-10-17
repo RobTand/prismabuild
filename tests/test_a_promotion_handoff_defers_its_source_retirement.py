@@ -38,6 +38,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
@@ -53,7 +54,7 @@ HOST_CAP = {"cpu": 8, "mem_gb": 16}
 WORKER = "worker:1:abcd0001"
 SOURCE_NAME = "layer.bin"
 #: Where the stage mover (and the promotion) name the one whole-file entry.
-STAGED_NAME = stage_move.stage_relative(f"/m/{SOURCE_NAME}", 0, MIB,
+STAGED_NAME = staged_path.stage_relative(f"/m/{SOURCE_NAME}", 0, MIB,
                                         mount_prefix="/m")
 
 
@@ -85,7 +86,7 @@ def fleet(tmp_path: Path):
     queue.tier(RAM_TIER).mint({RAM_KIND: 4})
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     return queue, stage
 
@@ -252,7 +253,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
 
     # Egress while the promotion's claim is live: a pending copy handoff, so
     # the whole document and its charge stay.  Not shared, not freed.
-    first = stage_release.evict(queue, MOVER_A,
+    first = staged_path.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert first["complete"] is False, first
@@ -296,7 +297,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     queue.finish(promo, status="executed")
     assert not (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").exists()
 
-    second = stage_release.evict(queue, MOVER_A,
+    second = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert second["complete"] is True, second
@@ -310,7 +311,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
 
     # Idempotent: the concluded egress cannot free or decharge a second time.
-    third = stage_release.evict(queue, MOVER_A,
+    third = staged_path.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert third["complete"] is True, third
@@ -348,7 +349,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
 
     # The claim is live and the promotion has not acquired yet: the handoff
     # outranks B's shared skip, so A keeps its own proof and full charge.
-    during = stage_release.evict(queue, MOVER_A,
+    during = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert during["complete"] is False, during
@@ -374,7 +375,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
 
     # The handoff ends; now the ordinary shared settlement applies.
     queue.finish(promo, status="executed")
-    shared = stage_release.evict(queue, MOVER_A,
+    shared = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert shared["complete"] is True, shared
@@ -389,7 +390,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
     assert ledger.holdings(MOVER_B).get(KIND) == 1
 
-    last = stage_release.evict(queue, MOVER_B,
+    last = staged_path.evict(queue, MOVER_B,
                                consumer_action_key=CONSUMER_B,
                                stage_root=str(stage))
     assert last["complete"] is True, last
@@ -412,7 +413,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
 
     staged = stage / STAGED_NAME
     ledger = queue.tier(TIER)
-    first = stage_release.evict(queue, MOVER_A,
+    first = staged_path.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert first["complete"] is False, first
@@ -423,7 +424,7 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     assert ledger.holdings(MOVER_A).get(KIND) == 1
 
     (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").unlink()
-    second = stage_release.evict(queue, MOVER_A,
+    second = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert second["complete"] is True, second
@@ -446,7 +447,7 @@ def test_a_malformed_promotion_claim_taints_and_retains(
     paths = _paths(queue, CONSUMER_A, MOVER_A)
     staged = stage / STAGED_NAME
     ledger = queue.tier(TIER)
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert receipt["complete"] is False, receipt

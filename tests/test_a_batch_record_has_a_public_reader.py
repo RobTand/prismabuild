@@ -29,6 +29,7 @@ from prismabuild import produced_output as po  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _commit, _queue, _template,
 )
+from prismabuild import output_vocabulary
 
 PAYLOAD = b"band handoff bytes"
 
@@ -102,7 +103,7 @@ def test_a_reclaimed_batch_still_reads_its_record(tmp_path: Path) -> None:
 
 def test_an_unreadable_record_raises_and_is_never_empty(tmp_path: Path) -> None:
     queue, template, instance, _path, _committed_ = _committed(tmp_path)
-    batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    batch_file = (queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                   / po.instance_namespace(instance) / "b1.json")
     # The record is published immutable (0444, `_publish_immutable`); only
     # root writes through that, so a pbtest shard's user makes it writable

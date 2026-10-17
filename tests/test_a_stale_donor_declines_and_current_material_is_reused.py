@@ -46,6 +46,7 @@ from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -65,7 +66,7 @@ PAYLOAD = bytes(range(256)) * 5 + bytes(range(16))
 DIGEST = hashlib.sha256(PAYLOAD).hexdigest()
 SOURCE = "/mnt/shared/pq-live-reader-20260920/calib-8x16.safetensors"
 #: Where the stage mover stages it: its range name, derived rather than spelled.
-RELATIVE = stage_move.stage_relative(SOURCE, 0, SIZE, mount_prefix="/mnt/shared")
+RELATIVE = staged_path.stage_relative(SOURCE, 0, SIZE, mount_prefix="/mnt/shared")
 MAP_KEY = residency_map.residency_map_key(SOURCE, 0)
 ENTRIES = [{"path": SOURCE, "offset": 0, "bytes": SIZE, "sha256": DIGEST}]
 
@@ -279,7 +280,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def stage(tmp_path: Path, queue: pool.PoolQueue) -> Path:
     path = tmp_path / "stage"
     path.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=path)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=path)
     return path
 
 
@@ -411,8 +412,8 @@ def test_file_id_matches_requires_every_field() -> None:
 
 
 def _publisher(queue: pool.PoolQueue, stage: Path, mover: str
-               ) -> stage_move._StagedPublisher:
-    return stage_move._StagedPublisher(
+               ) -> staged_path.StagedPublisher:
+    return staged_path.StagedPublisher(
         queue=queue, stage_root=stage,
         residency_root=queue.records.residency_fragment_root(),
         mover_action_key=mover, manifest_sha256=MANIFEST,
@@ -488,8 +489,8 @@ def test_without_a_current_proof_the_publisher_refuses_and_keeps_the_file(
     _publish_donor_record(queue, mover=DONOR_A, consumer=FIRST, stage=stage)
     live = _replace_destination_with_identical_bytes(stage)
     destination = stage / RELATIVE
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.05)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.01)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.05)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.01)
     mover = _hexkey("fourthmover0")
     publisher = _publisher(queue, stage, mover)
     temporary = destination.with_name(

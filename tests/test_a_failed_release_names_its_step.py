@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 #: A consumer whose directory does not hold the pin: its release falls back
@@ -72,7 +73,7 @@ def world(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     staged = stage / "model" / "w.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x01" * 4096)

@@ -43,6 +43,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:testbox"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -154,7 +155,7 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path, digest: str,
 
 
 def _staged(tmp_path: Path, origin: Path) -> Path:
-    return tmp_path / "stage" / stage_move.stage_relative(
+    return tmp_path / "stage" / staged_path.stage_relative(
         str(origin), 0, SIZE, mount_prefix=str(origin.parent))
 
 
@@ -183,8 +184,8 @@ def _fixture(tmp_path: Path, monkeypatch):
     queue.records.ensure_layout()
     (tmp_path / "stage").mkdir()
     manifest, digest, paths = _manifest(tmp_path)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", FRAGMENT_S)
     return queue, manifest, digest, paths
 

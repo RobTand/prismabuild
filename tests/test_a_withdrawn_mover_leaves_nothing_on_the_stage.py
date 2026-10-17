@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64
@@ -65,7 +66,7 @@ def fleet(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -88,7 +89,7 @@ def test_a_withdrawn_movers_verified_shards_and_partials_are_both_evicted(fleet)
     events = _sweep(queue, stage)
     assert len(events) == 1, events
     event = events[0]
-    assert event["event"] == stage_release.UNATTRIBUTED_EVENT
+    assert event["event"] == staged_path.UNATTRIBUTED_EVENT
     assert event["entries_deleted"] == 2
     assert event["partials_deleted"] == 1
     assert event["bytes_deleted"] == 8192 + 4096
@@ -130,8 +131,8 @@ def test_nothing_is_deleted_while_a_mover_could_still_be_writing(fleet):
                              "manifest_bytes": 8192, "tier_id": TIER,
                              "range_start_bytes": 0, "range_end_bytes": 8192})
 
-    assert stage_release.movers_in_flight(queue, tier_id=TIER) == {MOVER}
-    receipt = stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
+    assert staged_path.movers_in_flight(queue, tier_id=TIER) == {MOVER}
+    receipt = staged_path.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                                      wanted=set())
     assert receipt["skipped"] == "movers_in_flight"
     assert receipt["entries_deleted"] == 0
@@ -149,7 +150,7 @@ def test_a_prewarm_stage_object_is_not_a_movers_leftover(fleet):
         pytest.skip("this filesystem carries no user extended attributes")
     unmarked = _staged_file(stage, "nobodys.bin", 4096)
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                      stage_root=str(stage), wanted=set())
     assert marked.exists()
     assert not unmarked.exists()
@@ -169,7 +170,7 @@ def test_where_the_xattr_cannot_be_read_an_unmarked_file_is_left_alone(
         raise OSError(95, "Operation not supported")
 
     monkeypatch.setattr(stage_release.os, "getxattr", refuse)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
     assert unmarked.exists(), "an unanswerable question is not permission"
     assert not partial.exists(), "a mover's own temporary is self-identifying"
@@ -180,7 +181,7 @@ def test_where_the_xattr_cannot_be_read_an_unmarked_file_is_left_alone(
 def test_a_retired_prewarm_temporary_name_has_no_reconcile_exemption(fleet):
     queue, stage = fleet
     temporary = _staged_file(stage, "obj.bin.pbstage@0+4096.7.1.tmp", 4096)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
     assert not temporary.exists()
     assert receipt["entries_deleted"] == 1
@@ -194,8 +195,8 @@ def test_a_withdrawn_movers_fragment_is_not_attribution(fleet):
     root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, {"shard": shard})
     assert residency_map.fragment_path(root, CONSUMER, MOVER).exists()
-    assert stage_release.attributed_stage_paths(queue, wanted={MOVER}) == {str(shard)}
-    assert stage_release.attributed_stage_paths(queue, wanted=set()) == set()
+    assert staged_path.attributed_stage_paths(queue, wanted={MOVER}) == {str(shard)}
+    assert staged_path.attributed_stage_paths(queue, wanted=set()) == set()
 
 
 def test_the_sweep_still_evicts_a_held_orphan_by_its_fragment(fleet):

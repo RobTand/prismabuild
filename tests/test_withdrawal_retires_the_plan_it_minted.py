@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -431,7 +432,7 @@ def test_a_running_consumers_other_resident_ranges_stay_named(
     wanted, _owners = stage_release.live_claims(queue)
     assert later in wanted, "the live plan still names its staged later phase"
 
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)},
                                 pressure={TIER: 8})
 

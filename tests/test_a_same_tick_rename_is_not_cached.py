@@ -41,6 +41,7 @@ from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 TIER = red.TIER
@@ -53,9 +54,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 class _Pinned:
@@ -120,7 +121,7 @@ def _pass(queue, stage, index=None):
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
     return [entry for entry in receipts
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT
             and entry.get("action_key") == mover]
 
 
@@ -185,11 +186,11 @@ def test_a_directory_stamped_after_the_tick_installs_and_hits(
                                       replace=False)
     state = _pin(monkeypatch, stage, filesystem)
     state["clock"] = state["stamp"] + TICK_NS
-    key = stage_release._skip_checkpoint_key(
+    key = staged_path._skip_checkpoint_key(
         queue, queue.records.residency_fragment_root(), stage, TIER, consumer, mover)
 
     assert _one(_pass(queue, stage), mover)["cacheable"] is True
-    assert key in stage_release._skip_checkpoints
+    assert key in staged_path._skip_checkpoints
     assert _receipts_for(_pass(queue, stage), mover) == []
 
     # A change after the stamped tick moves the stamp: the fence still bites.

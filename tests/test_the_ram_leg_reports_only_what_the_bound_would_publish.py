@@ -31,6 +31,7 @@ from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
 import residency_publication  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
@@ -184,7 +185,7 @@ def test_adopted_ram_tail_still_asks_for_missing_lead_admission_relief(
     tiers = _tiers(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
-    stage_release.register_stage_root(queue, tier_id=RAM_TIER, stage_root=ram)
+    staged_path.register_stage_root(queue, tier_id=RAM_TIER, stage_root=ram)
     queue.tier(RAM_TIER).mint({'ram_gib': 20})
     tiers[RAM_TIER].update(capacity_bytes=20 * GIB, window_gib=20)
     ledger = queue.tier(RAM_TIER)

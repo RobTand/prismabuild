@@ -29,6 +29,7 @@ from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import _declared_plan  # noqa: E402
 from test_prelaunch_tier_module_1594 import _mover_row as _leg_row  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import GIB  # noqa: E402
+from prismabuild import staged_path
 
 CAPACITY = 20
 WITHDRAWN = "1" * 64
@@ -70,7 +71,7 @@ def test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans(
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)       # 14 of 20 held, 6 free
     consumer = _hexkey("waiter")
     plan = _declared_plan(queue, consumer,
@@ -89,7 +90,7 @@ def test_a_declared_waiter_above_the_tier_takes_nothing(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)
     consumer = _hexkey("too-big")
     plan = _declared_plan(queue, consumer,
@@ -107,7 +108,7 @@ def test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans(
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)
     consumer = _hexkey("streaming-waiter")
     plan = _declared_plan(queue, consumer,
@@ -137,7 +138,7 @@ def test_the_relief_counts_queued_demand_the_gate_counts(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)       # 14 of 20 held, 6 free
     _queued_row(queue, 4)
     consumer = _hexkey("waiter-with-queue")
@@ -189,7 +190,7 @@ def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 3)
     _funded_next(queue, stage)
     waiter = _hexkey("waiter-beside-funded-row")
@@ -216,7 +217,7 @@ def test_a_live_declared_prefix_is_not_counted_as_evictable(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 2)
     live = _hexkey("live-declared")
     live_plan = _declared_plan(queue, live,
@@ -248,7 +249,7 @@ def test_the_pressure_census_receives_the_declared_keys(
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     _orphans(queue, stage, 2)
     live = _hexkey("live-declared-2")
     live_plan = _declared_plan(queue, live,

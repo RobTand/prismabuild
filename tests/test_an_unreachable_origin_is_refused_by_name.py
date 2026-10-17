@@ -32,6 +32,7 @@ from prismabuild import data_manifest as manifest_codec
 import prismabuild.pool as pool  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -224,7 +225,7 @@ def test_a_reachable_origin_still_stages_and_is_never_censused(
     assert receipt["bytes_staged"] == 4096
     assert "refusal" not in receipt
     assert "origin_reachability" not in receipt
-    staged = Path(args.stage_root) / stage_move.stage_relative(
+    staged = Path(args.stage_root) / staged_path.stage_relative(
         "/m/shard-1.bin", 0, 4096, mount_prefix="/m")
     assert staged.read_bytes() == b"a" * 4096
 

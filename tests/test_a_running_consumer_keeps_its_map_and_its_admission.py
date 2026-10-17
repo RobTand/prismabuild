@@ -43,13 +43,14 @@ from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     assert_ledger_matches_the_stage)
+from prismabuild import staged_path
 
 
 def _egress(queue: pool.PoolQueue, stage: Path, ordinals: range) -> None:
     """Run the capture's egresses: every passed range given back."""
 
     for ordinal in ordinals:
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, _mover("capture", ordinal), consumer_action_key=CAPTURE,
             stage_root=str(stage))
         assert receipt["complete"], receipt

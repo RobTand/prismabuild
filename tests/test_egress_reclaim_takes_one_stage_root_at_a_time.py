@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
@@ -149,7 +150,7 @@ def _root(queue, base: Path, name: str, tier: str, consumer: str,
 
     stage = base / name
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=tier, stage_root=stage) == "registered"
     staged = stage / "model" / "shard.bin"
     staged.parent.mkdir(parents=True)
@@ -229,7 +230,7 @@ def test_egress_requests_no_second_stage_root_while_holding_one(
 
     queue, first, second = two_roots
     watched = WatchingQueue(queue.root)
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         watched, str(first["mover"]),
         consumer_action_key=str(first["consumer"]),
         stage_root=str(first["stage"]))
@@ -280,7 +281,7 @@ def _child_egress(pool_root: str, stage_root: str, consumer: str, mover: str,
         return original(*args, **kwargs)
 
     reader_lease.release_refs = rendezvous
-    receipt = stage_release.evict(queue, mover,
+    receipt = staged_path.evict(queue, mover,
                                   consumer_action_key=consumer,
                                   stage_root=stage_root)
     Path(receipt_path).write_text(json.dumps(receipt) + "\n")

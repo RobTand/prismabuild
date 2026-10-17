@@ -542,6 +542,7 @@ from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
     TOKEN, _finish, _judge, _verdict, _verdict_fixture)
 from test_a_resident_range_is_adopted_rather_than_recopied import STAGE_KIND  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 AHEAD = _hexkey("verdictahead")
 GRACE_S = 600.0
@@ -769,7 +770,7 @@ def _read_and_pass(queue: pool.PoolQueue, stage: Path, n: int, *, phase: str,
         "last_accepted": {"phase": following, "units_completed": 1,
                           "reported_unix": now}}})
     path.write_text(json.dumps(lease))
-    receipt = stage_release.evict(queue, _mover(n, phase), consumer_action_key=key,
+    receipt = staged_path.evict(queue, _mover(n, phase), consumer_action_key=key,
                                   stage_root=str(stage), reason="egress")
     assert receipt.get("tokens_released") or receipt.get("complete"), receipt
     plan = residency_plan.read(queue, key)

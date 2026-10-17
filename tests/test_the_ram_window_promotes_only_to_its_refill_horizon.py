@@ -60,6 +60,7 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     CLAIMED_AGO_S, MOVER_SECONDS, REPORTED_AGO_S, _claim, _claim_shortage,
     _newcomer)
+from prismabuild import staged_path
 
 RAM_TIER = "ram:dl380g10"
 RAM_KIND = f"ram_gib@{RAM_TIER}"
@@ -204,7 +205,7 @@ class Box:
         # The loop registers both roots on every cycle; a test that evicts
         # before its first cycle stands in for that loop (#628).
         for tier_id, root in ((TIER, self.stage), (RAM_TIER, self.ram)):
-            assert stage_release.register_stage_root(
+            assert staged_path.register_stage_root(
                 self.queue, tier_id=tier_id, stage_root=root) == "registered"
         self.queue.tier(TIER).mint({'stage_gib': stage_gib})
         self.queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})

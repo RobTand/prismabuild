@@ -29,6 +29,7 @@ from prismabuild import pool, produced_output as po  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import output_vocabulary
 
 try:
     from prismabuild import reader_lease as rlc  # coherent package only
@@ -399,7 +400,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
         digest = po.output_manifest_sha256([desc])
         ns = po.batch_namespace(instance, "batch-left", digest)
         mover = "e" * 64
-        batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+        batch_file = (queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                       / po.instance_namespace(instance) / "batch-left.json")
         batch_file.parent.mkdir(parents=True, exist_ok=True)
         batch_file.write_bytes(json.dumps({

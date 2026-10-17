@@ -50,6 +50,7 @@ import prismabuild.core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 SIZE = 4096
 TIER = base.TIER
@@ -91,7 +92,7 @@ def _manifest(tmp_path: Path, names, payloads, *, absent=()):
 
 
 def _destination(stage: Path, mount: Path, entry) -> Path:
-    relative = stage_move.stage_relative(
+    relative = staged_path.stage_relative(
         str(entry["path"]), 0, SIZE, mount_prefix=str(mount))
     return stage / relative
 
@@ -154,8 +155,8 @@ def _spy_consumed(monkeypatch):
 
 
 def _short_grace(monkeypatch, grace: float = 0.2):
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", grace)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', grace)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
 
 
 def test_one_refusal_stops_the_single_worker_range(fleet, tmp_path, monkeypatch):

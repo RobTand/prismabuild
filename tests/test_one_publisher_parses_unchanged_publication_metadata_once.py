@@ -61,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 MANIFEST = "4" * 64
@@ -228,7 +229,7 @@ def forest(tmp_path, monkeypatch):
             }
         write_fragment(consumer, mover, entries)
 
-    publisher = stage_move._StagedPublisher(
+    publisher = staged_path.StagedPublisher(
         queue=pool.PoolQueue(tmp_path / "pool"), stage_root=stage_root,
         residency_root=residency_root, mover_action_key=_key("thismover0"),
         manifest_sha256=MANIFEST, tier_id=TIER,
@@ -266,15 +267,15 @@ def _assert_cardinality_is_bounded(publisher, where: str) -> None:
     waits.
     """
 
-    floor = len(publisher._fragments) * stage_move._RECORD_OVERHEAD_BYTES
+    floor = len(publisher._fragments) * staged_path._RECORD_OVERHEAD_BYTES
     assert floor <= publisher._index_bytes(), (
         f"{where}: {len(publisher._fragments)} retained rows are charged "
         f"{publisher._index_bytes()} bytes in total, less than the "
-        f"{stage_move._RECORD_OVERHEAD_BYTES} bytes a single row costs; a "
+        f"{staged_path._RECORD_OVERHEAD_BYTES} bytes a single row costs; a "
         f"row priced below its overhead lets cardinality escape a byte "
         f"ceiling entirely")
     assert (publisher._index_bytes()
-            <= stage_move._INDEX_BUDGET_BYTES), f"{where}: past the ceiling"
+            <= staged_path._INDEX_BUDGET_BYTES), f"{where}: past the ceiling"
 
 
 # --------------------------------------------------------------------------
@@ -435,10 +436,10 @@ def test_churn_stays_bounded_and_leaves_reuse_working(forest, monkeypatch):
     """
 
     publisher, work = forest["publisher"], forest["work"]
-    real = stage_move._INDEX_BUDGET_BYTES
+    real = staged_path._INDEX_BUDGET_BYTES
     _sweep(forest)
     tiny = publisher._index_bytes() * 2
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", tiny)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', tiny)
 
     for round_ in range(12):
         consumer, mover = _key(f"churn{round_}c"), _key(f"churn{round_}m")
@@ -463,7 +464,7 @@ def test_churn_stays_bounded_and_leaves_reuse_working(forest, monkeypatch):
 
     # The ceiling was a ceiling, not a one-way door: with room again, reuse
     # works.  A drifted accounting would still be rejecting everything here.
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", real)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', real)
     first = _sweep(forest)
     work.reset()
     again = _sweep(forest)
@@ -491,7 +492,7 @@ def test_records_that_name_no_path_still_cost_and_are_bounded(forest,
     publisher = forest["publisher"]
     _sweep(forest)
     settled = len(publisher._fragments)
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES",
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES',
                         publisher._index_bytes() + 4096)
 
     for index in range(300):
@@ -501,7 +502,7 @@ def test_records_that_name_no_path_still_cost_and_are_bounded(forest,
             '{"schema": "not-a-residency-fragment"}')
 
     assert [row[1] for row in _sweep(forest)] == ["proof"] * DESTINATIONS
-    assert publisher._index_bytes() <= stage_move._INDEX_BUDGET_BYTES, (
+    assert publisher._index_bytes() <= staged_path._INDEX_BUDGET_BYTES, (
         "the index passed its ceiling on rows that name no path")
     assert len(publisher._fragments) < settled + 300, (
         f"the index took {len(publisher._fragments) - settled} of 300 rows "
@@ -540,7 +541,7 @@ def test_a_long_path_is_charged_its_length_not_a_flat_figure(tmp_path):
         "entries": {key: {"stage_path": norm, "bytes": len(body),
                           "offset": 0, "sha256": digest}}})
 
-    publisher = stage_move._StagedPublisher(
+    publisher = staged_path.StagedPublisher(
         queue=pool.PoolQueue(tmp_path / "pool"), stage_root=stage_root,
         residency_root=residency_root, mover_action_key=_key("thismover0"),
         manifest_sha256=MANIFEST, tier_id=TIER,
@@ -559,7 +560,7 @@ def test_a_record_too_big_for_the_ceiling_still_decides_correctly(forest,
                                                                   monkeypatch):
     """Over the ceiling is uncached, never wrong and never a held verdict."""
 
-    monkeypatch.setattr(stage_move, "_INDEX_BUDGET_BYTES", 1)
+    monkeypatch.setattr(staged_path, '_INDEX_BUDGET_BYTES', 1)
     assert [row[1] for row in _sweep(forest)] == ["proof"] * DESTINATIONS
     assert forest["publisher"]._index_bytes() == 0, (
         "nothing may be retained under a ceiling nothing fits in")

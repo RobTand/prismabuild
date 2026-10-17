@@ -75,6 +75,7 @@ import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import output_vocabulary, staged_path
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
 MOVER_RECEIPTS = pool.record_store.MOVERS
@@ -1328,7 +1329,7 @@ def release_incomplete_ram_promotions(
                                         step="ram-mover-incomplete") as owned:
                     if not owned:
                         continue
-                    outcome = stage_release.evict(
+                    outcome = staged_path.evict(
                         queue, key, consumer_action_key=consumer,
                         stage_root=ram_root, reason="ram-mover-incomplete", store=store)
             except (OSError, ValueError, pool.PoolContractError) as exc:
@@ -1351,7 +1352,7 @@ def release_incomplete_ram_promotions(
                     "entries_deleted": outcome.get("entries_deleted"),
                     "tokens_released": outcome.get("tokens_released"),
                     "tokens_decharged": outcome.get("tokens_decharged"),
-                    **stage_release.lock_scope(outcome)}
+                    **staged_path.lock_scope(outcome)}
             if outcome.get("complete") is True and not evict_errors:
                 events.append({"event": "ram-mover-incomplete-released",
                                **base})
@@ -2527,281 +2528,6 @@ def adoptable_ranges(queue: pool.PoolQueue, *, tier_id: str,
     return index
 
 
-def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
-          consumer_action_key: str, tier_id: str, phase: str,
-          range_start_bytes: int, range_end_bytes: int,
-          residency_root: Path,
-          chunk_index: int | None = None) -> dict[str, object]:
-    """Hand one resident range from a finished mover to a live consumer's (#598).
-
-    No byte is copied and no instant has bytes on the stage that no key holds.
-    The order is the whole argument:
-
-    1. **The donor's material still dates the files that are there.**  Under
-       the stage ownership lock, every dated entry's ``file_id`` is compared
-       against a live stat of its staged path -- the same comparison the
-       strict reader will make.  A donor whose sidecar names a superseded
-       incarnation (or bytes that are gone) publishes nothing: no successor,
-       no material, no transfer (#755).  A donor with no sidecar, or one
-       dating only some of the files its fragment names, is declined for the
-       same reason: what it would hand on is a range the reader cannot prove.
-    2. **The successor vouches for the same files under its own name.**  Its
-       sidecar is written before its fragment, so an interruption never
-       leaves a successor vouch without a date (#1087).  Two
-       fragments then name one range, which every reader already tolerates:
-       ``compose`` is per consumer, and the reconciliation unions them.
-       Published under the ownership lock, never before it, so no egress
-       scan can interleave between the vouch and the transfer.
-    3. **The tokens change owner.**  ``ResourceLedger.transfer`` renames each
-       token between two directories under ``held/``, so the tier's occupancy
-       is the same number throughout and a crash part-way splits the
-       attribution without changing the sum.
-    4. **Only then does the old name stop accounting for the bytes.**  Dropping
-       the old fragment before the transfer would leave an egress able to
-       release tokens for bytes that are still there; dropping it after means
-       the worst an interrupted adoption leaves is a range named twice.
-    5. **The receipt the pin and the gate read.**  An adopted mover never runs,
-       so it files no terminal record; ``adopted_from`` plus the ledger is what
-       ``residency_verdict`` reads instead.
-
-    Under the old mover's transition lock, non-blocking, because the one party
-    that could be acting on the same range at the same time is its egress.
-    Declining costs a copy; proceeding against an egress mid-delete would cost
-    the consumer its bytes.
-    """
-
-    outcome: dict[str, object] = {
-        "event": "range-adoption-declined", "adopted": False,
-        "consumer": consumer_action_key, "phase": phase,
-        "chunk_index": chunk_index,
-        "tier_id": tier_id, "mover": new_key, "adopted_from": old_key,
-    }
-    ledger = queue.tier(tier_id)
-    with queue.mover_transition_lock(old_key, blocking=False) as acquired:
-        if not acquired:
-            # Its egress holds the lock, which means its bytes are going.
-            return {**outcome, "reason": "range_busy"}
-        before = ledger.holdings(old_key)
-        if not before:
-            return {**outcome, "reason": "no_longer_resident"}
-        receipt = queue.move_record(old_key)
-        old_consumer = (str(receipt.get("consumer_action_key") or "")
-                        if isinstance(receipt, Mapping) else "")
-        if len(old_consumer) != 64:
-            return {**outcome, "reason": "unattributed_range"}
-        source_path = residency_map.fragment_path(
-            residency_root, old_consumer, old_key)
-        try:
-            with open(source_path) as stream:
-                source = residency_map.validate_fragment(json.load(stream))
-        except (OSError, ValueError) as exc:
-            # A fragment that is absent or unreadable cannot say which files
-            # this range is, and a range nobody can name is not one to take
-            # over.  The same refusal ``evict`` makes, for the same reason.
-            return {**outcome, "reason": "range_not_named", "error": repr(exc)}
-        # Same bytes, same generation: the successor dates its vouching with
-        # the publish it took over, never a new one (a new generation is for
-        # new bytes).
-        old_material = reader_lease.read_material(
-            residency_root, old_consumer, old_key)
-        if isinstance(old_material, Exception):
-            return {**outcome, "reason": "range_not_named",
-                    "error": repr(old_material)}
-        # The dated material is the only proof that survives into the
-        # successor, so a donor that cannot supply it is declined rather than
-        # adopted: the reader takes material as proof, and a successor vouched
-        # by a fragment alone is a range it refuses.  The next candidate for
-        # the descriptor is tried; if none qualifies, the copy runs.
-        named = source.get("entries")
-        if not isinstance(old_material, dict):
-            return {**outcome, "reason": "donor_undated"}
-        dated = old_material.get("entries")
-        if (not isinstance(dated, dict) or not isinstance(named, dict)
-                or not named or not set(named) <= set(dated)):
-            # Entries the sidecar does not date are unproven, and the reader
-            # needs every one of them.
-            return {**outcome, "reason": "donor_material_partial"}
-        # Covering the same keys is not describing the same object: a
-        # sidecar can pass live ``file_id`` validation against a different
-        # valid file.  ``reader_lease.covers_for_keys`` requires tier,
-        # manifest and epoch of the material itself to match before it will
-        # take a cover, and adoption qualifies its donor the same way.
-        if any(str(old_material.get(field) or "") != str(source.get(field) or "")
-               for field in ("tier_id", "manifest_sha256", "epoch")):
-            return {**outcome, "reason": "donor_material_mismatch"}
-        # Per entry, the same comparison the reader makes: the sidecar dates
-        # the fragment's vouching, so same path, same length, same digest or
-        # the two are about different bytes.
-        for key, vouched in named.items():
-            mention = dated.get(key)
-            if (not isinstance(vouched, Mapping) or not isinstance(mention, Mapping)
-                    or str(vouched.get("stage_path") or "")
-                    != str(mention.get("stage_path") or "")
-                    or vouched.get("bytes") != mention.get("bytes")
-                    or str(vouched.get("sha256") or "")
-                    != str(mention.get("sha256") or "")):
-                return {**outcome, "reason": "donor_material_mismatch",
-                        "entry": str(key)}
-        with queue.stage_ownership_lock(str(source["stage_root"]),
-                                        blocking=False) as owned:
-            if not owned:
-                # An egress is mid-scan on this stage root; its snapshot
-                # predates this adoption, so proceeding could interleave the
-                # transfer between its scan and its unlink.  Declining costs
-                # a copy, the same price as a busy transition lock.  Nothing
-                # has been published yet: the successor's fragment and
-                # material land only under this lock.
-                return {**outcome, "reason": "ownership_busy"}
-            if isinstance(old_material, dict):
-                # A partial prune can leave the fragment a strict subset of
-                # the complete range its historical receipt declares (#853).
-                # Whole-range adoption transfers one reservation and files
-                # one complete receipt, so it may only take over the exact
-                # range the donor's own complete receipt staged: the receipt
-                # must be complete, its declared and staged entry counts must
-                # equal the fragment's validated entries, their byte sum must
-                # equal the receipt's actual staged bytes and the requested
-                # leg's span, and the receipt's range must be that leg.  A
-                # shortened fragment is a per-path cache for the publisher,
-                # never a whole-range donor.
-                #
-                # This is metadata only -- three dict reads and a sum -- so
-                # it runs before the per-file stat walk below: only a donor
-                # that can still stand for the whole range is worth
-                # qualifying file by file.
-                declared = receipt.get("entries_declared")
-                staged = receipt.get("entries_staged")
-                receipt_start = receipt.get("range_start_bytes")
-                receipt_end = receipt.get("range_end_bytes")
-                staged_bytes = receipt.get("bytes_staged")
-                if (receipt.get("complete") is not True
-                        or receipt.get("refusal")
-                        or any(isinstance(value, bool) or not isinstance(value, int)
-                               for value in (declared, staged, receipt_start,
-                                             receipt_end, staged_bytes))
-                        # The counts are one shortening witness: a partial
-                        # prune leaves fewer fragment entries than the
-                        # complete receipt declared and staged.
-                        or declared != staged
-                        or declared != len(source["entries"])
-                        or int(receipt_start) != int(range_start_bytes)
-                        or int(receipt_end) != int(range_end_bytes)
-                        # The receipt's own byte accounting must still equal
-                        # its range...
-                        or int(staged_bytes)
-                        != int(receipt_end) - int(receipt_start)
-                        # ...and the fragment must cover that range exactly.
-                        # ``stage_move`` adds each landed entry's own
-                        # ``written`` to both the entry's ``bytes`` and
-                        # ``bytes_staged`` (an adopted incarnation returns
-                        # ``want`` the same way), and a run that did not land
-                        # every entry files an incomplete receipt -- so for a
-                        # complete receipt the two are equal, and equal entry
-                        # counts do not prove equal bytes.  Anything else is a
-                        # certificate for a range the fragment cannot cover.
-                        or sum(int(entry["bytes"])
-                               for entry in dict(source["entries"]).values())
-                        != int(staged_bytes)):
-                    return {**outcome, "reason": "donor_range_shortened",
-                            "declared": declared, "staged": staged,
-                            "entries": len(source["entries"])}
-                # The dated vouch must still describe the incarnation that
-                # is there: the strict reader takes the successor's material
-                # as proof, so adopting a donor that names a superseded
-                # incarnation would publish a refusal into the consumer
-                # (#755).  Verified under the ownership lock, so no egress
-                # or publisher can be changing the same name at the same
-                # time; a file that is gone is the same answer.
-                stale: list[str] = []
-                missing: list[str] = []
-                for key, mention in dict(
-                        old_material["entries"]).items():
-                    mention = mention if isinstance(mention, Mapping) else {}
-                    live = reader_lease.stat_identity(
-                        str(mention.get("stage_path") or ""))
-                    if live is None:
-                        missing.append(str(key))
-                    elif not reader_lease.file_id_matches(
-                            mention.get("file_id"), live):
-                        stale.append(str(key))
-                if missing:
-                    return {**outcome, "reason": "donor_file_missing",
-                            "missing": missing}
-                if stale:
-                    return {**outcome, "reason": "donor_file_changed",
-                            "stale": stale}
-            successor = residency_map.reissue(
-                source, consumer_action_key=consumer_action_key,
-                mover_action_key=new_key)
-            # The sidecar before the fragment it dates, as the movers and
-            # the shared-range fan-out write them (#1087): an interruption
-            # leaves a date no vouch cites, which every reader ignores,
-            # never a successor vouch without a date, which the publication
-            # gate refuses on for as long as it stands.
-            if isinstance(old_material, dict):
-                material_entries = old_material.get("entries")
-                assert isinstance(material_entries, dict)
-                reader_lease.write_material(
-                    residency_root, consumer_action_key=consumer_action_key,
-                    mover_action_key=new_key,
-                    tier_id=str(source.get("tier_id") or ""),
-                    stage_root=str(source.get("stage_root") or ""),
-                    manifest_sha256=str(source.get("manifest_sha256") or ""),
-                    generation=reader_lease.adopted_generation(old_material),
-                    entries=material_entries,  # type: ignore[arg-type]
-                    epoch=(str(source.get("epoch") or "")
-                           if source.get("epoch") is not None else None))
-            residency_map.write_fragment(residency_root, successor)
-            expected = sum(before.values())
-            moved = queue.tier(tier_id).handover(old_key, new_key)
-            if moved != expected:
-                # The reservation is split across the two keys and the sum is
-                # unchanged, so nothing is over-admitted; the old key is still
-                # resident, so the next cycle asks again and finishes the move.
-                return {**outcome, "reason": "partial_transfer",
-                        "tokens_moved": moved, "tokens_expected": expected}
-            source_path.unlink(missing_ok=True)
-            try:
-                reader_lease.material_path(
-                    residency_root, old_consumer,
-                    old_key).unlink(missing_ok=True)
-            except OSError:
-                pass
-        entries = dict(source["entries"])                # type: ignore[arg-type]
-        # The successor's own phase boundaries, which the descriptor match
-        # already proved equal to the range this copy made resident.  Taken
-        # from the plan rather than re-parsed out of the old receipt, so the
-        # range the new receipt declares is the one its pin is checked against.
-        start, end = int(range_start_bytes), int(range_end_bytes)
-        queue.record_move(new_key, {
-            "consumer_action_key": consumer_action_key,
-            "tier_id": tier_id,
-            "stage_root": str(source["stage_root"]),
-            "manifest_sha256": str(source["manifest_sha256"]),
-            "range_start_bytes": start,
-            "range_end_bytes": end,
-            "range_bytes": end - start,
-            # The bytes are staged; they were staged by somebody else.  Both
-            # halves are said, because ``residency_pin_holds`` reads the first
-            # and an operator pricing the next window reads the second -- and
-            # a receipt with no ``seconds`` prices nothing, which is what an
-            # adoption should contribute to a bandwidth measurement.
-            "bytes_staged": end - start,
-            "bytes_copied": 0,
-            "entries_declared": len(entries),
-            "entries_staged": len(entries),
-            "complete": True,
-            pool.MOVE_ADOPTED_FROM_FIELD: old_key,
-            "adopted_from_consumer": old_consumer,
-            "phase": phase,
-            "host": socket.gethostname(),
-            "unix": time.time(),
-        })
-        return {**outcome, "event": "range-adopted", "adopted": True,
-                "tokens_moved": moved, "entries": len(entries),
-                "bytes_staged": end - start}
-
-
 def adopt_resident_ranges(
     queue: pool.PoolQueue, *, tiers: Mapping[str, Mapping[str, object]],
     consumers: list | None = None,
@@ -2966,7 +2692,7 @@ def adopt_resident_ranges(
                 for old_key in list(candidates):
                     if old_key == new_key:
                         continue
-                    event = adopt(queue, old_key=old_key, new_key=new_key,
+                    event = staged_path.adopt(queue, old_key=old_key, new_key=new_key,
                                   consumer_action_key=vouch_as,
                                   tier_id=tier_id,
                                   phase=str(phase["name"]),
@@ -7963,12 +7689,12 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
         return ("unknown", owner)
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
+        scope = (residency / output_vocabulary.OUTPUT_SCOPES_SUBDIR / owner
                  / f"{template_id}.{nonce}")
         instance = _po.validate_instance(
             json.loads((scope / "instance.json").read_text()))
         template = _po.validate_template(json.loads(
-            (residency / _po.OUTPUT_TEMPLATES_SUBDIR
+            (residency / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
              / f"{template_id}.json").read_text()))
     except (OSError, ValueError):
         return ("unknown", owner)
@@ -8015,7 +7741,7 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
         return (False, "funding binding unreadable")
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / _po.OUTPUT_SCOPES_SUBDIR / owner
+        scope = (residency / output_vocabulary.OUTPUT_SCOPES_SUBDIR / owner
                  / f"{template_id}.{nonce}")
         instance = _po.validate_instance(
             json.loads((scope / "instance.json").read_text()))
@@ -9841,7 +9567,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
         with _locked_or_skipped(queue, str(row["mover_action_key"]), events,
                                 consumer=str(row["consumer_action_key"]),
                                 step=prefix) as owned:
-            receipt = stage_release.evict(
+            receipt = staged_path.evict(
                 queue, str(row["mover_action_key"]),
                 consumer_action_key=str(row["consumer_action_key"]),
                 stage_root=stage_root, reason=prefix, whole=True,
@@ -9871,7 +9597,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
                if row.get("for_consumer") else {}),
             # What the egress held the stage lock for, and what it did
             # before and after the hold (#988).
-            **stage_release.lock_scope(receipt)}
+            **staged_path.lock_scope(receipt)}
 
     def ram_first(row: Mapping[str, object], needed: int) -> bool:
         """Evict a stage row's ram copies; ``False`` keeps the stage row."""
@@ -9886,7 +9612,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
             if held <= 0:
                 continue      # already given back, by the ram tier's own pass
             root = str(copy.get("stage_root") or "")
-            refusal = (stage_release.stage_root_refusal(queue, root)
+            refusal = (staged_path.stage_root_refusal(queue, root)
                        if root else "no ram root announced")
             if refusal is not None:
                 events.append({"event": "beyond-horizon-eviction-refused",
@@ -9914,7 +9640,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
         if not rows:
             continue
         stage_root = str(tiers[tier_id].get("mountpoint") or "")
-        refusal = (stage_release.stage_root_refusal(queue, stage_root)
+        refusal = (staged_path.stage_root_refusal(queue, stage_root)
                    if stage_root else "no stage root announced")
         if refusal is not None:
             events.append({"event": "beyond-horizon-eviction-refused",
@@ -9977,7 +9703,7 @@ def evict_beyond_horizon(queue: pool.PoolQueue,
         if free >= target:
             stamp("not-needed")
             continue
-        refusal = (stage_release.stage_root_refusal(queue, stage_root)
+        refusal = (staged_path.stage_root_refusal(queue, stage_root)
                    if stage_root else "no stage root announced")
         if refusal is not None:
             stamp("refused", refusal=refusal)
@@ -11208,7 +10934,7 @@ def _cycle(
             # sweep refuses on the same fact rather than deleting under it.
             # The ram root carries the epoch marker beside this one; both are
             # the root's own identity, and ``reconcile`` skips them by name.
-            record["stage_root_owner"] = stage_release.register_stage_root(
+            record["stage_root_owner"] = staged_path.register_stage_root(
                 queue, tier_id=tier_id, stage_root=str(record["mountpoint"]))
             if (record["stage_root_owner"] != "registered"
                     and _stage_root_present(record.get("mountpoint"))):

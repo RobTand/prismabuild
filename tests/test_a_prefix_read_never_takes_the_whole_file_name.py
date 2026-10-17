@@ -41,6 +41,7 @@ import prismabuild.core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 WHOLE = 8192
@@ -91,8 +92,8 @@ def _staged_path(queue, consumer: str, mover: str) -> Path:
 
 
 def _short_grace(monkeypatch) -> None:
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
 
 
 def _both_publish(fleet, tmp_path, monkeypatch, order) -> None:
@@ -150,11 +151,11 @@ def test_the_name_encodes_offset_and_size_for_every_entry():
     """Pure derivation: the same (path, offset, bytes) is the same name, and
     anything else is a different name, whatever else the manifest says."""
 
-    name = stage_move.stage_relative
+    name = staged_path.stage_relative
     prefix = name("/m/d/f.safetensors", 0, PREFIX, mount_prefix="/m")
     whole = name("/m/d/f.safetensors", 0, WHOLE, mount_prefix="/m")
-    assert prefix == f"d/f.safetensors{stage_move.RANGE_SUFFIX}/0-{PREFIX}"
-    assert whole == f"d/f.safetensors{stage_move.RANGE_SUFFIX}/0-{WHOLE}"
+    assert prefix == f"d/f.safetensors{staged_path.RANGE_SUFFIX}/0-{PREFIX}"
+    assert whole == f"d/f.safetensors{staged_path.RANGE_SUFFIX}/0-{WHOLE}"
     assert prefix != whole
     assert name("/m/d/f.safetensors", 0, WHOLE, mount_prefix="/m") == whole
 
@@ -167,11 +168,11 @@ def test_a_staged_input_ignores_named_once():
     the collision back.
     """
 
-    name = stage_move.stage_relative
+    name = staged_path.stage_relative
     for named_once in (False, True):
         assert name("/m/d/f.safetensors", 0, PREFIX, mount_prefix="/m",
                     named_once=named_once) == (
-            f"d/f.safetensors{stage_move.RANGE_SUFFIX}/0-{PREFIX}")
+            f"d/f.safetensors{staged_path.RANGE_SUFFIX}/0-{PREFIX}")
 
 
 def test_a_produced_output_keeps_the_name_its_producer_declared():
@@ -184,16 +185,16 @@ def test_a_produced_output_keeps_the_name_its_producer_declared():
     """
 
     namespace = "ab" * 32
-    name = stage_move.stage_relative
+    name = staged_path.stage_relative
     assert name("/o/p1.bin", 0, WHOLE, mount_prefix="/o", namespace=namespace,
                 named_once=True) == f"produced-output/{namespace}/p1.bin"
     assert name("/o/p1.bin", 0, PREFIX, mount_prefix="/o",
                 namespace=namespace, named_once=False) == (
-        f"produced-output/{namespace}/p1.bin{stage_move.RANGE_SUFFIX}"
+        f"produced-output/{namespace}/p1.bin{staged_path.RANGE_SUFFIX}"
         f"/0-{PREFIX}")
     assert name("/o/p1.bin", PREFIX, PREFIX, mount_prefix="/o",
                 namespace=namespace, named_once=True) == (
-        f"produced-output/{namespace}/p1.bin{stage_move.RANGE_SUFFIX}"
+        f"produced-output/{namespace}/p1.bin{staged_path.RANGE_SUFFIX}"
         f"/{PREFIX}-{PREFIX}")
 
 
@@ -209,10 +210,10 @@ def test_a_retired_range_whose_directory_was_pruned_is_absent(tmp_path):
 
     stage = tmp_path / "stage"
     (stage / "model").mkdir(parents=True)
-    relative = stage_move.stage_relative(
+    relative = staged_path.stage_relative(
         "/m/model/f.safetensors", 0, WHOLE, mount_prefix="/m")
-    state = stage_release._containment_state
+    state = staged_path._containment_state
     assert state(stage, stage / relative) == "absent"
-    missing_parent = stage_move.stage_relative(
+    missing_parent = staged_path.stage_relative(
         "/m/gone/f.safetensors", 0, WHOLE, mount_prefix="/m")
     assert state(stage, stage / missing_parent) == "unknown"

@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, reader_lease  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "e" * 64
@@ -47,7 +48,7 @@ def held(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE_TIER,
+    staged_path.register_stage_root(queue, tier_id=STAGE_TIER,
                                       stage_root=stage)
     staged = stage / "model" / "p.safetensors"
     staged.parent.mkdir(parents=True)

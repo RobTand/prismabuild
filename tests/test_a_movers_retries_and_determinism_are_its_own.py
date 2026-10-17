@@ -54,6 +54,7 @@ from test_prepaid_writer_integration import (  # noqa: E402
     _prewrite, _producer_request, _queue, _template,
 )
 import test_prepaid_writer_integration as prepaid  # noqa: E402
+from prismabuild import staged_path
 
 CAPACITY = {"cpu": 8, "mem_gb": 16}
 
@@ -72,7 +73,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
     residency = mover_row["residency"]
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     entries = {}
     for index in range(2):
         path = stage / "sub" / f"part-{index}.bin"
@@ -129,7 +130,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
 
     with monkeypatch.context() as patch:
         patch.setattr(stage_release.os, "unlink", busy_dataset)
-        first = stage_release.evict(queue, mover, consumer_action_key=CONSUMER,
+        first = staged_path.evict(queue, mover, consumer_action_key=CONSUMER,
                                     stage_root=str(stage))
     assert first["complete"] is False and first["tokens_released"] == 0, json.dumps(first, default=str)
     queue.finish(egress, status="failed")
@@ -142,7 +143,7 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
 
     claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == egress
-    second = stage_release.evict(queue, mover, consumer_action_key=CONSUMER,
+    second = staged_path.evict(queue, mover, consumer_action_key=CONSUMER,
                                  stage_root=str(stage))
     queue.finish(egress, status="executed")
 

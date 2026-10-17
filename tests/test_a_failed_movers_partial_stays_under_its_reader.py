@@ -43,6 +43,7 @@ from prismabuild import (  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -90,7 +91,7 @@ class _Row:
         self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             self.queue, tier_id=TIER, stage_root=self.stage) == "registered"
         self.cas = tmp_path / "cas"
         self.cas.mkdir()
@@ -158,7 +159,7 @@ class _Row:
             if str(entry["path"]) in self.refuse:
                 # What 574747d717fc's copy of boundary-425 met (#1151 defect
                 # 2): a refusal that stops the range's dispatch.
-                raise stage_move._PublicationRefused(
+                raise staged_path.PublicationRefused(
                     f"shared staged name still has a live publisher after "
                     f"the grace, deferring to retry: {destination}")
             return real(copier, entry, destination, *args, **kwargs)
@@ -250,7 +251,7 @@ class _Row:
         for ordinal, egress in enumerate(EGRESSES):
             if self.queue.records.item_path(pool.record_store.READY, egress).exists():
                 # What the egress node does when it runs.
-                stage_release.evict(
+                staged_path.evict(
                     self.queue, MOVERS[ordinal],
                     consumer_action_key=self.consumer,
                     stage_root=str(self.stage),

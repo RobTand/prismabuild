@@ -56,6 +56,7 @@ from prismabuild import submission as submit_core
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:sparky"
 RAM_TIER = "ram:sparky"
@@ -650,7 +651,7 @@ def _resident_donor(queue: pool.PoolQueue, *, stage: Path, mover: str,
     # so a token can be held, and the stage root registered (#628).
     queue.tier(TIER).mint({'stage_gib': 8})
     stage.mkdir(parents=True, exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
 
     entries: dict[str, object] = {}
     written: list[Path] = []
@@ -712,7 +713,7 @@ def _tier_cycle(queue: pool.PoolQueue, stage: Path) -> None:
 
     queue.tier(TIER).mint({'stage_gib': 8})
     stage.mkdir(parents=True, exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     # The loop narrates its cycle on stdout; ``_detach_key`` reads stdout for
     # the submission's one JSON line, so the narration is kept out of it.
     with contextlib.redirect_stdout(io.StringIO()):
@@ -739,7 +740,7 @@ def test_a_cold_lead_is_published_by_the_loop_on_its_next_cycle(
     queue = prepared["queue"]
     queue.tier(TIER).mint({'stage_gib': 8})
     (tmp_path / "stage").mkdir(exist_ok=True)
-    stage_release.register_stage_root(
+    staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage")
 
     assert pbrun.main() == 0

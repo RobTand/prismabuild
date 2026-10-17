@@ -33,6 +33,7 @@ from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from prismabuild import kept_reads
 from kept_read_clock import after_paths
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 
@@ -42,9 +43,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 def _idle_owner(fleet, monkeypatch, *, filesystem: str = "zfs",
@@ -97,36 +98,36 @@ def test_a_filesystem_the_rule_does_not_list_says_so(fleet, monkeypatch):
 
 def test_a_full_cache_says_so(fleet, monkeypatch):
     queue, stage, mover = _idle_owner(fleet, monkeypatch)
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_capacity",
+    monkeypatch.setattr(staged_path, '_skip_checkpoint_capacity',
                         lambda discovered: 0)
     _assert_refused(queue, stage, mover, "cache-full")
 
 
 def test_an_owner_outside_the_sweep_scope_says_so(fleet, monkeypatch):
     queue, stage, mover = _idle_owner(fleet, monkeypatch)
-    real = stage_release._retain_skip_checkpoints
-    monkeypatch.setattr(stage_release, "_retain_skip_checkpoints",
+    real = staged_path._retain_skip_checkpoints
+    monkeypatch.setattr(staged_path, '_retain_skip_checkpoints',
                         lambda discovered: real([]))
     _assert_refused(queue, stage, mover, "outside-sweep-scope")
 
 
 def test_an_unknown_co_owner_version_says_so(fleet, monkeypatch):
     queue, stage, mover = _idle_owner(fleet, monkeypatch)
-    monkeypatch.setattr(stage_release, "_co_owner_fences",
+    monkeypatch.setattr(staged_path, '_co_owner_fences',
                         lambda memo, documents: None)
     _assert_refused(queue, stage, mover, "document-version-unknown")
 
 
 def test_an_unknown_own_document_version_says_so(fleet, monkeypatch):
     queue, stage, mover = _idle_owner(fleet, monkeypatch)
-    real = stage_release._install_skip_checkpoint
+    real = staged_path._install_skip_checkpoint
 
     def install(key, fragment_version, material_version, *args, **kwargs):
         # The version sampled after the scan read nothing: the file vanished
         # or is not regular.  Only the installation sees it here.
         return real(key, fragment_version, None, *args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "_install_skip_checkpoint", install)
+    monkeypatch.setattr(staged_path, '_install_skip_checkpoint', install)
     _assert_refused(queue, stage, mover, "document-version-unknown")
 
 
@@ -156,15 +157,15 @@ def test_the_refusal_is_a_verdict_that_is_falsy(tmp_path, monkeypatch):
 
     fragment = tmp_path / "fragment.json"
     fragment.write_text("{}")
-    version = stage_release._path_version(fragment)
+    version = staged_path._path_version(fragment)
     after_paths(monkeypatch, fragment, tmp_path)
     stamps = {str(tmp_path): kept_reads.filesystem_trust.directory_evidence(tmp_path)}
     key = ("tier", "consumer", "mover")
 
-    refused = stage_release._install_skip_checkpoint(
+    refused = staged_path._install_skip_checkpoint(
         key, version, version, stamps, {})
     assert not refused and refused.refused == "outside-sweep-scope"
-    stage_release._retain_skip_checkpoints([key])
-    installed = stage_release._install_skip_checkpoint(
+    staged_path._retain_skip_checkpoints([key])
+    installed = staged_path._install_skip_checkpoint(
         key, version, version, stamps, {})
     assert installed and installed.refused == ""

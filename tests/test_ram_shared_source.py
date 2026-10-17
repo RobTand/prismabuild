@@ -34,6 +34,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -471,7 +472,7 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     unattributed live incarnation.
     """
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 1.0, raising=False)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 1.0, raising=False)
     queue = _queue(tmp_path)
     manifest, manifest_sha, body = _manifest(tmp_path)
 

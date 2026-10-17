@@ -51,6 +51,7 @@ from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 from prismabuild import stage_marks  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -138,7 +139,7 @@ def run_passes(args) -> int:
         _orphans(stage, args.orphans)
         started = time.perf_counter()
         cpu = time.process_time()
-        receipt = stage_release.reconcile(
+        receipt = staged_path.reconcile(
             queue, tier_id=TIER, stage_root=str(stage), wanted={MOVER},
             index=index)
         row: dict[str, object] = {
@@ -262,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     shape = build_stage(queue, stage, files=args.files,

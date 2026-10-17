@@ -37,6 +37,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan, TIER)
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 CAPACITY = 156
 # Four chunks: 40 + 40 + 40 + 1 = 121.
@@ -50,7 +51,7 @@ TOOLS = {"mover_python": "/gen-1690/venv/bin/python",
 def _stage(queue, tier):
     root = queue.root.parent / f"stage-{tier.replace(':', '-')}"
     root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=tier, stage_root=str(root)) == "registered"
     return {"tier_id": tier, "tier": "stage", "mountpoint": str(root)}
 
@@ -217,7 +218,7 @@ def _state_1690(tmp_path):
             pass
     for mover in movers[2:]:
         consumer = str(queue.move_record(mover)["consumer_action_key"])
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, mover, consumer_action_key=consumer,
             stage_root=str(stage_root),
             residency_root=queue.root / pool.record_store.RESIDENCY,

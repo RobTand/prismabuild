@@ -38,6 +38,7 @@ import prismabuild.core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 SIZE = 4096
 TIER = base.TIER
@@ -75,7 +76,7 @@ def _manifest(tmp_path: Path, names: list[str], payloads: dict[str, bytes]):
 
 
 def _destination(stage: Path, mount: Path, entry: dict[str, object]) -> Path:
-    relative = stage_move.stage_relative(
+    relative = staged_path.stage_relative(
         str(entry["path"]), 0, SIZE, mount_prefix=str(mount))
     return stage / relative
 
@@ -135,8 +136,8 @@ def test_a_publish_wait_is_recorded_by_verdict_and_seconds(
     _fragment_no_sidecar(queue, stage, owner_consumer, owner_mover,
                         destination, hashlib.sha256(old).hexdigest())
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     mover, successor = base._key(), base._key()
     args = _args(queue, stage, cas, mover, successor, manifest, digest,
                 entries)

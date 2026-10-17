@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 #: Bounds a broken run; a passing run never waits it out.
 BOUND_S = 10.0
@@ -62,7 +63,7 @@ def _fleet(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
     source.write_bytes(payload)
     entry = {"path": str(source), "offset": 0, "bytes": len(payload),
              "sha256": hashlib.sha256(payload).hexdigest()}
-    destination = stage / stage_move.stage_relative(
+    destination = stage / staged_path.stage_relative(
         str(source), 0, len(payload), mount_prefix=str(mount))
     return mount, stage, entry, destination
 
@@ -143,6 +144,6 @@ def test_two_racing_creators_of_the_same_fresh_directory_both_land(
     assert copier.errors == []
     assert len(copier.staged) == 2
     for name, payload in (("a.bin", b"a" * 4096), ("b.bin", b"b" * 4096)):
-        destination = stage / stage_move.stage_relative(
+        destination = stage / staged_path.stage_relative(
             str(mount / "sub" / name), 0, len(payload), mount_prefix=str(mount))
         assert destination.read_bytes() == payload

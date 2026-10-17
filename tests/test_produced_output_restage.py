@@ -46,6 +46,7 @@ from prismabuild import stage_release  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 try:
     from prismabuild import reader_lease as rlc
@@ -192,7 +193,7 @@ def _prewrite(q, inst, template, batch_id, descs) -> dict:
 
 def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     stage_root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         q, tier_id=TIER, stage_root=stage_root) == "registered"
     record = {
         "tier": "stage",
@@ -756,7 +757,7 @@ def test_retirement_holds_no_output_prefix_lock_while_the_egress_runs(
 
     prefix = str(world.inst["output_prefix"])
     observed: list[bool] = []
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
 
     def _probing_evict(queue, mover_action_key, **kwargs):
         def _probe():
@@ -769,7 +770,7 @@ def test_retirement_holds_no_output_prefix_lock_while_the_egress_runs(
         thread.join(timeout=30)
         return real_evict(queue, mover_action_key, **kwargs)
 
-    monkeypatch.setattr(stage_release, "evict", _probing_evict)
+    monkeypatch.setattr(staged_path, 'evict', _probing_evict)
     retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert observed == [True], (

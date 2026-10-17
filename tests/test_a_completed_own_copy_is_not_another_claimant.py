@@ -44,6 +44,7 @@ import prismabuild.core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 FOREIGN_CONSUMER = "d" * 64
@@ -64,7 +65,7 @@ def fleet(tmp_path: Path):
     queue.tier(TIER).mint({'stage_gib': 1})
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     return queue, stage
 
@@ -180,7 +181,7 @@ def _completed_gap(queue: pool.PoolQueue, tmp_path: Path, stage: Path,
     assert receipt["complete"] is True, receipt
     queue.record_move(key, receipt)
     source_dir = tmp_path / "source"
-    staged = Path(str(receipt["stage_root"])) / stage_move.stage_relative(
+    staged = Path(str(receipt["stage_root"])) / staged_path.stage_relative(
         str(source_dir / name), 0, size, mount_prefix=str(source_dir))
     assert staged.exists()
     return key, digest, staged
@@ -198,7 +199,7 @@ def _free(queue: pool.PoolQueue) -> int:
 
 
 def _evict(queue: pool.PoolQueue, key: str, consumer: str, stage: Path):
-    return stage_release.evict(queue, key, consumer_action_key=consumer,
+    return staged_path.evict(queue, key, consumer_action_key=consumer,
                                stage_root=str(stage))
 
 

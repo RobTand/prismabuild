@@ -37,6 +37,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_plan  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 
 def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
@@ -66,9 +67,9 @@ def test_a_second_pass_of_one_consumer_replaces_its_siblings_changed_copy(
         tmp_path: Path, monkeypatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', ram.GRACE)
     manifest, digest, body = ram._manifest(tmp_path, null_digest=True)
-    paths = [tmp_path / "stage" / stage_move.stage_relative(
+    paths = [tmp_path / "stage" / staged_path.stage_relative(
                  str(entry["path"]), 0, ram.SIZE,
                  mount_prefix=str(body["mount_prefix"]))
              for entry in body["entries"]]

@@ -50,6 +50,7 @@ from prismabuild import window_credit  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
@@ -759,7 +760,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     ledger = queue.tier(TIER)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
 
     span = 1 << 20
@@ -818,7 +819,7 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     assert queue.records.item_path(pool.record_store.READY, stealer).exists()
     # Only the owner path returns landed bytes: the real egress deletes the
     # real file, releases the charge, and drops the fragment.
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         queue, mover, consumer_action_key=consumer, stage_root=str(stage))
     assert not staged.exists()
     assert int(receipt.get("tokens_released", 0)) == 1

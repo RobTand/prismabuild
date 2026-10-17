@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 MOVER = "1" * 64
 CONSUMER = "2" * 64
@@ -387,7 +388,7 @@ def test_reclaim_will_not_quietly_unpin_a_staged_range(queue) -> None:
 def _staged_files(tmp_path: Path, queue: pool.PoolQueue, count: int = 3) -> Path:
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     entries = {}
     for index in range(count):
         path = stage / "sub" / f"part-{index}.bin"
@@ -410,7 +411,7 @@ def test_an_egress_deletes_the_bytes_and_returns_the_tokens(queue, tmp_path) -> 
     queue.finish(MOVER, status="executed")
     assert _held(queue) == {"stage_gib": 2}
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is True
@@ -430,10 +431,10 @@ def test_a_second_egress_of_the_same_range_is_a_no_op(queue, tmp_path) -> None:
     _claim_mover(queue)
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
-    stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                         stage_root=str(stage))
 
-    again = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    again = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                 stage_root=str(stage))
 
     assert again["complete"] is True
@@ -453,7 +454,7 @@ def test_bytes_that_could_not_be_deleted_keep_their_tokens(queue, tmp_path,
     monkeypatch.setattr(stage_release.os, "unlink",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("EROFS")))
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is False and receipt["errors"]
@@ -478,7 +479,7 @@ def test_a_fragment_that_cannot_be_read_keeps_its_tokens(queue, tmp_path) -> Non
     # Mutate what the driver reads, not the code that reads it.
     (queue.root / pool.record_store.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text("{not json")
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is False and receipt["errors"]
@@ -493,7 +494,7 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     outside = tmp_path / "not-the-stage.bin"
     outside.write_bytes(b"keep me")
     (queue.root / pool.record_store.RESIDENCY / CONSUMER).mkdir(parents=True)
@@ -505,7 +506,7 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
             "stage_path": str(outside), "bytes": 7, "offset": 0,
             "sha256": DIGEST}}}))
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is False
@@ -517,12 +518,12 @@ def test_a_missing_fragment_still_returns_the_tokens(queue, tmp_path) -> None:
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     _claim_mover(queue)
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is True and receipt["tokens_released"] == 2

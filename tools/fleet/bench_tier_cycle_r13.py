@@ -85,6 +85,7 @@ import prismabuild.produced_output as po  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 import bench_tier_cycle  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 #: The calls counted, by the name each is reported under.
 _COUNTED = {
@@ -691,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
     queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=bench_tier_cycle.TIER, stage_root=stage) == "registered"
     shape_args = argparse.Namespace(
         empty_dirs=404, small_dirs=30, big_fragments="90000,60000,50000,40000",

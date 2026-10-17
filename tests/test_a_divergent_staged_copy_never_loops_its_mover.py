@@ -53,6 +53,7 @@ from prismabuild import (  # noqa: E402
     adaptive_cpu, pool, reader_lease, residency_map, residency_plan)
 from prismabuild import stage_move  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 SIZE = base.SIZE
@@ -179,8 +180,8 @@ class _World:
         # fixture row does not have; the shape is all admission needs here.
         monkeypatch.setattr(adaptive_cpu, "action_identity",
                             lambda item: ("shape", False))
-        monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", stale.GRACE)
-        monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+        monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', stale.GRACE)
+        monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
         self.queue, self.stage, self.cas = queue, stage, cas
         self.payloads = ORDERS[order]
         (self.manifest, self.digest, self.entries,
@@ -278,7 +279,7 @@ STEPS = ["adopt", "publish"]
 
 def _meet_at(monkeypatch, step: str) -> None:
     if step == "publish":
-        monkeypatch.setattr(stage_move._StagedPublisher, "try_adopt",
+        monkeypatch.setattr(staged_path.StagedPublisher, "try_adopt",
                             lambda self, *args, **kwargs: None)
 
 
@@ -466,7 +467,7 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
     path = _staged(stage, NAMES[1])
     before = os.stat(path)
     late_consumer, late_mover = base._key(), base._key()
-    real = stage_move._StagedPublisher._judge_owners
+    real = staged_path.StagedPublisher._judge_owners
     arrived: list[bool] = []
 
     def judge_then_arrive(self, pairs):
@@ -482,7 +483,7 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
             stale._fragment(queue, stage, late_consumer, late_mover)
         return rows
 
-    monkeypatch.setattr(stage_move._StagedPublisher, "_judge_owners",
+    monkeypatch.setattr(staged_path.StagedPublisher, "_judge_owners",
                         judge_then_arrive)
 
     rc, receipt = world.run(claimed=True)
@@ -521,7 +522,7 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
     world = _World(fleet, tmp_path, monkeypatch, "last")
     path = _staged(stage, NAMES[1])
     before = os.stat(path)
-    real = stage_move._StagedPublisher.publish
+    real = staged_path.StagedPublisher.publish
     resubmitted: list[bool] = []
 
     def resubmit_then_publish(self, *args, **kwargs):
@@ -533,7 +534,7 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
                 resources={"cpu": 1})
         return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(stage_move._StagedPublisher, "publish",
+    monkeypatch.setattr(staged_path.StagedPublisher, "publish",
                         resubmit_then_publish)
 
     rc, receipt = world.run()
@@ -579,13 +580,13 @@ def test_a_movers_own_record_is_not_an_owner_it_judges(fleet) -> None:
     declared = hashlib.sha256(NEW).hexdigest()
 
     own = base._publisher(fleet, mover, consumer)
-    collected = stage_move._Owners()
+    collected = staged_path._Owners()
     _, standing, _ = own._proof_search(path, SIZE, declared, owners=collected)
     assert standing == "divergent"
     assert collected.pairs == set() and collected.complete
 
     other = base._publisher(fleet, base._key(), base._key())
-    collected = stage_move._Owners()
+    collected = staged_path._Owners()
     _, standing, _ = other._proof_search(path, SIZE, declared,
                                          owners=collected)
     assert standing == "divergent"

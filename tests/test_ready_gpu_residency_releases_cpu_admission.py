@@ -25,6 +25,7 @@ import pbrun
 import stage_move
 import tier_loop
 from submission_support import patch_store
+from prismabuild import staged_path
 
 fleet = fleet_fixture
 HOST = "sparklina"
@@ -107,7 +108,7 @@ def test_a_residency_reason_must_match_the_recorded_state(reason):
 def _stage_cycle(queue, stage):
     stage.mkdir(exist_ok=True)
     queue.tier(TIER).mint({'stage_gib': 8})
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     tier_loop.cycle(queue, host=HOST, source_pool="storage_pool",
         receipts=tier_loop.ReceiptCache(), discover=lambda **kwargs: {
             TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,

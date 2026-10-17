@@ -45,6 +45,7 @@ from test_prepaid_writer_integration import (  # noqa: E402
     KIND, REPO, TIER, _announce_tier, _broker_control, _claim_mover,
     _queue, _template,
 )
+from prismabuild import staged_path
 
 #: The tick's events, spelled out: they are what an operator greps for.
 DEAD_BATCH_RETIRED = "output-dead-producer-batch-retired"
@@ -247,7 +248,7 @@ class _Producer:
             "range_start_bytes": 0, "range_end_bytes": len(payload),
             "bytes_staged": len(payload), "complete": True})
         q.finish(mover, status="executed")
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             q, mover, consumer_action_key=namespace,
             stage_root=str(self.fleet.stage),
             residency_root=po.output_fragment_root(q.root / pool.record_store.RESIDENCY))

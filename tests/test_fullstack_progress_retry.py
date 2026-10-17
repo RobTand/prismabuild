@@ -20,6 +20,7 @@ from test_fullstack_stage_ram_chain import (  # noqa: E402
     CONSUMER, STAGE_TIER, _fleet,
 )
 from test_fullstack_reader_boundaries import _staged_once  # noqa: E402
+from prismabuild import staged_path
 
 WHOLE_MOVER = "a" * 64
 
@@ -117,13 +118,13 @@ def test_repartition_after_freeze_refuses_with_both_bodies(tmp_path: Path) -> No
 def test_cleanup_leaves_no_addressable_orphans(tmp_path: Path) -> None:
     """Egress removes its staged files; repeated egress is a clean no-op."""
     queue, _, _ = _staged_once(tmp_path)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=tmp_path / "stage") == "registered"
-    first = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
+    first = staged_path.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                 stage_root=tmp_path / "stage")
     assert first["complete"] is True
     assert list((tmp_path / "stage").rglob("*.bin")) == []
     assert list((tmp_path / "stage").rglob("*.pbrange")) == []
-    again = stage_release.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
+    again = staged_path.evict(queue, WHOLE_MOVER, consumer_action_key=CONSUMER,
                                 stage_root=tmp_path / "stage")
     assert again["complete"] is True

@@ -38,6 +38,7 @@ from prismabuild import pool, residency_map, residency_plan, storage_tiers  # no
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -318,7 +319,7 @@ def stage(tmp_path: Path, queue: pool.PoolQueue) -> Path:
     path.mkdir()
     # The fleet's loop registers its own stage on every cycle; a test that
     # sweeps without a cycle first is standing in for that loop (#628).
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=path)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=path)
     return path
 
 
@@ -610,7 +611,7 @@ def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
     q.tier(TIER).mint({'stage_gib': 6})
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(q, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(q, tier_id=TIER, stage_root=stage)
     live_files = _stage_range(q, mover=_hexkey("firstmover0"),
                               consumer=FIRST, stage=stage, ordinal=0)
     orphan_files = _stage_range(q, mover=_hexkey("stalemover0"),
@@ -664,7 +665,7 @@ def test_adopted_ahead_range_does_not_hide_missing_lead_admission_pressure(
     q.tier(TIER).mint({'stage_gib': 10})
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(q, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(q, tier_id=TIER, stage_root=stage)
     plan = _plan(q, SECOND, phases=3, label="retry")
     live_files = _stage_range(
         q, mover=_hexkey("retrymover1"), consumer=SECOND,
@@ -715,7 +716,7 @@ def test_an_egress_of_the_old_key_never_deletes_an_adopted_range(
     second_mover = _hexkey("secondmover0")
     assert queue.tier(TIER).holdings(second_mover)
 
-    receipt = stage_release.evict(queue, first_mover,
+    receipt = staged_path.evict(queue, first_mover,
                                   consumer_action_key=FIRST,
                                   stage_root=str(stage))
 
@@ -961,7 +962,7 @@ def test_a_kill_between_the_successors_documents_leaves_no_undated_vouch(
                      phase="phase-0", range_start_bytes=0,
                      range_end_bytes=PHASE_GIB * GIB, residency_root=root)
     with pytest.raises(Killed):
-        tier_loop.adopt(queue, **arguments)
+        staged_path.adopt(queue, **arguments)
     monkeypatch.undo()
 
     def documents() -> tuple[set[str] | None, set[str] | None]:
@@ -978,7 +979,7 @@ def test_a_kill_between_the_successors_documents_leaves_no_undated_vouch(
         f"vouched={vouched} dated={dated}")
     assert queue.tier(TIER).holdings(donor) == {'stage_gib': PHASE_GIB}
 
-    again = tier_loop.adopt(queue, **arguments)
+    again = staged_path.adopt(queue, **arguments)
     assert again["adopted"] is True, again
     vouched, dated = documents()
     assert vouched and vouched == dated, (vouched, dated)

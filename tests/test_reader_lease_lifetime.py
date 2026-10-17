@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, reader_lease  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 CONSUMER2 = "d" * 64
@@ -101,7 +102,7 @@ def fleet(tmp_path: Path):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -154,7 +155,7 @@ def test_double_acquire_refcounts_window(fleet) -> None:
     assert first["pin_id"] == second["pin_id"]
     assert first["ref_id"] != second["ref_id"]
 
-    blocked = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    blocked = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
     assert staged.exists()
     assert blocked["entries_deleted"] == 0
@@ -163,14 +164,14 @@ def test_double_acquire_refcounts_window(fleet) -> None:
 
     assert reader_lease.release(queue, first["pin_id"], first["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    still = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    still = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                 stage_root=str(stage))
     assert staged.exists(), "second ref still live; still no delete"
     assert still["entries_deleted"] == 0
 
     assert reader_lease.release(queue, second["pin_id"], second["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["complete"] is True
@@ -196,7 +197,7 @@ def test_retry_token_is_idempotent(fleet) -> None:
 
     assert reader_lease.release(queue, first["pin_id"], first["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -251,7 +252,7 @@ def test_forked_child_reads_under_pin_after_parent_stops_releasing(fleet
     assert reader_lease.release(queue, acquired["pin_id"],
                                 acquired["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    kept = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    kept = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert staged.exists(), "child ref still live; still no delete"
     assert kept["entries_deleted"] == 0
@@ -263,7 +264,7 @@ def test_forked_child_reads_under_pin_after_parent_stops_releasing(fleet
     assert reader_lease.release(queue, acquired["pin_id"],
                                 child_ref[0]["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -312,7 +313,7 @@ def test_retiring_binds_generation_not_path(fleet) -> None:
     held = _acquire(queue, MOVER, "retire-token")
     assert held["ok"]
 
-    deferred = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    deferred = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                    stage_root=str(stage))
     assert staged.exists()
     assert deferred["complete"] is False
@@ -330,7 +331,7 @@ def test_retiring_binds_generation_not_path(fleet) -> None:
                                 consumer_action_key=CONSUMER) is True
     assert reader_lease.release(queue, nxt["pin_id"], nxt["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -405,7 +406,7 @@ def test_corrupt_pin_taints_egress_closed(fleet) -> None:
     (leases / CONSUMER).mkdir(parents=True, exist_ok=True)
     (leases / CONSUMER / ("0" * 32 + ".lease.json")).write_text("{not json\n")
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
     assert staged.exists(), "ownership uncertain: egress must delete nothing"
     assert receipt["entries_deleted"] == 0
@@ -529,7 +530,7 @@ def test_containment_needs_terminal_and_attestation(fleet) -> None:
     via_history = reader_lease.release_refs(queue, [target], dict(cert))
     assert via_history["ok"] is True, via_history
     assert via_history["released"] == [acquired["ref_id"]]
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -561,7 +562,7 @@ def test_terminal_telemetry_match_releases_without_history(fleet) -> None:
              "host": "test-host"}}))
     certified = reader_lease.release_refs(queue, [target], dict(cert))
     assert certified["ok"] is True, certified
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -689,7 +690,7 @@ def test_concurrent_acquire_release_keeps_exact_refs(fleet) -> None:
             queue, held["pin_id"], outcomes["b"]["ref_id"],  # type: ignore[index]
             consumer_action_key=CONSUMER) is True
     assert staged.exists()
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -717,13 +718,13 @@ def test_legacy_enumerators_ignore_lease_namespaces(fleet) -> None:
         mover_action_key=MOVER2, generation="0" * 32)
 
     wanted = {os.path.normpath(str(staged))}
-    owners, tainted = stage_release._fragment_owners(root, wanted)
+    owners, tainted = staged_path.fragment_owners(root, wanted)
     assert tainted == [], f"metadata namespaces taint the owner scan: {tainted}"
     assert owners == {os.path.normpath(str(staged)): {(CONSUMER, MOVER)}}
 
     fragments = residency_map.read_fragments(root, CONSUMER)
     assert len(fragments) == 1
-    attributed = stage_release.attributed_stage_paths(
+    attributed = staged_path.attributed_stage_paths(
         queue, wanted={MOVER}, residency_root=root)
     assert str(staged) in attributed
 
@@ -1244,7 +1245,7 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
                  "pin_id": acquired["pin_id"],
                  "ref_id": acquired["ref_id"]}], dict(cert))
     assert freed["ok"] is True, freed
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not staged.exists()
     assert done["entries_deleted"] == 1
@@ -1351,7 +1352,7 @@ def test_egress_auto_reclaims_contained_pins(fleet) -> None:
          "resource_telemetry": {
              "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
              "host": "test-host"}}))
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
     assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
     assert not staged.exists()
@@ -1383,7 +1384,7 @@ def test_bare_withdrawn_record_frees_nothing(fleet) -> None:
     refused = reader_lease.release_refs(queue, [target], dict(cert))
     assert refused["ok"] is False
     assert refused["reason"] == "no-terminal-evidence-retain"
-    kept = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    kept = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert staged.exists()
     assert kept["entries_deleted"] == 0
@@ -1550,13 +1551,13 @@ def test_distinct_same_shape_files_never_share_a_pin(fleet) -> None:
     # per-object lifetimes); B stays pinned behind its own pin.
     assert reader_lease.release(queue, pin_a["pin_id"], pin_a["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    kept = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    kept = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not first.exists() and second.exists()
     assert kept["entries_deleted"] == 1
     assert reader_lease.release(queue, pin_b["pin_id"], pin_b["ref_id"],
                                 consumer_action_key=CONSUMER) is True
-    done = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    done = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                stage_root=str(stage))
     assert not first.exists() and not second.exists()
     assert done["entries_deleted"] == 1
@@ -1705,7 +1706,7 @@ def test_owner_and_material_namespace_stay_split(fleet) -> None:
     finally:
         os.close(fd)
     # The producer's egress defers to the reader-owned pin...
-    blocked = stage_release.evict(queue, MOVER,
+    blocked = staged_path.evict(queue, MOVER,
                                   consumer_action_key=PRODUCER,
                                   stage_root=str(stage))
     assert staged.exists()
@@ -1719,7 +1720,7 @@ def test_owner_and_material_namespace_stay_split(fleet) -> None:
          "resource_telemetry": {
              "action_key": READER, "nonce": "n1", "scope_unit": "s1",
              "host": "test-host"}}))
-    freed = stage_release.evict(queue, MOVER,
+    freed = staged_path.evict(queue, MOVER,
                                 consumer_action_key=PRODUCER,
                                 stage_root=str(stage))
     assert freed["auto_reclaimed"] == [got["ref_id"]]
@@ -1883,7 +1884,7 @@ def test_withdrawn_with_telemetry_reclaims_automatically(fleet) -> None:
          "resource_telemetry": {
              "action_key": CONSUMER, "nonce": "n1", "scope_unit": "s1",
              "host": "test-host"}}))
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
     assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
     assert not staged.exists()
@@ -2377,14 +2378,14 @@ def test_connected_sdk_ref_reclaims_through_egress(
         assert proof["incarnation"] == worker
         assert proof["empty"] is True
         assert proof["tickets_pending"] is False
-        receipt = stage_release.evict(queue, MOVER,
+        receipt = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
         assert not staged.exists()
         assert receipt["complete"] is True
         assert receipt["entries_deleted"] == 1
-        again = stage_release.evict(queue, MOVER,
+        again = staged_path.evict(queue, MOVER,
                                     consumer_action_key=CONSUMER,
                                     stage_root=str(stage))
         assert again["auto_reclaimed"] == []
@@ -2444,7 +2445,7 @@ def test_finish_write_failure_heals_on_egress_tick(
         assert "proof_persistence_error" in (
             done["resource_scope_cleanup"]["telemetry"])
         assert staged.exists()
-        receipt = stage_release.evict(queue, MOVER,
+        receipt = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
@@ -2524,7 +2525,7 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         assert reader_lease.attempt_refs_live(
             queue, CONSUMER, nonce, unit) == (True, "attempt-ref-live")
         assert queue.ledger(host).held().get("cpu") == 1
-        kept = stage_release.evict(queue, MOVER,
+        kept = staged_path.evict(queue, MOVER,
                                    consumer_action_key=CONSUMER,
                                    stage_root=str(stage))
         assert staged.exists()
@@ -2547,7 +2548,7 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         assert proof["settled"] is True
         assert proof["retired"] is True
         assert proof["scope_id"] == unit
-        receipt = stage_release.evict(queue, MOVER,
+        receipt = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
@@ -2587,7 +2588,7 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         assert refused["ok"] is False, refused
         assert refused["skipped"] == [
             "%s: attempt mismatch" % second["ref_id"]]
-        latched = stage_release.evict(queue, MOVER,
+        latched = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert second["ref_id"] in latched["auto_retained"], latched
@@ -2623,7 +2624,7 @@ def test_released_refs_let_unproven_finish_publish(
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof, dict)
         assert proof["scope_empty"] is False
-        kept = stage_release.evict(queue, MOVER,
+        kept = staged_path.evict(queue, MOVER,
                                    consumer_action_key=CONSUMER,
                                    stage_root=str(stage))
         assert staged.exists()
@@ -2638,7 +2639,7 @@ def test_released_refs_let_unproven_finish_publish(
         still = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(still, dict)
         assert still["scope_empty"] is False
-        receipt = stage_release.evict(queue, MOVER,
+        receipt = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == []
@@ -2677,7 +2678,7 @@ def test_broker_transport_down_retains_then_reaper_recovers(
         assert not queue.records.item_path(pool.record_store.DONE, CONSUMER).exists()
         assert reader_lease.read_scope_attestation(
             queue, CONSUMER, nonce) is None
-        kept = stage_release.evict(queue, MOVER,
+        kept = staged_path.evict(queue, MOVER,
                                    consumer_action_key=CONSUMER,
                                    stage_root=str(stage))
         assert staged.exists()
@@ -2696,7 +2697,7 @@ def test_broker_transport_down_retains_then_reaper_recovers(
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof, dict)
         assert proof["scope_empty"] is True
-        receipt = stage_release.evict(queue, MOVER,
+        receipt = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert receipt["auto_reclaimed"] == [acquired["ref_id"]], receipt
@@ -2736,7 +2737,7 @@ def test_unknown_scan_never_reports_released(fleet) -> None:
             queue, {os.path.normpath(str(staged))})
         assert owners == {} and len(tainted) == 1
         # The egress fails closed on the same census.
-        receipt = stage_release.evict(queue, MOVER,
+        receipt = staged_path.evict(queue, MOVER,
                                       consumer_action_key=CONSUMER,
                                       stage_root=str(stage))
         assert staged.exists()

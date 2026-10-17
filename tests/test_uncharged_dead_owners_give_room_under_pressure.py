@@ -43,6 +43,7 @@ import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 GIB = storage_tiers.GIB
@@ -52,10 +53,10 @@ MANIFEST = "a" * 64
 
 @pytest.fixture(autouse=True)
 def _fresh_process_state():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
 
 
@@ -333,7 +334,7 @@ def test_a_live_claim_keeps_the_file(fleet, monkeypatch, claim):
             return {relative}, [], set()
         return set(), [], ({relative} if own_key == claimed[1] else set())
 
-    monkeypatch.setattr(stage_release, "_claimed_paths_attributed", attributed)
+    monkeypatch.setattr(staged_path, 'claimed_paths_attributed', attributed)
 
     index = kept_reads.CensusIndex(trust=ObservedTrust())
     first = _sweep(queue, stage, {TIER: 1}, index=index)
@@ -464,13 +465,13 @@ def test_an_unreadable_discovery_files_no_report_and_evicts_none(
     queue, stage, _ = fleet
     owner = dead_owner(fleet, ["taint-00001"], unix=100.0)
     assert len(_reports(_sweep(queue, stage, {}))) == 1
-    real = stage_release._fragment_census
+    real = staged_path.fragment_census
 
     def tainted(root, index=None):
         fragments, _ = real(root, index)
         return fragments, ["fixture: unreadable fragment"]
 
-    monkeypatch.setattr(stage_release, "_fragment_census", tainted)
+    monkeypatch.setattr(staged_path, 'fragment_census', tainted)
     receipts = _sweep(queue, stage, {TIER: 1})
 
     assert _owned(queue, *owner), receipts
@@ -504,7 +505,7 @@ def test_a_partially_pruned_owner_is_collected_from_its_rewritten_fragment(
 
     first = _sweep(queue, stage, {TIER: 1})
     (pruned,) = [entry for entry in first if entry.get("action_key") == mover
-                 and entry.get("event") == stage_release.STALE_MENTION_EVENT]
+                 and entry.get("event") == staged_path.STALE_MENTION_EVENT]
     assert pruned["partial"] is True and pruned["entries_pruned"] == 1, pruned
     assert _for(first, mover) == [] and _reports(first) == [], first
     assert _owned(queue, consumer, mover)

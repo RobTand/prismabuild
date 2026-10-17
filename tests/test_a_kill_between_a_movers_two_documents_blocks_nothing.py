@@ -40,6 +40,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -192,7 +193,7 @@ def _promote_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
 
 
 def _named(root: Path, body: dict) -> list[Path]:
-    return [root / stage_move.stage_relative(
+    return [root / staged_path.stage_relative(
                 str(entry["path"]), 0, SIZE,
                 mount_prefix=str(body["mount_prefix"]))
             for entry in body["entries"]]
@@ -293,7 +294,7 @@ def _killed_stage_move(tmp_path: Path, monkeypatch, *, behind: bool):
     paths = _named(tmp_path / "stage", body)
     for index, path in enumerate(paths):
         assert path.read_bytes() == _payload(index)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
     return queue, manifest, manifest_sha, body, paths
 
 
@@ -368,7 +369,7 @@ def _killed_promotion(tmp_path: Path, monkeypatch):
     paths = _named(ram, body)
     for index, path in enumerate(paths):
         assert path.read_bytes() == _payload(index)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
     return queue, manifest, manifest_sha, body, paths
 
 

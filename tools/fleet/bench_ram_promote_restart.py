@@ -60,6 +60,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:bench"
 RAM_TIER = "ram:bench"
@@ -140,7 +141,7 @@ def promote_argv(work: Path, queue: pool.PoolQueue, window: dict[str, object],
 
 def ram_paths(work: Path, window: dict[str, object]) -> list[Path]:
     body = window["body"]
-    return [work / "ram" / stage_move.stage_relative(
+    return [work / "ram" / staged_path.stage_relative(
                 str(entry["path"]), 0, int(entry["bytes"]),
                 mount_prefix=str(body["mount_prefix"]))
             for entry in body["entries"]]
@@ -299,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
             if old is not None and new is not None
             and not reader_lease.file_id_matches(old, new))
 
-        grace = getattr(stage_move, "_PUBLISH_GRACE_S", None)
+        grace = getattr(staged_path, '_PUBLISH_GRACE_S', None)
         result = {
             "schema": "prismabuild.bench.ram_promote_restart.v1",
             "host": socket.gethostname(),

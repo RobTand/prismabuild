@@ -51,6 +51,7 @@ from test_a_dead_producers_batches_and_paths_are_released import (  # noqa: E402
     _events,
 )
 from test_consumed_origin_retirement import _bind_owner  # noqa: E402
+from prismabuild import output_vocabulary
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -158,7 +159,7 @@ class _Successor:
 
     def recorded(self) -> dict:
         return json.loads((Path(self.queue.root) / "residency"
-                           / po.OUTPUT_BATCHES_SUBDIR
+                           / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                            / po.instance_namespace(self.instance)
                            / "s1.json").read_text())["origin_identity"]
 

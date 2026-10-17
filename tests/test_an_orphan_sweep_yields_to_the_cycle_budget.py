@@ -45,6 +45,7 @@ from prismabuild import pool, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 from prismabuild import tier_holdings
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = unc.TIER
 #: The unit kind the sweep asks the budget for.  Read softly, so that a tree
@@ -90,7 +91,7 @@ class _Sweeps:
         #: Every orphan eviction, in order: ``(mover, record age at start)``.
         self.evicted: list[tuple[str, float | None]] = []
         self._held = 0
-        real_evict = stage_release.evict
+        real_evict = staged_path.evict
 
         def evict(queue, mover, *args, **kwargs):
             if kwargs.get("reason") in REASONS:
@@ -98,7 +99,7 @@ class _Sweeps:
                 self.clock.now += EVICT_S
             return real_evict(queue, mover, *args, **kwargs)
 
-        monkeypatch.setattr(stage_release, "evict", evict)
+        monkeypatch.setattr(staged_path, 'evict', evict)
 
     def owner(self, name: str, unix: float, *, charged: bool = False,
               ) -> tuple[str, str]:
@@ -153,10 +154,10 @@ class _Sweeps:
 
 @pytest.fixture(autouse=True)
 def _fresh_process_state():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
 
 
@@ -261,7 +262,7 @@ def test_the_beyond_horizon_pass_yields_to_the_cycle_budget(
 
     clock = FakeClock()
     monkeypatch.setattr(pool, "_now", clock)
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
     ages: list[float] = []
 
     def evict(queue, mover, *args, **kwargs):
@@ -271,7 +272,7 @@ def test_the_beyond_horizon_pass_yields_to_the_cycle_budget(
             clock.now += EVICT_S
         return real_evict(queue, mover, *args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "evict", evict)
+    monkeypatch.setattr(staged_path, 'evict', evict)
     capacity = hz.PHASE_GIB * hz.WIDE + sum(hz.CAPTURE_SIZES[:4]) + 1
     queue, stage = hz._fixture_queue(tmp_path, capacity)
     hz._reader(queue, stage, landed=tuple(range(hz.WIDE)), phases=hz.WIDE)

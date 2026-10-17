@@ -27,6 +27,7 @@ import pbstatus
 import pbwait
 import pool_reset
 from prismabuild import stage_release
+from prismabuild import staged_path
 
 
 @pytest.fixture
@@ -409,12 +410,12 @@ def test_stage_release_accepts_only_additive_completed_withdrawal(scoped, monkey
     queue, item, calls = scoped
     queue, live, path, record = _conclude(queue, item, monkeypatch)
     key = live["action_key"]
-    assert stage_release._require_exact_withdrawal(queue, key) == record
+    assert staged_path._require_exact_withdrawal(queue, key) == record
     for changed in ({**record, "reason": "forged"},
                     {**record, "finished_unix": -1},
                     {**record, "unattested_field": True}):
         path.write_text(json.dumps(changed))
         with pytest.raises(pool.PoolContractError, match="withdrawal lacks its exact immutable decision"):
-            stage_release._require_exact_withdrawal(queue, key)
+            staged_path._require_exact_withdrawal(queue, key)
     path.write_text(json.dumps(record))
-    assert stage_release._require_exact_withdrawal(queue, key) == record
+    assert staged_path._require_exact_withdrawal(queue, key) == record

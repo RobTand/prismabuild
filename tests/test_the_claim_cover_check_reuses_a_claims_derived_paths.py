@@ -55,6 +55,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 SIZE = base.SIZE
@@ -109,15 +110,15 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
 
 
 def _publisher(queue: pool.PoolQueue, stage: Path, cas: Path,
-              mover: str) -> "stage_move._StagedPublisher":
-    return stage_move._StagedPublisher(
+              mover: str) -> 'staged_path.StagedPublisher':
+    return staged_path.StagedPublisher(
         queue=queue, stage_root=stage, residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
         tier_id=TIER, cas_root=str(cas))
 
 
 def _norm(stage: Path, path: str, offset: int, size: int) -> str:
-    relative = stage_move.stage_relative(path, offset, size,
+    relative = staged_path.stage_relative(path, offset, size,
                                          mount_prefix=MOUNT_PREFIX)
     return os.path.normpath(os.path.join(str(stage), relative))
 

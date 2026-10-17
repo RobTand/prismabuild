@@ -26,6 +26,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import output_vocabulary
 
 STAGE_TIER = "prismabuild-stage:dl380g10"
 STAGE_BARE = "stage_gib"
@@ -121,11 +122,11 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert isinstance(item, dict)
     ref = item["produced_output"]
-    assert ref["schema"] == po.PRODUCED_OUTPUT_REF_SCHEMA_V1
+    assert ref["schema"] == output_vocabulary.PRODUCED_OUTPUT_REF_SCHEMA_V1
     assert ref["template_id"] == "admit-v1"
     assert ref["template_sha256"] == po.template_sha256(template)
     # Filed immutably beside the queue.
-    filed = json.loads((queue.root / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    filed = json.loads((queue.root / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
                         / "admit-v1.json").read_text())
     assert po.template_sha256(filed) == ref["template_sha256"]
 

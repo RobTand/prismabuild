@@ -30,6 +30,7 @@ from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -39,7 +40,7 @@ RAM_TIER = "ram:dl380g10"
 GIB = storage_tiers.GIB
 CHUNK = 1 << 20
 #: The stage's (and the promotion's) name for the one whole-file entry.
-SHARD = stage_move.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
+SHARD = staged_path.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
                                   mount_prefix="/mnt/shared")
 
 
@@ -220,9 +221,9 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     # The egress is the only thing that may return them, because it is the
     # only thing that removes the bytes they stand for.
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=ram) == "registered"
-    egress = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    egress = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                  stage_root=str(ram))
 
     assert egress["complete"] is True

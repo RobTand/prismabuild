@@ -57,6 +57,7 @@ from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import ram_promote  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -212,7 +213,7 @@ def _world(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path, str, Path]:
     manifest, manifest_sha, _body = _manifest(tmp_path)
     stage = _stage_root(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     staged = _staged_path(queue, CONSUMER_A)
     assert staged.exists()
@@ -232,7 +233,7 @@ def _material_path(queue: pool.PoolQueue, consumer: str, mover: str) -> Path:
 
 def _evict(queue: pool.PoolQueue, stage: Path, *, mover: str = MOVER_A,
            consumer: str = CONSUMER_A) -> dict:
-    return stage_release.evict(queue, mover, consumer_action_key=consumer,
+    return staged_path.evict(queue, mover, consumer_action_key=consumer,
                                stage_root=str(stage))
 
 
@@ -244,13 +245,13 @@ def test_the_promotion_claim_is_recognized_through_the_real_helper(
         tmp_path: Path) -> None:
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
 
-    paths, tainted = stage_release._claimed_source_paths(queue, stage)
+    paths, tainted = staged_path.claimed_source_paths(queue, stage)
     assert (paths, tainted) == (set(), []), (
         "no claim is filed yet, so no source leg is held")
 
     _claim_promotion(queue, tmp_path, manifest, manifest_sha)
 
-    paths, tainted = stage_release._claimed_source_paths(queue, stage)
+    paths, tainted = staged_path.claimed_source_paths(queue, stage)
     assert tainted == []
     # The staged source leg under its range name, and the bare name a stage
     # leg sealed before range-only naming may still hold (over-retained).
@@ -368,7 +369,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     ]))
     assert promotion.get("refusal") is None, promotion
     assert promotion["complete"] is True
-    assert (ram / stage_move.stage_relative(
+    assert (ram / staged_path.stage_relative(
         "/m/calib.bin", 0, SIZE, mount_prefix="/m")).read_bytes() == _payload()
 
     # The RAM fragment names the ram tier and the ram path: it can never
@@ -453,7 +454,7 @@ def test_the_retry_after_the_handoff_deletes_and_releases_exactly_once(
     assert _evict(queue, stage)["entries_deferred"] == 1
 
     row.unlink()                      # the promotion ends; the claim is gone
-    assert stage_release._claimed_source_paths(queue, stage) == (set(), [])
+    assert staged_path.claimed_source_paths(queue, stage) == (set(), [])
 
     retry = _evict(queue, stage)
     assert retry["complete"] is True, retry

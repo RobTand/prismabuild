@@ -27,7 +27,8 @@ from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
-from prismabuild.stage_move import stage_relative  # noqa: E402
+from prismabuild import staged_path
+  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -36,7 +37,7 @@ NAMES = ["alpha.bin", "beta.bin"]
 
 
 def _staged(stage: Path, mount: Path, name: str) -> Path:
-    return stage / stage_relative(f"{mount}/{name}", 0, SIZE,
+    return stage / staged_path.stage_relative(f"{mount}/{name}", 0, SIZE,
                                   mount_prefix=str(mount))
 
 
@@ -55,7 +56,7 @@ def fleet(tmp_path: Path, monkeypatch):
     queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     mount = tmp_path / "originals"
     mount.mkdir()
@@ -494,7 +495,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
 
     def available():
         occupied = sum(path.stat().st_size for path in stage.rglob("*")
-                       if path.is_file() and path.name != stage_release.STAGE_ROOT_MARKER)
+                       if path.is_file() and path.name != staged_path.STAGE_ROOT_MARKER)
         return 2 * storage_tiers.GIB + 4 - occupied
 
     monkeypatch.setattr(storage_tiers, "stage_dataset", lambda pool: {
@@ -565,7 +566,7 @@ def test_a_ranged_name_inside_a_ranged_name_still_pairs(fleet) -> None:
     nested = "nested.pbrange/0-5"
     (mount / "nested.pbrange").mkdir(parents=True, exist_ok=True)
     (mount / nested).write_bytes(good)
-    staged = stage / stage_relative(
+    staged = stage / staged_path.stage_relative(
         f"{mount}/{nested}", 0, SIZE, mount_prefix=str(mount))
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(good)
@@ -807,7 +808,7 @@ def test_apply_budget_includes_copy_verification_and_final_source_read(fleet):
 def test_a_nonzero_original_extent_is_proven(fleet):
     queue, stage, mount, quarantine, good = fleet
     (mount / "offset.bin").write_bytes(b"prefix" + good + b"suffix")
-    target = stage / stage_relative(
+    target = stage / staged_path.stage_relative(
         str(mount / "offset.bin"), 6, SIZE, mount_prefix=str(mount))
     target.parent.mkdir(parents=True)
     target.write_bytes(good)

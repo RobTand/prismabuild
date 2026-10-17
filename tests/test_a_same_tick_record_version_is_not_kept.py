@@ -34,6 +34,7 @@ from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 COARSE = kept_reads._COARSE_REALTIME
 TICK_NS = 1_000_000
@@ -172,14 +173,14 @@ def test_the_fragment_memo_rereads_a_fragment_filed_in_the_fence_tick(
     memo = kept_reads.CensusMemo()
 
     clock["now"] = os.stat(fragment).st_ctime_ns
-    document = stage_release._read_fragment(fragment, memo)
+    document = staged_path._read_fragment(fragment, memo)
     assert document["v"] == 1
     # Nor may a skip checkpoint be fenced on it (#1056 reads this version).
     assert memo.version_of(document) is None
 
     clock["now"] = None
     _replace_in_the_same_tick(monkeypatch, fragment, b'{"entries": {}, "v": 2}')
-    assert stage_release._read_fragment(fragment, memo)["v"] == 2
+    assert staged_path._read_fragment(fragment, memo)["v"] == 2
 
 
 def test_the_fragment_memo_keeps_a_fragment_older_than_the_fence(
@@ -191,9 +192,9 @@ def test_the_fragment_memo_keeps_a_fragment_older_than_the_fence(
     memo = kept_reads.CensusMemo()
 
     clock["now"] = os.stat(fragment).st_ctime_ns + TICK_NS
-    document = stage_release._read_fragment(fragment, memo)
+    document = staged_path._read_fragment(fragment, memo)
     assert memo.version_of(document) is not None
-    assert stage_release._read_fragment(fragment, memo) is document
+    assert staged_path._read_fragment(fragment, memo) is document
     assert memo.counts() == (1, 1)
 
 
@@ -208,11 +209,11 @@ def test_the_material_memo_rereads_a_sidecar_filed_in_the_fence_tick(
     memo = kept_reads.CensusMemo()
 
     clock["now"] = os.stat(path).st_ctime_ns
-    assert stage_release._read_own_material(tmp_path, "c", "m", memo) == {"v": 1}
+    assert staged_path._read_own_material(tmp_path, "c", "m", memo) == {"v": 1}
 
     clock["now"] = None
     _replace_in_the_same_tick(monkeypatch, path, b'{"v": 2}')
-    assert stage_release._read_own_material(tmp_path, "c", "m", memo) == {"v": 2}
+    assert staged_path._read_own_material(tmp_path, "c", "m", memo) == {"v": 2}
 
 
 def test_a_kept_history_entry_changed_in_the_fence_tick_is_derived_again(

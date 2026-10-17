@@ -52,6 +52,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 SIZE = 4096
@@ -76,7 +77,7 @@ class _World:
         self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             self.queue, tier_id=TIER, stage_root=self.stage) == "registered"
         self.cas = tmp_path / "cas"
         self.cas.mkdir()
@@ -91,14 +92,14 @@ class _World:
                 "sha256": hashlib.sha256(payload).hexdigest()}
 
     def destination(self, entry: dict[str, object]) -> Path:
-        path = self.stage / stage_move.stage_relative(
+        path = self.stage / staged_path.stage_relative(
             str(entry["path"]), 0, int(entry["bytes"]),
             mount_prefix=str(self.mount))
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def publisher(self, mover: str, consumer: str) -> stage_move._StagedPublisher:
-        return stage_move._StagedPublisher(
+    def publisher(self, mover: str, consumer: str) -> staged_path.StagedPublisher:
+        return staged_path.StagedPublisher(
             queue=self.queue, stage_root=self.stage, residency_root=self.root,
             mover_action_key=mover, manifest_sha256="a" * 64, tier_id=TIER,
             cas_root=str(self.cas), consumer_action_key=consumer)
@@ -191,7 +192,7 @@ def test_a_proof_holds_no_stage_ownership_lock(world, monkeypatch) -> None:
 
     monkeypatch.setattr(publisher, "_proof_search", observed)
     adopted = publisher.try_adopt(entry, world.destination(entry),
-                                  stage_move._origin_id_of(str(entry["path"])))
+                                  staged_path._origin_id_of(str(entry["path"])))
 
     assert answers == [True], (
         f"the stage ownership lock was held while proving: {answers}")
@@ -314,8 +315,8 @@ def _race(world: _World, monkeypatch, payloads: dict[str, bytes]):
     destination is counted: that is what "one owner" means on disk.
     """
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.01)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", BOUND_S)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.01)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', BOUND_S)
     name = "shared.bin"
     probe = world.entry(name, payloads["a"])
     destination = world.destination(probe)
@@ -343,7 +344,7 @@ def _race(world: _World, monkeypatch, payloads: dict[str, bytes]):
         try:
             result = publisher.publish(entry, destination, temporary,
                                        str(entry["sha256"]))
-        except stage_move._PublicationRefused as exc:
+        except staged_path.PublicationRefused as exc:
             outcomes[label] = exc
             return
         outcomes[label] = result
@@ -391,7 +392,7 @@ def test_a_racing_mover_with_other_bytes_is_refused_not_adopted(
     assert len(replaced) == 1, f"{len(replaced)} renames onto one name"
     won = [label for label in ("a", "b") if isinstance(outcomes[label], tuple)]
     lost = [label for label in ("a", "b")
-            if isinstance(outcomes[label], stage_move._PublicationRefused)]
+            if isinstance(outcomes[label], staged_path.PublicationRefused)]
     assert len(won) == 1 and len(lost) == 1, outcomes
     winner = outcomes[won[0]]
     assert destination.read_bytes() == _payload(

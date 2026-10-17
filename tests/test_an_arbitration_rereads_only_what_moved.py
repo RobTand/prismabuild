@@ -55,6 +55,7 @@ from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = 16
 SIZE = 64
@@ -304,8 +305,8 @@ def _assert_forest_listings(
 @pytest.fixture()
 def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     queue, stage, _cas = fleet
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", stale.GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', stale.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     bench_stage_adopt.build_forest(
         queue, stage, empty_dirs=4, small_dirs=3, big_fragments=[],
         produced_fragment_dirs=0)
@@ -425,7 +426,7 @@ def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
                              "stage_path": str(target), "bytes": SIZE,
                              "sha256": OLD_DIGEST,
                              "file_id": _identity(target)}})
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, target, copier)
     assert live_consumer[:12] in str(refused.value), str(refused.value)
     assert target.read_bytes() == OLD

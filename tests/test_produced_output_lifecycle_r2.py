@@ -27,6 +27,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import output_vocabulary, staged_path
 
 try:
     from prismabuild import reader_lease as rlc
@@ -339,7 +340,7 @@ def test_durable_quota_survives_stage_egress(tmp_path: Path) -> None:
     stage.mkdir()
     from prismabuild import stage_release
 
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
     out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     assert po.require_prewrite(
@@ -400,7 +401,7 @@ def test_damaged_batch_record_retains_quota(tmp_path: Path) -> None:
     # such): the origin file stays, only the metadata entries are
     # emptied. Quota must retain, never prove a vacuous absence. (The
     # filed record is read-only; chmod simulates disk-level damage.)
-    batch_file = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    batch_file = (queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                   / po.instance_namespace(instance) / "dmg.json")
     os.chmod(batch_file, 0o644)
     record = json.loads(batch_file.read_text())
@@ -420,7 +421,7 @@ def _commit_staged(queue: pool.PoolQueue, tmp_path: Path, template: dict,
 
     stage = tmp_path / f"stage-{tag}"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
     out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     origin = Path(str(po.validate_template(template)["output_prefix"]))
@@ -539,13 +540,13 @@ def test_strict_loader_mutations_refuse_without_side_effects(
             return False
 
     calls: list[str] = []
-    real_evict = stage_release.evict
+    real_evict = staged_path.evict
 
     def _spy(q, mover, **kw):
         calls.append(mover)
         return real_evict(q, mover, **kw)
 
-    monkeypatch.setattr(stage_release, "evict", _spy)
+    monkeypatch.setattr(staged_path, 'evict', _spy)
 
     # (a) non-mapping entry in the filed record.
     batch_a = _fresh("mut-a", "2" * 64)
@@ -595,7 +596,7 @@ def test_strict_loader_mutations_refuse_without_side_effects(
 
 def _damage_filed(queue: pool.PoolQueue, instance: dict, batch_id: str,
                   mutate) -> None:
-    path = (queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    path = (queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
             / po.instance_namespace(instance) / f"{batch_id}.json")
     os.chmod(path, 0o644)
     record = json.loads(path.read_text())
@@ -701,7 +702,7 @@ def test_full_nonempty_lifecycle(tmp_path: Path, monkeypatch) -> None:
         stage.mkdir()
         from prismabuild import stage_release
 
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             queue, tier_id=STAGE_TIER, stage_root=str(stage)) == "registered"
         out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
         payload = b"W" * BIG

@@ -129,17 +129,13 @@ import tempfile
 import time
 import uuid
 from prismabuild import tier_holdings
+from prismabuild import output_vocabulary, staged_path
 
 TEMPLATE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_template.v1"
 INSTANCE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_instance.v1"
 DESCRIPTOR_SCHEMA_V2 = "prismaquant.prismabuild.produced_output_descriptor.v2"
 BATCH_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_batch.v1"
 BATCH_MANIFEST_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_manifest.v1"
-#: The queue item's projection of the sealed declaration: which immutable
-#: template this action's tier demand was derived from. The runtime binds
-#: from this ref (filed body + live claim), never from a caller-supplied
-#: template object.
-PRODUCED_OUTPUT_REF_SCHEMA_V1 = "prismabuild.produced_output_ref.v1"
 #: The sealed params record that makes a RE-materialization's action key its
 #: own: the batch stays identical, so the PB-filed materialization generation
 #: is what distinguishes the successor's content-addressed mover/funding key
@@ -182,11 +178,6 @@ ORIGIN_CONSUMER_RELEASE_INDEX_SCHEMA_V1 = (
 #: not on the tier host (`stage_move.origin_reachability_diagnosis`). Spelled
 #: as data: this package imports no fleet tool.
 ORIGIN_UNREACHABLE_REFUSAL = "origin_unreachable"
-
-OUTPUT_TEMPLATES_SUBDIR = "produced-output-templates"
-OUTPUT_SCOPES_SUBDIR = "produced-output-scopes"
-OUTPUT_BATCHES_SUBDIR = "produced-output-batches"
-OUTPUT_FRAGMENTS_SUBDIR = "produced-output-fragments"
 #: One pointer per attempt of each template, ``<template_id>/<owner>.<nonce>``
 #: (#1053): how the attempts that may own an origin path are found without
 #: listing every owner's scopes. `declare_instance` files it before the
@@ -471,7 +462,7 @@ def template_sha256(template: Mapping[str, object]) -> str:
 
 def template_path(queue_root: str | Path, template: Mapping[str, object]) -> Path:
     checked = validate_template(template)
-    return (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    return (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
             / f"{checked['template_id']}.json")
 
 
@@ -555,9 +546,9 @@ def declared_template(queue, action_key: str) -> dict[str, object]:
     ref = item.get("produced_output")
     if not isinstance(ref, Mapping):
         raise ProducedOutputError("this action declares no produced-output template")
-    if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
+    if ref.get("schema") != output_vocabulary.PRODUCED_OUTPUT_REF_SCHEMA_V1:
         raise ProducedOutputError(
-            f"produced-output ref schema must be {PRODUCED_OUTPUT_REF_SCHEMA_V1!r}")
+            f"produced-output ref schema must be {output_vocabulary.PRODUCED_OUTPUT_REF_SCHEMA_V1!r}")
     template_id = ref.get("template_id")
     digest = ref.get("template_sha256")
     if (not isinstance(template_id, str) or not template_id
@@ -565,7 +556,7 @@ def declared_template(queue, action_key: str) -> dict[str, object]:
         raise ProducedOutputError("produced-output ref names no template")
     _hex64(digest, where="produced-output ref template_sha256")
     assert isinstance(digest, str)
-    path = (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    path = (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
             / f"{template_id}.json")
     # Bounded intake: filed bodies from this path are tiny envelopes; a
     # larger file at this name is foreign, never the declared template.
@@ -883,7 +874,7 @@ def instance_dir(queue_root: str | Path, instance: Mapping[str, object]) -> Path
     checked = validate_instance(instance)
     attempt = checked["owner_attempt"]
     assert isinstance(attempt, dict)
-    return (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    return (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
             / str(checked["owner_action_key"])
             / f"{checked['template_id']}.{attempt['nonce']}")
 
@@ -941,7 +932,7 @@ _PREFIX_REALPATHS: dict[str, str] = {}
 
 
 def _attempts_root(queue_root: str | Path) -> Path:
-    return (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    return (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
             / OUTPUT_TEMPLATE_ATTEMPTS_SUBDIR)
 
 
@@ -999,7 +990,7 @@ def _filed_templates(queue_root: str | Path) -> dict[str, dict[str, object]]:
     and an answer that leaves it out could miss an owner.
     """
 
-    directory = Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    directory = Path(queue_root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
     try:
         with os.scandir(directory) as iterator:
             listed = sorted((entry.name, entry.inode()) for entry in iterator
@@ -1165,7 +1156,7 @@ def _template_attempts(queue_root: str | Path, template_ids: Collection[str]
                         and not name.startswith(".")):
                     found.add((owner, template_id, nonce))
         return sorted(found)
-    scopes_root = Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    scopes_root = Path(queue_root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except FileNotFoundError:
@@ -1189,7 +1180,7 @@ def _template_attempts(queue_root: str | Path, template_ids: Collection[str]
 
 def _attempt_scope(queue_root: str | Path, owner: str, template_id: str,
                    nonce: str) -> Path:
-    return (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
+    return (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR / owner
             / f"{template_id}.{nonce}")
 
 
@@ -1222,7 +1213,7 @@ def _attempt_owned_paths(queue_root: str | Path, scope: Path,
                 instance = validate_instance(json.loads(
                     (scope / "instance.json").read_text()))
                 template = validate_template(json.loads(
-                    (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+                    (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
                      / f"{instance['template_id']}.json").read_text()))
             except (OSError, ValueError) as exc:
                 raise ProducedOutputError(
@@ -2239,7 +2230,7 @@ def _delete_funding(path: Path) -> None:
 def output_fragment_root(residency_root: str | Path) -> Path:
     """The output material namespace root, beside input fragments."""
 
-    return Path(residency_root) / OUTPUT_FRAGMENTS_SUBDIR
+    return Path(residency_root) / output_vocabulary.OUTPUT_FRAGMENTS_SUBDIR
 
 
 def batch_namespace(instance: Mapping[str, object], batch_id: str,
@@ -2409,7 +2400,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
     owed: dict[str, int] = {}
     unknown: list[dict[str, str]] = []
     bounded: list[str] = []
-    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    scopes_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except FileNotFoundError:
@@ -2418,7 +2409,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
         return {"gib": None, "owners": {},
                 "unknown": [{"owner": "", "error": f"scopes unreadable: {exc}"}],
                 "bounded": []}
-    templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    templates_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
     for owner in owners:
         try:
             if not pool_mod.record_store.value_or_raise(
@@ -4167,7 +4158,7 @@ def commit_batch(queue, instance: Mapping[str, object],
                 for d in sealed}),
             "unix": time.time(),
         }
-        batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+        batch_dir = (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                      / instance_namespace(checked_instance))
         batch_dir.mkdir(parents=True, exist_ok=True)
         batch_path = batch_dir / f"{batch_id}.json"
@@ -4484,7 +4475,7 @@ def commit_origin_batch(queue, instance: Mapping[str, object],
                 batch_ns=batch_ns, manifest_digest=manifest_digest, tier=tier,
                 class_bytes=class_bytes, sealed=sealed,
                 origin_identity=origin_identity, lifetime=lifetime)
-            batch_dir = (Path(queue.root) / "residency" / OUTPUT_BATCHES_SUBDIR
+            batch_dir = (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                          / instance_namespace(checked_instance))
             batch_dir.mkdir(parents=True, exist_ok=True)
             batch_path = batch_dir / f"{batch_id}.json"
@@ -5829,14 +5820,14 @@ def _origin_ref_scope(queue_root: str | Path, checked_ref: Mapping[str, str]
     `ProducedOutputError` naming what is missing or does not match.
     """
 
-    scope_dir = (Path(queue_root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    scope_dir = (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
                  / checked_ref["owner_action_key"]
                  / f"{checked_ref['template_id']}.{checked_ref['owner_nonce']}")
     try:
         instance = validate_instance(json.loads(
             (scope_dir / "instance.json").read_text()))
         template = validate_template(json.loads(
-            (Path(queue_root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+            (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
              / f"{checked_ref['template_id']}.json").read_text()))
     except FileNotFoundError:
         raise ProducedOutputError(
@@ -6296,7 +6287,7 @@ def _load_batch_record(queue_root: str | Path,
 
     attempt = checked_instance["owner_attempt"]
     assert isinstance(attempt, dict)
-    batch_file = (Path(queue_root) / "residency" / OUTPUT_BATCHES_SUBDIR
+    batch_file = (Path(queue_root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                   / instance_namespace(checked_instance)
                   / f"{batch_id}.json")
     try:
@@ -7013,7 +7004,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     # leaves the old materialization holding its own credit.
     if in_process:
         assert stage_release is not None
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, target_mover, consumer_action_key=consumer,
             stage_root=str(stage_root), residency_root=str(residency_root))
         if not receipt.get("complete"):
@@ -7181,7 +7172,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
                                  "deferred": True}
             continue
         try:
-            receipt = stage_release.evict(
+            receipt = staged_path.evict(
                 queue, str(selection["target_mover"]),
                 consumer_action_key=str(selection["consumer"]),
                 stage_root=str(stage_root), residency_root=str(residency_root))
@@ -7980,7 +7971,7 @@ def dead_input_dependency(
         return None
     try:
         raw = json.loads(
-            (Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR / owner
+            (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR / owner
              / f"{template_id}.{nonce}" / "instance.json").read_text())
     except (OSError, ValueError):
         return None
@@ -7989,7 +7980,7 @@ def dead_input_dependency(
     try:
         instance = validate_instance(dict(raw))
         template = validate_template(json.loads(
-            (Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+            (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
              / f"{instance['template_id']}.json").read_text()))
     except (OSError, ValueError, ProducedOutputError):
         return None
@@ -9219,8 +9210,8 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                 "held_by_unknown": held_by_unknown,
                 "unreadable": unreadable}
 
-    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
-    templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    scopes_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
+    templates_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except FileNotFoundError:
@@ -9724,12 +9715,12 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
     """
 
     events: list[dict[str, object]] = []
-    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    scopes_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except OSError:
         return events
-    templates_root = Path(queue.root) / "residency" / OUTPUT_TEMPLATES_SUBDIR
+    templates_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
     reads = _TickReads(queue, trust=trust)
     indexed = True
     # What unreleased deferred consumers will read (#913), read once and only
@@ -10330,7 +10321,7 @@ def output_scope_tick(queue, tiers: Mapping[str, object]) -> list[dict[str, obje
     from prismabuild import residency_map as map_mod
 
     events: list[dict[str, object]] = []
-    scopes_root = Path(queue.root) / "residency" / OUTPUT_SCOPES_SUBDIR
+    scopes_root = Path(queue.root) / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR
     try:
         owners = _scope_owners(scopes_root)
     except OSError:

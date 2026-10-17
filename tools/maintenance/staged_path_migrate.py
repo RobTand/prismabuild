@@ -25,10 +25,10 @@ STAGED_MODULES = {
 }
 STAGED_RANGES = {
     "stage_release": ((138, 187), (239, 239), (253, 376), (408, 3413),
-                      (3470, 3515), (4496, 4529), (4812, 6218)),
-    "stage_move": ((83, 83), (91, 176), (344, 2944)),
+                      (3470, 3515), (4496, 4529), (4812, 6239)),
+    "stage_move": ((83, 83), (91, 176), (343, 2944), (5097, 5115)),
     "tier_loop": ((2530, 2802),),
-    "produced_output": ((186, 189),),
+    "produced_output": ((142, 142), (186, 189)),
 }
 STAGED_PUBLIC = {
     "_StagedPublisher": "StagedPublisher", "_PublicationRefused": "PublicationRefused",
@@ -74,6 +74,11 @@ def staged_destination(module):
 def staged_references(source, selected, *, local=None):
     """Rewrite imports, calls, fault seams and embedded programs without reformatting."""
     tree = ast.parse(source)
+    docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                  if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                  and n.body and isinstance(n.body[0], ast.Expr)
+                  and isinstance(n.body[0].value, ast.Constant)
+                  and isinstance(n.body[0].value.value, str)}
     lines = source.splitlines(keepends=True)
     offsets = [0]
     for line in lines:
@@ -82,6 +87,8 @@ def staged_references(source, selected, *, local=None):
     needs = set()
     aliases = {m: m for m in selected}
     bare = {}
+    dotted_patterns = {m: re.compile(rf"\b{m}\.({'|'.join(map(re.escape, sorted(names, key=len, reverse=True)))})\b")
+                       for m, names in selected.items() if names}
 
     def edit(node, text):
         edits.append((offsets[node.lineno - 1] + node.col_offset,
@@ -130,12 +137,11 @@ def staged_references(source, selected, *, local=None):
                     destination = staged_destination(module)
                     edit(target, destination); edit(key, repr(STAGED_PUBLIC.get(key.value, key.value)))
                     needs.add(destination)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
             value = node.value
-            for module, symbols in selected.items():
-                for symbol in symbols:
-                    value = re.sub(rf"\b{module}\.{re.escape(symbol)}\b",
-                                   f"{staged_destination(module)}.{STAGED_PUBLIC.get(symbol, symbol)}", value)
+            for module, pattern in dotted_patterns.items():
+                if module + "." in value:
+                    value = pattern.sub(lambda match: f"{staged_destination(module)}.{STAGED_PUBLIC.get(match[1], match[1])}", value)
             if "from prismabuild" in value and "\n" in value:
                 try:
                     value = staged_references(value, selected)
@@ -143,11 +149,12 @@ def staged_references(source, selected, *, local=None):
                     pass
             if value != node.value:
                 edit(node, repr(value))
-                needs.update(staged_destination(m) for m in selected
-                             if f"{staged_destination(m)}." in value)
     unique = {(a, b): text for a, b, text in edits}
     for (a, b), text in sorted(unique.items(), reverse=True):
         source = source[:a] + text + source[b:]
+    present = {a.name for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "prismabuild"
+               for a in n.names if a.asname in (None, a.name)}
+    needs -= present
     if needs:
         tree = ast.parse(source)
         at = 1
@@ -265,13 +272,14 @@ import time
 from prismabuild import core as pb, kept_reads, manifest_layout, movement_actions, pool
 from prismabuild import prewarm_loop, reader_lease, residency_map, residency_plan, storage_tiers, tier_holdings
 from prismabuild import output_vocabulary
+from prismabuild import progress as pb_progress
 from . import data_manifest as manifest_codec
 from prismabuild.stage_marks import STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, source_identity
 '''
         joined = header + "\n".join(owner)
         joined = re.sub(r"        from prismabuild.stage_release import (_claimed_paths|_unended_owner)\n", "", joined)
         joined = re.sub(r"    from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1\n", "", joined)
-        joined = joined.replace('PRODUCED_OUTPUT_REF_SCHEMA_V1', '"prismabuild.produced_output_ref.v1"')
+        joined = joined.replace('PRODUCED_OUTPUT_REF_SCHEMA_V1', 'output_vocabulary.PRODUCED_OUTPUT_REF_SCHEMA_V1')
         for module, names in selected.items():
             for name in names:
                 if module == "produced_output":
@@ -282,6 +290,17 @@ from prismabuild.stage_marks import STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, sourc
                 token = token._replace(string=STAGED_PUBLIC[token.string])
             tokens.append(token)
         joined = tokenize.untokenize(tokens)
+        seen = {}
+        duplicate_lines = set()
+        for node in ast.parse(joined).body:
+            if isinstance(node, ast.FunctionDef) and node.name == "own_action_key":
+                form = ast.dump(node, include_attributes=False)
+                if node.name in seen:
+                    if seen[node.name] != form:
+                        raise SystemExit("the two own_action_key bodies differ")
+                    duplicate_lines.update(range(node.lineno - 1, node.end_lineno))
+                seen[node.name] = form
+        joined = "".join(line for i, line in enumerate(joined.splitlines(keepends=True)) if i not in duplicate_lines)
         (args.root / STAGED_OWNER).write_text(joined)
         changed = [STAGED_OWNER, "src/prismabuild/output_vocabulary.py"]
         for path, source in sources.items():

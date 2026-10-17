@@ -49,6 +49,7 @@ from test_pbrun_detach import _checkout  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     KIND, TIER, _descriptor, _prewrite, _queue, _template,
 )
+from prismabuild import output_vocabulary, staged_path
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
@@ -130,7 +131,7 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     instance, path, committed = _commit(queue, template, "handoff",
                                         payload=payload)
     assert committed["lifetime"] == CONSUMED
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    record = json.loads((queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                          / po.instance_namespace(instance) / "b1.json"
                          ).read_text())
     assert record["lifetime"] == CONSUMED
@@ -500,7 +501,7 @@ def _cycle_lines(queue: pool.PoolQueue, stage: Path) -> list[dict]:
 
     queue.tier(TIER).mint({KIND: 8})
     stage.mkdir(parents=True, exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         tier_loop.cycle(queue, host="sparky", source_pool="storage_pool",
@@ -550,7 +551,7 @@ def test_a_retained_batch_survives_and_is_filed_as_912_filed_it(
     instance, path, committed = _commit(queue, template, "retained",
                                         lifetime=po.ORIGIN_LIFETIME_RETAIN)
     assert "lifetime" not in committed
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    record = json.loads((queue.root / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                          / po.instance_namespace(instance) / "b1.json"
                          ).read_text())
     assert "lifetime" not in record
@@ -630,4 +631,4 @@ def test_a_submission_without_declared_batches_files_nothing(
     assert len(prepared) == 1
     assert "produced_output_batches" not in prepared[0]["template"], (
         "the frozen template is the one it always was")
-    assert not (queue.root / "residency" / po.OUTPUT_SCOPES_SUBDIR).exists()
+    assert not (queue.root / "residency" / output_vocabulary.OUTPUT_SCOPES_SUBDIR).exists()

@@ -36,6 +36,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 TIER = "prismabuild-stage:dl380g10"
@@ -284,7 +285,7 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     plan = _plan(queue)
     _claim_consumer(queue, plan)
     ahead = _hexkey("mover3")
@@ -304,7 +305,7 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
 def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> None:
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     orphan = _hexkey("orphan")
     ledger = queue.tier(TIER)
     assert ledger.take(orphan, {'stage_gib': 2})

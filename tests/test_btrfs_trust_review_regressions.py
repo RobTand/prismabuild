@@ -23,6 +23,7 @@ from prismabuild import kept_reads
 from prismabuild import stage_release  # noqa: E402
 import test_btrfs_subvolume_records_are_retained as observations  # noqa: E402
 import test_stale_material_done_owner_retires as owner  # noqa: E402
+from prismabuild import staged_path
 
 # Re-export the existing supported queue fixture, without calling its body.
 fleet = owner.fleet
@@ -152,9 +153,9 @@ def warm_checkpoint(fleet, monkeypatch):
     facts = _CheckpointKernelFacts(
         stage, root, fragment, material, {Path(name) for name in parents}, monkeypatch)
     index = kept_reads.CensusIndex()
-    key = stage_release._skip_checkpoint_key(queue, root, stage, owner.TIER,
+    key = staged_path._skip_checkpoint_key(queue, root, stage, owner.TIER,
                                              consumer, mover)
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
     def sweep():
         return stage_release.sweep_dead_owner_fragments(
@@ -163,12 +164,12 @@ def warm_checkpoint(fleet, monkeypatch):
 
     try:
         first = [receipt for receipt in sweep()
-                 if receipt.get("event") == stage_release.STALE_MENTION_EVENT
+                 if receipt.get("event") == staged_path.STALE_MENTION_EVENT
                  and receipt.get("action_key") == mover]
         assert len(first) == 1
         assert first[0]["cacheable"] is True, json.dumps(first[0], sort_keys=True)
         assert first[0]["entries_pruned"] == first[0]["entries_unlinked"] == 0
-        assert stage_release._skip_checkpoint_hit(
+        assert staged_path._skip_checkpoint_hit(
             key,
             fragment,
             material,
@@ -176,7 +177,7 @@ def warm_checkpoint(fleet, monkeypatch):
         )
         assert sweep() == [], "a real inferred checkpoint must warm before trust loss"
         assert (index.stale_skipped, index.stale_censused) == (1, 1)
-        files = {str(path): stage_release._path_version(path)
+        files = {str(path): staged_path._path_version(path)
                  for path in (fragment, material)}
         directories = {name: _observed_directory_identity(name) for name in parents}
         assert all(version is not None for version in (*files.values(), *directories.values()))
@@ -186,7 +187,7 @@ def warm_checkpoint(fleet, monkeypatch):
             "sweep": sweep, "mover": mover, "stage": stage,
         }
     finally:
-        stage_release.reset_skip_checkpoints()
+        staged_path.reset_skip_checkpoints()
         facts.close()
 
 
@@ -194,8 +195,8 @@ def _observe_trust_loss(warm, loss):
     warm["kernel"].lose_trust(loss)
     # Bare versions have not changed; the refusal must be about current trust.
     for path, version in warm["files"].items():
-        assert stage_release._path_version(path) == version
-        bare, trusted = stage_release._fenced_path_version(
+        assert staged_path._path_version(path) == version
+        bare, trusted = staged_path._fenced_path_version(
             path,
             kept_reads.filesystem_trust.file_fence(),
             trust=kept_reads.filesystem_trust,
@@ -218,25 +219,25 @@ def _observe_trust_loss(warm, loss):
 def test_inferred_skip_checkpoint_refuses_current_trust_loss(warm_checkpoint, loss):
     warm = warm_checkpoint
     _observe_trust_loss(warm, loss)
-    assert not stage_release._skip_checkpoint_hit(
+    assert not staged_path._skip_checkpoint_hit(
         warm["key"], warm["fragment"], warm["material"], trust=kept_reads.filesystem_trust), (
         "unchanged bare file/directory versions cannot preserve an inferred "
         f"checkpoint after {loss}")
-    assert stage_release.skip_checkpoint_usage()["checkpoints"] == 0
+    assert staged_path.skip_checkpoint_usage()["checkpoints"] == 0
 
 
 @pytest.mark.parametrize("loss", LOSSES)
 def test_dead_owner_coherency_rereads_after_inferred_checkpoint_trust_loss(
         warm_checkpoint, monkeypatch, loss):
     warm = warm_checkpoint
-    real_prune = stage_release.prune_stale_mentions
+    real_prune = staged_path.prune_stale_mentions
     rescans = []
 
     def observed_prune(*args, **kwargs):
         rescans.append(args[1])
         return real_prune(*args, **kwargs)  # observe, never replace the verdict
 
-    monkeypatch.setattr(stage_release, "prune_stale_mentions", observed_prune)
+    monkeypatch.setattr(staged_path, 'prune_stale_mentions', observed_prune)
     _observe_trust_loss(warm, loss)
     receipts = warm["sweep"]()
     assert rescans == [warm["mover"]], (
@@ -245,7 +246,7 @@ def test_dead_owner_coherency_rereads_after_inferred_checkpoint_trust_loss(
         f"stale_censused={warm['index'].stale_censused}")
     assert (warm["index"].stale_skipped, warm["index"].stale_censused) == (1, 2)
     found = [receipt for receipt in receipts
-             if receipt.get("event") == stage_release.STALE_MENTION_EVENT
+             if receipt.get("event") == staged_path.STALE_MENTION_EVENT
              and receipt.get("action_key") == warm["mover"]]
     assert len(found) == 1
     assert found[0]["cacheable"] is False, found[0]

@@ -66,6 +66,7 @@ from prismabuild import pool  # noqa: E402
 import bench_tier_cycle  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = bench_tier_cycle.TIER
 HOST = bench_tier_cycle.HOST
@@ -128,7 +129,7 @@ def run(args) -> dict[str, object]:
         stage = scratch / "stage"
         stage.mkdir()
         queue.tier(TIER).mint({'stage_gib': 700})
-        stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+        staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
         discover = _discover(stage)
 
         # The replaced loop's last cycle: its record is what is on disk.

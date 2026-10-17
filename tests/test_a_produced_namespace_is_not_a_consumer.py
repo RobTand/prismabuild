@@ -42,6 +42,7 @@ from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 import test_produced_output_lifecycle_r2 as produced  # noqa: E402
+from prismabuild import output_vocabulary, staged_path
 
 TIER = produced.STAGE_TIER
 KIND = produced.STAGE_BARE
@@ -72,7 +73,7 @@ def _legacy_fragment(queue: pool.PoolQueue, stage: Path, staged: Path) -> None:
 
 
 def _register(queue: pool.PoolQueue, stage: Path) -> None:
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
 
 
@@ -186,12 +187,12 @@ def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
 def test_both_fragment_layouts_are_attributed(world) -> None:
     """The attribution census reads the produced namespace, not just skips it."""
 
-    both = stage_release.attributed_stage_paths(
+    both = staged_path.attributed_stage_paths(
         world.queue, wanted={LEGACY_MOVER, PRODUCED_MOVER})
     assert both == {str(world.legacy_path), str(world.produced_path)}
-    assert stage_release.attributed_stage_paths(
+    assert staged_path.attributed_stage_paths(
         world.queue, wanted={LEGACY_MOVER}) == {str(world.legacy_path)}
-    assert stage_release.attributed_stage_paths(
+    assert staged_path.attributed_stage_paths(
         world.queue, wanted={PRODUCED_MOVER}) == {str(world.produced_path)}
 
 
@@ -211,7 +212,7 @@ def test_a_produced_fragment_protects_a_shared_stage_path(world) -> None:
                 "stage_path": str(world.legacy_path), "bytes": LEGACY_BYTES,
                 "offset": 0, "sha256": "4" * 64}}})
 
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.queue.root / pool.record_store.RESIDENCY, {str(world.legacy_path)},
         except_consumer=LEGACY_CONSUMER, except_mover=LEGACY_MOVER)
 
@@ -224,7 +225,7 @@ def test_the_walked_root_is_the_exclusion_namespace(world) -> None:
 
     # A base-store walk: the nested produced fragment is another namespace
     # domain, so naming its key as the exception must not drop its proof.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.queue.root / pool.record_store.RESIDENCY, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
@@ -232,7 +233,7 @@ def test_the_walked_root_is_the_exclusion_namespace(world) -> None:
         str(world.produced_path): {(world.namespace, PRODUCED_MOVER)}}
 
     # The produced store's own child is that mover's self, and is excluded.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
@@ -256,7 +257,7 @@ def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
 
     # Excluding the produced mover's own key leaves the legacy co-owner of
     # the same physical staged path fully protected.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
@@ -264,7 +265,7 @@ def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
 
     # And naming the legacy key as the exception from the produced root does
     # not drop it either: it is not filed in the walked root's namespace.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=co_consumer, except_mover=co_mover)
     assert taint == []
@@ -318,7 +319,7 @@ def test_a_symlinked_produced_container_taints_instead_of_recursing(world) -> No
     """A link back into the store is unknown ownership, never a walk."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
+    (world.out_base / output_vocabulary.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
         "..", target_is_directory=True)
 
     events = _sweep(world.queue, world.stage)
@@ -336,7 +337,7 @@ def test_a_nested_produced_container_is_unknown(world) -> None:
     """One produced container, at the base store; a second is not a layout."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
+    (world.out_base / output_vocabulary.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
 
     events = _sweep(world.queue, world.stage)
 
@@ -401,7 +402,7 @@ def test_a_misfiled_mover_cannot_vanish_as_self(world) -> None:
     # The valid record still vouches, and the mismatched duplicate is
     # reported rather than dropped; naming the mover as the exception must
     # not make the misfiled record vanish.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert any("another mover" in item for item in taint), taint

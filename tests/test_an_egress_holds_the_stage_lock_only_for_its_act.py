@@ -78,6 +78,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -162,7 +163,7 @@ def _publisher(pool_root: str, stage: str, root: str, index: int,
     """One real publisher: first publication of its own fresh entries."""
 
     queue = pool.PoolQueue(Path(pool_root))
-    publisher = stage_move._StagedPublisher(
+    publisher = staged_path.StagedPublisher(
         queue=queue, stage_root=stage, residency_root=root,
         mover_action_key=_key(f"publisher-{index}"),
         manifest_sha256=_key(f"publisher-manifest-{index}"), tier_id=TIER,
@@ -193,7 +194,7 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
     stage = tmp_path / "stage"
     stage.mkdir()
     stage = stage.resolve()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     root = queue.root / pool.record_store.RESIDENCY
     _land_range(queue, stage, root)
@@ -266,7 +267,7 @@ def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
     queue.stage_ownership_lock = measured  # type: ignore[method-assign]
     try:
         began = time.monotonic()
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, LANDED_MOVER, consumer_action_key=LANDED_CONSUMER,
             stage_root=str(stage), reason="beyond-horizon", whole=True)
         ended = time.monotonic()

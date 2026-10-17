@@ -37,6 +37,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 NAMES = base.NAMES
@@ -190,7 +191,7 @@ def test_the_claim_census_reads_a_rate_only_claim_as_no_copy(
     queue, _stage, cas = fleet
     _claim_export(queue, cas, resources=resources)
 
-    paths, tainted = stage_release._claimed_paths(queue, TIER)
+    paths, tainted = staged_path.claimed_paths(queue, TIER)
 
     assert tainted == []
     assert paths == set()

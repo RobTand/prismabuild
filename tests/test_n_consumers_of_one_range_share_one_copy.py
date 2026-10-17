@@ -49,6 +49,7 @@ from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     GIB, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _row, _tier_record)
+from prismabuild import staged_path
 
 MANIFEST = _hexkey("1026shared")
 FIRST = _hexkey("1026first")
@@ -416,7 +417,7 @@ def test_a_dead_sharers_eviction_keeps_the_range_for_the_live_one(
     _fan_out(queue, stage)
     _fail(queue, SECOND)
 
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         queue, movers[0], consumer_action_key=SECOND, stage_root=str(stage),
         reason="dead-owner", whole=True)
 

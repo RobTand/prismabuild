@@ -9,6 +9,7 @@ from test_canary_leg3_staged_read import (
     CONSUMER, _build_fleet, _child_env, leg3, pool, reader_lease,
 )
 from prismabuild import stage_release
+from prismabuild import staged_path
 
 
 def _configure(monkeypatch, fleet):
@@ -20,7 +21,7 @@ def _configure(monkeypatch, fleet):
             monkeypatch.delenv(name)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    stage_release.register_stage_root(
+    staged_path.register_stage_root(
         fleet.queue, stage_root=str(fleet.stage), tier_id='prismabuild-stage:testbox')
 
 
@@ -38,7 +39,7 @@ def test_each_descriptor_is_pinned_against_egress_until_it_is_closed(tmp_path, m
         held = (queue.root / pool.record_store.RESIDENCY / reader_lease.LEASES_SUBDIR
                 / CONSUMER / (pin['pin_id'] + '.lease.json'))
         assert held.is_file(), 'reader ref missing while its fd is live'
-        result = stage_release.evict(
+        result = staged_path.evict(
             queue, f'{index+1:064x}', consumer_action_key=CONSUMER,
             stage_root=str(fleet.stage))
         assert result['entries_deleted'] == 0, result

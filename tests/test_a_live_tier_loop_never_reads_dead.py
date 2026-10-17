@@ -55,6 +55,7 @@ from prismabuild import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 
 import r13_1053_replay as r13  # noqa: E402
+from prismabuild import staged_path
 
 #: The bound both readers apply to the tier record's age.
 BOUND_S = pool.OFFER_TIMEOUT_S
@@ -140,8 +141,8 @@ class _Loop:
 
     def _charge(self, monkeypatch: pytest.MonkeyPatch) -> None:
         output_root = po.OUTPUT_FRAGMENTS_SUBDIR
-        real_evict = stage_release.evict
-        real_prune = stage_release.prune_stale_mentions
+        real_evict = staged_path.evict
+        real_prune = staged_path.prune_stale_mentions
 
         def evict(queue, mover, *args, **kwargs):
             retiring = Path(str(kwargs.get("residency_root") or "")).name == output_root
@@ -162,8 +163,8 @@ class _Loop:
             finally:
                 self.sample()
 
-        monkeypatch.setattr(stage_release, "evict", evict)
-        monkeypatch.setattr(stage_release, "prune_stale_mentions", prune)
+        monkeypatch.setattr(staged_path, 'evict', evict)
+        monkeypatch.setattr(staged_path, 'prune_stale_mentions', prune)
 
     def age(self) -> float:
         record = json.loads(self.queue.records.tier_record_path(bench.TIER).read_text())
@@ -271,7 +272,7 @@ def test_a_record_written_between_steps_carries_the_minted_content(
 def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
     loop = _Loop(tmp_path, monkeypatch)
     seen: dict[str, object] = {}
-    real_prune = stage_release.prune_stale_mentions
+    real_prune = staged_path.prune_stale_mentions
 
     def stalled(*args, **kwargs):
         # The first census unit hangs past the bound: no step completes, so
@@ -290,7 +291,7 @@ def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
                 bench.TIER).read_text())["announced_unix"] != stamp
         return real_prune(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "prune_stale_mentions", stalled)
+    monkeypatch.setattr(staged_path, 'prune_stale_mentions', stalled)
     loop.cycle()
     print("liveness-evidence " + json.dumps({
         "test": "hung", "bound_s": BOUND_S,

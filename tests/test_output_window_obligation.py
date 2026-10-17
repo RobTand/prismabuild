@@ -35,6 +35,7 @@ import test_a_resident_range_is_adopted_rather_than_recopied as adopted  # noqa:
 import test_produced_output_lifecycle_r2 as produced  # noqa: E402
 import test_window_progress_protection as protection  # noqa: E402
 from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 TIER = produced.STAGE_TIER
 KIND = produced.STAGE_BARE
@@ -269,7 +270,7 @@ def test_the_relief_covers_the_owed_window(tmp_path: Path, monkeypatch,
     queue.tier(TIER).mint({'stage_gib': 6})
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     for ordinal in (0, 1):
         adopted._stage_range(queue, mover=adopted._hexkey(f"stalemover{ordinal}"),
                              consumer="8" * 64, stage=stage, ordinal=ordinal,

@@ -89,6 +89,7 @@ from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = bench_stage_adopt.TIER
 HOST = "dl380g10"
@@ -617,7 +618,7 @@ def run_cycles(args) -> int:
             if isinstance(held, (int, float)):
                 swept["lock_held_s"] = swept.get("lock_held_s", 0.0) + held
                 swept["holds"] = swept.get("holds", 0) + 1
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT:
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT:
                 swept["stale_receipts"] = swept.get("stale_receipts", 0) + 1
         return out
 
@@ -848,7 +849,7 @@ def main(argv: list[str] | None = None) -> int:
     queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     shape = build_queue(queue, stage, args)

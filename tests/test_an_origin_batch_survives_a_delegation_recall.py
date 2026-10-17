@@ -50,6 +50,7 @@ from test_an_export_survives_a_delegation_recall import (  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     _descriptor, _prewrite, _queue, _template,
 )
+from prismabuild import output_vocabulary
 
 _isolated_synthetic_launch_context = retirement.fx._isolated_synthetic_launch_context
 
@@ -58,7 +59,7 @@ RECALLS = pytest.mark.parametrize("recall", [_recall_ctime, _recall_mtime],
 
 
 def _record_bytes(queue, instance, batch_id: str = "b1") -> bytes:
-    return (Path(queue.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    return (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
             / po.instance_namespace(instance) / f"{batch_id}.json").read_bytes()
 
 
