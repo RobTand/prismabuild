@@ -47,7 +47,7 @@ import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild.queue_publication import RowPublication  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import test_pbrun_residency_stage_submission as submission  # noqa: E402
 import test_the_ram_window_publishes_only_what_the_tmpfs_can_hold as ram_window  # noqa: E402

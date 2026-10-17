@@ -149,7 +149,7 @@ def test_the_file_server_declares_the_tiers_role() -> None:
 def test_the_tiers_role_arguments_are_ones_the_loop_accepts() -> None:
     """A role config the script refuses is a loop that dies on every respawn."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     roles = dict(supervise.declared_roles("dl380g10"))
     # Drive the real entry point far enough to parse, then stop: --once would
