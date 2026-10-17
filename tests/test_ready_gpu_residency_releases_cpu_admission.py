@@ -8,9 +8,12 @@ import sys
 
 import pytest
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
+
 from prismabuild import (
     adaptive_gpu, candidate_policy, capability_eligibility, contracts,
-    core as pb, pool, residency_map, residency_plan, storage_tiers,
+    core as pb, pool, residency_map, residency_plan, storage_tiers, stage_release,
 )
 from prismabuild import data_manifest as manifest_codec
 from test_measurement_drains_gpu_backfill import (
@@ -20,8 +23,8 @@ from test_pbrun_detach import _checkout
 
 import pbrun
 import stage_move
-import stage_release
 import tier_loop
+from submission_support import patch_store
 
 fleet = fleet_fixture
 HOST = "sparklina"
@@ -142,7 +145,7 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
     queue.announce_tier({"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": TIER, "host": HOST, "tier": "stage", "mountpoint": str(stage),
         "mover_python": sys.executable, "mover_tools_root": str(Path(pbrun.__file__).parent)})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path, runtime_root=ROOT)
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(work),
         "--detach", "--tag", HOST, "--gpu", "--cpus", "4", "--demand", "mem_gb=104",
         "--data-manifest", str(manifest_path), "--residency", "stage",
