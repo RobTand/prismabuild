@@ -62,15 +62,15 @@ def test_a_reading_that_cannot_be_taken_is_none_not_empty() -> None:
 
 def test_the_offer_carries_the_addresses_only_when_they_were_read(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    addresses=["10.100.98.1", "192.168.1.180", "10.100.98.1"])
-    record = json.loads((queue.root / pool.WORKERS / "sparky.json").read_text())
+    record = json.loads((queue.root / pool.record_store.WORKERS / "sparky.json").read_text())
     assert record["addresses"] == ["10.100.98.1", "192.168.1.180"]
 
     queue.announce(host="older", tags=["gb10"], has_gpu=True)
-    record = json.loads((queue.root / pool.WORKERS / "older.json").read_text())
+    record = json.loads((queue.root / pool.record_store.WORKERS / "older.json").read_text())
     assert "addresses" not in record
 
 

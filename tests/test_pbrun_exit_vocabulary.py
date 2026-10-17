@@ -44,7 +44,7 @@ def _failed_record(root: Path, *, returncode: int) -> pool.PoolQueue:
     """A pull-queue ``failed/`` ending whose launcher exited ``returncode``."""
 
     queue = pool.PoolQueue(root)
-    directory = root / pool.FAILED
+    directory = root / pool.record_store.FAILED
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{KEY}.json").write_text(json.dumps({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,

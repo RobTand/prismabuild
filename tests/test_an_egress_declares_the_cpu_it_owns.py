@@ -194,7 +194,7 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tiers = {"preferred": [0], "fallback": [1]}
     staged = _seal(tmp_path, queue)
     cpu_sampler = _idle_two_cpu_host(monkeypatch)
@@ -217,7 +217,7 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     queue.publish(**unbounded)
     assert queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
                        adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
-    assert queue.item_path(pool.READY, unbounded["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, unbounded["action_key"]).exists()
 
 
 def test_the_egress_keeps_no_tier_demand_and_its_own_retry_policy(
@@ -232,7 +232,7 @@ def test_the_egress_keeps_no_tier_demand_and_its_own_retry_policy(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     row = staged["plan"]["phases"][0]["egress_row"]
     assert set(row["resources"]) == {"cpu", "mem_gb"}, row["resources"]
@@ -247,7 +247,7 @@ def test_the_ram_egress_declares_one_cpu_too(tmp_path, monkeypatch):
     """The ram tier's release node (#640) is an egress of the same shape."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue, ram=True, monkeypatch=monkeypatch)
     phase = staged["plan"]["phases"][0]
     assert "ram_egress_row" in phase, "the ram leg must seal for this test"
@@ -271,7 +271,7 @@ def test_the_egress_row_carries_the_cpu_on_the_sealed_body(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     row = staged["plan"]["phases"][0]["egress_row"]
     key = str(row["action_key"])

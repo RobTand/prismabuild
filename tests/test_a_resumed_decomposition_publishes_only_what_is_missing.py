@@ -130,7 +130,7 @@ def test_a_resumed_campaign_publishes_only_the_children_that_are_missing(
     # The state a campaign dies in: the index and most of the children are
     # published, one is not.
     missing = str(first[0]["action_key"])
-    (queue.root / pool.READY / f"{missing}.json").unlink()
+    (queue.root / pool.record_store.READY / f"{missing}.json").unlink()
 
     _refuse_to_partition(monkeypatch)
     second = _decompose(request)
@@ -294,7 +294,7 @@ def test_a_plan_no_box_can_run_publishes_no_child(
     published = tmp_path / "cas" / dc.DECOMPOSITIONS
     assert list(published.rglob("plan.json")), "the cut is pure; publish it"
     assert not list(published.rglob("publication.json"))
-    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    assert not list((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
 
 
 def test_one_commit_in_two_places_is_one_parent(

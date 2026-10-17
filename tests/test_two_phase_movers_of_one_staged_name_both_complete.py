@@ -122,13 +122,13 @@ def _seal_claim(queue: pool.PoolQueue, cas: Path, mover: str, digest: str,
     path = cas / "requests" / mover[:2] / f"{mover}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(request))
-    queue.item_path(pool.CLAIMED, mover).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, mover).write_text(json.dumps({
         "action_key": mover, "cas_root": str(cas),
         "resources": {"cpu": 2, "mem_gb": 1, STAGE_KIND: 1}}))
 
 
 def _conclude(queue: pool.PoolQueue, mover: str) -> None:
-    queue.item_path(pool.CLAIMED, mover).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, mover).unlink()
 
 
 def _args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path, digest: str,
@@ -144,7 +144,7 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path, digest: str,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "1",
         "--max-readers", "1",
@@ -179,7 +179,7 @@ def _hold(monkeypatch, mover: str, path: Path):
 
 def _fixture(tmp_path: Path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     (tmp_path / "stage").mkdir()
     manifest, digest, paths = _manifest(tmp_path)
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
@@ -190,7 +190,7 @@ def _fixture(tmp_path: Path, monkeypatch):
 
 def _vouched(queue: pool.PoolQueue, consumer: str, mover: str) -> set[str]:
     path = residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
     try:
         fragment = json.loads(path.read_bytes())
     except (OSError, ValueError):

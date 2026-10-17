@@ -38,7 +38,7 @@ pbrun.seal_action_from_template = lambda *args, **kwargs: action
 pbrun.announce_placement = lambda *args, **kwargs: None
 pbrun.d38_gate.judge_publication = lambda *args, **kwargs: None
 pbrun.publish_consumer_row = lambda q, *args, **kwargs: (
-    q.item_path('ready', action['action_key']) if mode != 'attached' else None, None)
+    q.records.item_path('ready', action['action_key']) if mode != 'attached' else None, None)
 fd = sys.argv[sys.argv.index('--client-events-fd') + 1]
 sys.argv = ['pbrun.py', '--client-events-fd', fd, '--wait-s', '0', '--transport', 'pool',
     *(['--detach'] if mode == 'cached' else []), '--', '/bin/echo', 'hello']
@@ -52,7 +52,7 @@ def _setup(tmp_path):
     cas = core.PrismaBuildCAS(tmp_path / 'cas')
     cas.publish_action_request(action)
     queue = pool.PoolQueue(tmp_path / 'pb-queue')
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return action, cas, queue
 
 
@@ -78,7 +78,7 @@ def test_main_execution_facts_match_the_actual_interpreter_exit(
         tmp_path, status, returncode, expected):
     action, _, queue = _setup(tmp_path)
     state = 'done' if status == 'executed' else 'withdrawn' if status == 'withdrawn' else 'failed'
-    queue.item_path(state, action['action_key']).write_text(json.dumps(dict(
+    queue.records.item_path(state, action['action_key']).write_text(json.dumps(dict(
         action_key=action['action_key'], status=status, attempts=1, finished_host='fixture',
         detail=dict(returncode=returncode, stdout='unchanged payload\n', stderr=''))))
     actual, output, events = _run(tmp_path, action, mode='queued')

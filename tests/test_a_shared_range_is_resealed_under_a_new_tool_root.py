@@ -59,7 +59,7 @@ def _queued(queue: pool.PoolQueue, row: dict[str, object]) -> None:
     """``row``'s mover is live: its record sits in ``ready/``, which is all
     ``residency_plan.live_state`` reads."""
 
-    path = queue.item_path(pool.READY, str(row["action_key"]))
+    path = queue.records.item_path(pool.record_store.READY, str(row["action_key"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(row))
 
@@ -116,8 +116,8 @@ def test_a_registration_from_another_tool_root_is_reused_only_while_live(
 
     # The lead ran: its record leaves ``ready/`` for ``done/``.
     lead_key = str(lead["action_key"])
-    queue.item_path(pool.READY, lead_key).unlink()
-    done = queue.item_path(pool.DONE, lead_key)
+    queue.records.item_path(pool.record_store.READY, lead_key).unlink()
+    done = queue.records.item_path(pool.record_store.DONE, lead_key)
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text(json.dumps({**lead, "status": "done"}))
 
@@ -169,7 +169,7 @@ def test_a_fresh_mover_adopts_the_stale_movers_resident_range(
     ledger = queue.tier_ledger(TIER)
     assert ledger.holder_tokens(new) == {"stage_gib": PHASE_GIB}
     assert ledger.holder_tokens(old) == {}
-    assert not queue.item_path(pool.READY, new).exists()
+    assert not queue.records.item_path(pool.record_store.READY, new).exists()
     receipt = queue.move_record(new)
     assert receipt is not None
     assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == old
@@ -177,7 +177,7 @@ def test_a_fresh_mover_adopts_the_stale_movers_resident_range(
     assert _files(stage, 0).exists()
     # The fresh mover vouches under the range's namespace, and the fan-out
     # gives the reading consumer its own copy of the vouch.
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     assert residency_map.fragment_path(root, namespace, new).exists()
     assert residency_map.fragment_path(root, SECOND, new).exists()
     _published, staged = tier_loop._mover_state(queue, second, TIER)

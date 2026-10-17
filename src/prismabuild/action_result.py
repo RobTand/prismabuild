@@ -26,6 +26,8 @@ carry no hard NFS deadline.
 
 from __future__ import annotations
 
+from . import immutable_files
+
 import math
 import re
 from collections.abc import Mapping
@@ -138,8 +140,11 @@ def _normalize_input_limits(
 
 def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
     try:
-        return pb._read_regular_file_nofollow(
-            path, where=where, require_readonly=require_readonly,
+        reader = (immutable_files.read_immutable_file if require_readonly
+                  else immutable_files.read_stable_file)
+        return reader(
+            path,
+            where=where,
             max_bytes=max_bytes,
         )
     except FileNotFoundError as exc:
@@ -152,7 +157,7 @@ def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
 
 def _decode_json(raw: bytes, *, where: str) -> object:
     try:
-        return pb._decode_strict_json(raw, where=where)
+        return pb.digest_primitives.decode_strict_json(raw, where=where)
     except pb.PrismaBuildError as exc:
         raise ActionResultError(f"{where} is not strict JSON: {exc}") from exc
 
@@ -167,9 +172,10 @@ def _select_terminal(queue, key, published, number, evidence_cap):
     """
 
     try:
-        readable, unreadable = queue.read_terminal_candidates(
+        capture = queue.records.terminal_candidates(
             key, max_bytes=evidence_cap)
-        ending = endings.resolve_current(readable, unreadable)
+        ending = endings.resolve_current(capture)
+        unreadable = ending["unreadable"]
     except (OSError, _pool.PoolError, pb.PrismaBuildError, ValueError) as exc:
         raise ActionResultError(
             f"terminal evidence for {key[:12]} could not be captured: {exc}") from exc
@@ -177,7 +183,7 @@ def _select_terminal(queue, key, published, number, evidence_cap):
         states = ", ".join(str(entry["state"]) for entry in unreadable)
         raise ActionResultError(
             f"terminal evidence for {key[:12]} is present but unreadable: {states}")
-    if ending["state"] != _pool.DONE or ending["ambiguous"]:
+    if ending["state"] != _pool.record_store.DONE or ending["ambiguous"]:
         raise ActionResultError(
             f"{key[:12]} does not have an unambiguous done ending "
             f"(state={ending['state']!r}, ambiguous={ending['ambiguous']})")
@@ -207,7 +213,7 @@ def _select_terminal(queue, key, published, number, evidence_cap):
     if link is None:
         raise ActionResultError(
             f"attempt {number} is not linked by the terminal's history")
-    attempt_path = queue.attempt_path(record, number)
+    attempt_path = queue.records.attempt_path(record, number)
     if link.get("outcome") != str(attempt_path.relative_to(queue.root)):
         raise ActionResultError("the selected attempt link is not its canonical path")
     return record, generation, attempt_path
@@ -247,7 +253,7 @@ def _bind_attempt(
         raise ActionResultError(f"pool attempt outcome refused: {exc}") from exc
     if attempt_record.get("status") != record.get("status"):
         raise ActionResultError("pool attempt status differs from the terminal")
-    if attempt_record.get("disposition") != _pool.DONE:
+    if attempt_record.get("disposition") != _pool.record_store.DONE:
         raise ActionResultError("pool attempt disposition is not done")
     if attempt_record.get("status") not in {"executed", "cache_hit"}:
         raise ActionResultError("pool attempt status is not a success")
@@ -283,8 +289,10 @@ def decode_result_announcement(stdout: bytes) -> Mapping[str, object]:
         if not stripped.startswith("{") or not stripped.endswith("}"):
             continue
         try:
-            value = pb._decode_strict_json(
-                stripped.encode("utf-8"), where="pool attempt stdout line")
+            value = pb.digest_primitives.decode_strict_json(
+                stripped.encode("utf-8"),
+                where="pool attempt stdout line",
+            )
         except pb.PrismaBuildError:
             continue
         if not isinstance(value, dict):
@@ -477,7 +485,7 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
         "queue_root": str(Path(queue.root).resolve()),
         "action_key": key, "published_unix": record["published_unix"],
         "attempt": attempt_record["attempt"],
-        "generation": queue.attempt_generation(record),
+        "generation": queue.records.attempt_generation(record),
         "nonce": nonce, "scope_id": scope_id, "worker": worker, "host": host,
         "incarnation": worker, "helper_root": str(root),
         "resources": dict(resources),
@@ -579,7 +587,7 @@ def read_verified_action_result(
         raise ActionResultError("the selected attempt stdout digest is invalid")
     if declared_bytes > evidence_cap:
         raise ActionResultError("the selected attempt stdout exceeds the evidence cap")
-    stdout_path = queue.attempt_log_path(record, number, "stdout", declared_sha)
+    stdout_path = queue.records.attempt_log_path(record, number, "stdout", declared_sha)
     if stdout_meta.get("path") != str(stdout_path.relative_to(queue.root)):
         raise ActionResultError("the selected attempt stdout link is not canonical")
     stdout = _read_bounded(
@@ -664,7 +672,7 @@ def read_verified_action_result(
 
     worker = attempt_record.get("claimed_by")
     host = attempt_record.get("claimed_host")
-    generation_digest = queue.attempt_generation(record)
+    generation_digest = queue.records.attempt_generation(record)
     result = {
         "schema": ACTION_RESULT_SCHEMA_V1,
         "action_key": key,

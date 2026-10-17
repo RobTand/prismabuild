@@ -81,7 +81,7 @@ import role_log_identity  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import role_session as runtime_gate  # noqa: E402
-from prismabuild import filesystem_capacity, fleet_roster, local_scratch, pool  # noqa: E402
+from prismabuild import filesystem_capacity, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
 CONFIG = fleet_roster.Roster.beside(__file__)
@@ -590,7 +590,7 @@ def _held_spool(ledger) -> int:
     """
 
     try:
-        holders = pool._scan_visible(ledger.held_dir)
+        holders = immutable_files.scan_required(ledger.held_dir)
     except FileNotFoundError:
         return 0
     return sum(1 for holder in holders
@@ -1113,7 +1113,7 @@ def _ready_backlog() -> bool | None:
     signal and must not duplicate that NFS work.
     """
 
-    ready = _queue_root() / pool.READY
+    ready = _queue_root() / pool.record_store.READY
     try:
         with os.scandir(ready) as entries:
             return any(entry.name.endswith(".json") for entry in entries)

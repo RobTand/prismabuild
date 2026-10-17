@@ -21,7 +21,7 @@ def _offers(tmp_path, monkeypatch, ahead_s):
                    capacity={"cpu": 20, "mem_gb": 104, "gpu": 1})
     queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 80, "mem_gb": 96}, timeout_ceiling_s=3600)
-    path = queue.root / pool.WORKERS / "dl380g10.json"
+    path = queue.root / pool.record_store.WORKERS / "dl380g10.json"
     record = json.loads(path.read_text())
     record["announced_unix"] = 1000.0 + ahead_s
     path.write_text(json.dumps(record))

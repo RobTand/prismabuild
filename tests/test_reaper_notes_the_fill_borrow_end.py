@@ -31,7 +31,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 2, "mem_gb": 4},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -61,7 +61,7 @@ def test_a_reaped_terminal_claim_notes_its_fill_borrow_end(
 
     _publish(queue, KEY, max_attempts=1)
     assert queue.claim() is not None
-    path = queue.item_path(pool.CLAIMED, KEY)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(path.read_bytes())
     record["tier_fill_borrowed"] = {
         TIER: {
@@ -73,7 +73,7 @@ def test_a_reaped_terminal_claim_notes_its_fill_borrow_end(
     path.write_text(json.dumps(record))
 
     assert queue.reap_stale(timeout_s=-1.0) == [KEY]
-    filed = json.loads(queue.item_path(pool.FAILED, KEY).read_bytes())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, KEY).read_bytes())
     assert filed["status"] == "lease_lost_max_attempts"
     entry = filed["tier_fill_borrowed"][TIER]
     assert "checked_unix" in entry, filed["tier_fill_borrowed"]

@@ -472,7 +472,7 @@ def test_a_coordinator_ends_no_progress_once_the_child_is_terminal(
     def withdraw_soon() -> None:
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and not stopped.is_set():
-            if queue.item_path(pool.READY, children[0]["action_key"]).exists():
+            if queue.records.item_path(pool.record_store.READY, children[0]["action_key"]).exists():
                 time.sleep(1.0)
                 queue.withdraw(children[0]["action_key"], by="test-terminal")
                 return
@@ -585,7 +585,7 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
     awaited = _awaited(plan, state)
     admitted = _admitted(queue, cas, plan, state)
     assert len(admitted) == 2, admitted
-    queue.item_path(pool.READY, children[1]["action_key"]).unlink()
+    queue.records.item_path(pool.record_store.READY, children[1]["action_key"]).unlink()
     retained = _admitted(queue, cas, plan, state, retained={
         key: {} for key in admitted})
     assert children[1]["action_key"] in retained, retained
@@ -593,7 +593,7 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=retained,
         prior={"children": [
-            {"key": children[0]["action_key"], "state": pool.READY,
+            {"key": children[0]["action_key"], "state": pool.record_store.READY,
              "evidence": "baseline", "ordinal": 0,
              "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}]})
     assert verdict["exempt"] is False
@@ -660,7 +660,7 @@ def test_a_missing_child_with_a_verified_result_is_durable(tmp_path: Path) -> No
     queue.finish(children[0]["action_key"], status="executed", detail=outcome)
     # Remove the terminal record: the queue no longer names the child, but
     # the CAS still verifies its durable result.
-    queue.item_path(pool.DONE, children[0]["action_key"]).unlink()
+    queue.records.item_path(pool.record_store.DONE, children[0]["action_key"]).unlink()
     state = _controller_state(tmp_path, [children[0]], name="controller-durable")
     awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
@@ -824,7 +824,7 @@ def test_child_result_blob_opens_respect_the_size_bound(
     queue = _queue(tmp_path, cas)
     receipt = _finish_child(tmp_path, queue, cas, child)
     assert (receipt["result"]["bytes"] > 1024 * 1024) is oversized
-    queue.item_path(pool.DONE, child["action_key"]).unlink()
+    queue.records.item_path(pool.record_store.DONE, child["action_key"]).unlink()
     blob = cas.blob_path(receipt["result"]["sha256"])
     opened = observe_file_opens(monkeypatch, blob)
 
@@ -860,7 +860,7 @@ def test_a_receipted_json_null_preserves_query_refusal_and_zero_credit(
     queue = _queue(tmp_path, cas)
     receipt = _finish_child(tmp_path, queue, cas, child)
     assert cas.result_path(receipt, child).read_bytes() == b"null\n"
-    queue.item_path(pool.DONE, key).unlink()
+    queue.records.item_path(pool.record_store.DONE, key).unlink()
     capsys.readouterr()
 
     if consumer == "bound-query":
@@ -946,8 +946,8 @@ def test_a_cleanup_tombstone_is_neither_credited_nor_released(
         (entry,) = verdict["children"]
         assert entry["state"] == "held", verdict
         assert verdict["exempt"] is False
-        assert queue.item_path(
-            pool.CLAIMED, children[0]["action_key"]).exists() is False
+        assert queue.records.item_path(
+            pool.record_store.CLAIMED, children[0]["action_key"]).exists() is False
     finally:
         tombstone.unlink(missing_ok=True)
 
@@ -1079,7 +1079,7 @@ def test_an_unreadable_wave_state_refuses_the_credit(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=retained,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1166,7 +1166,7 @@ def test_a_member_outside_the_plan_earns_no_credit(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=admitted,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1196,7 +1196,7 @@ def test_an_initially_absent_member_blocks_a_live_sibling(tmp_path: Path) -> Non
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=admitted,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1236,7 +1236,7 @@ def test_an_unreadable_retained_request_stays_missing(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=retained,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1375,8 +1375,8 @@ def test_recovery_requires_two_valid_endpoints(
 
     key = children[1]["action_key"]
     paths = {
-        "missing-row": queue.item_path(pool.READY, key),
-        "unreadable-row": queue.item_path(pool.READY, key),
+        "missing-row": queue.records.item_path(pool.record_store.READY, key),
+        "unreadable-row": queue.records.item_path(pool.record_store.READY, key),
         "unreadable-request": cas.root / "requests" / key[:2] / f"{key}.json",
         "unreadable-custody": state / "wave-state.json",
         "unreadable-plan": (
@@ -1507,7 +1507,7 @@ def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
     outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     queue.finish(key, status="executed", detail=outcome)
-    queue.item_path(pool.DONE, key).unlink()
+    queue.records.item_path(pool.record_store.DONE, key).unlink()
     assert reporter.newly_durable() == []
     (state / "wave-state.json").write_text(json.dumps({
         "waves": [], "pending_submission": {"batch": "child-00000", "key": key}}))

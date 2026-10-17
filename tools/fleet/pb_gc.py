@@ -129,7 +129,7 @@ MAP_SUFFIX = ".map.json"
 LANDING_SUFFIX = ".landing.json"
 #: ``pool.PoolQueue._transition_locked`` and ``residency_fragment_root``.
 TRANSITION_LOCK_SUBPATH = ("transition-locks",)
-RESIDENCY_SUBPATH = (pool.RESIDENCY,)
+RESIDENCY_SUBPATH = (pool.record_store.RESIDENCY,)
 GC_RECEIPTS_SUBPATH = ("gc-receipts",)
 GC_RECEIPT_SCHEMA = "prismabuild.pb_gc.receipt.v1"
 PRIVATE_STAGING_PREFIX = "ingest."
@@ -176,30 +176,6 @@ class SweepError(Exception):
 # --------------------------------------------------------------------------
 # Reading the store
 # --------------------------------------------------------------------------
-
-
-def _entries(directory: Path) -> list[os.DirEntry[str]]:
-    """The directory's entries, empty when it is not there.
-
-    Never creates anything. A store that has never staged a result has no
-    ``.staging`` at all, and a sweeper that made one would be writing to the
-    store it was asked to report on.
-    """
-
-    try:
-        # Validate every component, including fixed CAS layout directories.
-        # A final-entry nofollow check alone misses a redirected .staging.
-        for component in reversed((directory, *directory.parents)):
-            if stat.S_ISLNK(os.lstat(component).st_mode):
-                raise SweepError(f"refusing symlinked store directory: {component}")
-        with os.scandir(directory) as scan:
-            return sorted(scan, key=lambda entry: entry.name)
-    except FileNotFoundError:
-        return []
-    except NotADirectoryError:
-        return []
-    except OSError as exc:
-        raise SweepError(f"cannot list {directory}: {exc}") from exc
 
 
 def _is_digest(name: str) -> bool:
@@ -294,7 +270,7 @@ def _count_json(directory: Path) -> int:
     """How many ``*.json`` files live under ``directory``, at any depth."""
 
     total = 0
-    for entry in _entries(directory):
+    for entry in immutable_files.scan_custodied(directory, error_type=SweepError):
         if entry.is_dir(follow_symlinks=False):
             total += _count_json(Path(entry.path))
         elif entry.name.endswith(".json"):
@@ -336,11 +312,11 @@ def _survey_claims(cas_root: Path, *, min_age_s: float) -> dict:
     protected_locks: set[str] = set()
     protected_namespaces: set[str] = set()
     scanned = 0
-    for shard in _entries(root):
+    for shard in immutable_files.scan_custodied(root, error_type=SweepError):
         if not shard.is_dir(follow_symlinks=False):
             keep.append(_retain(KIND_CLAIM, Path(shard.path), "unexpected entry"))
             continue
-        for entry in _entries(Path(shard.path)):
+        for entry in immutable_files.scan_custodied(Path(shard.path), error_type=SweepError):
             path = Path(entry.path)
             if not entry.name.endswith(".json"):
                 keep.append(_retain(KIND_CLAIM, path, "unexpected entry"))
@@ -440,7 +416,7 @@ def _survey_locks(
     remove: list[dict] = []
     keep: list[dict] = []
     scanned = 0
-    for entry in _entries(root):
+    for entry in immutable_files.scan_custodied(root, error_type=SweepError):
         path = Path(entry.path)
         if not (entry.name.endswith(".lock") and _is_digest(entry.name[:-5])):
             keep.append(_retain(KIND_LOCK, path, "unexpected entry"))
@@ -488,7 +464,7 @@ def _survey_namespaces(
     keep: list[dict] = []
     scanned = 0
     occupied = 0
-    for entry in _entries(root):
+    for entry in immutable_files.scan_custodied(root, error_type=SweepError):
         path = Path(entry.path)
         if not (entry.is_dir(follow_symlinks=False) and _is_digest(entry.name)):
             keep.append(_retain(KIND_NAMESPACE, path, "unexpected entry"))
@@ -498,7 +474,7 @@ def _survey_namespaces(
             keep.append(_retain(
                 KIND_NAMESPACE, path, "named by a live local result claim"))
             continue
-        contents = _entries(path)
+        contents = immutable_files.scan_custodied(path, error_type=SweepError)
         if contents:
             # A staged payload under a dead claim is a killed publication.
             # ``core.repair_local_result`` is what removes one, under the
@@ -532,7 +508,7 @@ def _survey_ingests(
     remove: list[dict] = []
     keep: list[dict] = []
     scanned = 0
-    for entry in _entries(root):
+    for entry in immutable_files.scan_custodied(root, error_type=SweepError):
         path = Path(entry.path)
         if (entry.name == NAMESPACE_SUBPATH[-1]
                 or entry.name.startswith(PRIVATE_STAGING_PREFIX)):
@@ -571,7 +547,7 @@ def _survey_private_ingests(
 ) -> dict:
     remove, keep = [], []
     scanned = 0
-    for entry in _entries(cas_root / ".staging"):
+    for entry in immutable_files.scan_custodied(cas_root / ".staging", error_type=SweepError):
         if not entry.name.startswith(PRIVATE_STAGING_PREFIX):
             continue
         scanned += 1
@@ -586,7 +562,7 @@ def _survey_private_ingests(
             continue
         members = {}
         reason = ""
-        for member in _entries(path):
+        for member in immutable_files.scan_custodied(path, error_type=SweepError):
             try:
                 member_info = member.stat(follow_symlinks=False)
             except OSError:
@@ -638,7 +614,7 @@ def _canary_members(
     stack: list[tuple[str, Path]] = [("", namespace)]
     while stack:
         relative, directory = stack.pop()
-        for member in _entries(directory):
+        for member in immutable_files.scan_custodied(directory, error_type=SweepError):
             name = f"{relative}/{member.name}" if relative else member.name
             try:
                 info = member.stat(follow_symlinks=False)
@@ -700,7 +676,7 @@ def _survey_canary(
     remove: list[dict] = []
     keep: list[dict] = []
     scanned = 0
-    for entry in _entries(canary_root):
+    for entry in immutable_files.scan_custodied(canary_root, error_type=SweepError):
         path = Path(entry.path)
         if not entry.is_dir(follow_symlinks=False):
             keep.append(_retain(KIND_CANARY, path, "unexpected entry"))
@@ -1028,51 +1004,14 @@ def transition_lock_name(action_key: str) -> str:
     return hashlib.sha256(str(action_key).encode()).hexdigest() + ".lock"
 
 
-def _live_key(name: str) -> str | None:
-    """The key a ``ready``/``claimed`` entry keeps live, or ``None``.
-
-    Any entry whose name starts with a key -- the row, its lease, a
-    tombstone or a late-finish file -- makes that key live: a transition may
-    be under way.  The survey and the re-check under the key's lock both
-    decide liveness with this one rule.
-    """
-
-    return name[:64] if _is_digest(name[:64]) else None
-
-
 def _key_live_now(queue_root: Path, key: str) -> bool:
-    """Whether ``key`` is live, re-read now by :func:`_live_key`'s rule."""
-
-    return any(_live_key(entry.name) == key
-               for state in (pool.READY, pool.CLAIMED)
-               for entry in _entries(queue_root / state))
+    return pool.record_store.RecordStore(queue_root).maintenance_key_live(
+        key, error_type=SweepError)
 
 
 def queue_key_states(queue_root: Path) -> tuple[set[str], dict[str, float]]:
-    """Keys with a live entry, and each terminal key's newest record mtime.
-
-    One listing per state directory; :func:`_live_key` decides which key an
-    entry keeps live.
-    """
-
-    live: set[str] = set()
-    for state in (pool.READY, pool.CLAIMED):
-        for entry in _entries(queue_root / state):
-            key = _live_key(entry.name)
-            if key is not None:
-                live.add(key)
-    terminal: dict[str, float] = {}
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
-        for entry in _entries(queue_root / state):
-            key = entry.name[:-5]
-            if not (entry.name.endswith(".json") and _is_digest(key)):
-                continue
-            try:
-                mtime = entry.stat(follow_symlinks=False).st_mtime
-            except OSError:
-                continue
-            terminal[key] = max(terminal.get(key, 0.0), mtime)
-    return live, terminal
+    return pool.record_store.RecordStore(queue_root).maintenance_key_states(
+        error_type=SweepError)
 
 
 def _survey_transition_locks(queue_root: Path, *, live: set[str],
@@ -1084,7 +1023,7 @@ def _survey_transition_locks(queue_root: Path, *, live: set[str],
     remove: list[dict] = []
     keep: list[dict] = []
     scanned = 0
-    for entry in _entries(root):
+    for entry in immutable_files.scan_custodied(root, error_type=SweepError):
         path = Path(entry.path)
         if not (entry.name.endswith(".lock") and _is_digest(entry.name[:-5])):
             # Includes an NFS ``.nfs*`` silly-rename of a lock being retired.
@@ -1122,7 +1061,7 @@ def _residency_entries(root: Path) -> dict[str, dict[str, Path]]:
     """
 
     found: dict[str, dict[str, Path]] = {}
-    for entry in _entries(root):
+    for entry in immutable_files.scan_custodied(root, error_type=SweepError):
         name = entry.name
         if _is_digest(name) and entry.is_dir(follow_symlinks=False):
             found.setdefault(name, {})["directory"] = Path(entry.path)
@@ -1190,7 +1129,7 @@ def _survey_residency_namespaces(queue_root: Path, *, live: set[str],
             continue
         if "directory" in parts:
             try:
-                contents = _entries(parts["directory"])
+                contents = immutable_files.scan_custodied(parts["directory"], error_type=SweepError)
             except SweepError as exc:
                 namespaces["keep"].append(_retain(KIND_RESIDENCY_NAMESPACE, path, str(exc)))
                 continue
@@ -1219,7 +1158,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
     read retains every receipt (unknown coverage never retires).
     """
 
-    root = queue_root / pool.MOVERS
+    root = queue_root / pool.record_store.MOVERS
     section = {"scanned": 0, "remove": [], "keep": []}
     queue = pool.PoolQueue(queue_root)
     try:
@@ -1227,7 +1166,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
         checkpoint_error = ""
     except (OSError, pool.PoolContractError) as exc:
         checkpoint_error = f"{type(exc).__name__}: {exc}"
-    for entry in _entries(root):
+    for entry in immutable_files.scan_custodied(root, error_type=SweepError):
         path = Path(entry.path)
         key = entry.name[:-5] if entry.name.endswith(".json") else ""
         if not (key and _is_digest(key)):
@@ -1246,7 +1185,7 @@ def _survey_movement_receipts(queue_root: Path, *, live: set[str],
                 KIND_MOVEMENT_RECEIPT, path, "not a regular file"))
             continue
         try:
-            record = pool._read_json(path)
+            record = pool.record_store.read_document(path)
         except (OSError, pool.PoolContractError) as exc:
             section["keep"].append(_retain(
                 KIND_MOVEMENT_RECEIPT, path, f"unreadable: {exc}"))
@@ -1313,7 +1252,7 @@ def survey_queue(queue_root: Path, *, now: float | None = None,
     """
 
     queue_root = Path(queue_root)
-    if not (queue_root / pool.READY).is_dir():
+    if not (queue_root / pool.record_store.READY).is_dir():
         raise SweepError(f"not a pool queue: {queue_root}")
     started = time.monotonic()
     now = time.time() if now is None else float(now)

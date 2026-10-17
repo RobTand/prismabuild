@@ -63,7 +63,7 @@ def test_offer_evidence_and_admission_keep_their_own_profiles(gpu_rig, profile, 
         queue.finish(key, status='executed', detail={})
     else:
         assert _denial(queue, key)['evidence']['decision']['reason'] == 'sample_invalid_or_stale'
-        assert queue.item_path(pool.READY, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
     assert not queue.ledger().held_keys()
     assert queue.ledger().available() == capacity
 
@@ -91,7 +91,7 @@ def test_a_busy_row_keeps_room_on_evidence_that_cannot_admit_it(gpu_rig):
     assert claimed['action_key'] == cpu
     assert _denial(queue, gpu)['evidence']['decision']['reason'] == 'sample_invalid_or_stale'
     assert queue.ledger().holder_tokens(cpu) == {'cpu': 8, 'mem_gb': 4}
-    assert queue.item_path(pool.READY, gpu).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu).exists()
     queue.finish(cpu, status='executed', detail={})
     sample['complete'] = True
     assert _claim_here(queue, capacity,
@@ -131,7 +131,7 @@ def test_unknown_room_evidence_allows_the_later_cpu_row(gpu_rig, fault):
     assert busy['reason'] == 'transition_busy'
     assert 'gpu_room_kept' not in (busy.get('evidence') or {})
     assert claimed['action_key'] == cpu
-    assert queue.item_path(pool.READY, gpu).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu).exists()
     assert queue.ledger().held_keys() == [cpu]
     queue.finish(cpu, status='executed', detail={})
     assert queue.ledger().available() == capacity

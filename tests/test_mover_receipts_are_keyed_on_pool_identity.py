@@ -289,7 +289,7 @@ def _move_args(tmp_path: Path, manifest_path: Path, stage: Path):
         "--range-start-bytes", "0",
         "--range-end-bytes", str(total),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--unpaced",
     ])
     return args
@@ -319,7 +319,7 @@ def _manifest(tmp_path: Path, name: str = "manifest.json") -> Path:
 def test_a_mover_receipt_carries_the_announced_pool_identity(
         tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier": "stage",
         "tier_id": TIER, "host": "dl380g10",
@@ -336,7 +336,7 @@ def test_a_mover_receipt_carries_the_announced_pool_identity(
 def test_a_mover_receipt_without_an_announced_identity_carries_none(
         tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
 

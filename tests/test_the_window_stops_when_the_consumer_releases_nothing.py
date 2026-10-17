@@ -80,7 +80,7 @@ def _plan(queue: pool.PoolQueue) -> dict[str, object]:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": STAGE_CAPACITY_GIB})
     return q
 
@@ -238,6 +238,6 @@ def test_a_published_mover_waiting_on_tokens_is_still_pressure(queue, tmp_path) 
                     "mountpoint": str(tmp_path / "stage")}}
     tier_loop.residency_window(queue, tiers=tiers)
     # Published, unpinned: somebody else holds the tokens it is waiting for.
-    assert queue.item_path(pool.READY, _hexkey("mover0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
 
     assert tier_loop.window_pressure(queue, tiers=tiers) == {TIER: PHASE_GIB[0]}

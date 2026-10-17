@@ -109,7 +109,7 @@ def _records(queue, keys: list[str]) -> list[dict[str, object]]:
 
     measured = []
     for key in keys:
-        path = residency_map.landing_path(queue.residency_fragment_root(), key)
+        path = residency_map.landing_path(queue.records.residency_fragment_root(), key)
         raw = path.read_bytes()
         payload = json.loads(raw)
         rows = list(payload["ranges"])

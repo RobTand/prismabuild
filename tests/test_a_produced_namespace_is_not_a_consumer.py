@@ -59,7 +59,7 @@ def _staged(stage: Path, name: str, size: int = LEGACY_BYTES) -> Path:
 
 
 def _legacy_fragment(queue: pool.PoolQueue, stage: Path, staged: Path) -> None:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": LEGACY_CONSUMER,
         "mover_action_key": LEGACY_MOVER,
@@ -92,7 +92,7 @@ def legacy_only(tmp_path: Path):
     """One legacy flat consumer, its staged file and its held token."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {KIND: 2})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -128,7 +128,7 @@ def world(tmp_path: Path):
     batch = po.commit_batch(queue, instance, template, [desc], batch_id="w0",
                             tier=TIER, mover_key=PRODUCED_MOVER)
     assert batch["ok"] is True, batch
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = po.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     moved = produced._move(queue, batch, origin, stage, out_base, tmp_path, "w0")
     assert moved["complete"] is True, moved
     namespace = str(batch["batch_namespace"])
@@ -214,7 +214,7 @@ def test_a_produced_fragment_protects_a_shared_stage_path(world) -> None:
                 "offset": 0, "sha256": "4" * 64}}})
 
     owners, taint = stage_release._fragment_owners(
-        world.queue.root / pool.RESIDENCY, {str(world.legacy_path)},
+        world.queue.root / pool.record_store.RESIDENCY, {str(world.legacy_path)},
         except_consumer=LEGACY_CONSUMER, except_mover=LEGACY_MOVER)
 
     assert taint == []
@@ -227,7 +227,7 @@ def test_the_walked_root_is_the_exclusion_namespace(world) -> None:
     # A base-store walk: the nested produced fragment is another namespace
     # domain, so naming its key as the exception must not drop its proof.
     owners, taint = stage_release._fragment_owners(
-        world.queue.root / pool.RESIDENCY, {str(world.produced_path)},
+        world.queue.root / pool.record_store.RESIDENCY, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
     assert owners == {
@@ -246,7 +246,7 @@ def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
 
     co_consumer = "7" * 64
     co_mover = "8" * 64
-    residency_map.write_fragment(world.queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(world.queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": co_consumer, "mover_action_key": co_mover,
         "tier_id": TIER, "stage_root": str(world.stage),
@@ -299,7 +299,7 @@ def test_an_unknown_residency_directory_retains(world) -> None:
     """A directory the census cannot classify is unknown ownership."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    unknown = world.queue.root / pool.RESIDENCY / "not-a-namespace"
+    unknown = world.queue.root / pool.record_store.RESIDENCY / "not-a-namespace"
     unknown.mkdir()
     (unknown / "record.json").write_text("{}\n")
 
@@ -374,7 +374,7 @@ def test_a_composed_map_beside_the_fragments_is_not_a_taint(world) -> None:
     """The map a reader reads sits beside its namespace; it is not ownership."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    root = world.queue.root / pool.RESIDENCY
+    root = world.queue.root / pool.record_store.RESIDENCY
     composed = residency_map.map_path(root, LEGACY_CONSUMER)
     residency_map.write_map(composed, residency_map.compose(
         residency_map.read_fragments(root, LEGACY_CONSUMER)))
@@ -425,7 +425,7 @@ def test_a_corrupt_legacy_fragment_is_not_read_as_unowned(legacy_only) -> None:
     """read_fragments' reader tolerance must not become a GC deletion."""
 
     orphan = _staged(legacy_only.stage, "orphan.bin", 128)
-    fragment = (legacy_only.queue.root / pool.RESIDENCY / LEGACY_CONSUMER
+    fragment = (legacy_only.queue.root / pool.record_store.RESIDENCY / LEGACY_CONSUMER
                 / f"{LEGACY_MOVER}.json")
     fragment.write_text('{"schema": "prismaquant.prismabuild.residency_map')
 

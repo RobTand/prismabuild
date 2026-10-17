@@ -196,7 +196,7 @@ def test_the_marker_is_on_disk_before_any_cancel_runs(
     re-submission only on a marker or a ``withdrawn_unix``."""
 
     (controller / "siblings").write_text("1001|RUNNING\n1002|PENDING\n")
-    marker = tmp_path / "pb-queue" / pool.WITHDRAWN / f"{KEY}.json"
+    marker = tmp_path / "pb-queue" / pool.record_store.WITHDRAWN / f"{KEY}.json"
     assert not marker.exists()
 
     _withdraw(tmp_path)

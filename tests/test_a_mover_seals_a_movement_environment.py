@@ -98,7 +98,7 @@ def _seal(tmp_path: Path, variables: dict[str, str]):
     import pbrun
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({
         "schema": "prismaquant.prismabuild.data_manifest.v1",

@@ -342,18 +342,18 @@ def test_a_prewrite_is_kept_while_its_attempt_can_still_commit(
     assert po.origin_retirement_tick(queue) == []
     assert _record(queue, first).exists()
 
-    claim = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(claim)
+    claim = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_document(claim)
     assert live is not None
     control = dict(live["resource_scope"])
     live["resource_scope"] = {**control, "nonce": ""}
-    pool._write_json_atomic(claim, live)
+    pool.record_store._write_json(claim, live)
     assert po._producer_attempt_state(queue, first) == "unknown"
     assert po.origin_retirement_tick(queue) == []
     assert _record(queue, first).exists()
 
     live["resource_scope"] = control
-    pool._write_json_atomic(claim, live)
+    pool.record_store._write_json(claim, live)
     queue.finish(owner, status="executed")
     assert po._producer_attempt_state(queue, first) == "succeeded"
     assert [(e["event"], e["reason"]) for e in po.origin_retirement_tick(queue)

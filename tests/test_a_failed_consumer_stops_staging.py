@@ -100,26 +100,26 @@ def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
     """File the consumer terminal the way a failed ending does: present in
     ``failed/``, absent from ``ready/`` and ``claimed/``."""
 
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.item_path(pool.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
     source.unlink()
 
 
 def _claim(queue: pool.PoolQueue, key: str) -> None:
-    source = queue.item_path(pool.READY, key)
+    source = queue.records.item_path(pool.record_store.READY, key)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": key, "claimed_unix": 1000.0,
                  "claimed_by": "worker", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(item))
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -141,14 +141,14 @@ def test_queued_and_claimed_movers_of_a_failed_consumer_are_withdrawn(
 
     assert {event["mover"] for event in events if event.get("withdrawn")} == {
         queued, running}
-    assert not queue.item_path(pool.READY, queued).exists()
+    assert not queue.records.item_path(pool.record_store.READY, queued).exists()
     # The queued mover never starts; the claimed one is stopped through the
     # withdrawal decision, which is the durable stop signal.  Its ``claimed/``
     # record stays until the claiming worker observes the marker and
     # concludes -- withdrawing never concludes another worker's claim.
-    assert queue.item_path(pool.WITHDRAWN, queued).exists()
-    assert queue.item_path(pool.WITHDRAWN, running).exists()
-    filed = json.loads(queue.item_path(pool.WITHDRAWN, running).read_text())
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, queued).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, running).exists()
+    filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, running).read_text())
     assert filed["status"] == "withdrawn"
 
 
@@ -197,8 +197,8 @@ def test_a_live_consumer_and_its_egress_rows_are_untouched(
 
     tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert queue.item_path(pool.READY, live_mover).exists()
-    assert queue.item_path(pool.READY, live_egress).exists()
+    assert queue.records.item_path(pool.record_store.READY, live_mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, live_egress).exists()
 
 
 def test_a_resubmitted_consumer_is_alive_again(
@@ -219,7 +219,7 @@ def test_a_resubmitted_consumer_is_alive_again(
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert events == []
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
 
 
 def test_a_withdrawn_consumer_is_dead_too(queue: pool.PoolQueue) -> None:

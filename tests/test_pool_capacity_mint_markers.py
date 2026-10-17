@@ -28,7 +28,7 @@ KEY_B = "b" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -54,7 +54,7 @@ def test_turnover_during_a_capacity_scan_mints_no_duplicate(
     ledger.ensure_capacity({"cpu": 1})
     assert ledger.acquire(KEY_A, {"cpu": 1})
 
-    original_scan = pool._scan
+    original_scan = pool.immutable_files.scan_optional
     original_open = pool.os.open
 
     def scan(path: Path):
@@ -70,7 +70,7 @@ def test_turnover_during_a_capacity_scan_mints_no_duplicate(
             ledger.acquire(KEY_B, {"cpu": 1})
         return original_open(path, flags, *args, **kwargs)
 
-    with mock.patch.object(pool, "_scan", scan), \
+    with mock.patch.object(pool.immutable_files, 'scan_optional', scan), \
             mock.patch.object(pool.os, "open", open_token):
         ledger.ensure_capacity({"cpu": 1})
 
@@ -154,7 +154,7 @@ def test_a_missed_adoption_leaves_no_permanent_duplicate(
     assert not ledger.minted_dir.exists()
     assert ledger.capacity() == {"cpu": 1}
 
-    original_scan = pool._scan
+    original_scan = pool.immutable_files.scan_optional
 
     def scan(path: Path):
         # The holder is invisible for the whole call, which is the worst this
@@ -164,7 +164,7 @@ def test_a_missed_adoption_leaves_no_permanent_duplicate(
             return []
         return original_scan(path)
 
-    with mock.patch.object(pool, "_scan", scan):
+    with mock.patch.object(pool.immutable_files, 'scan_optional', scan):
         ledger.ensure_capacity({"cpu": 1})
 
     # Today this is 2, the duplicate the fix documents. Either value is a

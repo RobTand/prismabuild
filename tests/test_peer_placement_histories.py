@@ -51,7 +51,7 @@ def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 3
                                         "gpu_power_fraction": power,
                                         "gpu_power_sampled_unix": time.time() - age})
     if observation == "map_mismatch":
-        pool._write_json_atomic(queue.ledger(PEER).base / "cpu-map.json",
+        pool.record_store._write_json(queue.ledger(PEER).base / "cpu-map.json",
                                 {"preferred": [4, 5, 6, 7], "fallback": []})
     if observation == "ledger_failure":
         original = pool.ResourceLedger.available
@@ -81,9 +81,9 @@ def _history(root, monkeypatch, rule, observation, *, mixed=False, ticks=(10., 3
             remote = evidence.get("cpu_host", evidence.get("remote_offer", {}))
             steps.append({"claimed": bool(claimed), "reason": denial.get("reason"),
                           "remote": remote,
-                          "ready": queue.item_path(pool.READY, key).exists(),
+                          "ready": queue.records.item_path(pool.record_store.READY, key).exists(),
                           "held": bool(queue.ledger().held_keys()),
-                          "passes": queue.passes_path(key).exists()})
+                          "passes": queue.records.passes_path(key).exists()})
             if mixed:
                 others = queue.latest_denials({other_key}).get(other_key) or []
                 steps[-1]["other_reason"] = next((record.get("reason") for record in others
@@ -134,18 +134,18 @@ def _scratch_history(root, monkeypatch, observation):
         fleet.profiles[host] = [fleet.profile(host, write_elapsed_s=20. if host == SLOW else 2.)]
         fleet.announce(host)
     key = fleet.publish()
-    peer_path = fleet.queue.root / pool.WORKERS / f"{FAST}.json"
+    peer_path = fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json"
     if observation in {"partial", "stale", "zero"}:
-        offer = pool._read_json(peer_path)
+        offer = pool.record_store.read_document(peer_path)
         if observation == "partial":
             offer["observed_capacity"].pop("mem_gb")
         elif observation == "zero":
             offer["observed_capacity"]["mem_gb"] = 0
         else:
             offer["observed_detail"]["observed_unix"] -= 10
-        pool._write_json_atomic(peer_path, offer)
+        pool.record_store._write_json(peer_path, offer)
     if observation == "map_mismatch":
-        offer = pool._read_json(peer_path)
+        offer = pool.record_store.read_document(peer_path)
         fleet.queue.announce(
             host=FAST, tags=offer["tags"], has_gpu=True, capacity=offer["capacity"],
             observed_capacity=offer["observed_capacity"], observed_detail=offer["observed_detail"],
@@ -166,9 +166,9 @@ def _scratch_history(root, monkeypatch, observation):
         def replace_after_read(ledger):
             available = original(ledger)
             if ledger.base == fleet.queue.ledger(FAST).base and not replacements:
-                offer = pool._read_json(peer_path)
+                offer = pool.record_store.read_document(peer_path)
                 offer["observed_capacity"]["mem_gb"] = 0
-                pool._write_json_atomic(peer_path, offer)
+                pool.record_store._write_json(peer_path, offer)
                 replacements.append(True)
             return available
 

@@ -15,7 +15,7 @@ import threading
 from typing import TypeVar, assert_never
 
 from . import action_client as client, action_wait, core as pb
-from .digest_primitives import compact_ascii_json_bytes
+from .digest_primitives import compact_ascii_json_bytes, decode_strict_json
 
 CLIENT_EVENT_SCHEMA = 'prismabuild.client_event.v1'
 MAX_EVENT_BYTES = 1024
@@ -300,7 +300,7 @@ def parse_client_event(raw: bytes, *, queue_root: Path, cas_root: Path,
     if len(raw) > MAX_EVENT_BYTES or not raw.endswith(b'\n') or raw.count(b'\n') != 1:
         raise ClientProtocolError('invalid client event framing')
     try:
-        record = pb._decode_strict_json(raw, where='client event')
+        record = decode_strict_json(raw, where='client event')
         if not isinstance(record, dict) or record.get('schema') != CLIENT_EVENT_SCHEMA:
             raise ClientProtocolError('unknown client event schema')
         if record.get('event') == 'identity':

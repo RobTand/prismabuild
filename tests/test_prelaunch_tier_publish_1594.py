@@ -71,12 +71,12 @@ def test_declared_window_reserves_then_publishes_and_binds(tmp_path) -> None:
     seen: list[dict] = []
     for _ in range(10):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-        if all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+        if all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers):
             break
-    assert all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+    assert all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers), [
         (event.get("event"), event.get("reason"), event.get("phase"))
         for event in seen]
@@ -100,8 +100,8 @@ def test_declared_window_without_room_stalls_for_room(tmp_path) -> None:
     seen: list[dict] = []
     for _ in range(4):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-    assert all(not queue.item_path(pool.READY, mover).exists()
-               and not queue.item_path(pool.CLAIMED, mover).exists()
+    assert all(not queue.records.item_path(pool.record_store.READY, mover).exists()
+               and not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers)
     stalls = [event for event in seen
               if event.get("event") == "window-stalled"]

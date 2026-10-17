@@ -121,7 +121,7 @@ def test_a_report_from_an_earlier_launch_releases_nothing(
     # The raw reporter path is deliberately not authority for prewarm: a
     # previous launch can leave it behind, but it has no matching accepted
     # observation in this launch's lease.
-    fleet.queue.action_progress_path(running).write_text(json.dumps({
+    fleet.queue.records.action_progress_path(running).write_text(json.dumps({
         "schema": "prismabuild.action_progress.v1", "phase": "compute",
         "reported_unix": claimed_unix - 60.0,
     }))

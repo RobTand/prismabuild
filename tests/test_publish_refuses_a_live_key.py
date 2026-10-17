@@ -51,7 +51,7 @@ KEY = uuid.uuid4().hex + uuid.uuid4().hex
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -66,7 +66,7 @@ def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
 
 
 def _row(q: pool.PoolQueue, state: str, key: str) -> dict:
-    return json.loads(q.item_path(state, key).read_text(encoding="utf-8"))
+    return json.loads(q.records.item_path(state, key).read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -84,13 +84,13 @@ def test_an_ordinary_publication_still_replaces_a_live_key(
     """
 
     _publish(queue, KEY, resources={"cpu": 1})
-    first = _row(queue, pool.READY, KEY)["published_unix"]
+    first = _row(queue, pool.record_store.READY, KEY)["published_unix"]
     _publish(queue, KEY, resources={"cpu": 1})
-    assert _row(queue, pool.READY, KEY)["published_unix"] != first
+    assert _row(queue, pool.record_store.READY, KEY)["published_unix"] != first
 
     assert queue.claim(capacity={"cpu": 4}) is not None
     _publish(queue, KEY, resources={"cpu": 1})
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
 # --------------------------------------------------------------------------
@@ -104,19 +104,19 @@ def test_a_declared_publisher_is_refused_while_the_key_is_claimed(
 
     _publish(queue, KEY, resources={"cpu": 1})
     assert queue.claim(capacity={"cpu": 4}) is not None
-    before = _row(queue, pool.CLAIMED, KEY)
+    before = _row(queue, pool.record_store.CLAIMED, KEY)
 
     with pytest.raises(pool.PoolContractError) as refusal:
         _publish(queue, KEY, resources={"cpu": 1}, recompute=True,
                  refuse_if_live=True)
 
     # The behavioural claim first: nothing was queued behind the running run.
-    assert not queue.item_path(pool.READY, KEY).exists()
-    assert _row(queue, pool.CLAIMED, KEY) == before
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
+    assert _row(queue, pool.record_store.CLAIMED, KEY) == before
 
     # And the refusal is typed, and says which generation to wait on.
     assert isinstance(refusal.value, pool.ActionAlreadyLiveError)
-    assert refusal.value.state == pool.CLAIMED
+    assert refusal.value.state == pool.record_store.CLAIMED
     assert refusal.value.generation == before["published_unix"]
 
 
@@ -135,7 +135,7 @@ def test_a_stale_mover_republication_does_not_queue_a_second_run(
 
     _publish(queue, KEY, resources={"cpu": 1})
     assert queue.claim(capacity={"cpu": 4}) is not None
-    claimed = _row(queue, pool.CLAIMED, KEY)
+    claimed = _row(queue, pool.record_store.CLAIMED, KEY)
 
     monkeypatch.setattr(RecordStore, "mover",
                         lambda *args, **kwargs: Absent())
@@ -148,9 +148,9 @@ def test_a_stale_mover_republication_does_not_queue_a_second_run(
         manifest_digest="0" * 64, total=1,
         retry_policy={"max_attempts": 1, "retry_safe": True})
 
-    assert not queue.item_path(pool.READY, KEY).exists()
-    assert _row(queue, pool.CLAIMED, KEY) == claimed
-    assert answer == {"ok": True, "published": False, "state": pool.CLAIMED}
+    assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
+    assert _row(queue, pool.record_store.CLAIMED, KEY) == claimed
+    assert answer == {"ok": True, "published": False, "state": pool.record_store.CLAIMED}
 
 
 def test_the_key_is_publishable_again_once_the_claim_has_concluded(
@@ -164,7 +164,7 @@ def test_the_key_is_publishable_again_once_the_claim_has_concluded(
 
     _publish(queue, KEY, resources={"cpu": 1}, recompute=True,
              refuse_if_live=True)
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
 def test_a_live_cancellation_is_still_superseded_by_a_resubmission(
@@ -178,7 +178,7 @@ def test_a_live_cancellation_is_still_superseded_by_a_resubmission(
     assert queue.live_withdrawal(KEY) is not None
 
     _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True)
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert queue.live_withdrawal(KEY) is None
 
 
@@ -219,14 +219,14 @@ def test_a_duplicate_submission_keeps_the_first_generation(
     """The row the first waiter is pinned to survives, so its ending reaches it."""
 
     _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True)
-    first = _row(queue, pool.READY, KEY)["published_unix"]
+    first = _row(queue, pool.record_store.READY, KEY)["published_unix"]
 
     with pytest.raises(pool.PoolContractError) as refusal:
         _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True)
 
-    assert _row(queue, pool.READY, KEY)["published_unix"] == first
+    assert _row(queue, pool.record_store.READY, KEY)["published_unix"] == first
     assert isinstance(refusal.value, pool.ActionAlreadyLiveError)
-    assert refusal.value.state == pool.READY
+    assert refusal.value.state == pool.record_store.READY
     assert refusal.value.generation == first
 
     # What the first client was waiting for: the one run's ending, carrying the
@@ -257,14 +257,14 @@ def test_pbrun_attaches_a_duplicate_pool_submission_instead_of_restamping(
 
     assert _run_pbrun(tmp_path, monkeypatch, work) in unfinished
     capsys.readouterr()
-    keys = [path.stem for path in queue.dir(pool.READY).glob("*.json")]
+    keys = [path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")]
     assert len(keys) == 1
     key = keys[0]
-    first = _row(queue, pool.READY, key)["published_unix"]
+    first = _row(queue, pool.record_store.READY, key)["published_unix"]
 
     assert _run_pbrun(tmp_path, monkeypatch, work) in unfinished
     captured = capsys.readouterr()
 
-    assert _row(queue, pool.READY, key)["published_unix"] == first
+    assert _row(queue, pool.record_store.READY, key)["published_unix"] == first
     assert "attaching to that run" in captured.err
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1

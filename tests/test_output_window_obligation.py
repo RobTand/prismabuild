@@ -264,7 +264,7 @@ def test_the_relief_covers_the_owed_window(tmp_path: Path, monkeypatch,
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 6})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -307,7 +307,7 @@ def test_the_next_phase_relief_leaves_the_owed_window_free(
     else:
         monkeypatch.delenv(tier_loop.OUTPUT_WINDOWS_ENV, raising=False)
     tier_loop.residency_window(queue, tiers=tiers)
-    assert queue.item_path(pool.READY, ctx["aa"]["movers"][0]).exists()
+    assert queue.records.item_path(pool.record_store.READY, ctx["aa"]["movers"][0]).exists()
     assert tier_loop.window_pressure(queue, tiers=tiers).get(TIER) == expected
 
 

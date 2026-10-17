@@ -1359,9 +1359,10 @@ def read_child_request(
         return None, "the coordinator's claim names no CAS"
     path = Path(str(cas_root)) / "requests" / child_key[:2] / f"{child_key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(path, where="child action request")
+        raw = immutable_files.read_stable_file(path, where="child action request")
         request = pb.validate_action(
-            pb._decode_strict_json(raw, where="child action request"))
+            pb.digest_primitives.decode_strict_json(raw, where="child action request"),
+        )
     except FileNotFoundError:
         return None, "no sealed request in the coordinator's CAS"
     except (OSError, ValueError, RecursionError, pb.ActionContractError,
@@ -1409,7 +1410,10 @@ def _read_child_result_document(
     assert isinstance(result, Mapping)
     payload = cas.read_declared_blob(
         result, max_bytes=_MAX_CHILD_RESULT_BYTES, where="child result manifest")
-    return receipt, pb._decode_strict_json(payload, where="child result manifest")
+    return (receipt, pb.digest_primitives.decode_strict_json(
+        payload,
+        where="child result manifest",
+    ))
 
 
 def child_result(

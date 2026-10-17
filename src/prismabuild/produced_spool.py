@@ -193,9 +193,17 @@ def _parent(path, *, create=False):
     descriptor = immutable_files.open_directory_nofollow(
         path.parent, where="produced spool parent", create=create, mode=0o700)
     try:
-        immutable_files.assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(
+            descriptor,
+            path.parent,
+            where="produced spool parent",
+        )
         yield descriptor
-        immutable_files.assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(
+            descriptor,
+            path.parent,
+            where="produced spool parent",
+        )
     finally:
         os.close(descriptor)
 
@@ -217,7 +225,7 @@ def _read(path, *, expected_sha256=None):
                         recorded=reader_lease.portable_identity(before), observed=after)
         if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise SpoolError("sealed spool record changed")
-        body = core._decode_strict_json(raw, where="spool record")
+        body = core.digest_primitives.decode_strict_json(raw, where="spool record")
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -252,7 +260,11 @@ def _lock(path):
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise SpoolError("spool lock is not regular")
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-            immutable_files.assert_directory_identity(directory, path.parent, where="locked spool parent")
+            immutable_files.assert_directory_identity(
+                directory,
+                path.parent,
+                where="locked spool parent",
+            )
             yield
         finally:
             os.close(descriptor)
@@ -474,7 +486,9 @@ class ProducedSpool:
         #: Whether this producer's exports reserve fill and pace by default.
         self.paced_export = paced == "1"
         self._live()
-        row = pool._read_json(queue.item_path(pool.CLAIMED, self.owner)) or {}
+        row = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, self.owner),
+        ) or {}
         self.host = str(row.get("claimed_host") or "")
         if not self.host:
             raise SpoolError("source host is unknown")
@@ -1045,32 +1059,12 @@ def check_export_receipt(receipt, manifest, record):
 
 
 def _live_rows(queue):
-    """Every ready and claimed record, by key, read fail-closed.
-
-    `pool.Queue.live_records`'s census, except that a record which cannot
-    be read refuses instead of being skipped: the answer decides whether a
-    file may be deleted, and an unread row may be the export that writes
-    it.  A record that moved between the listing and the read is skipped:
-    the caller takes this twice, so a row that stays live is seen once.
-    """
-
-    rows = {}
-    for state in (pool.READY, pool.CLAIMED):
-        directory = queue.dir(state)
-        try:
-            names = sorted(os.listdir(directory))
-        except OSError as exc:
-            raise SpoolError(f"unknown-retain: {state} rows: {exc}") from None
-        for name in names:
-            if not name.endswith(".json") or name.startswith("."):
-                continue
-            try:
-                record = pool._read_json(directory / name)
-            except (OSError, ValueError, pool.PoolContractError) as exc:
-                raise SpoolError(f"unknown-retain: {state}/{name}: {exc}") from None
-            if isinstance(record, dict):
-                rows[name[:-len(".json")]] = (state, record)
-    return rows
+    capture = queue.records.retention_live_rows()
+    if capture.issues:
+        issue = capture.issues[0]
+        raise SpoolError(f"unknown-retain: {issue.reason}: {issue.error}") from None
+    return {row.address.action_key: (row.address.state, row.result.value)
+            for row in capture.rows}
 
 
 def _export_attempt(queue, record, key, owner):
@@ -1533,7 +1527,9 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         record = _export_record(group, manifest["owner"])
         if record is None or record.get("export_key") != export_key or record.get("manifest_sha256") != manifest_sha256:
             raise SpoolError("export action does not own this local group")
-        claim = pool._read_json(queue.item_path(pool.CLAIMED, export_key)) or {}
+        claim = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, export_key),
+        ) or {}
         if claim.get("claimed_host") != manifest["host"]:
             raise SpoolError("export is not claimed on the source host")
         try:
@@ -1921,10 +1917,10 @@ def _retire_group(queue, directory, group, owner):
                         state = "absent"
                     case Unknown():
                         state = "unknown"
-                if state in (pool.READY, pool.CLAIMED):
+                if state in (pool.record_store.READY, pool.record_store.CLAIMED):
                     return {"batch_id": name, "kept": f"export-{state}",
                             "export_key": record["export_key"]}
-                if state not in (pool.FAILED, pool.WITHDRAWN, "absent"):
+                if state not in (pool.record_store.FAILED, pool.record_store.WITHDRAWN, "absent"):
                     return {"batch_id": name, "kept": f"export-{state}-without-ack",
                             "export_key": record["export_key"]}
                 outcome = {"batch_id": name, "discarded": f"export-{state}",

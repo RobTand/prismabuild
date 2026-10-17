@@ -95,7 +95,7 @@ def test_a_shared_mount_row_without_a_manifest_warns_when_it_is_submitted(
     printed = capsys.readouterr()
     assert [line["status"] for line in _submitted(printed)] == [
         "submitted", "submitted"], printed.out
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
     assert "WARNING row 1" in printed.err, printed.err
     assert "data_manifest" in printed.err, printed.err
@@ -183,7 +183,7 @@ def test_require_data_manifest_refuses_a_row_with_nothing_visible_to_scan(
         ])
     message = str(refused.value)
     assert "row 0" in message and "data_manifest" in message, message
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_require_data_manifest_refuses_before_any_row_is_submitted(
@@ -211,7 +211,7 @@ def test_require_data_manifest_refuses_before_any_row_is_submitted(
     assert "--require-data-manifest" in message, message
     # The rows before the flagged one were not sealed either: the refusal is
     # the manifest's, and no read can have happened cold.
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
@@ -227,7 +227,7 @@ def test_require_data_manifest_treats_a_blank_manifest_as_missing(
             manifest,
         ])
     assert "row 0" in str(refused.value), str(refused.value)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_require_data_manifest_refuses_the_windowed_prefix_before_any_row(
@@ -249,7 +249,7 @@ def test_require_data_manifest_refuses_the_windowed_prefix_before_any_row(
             "--require-data-manifest", manifest,
         ])
     assert "row 1" in str(refused.value), str(refused.value)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_require_data_manifest_accepts_a_row_that_names_its_bytes(
@@ -293,7 +293,7 @@ def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cu
         ])
     message = str(refused.value)
     assert "common" in message and "data_manifest" in message, message
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert not (tmp_path / "cas" / dc.DECOMPOSITIONS).exists()
 
 

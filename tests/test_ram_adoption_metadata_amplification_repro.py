@@ -40,6 +40,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
 
 import pytest
 
@@ -141,8 +142,8 @@ def _fixture(tmp_path: Path, *, destinations: int = N_DESTS,
     The promoting mover itself has no fragment yet -- mid-run.
     """
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    residence = tmp_path / "queue" / pool.RESIDENCY
+    queue.records.ensure_layout()
+    residence = tmp_path / "queue" / pool.record_store.RESIDENCY
     ram_root = tmp_path / "ram" / "prewarm"
     ram_root.mkdir(parents=True)
     src_root = tmp_path / "src"
@@ -730,6 +731,15 @@ def test_a_same_size_rewrite_with_restored_mtime_is_seen(tmp_path,
     material.write_bytes(old.replace(entry["sha256"].encode(), b"b" * 64))
     os.utime(material, ns=(before.st_atime_ns, before.st_mtime_ns))
     after = material.stat()
+    if after.st_ctime_ns == before.st_ctime_ns:
+        deadline = time.monotonic() + 1.0
+        while after.st_ctime_ns == before.st_ctime_ns:
+            assert time.monotonic() < deadline, "real metadata updates did not advance ctime"
+            time.sleep(0.001)
+            os.utime(material, ns=(before.st_atime_ns, before.st_mtime_ns))
+            after = material.stat()
+    assert (after.st_dev, after.st_ino, after.st_mode) == (
+        before.st_dev, before.st_ino, before.st_mode)
     assert after.st_size == before.st_size, "the rewrite must be same-size"
     assert after.st_mtime_ns == before.st_mtime_ns, "mtime must be restored"
     assert after.st_ctime_ns != before.st_ctime_ns, "ctime must have moved"

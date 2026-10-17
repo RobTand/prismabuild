@@ -148,7 +148,7 @@ def test_a_host_memory_shortfall_is_returned_by_release_not_eviction(
     import tier_loop  # noqa: E402
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger(HOST)
     ledger.ensure_capacity({"cpu": 80, "mem_gb": 256})
     # A cold fill holds 250 of 256; an 8 GiB shard row needs host memory.

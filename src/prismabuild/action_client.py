@@ -594,11 +594,11 @@ def _diagnosed_outcome_render_value(q, outcome_path: str, outcome: dict) -> dict
         diagnostic = {
             "kind": "terminal_summary_conflict",
             "action_key": outcome["action_key"],
-            "generation": q.attempt_generation(outcome),
+            "generation": q.records.attempt_generation(outcome),
             "published_unix": outcome["published_unix"],
             "attempt": adopted["attempt"],
             "summary_path": outcome_path,
-            "attempt_path": str(q.attempt_path(outcome, adopted["attempt"])),
+            "attempt_path": str(q.records.attempt_path(outcome, adopted["attempt"])),
             "mismatched_fields": exc.fields,
             "detail_fields": [name[:128] for name in fields[:32]],
             "detail_field_count": len(fields),
@@ -662,7 +662,7 @@ def outcome_summary(q, outcome_path, outcome) -> dict:
         # disposition names.
         archived_source = (
             isinstance(outcome.get("attempts"), int)
-            and Path(outcome_path) == q.attempt_path(
+            and Path(outcome_path) == q.records.attempt_path(
                 outcome, outcome["attempts"]))
         if not archived_source and disposition != Path(outcome_path).parent.name:
             raise _TerminalSummaryConflict(

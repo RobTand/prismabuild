@@ -40,7 +40,7 @@ DIGEST_B = "c" * 64
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -91,7 +91,7 @@ def test_covers_see_same_generation_republish(fleet) -> None:
 
     queue, stage = fleet
     first, second = _stage_files(stage)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key_a = residency_map.residency_map_key(SOURCE_A, 0)
     key_b = residency_map.residency_map_key(SOURCE_B, 0)
     generation = reader_lease.mint_generation()
@@ -124,7 +124,7 @@ def test_acquire_sees_same_generation_republish(fleet) -> None:
 
     queue, stage = fleet
     first, second = _stage_files(stage)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key_a = residency_map.residency_map_key(SOURCE_A, 0)
     key_b = residency_map.residency_map_key(SOURCE_B, 0)
     generation = reader_lease.mint_generation()

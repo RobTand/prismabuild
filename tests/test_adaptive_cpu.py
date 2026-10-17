@@ -94,8 +94,8 @@ def test_greedier_jobs_stop_new_admission_immediately(rig, state_update):
     clock[0] += 1
     state.update(state_update)
     assert claim() is None
-    assert queue.item_path(pool.CLAIMED, first['action_key']).exists()
-    assert queue.item_path(pool.CLAIMED, second['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, first['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, second['action_key']).exists()
 
 
 @pytest.mark.parametrize('fault', ['missing', 'stale', 'incomplete', 'previous_attempt'])
@@ -194,7 +194,7 @@ def test_lost_claim_returns_only_own_tokens_and_never_mints_borrowed_cpu(rig, mo
     queue, clock, state, key, first, publish, claim, telemetry = rig
     real_rename = os.rename
     def lose(source, target):
-        if Path(source).parent == queue.dir(pool.READY):
+        if Path(source).parent == queue.records.dir(pool.record_store.READY):
             raise FileNotFoundError(source)
         return real_rename(source, target)
     monkeypatch.setattr(pool.os, 'rename', lose)
@@ -555,7 +555,7 @@ def test_incoming_legacy_cpu_zero_cannot_overlap_claimed_cpu_work(tmp_path, monk
                   checkout_root=str(tmp_path), worker_script='worker.py',
                   resources={'gpu': 1})
     assert queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
-    assert queue.item_path(pool.CLAIMED, first['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, first['action_key']).exists()
 
 
 def test_empty_demand_is_refused_and_real_static_demand_reserves_tokens(tmp_path):
@@ -569,7 +569,7 @@ def test_empty_demand_is_refused_and_real_static_demand_reserves_tokens(tmp_path
         assert queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers,
                            adaptive_cpu=adaptive) is None
         assert not queue.ledger().held_keys()
-        assert queue.item_path(pool.READY, empty_key).exists()
+        assert queue.records.item_path(pool.record_store.READY, empty_key).exists()
     queue.publish(action_key=positive_key, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py',
                   resources={'cpu': 1})
@@ -580,7 +580,7 @@ def test_empty_demand_is_refused_and_real_static_demand_reserves_tokens(tmp_path
     queue.finish(positive_key, status='executed', detail={})
     assert not queue.ledger().held_keys()
     assert queue.ledger().available() == {'cpu': 1}
-    assert queue.item_path(pool.READY, empty_key).exists()
+    assert queue.records.item_path(pool.record_store.READY, empty_key).exists()
 
 
 @pytest.mark.parametrize('measurement', [False, True])

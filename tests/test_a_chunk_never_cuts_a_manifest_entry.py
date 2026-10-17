@@ -367,7 +367,7 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
     plan = staged["plan"]
     queue = staged["queue"]
     assert isinstance(queue, pool.PoolQueue)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     digest = str(staged["digest"])
     manifest_path = str(staged["manifest_path"])
     (tmp_path / "ram").mkdir()
@@ -385,7 +385,7 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end),
             "--manifest", manifest_path,
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
             "--block", str(1 << 12),
             "--readers", "2", "--max-readers", "2", "--unpaced",
         ])
@@ -403,7 +403,7 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end),
             "--manifest", manifest_path,
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         ])
         return ram_promote.promote(args)
 

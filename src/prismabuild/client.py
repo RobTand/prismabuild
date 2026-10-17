@@ -111,10 +111,10 @@ manifest_read_entries = manifest_layout.manifest_read_entries
 
 PoolQueue = _pool.PoolQueue
 #: The queue state of an action a worker has claimed and is running.
-CLAIMED = _pool.CLAIMED
+CLAIMED = _pool.record_store.CLAIMED
 #: The queue subdirectory residency maps, fragments and landing records live
 #: under: ``Path(queue.root) / RESIDENCY``.
-RESIDENCY = _pool.RESIDENCY
+RESIDENCY = _pool.record_store.RESIDENCY
 #: The schema of the terminal record the pool files when an action ends.
 POOL_OUTCOME_SCHEMA_V1 = _pool.POOL_OUTCOME_SCHEMA_V1
 
@@ -129,30 +129,7 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
     mount is never read as "not claimed" (#1267).
     """
 
-    path = queue.item_path(_pool.CLAIMED, action_key)
-    try:
-        present = path.exists()
-    except OSError:
-        present = True          # a stat that cannot answer is not "absent"
-    if not present:
-        return None
-    record = _pool._read_json(path)
-    if record is None:
-        try:
-            if not path.exists():
-                # Completed between the stat and the read: the row moved to
-                # done/, which is "not claimed", not a torn write (#1271).
-                return None
-        except OSError:
-            pass
-        # ``_read_json`` answers ``None`` for absent and for empty; only the
-        # absent is "not claimed".  An empty row is a torn write or a broken
-        # mount holding an opinion, and the reader that asked by key holds no
-        # evidence the directory is live -- the same reason ``_read_json``
-        # keeps single-key callers loud.
-        raise _pool.PoolContractError(
-            f"claimed record is empty (torn write or broken mount?): {path}")
-    return record
+    return _pool.record_store.value_or_raise(queue.records.claimed_for_action(action_key))
 
 
 # -- produced output ---------------------------------------------------------

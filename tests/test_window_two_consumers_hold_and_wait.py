@@ -134,7 +134,7 @@ def _ordered_ready(queue: pool.PoolQueue, *keys: str) -> list[dict[str, object]]
 
 def _fragment(queue: pool.PoolQueue, consumer: str, mover: str, *,
               path: str, stage: Path) -> None:
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -157,7 +157,7 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
     queue.mint_tier_capacity(TIER, {"stage_gib": CAPACITY_GIB})
     stage = tmp_path / "stage"
@@ -203,7 +203,7 @@ def test_two_consumers_make_progress_through_the_gate(tmp_path: Path) -> None:
     # The wedge interleaving is unreachable through the policy: the gated
     # consumer has no published mover, so no joint hold can form.
     loser_m0 = m0b if first_consumer == CONSUMER_A else m0a
-    assert not queue.item_path(pool.READY, loser_m0).exists()
+    assert not queue.records.item_path(pool.record_store.READY, loser_m0).exists()
     P, Q = first_consumer, gated_consumer
     p0, p1 = (m0a, m1a) if P == CONSUMER_A else (m0b, m1b)
     q0, q1 = (m0b, m1b) if P == CONSUMER_A else (m0a, m1a)

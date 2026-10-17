@@ -57,7 +57,7 @@ def _fleet(tmp_path: Path, primarycache: str) -> pool.PoolQueue:
     """A queue whose stage tier announces what ZFS said about its dataset."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": TIER, "host": "dl380g10", "tier": "stage",
@@ -84,7 +84,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
         "--max-readers", "2",

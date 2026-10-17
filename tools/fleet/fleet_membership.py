@@ -331,28 +331,20 @@ def claimed_census(
     """(owned claim snapshots, unknown paths). Malformed is unknown, never empty."""
     owned: list[dict[str, Any]] = []
     unknown: list[str] = []
-    claimed_dir = queue.dir(pool_module.CLAIMED)
-    if not claimed_dir.is_dir():
-        return [], [f"claimed directory unreadable: {claimed_dir}"]
-    try:
-        # An unreadable census is unknown, never an empty set of claims.
-        # Path.glob suppresses directory errors; materialize the names
-        # with scandir so resignation retains its gate on an I/O failure.
-        with os.scandir(claimed_dir) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json"))
-    except OSError as exc:
-        return [], [f"claimed directory not listable: {exc}"]
-    paths = [claimed_dir / name for name in names]
-    for path in paths:
-        try:
-            record = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            unknown.append(f"{path.name}: unreadable ({exc})")
+    for observation in queue.records.membership_claims():
+        path = observation.address.path
+        result = observation.result
+        if isinstance(result, pool_module.record_store.Unknown):
+            if result.reason == "claimed-directory-unreadable":
+                return [], [f"claimed directory unreadable: {path}"]
+            if result.reason == "claimed-directory-unlistable":
+                return [], [f"claimed directory not listable: {result.error}"]
+            if result.error is not None:
+                unknown.append(f"{path.name}: unreadable ({result.error})")
+            else:
+                unknown.append(f"{path.name}: non-object record")
             continue
-        if not isinstance(record, dict):
-            unknown.append(f"{path.name}: non-object record")
-            continue
+        record = result.value
         action_key = record.get("action_key")
         if not isinstance(action_key, str) or len(action_key) != 64:
             unknown.append(f"{path.name}: bad action key")
@@ -360,7 +352,7 @@ def claimed_census(
         mine = record.get("claimed_host") == host
         if not mine:
             try:
-                lease = json.loads(queue.lease_path(action_key).read_text())
+                lease = queue.records.text_lease(action_key)
             except (OSError, ValueError) as exc:
                 unknown.append(f"{path.name}: lease unreadable ({exc})")
                 continue
@@ -444,22 +436,25 @@ def terminal_of(
     the filed ``withdrawn/`` decision of this generation as the terminal.
     """
     key = str(snapshot["action_key"])
-    for state in (pool_module.DONE, pool_module.FAILED):
+    for state in (pool_module.record_store.DONE, pool_module.record_store.FAILED):
         try:
-            record = json.loads(queue.item_path(state, key).read_text())
+            record = queue.records.text_item(state, key)
         except (OSError, ValueError):
             continue
         if isinstance(record, dict) and _terminal_matches(record, snapshot):
-            return ("done" if state == pool_module.DONE else "failed", record)
+            return ("done" if state == pool_module.record_store.DONE else "failed", record)
     try:
-        claimed_gone = not queue.item_path(pool_module.CLAIMED, key).exists()
+        claimed_gone = not bool(
+            pool_module.record_store.value_or_raise(
+                queue.records.item_presence(pool_module.record_store.CLAIMED, key),
+            ),
+        )
     except OSError:
         return None
     if not claimed_gone:
         return None
     try:
-        withdrawn = json.loads(
-            queue.item_path(pool_module.WITHDRAWN, key).read_text())
+        withdrawn = queue.records.text_item(pool_module.record_store.WITHDRAWN, key)
     except (OSError, ValueError):
         return None
     if (isinstance(withdrawn, dict)
@@ -735,7 +730,11 @@ def _resign_withdraw(queue_root: str, action_key: str, reason: str, by: str,
 def _resign_claimed_exists(queue_root: str, action_key: str) -> bool:
     """Whether a claim still occupies CLAIMED (holder-concluded check)."""
     queue = pool_module.PoolQueue(Path(queue_root))
-    return queue.item_path(pool_module.CLAIMED, action_key).exists()
+    return bool(
+        pool_module.record_store.value_or_raise(
+            queue.records.item_presence(pool_module.record_store.CLAIMED, action_key),
+        ),
+    )
 
 
 def _resign_terminal_of(queue_root: str,
@@ -1465,8 +1464,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
     if not key:
         return out
     try:
-        live = json.loads(queue.item_path(
-            pool_module.WITHDRAWN, key).read_text())
+        live = queue.records.text_item(pool_module.record_store.WITHDRAWN, key)
     except (OSError, ValueError):
         live = None
     decision = None
@@ -1475,7 +1473,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
         decision, out["decision_live"] = live, True
     else:
         try:
-            candidates = queue.withdrawal_decisions(key)
+            candidates = queue.records.withdrawal_decisions(key)
         except (OSError, ValueError, pool_module.PoolContractError):
             candidates = []
         for _, candidate in candidates:
@@ -1485,25 +1483,17 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
                 decision = candidate
                 break
     out["decision"] = decision
-    try:
-        ready_raw: str | None = queue.item_path(
-            pool_module.READY, key).read_text()
-    except FileNotFoundError:
-        ready_raw = None  # proven absence: the slot is free
-    except OSError as exc:
-        # Unreadable is not absent: planning a publication over this
-        # would clobber an occupant no reader can see. Retain and block.
+    observation = queue.records.successor_document(key)
+    if isinstance(observation, pool_module.record_store.Absent):
+        return out
+    if isinstance(observation, pool_module.record_store.Unknown):
         out["successor_unknown"] = True
-        out["successor_unknown_error"] = f"{type(exc).__name__}: {exc}"
+        exc = observation.error
+        out["successor_unknown_error"] = (
+            f"corrupt ready record: {exc}" if observation.reason == "successor-corrupt"
+            else f"{type(exc).__name__}: {exc}")
         return out
-    if ready_raw is None:
-        return out
-    try:
-        ready = json.loads(ready_raw)
-    except ValueError as exc:
-        out["successor_unknown"] = True
-        out["successor_unknown_error"] = f"corrupt ready record: {exc}"
-        return out
+    ready = observation.value
     if not isinstance(ready, dict):
         out["successor_unknown"] = True
         out["successor_unknown_error"] = "ready record is not an object"
@@ -1658,8 +1648,8 @@ def resume_owed(
     """
     owed: list[dict[str, Any]] = []
     skipped: list[str] = []
-    directory = queue.dir(pool_module.WITHDRAWN)
-    if not directory.is_dir():
+    directory = queue.records.dir(pool_module.record_store.WITHDRAWN)
+    if not queue.records.state_directory_present(pool_module.record_store.WITHDRAWN):
         return [], [f"withdrawn directory unreadable: {directory}"]
     try:
         # Materialize with os.scandir, not Path.glob: the stdlib glob
@@ -1668,15 +1658,12 @@ def resume_owed(
         # so a permission-denied census would read as "nothing owed" and
         # JOIN would open the gate over unknown rows. scandir preserves
         # the error and the caller below fails closed on it.
-        with os.scandir(directory) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json"))
+        paths = queue.records.required_slot_paths(pool_module.record_store.WITHDRAWN)
     except OSError as exc:
         return [], [f"withdrawn directory not listable: {exc}"]
-    paths = [directory / name for name in names]
     for path in paths:
         try:
-            record = json.loads(path.read_text())
+            record = queue.records.text_document_at(path)
         except (OSError, ValueError) as exc:
             skipped.append(f"{path.name}: unreadable ({exc})")
             continue

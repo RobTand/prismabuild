@@ -73,7 +73,7 @@ class _World:
 
     def __init__(self, tmp_path: Path) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         assert stage_release.register_stage_root(
@@ -82,7 +82,7 @@ class _World:
         self.cas.mkdir()
         self.mount = tmp_path / "sources"
         self.mount.mkdir()
-        self.root = self.queue.residency_fragment_root()
+        self.root = self.queue.records.residency_fragment_root()
 
     def entry(self, name: str, payload: bytes) -> dict[str, object]:
         source = self.mount / name

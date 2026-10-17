@@ -88,7 +88,7 @@ def test_a_queue_it_cannot_write_is_reported_rather_than_raised(
     action = _runnable_action(tmp_path, cas)
     request = cas.publish_action_request(action)
     queue = tmp_path / "queue"
-    done = unwritable(queue / pool.DONE)
+    done = unwritable(queue / pool.record_store.DONE)
 
     code = pbrun.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],
@@ -123,7 +123,7 @@ def test_the_report_names_the_job_slurm_accepted(
     action = _runnable_action(tmp_path, cas)
     request = cas.publish_action_request(action)
     queue = tmp_path / "queue"
-    unwritable(queue / pool.DONE)
+    unwritable(queue / pool.record_store.DONE)
 
     pbrun.slurm_outcome(
         action, cas=cas, request_path=request, tags=["x86"],

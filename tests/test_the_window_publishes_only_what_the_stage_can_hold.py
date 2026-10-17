@@ -89,7 +89,7 @@ def _plan(queue: pool.PoolQueue, *, gib_per_phase: int = 2,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 5})
     return q
 
@@ -216,8 +216,8 @@ def test_the_loop_publishes_the_window_the_ledger_can_hold(queue, tmp_path) -> N
 
     published = [event["phase"] for event in events if event["event"] == "mover-published"]
     assert published == ["phase-0", "phase-1"]
-    assert queue.item_path(pool.READY, _hexkey("mover0")).exists()
-    assert not queue.item_path(pool.READY, _hexkey("mover2")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("mover2")).exists()
 
 
 def test_a_stage_on_another_box_is_left_to_its_own_loop(queue, tmp_path) -> None:
@@ -231,11 +231,11 @@ def test_a_stage_on_another_box_is_left_to_its_own_loop(queue, tmp_path) -> None
             "mountpoint": str(tmp_path / "stage")}})
 
     assert events == []
-    assert not queue.item_path(pool.READY, _hexkey("mover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
 
 
 def _fragment(queue, mover: str, *, path: str, stage: Path) -> None:
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -253,7 +253,7 @@ def test_one_writer_merges_every_movers_fragment_into_one_map(queue, tmp_path) -
 
     written = tier_loop.compose_map(queue, CONSUMER)
 
-    assert written == queue.residency_map_path(CONSUMER)
+    assert written == queue.records.residency_map_path(CONSUMER)
     composed = residency_map.read_map(written)
     assert set(composed["entries"]) == {
         residency_map.residency_map_key("/pool/a.bin", 0),
@@ -267,14 +267,14 @@ def test_an_evicted_range_leaves_the_map_behind_it(queue, tmp_path) -> None:
     stage = tmp_path / "stage"
     _fragment(queue, _hexkey("mover0"), path="/pool/a.bin", stage=stage)
     tier_loop.compose_map(queue, CONSUMER)
-    assert queue.residency_map_path(CONSUMER).exists()
+    assert queue.records.residency_map_path(CONSUMER).exists()
 
     # What an egress does: the fragment goes when the bytes go.
     residency_map.fragment_path(
-        queue.residency_fragment_root(), CONSUMER, _hexkey("mover0")).unlink()
+        queue.records.residency_fragment_root(), CONSUMER, _hexkey("mover0")).unlink()
 
     assert tier_loop.compose_map(queue, CONSUMER) is None
-    assert not queue.residency_map_path(CONSUMER).exists()
+    assert not queue.records.residency_map_path(CONSUMER).exists()
 
 
 def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path) -> None:
@@ -331,7 +331,7 @@ def test_the_launcher_names_the_map_only_when_there_is_one(queue, tmp_path) -> N
     tier_loop.compose_map(queue, CONSUMER)
 
     assert queue.residency_map_environment(item) == {
-        pb.RESIDENCY_MAP_ENV: str(queue.residency_map_path(CONSUMER))}
+        pb.RESIDENCY_MAP_ENV: str(queue.records.residency_map_path(CONSUMER))}
     # An ordinary action is launched exactly as it was before #583.
     assert queue.residency_map_environment({"action_key": CONSUMER}) == {}
 

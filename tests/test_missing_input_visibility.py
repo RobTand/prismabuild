@@ -22,7 +22,7 @@ def test_ready_row_names_its_missing_prewarm_input(tmp_path):
     assert "permanence unproven" in row["reason"]
     # No producer/retry binding exists in this manifest: absence alone is not
     # authority to terminalize. A later legitimate landing may still cure it.
-    assert fleet.queue.item_path(pool.READY, key).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, key).exists()
     Path(path).write_bytes(b"x" * size)
     fleet.cycle(fleet.args(readers=1))
     row = next(row for row in pbstatus.read_pool(fleet.queue.root)["jobs"]
@@ -33,7 +33,7 @@ def test_ready_row_names_its_missing_prewarm_input(tmp_path):
 def test_unreadable_prewarm_is_unknown_not_missing(tmp_path):
     fleet = Fleet(tmp_path)
     key = fleet.action("unknown-input", [fleet.file("input.pt", 4)])
-    path = fleet.queue.prewarm_path(key)
+    path = fleet.queue.records.prewarm_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not json")
     report = pbstatus.read_pool(fleet.queue.root)

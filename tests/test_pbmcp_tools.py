@@ -132,7 +132,7 @@ def test_a_snapshot_submission_says_why_the_claim_cannot_be_derived(
 ) -> None:
     """A refusal that names its reason, rather than a silent ``null``."""
 
-    path = fleet.queue.item_path(pool.READY, fx.READY_KEY)
+    path = fleet.queue.records.item_path(pool.record_store.READY, fx.READY_KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
     record.pop("checkout_root")
     record["checkout_snapshot"] = {"commit": "0" * 40}

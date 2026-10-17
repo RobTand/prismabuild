@@ -51,7 +51,7 @@ def test_a_box_without_the_copy_announces_its_own_directory(
 def test_the_tier_cycle_announces_the_tool_root_a_submitter_seals_from(
         movement_authority, retained, monkeypatch, tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 5})
     stage = tmp_path / "stage"
     stage.mkdir()

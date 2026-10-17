@@ -49,6 +49,7 @@ def test_raw_oserror_propagates(tmp_path, monkeypatch):
 
     assert pb.CASUnavailableError is immutable_files.CASUnavailableError
     assert pb.CASTamperError is immutable_files.CASTamperError
+    assert pb.ReplacedRecordError is immutable_files.ReplacedRecordError
     assert pb.ReplacedRecordError.__bases__ == (immutable_files.CASTamperError,)
 
 

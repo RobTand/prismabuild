@@ -49,7 +49,7 @@ def generation_actions(monkeypatch):
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -156,8 +156,8 @@ def test_thin_foreign_spread_below_the_per_cpu_line_admits(
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
     assert claim() == measurement
-    assert queue.item_path(pool.CLAIMED, measurement).exists()
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
 
 def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(

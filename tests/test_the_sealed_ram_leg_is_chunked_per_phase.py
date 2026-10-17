@@ -192,7 +192,7 @@ def test_a_phase_that_fits_seals_todays_whole_phase_pair(tmp_path) -> None:
 
 def test_the_sealed_plan_freezes_and_names_every_chunk_key(tmp_path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     plan = staged["plan"]
     assert isinstance(plan, dict)

@@ -109,19 +109,19 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
 
 
 def _claim(queue: pool.PoolQueue, key: str) -> None:
-    source = queue.item_path(pool.READY, key)
+    source = queue.records.item_path(pool.record_store.READY, key)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": key, "claimed_unix": 1000.0,
                  "claimed_by": "worker", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(item))
 
 
 def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.item_path(pool.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
     source.unlink()
 
 
@@ -133,7 +133,7 @@ def _tier(tmp_path: Path) -> dict[str, object]:
 def _artifacts(queue: pool.PoolQueue, consumer: str) -> list[Path]:
     """Everything filed under ``superseded/`` for one consumer."""
 
-    directory = queue.residency_plan_path(consumer).parent / residency_plan.SUPERSEDED
+    directory = queue.records.residency_plan_path(consumer).parent / residency_plan.SUPERSEDED
     if not directory.is_dir():
         return []
     return sorted(path for path in directory.iterdir()
@@ -168,7 +168,7 @@ def _published(events: list[dict[str, object]]) -> list[str]:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 8})
     return q
 
@@ -188,7 +188,7 @@ def test_a_withdrawn_ready_mover_is_not_republished_and_its_plan_is_superseded(
 
     events = tier_loop.residency_window(queue, tiers={TIER: _tier(tmp_path)})
 
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
     assert lead not in _published(events)
     assert any(event.get("event") == "residency-plan-superseded"
                and event.get("consumer") == FIRST for event in events)
@@ -212,17 +212,17 @@ def test_a_withdrawn_claimed_mover_supersedes_its_plan_and_stays_unpublished(
 
     result = queue.withdraw(lead, reason="stale price", by="operator")
     assert result["status"] == "withdrawn"
-    assert queue.item_path(pool.CLAIMED, lead).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, lead).exists()
 
     tier_loop.residency_window(queue, tiers={TIER: _tier(tmp_path)})
     assert residency_plan.superseded(queue, plan) is not None
 
     # What the claiming worker concludes is the worker's to conclude; once the
     # record is gone the window must still not ask for the cancelled key.
-    queue.item_path(pool.CLAIMED, lead).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, lead).unlink()
     events = tier_loop.residency_window(queue, tiers={TIER: _tier(tmp_path)})
 
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
     assert lead not in _published(events)
 
 
@@ -271,7 +271,7 @@ def test_an_admission_preemption_does_not_supersede_the_plan(
     assert residency_plan.superseded(queue, plan) is None
     assert _markers(queue, FIRST) == []
     assert lead not in _published(events)
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
 
 
 # -- the withdrawal path reaps the residue it minted -------------------------
@@ -300,13 +300,13 @@ def test_a_dead_consumers_movers_are_withdrawn_and_its_plan_reaped(
     assert _archives(queue, FIRST) == []
 
     # The worker concludes; now nothing names the plan and it is archived.
-    queue.item_path(pool.CLAIMED, running).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, running).unlink()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert any(event.get("event") == "residency-plan-reaped" for event in events)
     assert residency_plan.read(queue, FIRST) is None
     assert _archives(queue, FIRST)
-    assert not queue.item_path(pool.READY, queued).exists()
+    assert not queue.records.item_path(pool.record_store.READY, queued).exists()
 
 
 def test_a_reaped_plan_takes_its_landing_record_with_it(
@@ -317,7 +317,7 @@ def test_a_reaped_plan_takes_its_landing_record_with_it(
 
     plan = _plan(queue, FIRST, label="first")
     _publish_consumer(queue, FIRST, plan)
-    landing = residency_map.landing_path(queue.residency_fragment_root(), FIRST)
+    landing = residency_map.landing_path(queue.records.residency_fragment_root(), FIRST)
     landing.parent.mkdir(parents=True, exist_ok=True)
     landing.write_text("{}")
     _fail_consumer(queue, FIRST)
@@ -458,7 +458,7 @@ def test_an_unrelated_consumers_plan_survives_and_still_publishes(
     assert residency_plan.read(queue, SECOND) is not None
     assert _markers(queue, SECOND) == []
     assert _hexkey("secondmover1") in _published(events)
-    assert queue.item_path(pool.READY, _hexkey("secondmover1")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("secondmover1")).exists()
 
 
 # -- the cancellation outranks the snapshot, and identity is the filing ------
@@ -485,7 +485,7 @@ def test_a_cancellation_after_the_cycle_snapshot_is_not_superseded_by_publish(
         queue, tiers={TIER: _tier(tmp_path)}, withdrawn=frozenset())
 
     assert lead not in _published(events)
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
     refusal = [event for event in events
                if event.get("event") == "mover-publish-refused-withdrawn"]
     assert len(refusal) == 1, events
@@ -513,7 +513,7 @@ def test_an_unreadable_supersession_marker_refuses_publication(
     assert record is not None and record.get("unreadable") is True, record
     events = tier_loop.residency_window(queue, tiers={TIER: _tier(tmp_path)})
     assert not any(event.get("event") == "mover-published" for event in events)
-    assert not queue.item_path(pool.READY, _hexkey("firstmover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("firstmover0")).exists()
     assert residency_plan.read(queue, FIRST) is not None
 
 
@@ -548,7 +548,7 @@ def test_a_stale_reaper_does_not_archive_a_new_plan(queue: pool.PoolQueue) -> No
 
     # A deliberate resubmission replaces the filing before the stale reaper
     # runs: identical bytes, different incarnation.
-    queue.residency_plan_path(FIRST).unlink()
+    queue.records.residency_plan_path(FIRST).unlink()
     residency_plan.freeze(queue, plan)
 
     assert residency_plan.reap(queue, FIRST, reason="stale",

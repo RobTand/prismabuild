@@ -46,7 +46,7 @@ def test_real_immutable_attempt_metadata_preserves_its_summary_exit_and_output(
     elif kind == 'fake-output':
         stdout = '{"status": "cache_hit", "payload_path": "/unrelated/readable/file"}\n' + stdout
     queue, record = _finish(tmp_path, action, receipt, stdout=stdout)
-    path = queue.item_path(pool.DONE, key)
+    path = queue.records.item_path(pool.DONE, key)
     summary = client.outcome_summary(queue, path, record)
     rendered = client.bounded_outcome_render(queue, path, record, budget_s=5)
     assert rendered['summary'] == summary

@@ -227,20 +227,21 @@ def test_a_kept_history_entry_changed_in_the_fence_tick_is_derived_again(
 
     def scrape() -> list:
         reader.begin()
-        entries = list(reader.history(directory, select=lambda _entry: True))
+        entries = list(reader.queue_store(tmp_path).mover_entries())
+        rows = []
         for entry in entries:
-            reader.derive("row", entry, lambda: _parse(Path(entry.path)))
+            rows.append(reader.derive("row", entry, lambda: _parse(Path(entry.path))))
         reader.end()
-        return entries
+        return rows
 
     clock["now"] = os.stat(record).st_ctime_ns
     assert os.lstat(directory).st_mtime_ns < clock["now"]
     first = scrape()
-    assert first[0].derived == {"v": 1}
+    assert first[0] == {"v": 1}
 
     clock["now"] = None
     _replace_in_the_same_tick(monkeypatch, record, b'{"v": 2}')
     second = scrape()
-    assert second[0].derived == {"v": 2}, (
+    assert second[0] == {"v": 2}, (
         "an entry kept at a version stat-ed in its own change's tick "
         "carried what was derived from the replaced file")

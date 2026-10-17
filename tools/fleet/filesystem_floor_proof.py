@@ -37,7 +37,7 @@ REPORT = "client-report.json"
 
 def owner(root: Path, hold_s: float) -> dict:
     queue = root / "pb-queue"
-    pool.PoolQueue(queue).ensure_layout()
+    pool.PoolQueue(queue).records.ensure_layout()
     registered = ff.register(queue, root / "shared", filesystem_gib=4,
                              filesystem_ledger=LEDGER)
     report = {"role": "owner", "host": socket.gethostname(),

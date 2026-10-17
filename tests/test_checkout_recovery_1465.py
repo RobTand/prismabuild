@@ -203,7 +203,7 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     publishers = []
     publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
 
@@ -492,7 +492,6 @@ def test_32_distinct_banked_checkouts_are_supported_but_33_are_not(make_case):
     assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
-
 @pytest.mark.parametrize("fault", [
     "missing-terminal", "malformed-terminal", "wrong-key", "missing-key",
     "missing-generation", "boolean-generation", "nonfinite-generation",
@@ -557,7 +556,7 @@ def test_missing_or_conflicting_action_snapshot_and_ending_proof_keeps_original(
              "-qm", "not the sealed commit")
         case.bank()
     else:
-        sibling = case.queue.item_path(pool.DONE, case.key)
+        sibling = case.queue.records.item_path(pool.record_store.DONE, case.key)
         if fault == "tied-endings":
             _json(sibling, json.loads(case.terminal_path.read_text()))
         else:
@@ -565,17 +564,17 @@ def test_missing_or_conflicting_action_snapshot_and_ending_proof_keeps_original(
     _refused(case, case.prepare)
 
 
-@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED, "lease"])
+@pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED, "lease"])
 def test_live_queue_owner_or_lease_refuses_even_beside_complete_terminal(case, state):
     if state == "lease":
-        _json(case.queue.lease_path(case.key), {
+        _json(case.queue.records.lease_path(case.key), {
             "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": case.key,
             "owner": "still-live", "host": pool.socket.gethostname(),
             "heartbeat_unix": pool._now(), "pid": os.getpid(),
             "published_unix": case.claim["published_unix"],
         })
     else:
-        _json(case.queue.item_path(state, case.key), case.claim)
+        _json(case.queue.records.item_path(state, case.key), case.claim)
     _refused(case, case.prepare)
 
 
@@ -827,9 +826,9 @@ def test_apply_revalidates_every_plan_identity_and_lifetime_before_deletion(case
         else:
             _terminal(case, lambda value: value.update(status="changed-after-root-go"))
     elif fault in ("ready", "claimed"):
-        _json(case.queue.item_path(fault, case.key), case.claim)
+        _json(case.queue.records.item_path(fault, case.key), case.claim)
     elif fault == "lease":
-        _json(case.queue.lease_path(case.key), {"schema": pool.POOL_LEASE_SCHEMA_V1,
+        _json(case.queue.records.lease_path(case.key), {"schema": pool.POOL_LEASE_SCHEMA_V1,
               "action_key": case.key, "heartbeat_unix": pool._now(), "pid": 101})
     else:
         process = _process(case)
@@ -1319,7 +1318,7 @@ def test_busy_real_transition_lock_refuses_without_waiting_or_cleanup(case):
                                   "hidepid", "unreadable", "malformed", "empty"])
 def test_real_kernel_mount_census_cannot_hide_external_banks_or_processes(case, monkeypatch, fault):
     path = Path("/proc") / str(os.getpid()) / "mountinfo"
-    actual_reader = pb._read_regular_file_nofollow
+    actual_reader = pb.immutable_files._read_file
     selected = case.directory
     if fault == "same-device-native-bank":
         selected = case.checkout / "native"
@@ -1343,7 +1342,7 @@ def test_real_kernel_mount_census_cannot_hide_external_banks_or_processes(case, 
             return payload
         return actual_reader(candidate, **options)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", mount_census)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', mount_census)
     _refused(case, case.prepare)
 
 
@@ -1369,10 +1368,6 @@ def test_recovery_authority_itself_must_never_be_inside_a_selected_deletion_root
     # refusal must come from bounded deletion ownership, not an omitted bank.
     case.bank()
     _refused(case, lambda: recovery.prepare_checkout_recovery(queue, [case.entry], **options))
-
-
-
-
 
 
 _NATIVE_HOLDER_CODE = r"""
@@ -1640,7 +1635,6 @@ def test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan(case, 
     assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
-
 @pytest.mark.parametrize("fault", [
     "empty", "truncated-line", "truncated-complete-record", "malformed", "overlap",
     "bad-device", "bad-inode", "missing-path", "zero-inode-file", "bad-permissions",
@@ -1742,7 +1736,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                                    expected=(report["dev"], report["ino"]))
         _planned(case, proc_root=Path("/proc"))
         process = Path("/proc") / str(holder.pid)
-        actual_read = pb._read_regular_file_nofollow
+        actual_read = pb.immutable_files._read_file
         actual_open = immutable_files.open_directory_nofollow
         actual_readlink = recovery.os.readlink
         map_directory = (process / "map_files").stat()
@@ -1794,7 +1788,7 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                     raise FileNotFoundError("real process map_files link qualification disappearance")
             return actual_readlink(path, dir_fd=dir_fd)
 
-        monkeypatch.setattr(pb, "_read_regular_file_nofollow", failed_mapping_read)
+        monkeypatch.setattr(pb.immutable_files, '_read_file', failed_mapping_read)
         monkeypatch.setattr(immutable_files, "open_directory_nofollow", failed_mapping_directory)
         monkeypatch.setattr(recovery.os, "readlink", failed_mapping_link)
         result = _refused(case, lambda: case.prepare(proc_root=Path("/proc")))
@@ -1853,7 +1847,6 @@ def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_excep
     (process / "map_files" / "1000-2000").unlink()
     result = _refused(case, case.prepare)
     assert any("executable census incomplete" in error for error in result["errors"]), result
-
 
 
 @pytest.mark.parametrize("drift", ["start-time", "pid-directory"])

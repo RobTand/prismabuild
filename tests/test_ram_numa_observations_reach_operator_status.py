@@ -151,7 +151,7 @@ def _assert_admitted(record: dict[str, object], *, ids: tuple[int, ...] = (0, 2)
 
 def _queue(root: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(root)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -526,12 +526,12 @@ def test_liveness_refresh_keeps_sample_stamp_and_observations_aging(
     liveness = tier_loop.Liveness(interval_s=5)
     liveness.begin_cycle()
     liveness.announce(queue, record)
-    original = json.loads(queue.tier_record_path(RAM_TIER).read_text())
+    original = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     for node in evidence.ids:
         evidence.write_node(node, free=0, shmem=0)
     clock[0] += 100
     liveness.checkpoint("fixture-progress")
-    refreshed = json.loads(queue.tier_record_path(RAM_TIER).read_text())
+    refreshed = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     assert refreshed["announced_unix"] > original["announced_unix"]
     assert refreshed["sampled_unix"] == original["sampled_unix"] == SAMPLED
     assert refreshed["epoch"] == record["epoch"]
@@ -573,7 +573,7 @@ def test_real_tier_cycle_mints_and_announces_discovered_observations_to_status(
     _assert_admitted(record)
     assert record["stage_root_owner"] == "registered"
     assert queue.tier_ledger(RAM_TIER).capacity()[storage_tiers.RAM_CAPACITY_KIND] == 112
-    persisted = json.loads(queue.tier_record_path(RAM_TIER).read_text())
+    persisted = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     assert persisted == dict(record, announced_unix=NOW)
     assert tier_loop.LAST_CYCLE["completed"] is True
     # Cycle event logs are not the CLI's one JSON blob.

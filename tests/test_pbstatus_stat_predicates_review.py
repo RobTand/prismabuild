@@ -26,9 +26,9 @@ def test_queue_root_stat_permission_failure_remains_unavailable(
         (queue / 'done').symlink_to(terminal, target_is_directory=True)
     # Keep the test on the real queue-root helper: previous sections answered
     # before permissions changed, and this last read must report its own error.
-    monkeypatch.setattr(pbstatus, 'read_pool', lambda root: {
+    monkeypatch.setattr(pbstatus, 'read_pool', lambda root, *, reader=None: {
         'nodes': [], 'jobs': [], 'notes': [], 'queue': {'complete': True}})
-    monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit: [])
+    monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit, *, reader=None: [])
     private.chmod(0)
     try:
         code = pbstatus.main(['--transport', 'pool', '--json', '--queue-root', str(queue)])

@@ -55,7 +55,7 @@ def _changed() -> bytes:
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -93,7 +93,7 @@ def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -104,7 +104,7 @@ def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
 def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     fragments = residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, consumer)
+        queue.root / pool.record_store.RESIDENCY, consumer)
     composed = residency_map.compose(fragments)
     entries = composed["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
@@ -249,7 +249,7 @@ def test_dev_shared_source_end_to_end_reader(tmp_path: Path) -> None:
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -258,7 +258,7 @@ def test_dev_shared_source_end_to_end_reader(tmp_path: Path) -> None:
     assert receipt.get("complete") is True, receipt
     assert receipt.get("refusal") is None, receipt
 
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     ram_frags = [f for f in residency_map.read_fragments(residency, CONSUMER_A)
                  if str(f.get("tier_id") or "") == RAM_TIER]
     assert ram_frags

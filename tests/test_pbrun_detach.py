@@ -112,11 +112,11 @@ def test_a_detached_pool_submission_queues_and_returns_without_waiting(
     # The generation, so a later wait can tell this run's ending from the
     # ending of a run of the same work last week.
     assert line["published_unix"] == item["published_unix"]
-    assert line["done"] == str(queue.item_path(pool.DONE, key))
-    assert line["failed"] == str(queue.item_path(pool.FAILED, key))
-    assert line["withdrawn"] == str(queue.item_path(pool.WITHDRAWN, key))
-    assert not queue.item_path(pool.DONE, key).exists()
-    assert not queue.item_path(pool.FAILED, key).exists()
+    assert line["done"] == str(queue.records.item_path(pool.record_store.DONE, key))
+    assert line["failed"] == str(queue.records.item_path(pool.record_store.FAILED, key))
+    assert line["withdrawn"] == str(queue.records.item_path(pool.record_store.WITHDRAWN, key))
+    assert not queue.records.item_path(pool.record_store.DONE, key).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
 
 
 def test_a_detached_slurm_submission_prints_the_job_id_and_files_no_ending(

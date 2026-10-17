@@ -41,7 +41,7 @@ def _queue(tmp_path: Path, *, stage_gib: int) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
     return queue
 
@@ -94,7 +94,7 @@ def _publish(queue: pool.PoolQueue, plan: dict, mover: str) -> dict:
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 
@@ -498,7 +498,7 @@ def test_republished_mover_rotates_to_a_fresh_generation(tmp_path) -> None:
                              float(row["published_unix"]))
     assert first.status == "published"
     republished = dict(row, published_unix=float(row["published_unix"]) + 1.0)
-    queue.item_path(pool.READY, mover).write_text(
+    queue.records.item_path(pool.record_store.READY, mover).write_text(
         json.dumps(republished), encoding="utf-8")
     second = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
                               float(republished["published_unix"]))

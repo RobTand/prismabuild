@@ -78,6 +78,15 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
                         lambda self, *a, **k: None)
     monkeypatch.setattr(loop.box_capacity, "ipv4_addresses", lambda: None)
 
+    class UnavailableRecords:
+        def dir(self, *args, **kwargs):
+            # Drain-path membership reconciliation may census the
+            # withdrawn/ decisions (read-only, no admission). Report no
+            # queue dir so the census is empty and nothing publishes;
+            # any actual admission still fails below.
+            return tmp_path / "no-such-queue-dir"
+
+
     class UntouchableQueue:
         def __init__(self, root):
             assert root == tmp_path / "pb-queue"
@@ -86,13 +95,7 @@ def test_park_precedes_announce_sleep_and_queue_access(tmp_path, monkeypatch,
             # private root holds no queue state, so that one scan is inert;
             # every other operation still fails below.
             self.root = root
-
-        def dir(self, *args, **kwargs):
-            # Drain-path membership reconciliation may census the
-            # withdrawn/ decisions (read-only, no admission). Report no
-            # queue dir so the census is empty and nothing publishes;
-            # any actual admission still fails below.
-            return tmp_path / "no-such-queue-dir"
+            self.records = UnavailableRecords()
 
         def retry_own_pending_finishes(self):
             # The drain branch's second bounded queue access (#1403): it

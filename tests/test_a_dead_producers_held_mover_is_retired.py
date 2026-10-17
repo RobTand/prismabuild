@@ -131,21 +131,21 @@ class _World:
         funding = self.q.read_output_funding(self.mover, TIER)
         assert funding is not None and funding["state"] == "consumed"
         self.q.finish(self.mover, status="failed", detail={"returncode": 1})
-        if self.q.item_path(pool.READY, self.mover).exists():
+        if self.q.records.item_path(pool.record_store.READY, self.mover).exists():
             self.q.withdraw(self.mover, by="test",
                             reason="stranded produced-output mover")
-        ended = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
-                 if self.q.item_path(state, self.mover).exists()]
+        ended = [state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
+                 if self.q.records.item_path(state, self.mover).exists()]
         assert len(ended) == 1, ended
-        assert not self.q.item_path(pool.READY, self.mover).exists()
+        assert not self.q.records.item_path(pool.record_store.READY, self.mover).exists()
         assert self.q.move_record(self.mover) is None
         # Neither the failure nor the withdrawal released the prepaid token.
         assert self.ledger.holder_tokens(self.mover) == {KIND: 1}
 
     def fail_the_producer(self) -> None:
         self.q.finish(self.owner, status="failed", detail={"returncode": 1})
-        assert self.q.item_path(pool.FAILED, self.owner).exists()
-        assert not self.q.item_path(pool.READY, self.owner).exists()
+        assert self.q.records.item_path(pool.record_store.FAILED, self.owner).exists()
+        assert not self.q.records.item_path(pool.record_store.READY, self.owner).exists()
 
     def sweep(self, pressure):
         return stage_release.sweep(
@@ -221,7 +221,7 @@ def test_a_queued_mover_of_a_dead_producer_is_kept(tmp_path) -> None:
     """The mover's own row is live: releasing now would let it copy unpaid."""
 
     world = _World(tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     world.fail_the_producer()
     receipts = world.sweep(UNMET)
     assert not _about(receipts, world.mover), receipts
@@ -240,7 +240,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
     staged.write_bytes(PAYLOAD)
     origin = str(world.descs[0]["path"])
     residency_map.write_fragment(
-        po.output_fragment_root(world.q.root / pool.RESIDENCY), {
+        po.output_fragment_root(world.q.root / pool.record_store.RESIDENCY), {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": world.namespace,
             "mover_action_key": world.mover, "tier_id": TIER,
@@ -276,7 +276,7 @@ def test_an_unresolvable_produced_holder_is_reported_once_and_kept(
     world = _World(tmp_path)
     world.strand_the_mover()
     world.fail_the_producer()
-    template_file = (world.q.root / pool.RESIDENCY
+    template_file = (world.q.root / pool.record_store.RESIDENCY
                      / po.OUTPUT_TEMPLATES_SUBDIR
                      / f"{world.inst['template_id']}.json")
     template_file.chmod(0o644)

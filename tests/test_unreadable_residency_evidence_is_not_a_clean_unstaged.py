@@ -53,7 +53,7 @@ def _landed(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
     plan = base._filed(queue)
     assert residency_plan.resident_movers(queue, plan, STAGE_TIER) == {MOVER}
     return queue, residency_map.fragment_path(
-        queue.residency_fragment_root(), CONSUMER, MOVER)
+        queue.records.residency_fragment_root(), CONSUMER, MOVER)
 
 
 def _unknown_now(queue: pool.PoolQueue) -> None:
@@ -65,7 +65,7 @@ def _unknown_now(queue: pool.PoolQueue) -> None:
 
     events = tier_loop.ram_residency_window(queue, tiers=base._tiers(queue))
     assert base._promotions(events) == [], "unknown is not a source"
-    assert not queue.item_path(pool.READY, RAM_MOVER).exists()
+    assert not queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
     assert [event for event in events
             if event.get("event") == "ram-window-unknown"], events
 
@@ -149,5 +149,5 @@ def test_the_map_the_consumer_composes_is_untouched(tmp_path: Path) -> None:
     queue, fragment = _landed(tmp_path)
     fragment.write_text('{"schema": "not-a-fragment"}')
     assert residency_map.read_fragments(
-        queue.residency_fragment_root(), CONSUMER) == []
+        queue.records.residency_fragment_root(), CONSUMER) == []
     assert json.loads(fragment.read_text())["schema"] == "not-a-fragment"

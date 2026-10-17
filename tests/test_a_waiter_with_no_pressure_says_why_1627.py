@@ -220,9 +220,9 @@ def test_a_waiter_that_stops_and_returns_is_reported_again(tmp_path: Path) -> No
     queue, stage = _tier(tmp_path)
     waiter, _movers = _too_big(queue, stage)
     _cycle(queue, stage, gib=CAPACITY)
-    queue.item_path(pool.READY, waiter).rename(tmp_path / "parked.json")
+    queue.records.item_path(pool.record_store.READY, waiter).rename(tmp_path / "parked.json")
     _cycle(queue, stage, gib=CAPACITY)
-    (tmp_path / "parked.json").rename(queue.item_path(pool.READY, waiter))
+    (tmp_path / "parked.json").rename(queue.records.item_path(pool.record_store.READY, waiter))
     _cycle(queue, stage, gib=CAPACITY)
     assert len(_events(queue, waiter)) == 2
 

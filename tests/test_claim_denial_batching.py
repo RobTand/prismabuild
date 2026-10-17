@@ -41,20 +41,20 @@ def test_one_diagnostic_write_per_pass_not_per_candidate(tmp_path, monkeypatch, 
 
 def test_record_pass_reads_its_existing_sidecar_once(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "f" * 64
     assert queue.record_pass(key) == 1
-    path = queue.passes_path(key)
+    path = queue.records.passes_path(key)
     first = json.loads(path.read_text())["first_unix"]
     reads = []
-    original = pool._read_json
+    original = pool.record_store.read_document
 
     def record(candidate):
         if candidate == path:
             reads.append(candidate)
         return original(candidate)
 
-    monkeypatch.setattr(pool, "_read_json", record)
+    monkeypatch.setattr(pool.record_store, '_read_json', record)
     assert queue.record_pass(key) == 2
     assert len(reads) == 1, f"one increment reread the sidecar {len(reads)} times"
     after = json.loads(path.read_text())
@@ -64,7 +64,7 @@ def test_record_pass_reads_its_existing_sidecar_once(tmp_path, monkeypatch):
 
 def test_summaries_only_flush_preserves_existing_records(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_denial({"action_key": "a" * 64, "published_unix": 1.0}, "placement_mismatch")
     before = local_records(queue)
     assert before
@@ -78,7 +78,7 @@ def test_summaries_only_flush_preserves_existing_records(tmp_path, monkeypatch):
 
 def test_overflowing_generation_is_dropped_not_raised(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     writes = _writes(monkeypatch)
     queue.record_denial({"action_key": "a" * 64, "published_unix": 10 ** 400},
                         "placement_mismatch")
@@ -104,10 +104,10 @@ def test_exception_flushes_and_resets_context(tmp_path, monkeypatch):
         queue.claim(capacity={"cpu": 1})
     assert len(writes) == 1
     assert pool._CLAIM_DIAGNOSTICS.get() is None
-    assert queue.item_path(pool.READY, key).is_file()
+    assert queue.records.item_path(pool.record_store.READY, key).is_file()
     assert queue.ledger().held_keys() == []
     monkeypatch.setattr(queue, "record_denial", original)
-    queue.record_denial(pool.read_queue_record(queue.item_path(pool.READY, key)), "placement_mismatch")
+    queue.record_denial(pool.read_queue_record(queue.records.item_path(pool.record_store.READY, key)), "placement_mismatch")
     assert len(writes) == 2
 
 
@@ -129,7 +129,7 @@ def test_failed_flush_does_not_mask_original_exception(tmp_path, monkeypatch):
     with pytest.raises(LookupError, match="original pass failure"):
         queue.claim(capacity={"cpu": 1})
     assert pool._CLAIM_DIAGNOSTICS.get() is None
-    assert queue.item_path(pool.READY, key).is_file()
+    assert queue.records.item_path(pool.record_store.READY, key).is_file()
     assert queue.ledger().held_keys() == []
 
 
@@ -142,7 +142,7 @@ def test_reason_ring_is_written_before_latest_document_flush(tmp_path, monkeypat
 
     def observe(item, reason, evidence=None):
         original(item, reason, evidence)
-        assert queue.denial_transitions_path(key).is_file()
+        assert queue.records.denial_transitions_path(key).is_file()
         assert not writes
 
     monkeypatch.setattr(queue, "record_denial", observe)
@@ -154,7 +154,7 @@ def test_other_queue_does_not_join_current_batch(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "one")
     other = pool.PoolQueue(tmp_path / "two")
     publish(queue, "a" * 64, resources={"cpu": 2})
-    other.ensure_layout()
+    other.records.ensure_layout()
     original = queue.record_denial
 
     def observe(item, reason, evidence=None):
@@ -212,7 +212,7 @@ def test_interleaved_passes_merge_and_preserve_newer_peer_verdict(tmp_path, monk
     records = list(local_records(queue).values())
     assert len(records) == 2
     assert next(row for row in records if row["action_key"] == same)["evidence"] == {"version": "new"}
-    assert all(queue.item_path(pool.READY, key).is_file() for key in (same, unrelated))
+    assert all(queue.records.item_path(pool.record_store.READY, key).is_file() for key in (same, unrelated))
 
 
 def test_pending_diagnostics_are_bounded(tmp_path, monkeypatch):
@@ -242,6 +242,6 @@ def test_diagnostics_lock_contention_drops_batch_not_claim(tmp_path):
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert queue.claim(capacity={"cpu": 1}) is None
         assert not local_records(queue)
-        assert queue.denial_transitions_path("a" * 64).is_file()
+        assert queue.records.denial_transitions_path("a" * 64).is_file()
     assert queue.claim(capacity={"cpu": 1}) is None
     assert local_records(queue)

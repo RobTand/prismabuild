@@ -57,6 +57,7 @@ from runtime_paths import generation_root  # noqa: E402
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 import prewarm_loop  # noqa: E402
+from prismabuild import materialize  # noqa: E402
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
@@ -145,7 +146,7 @@ def promote(args, *, stop=None) -> dict[str, object]:
     residency_root = Path(args.residency_root) if args.residency_root else None
     queue = pool.PoolQueue(Path(args.pool_root))
     residence = (Path(residency_root) if residency_root is not None
-                 else queue.root / pool.RESIDENCY)
+                 else queue.root / pool.record_store.RESIDENCY)
     covers: list[dict[str, str]] = []
     stage_tier: str | None = None
     for fragment in residency_map.read_fragments(
@@ -429,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.action_key = own_action_key(args.action_key)
     if args.residency_root is None:
-        args.residency_root = str(Path(args.pool_root) / pool.RESIDENCY)
+        args.residency_root = str(Path(args.pool_root) / pool.record_store.RESIDENCY)
 
     receipt = promote(args)
     queue = pool.PoolQueue(Path(args.pool_root))
@@ -437,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.receipt:
         # The atomic writer every other fleet record uses: a reader of this
         # path must never be able to observe half a document.
-        pool._write_json_atomic(Path(args.receipt), receipt)
+        materialize._write_json_atomic(Path(args.receipt), receipt)
     print(json.dumps(receipt, indent=1, sort_keys=True, default=str))
     return 1 if receipt.get("refusal") else 0
 

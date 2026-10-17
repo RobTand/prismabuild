@@ -118,7 +118,7 @@ def _publish(queue, key, resources):
 
 def test_a_claim_reserves_spool_on_a_box_that_declares_it(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     _publish(queue, key, {"cpu": 1, "mem_gb": 1, KIND: 3})
     claimed = queue.claim(owner="w", capacity={"cpu": 2, "mem_gb": 4, KIND: 5})
@@ -130,7 +130,7 @@ def test_a_claim_reserves_spool_on_a_box_that_declares_it(tmp_path):
 
 def test_a_box_that_declares_no_spool_never_fits_and_placement_calls_it_unknown(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="box", tags=["box"], has_gpu=False,
                    capacity={"cpu": 2, "mem_gb": 4})
     key = "b" * 64

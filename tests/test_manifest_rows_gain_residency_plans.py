@@ -615,14 +615,20 @@ def test_the_superseded_directory_is_listed_once_per_call(tmp_path, monkeypatch)
     keys = [fleet.action(f"r4-plain-{index}", files, with_manifest=False)
             for index in range(5)]
     listings: list[str] = []
-    real_scan = pool_scan = __import__("prismabuild.pool", fromlist=["_scan"])._scan
+    real_scan = pool_scan = __import__(
+        "prismabuild.immutable_files",
+        fromlist=["scan_optional"],
+    ).scan_optional
 
     def counting(directory):
         listings.append(str(directory))
         return real_scan(directory)
 
     monkeypatch.setattr(
-        __import__("prismabuild.pool", fromlist=["_scan"]), "_scan", counting)
+        __import__(
+            "prismabuild.immutable_files",
+            fromlist=["scan_optional"],
+        ), 'scan_optional', counting)
 
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),

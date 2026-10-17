@@ -157,13 +157,51 @@ from .denial_records import (
 from . import manifest_layout
 from . import _peer_placement
 from . import core as pb
-from . import immutable_files
+from . import immutable_files, record_store
+from .record_store import PoolError, PoolContractError, StaleAbsenceError
+from .record_store import (
+    ATTEMPTS,
+    CLAIMED,
+    DENIAL_TRANSITIONS,
+    DONE,
+    EXPORTS,
+    FAILED,
+    INTENT,
+    LATE_FINISH_SUFFIX,
+    MOVERS,
+    MOVERS_ARCHIVE,
+    MOVERS_PRICING,
+    MOVERS_PRICING_LOG,
+    MOVERS_RETIRED,
+    MOVERS_RETIREMENT_CHECKPOINT,
+    MOVERS_RETIREMENT_STATE,
+    MOVER_LANDING_REPORT,
+    PASSES,
+    POOL_ATTEMPT_SCHEMA_V1,
+    PREWARM,
+    READY,
+    RELEASED_ORIGIN_CONSUMERS,
+    RESIDENCY,
+    RESIDENCY_EVENTS,
+    RESIDENCY_EVENTS_HOST_DIR,
+    RESIDENCY_PLANS,
+    STAGE_OWNERSHIP_HOLDERS,
+    TIERS,
+    TIER_COMMITMENTS,
+    TIER_FUNDING,
+    TIER_FUNDING_RETIRED,
+    TIER_RESERVATIONS,
+    TOMBSTONE_SUFFIX,
+    WITHDRAWN,
+    WORKERS,
+    _CLAIM_IDENTITY,
+    _STATES,
+)
 from . import progress as pb_progress
 from .materialize import (  # relocated verbatim; see materialize.py
     _cleanup_execution_checkout,
     _now,
     _run_materializer_git,
-    _write_json_atomic,
 )
 from . import materialize, cpu_topology
 from . import adaptive_cpu as cpu_admission
@@ -196,7 +234,6 @@ PUBLICATION_SUPERSEDED_SCHEMA_V1 = "prismabuild.publication_superseded.v1"
 #: #372 Tier 0: metadata about a run, never part of the action it was a run of,
 #: so a receipt that carries it and one from before it are the same action.
 RESOURCE_PROFILE_SCHEMA_V1 = "prismabuild.resource_profile.v1"
-POOL_ATTEMPT_SCHEMA_V1 = "prismaquant.prismabuild.pool_attempt.v1"
 POOL_OFFER_SCHEMA_V1 = "prismaquant.prismabuild.pool_offer.v1"
 
 def _membership_withdrawal_owner(value: object) -> bool:
@@ -283,27 +320,18 @@ MOVE_ADOPTED_FROM_FIELD = "adopted_from"
 # every receipt already published to this CAS; mixing prefixes inside one store
 # would be worse than carrying the history.  See the package docstring.
 
-READY = "ready"
-CLAIMED = "claimed"
-DONE = endings.DONE
-FAILED = endings.FAILED
-INTENT = "intent"
 #: Where an operator's cancellation is filed.  Deliberately not ``failed``: a
 #: withdrawn action is a decision, and putting it in the failure record makes
 #: the failure record lie about the fleet.  Four withdrawn test suites are in
 #: the live ``failed/`` for exactly that reason.
-WITHDRAWN = endings.WITHDRAWN
-_STATES = (READY, CLAIMED, DONE, FAILED, INTENT, WITHDRAWN)
 
 #: Suffix of a claim that has been moved out of the way while its finisher
 #: publishes the item's next home.  Every reader of ``claimed/`` addresses it
 #: as ``<key>.json`` or ``<key>.lease`` -- ``reap_stale`` and
 #: ``sweep_widowed_leases`` by glob, ``item_path`` and ``find_key`` by name --
 #: so a suffix that is neither is invisible to all of them, which is the point.
-TOMBSTONE_SUFFIX = ".tombstone"
 # Old sweepers must ignore exact-attempt cleanup beside a newer live claim;
 # they retire ordinary tombstones in that situation without scope cleanup.
-LATE_FINISH_SUFFIX = ".late-finish"
 CONTAINER_OWNERS = "container-owners"
 CONTAINER_OWNER_LABEL = "prismabuild.action"
 #: The slice a container was created inside.  The owner label is the action's
@@ -323,7 +351,6 @@ CONTAINER_SCOPE_LABEL = "prismabuild.scope"
 CONTAINER_OWNER_ENV = "PRISMABUILD_CONTAINER_OWNER"
 CONTAINER_MARKER_ENV = "PRISMABUILD_CONTAINER_MARKER"
 DOCKER = "/usr/bin/docker"
-ATTEMPTS = "attempts"
 
 # Ported verbatim from pqwork: 30 s refresh, 300 s expiry.  The 10x margin is
 # what absorbs an NFS stall or a long GC pause without a spurious requeue.
@@ -499,11 +526,9 @@ RESERVATIONS = "reservations"
 #: tokens are taken by claimants on any box: a mover on dl380g10 fills a
 #: stage that a consumer on a Spark reads, and both reserve against the
 #: same ledger.
-TIER_RESERVATIONS = "tier-reservations"
 #: Where one mover's advance-credit funding record lives (window progress
 #: protection): bound to exact tier/mover/range/generation, read by the claim
 #: path only to cover pre-positioned fence tokens, never to invent capacity.
-TIER_FUNDING = "tier-funding"
 TIER_FUNDING_SCHEMA_V1 = "prismabuild.tier_funding.v1"
 #: The funding state machine.  ``reserved`` (fence held under the grant) ->
 #: ``transferring`` (fence moved under the mover, awaiting its claim) ->
@@ -546,7 +571,6 @@ TIER_FUNDING_OUTPUT_SCHEMA_V1 = "prismabuild.tier_funding.output.v1"
 #: :meth:`PoolQueue.retire_terminal_output_funding`).  A record is read at the
 #: same per-mover address whether or not it was retired; only the directory
 #: census, which never needs a terminal record, stops reading it.
-TIER_FUNDING_RETIRED = "retired"
 #: Immutable output binding fields within one generation (``state``/``unix``
 #: advance as in V1).  ``published_unix`` is the sealed mover publication;
 #: ``owner_*`` binds the live producer claim that prepaid the window.
@@ -574,10 +598,8 @@ _FUNDING_KIND_ROLES = {
     "ram_gib": "ram_mover_row",
 }
 #: Where a tier loop files what it discovered about one tier, for readers.
-TIERS = "tiers"
 #: Per stage tier, what the tier loop's admission commitment saw this cycle
 #: (#930): one record per tier, rewritten each cycle by the loop that owns it.
-TIER_COMMITMENTS = "tier-commitments"
 TIER_COMMITMENT_SCHEMA_V1 = "prismabuild.tier_commitment.v1"
 #: The residency block an item may carry (#583): what a movement node moves,
 #: and which movement nodes a compute node waits on.  Absent on every item the
@@ -587,7 +609,6 @@ _RESIDENCY_KEYS = frozenset({
     "schema", "tier_id", "manifest_sha256", "manifest_bytes",
     "range_start_bytes", "range_end_bytes", "leads",
 })
-PASSES = "passes"
 #: Pass sidecars one ``sweep_orphan_passes`` call may inspect (#1498): the
 #: backlog drains over successive sweeps without parking a loop on the mount.
 ORPHAN_PASSES_SWEEP_LIMIT = 256
@@ -600,7 +621,6 @@ CENSUS_UNREADABLE_SCHEMA_V1 = "prismabuild.ledger_census_unreadable.v1"
 #: small file per key in the queue root, beside ``passes``, written only when
 #: a host's reason for the key changes.  ``claim-denials.json`` keeps the
 #: latest verdict; this keeps the sequence that diagnoses a starvation.
-DENIAL_TRANSITIONS = "denial-transitions"
 #: How long a ring outlives a key that no state directory names any more,
 #: when no terminal or withdrawal record says why.  The same safety valve,
 #: for the same reason, as ``PREWARM_RECEIPT_RETENTION_S`` (defined below).
@@ -613,7 +633,6 @@ MAX_ENDING_DEPENDENTS = MAX_DENIAL_VALUE_ITEMS
 #: ``residency-events/<consumer>/<host>.jsonl``, one file per writing host so
 #: every file has one writer (the host's tier-loop singleton) and no append
 #: crosses the NFS client boundary.
-RESIDENCY_EVENTS = "residency-events"
 #: Lines one host's event file keeps.  The writer rewrites the file to its
 #: newest ``MAX_CONSUMER_EVENT_LINES`` once it holds twice that, so a file
 #: never exceeds ``2 * MAX_CONSUMER_EVENT_LINES`` lines.  At one verdict per
@@ -629,14 +648,11 @@ MAX_ENDING_EVENTS = MAX_DENIAL_VALUE_ITEMS
 #: same root, one ``<host>.jsonl`` per writing host, bounded the same way.
 #: The leading underscore keeps it out of ``sweep_consumer_events``, which
 #: only reaps directories named by a 64-character action key.
-RESIDENCY_EVENTS_HOST_DIR = "_host"
-WORKERS = "workers"
 #: Where a storage-role loop files what it made resident for one action.
 #: A sidecar for the same reason ``passes`` is one: the only safe moment to
 #: write a ready item is never.  The prewarm runs while the item is still in
 #: ``ready``, so writing its result into the item would race the claim that
 #: may already have moved it and resurrect a claimed action.
-PREWARM = "prewarm"
 
 #: The claim record's pointer at that sidecar, and the digest it must still
 #: name when the terminal record resolves it.  The claim carries a reference
@@ -658,7 +674,6 @@ PREWARM_RECEIPT_RETENTION_S = 7 * 24 * 3600.0
 #: Where a movement node files what it staged.  A sidecar for the same reason
 #: ``prewarm`` is one, and read by ``tier_loop`` for the fill measurement: a
 #: mover's receipt is the pool-side rate the tier mints its fill tokens from.
-MOVERS = "movers"
 
 #: The retired movement-receipt store (#992 item 2), beside ``movers/``.
 #: ``pb_gc --queue-root`` moves a terminal consumer's receipt here instead of
@@ -674,11 +689,7 @@ MOVERS = "movers"
 #: leave the active directory.  A state marker beside the checkpoint proves a
 #: retirement happened, so a later missing or truncated checkpoint refuses
 #: instead of reading as "no retirements".
-MOVERS_RETIRED = "movers-retired"
-MOVERS_RETIREMENT_CHECKPOINT = "checkpoint.json"
-MOVERS_RETIREMENT_STATE = "state.json"
 MOVERS_RETIREMENT_LOCK = "checkpoint.lock"
-MOVERS_ARCHIVE = "movers-archive"
 #: One checkpoint document names its own digest over the canonical body with
 #: the digest field removed; the state marker names the revision it followed.
 MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1 = (
@@ -692,13 +703,10 @@ MOVER_RETIREMENT_STATE_SCHEMA_V1 = "prismabuild.mover_retirement_state.v1"
 #: A directory of its own, not a file in ``movers/``: the tier loop, pbmcp,
 #: pbmetrics and the visibility qualifier all list ``movers/*.json`` and
 #: parse what they find.
-MOVERS_PRICING = "movers-pricing"
-MOVERS_PRICING_LOG = "receipts.jsonl"
 MOVERS_PRICING_LOCK = "receipts.lock"
 #: The first field of every log line.  A line with any other tag is not
 #: read, so changing :data:`MOVE_PRICING_FIELDS` means changing this tag:
 #: every receipt is then read once more and logged in the new shape.
-MOVE_PRICING_LOG_TAG = b"pricing.v2"
 #: What a pricing read keeps of each receipt.  Every field the three
 #: pricing readers of :meth:`PoolQueue.move_records` consult, and nothing
 #: else: ``storage_tiers.usable_mover_receipts``,
@@ -738,7 +746,6 @@ MOVE_PRICING_FIELDS = (
 #: ``usable_mover_receipts`` count a writer among the readers.  History
 #: survives beside the newest: older receipts stay listed for diagnosis,
 #: and a degenerate newest prices nothing without erasing them.
-EXPORTS = "exports"
 #: The schema of one filed export receipt: the export's pacing record with
 #: the identity a next seal needs -- action key, unix, tier, owner.
 #:
@@ -778,39 +785,14 @@ def move_pricing_projection(record: Mapping[str, object]) -> dict[str, object]:
 
 
 def _move_pricing_line(name: str, record: Mapping[str, object]) -> bytes:
-    body = pb._canonical_bytes(move_pricing_projection(record))
-    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), body)) + b"\n"
+    return record_store.pricing_line(name, move_pricing_projection(record))
 
-
-def _move_pricing_unknown_line(name: str) -> bytes:
-    """A line that makes ``name`` unknown to the log until a later line.
-
-    Appended before a receipt is re-filed under its own name, so a log that
-    loses the new receipt's line -- a crash between the rename and the
-    append, a failed append -- reads that name from the receipt rather than
-    from its older line.
-    """
-
-    return b"\t".join((MOVE_PRICING_LOG_TAG, name.encode(), b"")) + b"\n"
-
-
-def _move_pricing_line_name(line: bytes) -> str | None:
-    """The receipt name a log line is about, even when its body is torn."""
-
-    parts = line.split(b"\t", 2)
-    if len(parts) < 2 or parts[0] != MOVE_PRICING_LOG_TAG:
-        return None
-    try:
-        return parts[1].decode()
-    except UnicodeDecodeError:
-        return None
 
 #: Who holds a stage's ownership lock, as the holder itself says (#1021).  A
 #: lock file must stay empty (``posix_lock``: only a retirement writes one),
 #: so the record lives in a directory of its own, named like the lock.  A
 #: holder files it once the lock is granted and removes it before letting
 #: go; a worker reads it only when a non-blocking try finds the lock held.
-STAGE_OWNERSHIP_HOLDERS = "stage-ownership-holders"
 STAGE_OWNERSHIP_HOLDER_SCHEMA_V1 = "prismabuild.stage_ownership_holder.v1"
 #: A holder record is a few fields; anything larger is not one.
 MAX_STAGE_OWNERSHIP_HOLDER_BYTES = 4096
@@ -841,12 +823,10 @@ TIER_RATE_KINDS = frozenset({storage_tiers.FILL_KIND})
 #: Where movers file their residency-map fragments, one directory per consumer
 #: and one file per mover inside it.  The composed map a consumer reads is
 #: written from these; see :mod:`prismabuild.residency_map`.
-RESIDENCY = "residency"
 
 #: Where a consumer's frozen window plan lives: every movement node it
 #: will ever have, named before the first one is published, so a restart
 #: resumes the same decomposition instead of cutting a new one.
-RESIDENCY_PLANS = "residency-plans"
 
 #: The queue-wide index of consumers an operator released from an origin
 #: batch (#954): one file per released key and batch.  Filed by
@@ -855,7 +835,6 @@ RESIDENCY_PLANS = "residency-plans"
 #: The claim keeps its scan-time listing only as the placement-bypass hint;
 #: the refusal itself lists the directory fresh under the key's transition
 #: lock (#964), so an entry filed after the scan listed it is still seen.
-RELEASED_ORIGIN_CONSUMERS = "released-origin-consumers"
 
 #: How long each rung of a withdrawal's signal ladder waits before escalating.
 #: Matched to ``core._PROCESS_GROUP_GRACE_SECONDS``, which is the grace the
@@ -876,7 +855,6 @@ DEFERRED_FOR_POOL_READERS = "deferred_for_pool_readers"
 #: A mover's own landing report (#1090): ``residency-events/<mover>/`` +
 #: this name, written by ``stage_move`` whether or not the worker gave it a
 #: progress channel.  ``consumer_events`` reads only ``*.jsonl`` there.
-MOVER_LANDING_REPORT = "landing.json"
 MOVER_LANDING_SCHEMA_V1 = "prismabuild.mover_landing.v1"
 
 #: How long a worker's offer stays believable.  A loop re-announces on every
@@ -915,20 +893,6 @@ OFFER_FUTURE_TOLERANCE_S = 60.0
 class OfferTiming(NamedTuple):
     age_s: float | None
     clock_skew_s: float | None
-
-
-def _residency_action_key(value: object) -> str:
-    """One action key, checked, because these two names index shared files.
-
-    The residency map and the frozen plan are named after the consumer; a
-    caller that passed a path fragment instead of a key would name a file
-    somewhere else under the shared mount.
-    """
-
-    if (not isinstance(value, str) or len(value) != 64
-            or any(character not in "0123456789abcdef" for character in value)):
-        raise PoolContractError("a residency file is named by a 64-character action key")
-    return value
 
 
 def offer_timing(announced: object, *, now: float) -> OfferTiming:
@@ -1010,12 +974,6 @@ def normalize_placement_tags(tags: Sequence[object]) -> list[str]:
     return sorted(normalized)
 
 
-class PoolError(pb.PrismaBuildError):
-    """A queue-level failure, distinct from an action-level one."""
-
-
-class PoolContractError(PoolError, ValueError):
-    """A queue record does not satisfy its schema."""
 
 
 def normalize_priority_reason(value: object) -> str | None:
@@ -1073,18 +1031,6 @@ def tested_repository_of(record: object) -> str:
                 and value.strip().isprintable()):
             return value.strip()
     return TESTED_REPOSITORY_UNKNOWN
-
-
-class StaleAbsenceError(FileNotFoundError):
-    """A linked attempt file its directory lists that this client cannot open yet.
-
-    ``PoolQueue.attempt_outcomes`` raises it only after a listing of every
-    directory on the canonical path showed each name, so the file exists on
-    the server and this client still answers ``ENOENT`` for it from a lookup
-    it cached before the file was created (#1100).  A waiter treats it as a
-    read to repeat later, not as a verdict.  It is a ``FileNotFoundError``,
-    so a caller that does not know it keeps its old handling.
-    """
 
 
 class AmbiguousClaimHolder(PoolContractError):
@@ -1390,12 +1336,17 @@ def _sealed_action_request(
     key = str(action_key)
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request", max_bytes=max_bytes)
+        raw = immutable_files.read_stable_file(
+            request,
+            where="pool action request",
+            max_bytes=max_bytes,
+        )
     except FileNotFoundError:
         return None
     try:
         action = pb.validate_action(
-            pb._decode_strict_json(raw, where="pool action request"))
+            pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+        )
     except (pb.ActionContractError, pb.CASTamperError, pb.CASUnavailableError,
             ValueError, OSError) as exc:
         raise PoolContractError(
@@ -1448,12 +1399,14 @@ def _sealed_progress_policy(
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+        raw = immutable_files.read_stable_file(request, where="pool action request")
     except FileNotFoundError:
         # Same rule as the deadline: a legacy launcher with no request declares
         # nothing, and the canonical worker refuses a missing request itself.
         return None
-    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     try:
@@ -1590,10 +1543,10 @@ class ProgressWatch:
 
         self.sampled_unix = self.clock.unix()
         try:
-            raw = pb._read_regular_file_nofollow(
-                self.path, where="action progress report",
+            raw = immutable_files.read_replaced_record(
+                self.path,
+                where="action progress report",
                 max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
-                replaced_leaf=True,
             )
         except FileNotFoundError:
             # Before the first report, and after a reporter that never came.
@@ -1612,7 +1565,7 @@ class ProgressWatch:
             self._reject(f"unreadable: {type(exc).__name__}")
             return False
         try:
-            record = pb._decode_strict_json(raw, where="action progress report")
+            record = pb.digest_primitives.decode_strict_json(raw, where="action progress report")
         except (pb.ActionContractError, RecursionError):
             # A torn read is possible in principle even behind os.replace on a
             # shared filesystem; the next poll reads the whole file.
@@ -2255,16 +2208,18 @@ def _read_wait_record(path: Path, *, token: str | None, schema: str,
     """One wait record: ``{field: [keys], "since_unix": t}``, or why not."""
 
     try:
-        raw = pb._read_regular_file_nofollow(
-            path, where=where,
-            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+        raw = immutable_files.read_replaced_record(
+            path,
+            where=where,
+            max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+        )
     except FileNotFoundError:
         return None, ""
     except (OSError, pb.ActionContractError, pb.CASTamperError,
             pb.CASUnavailableError) as exc:
         return None, f"unreadable: {type(exc).__name__}"
     try:
-        record = pb._decode_strict_json(raw, where=where)
+        record = pb.digest_primitives.decode_strict_json(raw, where=where)
     except (pb.ActionContractError, RecursionError):
         return None, "unparsable"
     if not isinstance(record, dict):
@@ -2300,12 +2255,14 @@ def _sealed_execution_policy(
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request")
+        raw = immutable_files.read_stable_file(request, where="pool action request")
     except FileNotFoundError:
         # Legacy/custom launchers can have no request. The canonical worker
         # independently refuses a missing request before executing any action.
         return ceiling, False
-    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     mode = action["params"].get("profile")
@@ -2353,10 +2310,16 @@ def _declared_run_bound(item: Mapping[str, object], *, max_bytes: int | None = N
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="pool action request", max_bytes=max_bytes)
+        raw = immutable_files.read_stable_file(
+            request,
+            where="pool action request",
+            max_bytes=max_bytes,
+        )
     except FileNotFoundError:
         return "deadline", None
-    action = pb.validate_action(pb._decode_strict_json(raw, where="pool action request"))
+    action = pb.validate_action(
+        pb.digest_primitives.decode_strict_json(raw, where="pool action request"),
+    )
     if action["action_key"] != key:
         raise PoolContractError("pool action request does not match the claimed key")
     try:
@@ -2391,21 +2354,6 @@ def _execution_checkout(item: Mapping[str, object]) -> Iterator[Path]:
         raise PoolContractError(str(exc)) from exc
 
 
-def _publish_immutable(path: Path, raw: bytes, *, where: str) -> None:
-    """First-writer-publish one attempt artifact; refuse conflicting bytes."""
-
-    won = immutable_files.publish_immutable(path, raw)
-    if won:
-        return
-    observed = pb._read_regular_file_nofollow(
-        path, where=where, require_readonly=True
-    )
-    if observed != raw:
-        raise PoolContractError(
-            f"{where} conflicts with the immutable record already filed: {path}"
-        )
-
-
 def read_queue_record(path: Path) -> dict[str, object] | None:
     """Read one JSON object without mutation; missing/empty returns None.
 
@@ -2413,182 +2361,9 @@ def read_queue_record(path: Path) -> dict[str, object] | None:
     loud. This direct read has no deadline: callers on shared mounts must bound
     it. Stale-entry tolerance belongs to offer enumeration, not this API.
     """
-    return _read_json(path)
+    return record_store.read_document(path)
 
 
-def _stage_ownership_name(stage_root) -> str:
-    """The name one stage root's ownership lock and holder record share."""
-
-    root = str(Path(stage_root).absolute())
-    return hashlib.sha256(f"stage-ownership:{root}".encode()).hexdigest()
-
-
-def _read_json(
-    path: Path, *, tolerate_stale: bool = False
-) -> dict[str, object] | None:
-    """The record at ``path``, or ``None`` if it is not there to read.
-
-    ``tolerate_stale`` extends "not there" to cover ``ESTALE``, and belongs
-    only to a caller enumerating a directory whose entries come and go.  A
-    worker offer is exactly that: it appears when a loop starts and is gone
-    when the box leaves, so a file that vanishes between the ``glob`` and the
-    read is ordinary.  ``ENOENT`` has always been read that way here; on NFS
-    the same event arrives as ``ESTALE`` through a directory handle the client
-    had already cached, and untreated it left this function, ``offers()`` and
-    ``placeable_hosts()`` and killed a submission before it queued anything --
-    a whole ``pbtest`` shard, 74 tests never run, for two offer files an
-    operator had tidied away (#208).
-
-    It is opt-in because ``ESTALE`` is not only "this file vanished": it is
-    also what a dead mount or a stale parent handle returns.  An enumerator
-    has already had its ``glob`` succeed, so it holds the evidence that the
-    directory is live and the entry is not.  A caller addressing one record by
-    key holds no such evidence -- ``reclaim`` asserting exactly one terminal
-    record, a lease read, a pass record -- and answering "absent" there would
-    turn a broken mount into a confident wrong verdict.  Those callers keep
-    the default and stay loud.
-    """
-
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        if tolerate_stale and exc.errno == errno.ESTALE:
-            return None
-        raise
-    if not raw:
-        return None
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise PoolContractError(f"queue record is not valid JSON: {path}") from exc
-    if not isinstance(value, dict):
-        raise PoolContractError(f"queue record is not an object: {path}")
-    return value
-
-
-def _read_json_fresh(path: Path) -> dict[str, object] | None:
-    """``_read_json`` for a record another box files under a key this one polls.
-
-    The queue is on NFS with default attribute caching.  A lookup of a name
-    that does not exist yet is cached as a negative entry, and the client keeps
-    answering ``ENOENT`` from it until the parent directory's attributes are
-    revalidated -- up to ``acdirmin``, 30 s here.  A poller always looks first,
-    so it always caches the miss.  On sparky, ``move_record`` saw a receipt
-    dl380g10 had already filed 26.3 s to 26.6 s late with a plain read, and
-    0.04 s to 0.25 s late with the parent opened first
-    (``tools/fleet/qualify_record_visibility.py``, #808).  A produced-output
-    owner waited that out on every staged group, after a copy that took 4 s.
-
-    ``slurm_lane._read_json_object`` and ``action_wait.terminal_record`` follow the
-    same rule by listing the parent.  Opening it is used here because these
-    reads are polled several times a second and a listing costs what the
-    directory holds (``done`` held 17,117 names when this was written): an
-    open is one round trip, and close-to-open consistency makes it the
-    revalidation.
-
-    A stale "absent" is not only slow.  ``produced_output`` republishes a
-    mover row it reads as absent, and an egress whose row it does not read as
-    live and whose receipt it does not see.  In the 2026-09-21 live cycle
-    those stale misses republished each egress three times, so each ran four
-    times and each retirement took more than 20 s for a 4 s action.  The
-    re-runs were no-ops (``stage_release.evict`` is idempotent), and the last
-    one overwrote the receipt the retirement had been filed from.
-
-    Only a miss pays for the revalidation: a record that is there is one
-    read, as before.  It is best effort.  A parent that cannot be opened
-    leaves the answer what the first read said, which is what this function
-    answered before it revalidated anything, so no caller meets a failure it
-    did not meet before; that read can still be stale.
-    """
-
-    record = _read_json(path)
-    if record is not None:
-        return record
-    try:
-        descriptor = os.open(
-            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    except OSError:
-        return None
-    os.close(descriptor)
-    return _read_json(path)
-
-
-def _read_json_bounded(
-    path: Path, *, max_bytes: int | None
-) -> dict[str, object] | None:
-    """``_read_json`` through Core's bounded, no-follow replaced-leaf reader.
-
-    ``max_bytes is None`` is exactly :func:`_read_json`, so every uncapped
-    caller keeps its behaviour.  With a cap the record is read as a stable,
-    non-symlink regular file no larger than the bound (the writer replaces
-    the name with ``os.replace``, so the replaced-leaf retry is the correct
-    one) and decoded by Core's strict JSON reader, which refuses duplicate
-    keys and non-finite numbers.  The mutable queue rows are writable by
-    design, so no read-only requirement is imposed here; the immutable
-    attempt logs and CAS objects keep their own stricter checks (#1446).
-
-    A present leaf that is empty, oversized or invalid is refused, never read
-    as absent: a terminal slot silently skipped here would let a readable
-    success outrank a newer failure or withdrawal the census never parsed.
-    Only a genuinely missing name is ``None``.
-    """
-
-    if max_bytes is None:
-        return _read_json(path)
-    try:
-        raw = pb._read_regular_file_nofollow(
-            path, where="queue record", max_bytes=max_bytes,
-            replaced_leaf=True)
-    except FileNotFoundError:
-        return None
-    if not raw:
-        raise PoolContractError(f"queue record is present but empty: {path}")
-    try:
-        value = pb._decode_strict_json(raw, where="queue record")
-    except pb.PrismaBuildError as exc:
-        raise PoolContractError(str(exc)) from exc
-    if not isinstance(value, dict):
-        raise PoolContractError(f"queue record is not an object: {path}")
-    return value
-
-
-def _read_json_confirmed(path: Path, *, max_bytes: int | None = None) -> dict[str, object] | None:
-    """Read after an error-visible directory refresh; never trust a cached miss."""
-    names = os.listdir(path.parent)
-    if path.name not in names:
-        return None
-    # A listed name that cannot be read is uncertain, not absent. Reopen
-    # positive records too; the best-effort poll reader is not commit proof.
-    raw = pb._read_regular_file_nofollow(
-        path, where="terminal proof record", replaced_leaf=True, max_bytes=max_bytes)
-    value = pb._decode_strict_json(raw, where="terminal proof record")
-    if not isinstance(value, dict):
-        raise PoolContractError(f"terminal proof record is not an object: {path}")
-    return value
-
-
-def _is_hex64(value: object) -> bool:
-    return (isinstance(value, str) and len(value) == 64
-            and all(character in "0123456789abcdef" for character in value))
-
-
-_write_bytes_atomic = materialize.write_bytes_atomic
-#: The bytes twin lives beside the JSON owner so the two can never drift
-#: (#1330); this alias keeps the pool-local name its callers and one
-#: monkeypatching test use.
-
-
-def _read_optional_document(path: Path
-                            ) -> tuple[bool, dict[str, object] | None]:
-    """``(present, document)``; invalid JSON raises, an empty file is present/None."""
-
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        return False, None
-    return True, _read_json(path)
 
 
 def _retirement_checkpoint_digest(body: Mapping[str, object]) -> str:
@@ -2640,7 +2415,7 @@ def _validate_mover_retirements(checkpoint_present: bool,
 
     ``writer`` is true only for the retirement lock holder, whose own
     archive-without-commit prefix is judged by
-    :meth:`PoolQueue._orphan_archives_refusal` instead of the blanket
+    :meth:`record_store.RecordStore.mover_archive_coverage` instead of the blanket
     archive-presence refusal; the reader always refuses that shape.
     """
 
@@ -2667,7 +2442,7 @@ def _validate_mover_retirements(checkpoint_present: bool,
         raise PoolContractError(
             "movement retirement checkpoint is malformed")
     digest = checkpoint.get("checkpoint_sha256")
-    if not _is_hex64(digest) or digest != _retirement_checkpoint_digest(checkpoint):
+    if not record_store.key_shaped(digest) or digest != _retirement_checkpoint_digest(checkpoint):
         raise PoolContractError(
             "movement retirement checkpoint fails its own digest")
     incomplete = True
@@ -2681,7 +2456,7 @@ def _validate_mover_retirements(checkpoint_present: bool,
         state_revision = state.get("revision")
         if (isinstance(state_revision, bool)
                 or not isinstance(state_revision, int) or state_revision < 0
-                or not _is_hex64(state.get("checkpoint_sha256"))):
+                or not record_store.key_shaped(state.get("checkpoint_sha256"))):
             raise PoolContractError("movement retirement state is malformed")
         if state_revision > revision:
             raise PoolContractError(
@@ -2694,11 +2469,11 @@ def _validate_mover_retirements(checkpoint_present: bool,
             incomplete = False
     out: dict[str, dict[str, object]] = {}
     for key, entry in entries.items():
-        if (not _is_hex64(key) or not isinstance(entry, Mapping)
+        if (not record_store.key_shaped(key) or not isinstance(entry, Mapping)
                 or str(entry.get("action_key") or "") != str(key)
                 or entry.get("receipt_schema") not in POOL_MOVEMENT_RECEIPT_SCHEMAS
-                or not _is_hex64(entry.get("archive_sha256"))
-                or not _is_hex64(entry.get("projection_sha256"))):
+                or not record_store.key_shaped(entry.get("archive_sha256"))
+                or not record_store.key_shaped(entry.get("projection_sha256"))):
             raise PoolContractError(
                 f"movement retirement entry {key!r} is not self-bound")
         projection = entry.get("projection")
@@ -2780,52 +2555,6 @@ def _drain(
         return partial[0], partial[1], True
 
 
-def _scan(directory: Path):
-    """List a directory that another process may be deleting underneath us.
-
-    Every ledger scan walks entries a concurrent worker is free to remove --
-    ``release`` is documented safe to call twice, so two of them will have one
-    ``rmdir`` the directory the other is mid-iteration over.  At one worker per
-    box that never happens; at sixty it happens within minutes, and the worker
-    dies with ``FileNotFoundError`` on ``iterdir`` rather than losing a lease
-    gracefully.  A directory that vanished held nothing this caller can still
-    act on, so the honest answer is an empty listing, not an exception.
-    """
-
-    try:
-        return sorted(directory.iterdir())
-    except (FileNotFoundError, NotADirectoryError):
-        return []
-
-
-def _glob(directory: Path, pattern: str):
-    """``Path.glob`` with the same disappearing-directory contract as `_scan`."""
-
-    try:
-        return sorted(directory.glob(pattern))
-    except (FileNotFoundError, NotADirectoryError):
-        return []
-
-
-def _scan_visible(directory: Path):
-    """List a directory LOUDLY: every error propagates to the caller.
-
-    The counterpart to :func:`_scan` for authoritative censuses (mint
-    grow, dead-name reclaim): a holder this listing cannot read makes
-    the census unknown, and the caller must refuse the decision --
-    retain rather than mint -- instead of narrowing the view.  Reads
-    (``capacity``, ``available``) keep the tolerant :func:`_scan`, and a
-    holder they cannot read is counted as HELD, never as free (#936):
-    ``capacity`` becomes a lower bound, and the shrink
-    (``retire_free_capacity``) counts the holder as holding every minted
-    name that is neither free nor dead, because an under-counted held
-    total would retire too few.  Neither reads an unreadable holder's
-    tokens as free.
-    """
-
-    return sorted(directory.iterdir())
-
-
 def _holder_is_dir(path: Path) -> bool:
     """Whether a listed ``held/`` entry is a holder directory, error-visible.
 
@@ -2836,7 +2565,7 @@ def _holder_is_dir(path: Path) -> bool:
     and that holder's tokens drop out of the census: on the strict census
     this reissued dead names with no backing.  This check gives one answer
     everywhere.  An entry that vanished (ENOENT, ENOTDIR) is not a holder,
-    exactly as :func:`_scan` treats a vanished directory.  Any other error
+    exactly as :func:`immutable_files.scan_optional` treats a vanished directory.  Any other error
     propagates, and each caller decides what an unreadable holder means.
     """
 
@@ -2864,33 +2593,20 @@ def _holder_token_paths(
     as held and report it instead of treating it as empty.  A holder that
     vanished mid-scan was released and holds nothing, so it reads as an
     empty list with no error.  Tokens are matched exactly as
-    :func:`_glob_visible` matches them.
+    :func:`immutable_files.match_required` matches them.
     """
 
     try:
         if not _holder_is_dir(holder):
             return [], None
         if names is None:
-            return _glob_visible(holder, pattern), None
+            return immutable_files.match_required(holder, pattern), None
         return sorted(path for path in names(holder)
                       if fnmatch.fnmatchcase(path.name, pattern)), None
     except (FileNotFoundError, NotADirectoryError):
         return [], None
     except OSError as exc:
         return [], exc
-
-
-def _glob_visible(directory: Path, pattern: str):
-    """Error-visible name match for authoritative censuses.
-
-    Same names as :func:`_glob` on a readable tree (``Path.glob`` uses
-    ``fnmatch`` for the leaf), but unreadable directories raise
-    instead of reading empty: a hidden live holder must abort a
-    reissue, never excuse one.  See :func:`_scan_visible`.
-    """
-
-    return sorted(path for path in _scan_visible(directory)
-                  if fnmatch.fnmatchcase(path.name, pattern))
 
 
 def held_names_visible(ledger, key: str) -> set[str]:
@@ -2900,7 +2616,7 @@ def held_names_visible(ledger, key: str) -> set[str]:
     tolerant scans: a key that holds nothing holds nothing.  Every other
     listing failure -- an unreadable holder directory above all -- raises,
     because an authoritative mutation cannot tell "holds nothing" from
-    "cannot see it holding" and must retain (:func:`_glob_visible` is the
+    "cannot see it holding" and must retain (:func:`immutable_files.match_required` is the
     accepted #742 census semantics this reuses; ``Path.glob`` hides
     ``EACCES`` as an empty listing, which is the trap this exists for).
     """
@@ -2908,7 +2624,7 @@ def held_names_visible(ledger, key: str) -> set[str]:
     try:
         paths = (ledger._glob_names(ledger.held_dir / key, "*-*", strict=True)
                  if isinstance(ledger, ResourceLedger)
-                 else _glob_visible(ledger.held_dir / key, "*-*"))
+                 else immutable_files.match_required(ledger.held_dir / key, "*-*"))
         return {path.name for path in paths}
     except (FileNotFoundError, NotADirectoryError):
         return set()
@@ -3108,7 +2824,7 @@ def find_launcher_pids(action_key: str) -> list[int]:
     needle = action_key.encode()
     mine = os.getpid()
     found: list[int] = []
-    for entry in _scan(Path("/proc")):
+    for entry in immutable_files.scan_optional(Path("/proc")):
         if not entry.name.isdigit() or int(entry.name) == mine:
             continue
         try:
@@ -3517,7 +3233,6 @@ class _Insufficient(Exception):
 #: What makes two readings of ``claimed/<key>.json`` the same claim.  The owner
 #: alone would be enough for two different workers, but not for one worker's
 #: two attempts at the same action, which is the case the reaper creates.
-_CLAIM_IDENTITY = ("claimed_by", "claimed_unix", "published_unix", "attempts")
 
 
 #: The resource fields every ending row carries, absent on a record filed
@@ -3928,7 +3643,11 @@ class ResourceLedger:
 
         reader = self._names_reader()
         if reader is None:
-            return _scan_visible(directory) if strict else _scan(directory)
+            return immutable_files.scan_required(
+                directory,
+            ) if strict else immutable_files.scan_optional(
+                directory,
+            )
         try:
             if optional and directory.name not in reader(directory.parent):
                 return []
@@ -3946,8 +3665,8 @@ class ResourceLedger:
 
         reader = self._names_reader()
         if reader is None or "/" in pattern or "**" in pattern:
-            return (_glob_visible(directory, pattern) if strict
-                    else _glob(directory, pattern))
+            return (immutable_files.match_required(directory, pattern) if strict
+                    else immutable_files.match_optional(directory, pattern))
         try:
             # Filter before constructing Paths, and sort exactly once. The
             # prior scan adapter sorted all Paths and this glob sorted them a
@@ -3960,7 +3679,7 @@ class ResourceLedger:
                 raise
             # Path.glob's tolerant behavior varies by interpreter. Preserve
             # it on errors; a failed cache read never becomes a remembered empty.
-            return _glob(directory, pattern)
+            return immutable_files.match_optional(directory, pattern)
 
     def _census_scan(self, directory: Path, *, optional: bool = False):
         """Authoritative-or-tolerant directory listing by ledger kind."""
@@ -4017,7 +3736,7 @@ class ResourceLedger:
                 or len(cpus) != len(set(cpus))):
             raise PoolContractError("CPU tiers must contain distinct nonnegative CPU IDs")
         path = self.base / "cpu-map.json"
-        existing = _read_json(path)
+        existing = record_store.read_document(path)
         if existing is None:
             if not initialize:
                 return None
@@ -4025,7 +3744,7 @@ class ResourceLedger:
                 raise PoolContractError("drain legacy CPU reservations before enabling CPU tiers")
             self.base.mkdir(parents=True, exist_ok=True)
             immutable_files.publish_immutable(path, pb._canonical_bytes(record))
-            existing = _read_json(path)
+            existing = record_store.read_document(path)
         if existing != record:
             raise PoolContractError("CPU tier map differs: stop workers, drain reservations "
                                     "and remove cpu-map.json before changing topology")
@@ -4042,7 +3761,7 @@ class ResourceLedger:
             metadata = self.holder_census().cpu_record(holder).value
         if metadata is not None and "allocation" in metadata:
             return metadata["allocation"]
-        cpus = self.cpu_ids(_glob(self.held_dir / holder, "cpu-*"), tiers)
+        cpus = self.cpu_ids(immutable_files.match_optional(self.held_dir / holder, "cpu-*"), tiers)
         return {kind: [c for c in tiers[kind] if c in cpus]
                 for kind in ("preferred", "fallback")}
 
@@ -4073,7 +3792,7 @@ class ResourceLedger:
         may silently substitute a busy CPU outside that proof. With no filter,
         static and old adaptive decisions keep the original ordered selection.
         """
-        tokens = _glob(self.free_dir, "cpu-*")
+        tokens = immutable_files.match_optional(self.free_dir, "cpu-*")
         if eligible_cpus is None:
             return tokens
         if tiers is None:
@@ -4095,7 +3814,7 @@ class ResourceLedger:
 
     def free_preferred(self, tiers: Mapping) -> int:
         return sum(int(token.name.split("-")[-1]) < len(tiers["preferred"])
-                   for token in _glob(self.free_dir, "cpu-*"))
+                   for token in immutable_files.match_optional(self.free_dir, "cpu-*"))
 
     @_guarded_mutation(blocking=True)
     def ensure_capacity(self, capacity: Mapping[str, int]) -> None:
@@ -4224,7 +3943,7 @@ class ResourceLedger:
                 for holder in self._scan_names(self.held_dir, strict=True)
                 if _holder_is_dir(holder)
             )
-        for holder in _scan(self.held_dir):
+        for holder in immutable_files.scan_optional(self.held_dir):
             if not _holder_is_dir(holder):
                 continue
             try:
@@ -4410,7 +4129,7 @@ class ResourceLedger:
             if want <= 0:
                 continue
             taken = 0
-            for token in sorted(_glob(holder, f"{kind}-*"), reverse=True):
+            for token in sorted(immutable_files.match_optional(holder, f"{kind}-*"), reverse=True):
                 if taken >= want:
                     break
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
@@ -4450,7 +4169,7 @@ class ResourceLedger:
         """
 
         try:
-            remaining = [path for path in _scan(holder)
+            remaining = [path for path in immutable_files.scan_optional(holder)
                          if path.name not in (cpu_admission.METADATA,
                                               gpu_admission.METADATA)]
         except OSError:
@@ -4487,7 +4206,7 @@ class ResourceLedger:
             if want <= 0:
                 continue
             taken = 0
-            for token in sorted(_glob(holder, f"{kind}-*")):
+            for token in sorted(immutable_files.match_optional(holder, f"{kind}-*")):
                 if taken >= want:
                     break
                 if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
@@ -4588,7 +4307,7 @@ class ResourceLedger:
                 path.unlink(missing_ok=True)
             return None
         try:
-            previous = _read_json(path) or {}
+            previous = record_store.read_document(path) or {}
         except (OSError, PoolContractError):
             previous = {}
         now = _now()
@@ -4607,7 +4326,7 @@ class ResourceLedger:
             "last_unix": now,
         }
         with suppress(OSError):
-            _write_json_atomic(path, report)
+            materialize._write_json_atomic(path, report)
         return report
 
     def capacity(self) -> dict[str, int]:
@@ -4735,7 +4454,10 @@ class ResourceLedger:
                     need -= int(adaptive.get("preferred_borrow", 0))
                 taken = 0
                 tokens = (self.free_cpu_tokens(cpu_tiers, eligible_cpus=(adaptive or {}).get('eligible_cpus'))
-                          if kind == 'cpu' else _glob(self.free_dir, f"{kind}-*"))
+                          if kind == "cpu" else immutable_files.match_optional(
+                              self.free_dir,
+                              f"{kind}-*",
+                          ))
                 for token in tokens:
                     if taken >= need:
                         break
@@ -4757,8 +4479,10 @@ class ResourceLedger:
                     raise _Insufficient(kind)
             if adaptive_gpu:
                 metadata = dict(adaptive_gpu, borrowed_gpu=max(
-                    0, wanted.get("gpu", 0) - len(_glob(destination, "gpu-*"))))
-                _write_json_atomic(destination / gpu_admission.METADATA, metadata)
+                    0, wanted.get("gpu", 0) - len(
+                        immutable_files.match_optional(destination, "gpu-*"),
+                    )))
+                materialize._write_json_atomic(destination / gpu_admission.METADATA, metadata)
             if adaptive is not None and cpu_tiers is not None:
                 allocation = self.cpu_allocation(handle, cpu_tiers)
                 assigned = set(allocation["preferred"] + allocation["fallback"])
@@ -4787,7 +4511,9 @@ class ResourceLedger:
                     allocation[tier] = [c for c in cpu_tiers[tier] if c in assigned]
                 metadata = dict(adaptive, allocation=allocation,
                                 borrowed_cpu=0 if funded else max(
-                                    0, len(assigned) - len(_glob(destination, "cpu-*"))))
+                                    0, len(assigned) - len(
+                                        immutable_files.match_optional(destination, "cpu-*"),
+                                    )))
                 allowance = adaptive.get("dependent_allowance")
                 if allowance:
                     # A producer's export allowance (#985): the last CPUs it
@@ -4799,7 +4525,12 @@ class ResourceLedger:
                     # Only CPUs this claim holds tokens for: a CPU borrowed
                     # from another holder's idle reservation is that holder's.
                     count = int(allowance.get("cpu", 0))
-                    own = set(self.cpu_ids(_glob(destination, "cpu-*"), cpu_tiers))
+                    own = set(
+                        self.cpu_ids(
+                            immutable_files.match_optional(destination, "cpu-*"),
+                            cpu_tiers,
+                        ),
+                    )
                     ordered = [cpu for cpu in allocation["preferred"] + allocation["fallback"]
                                if cpu in own]
                     if count <= 0 or count >= len(ordered):
@@ -4814,7 +4545,7 @@ class ResourceLedger:
                         # How the slot count was reached (#999): declared,
                         # measured, or unmeasured with the default.
                         "basis": allowance.get("basis")}
-                _write_json_atomic(destination / cpu_admission.METADATA, metadata)
+                materialize._write_json_atomic(destination / cpu_admission.METADATA, metadata)
         except _Insufficient:
             self._empty_into_free(destination)
             return None
@@ -4823,7 +4554,7 @@ class ResourceLedger:
             # attempt.  ``_Insufficient`` is the only ending this function
             # authors, and it was the only ending that returned the tokens;
             # every other one -- ``cpu_allocation`` refusing a token index the
-            # configured topology no longer covers, ``_read_json`` on a torn
+            # configured topology no longer covers, ``record_store.read_document`` on a torn
             # ``.adaptive.json``, an ESTALE or ENOSPC out of ``os.rename`` or
             # either ``_write_json_atomic`` -- left the whole demand under a
             # private holder.  The caller cannot clean that up: the function
@@ -4876,7 +4607,7 @@ class ResourceLedger:
             return 0
         moved = 0
         destination.mkdir(parents=True, exist_ok=True)
-        for token in _scan(source):
+        for token in immutable_files.scan_optional(source):
             landing = destination / token.name
             if landing.exists():
                 continue
@@ -4885,9 +4616,9 @@ class ResourceLedger:
             except OSError:
                 continue
             if token.name == cpu_admission.METADATA:
-                moved += int((_read_json(landing) or {}).get("borrowed_cpu", 0))
+                moved += int((record_store.read_document(landing) or {}).get("borrowed_cpu", 0))
             elif token.name == gpu_admission.METADATA:
-                moved += int((_read_json(landing) or {}).get("borrowed_gpu", 0))
+                moved += int((record_store.read_document(landing) or {}).get("borrowed_gpu", 0))
             else:
                 moved += 1
         try:
@@ -4941,7 +4672,7 @@ class ResourceLedger:
             return 0
         moved = 0
         destination.mkdir(parents=True, exist_ok=True)
-        for token in _scan(source):
+        for token in immutable_files.scan_optional(source):
             landing = destination / token.name
             if landing.exists():
                 continue
@@ -5016,7 +4747,7 @@ class ResourceLedger:
             return 0
         moved = 0
         destination.mkdir(parents=True, exist_ok=True)
-        for token in sorted(_scan(source), key=lambda entry: entry.name):
+        for token in sorted(immutable_files.scan_optional(source), key=lambda entry: entry.name):
             if moved >= count:
                 break
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
@@ -5153,7 +4884,7 @@ class ResourceLedger:
                 continue
             usec, host, pid = parsed
             tokens = sum(
-                1 for token in _scan(entry)
+                1 for token in immutable_files.scan_optional(entry)
                 if token.name not in (cpu_admission.METADATA,
                                       gpu_admission.METADATA))
             found.append((entry.name, usec, host, pid, tokens))
@@ -5311,7 +5042,7 @@ class ResourceLedger:
             return 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
         released = 0
-        for token in _scan(holder):
+        for token in immutable_files.scan_optional(holder):
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                 continue
             if token.name.rsplit("-", 1)[0] not in kinds:
@@ -5347,7 +5078,7 @@ class ResourceLedger:
             return 0
         self.free_dir.mkdir(parents=True, exist_ok=True)
         released = 0
-        for token in _scan(holder):
+        for token in immutable_files.scan_optional(holder):
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                 continue
             if token.name in keep:
@@ -5378,7 +5109,7 @@ class ResourceLedger:
         metadata = []
         incomplete = False
         self.free_dir.mkdir(parents=True, exist_ok=True)
-        for token in _scan(holder):
+        for token in immutable_files.scan_optional(holder):
             if token.name in (cpu_admission.METADATA, gpu_admission.METADATA):
                 metadata.append(token)
                 continue
@@ -5402,7 +5133,7 @@ class ResourceLedger:
         """Fresh holder observations with this ledger's existing read adapters."""
 
         return holder_census.HolderCensus(
-            self.held_dir, _read_json, scan=self._scan_names,
+            self.held_dir, record_store.read_document, scan=self._scan_names,
             token_paths=self._glob_names)
 
     def held(self) -> dict[str, int]:
@@ -5440,7 +5171,7 @@ class ResourceLedger:
         """
 
         census = holder_census.HolderCensus(
-            self.held_dir, cpu_admission.read_json, token_paths=_glob)
+            self.held_dir, cpu_admission.read_json, token_paths=immutable_files.match_optional)
         return census.has_gpu_reservation(action_key)
 
     def held_keys(self) -> list[str]:
@@ -5478,21 +5209,6 @@ _DENIAL_SEEN: dict[tuple[str, str, str], tuple[str, str | None]] = {}
 _READY_PLACEMENT: contextvars.ContextVar[
     "tuple[frozenset[str], bool] | None"] = contextvars.ContextVar(
         "pool_ready_placement", default=None)
-
-
-def _claimed_blocks(names: Iterable[str], key: str) -> bool:
-    """Whether a listing of ``claimed/`` refuses a claim of ``key``.
-
-    Its claim record, or a finish mark for it: a tombstone or a late-finish
-    record, whose names start ``<key>.`` and end in their suffix.
-    """
-
-    record = f"{key}.json"
-    prefix = f"{key}."
-    return any(name == record
-               or (name.startswith(prefix)
-                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX)))
-               for name in names)
 
 
 @contextmanager
@@ -5627,9 +5343,9 @@ class _ClaimReservation:
             assert moved is not None
             if exit is _ClaimExit.PERSISTED_RETRY:
                 with suppress(Exception):
-                    self.queue.lease_path(self.action_key).unlink()
+                    self.queue.records.lease_path(self.action_key).unlink()
                 try:
-                    _write_json_atomic(moved.claimed_path, moved.record)
+                    self.queue.records.replace_record_at(moved.claimed_path, moved.record)
                 except (OSError, PoolContractError, ValueError):
                     return
             try:
@@ -5637,7 +5353,7 @@ class _ClaimReservation:
             except OSError:
                 return
             moved.claimed_path.unlink(missing_ok=True)
-            self.queue.item_path(INTENT, self.action_key).unlink(missing_ok=True)
+            self.queue.records.item_path(INTENT, self.action_key).unlink(missing_ok=True)
 
 class _TransitionHolds:
     """The per-key transition-lock holds of one claim pass, timed (#1029).
@@ -5912,8 +5628,7 @@ class _ClaimScanReads:
         self.has_gpu = has_gpu
         self._host_verdicts: Mapping[str, object] | None = None
         self._bootstrap_authority: list[bool] = []
-        self._claimed_listed: set[str] | None = None
-        self._claimed_marks: list[str] = []
+        self._claimed_names: record_store.ClaimedNames | None = None
         self.reader_plans: dict[str, dict[str, object]] = {}
         self.dead_input_hints: dict[str, KeyStanding] = {}
 
@@ -5938,17 +5653,12 @@ class _ClaimScanReads:
         return self._bootstrap_authority[0]
 
     def claimed_hint(self, key: str) -> bool:
-        if self._claimed_listed is None:
-            names = os.listdir(self.queue.dir(CLAIMED))
-            self._claimed_listed = set(names)
-            self._claimed_marks = [
-                name for name in names
-                if name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))]
-        return (f"{key}.json" in self._claimed_listed
-                or _claimed_blocks(self._claimed_marks, key))
+        if self._claimed_names is None:
+            self._claimed_names = self.queue.records.claimed_names()
+        return self._claimed_names.blocks(key)
 
     def renamed_into_claimed(self) -> None:
-        self._claimed_listed = None
+        self._claimed_names = None
         self.reader_plans.clear()
 
 
@@ -5961,6 +5671,7 @@ class PoolQueue:
         # after import gets the root it named rather than the live store.
         defaulted = root is None
         self.root = Path(DEFAULT_POOL_ROOT if defaulted else root)
+        self.records = record_store.RecordStore(self.root)
         self._placement_history = _peer_placement.PlacementHistory()
         self._claim_denial_bases: dict[str, Path] = {}
         # An unseen member must reset inherited evidence. Failed resets stay
@@ -5989,7 +5700,6 @@ class PoolQueue:
         self._admission_busy_logged_at: float | None = None
         # Queue directories are created once per process (see
         # ``ensure_layout``): nothing in the pool ever removes them.
-        self._layout_ensured = False
         if not self.root.is_absolute():
             raise PoolContractError("pool root must be absolute")
         # Only the default is checked (#976).  A caller that names a root owns
@@ -6004,49 +5714,6 @@ class PoolQueue:
 
     # -- layout ---------------------------------------------------------
 
-    def dir(self, state: str) -> Path:
-        if state not in _STATES:
-            raise PoolContractError(f"unknown queue state: {state!r}")
-        return self.root / state
-
-    def item_path(self, state: str, action_key: str) -> Path:
-        return self.dir(state) / f"{action_key}.json"
-
-    def lease_path(self, action_key: str) -> Path:
-        return self.dir(CLAIMED) / f"{action_key}.lease"
-
-    def action_status_path(self, action_key: str) -> Path:
-        """Where the launcher may leave facts its exit status cannot carry.
-
-        The launcher exits 1 for every failed action, so ``detail.returncode``
-        on this lane is the *launcher's* status and the action's own was simply
-        unavailable here -- ``core`` has written it to this file since the
-        status contract was added, and nothing on this lane set the variable
-        that names the file.  A killed run's partial profile comes back the
-        same way, because the launcher is being killed and cannot print it.
-
-        Beside the lease, with a suffix that is neither ``.json`` nor
-        ``.lease``: every reader of ``claimed/`` addresses those two names, so
-        a third is invisible to all of them.  It is unlinked as it is read.
-        """
-
-        return self.dir(CLAIMED) / f"{action_key}.status"
-
-    def action_progress_path(self, action_key: str) -> Path:
-        """Where an action reports advancement while it is still running.
-
-        A file of its own, beside the lease and the status sidecar and equally
-        invisible to every reader of ``claimed/``, because it is the one thing
-        here written repeatedly *during* execution by a process this loop does
-        not own.  Merging it into the status sidecar would put a ticking writer
-        into an unlocked read-merge-write shared with the launcher's own ending
-        facts, and would ask a heartbeat to read a file whose reader unlinks it.
-
-        The read costs one open of a small file in a directory this loop
-        already writes to every heartbeat, at the heartbeat's own cadence.
-        """
-
-        return self.dir(CLAIMED) / f"{action_key}.progress"
 
     @staticmethod
     def _merge_action_status(
@@ -6108,12 +5775,12 @@ class PoolQueue:
         on the key wants.
         """
 
-        tombstone = self.dir(CLAIMED) / (
-            f"{action_key}.{int(_now() * 1_000_000)}.{socket.gethostname()}"
-            f".{os.getpid()}.{uuid.uuid4().hex[:8]}{TOMBSTONE_SUFFIX}"
+        tombstone = self.records.dir(CLAIMED) / (
+            self.records.claim_tombstone_name(
+                action_key, _now(), socket.gethostname(), os.getpid(), uuid.uuid4().hex[:8])
         )
         try:
-            os.rename(self.item_path(CLAIMED, action_key), tombstone)
+            os.rename(self.records.item_path(CLAIMED, action_key), tombstone)
         except OSError as exc:
             # No move means no exclusive ownership of the bytes being
             # concluded. In particular a stale handle or denied rename must
@@ -6123,7 +5790,7 @@ class PoolQueue:
             return None, False
         if expect is None:
             return tombstone, True
-        entombed = _read_json(tombstone)
+        entombed = record_store.read_document(tombstone)
         if entombed is not None and not _same_claim(entombed, expect):
             # The rename is what makes this decidable.  Comparing before it
             # tests a name another process can replace between the read and
@@ -6133,7 +5800,7 @@ class PoolQueue:
             # ``sweep_finish_tombstones`` recovers the record and the caller
             # has still touched nothing that was not its own.
             try:
-                os.link(tombstone, self.item_path(CLAIMED, action_key))
+                os.link(tombstone, self.records.item_path(CLAIMED, action_key))
             except OSError:
                 pass
             else:
@@ -6141,41 +5808,18 @@ class PoolQueue:
             return None, False
         return tombstone, True
 
-    def attempt_generation(self, record: Mapping[str, object]) -> str:
-        """Stable directory name for one submission of a content-addressed key."""
-
-        key = str(record.get("action_key") or "")
-        published = record.get("published_unix")
-        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
-            raise PoolContractError("attempt history requires a full action key")
-        if type(published) not in (int, float):
-            raise PoolContractError("attempt history requires published_unix")
-        try:
-            generation = float(published)
-        except OverflowError as exc:
-            raise PoolContractError("attempt history requires finite published_unix") from exc
-        if not math.isfinite(generation):
-            raise PoolContractError("attempt history requires published_unix")
-        return pb.canonical_sha256(
-            {"action_key": key, "published_unix": generation}
-        )
-
-    def publication_ending_path(self, record: Mapping[str, object]) -> Path:
-        """The immutable ending address for an exact publication identity."""
-        generation = self.attempt_generation(record)
-        return self.root / "publication-endings" / str(record["action_key"]) / f"{generation}.json"
 
     def _successor_generation(
         self, original: Mapping[str, object], successor: Mapping[str, object],
     ) -> float:
-        self.attempt_generation(successor)
+        self.records.attempt_generation(successor)
         key = str(original["action_key"])
         try:
             usable = (successor.get("schema") == POOL_ITEM_SCHEMA_V1
                       and self._ready_record_usable(successor, key))
             host_demand, tier_demand = storage_tiers.split_demand(self.demand_of(successor))
             for tier_id in tier_demand:
-                self._check_tier_id(tier_id)
+                self.records.check_tier_id(tier_id)
         except (TypeError, ValueError, OverflowError) as exc:
             raise PoolContractError("invalid successor publication item") from exc
         if not usable or not host_demand:
@@ -6193,7 +5837,7 @@ class PoolQueue:
                 or record.get("schema") != PUBLICATION_SUPERSEDED_SCHEMA_V1
                 or record.get("status") != "superseded"
                 or set(record) != {"schema", "status", "action_key", "published_unix", "successor"}
-                or self.publication_ending_path(record) != Path(path)):
+                or self.records.publication_ending_path(record) != Path(path)):
             raise PoolContractError("invalid exact publication ending")
         successor = record["successor"]
         if not isinstance(successor, dict):
@@ -6210,25 +5854,11 @@ class PoolQueue:
         self, key: str, *, generation: float,
     ) -> endings.PublicationSupersession | None:
         """Read one exact immutable decision; absence never infers a successor."""
-        path = self.publication_ending_path({"action_key": key, "published_unix": generation})
-        try:
-            names = os.listdir(path.parent)
-        except FileNotFoundError:
+        captured = self.records.publication_ending(key, generation=generation)
+        if captured is None:
             return None
-        if path.name not in names:
-            return None
-        raw = pb._read_regular_file_nofollow(
-            path, where="publication ending", require_readonly=True)
-        record = pb._decode_strict_json(raw, where="publication ending")
-        return self.decode_publication_supersession(path, record)
+        return self.decode_publication_supersession(*captured)
 
-    def _read_ready_publication(self, key: str) -> dict[str, object]:
-        raw = pb._read_regular_file_nofollow(
-            self.item_path(READY, key), where="successor publication", replaced_leaf=True)
-        record = pb._decode_strict_json(raw, where="successor publication")
-        if not isinstance(record, dict):
-            raise PoolContractError("successor publication must be an object")
-        return record
 
     def _persist_publication_supersession(
         self, record: Mapping[str, object], *, successor: Mapping[str, object],
@@ -6237,80 +5867,17 @@ class PoolQueue:
         prior = self.publication_ending(key, generation=generation)
         if prior is not None:
             return prior
-        path = self.publication_ending_path(record)
+        path = self.records.publication_ending_path(record)
         payload = {"schema": PUBLICATION_SUPERSEDED_SCHEMA_V1, "status": "superseded",
                    "action_key": key, "published_unix": generation,
                    "successor": dict(successor)}
         self.decode_publication_supersession(path, payload)
-        _publish_immutable(path, pb._canonical_bytes(payload), where="publication ending")
+        self.records.file_publication_ending_at(path, payload)
         published = self.publication_ending(key, generation=generation)
         if published is None:
             raise PoolContractError("published exact publication ending is not visible")
         return published
 
-    def attempt_path(self, record: Mapping[str, object], attempt: int) -> Path:
-        """Immutable outcome path for one numbered attempt of one generation."""
-
-        if type(attempt) is not int or attempt < 1:
-            raise PoolContractError("attempt number must be a positive integer")
-        key = str(record.get("action_key") or "")
-        return (
-            self.root
-            / ATTEMPTS
-            / key
-            / self.attempt_generation(record)
-            / f"{attempt:08d}.json"
-        )
-
-    def attempt_log_path(
-        self,
-        record: Mapping[str, object],
-        attempt: int,
-        stream: str,
-        sha256: str,
-    ) -> Path:
-        """Immutable stdout/stderr path beside an attempt outcome."""
-
-        if stream not in {"stdout", "stderr"}:
-            raise PoolContractError(f"unknown attempt log stream: {stream!r}")
-        if (
-            not isinstance(sha256, str)
-            or len(sha256) != 64
-            or any(ch not in "0123456789abcdef" for ch in sha256)
-        ):
-            raise PoolContractError("attempt log requires a full SHA-256 digest")
-        outcome = self.attempt_path(record, attempt)
-        return outcome.parent / f"{attempt:08d}.{stream}.{sha256}.log"
-
-    def ensure_layout(self) -> None:
-        """Create the queue directories, once per process.
-
-        Fifteen ``mkdir`` calls: one per directory in ``_STATES`` plus one
-        per auxiliary root.  On a starved NFS mount each costs RPCs (a ``MKDIR``
-        plus a stat on ``FileExistsError``), so running this on every claim
-        poll billed every worker a directory walk per poll for directories
-        nothing ever deletes (#595).  The first call in this process creates
-        them; later calls are a flag check.  A directory an operator deletes
-        by hand returns on the next loop restart, which is the same window
-        any other queue repair already needs.
-        """
-
-        if self._layout_ensured:
-            return
-        for state in _STATES:
-            self.dir(state).mkdir(parents=True, exist_ok=True)
-        (self.root / WORKERS).mkdir(parents=True, exist_ok=True)
-        (self.root / ATTEMPTS).mkdir(parents=True, exist_ok=True)
-        (self.root / PREWARM).mkdir(parents=True, exist_ok=True)
-        (self.root / MOVERS).mkdir(parents=True, exist_ok=True)
-        (self.root / RESIDENCY).mkdir(parents=True, exist_ok=True)
-        (self.root / RESIDENCY_PLANS).mkdir(parents=True, exist_ok=True)
-        (self.root / TIER_RESERVATIONS).mkdir(parents=True, exist_ok=True)
-        (self.root / TIERS).mkdir(parents=True, exist_ok=True)
-        # Created here so the claim's listing never meets a directory that did
-        # not exist yet, which NFS may keep answering as absent (#954).
-        self.released_origin_consumers_dir().mkdir(parents=True, exist_ok=True)
-        self._layout_ensured = True
 
     # -- what the fleet can actually run ---------------------------------
 
@@ -6471,12 +6038,12 @@ class PoolQueue:
             record["drain_reason"] = str(drain_reason)
         if drain_changed_unix is not None:
             record["drain_changed_unix"] = float(drain_changed_unix)
-        directory = self.root / WORKERS
+        directory = self.records.worker_directory()
         directory.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(directory / f"{host}.json", record)
+        self.records.replace_record_at(self.records.worker_offer_path(host), record)
 
     def _offer_records(self) -> list[dict[str, object]]:
-        directory = self.root / WORKERS
+        directory = self.records.worker_directory()
         if not directory.is_dir():
             return []
         records: list[dict[str, object]] = []
@@ -6487,7 +6054,7 @@ class PoolQueue:
             # submission -- the box it described was at worst one candidate
             # among several.  ``tolerate_stale`` is what makes that true on
             # the shared filesystem the pool actually lives on (#208).
-            record = _read_json(path, tolerate_stale=True)
+            record = record_store.value_or_raise(self.records.listed_record(path))
             if record is None:
                 # ...but one failed read does not show that the box left.
                 # Every loop on a live box rewrites its offer each poll with
@@ -6501,7 +6068,7 @@ class PoolQueue:
                 # both times.  A second read opens the name again, so it gets
                 # the replacement.  An offer that is really gone fails both
                 # reads and is still left out.
-                record = _read_json(path, tolerate_stale=True)
+                record = record_store.value_or_raise(self.records.listed_record(path))
             if record is not None:
                 records.append(record)
         return records
@@ -6996,8 +6563,8 @@ class PoolQueue:
         ``PermissionError`` raised from inside a rename.
         """
 
-        ready = self.dir(READY)
-        if not ready.is_dir() or os.access(ready, os.W_OK):
+        ready = self.records.dir(READY)
+        if not self.records.state_directory_present(READY) or os.access(ready, os.W_OK):
             return
         fenced = self.fence()
         if fenced is None:
@@ -7158,7 +6725,7 @@ class PoolQueue:
         try:
             tier_demand = storage_tiers.split_demand(demand)[1]
             for tier_id in tier_demand:
-                self._check_tier_id(tier_id)
+                self.records.check_tier_id(tier_id)
         except ValueError as exc:
             raise PoolContractError(str(exc)) from exc
         residency_block = (
@@ -7408,7 +6975,7 @@ class PoolQueue:
                     checkout_snapshot
                 )
             }
-        self.ensure_layout()
+        self.records.ensure_layout()
         if refuse_withdrawn:
             # Under this method's transition lock, so a cancellation can only
             # win outright (the marker is already filed and this refuses) or
@@ -7468,11 +7035,11 @@ class PoolQueue:
             # but unreadable -- a truncated write, a tombstone or late-finish
             # sidecar -- is not a generation anybody is waiting on, and
             # republishing is how such a key is repaired, so it stays
-            # publishable.  ``_read_json_fresh`` is used because a stale
+            # publishable.  ``record_store._read_json_fresh`` is used because a stale
             # negative lookup on NFS is what produced #810's republications in
             # the first place.
             for state in (READY, CLAIMED):
-                live = _read_json_fresh(self.item_path(state, action_key))
+                live = record_store.value_or_raise(self.records.item_for_publish(state, action_key))
                 if live is None:
                     continue
                 stamped = live.get("published_unix")
@@ -7512,12 +7079,14 @@ class PoolQueue:
                     and decision is not None
                     and decision.get("withdrawn_by") == handoff_by):
                 handoff = handoff_by
-            visible = _read_json(self.item_path(WITHDRAWN, action_key))
-            live = _read_json(self.item_path(CLAIMED, action_key))
+            visible = record_store.value_or_raise(self.records.item(WITHDRAWN, action_key))
+            live = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
             if (decision is None or not handoff
                     or visible is None
                     or visible.get("published_unix") != preempted_claim.get("published_unix")
-                    or self.item_path(READY, action_key).exists()
+                    or bool(
+                        record_store.value_or_raise(self.records.item_presence(READY, action_key)),
+                    )
                     or (live is not None and not _same_claim(live, preempted_claim))
                     or not self._preemption_eligible(preempted_claim)):
                 raise PoolContractError("preemption handoff changed before requeue")
@@ -7663,8 +7232,8 @@ class PoolQueue:
             # their complete cancellation lineage remains in the decisions.
             item["attempts"] = int(preempted_claim.get("attempts", 0)) + 1
             item["attempt_history_missing_before"] = item["attempts"]
-        path = self.item_path(READY, action_key)
-        _write_json_atomic(path, item)
+        path = self.records.item_path(READY, action_key)
+        self.records.replace_record_at(path, item)
         return path
 
     #: Everything that describes the claim that has just ended.  A ready item
@@ -7703,33 +7272,33 @@ class PoolQueue:
         record["requeued_unix"] = _now()
         for field in self._CLAIM_SCOPED_FIELDS:
             record.pop(field, None)
-        return self.item_path(READY, action_key)
+        return self.records.item_path(READY, action_key)
 
     def _publish_requeued_claim(
         self, record: Mapping[str, object], *, action_key: str, tombstone: Path,
         superseded_kind: str, superseded_reason: str,
     ) -> Path:
         """Publish a requeue without replacing another publication's READY row."""
-        destination = self.item_path(READY, action_key)
+        destination = self.records.item_path(READY, action_key)
         # Recovery must see the original claim's attempt count so it adopts
         # the archived execution rather than charging the next attempt slot.
         source = tombstone.with_name(f".{tombstone.name}.tmp")
         try:
             prior = self.publication_ending(action_key, generation=record["published_unix"])
             if prior is None:
-                _write_json_atomic(source, record)
+                self.records.replace_record_at(source, record)
                 try:
                     os.link(source, destination)
                 except FileExistsError:
-                    successor = self._read_ready_publication(action_key)
+                    successor = self.records.ready_publication(action_key)
                     if self._successor_generation(record, successor) == record["published_unix"]:
                         return destination
                     self._persist_publication_supersession(record, successor=successor)
                 else:
                     return destination
-            return self._file_superseded(
+            return self.records.file_superseded(
                 record, key=action_key, kind=superseded_kind, status="dropped",
-                reason=superseded_reason,
+                reason=superseded_reason, when=_now(),
             )
         finally:
             source.unlink(missing_ok=True)
@@ -8091,7 +7660,7 @@ class PoolQueue:
         taken under the key's transition lock just before the rename, with
         the check the per-candidate listing made: the key is refused on its
         claim record, ``<key>.json``, or on either finish mark,
-        ``<key>.*.tombstone`` or ``<key>.*.late-finish`` (:func:`_claimed_blocks`).
+        ``<key>.*.tombstone`` or ``<key>.*.late-finish`` (:meth:`RecordStore.claim_blocked`).
         ``os.rename`` replaces its destination, so a claim record filed since
         the pass listing would be lost; and ``sweep_finish_tombstones``
         completes a predecessor's cleanup only while no successor is
@@ -8106,10 +7675,10 @@ class PoolQueue:
         """
 
         try:
-            names = os.listdir(self.dir(CLAIMED))
+            blocked = self.records.claim_blocked(key)
         except OSError as exc:
             return True, f"claimed/ could not be listed: {exc}"
-        return _claimed_blocks(names, key), None
+        return blocked, None
 
     def _aged_for(self, ready: list[dict[str, object]], *,
                   tags: frozenset[str], has_gpu: bool,
@@ -8226,10 +7795,10 @@ class PoolQueue:
                     return True
 
         ordered: list[tuple[tuple[int, int, float], dict[str, object]]] = []
-        ready = self.dir(READY)
-        if not ready.is_dir():
+        ready = self.records.dir(READY)
+        if not self.records.state_directory_present(READY):
             return []
-        for path in sorted(ready.glob("*.json")):
+        for path in self.records.json_slot_paths(READY):
             try:
                 # An item claimed out from under this listing is one this poll
                 # does not offer, which is the answer ``None`` already gives.
@@ -8237,7 +7806,7 @@ class PoolQueue:
                 # reaches a cached directory handle as ``ESTALE`` rather than
                 # ``ENOENT`` (#212, following #208).  The ``glob`` has already
                 # succeeded, so the directory is live and the entry is not.
-                record = _read_json(path, tolerate_stale=True)
+                record = record_store.value_or_raise(self.records.listed_record(path))
             except PoolContractError:
                 # A record nobody can parse is nobody's work.  Raising it out
                 # of here took ``claim`` down on every box at once for one
@@ -8290,11 +7859,9 @@ class PoolQueue:
 
     # -- aging ----------------------------------------------------------
 
-    def passes_path(self, action_key: str) -> Path:
-        return self.root / PASSES / f"{action_key}.json"
 
     def passes(self, action_key: str) -> int:
-        record = _read_json(self.passes_path(action_key))
+        record = record_store.read_document(self.records.passes_path(action_key))
         if record is None:
             return 0
         value = record.get("passes", 0)
@@ -8302,8 +7869,6 @@ class PoolQueue:
 
     # -- prewarm receipts -----------------------------------------------
 
-    def prewarm_path(self, action_key: str) -> Path:
-        return self.root / PREWARM / f"{action_key}.json"
 
     def prewarm(self, action_key: str) -> dict[str, object] | None:
         """What a storage-role loop made resident for this action, if any.
@@ -8314,7 +7879,7 @@ class PoolQueue:
         Every caller treats ``None`` as "nothing was warmed".
         """
 
-        record = _read_json(self.prewarm_path(action_key))
+        record = record_store.read_document(self.records.prewarm_path(action_key))
         if not isinstance(record, dict):
             return None
         if record.get("schema") != POOL_PREWARM_SCHEMA_V1:
@@ -8330,9 +7895,9 @@ class PoolQueue:
         the worst case is a receipt nobody reads because the claim beat it.
         """
 
-        path = self.prewarm_path(action_key)
+        path = self.records.prewarm_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(
+        self.records.replace_record_at(
             path,
             {**dict(record), "schema": POOL_PREWARM_SCHEMA_V1,
              "action_key": action_key},
@@ -8411,7 +7976,7 @@ class PoolQueue:
         key = str(action_key)
         if live:
             return {"action_key": key, "pruned": False, "reason": "live"}
-        path = self.prewarm_path(key)
+        path = self.records.prewarm_path(key)
         try:
             present = path.is_file()
         except OSError:
@@ -8419,15 +7984,18 @@ class PoolQueue:
                     "reason": "receipt unreadable"}
         if not present:
             return {"action_key": key, "pruned": False, "reason": "absent"}
-        if self.item_path(DONE, key).exists() or self.item_path(
-                FAILED, key).exists():
+        if bool(
+            record_store.value_or_raise(self.records.item_presence(DONE, key)),
+        ) or bool(
+            record_store.value_or_raise(self.records.item_presence(FAILED, key)),
+        ):
             try:
                 path.unlink()
             except OSError:
                 return {"action_key": key, "pruned": False,
                         "reason": "unlink failed"}
             return {"action_key": key, "pruned": True, "reason": "terminal"}
-        if self.item_path(WITHDRAWN, key).exists():
+        if bool(record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key))):
             record = self.prewarm(key)
             block = (record.get("stage") if isinstance(record, dict)
                      else None)
@@ -8532,7 +8100,7 @@ class PoolQueue:
 
         for state in (CLAIMED, READY):
             try:
-                record = _read_json(self.item_path(state, key))
+                record = record_store.value_or_raise(self.records.item(state, key))
             except (OSError, PoolContractError):
                 return self.SELECTION_UNKNOWN
             if record is None:
@@ -8545,7 +8113,7 @@ class PoolQueue:
             return self.SELECTION_SUPERSEDED
         for state in (DONE, FAILED):
             try:
-                record = _read_json(self.item_path(state, key))
+                record = record_store.value_or_raise(self.records.item(state, key))
             except (OSError, PoolContractError):
                 return self.SELECTION_UNKNOWN
             if record is None:
@@ -8557,7 +8125,7 @@ class PoolQueue:
                 return self.SELECTION_TERMINAL
             return self.SELECTION_SUPERSEDED
         try:
-            record = _read_json(self.item_path(WITHDRAWN, key))
+            record = record_store.value_or_raise(self.records.item(WITHDRAWN, key))
         except (OSError, PoolContractError):
             return self.SELECTION_UNKNOWN
         if record is None:
@@ -8569,8 +8137,6 @@ class PoolQueue:
             return self.SELECTION_WITHDRAWN
         return self.SELECTION_SUPERSEDED
 
-    def move_path(self, action_key: str) -> Path:
-        return self.root / MOVERS / f"{action_key}.json"
 
     def move_record(self, action_key: str, *, fresh: bool = False) -> dict[str, object] | None:
         """What one movement node staged or released, if it has filed it.
@@ -8590,13 +8156,13 @@ class PoolQueue:
 
         Every caller is asking whether a mover on another box has filed yet,
         and most of them poll, so the read revalidates before answering no
-        (``_read_json_fresh``): a stale "not yet" held a produced-output owner
+        (``record_store._read_json_fresh``): a stale "not yet" held a produced-output owner
         for 26 s after a 4 s copy (#808).
         """
 
-        path = self.move_path(action_key)
+        path = self.records.move_path(action_key)
         if fresh:
-            record = _read_json_confirmed(path)
+            record = record_store.value_or_raise(self.records.confirmed_movement(action_key))
             present = record is not None
         else:
             try:
@@ -8604,7 +8170,7 @@ class PoolQueue:
                 present = True
             except FileNotFoundError:
                 present = False
-            record = _read_json_fresh(path)       # malformed JSON raises, as before
+            record = record_store.value_or_raise(self.records.movement_for_poll(action_key))
         if record is not None:
             if record.get("schema") in POOL_MOVEMENT_RECEIPT_SCHEMAS:
                 return record
@@ -8621,25 +8187,12 @@ class PoolQueue:
                     os.listdir(self.root / name)
         return self.recover_archived_move(action_key)
 
-    def mover_retirement_checkpoint_path(self) -> Path:
-        """The atomically replaced compact checkpoint of retired projections."""
-
-        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_CHECKPOINT
-
-    def mover_retirement_state_path(self) -> Path:
-        """The persistent marker proving at least one retirement committed."""
-
-        return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_STATE
 
     def mover_retirement_lock(self) -> Path:
         """Serializes the checkpoint's read-modify-write across GC runs."""
 
         return self.root / MOVERS_RETIRED / MOVERS_RETIREMENT_LOCK
 
-    def mover_archive_dir(self) -> Path:
-        """Where retired receipts' full bodies live, named by content digest."""
-
-        return self.root / MOVERS_ARCHIVE
 
     def _read_mover_retirement_entries(
             self, *, writer: bool = False,
@@ -8654,13 +8207,11 @@ class PoolQueue:
         the only empty answer; everything else validates or raises.
         """
 
-        checkpoint_present, checkpoint = _read_optional_document(
-            self.mover_retirement_checkpoint_path())
-        state_present, state = _read_optional_document(
-            self.mover_retirement_state_path())
+        checkpoint_present, checkpoint = self.records.mover_retirement_checkpoint()
+        state_present, state = self.records.mover_retirement_state()
         return _validate_mover_retirements(
             checkpoint_present, checkpoint, state_present, state,
-            archive_root=self.mover_archive_dir(), writer=writer)
+            archive_root=self.records.mover_archive_dir(), writer=writer)
 
     def read_mover_retirements(self) -> dict[str, dict[str, object]]:
         """The projection of every retired movement receipt, by key.
@@ -8692,9 +8243,9 @@ class PoolQueue:
         if entry is None:
             return None
         digest = str(entry["archive_sha256"])
-        path = self.mover_archive_dir() / f"{digest}.json"
+        path = self.records.mover_archive_path(digest)
         try:
-            raw = path.read_bytes()
+            raw = self.records.raw_record_at(path)
         except OSError as exc:
             raise PoolContractError(
                 f"retired receipt {action_key} has no readable archive "
@@ -8741,16 +8292,16 @@ class PoolQueue:
 
         body = pb._canonical_bytes(record)
         digest = hashlib.sha256(body).hexdigest()
-        archive = self.mover_archive_dir() / f"{digest}.json"
+        archive = self.records.mover_archive_path(digest)
         try:
-            present = archive.read_bytes()
+            present = self.records.raw_record_at(archive)
         except FileNotFoundError:
             present = None
         except OSError as exc:
             return "", f"archive is unreadable: {exc}"
         if present != body:
             try:
-                _write_bytes_atomic(archive, body)
+                self.records.replace_record_bytes_at(archive, body)
             except OSError as exc:
                 return "", f"archive cannot be written: {exc}"
         return digest, ""
@@ -8767,7 +8318,7 @@ class PoolQueue:
         that lock, so a receipt replaced after the survey is left alone.
         """
 
-        path = self.move_path(action_key)
+        path = self.records.move_path(action_key)
         try:
             version = self._receipt_version(path)
         except OSError as exc:
@@ -8777,7 +8328,7 @@ class PoolQueue:
         if version != tuple(expected_version):
             return "replaced since the survey"
         try:
-            record = _read_json(path)
+            record = record_store.read_document(path)
         except PoolContractError as exc:
             return f"receipt is unreadable: {exc}"
         if record is None:
@@ -8807,7 +8358,7 @@ class PoolQueue:
                              ) -> dict[str, object] | str:
         """The entry for one receipt, re-read under its mint lock."""
 
-        path = self.move_path(action_key)
+        path = self.records.move_path(action_key)
         try:
             version = self._receipt_version(path)
         except OSError as exc:
@@ -8815,7 +8366,7 @@ class PoolQueue:
         if version is None:
             return "already gone"
         try:
-            current = _read_json(path)
+            current = record_store.read_document(path)
         except PoolContractError as exc:
             return f"receipt is unreadable: {exc}"
         if current != record or version != tuple(expected_version):
@@ -8862,55 +8413,6 @@ class PoolQueue:
             return "its mover holds tokens on its tier"
         return ""
 
-    def _orphan_archives_refusal(self) -> str:
-        """``""`` when every archived body is an exact active receipt's bytes.
-
-        The only writer that may see archives without a checkpoint is one
-        whose own crash landed an archive before the commit; its active
-        receipt is still filed, byte for byte.  Any archive that no active
-        receipt reproduces may be already-retired history, and starting from
-        an empty checkpoint would silently reset it, so it refuses.  The
-        listing is an explicit ``os.scandir``: ``Path.glob`` suppresses some
-        listing failures, and an archive directory that cannot be read is
-        unknown history, never empty history.  An entry that is not a
-        plain ``<sha256>.json`` regular file is refused conservatively too.
-        """
-
-        root = self.mover_archive_dir()
-        try:
-            with os.scandir(root) as listing:
-                entries = sorted(listing, key=lambda entry: entry.name)
-        except FileNotFoundError:
-            return ""
-        except OSError as exc:
-            return f"cannot list the retirement archives: {exc}"
-        for entry in entries:
-            if (not entry.name.endswith(".json")
-                    or not _is_hex64(entry.name[:-len(".json")])):
-                return f"unexpected entry in the retirement archives: {entry.name}"
-            try:
-                if not entry.is_file(follow_symlinks=False):
-                    return ("an archived entry is not a regular file: "
-                            f"{entry.name}")
-                body = Path(entry.path).read_bytes()
-            except OSError as exc:
-                return f"an archived body is unreadable: {exc}"
-            try:
-                record = json.loads(body)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return f"an archived body is not JSON: {entry.name}"
-            key = record.get("action_key") if isinstance(record, dict) else None
-            if not isinstance(key, str) or not key:
-                return f"an archived body names no key: {entry.name}"
-            try:
-                active = self.move_path(key).read_bytes()
-            except OSError:
-                return ("an archived body is not covered by an active "
-                        "receipt; retired history may be missing")
-            if active != body:
-                return ("an archived body differs from its active receipt; "
-                        "retired history may be missing")
-        return ""
 
     def begin_mover_retirement_batch(self) -> tuple[int, str]:
         """Validate the store and return the CAS baseline for one batch.
@@ -8922,43 +8424,42 @@ class PoolQueue:
         checkpoint would otherwise make every reader refuse for its duration.
         When archives exist with no checkpoint, they are accepted as the
         batch's own crash prefix only if every one is an exact active
-        receipt's bytes (:meth:`_orphan_archives_refusal`); anything else
+        receipt's bytes (:meth:`RecordStore.mover_archive_coverage`); anything else
         refuses, so a lost checkpoint is never reset over retired history.
         The retirement lock is a leaf: no transition or mint lock is held
         here, and the caller prepares and commits after this returns.
         """
 
-        checkpoint_path = self.mover_retirement_checkpoint_path()
-        state_path = self.mover_retirement_state_path()
+        checkpoint_path = self.records.mover_retirement_checkpoint_path()
+        state_path = self.records.mover_retirement_state_path()
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         with posix_lock.held(self.mover_retirement_lock()) as got:
             if not got:
                 raise PoolContractError(
                     "retirement checkpoint is held by another writer")
-            checkpoint_present, checkpoint = _read_optional_document(
-                checkpoint_path)
-            state_present, state = _read_optional_document(state_path)
+            checkpoint_present, checkpoint = self.records.mover_retirement_checkpoint()
+            state_present, state = self.records.mover_retirement_state()
             if checkpoint_present:
                 _entries, _incomplete = _validate_mover_retirements(
                     True, checkpoint, state_present, state,
-                    archive_root=self.mover_archive_dir(), writer=True)
+                    archive_root=self.records.mover_archive_dir(), writer=True)
                 return (int(checkpoint["revision"]),  # type: ignore[index]
                         str(checkpoint["checkpoint_sha256"]))
             if state_present:
                 raise PoolContractError(
                     "movement retirement state is present but its checkpoint "
                     "is missing; retired history cannot be read")
-            reason = self._orphan_archives_refusal()
-            if reason:
+            archives = self.records.mover_archive_coverage()
+            if isinstance(archives, record_store.Unknown):
                 raise PoolContractError(
-                    f"cannot start a retirement batch: {reason}")
+                    f"cannot start a retirement batch: {archives.reason}")
             body = {"schema": MOVER_RETIREMENT_CHECKPOINT_SCHEMA_V1,
                     "revision": 0, "written_unix": time.time(),
                     "entries": {}}
             digest = _retirement_checkpoint_digest(body)
-            _write_bytes_atomic(checkpoint_path, pb._canonical_bytes(
+            self.records.replace_record_bytes_at(checkpoint_path, pb._canonical_bytes(
                 {**body, "checkpoint_sha256": digest}))
-            _write_bytes_atomic(state_path, self._state_document(0, digest))
+            self.records.replace_record_bytes_at(state_path, self._state_document(0, digest))
             return 0, digest
 
     def commit_move_retirements(
@@ -8987,22 +8488,21 @@ class PoolQueue:
         requested = [dict(entry) for entry in entries]
         if not requested:
             return [], None, ""
-        checkpoint_path = self.mover_retirement_checkpoint_path()
-        state_path = self.mover_retirement_state_path()
+        checkpoint_path = self.records.mover_retirement_checkpoint_path()
+        state_path = self.records.mover_retirement_state_path()
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         with posix_lock.held(self.mover_retirement_lock()) as got:
             if not got:
                 return [], None, ("retirement checkpoint is held by another "
                                   "writer")
-            checkpoint_present, checkpoint = _read_optional_document(
-                checkpoint_path)
-            state_present, state = _read_optional_document(state_path)
+            checkpoint_present, checkpoint = self.records.mover_retirement_checkpoint()
+            state_present, state = self.records.mover_retirement_state()
             if not checkpoint_present:
                 return [], None, ("the retirement checkpoint is missing; the "
                                   "batch baseline no longer holds")
             entries_by_key, incomplete = _validate_mover_retirements(
                 True, checkpoint, state_present, state,
-                archive_root=self.mover_archive_dir(), writer=True)
+                archive_root=self.records.mover_archive_dir(), writer=True)
             revision = int(checkpoint["revision"])  # type: ignore[index]
             current = (revision, str(checkpoint["checkpoint_sha256"]))
             if current != tuple(expected_baseline):
@@ -9019,14 +8519,14 @@ class PoolQueue:
                         "revision": revision + 1, "written_unix": time.time(),
                         "entries": entries_by_key}
                 digest = _retirement_checkpoint_digest(body)
-                _write_bytes_atomic(checkpoint_path, pb._canonical_bytes(
+                self.records.replace_record_bytes_at(checkpoint_path, pb._canonical_bytes(
                     {**body, "checkpoint_sha256": digest}))
-                _write_bytes_atomic(state_path,
+                self.records.replace_record_bytes_at(state_path,
                                     self._state_document(revision + 1, digest))
                 identity = (revision + 1, digest)
             elif incomplete:
                 digest = str(checkpoint["checkpoint_sha256"])
-                _write_bytes_atomic(state_path,
+                self.records.replace_record_bytes_at(state_path,
                                     self._state_document(revision, digest))
                 identity = (revision, digest)
             else:
@@ -9049,12 +8549,11 @@ class PoolQueue:
         projection.
         """
 
-        path = self.move_path(action_key)
+        path = self.records.move_path(action_key)
         digest = str(entry.get("archive_sha256") or "")
 
         def unlink_locked() -> str:
-            state_present, state = _read_optional_document(
-                self.mover_retirement_state_path())
+            state_present, state = self.records.mover_retirement_state()
             if not state_present or not isinstance(state, Mapping):
                 return "the retirement commit marker is not readable"
             if (state.get("revision"), state.get("checkpoint_sha256")
@@ -9073,7 +8572,7 @@ class PoolQueue:
                 return ""                     # already gone
             if version != tuple(expected_version):
                 return "replaced since the commit"
-            if not _is_hex64(digest):
+            if not record_store.key_shaped(digest):
                 return "prepared entry is not self-bound"
             try:
                 body = path.read_bytes()
@@ -9147,8 +8646,8 @@ class PoolQueue:
         """
 
         out: list[str] = []
-        for path in _scan(self.dir(CLAIMED)):
-            item = _read_json(path)
+        for path in immutable_files.scan_optional(self.records.dir(CLAIMED)):
+            item = record_store.read_document(path)
             residency = item.get("residency") if isinstance(item, dict) else None
             if not isinstance(residency, dict):
                 continue
@@ -9160,51 +8659,6 @@ class PoolQueue:
             out.append(name[:-len(".json")] if name.endswith(".json") else name)
         return sorted(out)
 
-    def move_pricing_log_path(self) -> Path:
-        """The pricing log :meth:`move_records` reads (#1044)."""
-
-        return self.root / MOVERS_PRICING / MOVERS_PRICING_LOG
-
-    def _read_move_pricing_log(self) -> tuple[dict[str, dict[str, object]], int | None]:
-        """What the pricing log says about each receipt name, and its size.
-
-        One read of one file.  The last line about a name wins, because a
-        receipt re-filed under the same key replaces the file and appends a
-        new line.  A line whose body does not parse -- a write cut off by a
-        crash, or bytes an operator mangled -- makes its name *unknown*
-        rather than leaving an older line standing, so the reader reads that
-        receipt itself.  A missing log reads as empty; an unreadable one too,
-        with ``None`` as its size so nothing is appended to it.
-        """
-
-        path = self.move_pricing_log_path()
-        try:
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            return {}, 0
-        except OSError:
-            return {}, None
-        kept: dict[str, dict[str, object]] = {}
-        lines = raw.split(b"\n")
-        # The last piece has no newline after it: empty when the log ends
-        # cleanly, a line still being written (or cut off) otherwise.
-        partial = lines.pop()
-        for line in lines:
-            name = _move_pricing_line_name(line)
-            if name is None:
-                continue
-            try:
-                record = json.loads(line.split(b"\t", 2)[2])
-            except (IndexError, ValueError):
-                record = None
-            if isinstance(record, dict):
-                kept[name] = record
-            else:
-                kept.pop(name, None)
-        name = _move_pricing_line_name(partial)
-        if name is not None:
-            kept.pop(name, None)
-        return kept, len(raw)
 
     def _append_move_pricing(self, lines: Sequence[tuple[str, bytes]], *,
                              since: int | None, blocking: bool) -> bool:
@@ -9219,7 +8673,7 @@ class PoolQueue:
         never swallows the next one.
         """
 
-        path = self.move_pricing_log_path()
+        path = self.records.move_pricing_log_path()
         with posix_lock.held(path.with_name(MOVERS_PRICING_LOCK),
                              blocking=blocking) as got:
             if not got:
@@ -9231,7 +8685,7 @@ class PoolQueue:
                 if since is not None:
                     start = since if since <= size else 0
                     tail = os.pread(descriptor, size - start, start)
-                    skip = {name for name in map(_move_pricing_line_name,
+                    skip = {name for name in map(record_store.pricing_line_name,
                                                  tail.split(b"\n"))
                             if name is not None}
                 data = b"".join(line for name, line in lines if name not in skip)
@@ -9291,14 +8745,14 @@ class PoolQueue:
             paths = sorted(directory.glob("*.json"), key=lambda path: path.name)
         except OSError:
             return out
-        logged, since = self._read_move_pricing_log()
+        logged, since = self.records.movement_pricing_records()
         missing: list[tuple[str, bytes]] = []
         for path in paths:
             name = path.name
             record = logged.get(name)
             if record is None:
                 try:
-                    full = _read_json(path, tolerate_stale=True)
+                    full = record_store.value_or_raise(self.records.listed_record(path))
                 except PoolContractError:
                     continue
                 if not isinstance(full, dict):
@@ -9378,10 +8832,10 @@ class PoolQueue:
         # reader opens that receipt itself, as it does any unlogged name.
         loggable = "\t" not in action_key and "\n" not in action_key
         try:
-            existing = self.move_path(action_key)
+            existing = self.records.move_path(action_key)
             if loggable and os.path.lexists(existing):
                 self._append_move_pricing(
-                    [(existing.name, _move_pricing_unknown_line(existing.name))],
+                    [(existing.name, record_store.pricing_unknown_line(existing.name))],
                     since=None, blocking=True)
         except (OSError, PoolContractError):
             pass
@@ -9412,29 +8866,14 @@ class PoolQueue:
                    ) -> tuple[Path, dict[str, object]]:
         """The atomic receipt write behind :meth:`record_move`."""
 
-        path = self.move_path(action_key)
+        path = self.records.move_path(action_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         body = {**dict(record),
                 "schema": record.get("schema") or POOL_MOVE_SCHEMA_V1,
                 "action_key": action_key}
-        _write_json_atomic(path, body)
+        self.records.replace_record_at(path, body)
         return path, body
 
-    def export_path(self, export_key: str) -> Path:
-        """The file one finished export's pacing record keeps (#1319).
-
-        ``exports/<export_key>.json``: one small immutable file per
-        export.  The key is the export action key (a 64-hex seal, so it
-        needs no escaping); a record without one is corrupt and refused
-        loudly here, never filed.
-        """
-
-        key = str(export_key)
-        if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
-            raise PoolContractError(
-                "export receipt names no 64-hex export key; "
-                "record_export files one file per export")
-        return self.root / EXPORTS / f"{key}.json"
 
     def record_export(self, record: Mapping[str, object]) -> Path:
         """File one finished export's pacing record (#1014 item 3, #1319).
@@ -9465,9 +8904,9 @@ class PoolQueue:
             raise PoolContractError(
                 "export receipt names no owner or no tier; record_export "
                 "files one file per export")
-        path = self.export_path(record.get("action_key"))
+        path = self.records.export_path(record.get("action_key"))
         path.parent.mkdir(parents=True, exist_ok=True)
-        _write_json_atomic(path, dict(record))
+        self.records.replace_record_at(path, dict(record))
         return path
 
     def export_records(self, owner: str, tier_id: str) -> list[dict[str, object]]:
@@ -9496,7 +8935,7 @@ class PoolQueue:
             if not name.endswith(".json"):
                 continue
             try:
-                record = _read_json(root / name, tolerate_stale=True)
+                record = record_store.value_or_raise(self.records.listed_record(root / name))
             except (OSError, PoolContractError):
                 continue
             if (not isinstance(record, dict)
@@ -9517,30 +8956,6 @@ class PoolQueue:
 
     # -- residency: the map an action reads, and the plan it was cut from ---
 
-    def residency_fragment_root(self) -> Path:
-        """Where movement nodes file their fragments, one directory per consumer."""
-
-        return self.root / RESIDENCY
-
-    def residency_map_path(self, consumer_action_key: str) -> Path:
-        """The composed map an action reads its staged inputs through.
-
-        One definition, because two parties depend on this name being the same
-        string: the ``tiers`` loop is its single writer, and this launcher puts
-        it in the action's environment.  A second spelling would be a consumer
-        reading a map nobody writes, which fails by falling back to the pool --
-        that is, silently, at full cost.
-        """
-
-        return residency_map.map_path(
-            self.residency_fragment_root(),
-            _residency_action_key(consumer_action_key))
-
-    def residency_plan_path(self, consumer_action_key: str) -> Path:
-        """The frozen window plan: every mover this consumer will ever have."""
-
-        return (self.root / RESIDENCY_PLANS
-                / f"{_residency_action_key(consumer_action_key)}.json")
 
     def launch_environment(self, item: Mapping[str, object]) -> dict[str, str]:
         """The queue's own launch context for ``item`` (#583, #961).
@@ -9573,7 +8988,7 @@ class PoolQueue:
             if not isinstance(key, str):
                 return {}
             try:
-                path = self.residency_map_path(key)
+                path = self.records.residency_map_path(key)
             except PoolContractError:
                 return {}
             try:
@@ -9606,7 +9021,7 @@ class PoolQueue:
         if not isinstance(key, str):
             return {}
         try:
-            path = self.residency_map_path(key)
+            path = self.records.residency_map_path(key)
             present = path.exists()
         except (OSError, PoolContractError):
             return {}
@@ -9647,7 +9062,7 @@ class PoolQueue:
         # ``first_unix`` is set once and carried forward: it is the clock the
         # withhold ceiling reads, so it must measure the age of the *block*,
         # not the age of the most recent denial.
-        prior = _read_json(self.passes_path(action_key)) or {}
+        prior = record_store.read_document(self.records.passes_path(action_key)) or {}
         first = prior.get("first_unix")
         if not isinstance(first, (int, float)):
             first = now
@@ -9664,7 +9079,7 @@ class PoolQueue:
         record.update(drain_policy.measurement_note_fields(episodes, measurement))
         if "measurement_reservation" in prior:
             record["measurement_reservation"] = prior["measurement_reservation"]
-        _write_json_atomic(self.passes_path(action_key), record)
+        self.records.replace_record_at(self.records.passes_path(action_key), record)
         return count
 
     def record_denial(
@@ -9775,10 +9190,6 @@ class PoolQueue:
 
     # -- denial history and a kill's dependents (#990, #991) ----------------
 
-    def denial_transitions_path(self, action_key: str) -> Path:
-        """The key's reason ring: ``denial-transitions/<key>.json``."""
-
-        return self.root / DENIAL_TRANSITIONS / f"{_residency_action_key(action_key)}.json"
 
     def _record_denial_transition(
         self, item: Mapping[str, object], *, host: str, reason: str,
@@ -9840,7 +9251,7 @@ class PoolQueue:
         """
 
         try:
-            key = _residency_action_key(item.get("action_key"))
+            key = record_store.residency_action_key(item.get("action_key"))
             generation = float(item["published_unix"])  # type: ignore[arg-type]
         except (PoolContractError, KeyError, TypeError, ValueError):
             return
@@ -9849,10 +9260,10 @@ class PoolQueue:
         if _DENIAL_SEEN.get(memo) == verdict:
             return
         now = _now()
-        path = self.denial_transitions_path(key)
+        path = self.records.denial_transitions_path(key)
         try:
             try:
-                prior = _read_json(path) or {}
+                prior = record_store.read_document(path) or {}
             except PoolContractError:
                 prior = {}    # an unparsable ring is replaced, not trusted
             document = denial_records.transition_document(
@@ -9862,7 +9273,7 @@ class PoolQueue:
                 _DENIAL_SEEN[memo] = verdict
                 return  # unchanged from the newest transition on file
             path.parent.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(path, document)
+            self.records.replace_record_at(path, document)
         except (OSError, PoolContractError, TypeError, ValueError):
             return
         _DENIAL_SEEN[memo] = verdict
@@ -9889,7 +9300,9 @@ class PoolQueue:
         """
 
         try:
-            record = _read_json(self.denial_transitions_path(action_key)) or {}
+            record = record_store.read_document(
+                self.records.denial_transitions_path(action_key),
+            ) or {}
         except (OSError, PoolContractError):
             return []
         ring = record.get("transitions") if isinstance(record, Mapping) else None
@@ -9928,11 +9341,19 @@ class PoolQueue:
                 continue
             path = root / name
             try:
-                if (self.item_path(READY, key).exists()
-                        or self.item_path(CLAIMED, key).exists()):
+                if (bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
+                        )):
                     continue      # live, whatever the caller's set covered
-                if (self.item_path(DONE, key).exists() or self.item_path(FAILED, key).exists()
-                        or self.item_path(WITHDRAWN, key).exists()):
+                if (bool(
+                    record_store.value_or_raise(self.records.item_presence(DONE, key)),
+                ) or bool(
+                    record_store.value_or_raise(self.records.item_presence(FAILED, key)),
+                )
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key)),
+                        )):
                     why = "terminal"
                 elif moment - path.stat().st_mtime > DENIAL_TRANSITIONS_RETENTION_S:
                     why = "retention"
@@ -9993,7 +9414,7 @@ class PoolQueue:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise OSError("sweep marker is not a regular file")
             cursor = os.pread(descriptor, cursor_bytes + 1, 0).decode("ascii", errors="replace")
-            if not cursor.endswith(".json") or not _is_hex64(cursor[:-len(".json")]):
+            if not cursor.endswith(".json") or not record_store.key_shaped(cursor[:-len(".json")]):
                 cursor = ""  # absent/legacy/malformed bookkeeping is no authority
         except Exception:                                        # noqa: BLE001
             # Like _sweep_due, unavailable local state never disables cleanup.
@@ -10009,14 +9430,20 @@ class PoolQueue:
                     break
                 name = names[(start + offset) % len(names)]
                 key = name[: -len(".json")]
-                if not name.endswith(".json") or not _is_hex64(key):
+                if not name.endswith(".json") or not record_store.key_shaped(key):
                     continue
-                path = self.passes_path(key)
+                path = self.records.passes_path(key)
                 try:
-                    if (self.item_path(READY, key).exists()
-                            or self.item_path(CLAIMED, key).exists()):
+                    if (bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
+                            or bool(
+                                record_store.value_or_raise(
+                                    self.records.item_presence(CLAIMED, key),
+                                ),
+                            )):
                         continue
-                    if not any(self.item_path(state, key).exists()
+                    if not any(bool(
+                        record_store.value_or_raise(self.records.item_presence(state, key)),
+                    )
                                for state in (DONE, FAILED, WITHDRAWN)):
                         continue
                     inspected += 1
@@ -10024,10 +9451,16 @@ class PoolQueue:
                     with self._transition_locked(key, blocking=False) as acquired:
                         if not acquired:
                             continue
-                        if (self.item_path(READY, key).exists()
-                                or self.item_path(CLAIMED, key).exists()):
+                        if (bool(
+                            record_store.value_or_raise(self.records.item_presence(READY, key)),
+                        )
+                                or bool(
+                                    record_store.value_or_raise(
+                                        self.records.item_presence(CLAIMED, key),
+                                    ),
+                                )):
                             continue
-                        record = _read_json(path)
+                        record = record_store.read_document(path)
                         if (record is None or record.get("action_key") != key
                                 or measurement_reservation.FIELD in record):
                             continue
@@ -10092,16 +9525,24 @@ class PoolQueue:
                         torn = _gang.teardown(self, group)
                 if torn is not None:
                     for key in keys:
-                        if self.item_path(READY, key).exists():
+                        if bool(
+                            record_store.value_or_raise(self.records.item_presence(READY, key)),
+                        ):
                             try:
                                 self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
                                               by=f"gang:{group}")
                             except (PoolContractError, OSError, pb.PrismaBuildError):
                                 continue
-                if any(self.item_path(READY, key).exists() or self.item_path(CLAIMED, key).exists()
+                if any(bool(
+                    record_store.value_or_raise(self.records.item_presence(READY, key)),
+                ) or bool(
+                    record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
+                )
                        for key in keys):
                     continue
-                if not all(any(self.item_path(state, key).exists()
+                if not all(any(bool(
+                    record_store.value_or_raise(self.records.item_presence(state, key)),
+                )
                                for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
                     continue
                 shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
@@ -10139,12 +9580,20 @@ class PoolQueue:
             directory = root / key
             try:
                 if (len(key) != 64 or not directory.is_dir()
-                        or self.item_path(READY, key).exists()
-                        or self.item_path(CLAIMED, key).exists()
-                        or self.residency_plan_path(key).exists()):
+                        or bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
+                        )
+                        or bool(record_store.value_or_raise(self.records.plan_presence(key)))):
                     continue
-                if (self.item_path(DONE, key).exists() or self.item_path(FAILED, key).exists()
-                        or self.item_path(WITHDRAWN, key).exists()):
+                if (bool(
+                    record_store.value_or_raise(self.records.item_presence(DONE, key)),
+                ) or bool(
+                    record_store.value_or_raise(self.records.item_presence(FAILED, key)),
+                )
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key)),
+                        )):
                     why = "terminal"
                 else:
                     newest = max((entry.stat().st_mtime for entry in directory.iterdir()),
@@ -10207,32 +9656,6 @@ class PoolQueue:
         return {key: sorted(slot.values(), key=lambda value: -float(value["denied_unix"]))
                 for key, slot in found.items()}
 
-    def live_records(self) -> tuple[dict[str, tuple[str, dict[str, object]]], list[str]]:
-        """Every ready and claimed record, by key, and what could not be listed.
-
-        One listing and one read per record: what a single claim pass reads.
-        A census for :meth:`dependent_rows`, taken once by a caller that asks
-        about several actions.
-        """
-
-        live: dict[str, tuple[str, dict[str, object]]] = {}
-        errors: list[str] = []
-        for state in (READY, CLAIMED):
-            try:
-                names = sorted(os.listdir(self.dir(state)))
-            except OSError as exc:
-                errors.append(f"{state}: {exc!r}")
-                continue
-            for name in names:
-                if not name.endswith(".json"):
-                    continue
-                try:
-                    record = _read_json(self.dir(state) / name, tolerate_stale=True)
-                except (OSError, PoolContractError):
-                    continue
-                if isinstance(record, dict):
-                    live[str(record.get("action_key", ""))] = (state, record)
-        return live, errors
 
     def dependent_rows(
         self, action_key: str, *, now: float | None = None,
@@ -10261,9 +9684,10 @@ class PoolQueue:
 
         from . import residency_plan as plan_mod
 
-        key = _residency_action_key(action_key)
+        key = record_store.residency_action_key(action_key)
         moment = _now() if now is None else float(now)
-        live, listed = live_records if live_records is not None else self.live_records()
+        live, listed = live_records if live_records is not None else self.records.advisory_live_rows(
+        )
         errors: list[str] = list(listed)
         roles: dict[str, str] = {
             child: "produced_export" for child, (_state, record) in sorted(live.items())
@@ -10293,7 +9717,9 @@ class PoolQueue:
             state, record = live.get(child, (None, None))
             if state is None:
                 try:
-                    if not self.item_path(FAILED, child).exists():
+                    if not bool(
+                        record_store.value_or_raise(self.records.item_presence(FAILED, child)),
+                    ):
                         continue      # unpublished, done, or withdrawn: not waited on
                 except OSError:
                     continue
@@ -10351,22 +9777,14 @@ class PoolQueue:
         it.  Best-effort: a write that fails is said on stderr.
         """
 
-        line = json.dumps(dict(record), default=str)
+        line = self.records.event_line(record)
         print(f"PrismaBuild: {line}", file=sys.stderr, flush=True)
         try:
-            directory = self.consumer_events_dir(action_key)
-            directory.mkdir(parents=True, exist_ok=True)
-            with open(directory / f"{socket.gethostname()}-stall-watch.jsonl",
-                      "a") as stream:
-                stream.write(line + "\n")
+            self.records.append_stall_event(action_key, line)
         except (OSError, PoolContractError) as exc:
             print(f"PrismaBuild: stall-watch event unwritten: {exc!r}",
                   file=sys.stderr, flush=True)
 
-    def consumer_events_dir(self, action_key: str) -> Path:
-        """``residency-events/<consumer>/``: one ``<host>.jsonl`` per tier loop."""
-
-        return self.root / RESIDENCY_EVENTS / _residency_action_key(action_key)
 
     def consumer_events(
         self, action_key: str, *, limit: int | None = None,
@@ -10378,33 +9796,11 @@ class PoolQueue:
         parse is skipped, and a missing directory is no events.
         """
 
-        events: list[dict[str, object]] = []
-        try:
-            names = sorted(os.listdir(self.consumer_events_dir(action_key)))
-        except OSError:
-            return events
-        for name in names:
-            if not name.endswith(".jsonl"):
-                continue
-            try:
-                text = (self.consumer_events_dir(action_key) / name).read_text()
-            except OSError:
-                continue
-            for line in text.splitlines():
-                try:
-                    value = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(value, dict):
-                    events.append(value)
+        events = self.records.consumer_event_records(action_key)
         events.sort(key=lambda value: float(value.get("unix", 0.0))
                     if isinstance(value.get("unix"), (int, float)) else 0.0)
         return events if limit is None else events[-limit:]
 
-    def host_events_dir(self) -> Path:
-        """``residency-events/_host/``: one ``<host>.jsonl`` per tier loop (#1006)."""
-
-        return self.root / RESIDENCY_EVENTS / RESIDENCY_EVENTS_HOST_DIR
 
     def host_events(
         self, host: str | None = None, *, limit: int | None = None,
@@ -10417,29 +9813,7 @@ class PoolQueue:
         skipped, and a missing file or directory is no events.
         """
 
-        events: list[dict[str, object]] = []
-        directory = self.host_events_dir()
-        if host is None:
-            try:
-                names = sorted(os.listdir(directory))
-            except OSError:
-                return events
-        else:
-            names = [f"{host}.jsonl"]
-        for name in names:
-            if not name.endswith(".jsonl"):
-                continue
-            try:
-                text = (directory / name).read_text()
-            except OSError:
-                continue
-            for line in text.splitlines():
-                try:
-                    value = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(value, dict):
-                    events.append(value)
+        events = self.records.host_event_records(host)
         events.sort(key=lambda value: float(value.get("unix", 0.0))
                     if isinstance(value.get("unix"), (int, float)) else 0.0)
         return events if limit is None else events[-limit:]
@@ -10616,7 +9990,7 @@ class PoolQueue:
             str(entry.get("key")): entry
             for entry in ((prior or {}).get("movers") or ())  # type: ignore[union-attr]
             if isinstance(entry, Mapping)}
-        key = _residency_action_key(action_key)
+        key = record_store.residency_action_key(action_key)
         try:
             plan = plan_mod.read(self, key)
         except (OSError, ValueError, PoolContractError):
@@ -10643,11 +10017,11 @@ class PoolQueue:
                 continue
             detail: str | None = None
             try:
-                if self.item_path(WITHDRAWN, mover).exists():
+                if bool(record_store.value_or_raise(self.records.item_presence(WITHDRAWN, mover))):
                     state = WITHDRAWN
-                elif self.item_path(READY, mover).exists():
+                elif bool(record_store.value_or_raise(self.records.item_presence(READY, mover))):
                     state = READY
-                elif self.item_path(CLAIMED, mover).exists():
+                elif bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, mover))):
                     state = CLAIMED
                 else:
                     # One key-level answer, resolved by generation (#1178): an
@@ -10819,15 +10193,15 @@ class PoolQueue:
             return {"key": export, "state": why[0], "evidence": why[0],
                     **({"detail": why[1]} if why[1] else {})}
         try:
-            if self.item_path(WITHDRAWN, export).exists():
+            if bool(record_store.value_or_raise(self.records.item_presence(WITHDRAWN, export))):
                 state = WITHDRAWN
-            elif self.item_path(READY, export).exists():
+            elif bool(record_store.value_or_raise(self.records.item_presence(READY, export))):
                 state = READY
-            elif self.item_path(CLAIMED, export).exists():
+            elif bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, export))):
                 state = CLAIMED
-            elif self.item_path(DONE, export).exists():
+            elif bool(record_store.value_or_raise(self.records.item_presence(DONE, export))):
                 state = DONE
-            elif self.item_path(FAILED, export).exists():
+            elif bool(record_store.value_or_raise(self.records.item_presence(FAILED, export))):
                 state = FAILED
             else:
                 state = "unpublished"
@@ -10862,7 +10236,7 @@ class PoolQueue:
                 entry.update({"evidence": "none", "evidence_unix": then})
         elif state == CLAIMED:
             try:
-                claim = _read_json(self.item_path(CLAIMED, export))
+                claim = record_store.value_or_raise(self.records.item(CLAIMED, export))
             except (OSError, ValueError, PoolContractError):
                 claim = None
             claimed = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
@@ -10892,7 +10266,7 @@ class PoolQueue:
                 entry.update({"evidence": "none", "evidence_unix": then})
         elif state == DONE:
             try:
-                row = _read_json(self.item_path(DONE, export))
+                row = record_store.value_or_raise(self.records.item(DONE, export))
             except (OSError, ValueError, PoolContractError):
                 row = None
             finished = row.get("finished_unix") if isinstance(row, Mapping) else None
@@ -10945,9 +10319,10 @@ class PoolQueue:
             return None, ("unknown", "the owner's claim names no CAS")
         path = Path(str(cas_root)) / "requests" / export[:2] / f"{export}.json"
         try:
-            raw = pb._read_regular_file_nofollow(path, where="export action request")
+            raw = immutable_files.read_stable_file(path, where="export action request")
             request = pb.validate_action(
-                pb._decode_strict_json(raw, where="export action request"))
+                pb.digest_primitives.decode_strict_json(raw, where="export action request"),
+            )
         except FileNotFoundError:
             return None, ("not-own-export", "no sealed request in the owner's CAS")
         except (OSError, ValueError, RecursionError, pb.ActionContractError,
@@ -11135,16 +10510,16 @@ class PoolQueue:
         """One awaited child's queue state, with durable CAS as durable."""
 
         try:
-            if self._queued_child_finish_marked(child_key):
+            if self.records.claimed_finish_marked(child_key):
                 # A cleanup tombstone or a late-finish leaf: owner-defined
                 # custody, neither credited nor released.
                 return "held", "cleanup holds the claim"
-            if self.item_path(WITHDRAWN, child_key).exists():
+            if bool(record_store.value_or_raise(self.records.item_presence(WITHDRAWN, child_key))):
                 return WITHDRAWN, ""
             for state in (READY, CLAIMED):
-                if self.item_path(state, child_key).exists():
+                if bool(record_store.value_or_raise(self.records.item_presence(state, child_key))):
                     try:
-                        row = _read_json(self.item_path(state, child_key))
+                        row = record_store.value_or_raise(self.records.item(state, child_key))
                     except (OSError, ValueError, PoolContractError) as exc:
                         return "unknown", f"{state} row unreadable: {exc!r}"
                     if not isinstance(row, Mapping):
@@ -11209,7 +10584,7 @@ class PoolQueue:
         keep = {str(key): dict(value)
                 for key, value in dict(
                     retained if isinstance(retained, Mapping) else {}).items()
-                if _is_hex64(key)}
+                if record_store.key_shaped(key)}
         custody, refusal = (
             self._awaited_controller_custody(
                 state_dir, parent_key=parent_key, plan_key=plan_key)
@@ -11255,26 +10630,32 @@ class PoolQueue:
         if not root.is_absolute() or ".." in root.parts:
             return None, "the controller state is not an absolute path"
         try:
-            state_raw = pb._read_regular_file_nofollow(
-                root / CONTROLLER_WAVE_STATE, where="controller wave state",
-                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+            state_raw = immutable_files.read_replaced_record(
+                root / CONTROLLER_WAVE_STATE,
+                where="controller wave state",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES,
+            )
         except FileNotFoundError:
             return None, f"{CONTROLLER_WAVE_STATE} is missing"
         except (OSError, pb.ActionContractError, pb.CASTamperError,
                 pb.CASUnavailableError, pb.ReplacedRecordError) as exc:
             return None, f"{CONTROLLER_WAVE_STATE} is unreadable: {type(exc).__name__}"
         try:
-            state_value = pb._decode_strict_json(
-                state_raw, where="controller wave state")
+            state_value = pb.digest_primitives.decode_strict_json(
+                state_raw,
+                where="controller wave state",
+            )
         except (pb.ActionContractError, RecursionError):
             return None, f"{CONTROLLER_WAVE_STATE} is not JSON"
         state_members, reason = PoolQueue._awaited_wave_members(state_value)
         if state_members is None:
             return None, reason
         try:
-            journal_raw = pb._read_regular_file_nofollow(
-                root / CONTROLLER_SUB_KEYS, where="controller journal",
-                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES, replaced_leaf=True)
+            journal_raw = immutable_files.read_replaced_record(
+                root / CONTROLLER_SUB_KEYS,
+                where="controller journal",
+                max_bytes=MAX_CONTROLLER_CUSTODY_BYTES,
+            )
         except FileNotFoundError:
             return None, f"{CONTROLLER_SUB_KEYS} is missing"
         except (OSError, pb.ActionContractError, pb.CASTamperError,
@@ -11314,7 +10695,7 @@ class PoolQueue:
         if pending is not None and (
                 set(pending) != {"batch", "key"}
                 or not isinstance(pending["batch"], str) or not pending["batch"]
-                or not _is_hex64(pending["key"])):
+                or not record_store.key_shaped(pending["key"])):
             return None, f"{CONTROLLER_WAVE_STATE} pending_submission must hold batch and key"
         if "last_disk_check" in value:
             reason = PoolQueue._awaited_disk_check(value["last_disk_check"])
@@ -11357,7 +10738,7 @@ class PoolQueue:
                 key = entry["key"]
                 if type(batch) is not str or not batch:
                     return None, f"{at} batch is not a non-empty string"
-                if not _is_hex64(key):
+                if not record_store.key_shaped(key):
                     return None, f"{at} key is not a 64-hex action key"
                 assert isinstance(key, str)
                 if key in members and members[key] != batch:
@@ -11374,7 +10755,7 @@ class PoolQueue:
         """Validate the routed writer's disk diagnostic envelope."""
 
         if (not isinstance(value, dict) or set(value) != {"action_key", "evidence"}
-                or not _is_hex64(value["action_key"])
+                or not record_store.key_shaped(value["action_key"])
                 or not isinstance(value["evidence"], dict)):
             return "must hold an action_key and an evidence object"
         return ""
@@ -11404,7 +10785,7 @@ class PoolQueue:
                     f"{CONTROLLER_SUB_KEYS} line {number} "
                     "is not a batch and key pair")
             batch, key = parts
-            if not _is_hex64(key):
+            if not record_store.key_shaped(key):
                 return None, (
                     f"{CONTROLLER_SUB_KEYS} line {number} "
                     "key is not a 64-hex action key")
@@ -11418,17 +10799,6 @@ class PoolQueue:
             members[key] = batch
         return members, ""
 
-    def _queued_child_finish_marked(self, child_key: str) -> bool:
-        """Whether a finish mark holds this key's claim aside (#1666)."""
-
-        prefix = f"{child_key}."
-        try:
-            names = os.listdir(self.dir(CLAIMED))
-        except OSError:
-            return False
-        return any(name.startswith(prefix)
-                   and name.endswith((TOMBSTONE_SUFFIX, LATE_FINISH_SUFFIX))
-                   for name in names)
 
     def _queued_child_durable(self, child_key: str, *, cas_root: object,
                               request: Mapping[str, object],
@@ -11464,7 +10834,7 @@ class PoolQueue:
                         dict(entry) if isinstance(entry, Mapping) else {})
                     for entry in prior.get("children") or ()  # type: ignore[union-attr]
                     if isinstance(entry, Mapping)
-                    and _is_hex64(entry.get("key"))}
+                    and record_store.key_shaped(entry.get("key"))}
             custody_read = self._awaited_controller_custody(
                 progress.awaited_batch.get("controller_state"),
                 parent_key=str(progress.awaited_batch["parent_key"]),
@@ -11545,9 +10915,11 @@ class PoolQueue:
         from . import movement_actions
 
         try:
-            raw = pb._read_regular_file_nofollow(
-                self.action_progress_path(mover), where="mover progress report",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            raw = immutable_files.read_replaced_record(
+                self.records.action_progress_path(mover),
+                where="mover progress report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
             record = json.loads(raw)
         except FileNotFoundError:
             return None
@@ -11567,10 +10939,6 @@ class PoolQueue:
         return {"landed_bytes": units, "reported_unix": float(at),
                 "landed_phase": str(record["phase"])}
 
-    def mover_landing_path(self, mover: str) -> Path:
-        """Where ``mover`` files its own landing report (#1090)."""
-
-        return self.consumer_events_dir(mover) / MOVER_LANDING_REPORT
 
     def mover_landing(self, mover: str) -> dict[str, object] | None:
         """A running stage mover's own report of the bytes it has copied (#1090).
@@ -11587,9 +10955,11 @@ class PoolQueue:
         """
 
         try:
-            raw = pb._read_regular_file_nofollow(
-                self.mover_landing_path(mover), where="mover landing report",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            raw = immutable_files.read_replaced_record(
+                self.records.mover_landing_path(mover),
+                where="mover landing report",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
             record = json.loads(raw)
         except FileNotFoundError:
             return None
@@ -11716,7 +11086,7 @@ class PoolQueue:
         """
 
         try:
-            path = self.tier_record_path(tier_id)
+            path = self.records.tier_record_path(tier_id)
             status = os.stat(path)
         except (OSError, PoolContractError, ValueError):
             return None
@@ -11729,7 +11099,7 @@ class PoolQueue:
             record = held[1]
         else:
             try:
-                record = _read_json(path)
+                record = record_store.read_document(path)
             except (OSError, PoolContractError, ValueError):
                 return None
             memo[tier_id] = (stamp, record)
@@ -11788,7 +11158,7 @@ class PoolQueue:
             if row.get("state") != CLAIMED or not mover or mover == me:
                 continue
             try:
-                claim = _read_json_fresh(self.item_path(CLAIMED, mover))
+                claim = record_store.value_or_raise(self.records.item_for_publish(CLAIMED, mover))
             except (OSError, ValueError, PoolContractError):
                 continue
             stamp = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
@@ -11826,7 +11196,7 @@ class PoolQueue:
 
         try:
             record = residency_map.read_landing(residency_map.landing_path(
-                self.residency_fragment_root(), consumer))
+                self.records.residency_fragment_root(), consumer))
         except (OSError, ValueError, RecursionError):
             return {}
         out: dict[str, tuple[int | None, list[str] | None]] = {}
@@ -11853,7 +11223,7 @@ class PoolQueue:
         """
 
         try:
-            item = _read_json(self.item_path(READY, mover))
+            item = record_store.value_or_raise(self.records.item(READY, mover))
         except (OSError, ValueError, PoolContractError):
             return None
         published = item.get("published_unix") if isinstance(item, Mapping) else None
@@ -11894,7 +11264,7 @@ class PoolQueue:
         """
 
         try:
-            record = _read_json(self.passes_path(mover))
+            record = record_store.read_document(self.records.passes_path(mover))
         except (OSError, ValueError, PoolContractError):
             return None, None, None
         if not isinstance(record, Mapping):
@@ -12035,7 +11405,7 @@ class PoolQueue:
                         "progress_unix": report["reported_unix"],
                         "progress_phase": report["landed_phase"]})
         try:
-            claim = _read_json(self.item_path(CLAIMED, mover))
+            claim = record_store.value_or_raise(self.records.item(CLAIMED, mover))
         except (OSError, ValueError, PoolContractError):
             claim = None
         claimed = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
@@ -12088,7 +11458,7 @@ class PoolQueue:
         if not isinstance(claim, Mapping):
             return None
         try:
-            lease = _read_json(self.lease_path(mover))
+            lease = record_store.read_document(self.records.lease_path(mover))
         except (OSError, ValueError, PoolContractError):
             return None
         if (not isinstance(lease, Mapping)
@@ -12121,7 +11491,7 @@ class PoolQueue:
 
         for mover in movers:
             try:
-                claim = _read_json(self.item_path(CLAIMED, mover))
+                claim = record_store.value_or_raise(self.records.item(CLAIMED, mover))
             except (OSError, ValueError, PoolContractError):
                 continue
             lease = self._mover_lease(mover, claim, now=now)
@@ -12287,14 +11657,14 @@ class PoolQueue:
             return False, out
 
         try:
-            claim = _read_json(self.item_path(CLAIMED, ahead))
+            claim = record_store.value_or_raise(self.records.item(CLAIMED, ahead))
         except (OSError, ValueError, PoolContractError):
             return carried("unread")
         if claim is None:
             out.update({"evidence": "ahead-ended", "evidence_unix": now})
             return True, out
         try:
-            lease = _read_json(self.lease_path(ahead))
+            lease = record_store.read_document(self.records.lease_path(ahead))
         except (OSError, ValueError, PoolContractError):
             return carried("unread")
         if (not isinstance(lease, Mapping)
@@ -12374,7 +11744,7 @@ class PoolQueue:
         """
 
         try:
-            record = _read_json(self.tier_record_path(tier_id))
+            record = record_store.read_document(self.records.tier_record_path(tier_id))
         except (OSError, PoolContractError, ValueError):
             return False, None
         if not isinstance(record, Mapping):
@@ -12385,7 +11755,7 @@ class PoolQueue:
     def withhold_age(self, action_key: str) -> float:
         """Seconds since this item was first denied admission; 0.0 if never."""
 
-        record = _read_json(self.passes_path(action_key)) or {}
+        record = record_store.read_document(self.records.passes_path(action_key)) or {}
         first = record.get("first_unix")
         if not isinstance(first, (int, float)):
             return 0.0
@@ -12426,7 +11796,7 @@ class PoolQueue:
         moment = _now() if now is None else float(now)
         answer: dict[str, object] = {"action_key": action_key, "bound": "unknown"}
         try:
-            claim = _read_json(self.item_path(CLAIMED, action_key))
+            claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
         except (OSError, pb.PrismaBuildError, ValueError):
             return answer
         claimed_unix = claim.get("claimed_unix") if isinstance(claim, Mapping) else None
@@ -12464,7 +11834,7 @@ class PoolQueue:
     ) -> drain_policy.DrainAssessment | drain_policy.DrainFailure:
         """Observe one drain after H release, reducing each holder before the next read."""
         now = _now()
-        prior = _read_json(self.passes_path(key)) or {}
+        prior = record_store.read_document(self.records.passes_path(key)) or {}
         question = drain_policy.DrainQuestion(
             key, need, mode, adaptive, foreign, held_cpus, cpu_tiers is not None,
             measurement, measurement_generation, measurement_foreign_clear,
@@ -12517,8 +11887,8 @@ class PoolQueue:
                 chosen["host"] != ledger.base.name if chosen is not None else False))
 
     def _write_claim_intent(self, action_key: str, *, owner: str) -> None:
-        _write_json_atomic(
-            self.item_path(INTENT, action_key),
+        self.records.replace_record_at(
+            self.records.item_path(INTENT, action_key),
             {
                 "schema": POOL_CLAIM_INTENT_SCHEMA_V1,
                 "action_key": action_key,
@@ -12532,8 +11902,8 @@ class PoolQueue:
     def _discard_claim_intent(self, action_key: str, *, owner: str) -> None:
         """Remove this claimant's intent marker, and only ever its own."""
 
-        path = self.item_path(INTENT, action_key)
-        marker = _read_json(path)
+        path = self.records.item_path(INTENT, action_key)
+        marker = record_store.read_document(path)
         if isinstance(marker, Mapping) and marker.get("owner") == owner:
             path.unlink(missing_ok=True)
 
@@ -12579,19 +11949,23 @@ class PoolQueue:
             # -- continuation is the loop's decision and stays the loop's -- but
             # an operator who cannot see what governs cannot review it either.
             lease["progress_observation"] = dict(progress_observation)
-        claim = _read_json(self.item_path(CLAIMED, action_key))
+        claim = record_store.value_or_raise(self.records.item(CLAIMED, action_key))
         if (claim is None or claim.get("claimed_by") != owner
                 or (claim_snapshot is not None and not _same_claim(claim, claim_snapshot))):
             raise PoolContractError("claim changed before heartbeat publication")
         # A stale claim read must not erase the successor lease's ownership
         # evidence, including the evidence used by finish's cleanup guard.
-        _check_claim_lease_identity(action_key, claim, _read_json(self.lease_path(action_key)))
+        _check_claim_lease_identity(
+            action_key,
+            claim,
+            record_store.read_document(self.records.lease_path(action_key)),
+        )
         for field in ("resource_scope", "resource_scope_intent", "resource_scope_cleanup",
                       "claimed_unix", "published_unix", "scratch_declaration_record",
                       scratch_lifetime.SCRATCH_LIFETIME_FIELD):
             if field in claim:
                 lease[field] = claim[field]
-        _write_json_atomic(self.lease_path(action_key), lease)
+        self.records.replace_record_at(self.records.lease_path(action_key), lease)
 
     def ledger(self, host: str | None = None) -> ResourceLedger:
         """Host tokens share the reservation owner's reentrant mutation lock.
@@ -12605,12 +11979,6 @@ class PoolQueue:
 
     # -- storage tiers (#583) --------------------------------------------
 
-    @staticmethod
-    def _check_tier_id(tier_id: str) -> str:
-        if (not isinstance(tier_id, str) or not tier_id or tier_id.startswith(".")
-                or "/" in tier_id or storage_tiers.TIER_DEMAND_SEPARATOR in tier_id):
-            raise PoolContractError(f"invalid tier id {tier_id!r}")
-        return tier_id
 
     def tier_ledger(self, tier_id: str) -> ResourceLedger:
         """The cluster-scoped ledger of one storage tier.
@@ -12634,7 +12002,7 @@ class PoolQueue:
         on :meth:`_reclaim_dead_markers`.
         """
 
-        checked = self._check_tier_id(tier_id)
+        checked = self.records.check_tier_id(tier_id)
 
         def _tier_guard(*, blocking: bool = True):
             return self.tier_mint_lock(checked, blocking=blocking)
@@ -12660,7 +12028,7 @@ class PoolQueue:
         """
 
         name = hashlib.sha256(
-            f"tier-mint:{self._check_tier_id(tier_id)}".encode()).hexdigest()
+            f"tier-mint:{self.records.check_tier_id(tier_id)}".encode()).hexdigest()
         return posix_lock.held(self.root / "tier-mint-locks" / f"{name}.lock",
                                blocking=blocking)
 
@@ -12705,13 +12073,8 @@ class PoolQueue:
 
         return posix_lock.held(
             self.root / "stage-ownership-locks"
-            / f"{_stage_ownership_name(stage_root)}.lock", blocking=blocking)
+            / f"{record_store.stage_ownership_name(stage_root)}.lock", blocking=blocking)
 
-    def stage_ownership_holder_path(self, stage_root) -> Path:
-        """Where the holder of one stage root's ownership lock names itself."""
-
-        return (self.root / STAGE_OWNERSHIP_HOLDERS
-                / f"{_stage_ownership_name(stage_root)}.json")
 
     def write_stage_ownership_holder(
         self, stage_root, *, role: str, action_key: str | None = None,
@@ -12733,16 +12096,15 @@ class PoolQueue:
             "role": str(role), "action_key": action_key or None,
             "host": socket.gethostname(), "pid": os.getpid(),
             "since_unix": _now()}
-        path = self.stage_ownership_holder_path(stage_root)
-        _write_json_atomic(path, record, text="sorted_lf", tmp="pid",
-                           fsync=False)
+        path = self.records.stage_ownership_holder_path(stage_root)
+        self.records.replace_stage_holder_at(path, record)
         return record
 
     def clear_stage_ownership_holder(self, stage_root) -> None:
         """Remove the holder record; call while still holding the lock."""
 
         with suppress(FileNotFoundError):
-            self.stage_ownership_holder_path(stage_root).unlink()
+            self.records.stage_ownership_holder_path(stage_root).unlink()
 
     @contextmanager
     def recorded_stage_ownership(self, stage_root, *, role: str,
@@ -12806,11 +12168,13 @@ class PoolQueue:
         ``why`` whenever ``live`` is not ``True``.
         """
 
-        path = self.stage_ownership_holder_path(stage_root)
+        path = self.records.stage_ownership_holder_path(stage_root)
         try:
-            raw = pb._read_regular_file_nofollow(
-                path, where="stage ownership holder",
-                max_bytes=MAX_STAGE_OWNERSHIP_HOLDER_BYTES)
+            raw = immutable_files.read_stable_file(
+                path,
+                where="stage ownership holder",
+                max_bytes=MAX_STAGE_OWNERSHIP_HOLDER_BYTES,
+            )
         except FileNotFoundError:
             return {"recorded": False, "live": None, "why": "no holder record"}
         except (OSError, pb.ActionContractError, pb.CASTamperError,
@@ -12818,7 +12182,7 @@ class PoolQueue:
             return {"recorded": False, "live": None,
                     "why": f"holder record unreadable: {type(exc).__name__}"}
         try:
-            record = pb._decode_strict_json(raw, where="stage ownership holder")
+            record = pb.digest_primitives.decode_strict_json(raw, where="stage ownership holder")
         except (pb.ActionContractError, RecursionError):
             record = None
         pid = record.get("pid") if isinstance(record, dict) else None
@@ -12843,7 +12207,7 @@ class PoolQueue:
                 pass
         if verdict["live"] and key is not None:
             try:
-                if not self.item_path(CLAIMED, key).exists():
+                if not bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key))):
                     verdict.update(live=False, why="holder claim ended")
             except (OSError, ValueError):
                 verdict.update(live=False, why="holder claim unreadable")
@@ -12869,8 +12233,8 @@ class PoolQueue:
     def tier_ids(self) -> list[str]:
         """Every tier that has a ledger, whether or not it holds anything.
 
-        Contained against every ``OSError``, not only the two ``_scan``
-        tolerates, and deliberately here rather than in ``_scan``: a host
+        Contained against every ``OSError``, not only the two ``immutable_files.scan_optional``
+        tolerates, and deliberately here rather than in ``immutable_files.scan_optional``: a host
         ledger's scan must keep failing loudly, because a box that cannot read
         its own reservations does not know what it holds.  This directory is
         different.  It is brand new, it is on the shared mount, nothing touches
@@ -12886,7 +12250,9 @@ class PoolQueue:
 
         try:
             return sorted(
-                directory.name for directory in _scan(self.root / TIER_RESERVATIONS)
+                directory.name for directory in immutable_files.scan_optional(
+                    self.root / TIER_RESERVATIONS,
+                )
                 if directory.is_dir() and not directory.name.startswith(".")
             )
         except OSError:
@@ -13313,11 +12679,6 @@ class PoolQueue:
 
     # -- advance-credit funding records (window progress protection) --------
 
-    def funding_path(self, mover_action_key: str, tier_id: str) -> Path:
-        """One mover's funding record on one tier (newest generation wins)."""
-
-        return (self.root / TIER_FUNDING
-                / f"{mover_action_key}.{tier_id}.funding.json")
 
     @staticmethod
     def validate_funding(value: object) -> dict[str, object]:
@@ -13418,16 +12779,17 @@ class PoolQueue:
         absent.
         """
 
-        path = self.funding_path(mover_action_key, tier_id)
+        path = self.records.funding_path(mover_action_key, tier_id)
         try:
-            raw = _read_json(path)
+            raw = record_store.read_document(path)
         except OSError as exc:
             return ("unknown", None, f"funding record unreadable: {exc!r}")
         except PoolContractError as exc:
             return ("unknown", None, f"funding record unparsable: {exc}")
         if raw is None:
             try:
-                present = path.exists()
+                present = bool(record_store.value_or_raise(
+                    self.records.funding_presence(mover_action_key, tier_id)))
             except OSError as exc:
                 return ("unknown", None,
                         f"funding record census unreadable: {exc!r}")
@@ -13489,13 +12851,13 @@ class PoolQueue:
         if rotate and checked.get("state") != "reserved":
             raise PoolContractError(f"rotated {label} generations are born reserved")
         mover, tier = str(checked["mover_action_key"]), str(checked["tier_id"])
-        path = (self.funding_output_path(mover, tier) if binding == "output"
-                else self.funding_path(mover, tier))
+        path = (self.records.funding_output_path(mover, tier) if binding == "output"
+                else self.records.funding_path(mover, tier))
         path.parent.mkdir(parents=True, exist_ok=True)
         if binding == "output":
             self._refuse_retired_output_funding(checked)
         try:
-            raw = _read_json(path)
+            raw = record_store.read_document(path)
         except (OSError, PoolContractError):
             raise PoolContractError(f"{label} record unreadable for CAS")
         if raw is None:
@@ -13528,7 +12890,7 @@ class PoolQueue:
                         f"{label} state step "
                         f"{current.get('state')!r}->{checked.get('state')!r} "
                         "is not a legal advance")
-        _write_json_atomic(path, checked)
+        self.records.replace_record_at(path, checked)
         return path
 
     def advance_funding_state(self, mover_action_key: str, tier_id: str, *,
@@ -13694,7 +13056,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in _glob(
+            held_names = {path.name for path in immutable_files.match_optional(
                 self.tier_ledger(tier_id).held_dir / key, "*-*")}
         except (OSError, PoolContractError, ValueError):
             return (0, None)
@@ -14047,7 +13409,9 @@ class PoolQueue:
         # cannot advance a state or edit a binding.
         try:
             if current is None:
-                if self.funding_path(mover, str(tier_id)).exists():
+                if bool(
+                    record_store.value_or_raise(self.records.funding_presence(mover, str(tier_id))),
+                ):
                     # Appeared or unreadable since the read above (the
                     # mover lock makes the funding writer race impossible,
                     # so this is unknown evidence): retain, defer.
@@ -14075,8 +13439,10 @@ class PoolQueue:
         """
 
         try:
-            if not (self.item_path(READY, mover).exists()
-                    or self.item_path(CLAIMED, mover).exists()):
+            if not (bool(record_store.value_or_raise(self.records.item_presence(READY, mover)))
+                    or bool(
+                        record_store.value_or_raise(self.records.item_presence(CLAIMED, mover)),
+                    )):
                 return 0
             return int(self.transfer_tier_reservation(
                 tier_id, grant, mover, faults=faults))
@@ -14095,18 +13461,6 @@ class PoolQueue:
     # the produced-output lane references its generation and never mirrors
     # it with a second protocol.
 
-    def funding_output_path(self, mover_action_key: str, tier_id: str) -> Path:
-        """One output mover's funding record on one tier."""
-
-        return (self.root / TIER_FUNDING
-                / f"{mover_action_key}.{tier_id}.output-funding.json")
-
-    def funding_output_retired_path(self, mover_action_key: str,
-                                    tier_id: str) -> Path:
-        """Where :meth:`retire_terminal_output_funding` moves that record."""
-
-        return (self.root / TIER_FUNDING / TIER_FUNDING_RETIRED
-                / f"{mover_action_key}.{tier_id}.output-funding.json")
 
     @staticmethod
     def validate_output_funding(value: object) -> dict[str, object]:
@@ -14222,7 +13576,7 @@ class PoolQueue:
         """
 
         try:
-            raw_bytes = self._read_output_funding_bytes(
+            raw_bytes = self.records.output_funding_bytes(
                 mover_action_key, tier_id, max_bytes=None)
             if raw_bytes is None:
                 return None
@@ -14248,7 +13602,7 @@ class PoolQueue:
         """
 
         try:
-            raw_bytes = self._read_output_funding_bytes(
+            raw_bytes = self.records.output_funding_bytes(
                 mover_action_key, tier_id, max_bytes=1024 * 1024)
         except OSError:
             return (None, "corrupt")
@@ -14269,25 +13623,6 @@ class PoolQueue:
         except (PoolContractError, ValueError):
             return (None, "corrupt")
 
-    def _read_output_funding_bytes(
-            self, mover_action_key: str, tier_id: str, *,
-            max_bytes: int | None) -> bytes | None:
-        """Read live or ENOENT-selected retired bytes; None proves absence."""
-
-        try:
-            try:
-                handle = open(self.funding_output_path(
-                    mover_action_key, tier_id), "rb")
-            except FileNotFoundError:
-                # Retirement moves terminal funding out of the census, not
-                # out of the address used by per-mover decisions.
-                handle = open(self.funding_output_retired_path(
-                    mover_action_key, tier_id), "rb")
-            with handle:
-                return (handle.read() if max_bytes is None
-                        else handle.read(max_bytes + 1))
-        except FileNotFoundError:
-            return None
 
     def write_output_funding(self, record: Mapping[str, object], *,
                              expect_generation: str | None = None) -> Path:
@@ -14317,7 +13652,7 @@ class PoolQueue:
         which is exactly what the per-mover address forbids.
         """
 
-        retired = self.funding_output_retired_path(
+        retired = self.records.funding_output_retired_path(
             str(checked["mover_action_key"]), str(checked["tier_id"]))
         try:
             os.stat(retired)
@@ -14416,12 +13751,12 @@ class PoolQueue:
             return False
         try:
             for state in (READY, CLAIMED):
-                if os.path.lexists(self.item_path(state, mover)):
+                if os.path.lexists(self.records.item_path(state, mover)):
                     return False
-            if not any(os.path.lexists(self.item_path(state, mover))
+            if not any(os.path.lexists(self.records.item_path(state, mover))
                        for state in (DONE, FAILED, WITHDRAWN)):
                 return False
-            if os.path.lexists(self.lease_path(mover)):
+            if os.path.lexists(self.records.lease_path(mover)):
                 return False
             with os.scandir(ledger.held_dir / mover) as entries:
                 if any(True for _ in entries):
@@ -14437,7 +13772,7 @@ class PoolQueue:
         """Live owner CLAIMED row + its published_unix, or (None, refusal)."""
 
         try:
-            live = _read_json(self.item_path(CLAIMED, owner_key))
+            live = record_store.value_or_raise(self.records.item(CLAIMED, owner_key))
         except (OSError, PoolContractError):
             return None, "unknown-retain: owner-claim-unreadable"
         if live is None:
@@ -14469,7 +13804,7 @@ class PoolQueue:
 
         for state in (READY, CLAIMED):
             try:
-                row = _read_json(self.item_path(state, mover_key))
+                row = record_store.value_or_raise(self.records.item(state, mover_key))
             except (OSError, PoolContractError):
                 return None, "unknown-retain: mover-row-unreadable"
             if isinstance(row, Mapping):
@@ -14507,7 +13842,7 @@ class PoolQueue:
         except (TypeError, ValueError, KeyError):
             return False
         try:
-            live = _read_json(self.item_path(CLAIMED, owner_key))
+            live = record_store.value_or_raise(self.records.item(CLAIMED, owner_key))
         except (OSError, PoolContractError):
             return False
         if isinstance(live, Mapping):
@@ -14537,7 +13872,7 @@ class PoolQueue:
         # No live claim: consult the terminal for the same attempt.
         for state in (DONE, FAILED):
             try:
-                terminal = _read_json(self.item_path(state, owner_key))
+                terminal = record_store.value_or_raise(self.records.item(state, owner_key))
             except (OSError, PoolContractError):
                 return False
             if not isinstance(terminal, Mapping):
@@ -14831,7 +14166,7 @@ class PoolQueue:
         """
 
         try:
-            tier = self._check_tier_id(str(tier_id))
+            tier = self.records.check_tier_id(str(tier_id))
         except (PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         for label, key in (("owner", owner_key), ("mover", mover_key)):
@@ -14892,7 +14227,7 @@ class PoolQueue:
             return {"ok": False, "refusal": "stale-superseded-owner"}
         try:
             ledger = self.tier_ledger(tier)
-            held_names = sorted(path.name for path in _glob(
+            held_names = sorted(path.name for path in immutable_files.match_optional(
                 ledger.held_dir / str(owner_key), "*-*")
                 if path.name.startswith(kind + "-"))
         except (OSError, PoolContractError, ValueError) as exc:
@@ -15040,7 +14375,7 @@ class PoolQueue:
         """
 
         try:
-            tier = self._check_tier_id(str(tier_id))
+            tier = self.records.check_tier_id(str(tier_id))
         except (PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         for label, key in (("owner", owner_key), ("mover", mover_key)):
@@ -15157,7 +14492,7 @@ class PoolQueue:
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         try:
-            held_names = sorted(path.name for path in _glob(
+            held_names = sorted(path.name for path in immutable_files.match_optional(
                 ledger.held_dir / str(owner_key), "*-*")
                 if path.name.startswith(kind + "-"))
         except (OSError, PoolContractError, ValueError) as exc:
@@ -15246,7 +14581,7 @@ class PoolQueue:
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
             ledger = self.tier_ledger(tier)
-            held_now = {path.name for path in _glob(
+            held_now = {path.name for path in immutable_files.match_optional(
                 ledger.held_dir / owner_key, "*-*")}
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -15477,7 +14812,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in _glob(
+            held_names = {path.name for path in immutable_files.match_optional(
                 self.tier_ledger(str(tier_id)).held_dir / key, "*-*")}
         except (OSError, PoolContractError, ValueError):
             return (0, None)
@@ -15508,7 +14843,7 @@ class PoolQueue:
         """
 
         try:
-            tier = self._check_tier_id(str(tier_id))
+            tier = self.records.check_tier_id(str(tier_id))
         except (PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         mover = str(mover_action_key)
@@ -15586,8 +14921,9 @@ class PoolQueue:
                 # promotes an unfinished prewrite. Determine liveness from the
                 # live row directly (owner authority above conflates both).
                 try:
-                    _live_row = _read_json(self.item_path(
-                        CLAIMED, str(record.get("owner_action_key"))))
+                    _live_row = record_store.value_or_raise(
+                        self.records.item(CLAIMED, str(record.get("owner_action_key"))),
+                    )
                 except (OSError, PoolContractError):
                     _live_row = None
                 _live_matches = False
@@ -15773,7 +15109,7 @@ class PoolQueue:
         # Durable claim: CLAIMED row of any shape means the mover may hold
         # the fence while the consumed marker failed.
         try:
-            claimed = _read_json(self.item_path(CLAIMED, mover))
+            claimed = record_store.value_or_raise(self.records.item(CLAIMED, mover))
         except (OSError, PoolContractError):
             return None
         if isinstance(claimed, Mapping):
@@ -15784,7 +15120,7 @@ class PoolQueue:
         # reads fail closed (retain).
         for terminal_state in (DONE, FAILED):
             try:
-                terminal = _read_json(self.item_path(terminal_state, mover))
+                terminal = record_store.value_or_raise(self.records.item(terminal_state, mover))
             except (OSError, PoolContractError):
                 return None
             if not isinstance(terminal, Mapping):
@@ -15808,7 +15144,7 @@ class PoolQueue:
                 return False
         # Lease: a live lease file means the mover may still hold the key.
         try:
-            lease = _read_json(self.lease_path(mover))
+            lease = record_store.read_document(self.records.lease_path(mover))
         except (OSError, PoolContractError):
             return None
         if isinstance(lease, Mapping):
@@ -15858,7 +15194,7 @@ class PoolQueue:
         for name in names:
             path = funding_dir / name
             try:
-                raw = _read_json(path)
+                raw = record_store.read_document(path)
             except (OSError, PoolContractError):
                 unknown = True
                 continue
@@ -15953,7 +15289,7 @@ class PoolQueue:
 
         try:
             ledger = self.tier_ledger(str(tier_id))
-            held_names = {path.name for path in _glob(
+            held_names = {path.name for path in immutable_files.match_optional(
                 ledger.held_dir / str(owner_key), "*-*")}
         except (OSError, PoolContractError, ValueError):
             return (0, True)
@@ -16343,7 +15679,7 @@ class PoolQueue:
         seen = False
         for state in (DONE, FAILED):
             try:
-                record = _read_json(self.item_path(state, str(action_key)))
+                record = record_store.value_or_raise(self.records.item(state, str(action_key)))
             except (OSError, PoolContractError):
                 return True
             if isinstance(record, Mapping):
@@ -16735,8 +16071,6 @@ class PoolQueue:
         return {"destroyed": destroyed, "released": released,
                 "shortfall": shortfall}
 
-    def tier_record_path(self, tier_id: str) -> Path:
-        return self.root / TIERS / f"{self._check_tier_id(tier_id)}.json"
 
     def announce_tier(self, record: Mapping[str, object], *,
                       now: float | None = None) -> Path:
@@ -16752,9 +16086,9 @@ class PoolQueue:
         exact stamp a reader will age (#1072); otherwise the time of the call.
         """
 
-        tier_id = self._check_tier_id(str(record.get("tier_id", "")))
-        path = self.tier_record_path(tier_id)
-        self._write_cycle_record(path, dict(record, announced_unix=(
+        tier_id = self.records.check_tier_id(str(record.get("tier_id", "")))
+        path = self.records.tier_record_path(tier_id)
+        self.records.replace_cycle_at(path, dict(record, announced_unix=(
             _now() if now is None else float(now))))
         return path
 
@@ -16762,31 +16096,12 @@ class PoolQueue:
         """Every announced tier record, by tier id."""
 
         records = []
-        for path in _glob(self.root / TIERS, "*.json"):
-            record = _read_json(path)
+        for path in immutable_files.match_optional(self.root / TIERS, "*.json"):
+            record = record_store.read_document(path)
             if isinstance(record, dict) and record.get("tier_id") == path.stem:
                 records.append(record)
         return records
 
-    @staticmethod
-    def _write_cycle_record(path: Path, record: Mapping[str, object]) -> None:
-        """Publish a record a loop rewrites every cycle, making its directory once.
-
-        The directory is made only when the write finds it missing, so the
-        steady state costs no ``mkdir`` per call (#960): on a starved NFS
-        mount each one is an RPC, the reason ``ensure_layout`` runs once per
-        process (#595).  A directory an operator deletes comes back on the
-        next write.
-        """
-
-        try:
-            _write_json_atomic(path, record, make_parent=False)
-        except FileNotFoundError:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(path, record, make_parent=False)
-
-    def tier_commitment_path(self, tier_id: str) -> Path:
-        return self.root / TIER_COMMITMENTS / f"{self._check_tier_id(tier_id)}.json"
 
     def file_tier_commitment(self, record: Mapping[str, object]) -> Path:
         """File what the admission commitment saw on one stage tier (#930).
@@ -16797,9 +16112,9 @@ class PoolQueue:
         tier again.  Stamped with ``filed_unix`` so a reader can age it.
         """
 
-        tier_id = self._check_tier_id(str(record.get("tier_id", "")))
-        path = self.tier_commitment_path(tier_id)
-        self._write_cycle_record(path, dict(
+        tier_id = self.records.check_tier_id(str(record.get("tier_id", "")))
+        path = self.records.tier_commitment_path(tier_id)
+        self.records.replace_cycle_at(path, dict(
             record, schema=TIER_COMMITMENT_SCHEMA_V1, filed_unix=_now()))
         return path
 
@@ -16811,12 +16126,11 @@ class PoolQueue:
         can say so rather than report a tier with nothing waiting.
         """
 
-        path = self.tier_commitment_path(tier_id)
+        path = self.records.tier_commitment_path(tier_id)
         try:
-            text = path.read_text()
+            record = self.records.text_document_at(path)
         except FileNotFoundError:
             return None
-        record = json.loads(text)
         if (not isinstance(record, dict) or record.get("tier_id") != tier_id
                 or record.get("schema") != TIER_COMMITMENT_SCHEMA_V1):
             raise ValueError(f"tier commitment record {path.name} is not one")
@@ -16906,7 +16220,7 @@ class PoolQueue:
         # requiredness verdict below must not authorize fresh acquisition
         # from an unreadable row.
         try:
-            sealed = _read_json(self.item_path(READY, action_key))
+            sealed = record_store.value_or_raise(self.records.item(READY, action_key))
             sealed_read_error = False
         except (OSError, PoolContractError):
             sealed = None
@@ -17122,7 +16436,7 @@ class PoolQueue:
         if (not cpu_admission._is_key(owner) or telemetry.get("complete") is not True
                 or record.get("action_key") != telemetry.get("action_key")):
             return False
-        producer = _read_json(self.item_path(CLAIMED, str(owner)))
+        producer = record_store.value_or_raise(self.records.item(CLAIMED, str(owner)))
         # The same reading of the producer's reference its allowance was
         # sized from: its template, or the family the template declares
         # (#1126).  A reference naming a malformed family teaches nothing.
@@ -17219,7 +16533,7 @@ class PoolQueue:
                     if not count:
                         continue
                     if holder not in family:
-                        row = _read_json(self.item_path(CLAIMED, holder))
+                        row = record_store.value_or_raise(self.records.item(CLAIMED, holder))
                         if not (isinstance(row, Mapping) and row.get("dependent_of") == owner):
                             continue
                     lenders[holder] = int(count)
@@ -17284,7 +16598,7 @@ class PoolQueue:
         if report is None:
             return False
         started = float(report["started_unix"])
-        row = _read_json(self.item_path(CLAIMED, lender))
+        row = record_store.value_or_raise(self.records.item(CLAIMED, lender))
         if not isinstance(row, Mapping):
             return True
         claimed = row.get("claimed_unix")
@@ -17310,8 +16624,8 @@ class PoolQueue:
         """
 
         out: dict[str, int] = {}
-        for path in _glob(self.dir(CLAIMED), "*.json"):
-            row = _read_json(path)
+        for path in self.records.optional_claim_paths():
+            row = record_store.read_document(path)
             if not isinstance(row, Mapping):
                 continue
             if exclude is not None and row.get("action_key") == exclude:
@@ -17438,7 +16752,7 @@ class PoolQueue:
                 "residency.manifest_bytes must be a positive integer")
         tier_id = block.get("tier_id")
         if tier_id is not None:
-            cls._check_tier_id(str(tier_id))
+            record_store.RecordStore.check_tier_id(str(tier_id))
         leads = block.get("leads") or []
         if not isinstance(leads, list):
             raise PoolContractError("residency.leads must be an array of action keys")
@@ -17922,9 +17236,9 @@ class PoolQueue:
             return float(stamp)
 
         before = generation(ended)
-        read_record = _read_json_confirmed if fresh else _read_json
+        read_record = record_store.read_confirmed_document if fresh else record_store.read_document
         for state in (CLAIMED, READY):
-            live = read_record(self.item_path(state, lead))
+            live = read_record(self.records.item_path(state, lead))
             if not isinstance(live, Mapping):
                 continue
             after = generation(live)
@@ -17949,7 +17263,7 @@ class PoolQueue:
     def _superseded_status_of(self, action_key: str, *, fresh: bool = False) -> str | None:
         """The newest drop filed for this key, or ``None`` if it was never dropped.
 
-        ``_file_superseded`` writes ``<key>.<unix>.<kind>.json`` under
+        ``RecordStore.file_superseded`` writes ``<key>.<unix>.<kind>.json`` under
         ``withdrawn/superseded/``, which is deliberately invisible to every
         reader that addresses a state directory by ``<key>.json``.  A lead
         dropped by the terminal-claim branch, the withdrawal race or the reaper
@@ -17958,15 +17272,7 @@ class PoolQueue:
         """
 
         newest: tuple[str, str] | None = None
-        directory = self.superseded_dir()
-        if fresh:
-            paths = [directory / name for name in os.listdir(directory)
-                     if fnmatch.fnmatchcase(name, f"{action_key}.*.json")]
-        else:
-            paths = _glob(directory, f"{action_key}.*.json")
-        read_record = _read_json_confirmed if fresh else _read_json
-        for path in paths:
-            record = read_record(path)
+        for path, record in self.records.superseded_records(action_key, fresh=fresh):
             if not isinstance(record, Mapping):
                 continue
             status = record.get("status")
@@ -17988,7 +17294,7 @@ class PoolQueue:
         from . import residency_plan as plan_mod
 
         try:
-            key = _residency_action_key(action_key)
+            key = record_store.residency_action_key(action_key)
             plan = plan_mod.read(self, key)
             if plan is None:
                 return None
@@ -18136,7 +17442,7 @@ class PoolQueue:
                         "sibling_action_key": other_key,
                         "sibling_state": state}
             try:
-                row = _read_json(self.item_path(READY, other_key))
+                row = record_store.value_or_raise(self.records.item(READY, other_key))
             except (OSError, ValueError, PoolContractError) as exc:
                 return {"group": group, "sibling_index": index,
                         "sibling_action_key": other_key,
@@ -18203,10 +17509,10 @@ class PoolQueue:
             return {"state": "no_leads"}
         wanted = residency.get("manifest_sha256")
         pending: list[dict[str, object]] = []
-        read_record = _read_json_confirmed if fresh else _read_json
+        read_record = record_store.read_confirmed_document if fresh else record_store.read_document
         proof = {"fresh": True} if fresh else {}
         for lead in leads:
-            record = read_record(self.item_path(DONE, str(lead)))
+            record = read_record(self.records.item_path(DONE, str(lead)))
             status = record.get("status") if isinstance(record, Mapping) else None
             if status == "executed":
                 declared = self._residency_manifest_of(record)
@@ -18253,7 +17559,7 @@ class PoolQueue:
                 # No drop policy is implied for the consumer: the item stays
                 # ready, exactly as it does while its mover is still queued.
                 for state in (FAILED, WITHDRAWN):
-                    ended = read_record(self.item_path(state, str(lead)))
+                    ended = read_record(self.records.item_path(state, str(lead)))
                     if isinstance(ended, Mapping):
                         status = str(ended.get("status") or state)
                         break
@@ -18306,7 +17612,7 @@ class PoolQueue:
         composed: Path | None = None
         if isinstance(key, str):
             try:
-                composed = self.residency_map_path(key)
+                composed = self.records.residency_map_path(key)
             except PoolContractError:
                 composed = None
         if composed is None:
@@ -18427,7 +17733,7 @@ class PoolQueue:
 
         if not residency_plan.filed_prelaunch_phases(self, key):
             return None
-        root = self.residency_fragment_root()
+        root = self.records.residency_fragment_root()
         mapped = document.get("entries")
         mapped = mapped if isinstance(mapped, Mapping) else {}
         all_leads = [str(lead) for lead in leads]
@@ -18557,7 +17863,7 @@ class PoolQueue:
                 return False
             if not any("-" in name for name in os.listdir(ledger.held_dir / lead)):
                 return False
-            if _read_json_confirmed(self.item_path(CLAIMED, lead)) is not None:
+            if record_store.value_or_raise(self.records.confirmed_item(CLAIMED, lead)) is not None:
                 return False
             receipt = self.move_record(lead, fresh=True)
             return (isinstance(receipt, Mapping) and receipt.get("complete") is True
@@ -18579,7 +17885,7 @@ class PoolQueue:
         # false`` and whose 7 GB anchors file was never staged.  A claim-time
         # reservation is a promise; the pin is the receipt.
         try:
-            if self.item_path(CLAIMED, lead).exists():
+            if bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, lead))):
                 return False
             receipt = self.move_record(lead)
         except PoolContractError:
@@ -18718,14 +18024,18 @@ class PoolQueue:
         if not scope.recover_create():
             return False
         control = {**scope.control_record(), "create_recovered": True}
-        path = self.item_path(CLAIMED, key)
-        live = _read_json(path)
+        path = self.records.item_path(CLAIMED, key)
+        live = record_store.read_document(path)
         if live is not None and _same_claim(live, record):
             # A recovered broker reply must not overwrite a successor before
             # the subsequent heartbeat detects its contradictory lease.
-            _check_claim_lease_identity(key, live, _read_json(self.lease_path(key)))
+            _check_claim_lease_identity(
+                key,
+                live,
+                record_store.read_document(self.records.lease_path(key)),
+            )
             live["resource_scope"] = control
-            _write_json_atomic(path, live)
+            self.records.replace_record_at(path, live)
             self.write_lease(key, owner=str(record.get("claimed_by") or ""),
                              claim_snapshot=record, container_owner=record.get("container_owner"))
         if not isinstance(record, dict):
@@ -18796,14 +18106,14 @@ class PoolQueue:
         expected = local_scratch._scratch_claim_envelope(claim_snapshot)
         if expected["action_key"] != action_key:
             raise local_scratch.LocalScratchError("scratch declaration action key disagrees")
-        path = self.item_path(CLAIMED, action_key)
-        live = _read_json(path)
+        path = self.records.item_path(CLAIMED, action_key)
+        live = record_store.read_document(path)
         observed = local_scratch._scratch_claim_envelope(live)
         if pb.canonical_sha256(observed) != pb.canonical_sha256(expected):
             raise local_scratch.LocalScratchError("scratch declaration claim envelope changed")
         assert live is not None
-        lease_path = self.lease_path(action_key)
-        lease = _read_json(lease_path)
+        lease_path = self.records.lease_path(action_key)
+        lease = record_store.read_document(lease_path)
         if lease is None:
             raise local_scratch.LocalScratchError("scratch recording requires the worker's existing lease")
         _check_claim_lease_identity(action_key, live, lease)
@@ -18842,13 +18152,13 @@ class PoolQueue:
                 raise local_scratch.LocalScratchError("conflicting scratch declaration record")
         else:
             live[field] = evidence
-            _write_json_atomic(path, live)
+            self.records.replace_record_at(path, live)
         # Merge only audit evidence: the recorder is not the worker heartbeat
         # authority and cannot replace pid/child/observations or renew liveness.
         # An already-correct mirror needs no write. A partial claim commit is
         # replayable, but never reports success before this mirror settles.
         if field not in lease:
-            _write_json_atomic(lease_path, {**lease, field: evidence})
+            self.records.replace_record_at(lease_path, {**lease, field: evidence})
         return evidence
 
 
@@ -18856,8 +18166,10 @@ class PoolQueue:
     def _start_resource_scope(self, item: Mapping[str, object]) -> resource_scope.ResourceScope:
         key = str(item["action_key"])
         request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
-        raw = pb._read_regular_file_nofollow(request, where="contained pool action request")
-        action = pb.validate_action(pb._decode_strict_json(raw, where="contained pool action request"))
+        raw = immutable_files.read_stable_file(request, where="contained pool action request")
+        action = pb.validate_action(
+            pb.digest_primitives.decode_strict_json(raw, where="contained pool action request"),
+        )
         demand = action["params"].get("demand")
         if action["action_key"] != key:
             raise PoolContractError("contained action request differs from claimed key")
@@ -18890,18 +18202,22 @@ class PoolQueue:
             shape_key=cpu_admission.shape_key(item),
             **gpu_kwargs,
         )
-        path = self.item_path(CLAIMED, key)
-        live = _read_json(path)
+        path = self.records.item_path(CLAIMED, key)
+        live = record_store.read_document(path)
         if live is None or not _same_claim(live, item):
             raise PoolContractError("claim changed before scope creation")
         # Heartbeat validation happens after the claim write. Refuse a stale
         # caller here so that write cannot first erase a successor's scope.
-        _check_claim_lease_identity(key, live, _read_json(self.lease_path(key)))
+        _check_claim_lease_identity(
+            key,
+            live,
+            record_store.read_document(self.records.lease_path(key)),
+        )
         intent = {"action_key": key, "nonce": scope.nonce,
                   "memory_max_bytes": scope.memory_max_bytes,
                   "socket_path": str(scope.socket_path), **gpu_kwargs}
         live["resource_scope_intent"] = intent
-        _write_json_atomic(path, live)
+        self.records.replace_record_at(path, live)
         if isinstance(item, dict):
             item["resource_scope_intent"] = intent
         self.write_lease(key, owner=str(item.get("claimed_by") or ""),
@@ -18918,12 +18234,16 @@ class PoolQueue:
         control["started_monotonic"] = scope.started
         control["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         try:
-            live = _read_json(path)
+            live = record_store.read_document(path)
             if live is None or not _same_claim(live, item):
                 raise PoolContractError("claim changed before scope launch")
-            _check_claim_lease_identity(key, live, _read_json(self.lease_path(key)))
+            _check_claim_lease_identity(
+                key,
+                live,
+                record_store.read_document(self.records.lease_path(key)),
+            )
             live["resource_scope"] = control
-            _write_json_atomic(path, live)
+            self.records.replace_record_at(path, live)
             if isinstance(item, dict):
                 item["resource_scope"] = control
             self.write_lease(key, owner=str(item.get("claimed_by") or ""),
@@ -19005,7 +18325,7 @@ class PoolQueue:
         if not payload["host"] or not payload["worker"]:
             return False
         path = reader_lease.attestation_path(self, action_key, nonce)
-        _write_json_atomic(path, payload, text="sorted_lf", tmp="pid")
+        self.records.replace_reader_scope_at(path, payload)
         return True
 
     def _recover_reader_scope_proof(self, record: Mapping[str, object],
@@ -19091,7 +18411,7 @@ class PoolQueue:
         if scratch_owner_path is not None and scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
             try:
                 _, owner = scratch_lifetime.durable_owner(
-                    record_store.RecordStore(self.root), record, scope_only=scope_only, owner_path=scratch_owner_path)
+                    self.records, record, scope_only=scope_only, owner_path=scratch_owner_path)
                 if owner is None:
                     raise local_scratch.LocalScratchError("scratch recovery owner disappeared")
                 # A widowed lease carries the complete envelope inside its
@@ -19112,7 +18432,7 @@ class PoolQueue:
                 # cannot carry registered scratch and keeps its old outcome.
                 return result
             scratch = scratch_lifetime.finalize(
-                record_store.RecordStore(self.root), self, str(record["action_key"]), record, scope_only=scope_only,
+                self, str(record["action_key"]), record, scope_only=scope_only,
                 export=(result.get("resource_scope") or {}).get("export"),
                 owner_path=scratch_owner_path)
             if not scratch["used"]:
@@ -19133,7 +18453,9 @@ class PoolQueue:
         """
         if scope_only:
             try:
-                live = _read_json(self.item_path(CLAIMED, str(record["action_key"])))
+                live = record_store.value_or_raise(
+                    self.records.item(CLAIMED, str(record["action_key"])),
+                )
                 if live is not None and not _same_claim(live, record):
                     old = record.get("resource_scope") or record.get("resource_scope_intent")
                     if not isinstance(old, dict) or not old.get("nonce"):
@@ -19276,11 +18598,11 @@ class PoolQueue:
             if settle_error is not None:
                 cleanup["settle_error"] = settle_error
             key = str(record["action_key"])
-            path = self.item_path(CLAIMED, key)
-            live = _read_json(path)
+            path = self.records.item_path(CLAIMED, key)
+            live = record_store.read_document(path)
             if not scope_only and live is not None and _same_claim(live, record):
                 live["resource_scope_cleanup"] = cleanup
-                _write_json_atomic(path, live)
+                self.records.replace_record_at(path, live)
             if isinstance(record, dict):
                 record["resource_scope_cleanup"] = cleanup
             if scope_only:
@@ -19666,7 +18988,11 @@ class PoolQueue:
                for r in (current, evaluated)):
             return False
         try:
-            return (self.attempt_generation(current) == self.attempt_generation(evaluated)
+            return (self.records.attempt_generation(
+                current,
+            ) == self.records.attempt_generation(
+                evaluated,
+            )
                     and current.get("attempts", 0) == evaluated.get("attempts", 0)
                     and current.get(local_scratch.IO_ENV) == intent
                     and all(current.get(k) == evaluated.get(k) for k in (
@@ -19827,7 +19153,7 @@ class PoolQueue:
             if remote == host or not candidate["fit"]:
                 continue
             try:
-                offer = _read_json(self.root / WORKERS / f"{remote}.json")
+                offer = record_store.read_document(self.records.worker_offer_path(remote))
                 if (not isinstance(offer, Mapping) or offer.get("host") != remote
                         or offer.get("state") == "draining"
                         or not 0 <= _now() - offer["announced_unix"] <= OFFER_TIMEOUT_S
@@ -19849,7 +19175,9 @@ class PoolQueue:
                 candidate["fit"], candidate["exclusion"] = False, str(exc)
         evidence = {"schema": local_scratch.PLACEMENT_SCHEMA,
                     "action_key": item["action_key"], "published_unix": item["published_unix"],
-                    "generation": self.attempt_generation(item), "attempts": item.get("attempts", 0),
+                    "generation": self.records.attempt_generation(
+                        item,
+                    ), "attempts": item.get("attempts", 0),
                     "selected_host": host, "declaration": intent["declaration"],
                     "root": intent["root"], "candidates": candidates}
         # Own root/generation reads can also stall. Finish every shared read
@@ -19906,7 +19234,7 @@ class PoolQueue:
         # scans/CAS contract reads and BEFORE holding admission. No slow I/O
         # is added under the host lock. Inside, ORIGINAL age is checked again.
         host = socket.gethostname()
-        offer = _read_json(self.root / WORKERS / f"{host}.json")
+        offer = record_store.read_document(self.records.worker_offer_path(host))
         if (not isinstance(offer, Mapping) or offer.get("state") == "draining"
                 or not 0 <= _now() - offer["announced_unix"] <= OFFER_TIMEOUT_S
                 or not self._matching_offers(item, live=[offer])):
@@ -19919,9 +19247,11 @@ class PoolQueue:
                 "device", "filesystem", "root_inode"))
                 or any(current[k] != chosen[k] for k in ("device", "filesystem", "root_inode"))):
             raise local_scratch.LocalScratchError("scratch profile/root changed before admission")
-        current_item = _read_json(self.item_path(READY, str(item["action_key"])))
+        current_item = record_store.value_or_raise(
+            self.records.item(READY, str(item["action_key"])),
+        )
         if (not self._scratch_record_matches(current_item, item, intent)
-                or evidence["generation"] != self.attempt_generation(item)
+                or evidence["generation"] != self.records.attempt_generation(item)
                 or evidence["attempts"] != item.get("attempts", 0)):
             raise local_scratch.LocalScratchError("scratch evaluated generation changed before admission")
         # Root and ready-record I/O must not launder the original price age.
@@ -19931,9 +19261,13 @@ class PoolQueue:
             raise local_scratch.LocalScratchError("scratch original profile/offer expired before admission")
         checked = cast(Mapping[str, object], current_item)
         return (chosen["measured_unix"], offer["announced_unix"],
-                self.attempt_generation(checked), checked.get("attempts", 0))
+                self.records.attempt_generation(checked), checked.get("attempts", 0))
 
-    def _read_peer_observation(self, host: str, offer: Mapping) -> _peer_placement.PeerObservation | None:
+    def _read_peer_observation(
+        self,
+        host: str,
+        offer: Mapping,
+    ) -> _peer_placement.PeerObservation | None:
         """Share #1262 peer evidence without repeated shared-mount reads (#351).
 
         GPU hosts leave CPU-only work to fitting CPU-only peers (#1262).
@@ -19942,7 +19276,7 @@ class PoolQueue:
         """
         remote = self.ledger(host)
         tiers = offer.get("cpu_tiers") or {}
-        if _read_json(remote.base / "cpu-map.json") != tiers:
+        if record_store.read_document(remote.base / "cpu-map.json") != tiers:
             return None
         denials = cpu_admission.read_json(
             self.root / RESERVATIONS / host / "adaptive" / CLAIM_DENIALS).get("records")
@@ -20068,7 +19402,7 @@ class PoolQueue:
             if (residency["state"] not in ("lead_not_resident", "lead_unpinned")
                     or (isinstance(pending, list) and pending
                         and all(isinstance(entry, Mapping)
-                                and _is_hex64(entry.get("lead"))
+                                and record_store.key_shaped(entry.get("lead"))
                                 and isinstance(entry.get("status"), str)
                                 and entry["status"]
                                 for entry in pending))):
@@ -20166,7 +19500,7 @@ class PoolQueue:
         poll check is still observed. ``None`` preserves current behavior.
         """
         ledger = self.ledger()
-        tiers = cpu_tiers or _read_json(ledger.base / "cpu-map.json")
+        tiers = cpu_tiers or record_store.read_document(ledger.base / "cpu-map.json")
         if adaptive_cpu and capacity is not None and tiers is not None:
             controller = cpu_admission.Controller(ledger, tiers, sampler=cpu_sampler)
             # Resolving the ledger identity may stat the shared mount. Prepare
@@ -20332,7 +19666,7 @@ class PoolQueue:
             if type(generation) not in (int, float) or not math.isfinite(generation):
                 return False
             try:
-                decisions = self.withdrawal_decisions(
+                decisions = self.records.withdrawal_decisions(
                     str(record["action_key"]), generation=float(generation))
             except PoolContractError:
                 return False
@@ -20606,7 +19940,7 @@ class PoolQueue:
             if holder == action_key:
                 continue
             try:
-                record = _read_json(self.item_path(CLAIMED, holder))
+                record = record_store.value_or_raise(self.records.item(CLAIMED, holder))
             except PoolContractError:
                 continue
             if record is None:
@@ -20716,7 +20050,7 @@ class PoolQueue:
             if not tokens:
                 continue
             try:
-                record = _read_json(self.item_path(CLAIMED, holder))
+                record = record_store.value_or_raise(self.records.item(CLAIMED, holder))
             except PoolContractError:
                 continue      # a reservation whose claim nobody can read
             if record is None:
@@ -20797,7 +20131,7 @@ class PoolQueue:
                     **({"gang_backfill_preemption": {
                         "election": dict(gang_election), "holder": holder,
                         "published_unix": record["published_unix"],
-                        "generation": self.attempt_generation(record),
+                        "generation": self.records.attempt_generation(record),
                         "requested_unix": _now(), "tokens_returned_unix": None,
                     }} if gang_election is not None else {}),
                 )
@@ -20876,7 +20210,7 @@ class PoolQueue:
         if reads.claimed_hint(key):
             return candidate_policy.CandidateDenial(
                 'already_claimed', None, scan)
-        if _is_hex64(key) and self._refuse_released_origin_consumer(
+        if record_store.key_shaped(key) and self._refuse_released_origin_consumer(
                 item, key):
             # Before placement: failing the row is queue bookkeeping,
             # not execution, so any box's scan may do it (#954).  The
@@ -20937,11 +20271,11 @@ class PoolQueue:
             # which a content-addressed key makes the ordinary way to ask.
             cancelled = self._withdraw_ready(key)
             if cancelled is not None:
-                self._file_superseded(
+                self.records.file_superseded(
                     cancelled, key=key, kind="dropped", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),
                     reason="requeued into ready after the withdrawal that "
-                           "cancelled this generation",
+                           "cancelled this generation", when=_now(),
                 )
             return scan
         # A lead's record that cannot be read -- corrupt bytes, or an
@@ -21053,7 +20387,7 @@ class PoolQueue:
             # checks over an already-parsed dict: nothing here adds
             # work to an item with no tier demand.
             for tier_id in tier_demand:
-                self._check_tier_id(tier_id)
+                self.records.check_tier_id(tier_id)
         except ValueError as exc:
             self.record_denial(item, "malformed_tier_demand", {
                 "demand": sealed_demand, "error": str(exc)})
@@ -21088,7 +20422,7 @@ class PoolQueue:
                         (item.get("tags") or []))):
                 raise PoolContractError("scratch I/O row lacks/misstates sealed intent")
             if scratch_intent is not None:
-                current = _read_json(self.item_path(READY, key))
+                current = record_store.value_or_raise(self.records.item(READY, key))
                 if not self._scratch_record_matches(current, item, scratch_intent):
                     raise PoolContractError("scratch I/O evaluated stale or contradictory publication/attempt")
                 if ledger is None or not demand:
@@ -21456,7 +20790,7 @@ class PoolQueue:
             original, announced, generation, attempt = scratch_boundary
             scratch_changed = local_scratch.admission_generation_changed(
                 item, scratch_evidence, generation=generation, attempt=attempt,
-                observed_generation=self.attempt_generation(item))
+                observed_generation=self.records.attempt_generation(item))
             scratch_expired = not (
                 0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
                 and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
@@ -21537,7 +20871,7 @@ class PoolQueue:
             original, announced, generation, attempt = scratch_boundary
             scratch_changed = local_scratch.admission_generation_changed(
                 item, scratch_evidence, generation=generation, attempt=attempt,
-                observed_generation=self.attempt_generation(item))
+                observed_generation=self.records.attempt_generation(item))
             scratch_expired = not (
                 0 <= _now() - original <= scratch_intent["declaration"]["max_profile_age_s"]
                 and 0 <= _now() - announced <= OFFER_TIMEOUT_S)
@@ -21649,7 +20983,7 @@ class PoolQueue:
                            if mode == DRAIN_HELD_CPUS else None),
                 cpu_tiers=cpu_tiers,
                 measurement=bool(identity and identity[1]),
-                measurement_generation=(self.attempt_generation(item)
+                measurement_generation=(self.records.attempt_generation(item)
                     if identity and identity[1] else None),
                 measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision),
                 measurement_unmeasured=drain_policy.unmeasured_refusal(
@@ -21692,7 +21026,7 @@ class PoolQueue:
                 key, ledger=ledger, need=asked, mode="tokens",
                 gpu_sample=_gpu_sample_for(gpu_controller, demand),
                 measurement=bool(identity and identity[1]),
-                measurement_generation=(self.attempt_generation(item)
+                measurement_generation=(self.records.attempt_generation(item)
                     if identity and identity[1] else None),
                 measurement_foreign_clear=drain_policy.foreign_clear(cpu_decision))
             self._drain_accounting.stage(key, observed.notes)
@@ -21925,8 +21259,8 @@ class PoolQueue:
                     "group": gang["group"], "index": gang["index"], **readiness})
                 return _ClaimHandled.REFUSED
         self._write_claim_intent(key, owner=owner)
-        src = self.item_path(READY, key)
-        dst = self.item_path(CLAIMED, key)
+        src = self.records.item_path(READY, key)
+        dst = self.records.item_path(CLAIMED, key)
         try:
             os.rename(src, dst)
         except (FileNotFoundError, NotADirectoryError):
@@ -21958,7 +21292,7 @@ class PoolQueue:
         # next candidate reads fresh (#1571).
         reads.renamed_into_claimed()
         pass_census.invalidate()
-        moved_record = _read_json(dst)
+        moved_record = record_store.read_document(dst)
         moved = moved_record or item
         if container_class_policy is not None:
             image_check = (image_host.class_check(clock=_now)
@@ -22334,15 +21668,15 @@ class PoolQueue:
             # at which the payload is definitely not executing.
             reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
             state, outcome = terminal
-            self._file_superseded(
+            self.records.file_superseded(
                 moved, key=key, kind="terminal-claim", status="dropped",
                 dropped_unix=_now(), dropped_host=socket.gethostname(),
                 reason="claim lost to an outcome for the same generation "
                        f"filed under {state}",
                 terminal_status=outcome.get("status"),
-            )
+            when=_now(), )
             dst.unlink(missing_ok=True)
-            self.passes_path(key).unlink(missing_ok=True)
+            self.records.passes_path(key).unlink(missing_ok=True)
             return None
         if self.withdrawal_covers(moved, action_key=key) is not None:
             # Withdrawn between the scan above and this rename.  The window
@@ -22350,11 +21684,11 @@ class PoolQueue:
             # a path taken once per claim; leaving it open costs a cancelled
             # action a full run before ``execute`` notices.
             reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
-            self._file_superseded(
+            self.records.file_superseded(
                 moved, key=key, kind="dropped", status="dropped",
                 dropped_unix=_now(), dropped_host=socket.gethostname(),
                 reason="withdrawn between the ready scan and the claim",
-            )
+            when=_now(), )
             dst.unlink(missing_ok=True)
             return None
         claimed = self._build_claim_record(committed, scan_pass)
@@ -22424,7 +21758,7 @@ class PoolQueue:
                     "manifest_sha256": digest,
                 }
         try:
-            _write_json_atomic(dst, claimed)
+            self.records.replace_record_at(dst, claimed)
         except (OSError, PoolContractError, ValueError) as exc:
             # The claim record never landed (atomic replace leaves
             # ``dst`` with its old bytes): nothing may execute.
@@ -22498,9 +21832,9 @@ class PoolQueue:
         # Keep a canonical election through unstarted deferral/retry.
         # Neither READY absence nor a successful rename retires it.
         from . import _measurement_reservation as measurement_reservation
-        pass_record = _read_json(self.passes_path(key)) or {}
+        pass_record = record_store.read_document(self.records.passes_path(key)) or {}
         if measurement_reservation.selection(pass_record) is None:
-            self.passes_path(key).unlink(missing_ok=True)
+            self.records.passes_path(key).unlink(missing_ok=True)
         return claimed
 
     def _start_claim_scan(
@@ -22523,7 +21857,7 @@ class PoolQueue:
 
         owner = owner or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         tagset = frozenset(str(t) for t in tags)
-        self.ensure_layout()
+        self.records.ensure_layout()
         # The load-bearing half of ``withdraw``.  A withdrawal that lands while
         # a worker is mid-``finish`` can leave a requeued ready record behind
         # it, and without this guard that record is claimed and the cancelled
@@ -22558,7 +21892,7 @@ class PoolQueue:
             # it is not the claim: no rename, lease or token move happens here.
             with self._admission_lock(host_gate):
                 if cpu_tiers is None:
-                    cpu_tiers = _read_json(ledger.base / "cpu-map.json")
+                    cpu_tiers = record_store.read_document(ledger.base / "cpu-map.json")
                 if cpu_tiers is not None:
                     cpu_tiers = (configured_tiers if configured_tiers is not None else
                                  ledger.configure_cpu_tiers(cpu_tiers))
@@ -22904,7 +22238,7 @@ class PoolQueue:
     # -- self-healing ---------------------------------------------------
 
     def lease_age(self, action_key: str) -> float | None:
-        record = _read_json(self.lease_path(action_key))
+        record = record_store.read_document(self.records.lease_path(action_key))
         if record is None:
             return None
         beat = record.get("heartbeat_unix")
@@ -22919,7 +22253,7 @@ class PoolQueue:
         that exists for a claimed record ``claim()`` has not yet rewritten.
         """
 
-        record = _read_json(self.item_path(INTENT, action_key))
+        record = record_store.value_or_raise(self.records.item(INTENT, action_key))
         if record is None:
             return None
         declared = record.get("intent_unix")
@@ -22944,7 +22278,7 @@ class PoolQueue:
         refused rather than guessed with.
         """
 
-        marker = _read_json(self.item_path(INTENT, action_key))
+        marker = record_store.value_or_raise(self.records.item(INTENT, action_key))
         if marker is None:
             return None
         host = marker.get("host")
@@ -22979,7 +22313,7 @@ class PoolQueue:
 
         return sorted(
             directory.name
-            for directory in _scan(self.root / RESERVATIONS)
+            for directory in immutable_files.scan_optional(self.root / RESERVATIONS)
             if (directory / "held" / action_key).is_dir()
         )
 
@@ -23067,11 +22401,12 @@ class PoolQueue:
 
         host = socket.gethostname() if host is None else host
         pids: set[int] = set()
-        for claim in _glob(self.dir(CLAIMED), "*.json"):
-            lease = claim.with_suffix(".lease")
-            record = _read_json(lease)
+        for claim in self.records.optional_claim_paths():
+            lease = self.records.lease_path(claim.stem)
+            record = record_store.read_document(lease)
             if record is None:
-                if not claim.exists():
+                if not record_store.value_or_raise(
+                        self.records.item_presence(CLAIMED, claim.stem)):
                     continue  # Finished while the directory was being read.
                 raise PoolContractError(f"claim ownership is unknown: {claim}")
             pid = record.get("pid")
@@ -23245,16 +22580,16 @@ class PoolQueue:
         if not self._sweep_due():
             return []
         retried: list[str] = []
-        claimed = self.dir(CLAIMED)
-        if not claimed.is_dir():
+        claimed = self.records.dir(CLAIMED)
+        if not self.records.state_directory_present(CLAIMED):
             return retried
-        for path in sorted(claimed.glob("*.json")):
+        for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
             try:
                 with self._transition_locked(key, blocking=False) as acquired:
                     if not acquired:
                         continue
-                    record = _read_json(path)
+                    record = record_store.read_document(path)
                     if (record or {}).get("action_key") != key:
                         # The filename is the identity.  A row that does not
                         # carry the key it is filed under -- corrupt, truncated
@@ -23274,7 +22609,7 @@ class PoolQueue:
                 print(f"pool pending-finish retry skipped {key}: "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
-            if result is not None and result == self.item_path(READY, key):
+            if result is not None and result == self.records.item_path(READY, key):
                 retried.append(key)
         return retried
 
@@ -23353,16 +22688,16 @@ class PoolQueue:
 
         grace_s = HEARTBEAT_S
         requeued: list[str] = []
-        claimed = self.dir(CLAIMED)
-        if not claimed.is_dir():
+        claimed = self.records.dir(CLAIMED)
+        if not self.records.state_directory_present(CLAIMED):
             return requeued
         terminal_keys = self.terminal_keys()
-        for path in sorted(claimed.glob("*.json")):
+        for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
                     continue
-                record = _read_json(path)
+                record = record_store.read_document(path)
                 if (record or {}).get("finish_pending") is not None:
                     # Only the owner host can prove its kernel scope is empty.
                     # A payload has already returned here, so lease freshness is
@@ -23374,14 +22709,14 @@ class PoolQueue:
                     except AmbiguousClaimHolder as exc:
                         print(f"pool reaper: {exc}", file=sys.stderr)
                         continue
-                    if result == self.item_path(READY, key):
+                    if result == self.records.item_path(READY, key):
                         requeued.append(key)
                     continue
                 age = self.lease_age(key)
                 if age is not None and age <= timeout_s:
                     continue
                 if age is None:
-                    record = _read_json(path) or {}
+                    record = record_store.read_document(path) or {}
                     claimed_unix = record.get("claimed_unix")
                     if isinstance(claimed_unix, (int, float)):
                         if _now() - float(claimed_unix) <= grace_s:
@@ -23394,7 +22729,7 @@ class PoolQueue:
                             # below may touch this record: a conclusion here would
                             # release tokens the claimant is about to hold.
                             continue
-                record = _read_json(path)
+                record = record_store.read_document(path)
                 # The claim exactly as it was read, before the archiving below
                 # rewrites its attempt fields.  ``_entomb_claim`` compares against
                 # this so the loop can only move aside the claim it judged.
@@ -23453,7 +22788,11 @@ class PoolQueue:
                     # A host's token holder names the key, not its attempt. An
                     # expired lease can still contradict a stale claim read;
                     # refuse before payload cleanup or any ownership mutation.
-                    _check_claim_lease_identity(key, record, _read_json(self.lease_path(key)))
+                    _check_claim_lease_identity(
+                        key,
+                        record,
+                        record_store.read_document(self.records.lease_path(key)),
+                    )
                     holder = self.resolve_claim_holder(key, record)
                 except AmbiguousClaimHolder as exc:
                     print(f"pool reaper: {exc}", file=sys.stderr)
@@ -23464,7 +22803,7 @@ class PoolQueue:
                 if not container_cleanup["complete"]:
                     pending = dict(record)
                     self._note_cleanup_attempt(pending, record, container_cleanup)
-                    _write_json_atomic(path, pending)
+                    self.records.replace_record_at(path, pending)
                     continue
                 terminal = self.terminal_outcome_covers(
                     record, action_key=key, terminal=terminal_keys
@@ -23474,12 +22813,12 @@ class PoolQueue:
                     # directory view or a cycle racing the final unlink may still
                     # expose its old claim, but that copy is cleanup, not a retry.
                     state, outcome = terminal
-                    self._file_superseded(
+                    self.records.file_superseded(
                         record, key=key, kind="terminal-claim", status="dropped",
                         dropped_unix=_now(), dropped_host=socket.gethostname(),
                         reason="stale claim belongs to a generation already filed "
                                f"under {state}",
-                        terminal_status=outcome.get("status"),
+                        terminal_status=outcome.get("status"), when=_now(),
                     )
                     self._release_reservation(
                         key, host=holder if isinstance(holder, str) else socket.gethostname(),
@@ -23493,13 +22832,13 @@ class PoolQueue:
                         # ever take back.
                         keep_tier=self.pin_holds_tier_tokens(outcome, key))
                     path.unlink(missing_ok=True)
-                    self.lease_path(key).unlink(missing_ok=True)
+                    self.records.lease_path(key).unlink(missing_ok=True)
                     continue
                 if self.withdrawal_covers(record, action_key=key) is not None:
                     if ("scratch_declaration_record" in record
                             or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
-                        self._file_superseded(record, key=key,
-                                              kind="scratch-declarations-after-withdrawal")
+                        self.records.file_superseded(record, key=key,
+                                              kind="scratch-declarations-after-withdrawal", when=_now())
                     # A withdrawal that could not finish its own cleanup -- the
                     # operator's box died mid-verb, say -- leaves a claimed record
                     # whose lease nobody refreshes.  Requeueing that is the one
@@ -23509,7 +22848,7 @@ class PoolQueue:
                     tombstone, mine = self._entomb_claim(key, expect=read_claim)
                     if not mine or tombstone is None:
                         continue
-                    self.lease_path(key).unlink(missing_ok=True)
+                    self.records.lease_path(key).unlink(missing_ok=True)
                     self._release_reservation(
                         key, host=holder if isinstance(holder, str) else socket.gethostname())
                     tombstone.unlink(missing_ok=True)
@@ -23521,8 +22860,11 @@ class PoolQueue:
                 prior_attempts = int(record.get("attempts", 0))
                 if (age is None
                         and record.get("withdrawn_unix") is None
-                        and not self.attempt_path(
-                            record, prior_attempts + 1).exists()
+                        and not bool(
+                            record_store.value_or_raise(
+                                self.records.attempt_presence(record, prior_attempts + 1),
+                            ),
+                        )
                         # Consumed output funding proves this claim already
                         # persisted its lease; a subsequently missing lease
                         # cannot restore its one-use entitlement (#848).
@@ -23568,11 +22910,11 @@ class PoolQueue:
                     # claimant must pass the exact-claim launch/heartbeat guards.
                     # Its late report cannot use the uncharged attempt number:
                     # that slot now belongs to the successor's first execution.
-                    self._file_superseded(
+                    self.records.file_superseded(
                         record, key=key, kind="unstarted-claim", status="released",
                         released_unix=_now(), released_host=socket.gethostname(),
                         reason="claim released without an attempt: no lease was "
-                               "written and no attempt was published",
+                               "written and no attempt was published", when=_now(),
                     )
                     # Counted, not bounded.  A bound would be the constant this
                     # issue exists to avoid, and a release costs an execution
@@ -23588,7 +22930,7 @@ class PoolQueue:
                         # outside the superseded filing, which is evidence rather
                         # than state.
                         continue
-                    self.lease_path(key).unlink(missing_ok=True)
+                    self.records.lease_path(key).unlink(missing_ok=True)
                     self._release_reservation(
                         key, host=holder if isinstance(holder, str) else socket.gethostname())
                     try:
@@ -23668,7 +23010,7 @@ class PoolQueue:
                     # File the exact transition it proved rather than the local
                     # lease observation that lost the first-writer race.
                     record["schema"] = POOL_OUTCOME_SCHEMA_V1
-                    destination = self.item_path(str(disposition), key)
+                    destination = self.records.item_path(str(disposition), key)
                 else:
                     destination = self._shape_as_ready_item(record, action_key=key)
                 # Same ordering as ``finish``, and for the same reason: this loop
@@ -23682,7 +23024,7 @@ class PoolQueue:
                     # outside the attempt archive, which is immutable and
                     # first-writer-wins, so leaving now costs the key nothing.
                     continue
-                self.lease_path(key).unlink(missing_ok=True)
+                self.records.lease_path(key).unlink(missing_ok=True)
                 if disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
                     # The reaper files the terminal record the claimant never
                     # could (#999), so it owns the same pre-release question
@@ -23703,7 +23045,7 @@ class PoolQueue:
                                and self.pin_holds_tier_tokens(record, key)))
                 try:
                     if disposition in {DONE, FAILED}:
-                        _write_json_atomic(destination, record)
+                        self.records.replace_record_at(destination, record)
                     else:
                         destination = self._publish_requeued_claim(
                             record, action_key=key, tombstone=tombstone,
@@ -23723,7 +23065,10 @@ class PoolQueue:
                         tombstone.unlink(missing_ok=True)
                     continue
                 tombstone.unlink(missing_ok=True)
-                if disposition in {DONE, FAILED} or destination == self.item_path(READY, key):
+                if disposition in {DONE, FAILED} or destination == self.records.item_path(
+                    READY,
+                    key,
+                ):
                     requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
@@ -23734,7 +23079,7 @@ class PoolQueue:
 
     def _sweep_orphan_requeue_staging(self, claimed: Path, *, grace_s: float) -> None:
         """Unlink only aged staging siblings whose exact tombstone is gone."""
-        for source in _glob(claimed, ".*.tombstone.tmp"):
+        for source in immutable_files.match_optional(claimed, ".*.tombstone.tmp"):
             # The hostname is verbatim writer text, not a validated host tag.
             matched = re.fullmatch(
                 r"\.([0-9a-f]{64})\.(?:0|-?[1-9][0-9]*)\.[^\x00/]*\."
@@ -23819,13 +23164,12 @@ class PoolQueue:
         """
 
         swept: list[str] = []
-        claimed = self.dir(CLAIMED)
-        if not claimed.is_dir():
+        claimed = self.records.dir(CLAIMED)
+        if not self.records.state_directory_present(CLAIMED):
             return swept
         self._sweep_orphan_requeue_staging(claimed, grace_s=grace_s)
         now = _now()
-        for tombstone in sorted([*claimed.glob(f"*{TOMBSTONE_SUFFIX}"),
-                                 *claimed.glob(f"*{LATE_FINISH_SUFFIX}")]):
+        for tombstone in self.records.finishing_paths():
             parts = tombstone.name.split(".", 2)
             key = parts[0]
             if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
@@ -23838,7 +23182,7 @@ class PoolQueue:
                     # tokens. Retry only its saved scope, even beside a live
                     # successor, without the ordinary tombstone dispositions.
                     try:
-                        record = _read_json(tombstone)
+                        record = record_store.read_document(tombstone)
                         if record is None or record.get("action_key") != key:
                             raise PoolContractError("invalid late-finish recovery record")
                         if record.get("claimed_host") != socket.gethostname():
@@ -23866,9 +23210,9 @@ class PoolQueue:
                     continue
                 successor = None
                 try:
-                    record = _read_json(tombstone)
+                    record = record_store.read_document(tombstone)
                     live = any(
-                        self.item_path(state, key).exists()
+                        bool(record_store.value_or_raise(self.records.item_presence(state, key)))
                         for state in (READY, CLAIMED)
                     )
                     covered = (
@@ -23879,13 +23223,13 @@ class PoolQueue:
                         generation = record["published_unix"]
                         decision = self.publication_ending(key, generation=generation)
                         covered = covered or decision is not None
-                        if (not covered and f"{key}.json" not in os.listdir(claimed)
-                                and f"{key}.json" in os.listdir(self.dir(READY))):
+                        if (not covered and not self.records.listed_item_present(CLAIMED, key)
+                                and self.records.listed_item_present(READY, key)):
                             archived = self.archived_generation_outcomes(key, generation=generation)
                             if archived:
                                 covered = True
                             else:
-                                candidate = self._read_ready_publication(key)
+                                candidate = self.records.ready_publication(key)
                                 candidate_generation = self._successor_generation(record, candidate)
                                 live = True
                                 if candidate_generation > generation:
@@ -23899,7 +23243,7 @@ class PoolQueue:
                     except (PoolContractError, FileNotFoundError, pb.CASTamperError):
                         # ``attempt_outcomes`` decides most of this by reading the
                         # record and raises ``PoolContractError``, but the link it
-                        # checks last is a *file*: ``_open_regular_nofollow``
+                        # checks last is a *file*: ``open_regular_nofollow``
                         # raises a bare ``FileNotFoundError`` when the immutable
                         # outcome is absent and ``CASTamperError`` when the entry
                         # is not a readonly regular file, and neither derives from
@@ -23918,7 +23262,7 @@ class PoolQueue:
                         continue
                 if restorable:
                     try:
-                        os.link(tombstone, self.item_path(CLAIMED, key))
+                        os.link(tombstone, self.records.item_path(CLAIMED, key))
                     except OSError:
                         pass
                     else:
@@ -23932,7 +23276,7 @@ class PoolQueue:
                 # READY bytes while completing the predecessor's cleanup.
                 # A claimed successor, however, owns the key now; none of its
                 # resources or lease belongs to this old tombstone.
-                if f"{key}.json" not in os.listdir(claimed):
+                if not self.records.listed_item_present(CLAIMED, key):
                     try:
                         holders = self.claim_reservation_hosts(key)
                         if len(holders) > 1 or (record is None and holders):
@@ -23958,10 +23302,10 @@ class PoolQueue:
                                 keep_tier=self._filed_pin_holds(key))
                             if self.claim_reservation_hosts(key):
                                 continue  # a partial return still needs this owner
-                        lease = _read_json(self.lease_path(key))
+                        lease = record_store.read_document(self.records.lease_path(key))
                         if (record is not None and lease is not None
                                 and lease.get("owner") == record.get("claimed_by")):
-                            self.lease_path(key).unlink(missing_ok=True)
+                            self.records.lease_path(key).unlink(missing_ok=True)
                     except (OSError, PoolContractError, pb.CASUnavailableError):
                         continue
                 if successor is not None:
@@ -23969,13 +23313,13 @@ class PoolQueue:
                         self._persist_publication_supersession(record, successor=successor)
                     except (OSError, pb.PrismaBuildError):
                         continue
-                self._file_superseded(
+                self.records.file_superseded(
                     record, key=key, kind="finish-tombstone", status="dropped",
                     dropped_unix=_now(), dropped_host=socket.gethostname(),
                     reason="a finisher was interrupted between moving its claim "
                            "aside and publishing the item's next home; the key "
                            "already has a live or terminal record, so these bytes "
-                           "are evidence rather than work",
+                           "are evidence rather than work", when=_now(),
                 )
                 tombstone.unlink(missing_ok=True)
                 swept.append(key)
@@ -23995,7 +23339,7 @@ class PoolQueue:
         """
 
         swept: list[str] = []
-        for directory in _scan(self.root / RESERVATIONS):
+        for directory in immutable_files.scan_optional(self.root / RESERVATIONS):
             if not directory.is_dir():
                 continue
             swept.extend(
@@ -24045,18 +23389,18 @@ class PoolQueue:
         """
 
         swept: list[str] = []
-        claimed = self.dir(CLAIMED)
-        if not claimed.is_dir():
+        claimed = self.records.dir(CLAIMED)
+        if not self.records.state_directory_present(CLAIMED):
             return swept
         now = _now()
-        for lease in sorted(claimed.glob("*.lease")):
+        for lease in self.records.claimed_lease_paths():
             key = lease.name[: -len(".lease")]
             with self._transition_locked(key, blocking=False) as acquired:
                 if not acquired:
                     continue
-                if self.item_path(CLAIMED, key).exists():
+                if bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key))):
                     continue
-                record = _read_json(lease) or {}
+                record = record_store.read_document(lease) or {}
                 beat = record.get("heartbeat_unix")
                 try:
                     age = now - float(beat)
@@ -24107,14 +23451,14 @@ class PoolQueue:
         # Take the bytes out of the live namespace before diagnosing or filing
         # them. A later publish must not be unlinked by this sweep. Preserve the
         # complete original alongside the bounded inline diagnostic.
-        evidence = self.superseded_dir() / f"{key}.{uuid.uuid4().hex}.unreadable.raw"
+        evidence = self.records.unreadable_capture_path(key)
         evidence.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.rename(path, evidence)
         except FileNotFoundError:
             return None
         try:
-            repaired = _read_json(evidence)
+            repaired = record_store.read_document(evidence)
         except PoolContractError:
             repaired = None
         else:
@@ -24128,20 +23472,18 @@ class PoolQueue:
                 else:
                     evidence.unlink()
                 return None
-        raw = evidence.read_bytes()
-        self._file_superseded(
+        raw = self.records.raw_record_at(evidence)
+        self.records.file_superseded(
             None, key=key, kind="unreadable", state=READY,
             status="unreadable_record",
             filed_unix=_now(), filed_host=socket.gethostname(),
             reason=reason, raw_bytes=len(raw),
             raw_path=str(evidence.relative_to(self.root)),
-            raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"),
+            raw_head=raw[:UNREADABLE_HEAD_BYTES].decode("utf-8", "replace"), when=_now(),
         )
-        if not any(self.item_path(state, key).exists()
+        if not any(bool(record_store.value_or_raise(self.records.item_presence(state, key)))
                    for state in (DONE, FAILED)):
-            immutable_files.publish_immutable(
-                self.item_path(FAILED, key),
-                pb._canonical_bytes({
+            self.records.file_record_if_absent_at(self.records.item_path(FAILED, key), {
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": key,
                     "status": "unreadable_record",
@@ -24154,8 +23496,7 @@ class PoolQueue:
                         "parse_error": reason,
                         "bytes": len(raw),
                     },
-                }),
-            )
+                })
         return key
 
     @staticmethod
@@ -24179,9 +23520,8 @@ class PoolQueue:
         The source name is unique and immutable once captured. Superseded is
         only a final evidence destination, never an in-flight recovery address.
         """
-        captured = self.root / "ready-transitions" / (
-            f"{path.stem}.{int(_now() * 1_000_000)}.{uuid.uuid4().hex}.{kind}.json"
-        )
+        captured = self.records.ready_transition_directory() / self.records.ready_transition_name(
+            path.stem, _now(), uuid.uuid4().hex, kind)
         captured.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.rename(path, captured)
@@ -24192,7 +23532,7 @@ class PoolQueue:
     def _restore_ready_transition(self, captured: Path, key: str) -> bool:
         """Restore without replacing a publication; retain any failed restore."""
         try:
-            os.link(captured, self.item_path(READY, key))
+            os.link(captured, self.records.item_path(READY, key))
         except OSError:
             return False
         captured.unlink(missing_ok=True)
@@ -24200,7 +23540,7 @@ class PoolQueue:
 
     def _finish_ready_transition(self, captured: Path) -> None:
         """Retain original bytes after a durable ending or successor is known."""
-        evidence = self.superseded_dir() / (captured.name + ".ready-source")
+        evidence = self.records.superseded_dir() / (captured.name + ".ready-source")
         evidence.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.rename(captured, evidence)
@@ -24217,7 +23557,7 @@ class PoolQueue:
         publishing its observable ending through the ordinary path.
         """
         recovered: list[str] = []
-        for captured in sorted(_scan(self.root / "ready-transitions")):
+        for captured in sorted(immutable_files.scan_optional(self.root / "ready-transitions")):
             parts = captured.name.split(".")
             if (len(parts) != 5 or parts[-1] != "json"
                     or parts[3] not in {"orphan", "withdraw-ready",
@@ -24236,14 +23576,14 @@ class PoolQueue:
                 if not acquired:
                     continue
                 try:
-                    record = _read_json(captured)
+                    record = record_store.read_document(captured)
                     # A prior helper or sweep already concluded this capture.
                     if record is None and not captured.exists():
                         continue
                     # List first: a negatively cached missing name must not
                     # hide a successor or a terminal publication on NFS.
                     present = {
-                        state: f"{key}.json" in os.listdir(self.dir(state))
+                        state: self.records.listed_item_present(state, key)
                         for state in (READY, CLAIMED, DONE, FAILED)
                     }
                     superseded = present[READY] or present[CLAIMED]
@@ -24251,7 +23591,9 @@ class PoolQueue:
                         # A listed but unreadable/empty ending is unknown,
                         # including for a stub without generation metadata.
                         for state in (DONE, FAILED):
-                            if present[state] and _read_json(self.item_path(state, key)) is None:
+                            if present[state] and record_store.value_or_raise(
+                                self.records.item(state, key),
+                            ) is None:
                                 raise PoolContractError(f"unreadable terminal record: {state}/{key}")
                         terminal = frozenset({key}) if present[DONE] or present[FAILED] else frozenset()
                         superseded = (
@@ -24277,7 +23619,7 @@ class PoolQueue:
         if captured is None:
             return None
         try:
-            record = _read_json(captured)
+            record = record_store.read_document(captured)
             if record is not None and not self._ready_record_usable(record, path.stem):
                 return record, captured
         except (OSError, PoolContractError):
@@ -24299,22 +23641,22 @@ class PoolQueue:
 
         A record whose bytes will not parse is the same defect one step
         earlier, so it takes the same route.  It used to take the whole fleet
-        instead: ``_read_json`` refuses a malformed record, and that refusal
+        instead: ``record_store.read_document`` refuses a malformed record, and that refusal
         reached ``claim``, ``ready_items``, ``reap_stale`` and this sweep, so
         one foreign writer's truncated file stopped every consumer on every
         box until somebody deleted it by hand.
         """
 
         filed: list[str] = []
-        ready = self.dir(READY)
-        if not ready.is_dir():
+        ready = self.records.dir(READY)
+        if not self.records.state_directory_present(READY):
             return filed
-        for path in sorted(ready.glob("*.json")):
+        for path in self.records.json_slot_paths(READY):
             with self._transition_locked(path.stem, blocking=False) as acquired:
                 if not acquired:
                     continue
                 try:
-                    record = _read_json(path)
+                    record = record_store.read_document(path)
                 except PoolContractError as exc:
                     key = self._file_unreadable(path, reason=str(exc))
                     if key is not None:
@@ -24325,7 +23667,7 @@ class PoolQueue:
                         raise
                     # The same race the branch below calls ordinary, arriving
                     # through a directory handle the client had cached (#208).
-                    # It is caught here rather than through ``_read_json``'s
+                    # It is caught here rather than through ``record_store.read_document``'s
                     # ``tolerate_stale`` because this sweep *discriminates*
                     # ``None``, and the flag would throw away the errno that tells
                     # the two cases apart: a record still on disk answers
@@ -24387,10 +23729,14 @@ class PoolQueue:
                 )
                 # The moved bytes remain evidence. Neither a terminal ending nor
                 # a new live record under the same key belongs to this stub.
-                if not any(self.item_path(state, path.stem).exists()
+                if not any(bool(
+                    record_store.value_or_raise(self.records.item_presence(state, path.stem)),
+                )
                            for state in (READY, CLAIMED, DONE, FAILED)):
-                    immutable_files.publish_immutable(self.item_path(FAILED, path.stem),
-                                       pb._canonical_bytes(record))
+                    self.records.file_record_if_absent_at(
+                        self.records.item_path(FAILED, path.stem),
+                        record,
+                    )
                 # A ready stub supplies no authority over committed reservations.
                 self._finish_ready_transition(captured)
                 filed.append(path.stem)
@@ -24491,7 +23837,7 @@ class PoolQueue:
         carries the ordered relative links returned here.
         """
 
-        path = self.attempt_path(record, attempt)
+        path = self.records.attempt_path(record, attempt)
         link: dict[str, object] = {
             "attempt": attempt,
             "outcome": str(path.relative_to(self.root)),
@@ -24572,10 +23918,9 @@ class PoolQueue:
                     f"pool attempt {stream} must be text or null")
             raw = value.encode("utf-8")
             digest = hashlib.sha256(raw).hexdigest()
-            log_path = self.attempt_log_path(
+            log_path = self.records.attempt_log_path(
                 record, attempt, stream, digest)
-            _publish_immutable(
-                log_path, raw, where=f"pool attempt {stream}")
+            self.records.file_attempt_log_at(log_path, raw, stream=stream)
             logs[stream] = {
                 "path": str(log_path.relative_to(self.root)),
                 "bytes": len(raw),
@@ -24635,7 +23980,7 @@ class PoolQueue:
         # links first is the causal record the mutable queue must adopt.  This
         # also repairs a crash after immutable publication but before the
         # ready/terminal summary kept its link.
-        immutable_files.publish_immutable(path, pb._canonical_bytes(outcome))
+        self.records.file_record_if_absent_at(path, outcome)
         history.append(link)
         self.attempt_outcomes(
             {
@@ -24690,7 +24035,7 @@ class PoolQueue:
                 raise PoolContractError(
                     "attempt_history numbers must be contiguous and ordered"
                 )
-            expected = self.attempt_path(record, attempt)
+            expected = self.records.attempt_path(record, attempt)
             if raw_link.get("outcome") != str(expected.relative_to(self.root)):
                 raise PoolContractError(
                     f"attempt {attempt} outcome link is not its canonical path"
@@ -24760,18 +24105,8 @@ class PoolQueue:
         outcomes: list[dict[str, object]] = []
         for raw_link in links:
             attempt = raw_link["attempt"]
-            expected = self.attempt_path(record, attempt)
-            raw = self._read_attempt_file(expected, where="pool attempt outcome")
-            try:
-                value = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise PoolContractError(
-                    f"pool attempt outcome is not valid JSON: {expected}"
-                ) from exc
-            if not isinstance(value, dict):
-                raise PoolContractError(
-                    f"pool attempt outcome is not an object: {expected}"
-                )
+            expected = self.records.attempt_path(record, attempt)
+            value = self.records.attempt_document(expected)
             self._bind_linked_attempt(
                 record, value, attempt=attempt, where=str(expected))
             raw_logs = value.get("logs")
@@ -24790,13 +24125,13 @@ class PoolQueue:
                     raise PoolContractError(
                         f"pool attempt {stream} byte count is invalid: {expected}"
                     )
-                log_path = self.attempt_log_path(
+                log_path = self.records.attempt_log_path(
                     record, attempt, stream, str(digest))
                 if metadata.get("path") != str(log_path.relative_to(self.root)):
                     raise PoolContractError(
                         f"pool attempt {stream} link is not its canonical path"
                     )
-                log = self._read_attempt_file(
+                log = self.records.attempt_bytes(
                     log_path, where=f"pool attempt {stream}")
                 if (
                     byte_count != len(log)
@@ -24809,132 +24144,6 @@ class PoolQueue:
             outcomes.append(expanded)
         return outcomes
 
-    def _read_attempt_file(self, path: Path, *, where: str) -> bytes:
-        """Read one linked immutable attempt file, past a stale "absent" (#1100).
-
-        A landed ending links its attempt records, so a miss here is either a
-        record that is really gone or a name this NFS client cached as absent.
-        The second is the ordinary case for a waiter on another box: its poll
-        walks ``attempts/<key>/<generation>`` before the ending lands
-        (``archived_generation_outcomes``), the worker's box then creates it,
-        and the client keeps answering ``ENOENT`` from the lookup it cached.
-        On sparky that outlived a fresh open of the parent for 25 s to more
-        than 180 s, so the close-to-open revalidation ``_read_json_fresh``
-        relies on (#808) is not enough here.
-
-        A miss is revalidated by listing each directory on the canonical
-        path, the rule ``action_wait.terminal_record`` follows for ``done/``, and
-        the file is read again only when every name is listed.  Only a miss
-        pays for the listings, and ``attempts/`` holds one name per action
-        key, about as many as the ``done/`` a waiter already lists on every
-        poll.  A name that no listing shows raises the original
-        ``FileNotFoundError``: a missing record is never read around.  A name
-        that is listed but still cannot be opened raises
-        ``StaleAbsenceError``, which a waiter repeats inside its own patience.
-        """
-
-        try:
-            return pb._read_regular_file_nofollow(
-                path, where=where, require_readonly=True)
-        except FileNotFoundError:
-            if not self._attempt_path_listed(path):
-                raise
-        try:
-            return pb._read_regular_file_nofollow(
-                path, where=where, require_readonly=True)
-        except FileNotFoundError as exc:
-            raise StaleAbsenceError(
-                errno.ENOENT,
-                f"{where} is listed by its directory but is not visible here "
-                f"yet (a lookup this client cached before it was created, "
-                f"#1100)",
-                str(path),
-            ) from exc
-
-    def _attempt_path_listed(self, path: Path) -> bool:
-        """Whether each directory from ``attempts/`` down lists the next name.
-
-        Listing a directory is also what refreshes this client's view of its
-        names.  A directory whose own name its parent just listed, and that
-        still cannot be opened for its listing, is the same stale lookup one
-        level down, so it counts as listed.  Any other failure to list
-        answers ``False``, and the caller keeps its original miss.
-        """
-
-        base = self.root / ATTEMPTS
-        try:
-            parts = path.relative_to(base).parts
-        except ValueError:
-            return False
-        directory = base
-        for depth, name in enumerate(parts):
-            try:
-                names = os.listdir(directory)
-            except FileNotFoundError:
-                if depth == 0:
-                    return False
-                return True
-            except OSError:
-                return False
-            if name not in names:
-                return False
-            directory = directory / name
-        return True
-
-    def _archived_attempt_identity(
-        self,
-        path: Path,
-        value: Mapping[str, object],
-        *,
-        action_key: str,
-        generation: object,
-    ) -> int:
-        """The attempt number this immutable outcome canonically addresses.
-
-        ``archive_attempt`` publishes one file per numbered attempt under
-        ``(action_key, published_unix)``.  A reader that reconstructs an
-        ending from that evidence must not be redirected to another action,
-        another generation or another attempt number by the file's own
-        claims, so the file's identity is checked against the directory it
-        was found in and against the canonical path its number derives.  The
-        number must also lie within the budget the attempt itself records: an
-        attempt above its own ``max_attempts`` is inconsistent identity, not
-        an ending, whatever its status says.  A legacy ``retry_safe`` of
-        ``None`` remains valid; only the handoff context requires it.
-        """
-
-        if (
-            type(generation) not in (int, float)
-            or isinstance(generation, bool)
-            or not math.isfinite(float(generation))
-        ):
-            raise PoolContractError("archived attempt names no generation")
-        attempt = value.get("attempt")
-        published = value.get("published_unix")
-        limit = value.get("max_attempts")
-        retry_safe = value.get("retry_safe")
-        if (
-            value.get("schema") != POOL_ATTEMPT_SCHEMA_V1
-            or value.get("action_key") != action_key
-            or type(published) not in (int, float)
-            or isinstance(published, bool)
-            or not math.isfinite(float(published))
-            or float(published) != float(generation)
-            or type(attempt) is not int
-            or attempt < 1
-            or type(limit) is not int
-            or limit < 1
-            or attempt > limit
-            or (retry_safe is not None and type(retry_safe) is not bool)
-            or path != self.attempt_path(
-                {"action_key": action_key, "published_unix": float(generation)},
-                attempt,
-            )
-        ):
-            raise PoolContractError(
-                f"archived attempt does not own its path and generation: {path}"
-            )
-        return attempt
 
     def archived_generation_outcomes(
         self, action_key: str, *, generation: float
@@ -24976,38 +24185,7 @@ class PoolQueue:
         """
 
         key = str(action_key)
-        if (
-            type(generation) not in (int, float)
-            or isinstance(generation, bool)
-            or not math.isfinite(float(generation))
-        ):
-            raise PoolContractError("archived generation must be a finite timestamp")
-        identity = {"action_key": key, "published_unix": float(generation)}
-        generation_name = self.attempt_generation(identity)  # validates key and timestamp
-        base = self.root / ATTEMPTS / key / generation_name
-        try:
-            entries = _scan_visible(base)
-        except (FileNotFoundError, NotADirectoryError):
-            # A generation that has not archived an attempt is an ordinary
-            # wait.  Every other enumeration failure stays loud: a reader
-            # that cannot see the directory must not answer "no ending".
-            return []
-        present: dict[int, tuple[Path, dict[str, object]]] = {}
-        for path in entries:
-            name = path.name
-            stem = name[:-5] if name.endswith(".json") else ""
-            if not stem or not stem.isascii() or not stem.isdigit():
-                # ``pool_reconcile`` writes ``<number>.receipt-reconciliation
-                # .json`` beside the attempt it supplements; a numbered
-                # attempt is exactly ``<digits>.json`` and nothing else here
-                # is one.
-                continue
-            value = _read_json(path)
-            if value is None:
-                raise PoolContractError(f"archived attempt is unreadable: {path}")
-            attempt = self._archived_attempt_identity(
-                path, value, action_key=key, generation=identity["published_unix"])
-            present[attempt] = (path, value)
+        present = self.records.archived_generation_records(key, generation=generation)
         if not present:
             return []
         terminal = [
@@ -25062,7 +24240,7 @@ class PoolQueue:
         record["attempt_history_missing_before"] = missing
         record["attempt_history"] = [
             {"attempt": number,
-             "outcome": str(self.attempt_path(record, number).relative_to(self.root))}
+             "outcome": str(self.records.attempt_path(record, number).relative_to(self.root))}
             for number in range(missing + 1, attempt + 1)
         ]
         adopted = self.attempt_ending(record)
@@ -25083,16 +24261,9 @@ class PoolQueue:
         path names that actual immutable source, not an overwritten summary.
         Older attempts without handoff context supply no inferred successor.
         """
-        identity = {"action_key": action_key,
-                    "published_unix": generation if generation is not None else 0.0}
-        generation_name = self.attempt_generation(identity)  # validates key and timestamp
-        base = self.root / ATTEMPTS / action_key
-        if generation is not None:
-            base /= generation_name
-        pattern = "*.json" if generation is not None else "*/*.json"
+        candidates = self.records.attempt_documents(action_key, generation=generation)
         found = []
-        for path in _glob(base, pattern):
-            value = _read_json(path)
+        for path, value in candidates:
             if value is None or "preemption_context" not in value:
                 continue
             if value.get("disposition") not in {DONE, FAILED}:
@@ -25101,7 +24272,7 @@ class PoolQueue:
             if not isinstance(context, Mapping):
                 raise PoolContractError("immutable attempt preemption context must be an object")
             record = {**value, **context, "schema": POOL_OUTCOME_SCHEMA_V1}
-            attempt = self._archived_attempt_identity(
+            attempt = self.records.archived_attempt_identity(
                 path, value, action_key=action_key,
                 generation=value.get("published_unix"))
             missing = context.get("attempt_history_missing_before")
@@ -25114,7 +24285,7 @@ class PoolQueue:
             record["attempts"] = attempt
             record["attempt_history"] = [
                 {"attempt": number,
-                 "outcome": str(self.attempt_path(record, number).relative_to(self.root))}
+                 "outcome": str(self.records.attempt_path(record, number).relative_to(self.root))}
                 for number in range(missing + 1, attempt + 1)
             ]
             adopted = self.attempt_ending(record)
@@ -25135,9 +24306,6 @@ class PoolQueue:
             self.attempt_outcomes(record), invalid=PoolContractError,
             validate_output_retry_stop=self._validate_output_retry_stop)
 
-    def _late_finish_path(self, record: Mapping[str, object]) -> Path:
-        identity = pb.canonical_sha256({field: record.get(field) for field in _CLAIM_IDENTITY})
-        return self.dir(CLAIMED) / f"{record['action_key']}.{identity}{LATE_FINISH_SUFFIX}"
 
     def _finish_late(
         self,
@@ -25152,15 +24320,15 @@ class PoolQueue:
             return self._archive_late_finish(
                 action_key, status=status, detail=detail, snapshot=snapshot, live=live)
         record = {**dict(snapshot), "action_key": action_key}
-        path = self._late_finish_path(record)
-        saved = _read_json(path)
+        path = self.records.late_finish_path(record)
+        saved = record_store.read_document(path)
         if saved is None:
             record["finish_pending"] = {"status": status, "detail": dict(detail or {})}
             record["late_finish"] = {field: live.get(field) for field in _CLAIM_IDENTITY}
             # Persist authority and the completed payload's result before any
             # broker operation. A crash can then be retried by the same sweep
             # that already recovers interrupted finish tombstones.
-            _write_json_atomic(path, record)
+            self.records.replace_record_at(path, record)
         else:
             record = saved
         return self._retry_late_finish(path, record)
@@ -25168,7 +24336,7 @@ class PoolQueue:
     def _retry_late_finish(self, path: Path, record: dict[str, object]) -> Path:
         pending = record.get("finish_pending")
         live = record.get("late_finish")
-        if (path != self._late_finish_path(record)
+        if (path != self.records.late_finish_path(record)
                 or not isinstance(pending, dict) or not isinstance(pending.get("status"), str)
                 or not isinstance(pending.get("detail"), dict) or not isinstance(live, dict)
                 or (record.get("resource_scope") is None
@@ -25179,7 +24347,7 @@ class PoolQueue:
             record, reason=str(detail.get("termination_reason") or status), scope_only=True)
         if not cleanup["complete"]:
             self._note_cleanup_attempt(record, record, cleanup)
-            _write_json_atomic(path, record)
+            self.records.replace_record_at(path, record)
             return path
         scope_cleanup = cleanup.get("resource_scope") or {}
         detail["resource_scope_cleanup"] = scope_cleanup
@@ -25192,16 +24360,20 @@ class PoolQueue:
                           termination_evidence=telemetry.get("termination_evidence"))
         # Keep completed cleanup durable until both the immutable attempt and
         # the recovery evidence are filed. Neither can overwrite a successor.
-        _write_json_atomic(path, record)
+        self.records.replace_record_at(path, record)
         result = self._archive_late_finish(
             str(record["action_key"]), status=status, detail=detail, snapshot=record, live=live)
         evidence = dict(record)
         evidence.pop("finish_pending", None)
         evidence.pop("container_cleanup_pending", None)
-        self._file_superseded(
+        self.records.file_superseded(
             evidence, key=str(record["action_key"]), kind="late-finish",
             status=status, detail=detail, finished_unix=_now(),
-            finished_host=socket.gethostname(), outcome=str(result.relative_to(self.root)))
+            finished_host=socket.gethostname(
+            ), outcome=str(
+                result.relative_to(self.root),
+            ), when=_now(
+            ))
         path.unlink(missing_ok=True)
         return result
 
@@ -25245,20 +24417,20 @@ class PoolQueue:
         """
 
         attempt = int(snapshot.get("attempts", 0)) + 1
-        if (self.attempt_generation({**snapshot, "action_key": action_key})
-                == self.attempt_generation({**live, "action_key": action_key})
+        if (self.records.attempt_generation({**snapshot, "action_key": action_key})
+                == self.records.attempt_generation({**live, "action_key": action_key})
                 and int(live.get("attempts", 0)) < attempt):
             # An unstarted release keeps the publication and attempt count.
             # First-writer-wins is unsafe here: filing the predecessor in that
             # slot makes the successor adopt an outcome it never produced.
             # Keep the report attributable without charging an execution or
             # creating a terminal that a waiter could mistake for completion.
-            return self._file_superseded(
+            return self.records.file_superseded(
                 snapshot, key=action_key, kind="uncharged-late-finish",
                 status=status, detail=dict(detail or {}),
                 finished_unix=_now(), finished_host=socket.gethostname(),
                 reason="replaced claim has no charged attempt; its execution "
-                       "slot belongs to the same-generation successor",
+                       "slot belongs to the same-generation successor", when=_now(),
             )
         archived = dict(snapshot)
         archived["action_key"] = action_key
@@ -25294,7 +24466,7 @@ class PoolQueue:
                 },
             },
         )
-        return self.attempt_path(archived, attempt)
+        return self.records.attempt_path(archived, attempt)
 
     def _gang_reservation_priority(self, item: Mapping[str, object], *,
                                    authority: bool) -> int | None:
@@ -25359,7 +24531,7 @@ class PoolQueue:
             lead = str(entry.get("lead"))
             seen = []
             for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
-                record = _read_json_confirmed(self.item_path(state, lead))
+                record = record_store.value_or_raise(self.records.confirmed_item(state, lead))
                 if isinstance(record, Mapping):
                     if state in (READY, CLAIMED):
                         return None
@@ -25423,7 +24595,9 @@ class PoolQueue:
                 # refreshes and listed-but-unreadable records end the window.
                 for lead in leads:
                     for state in (READY, CLAIMED):
-                        if _read_json_confirmed(self.item_path(state, lead)) is not None:
+                        if record_store.value_or_raise(
+                            self.records.confirmed_item(state, lead),
+                        ) is not None:
                             self._gang_clear_terminal(item, key)
                             return False
                 fresh = self.residency_verdict(item, fresh=True)
@@ -25577,14 +24751,14 @@ class PoolQueue:
         """
 
         succeeded = status in {"executed", "cache_hit"}
-        src = self.item_path(CLAIMED, action_key)
-        record = _read_json(src)
+        src = self.records.item_path(CLAIMED, action_key)
+        record = record_store.read_document(src)
         if not succeeded and (record or claim_snapshot or {}).get("gang") is not None:
             # One member ending unsuccessfully ends the gang (#1517).
             self._gang_teardown(record or claim_snapshot, by=action_key,
                                 reason=f"member {action_key[:12]} ended {status}")
         if record is None and claim_snapshot is not None:
-            ready = _read_json(self.item_path(READY, action_key))
+            ready = record_store.value_or_raise(self.records.item(READY, action_key))
             if ready is not None:
                 # A queued successor is as live as a claimed successor. This
                 # includes charged retries and replacement publications, not
@@ -25606,8 +24780,8 @@ class PoolQueue:
         if record is None and claim_snapshot is not None and (
                 claim_snapshot.get("resource_scope") is not None
                 or claim_snapshot.get("resource_scope_intent") is not None):
-            late_path = self._late_finish_path({**claim_snapshot, "action_key": action_key})
-            pending_late = _read_json(late_path)
+            late_path = self.records.late_finish_path({**claim_snapshot, "action_key": action_key})
+            pending_late = record_store.read_document(late_path)
             if pending_late is not None:
                 # Its successor may have finished since the first refusal.
                 # The saved exact-scope transition still owns this retry.
@@ -25618,7 +24792,11 @@ class PoolQueue:
             # the lease names its successor. Refuse before action-wide Docker
             # cleanup or any claim/telemetry write; the later entomb comparison
             # cannot undo payload removal. Missing legacy fields add no proof.
-            _check_claim_lease_identity(action_key, record, _read_json(self.lease_path(action_key)))
+            _check_claim_lease_identity(
+                action_key,
+                record,
+                record_store.read_document(self.records.lease_path(action_key)),
+            )
         read_claim = dict(record) if record is not None else None
         # Cleanup annotates this mapping with the completed scope evidence.
         # Keep the live record itself so the terminal retains that annotation;
@@ -25640,9 +24818,9 @@ class PoolQueue:
             pending["finish_pending"] = {
                 "status": status, "detail": dict(detail or {}),
             }
-            live = _read_json(src)
+            live = record_store.read_document(src)
             if live is not None and _same_claim(live, effective_record):
-                _write_json_atomic(src, pending)
+                self.records.replace_record_at(src, pending)
             return src
         scope_cleanup = container_cleanup.get("resource_scope") or {}
         telemetry = scope_cleanup.get("telemetry") or {}
@@ -25662,20 +24840,22 @@ class PoolQueue:
             # that its exact attempt stopped. Preserve that proof before giving
             # up the claim; never overwrite an operator's decision or a newer
             # generation's visible marker.
-            dst = self.item_path(WITHDRAWN, action_key)
+            dst = self.records.item_path(WITHDRAWN, action_key)
             if read_claim is None:
                 return dst
             with self._transition_locked(action_key):
-                live = _read_json(src)
+                live = record_store.read_document(src)
                 if live is None or not _same_claim(live, read_claim):
                     return dst
                 decision = self.withdrawal_covers(record, action_key=action_key)
-                marker = _read_json(dst)
+                marker = record_store.read_document(dst)
                 current = (marker is not None and
                            marker.get("published_unix") == record.get("published_unix"))
-                archive = (None if current else self.superseded_dir() /
-                           f"{action_key}.{self.attempt_generation(record)}.withdrawn-finish.json")
-                filed = dict(marker if current else _read_json(archive) or decision)
+                archive = (None if current else self.records.withdrawn_finish_path(
+                    action_key,
+                    record,
+                ))
+                filed = dict(marker if current else record_store.read_document(archive) or decision)
                 if "withdrawn_attempt" not in filed:
                     retained = dict(record)
                     retained.pop("finish_pending", None)
@@ -25711,17 +24891,17 @@ class PoolQueue:
                     filed.setdefault("finished_unix", adopted["finished_unix"])
                     filed.setdefault("finished_host", adopted["finished_host"])
                     if current:
-                        _write_json_atomic(dst, filed)
+                        self.records.replace_record_at(dst, filed)
                     else:
-                        immutable_files.publish_immutable(archive, pb._canonical_bytes(filed))
+                        self.records.file_record_if_absent_at(archive, filed)
                 if ("scratch_declaration_record" in record
                         or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
-                    self._file_superseded(record, key=action_key,
-                                          kind="scratch-declarations-after-withdrawal")
+                    self.records.file_superseded(record, key=action_key,
+                                          kind="scratch-declarations-after-withdrawal", when=_now())
                 tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
                 if not mine or tombstone is None:
                     return dst
-                self.lease_path(action_key).unlink(missing_ok=True)
+                self.records.lease_path(action_key).unlink(missing_ok=True)
                 self._release_reservation(action_key, host=holder)
                 if isinstance(decision.get("gang_backfill_preemption"), Mapping):
                     from . import _gang
@@ -25730,7 +24910,7 @@ class PoolQueue:
                     # The decision stays immutable; the worker's conclusion
                     # records when its exact released reservation came back.
                     with suppress(OSError, ValueError, pb.PrismaBuildError):
-                        _write_json_atomic(dst if current else archive, filed)
+                        self.records.replace_record_at(dst if current else archive, filed)
                     election = timing["election"]
                     with self._transition_locked(election["action_key"], blocking=False) as acquired:
                         if acquired:
@@ -25768,7 +24948,7 @@ class PoolQueue:
             # what makes the question askable here at all.
             snapshot = dict(effective_record)
             self._release_reservation(action_key, host=holder)
-            self.lease_path(action_key).unlink(missing_ok=True)
+            self.records.lease_path(action_key).unlink(missing_ok=True)
             try:
                 covered = self.terminal_outcome_covers(
                     snapshot, action_key=action_key)
@@ -25790,15 +24970,16 @@ class PoolQueue:
                 # it from here would be inventing an ending for an attempt
                 # this worker did not archive.
                 for state in (DONE, FAILED):
-                    unreadable = self.item_path(state, action_key)
+                    unreadable = self.records.item_path(state, action_key)
                     if unreadable.exists():
                         return unreadable
                 raise
             if covered is not None:
-                return self.item_path(str(covered[0]), action_key)
-            lost = self.item_path(
+                return self.records.item_path(str(covered[0]), action_key)
+            lost = self.records.item_path(
                 DONE if succeeded else FAILED, action_key)
-            if not lost.exists():
+            if not record_store.value_or_raise(self.records.item_presence(
+                    DONE if succeeded else FAILED, action_key)):
                 filed = {
                     "schema": POOL_OUTCOME_SCHEMA_V1,
                     "action_key": action_key,
@@ -25826,7 +25007,7 @@ class PoolQueue:
                 # Every end record names a repository (#1565): the
                 # submission's own tag, backfilled to explicit unknown.
                 filed["tested_repository"] = tested_repository_of(snapshot)
-                _write_json_atomic(lost, filed)
+                self.records.replace_record_at(lost, filed)
             return lost
         record.pop("finish_pending", None)
         record.pop("container_cleanup_pending", None)
@@ -25899,7 +25080,7 @@ class PoolQueue:
         )
         disposition = adopted["disposition"]
         if disposition in {DONE, FAILED}:
-            dst = self.item_path(str(disposition), action_key)
+            dst = self.records.item_path(str(disposition), action_key)
         else:
             # Reaching this branch is the producer's explicit retry contract,
             # not an inference from deterministic bytes: an argv may mutate
@@ -25916,8 +25097,8 @@ class PoolQueue:
         # not just at entry, before touching the lease or reservation.
         tombstone, mine = self._entomb_claim(action_key, expect=read_claim)
         if not mine or tombstone is None:
-            return self.attempt_path(record, attempts)
-        self.lease_path(action_key).unlink(missing_ok=True)
+            return self.records.attempt_path(record, attempts)
+        self.records.lease_path(action_key).unlink(missing_ok=True)
         # Capacity is released before the item is filed, so the next worker to
         # look sees the tokens free rather than racing this rename.  A mover
         # that staged what it declared keeps its *tier* tokens: they stand for
@@ -25935,7 +25116,7 @@ class PoolQueue:
         if retired is not None:
             record["supersedes_terminal"] = retired[1]
         if disposition in {DONE, FAILED}:
-            _write_json_atomic(dst, record)
+            self.records.replace_record_at(dst, record)
         else:
             dst = self._publish_requeued_claim(
                 record, action_key=action_key, tombstone=tombstone,
@@ -26002,9 +25183,9 @@ class PoolQueue:
 
         key = str(record["action_key"])
         other = FAILED if disposition == DONE else DONE
-        path = self.item_path(other, key)
+        path = self.records.item_path(other, key)
         try:
-            prior = _read_json(path)
+            prior = record_store.read_document(path)
         except (OSError, PoolContractError):
             # Unreadable is not this conclusion's to repair, and raising here
             # would strand the claim this call has already entombed.
@@ -26013,11 +25194,11 @@ class PoolQueue:
                 "published_unix"):
             return None
         try:
-            archived = self._file_superseded(
+            archived = self.records.file_superseded(
                 prior, key=key, kind=f"{other}-terminal",
                 superseded_unix=_now(), superseded_host=socket.gethostname(),
                 superseded_by_published_unix=record.get("published_unix"),
-                superseded_by_state=disposition)
+                superseded_by_state=disposition, when=_now())
         except OSError:
             return None
         summary: dict[str, object] = {"state": other}
@@ -26048,17 +25229,27 @@ class PoolQueue:
         if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
             raise PoolContractError("action_key must be a 64-character hex digest")
         for state in (READY, CLAIMED):
-            if self.item_path(state, key).exists():
+            try:
+                present = record_store.value_or_raise(self.records.item_presence(state, key))
+            except OSError as exc:
+                raise PoolContractError(
+                    f"refusing to reclaim {key}: its {state} record is unreadable: {exc}") from exc
+            if present:
                 raise PoolContractError(
                     f"refusing to reclaim {key}: action is still {state}")
-        if self.lease_path(key).exists():
+        try:
+            leased = record_store.value_or_raise(self.records.lease_presence(key))
+        except OSError as exc:
+            raise PoolContractError(
+                f"refusing to reclaim {key}: its lease is unreadable: {exc}") from exc
+        if leased:
             raise PoolContractError(
                 f"refusing to reclaim {key}: action still has a lease")
 
         terminals = [
             (state, record)
             for state in (DONE, FAILED, WITHDRAWN)
-            if (record := _read_json(self.item_path(state, key))) is not None
+            if (record := record_store.value_or_raise(self.records.item(state, key))) is not None
         ]
         if len(terminals) != 1:
             raise PoolContractError(
@@ -26130,30 +25321,18 @@ class PoolQueue:
         ``terminal_outcome_covers`` decides on, and every ``OSError`` used to
         answer it the same way an empty directory does.  ``ESTALE`` on a
         cached directory handle is the ordinary way a listing fails on this
-        mount -- ``_read_json`` treats it as a first-class event (#208) and
+        mount -- ``record_store.read_document`` treats it as a first-class event (#208) and
         ``quarantine_orphans`` re-raises every errno that is not ``ESTALE``
         rather than swallowing the class -- so one stale handle reported "no
         outcomes have been filed" for a queue full of them.  ``reap_stale``
         then found no filed outcome for a generation that had one and put it
         back in ``ready``, which is the one thing this method's own caller
-        says a CAS hit does not license.  ``_read_json`` states the rule:
+        says a CAS hit does not license.  ``record_store.read_document`` states the rule:
         answering "absent" without the evidence that the directory is live
         "would turn a broken mount into a confident wrong verdict".
         """
 
-        keys: set[str] = set()
-        for state in (DONE, FAILED):
-            try:
-                names = os.listdir(self.dir(state))
-            except FileNotFoundError:
-                # Absence only.  A queue whose layout has not been created yet
-                # legitimately has no ``done`` and no ``failed``, and that is
-                # the one reading of "no names" this method may make.
-                continue
-            keys.update(
-                name[: -len(".json")] for name in names if name.endswith(".json")
-            )
-        return frozenset(keys)
+        return self.records.terminal_keys()
 
     def terminal_outcome_covers(
         self,
@@ -26180,7 +25359,7 @@ class PoolQueue:
         if not isinstance(mine, (int, float)):
             return None
         for state in (DONE, FAILED):
-            outcome = _read_json(self.item_path(state, key))
+            outcome = record_store.value_or_raise(self.records.item(state, key))
             if outcome is None:
                 continue
             theirs = outcome.get("published_unix")
@@ -26188,42 +25367,6 @@ class PoolQueue:
                 return state, outcome
         return None
 
-    def read_terminal_candidates(
-        self, action_key: str, *, max_bytes: int | None = None,
-    ) -> tuple[dict[str, tuple[Path, dict[str, object]]],
-               list[dict[str, object]]]:
-        """One capture of the three mutable terminal slots for this key.
-
-        Returns ``(readable, unreadable)``: ``readable`` maps a state to the
-        ``(path, record)`` this read found there, and ``unreadable`` names a
-        record that is present but could not be read, with its reason.  The
-        capture is deliberately separate from the resolution (#1178 review):
-        a census and a resolution built from two different reads can order
-        one record and report another when the key is replaced between them,
-        so a caller that needs both derives them from one capture.
-
-        ``max_bytes`` is opt-in and belongs to a caller that must bound the
-        mutable record it reads before consuming it (#1446): each candidate is
-        read through Core's bounded, no-follow replaced-leaf reader, and a
-        record over the bound lands in ``unreadable`` rather than being read.
-        ``None`` keeps every existing caller's uncapped read exactly.
-        """
-
-        key = str(action_key)
-        readable: dict[str, tuple[Path, dict[str, object]]] = {}
-        unreadable: list[dict[str, object]] = []
-        for state in (DONE, FAILED, WITHDRAWN):
-            path = self.item_path(state, key)
-            try:
-                record = _read_json_bounded(path, max_bytes=max_bytes)
-            except (OSError, pb.PrismaBuildError) as exc:
-                unreadable.append({
-                    "state": state, "path": path,
-                    "reason": str(exc) or type(exc).__name__})
-                continue
-            if record is not None:
-                readable[state] = (path, record)
-        return readable, unreadable
 
     def current_ending(
         self, action_key: str, *, max_bytes: int | None = None,
@@ -26231,13 +25374,12 @@ class PoolQueue:
         """One capture and its generation-resolved answer (#1178).
 
         The convenience the key-level readers call; see
-        :meth:`read_terminal_candidates` and `endings.resolve_current` for the
+        :meth:`RecordStore.terminal_candidates` and `endings.resolve_current` for the
         capture and the pure rule a status census must not split.
         """
 
-        readable, unreadable = self.read_terminal_candidates(
-            action_key, max_bytes=max_bytes)
-        return endings.resolve_current(readable, unreadable)
+        capture = self.records.terminal_candidates(action_key, max_bytes=max_bytes)
+        return endings.resolve_current(capture)
 
     def withdrawn_keys(self) -> frozenset[str]:
         """Every action an operator has withdrawn.
@@ -26257,20 +25399,8 @@ class PoolQueue:
         anything but absence, for the reason :meth:`terminal_keys` records.
         """
 
-        try:
-            names = os.listdir(self.dir(WITHDRAWN))
-        except FileNotFoundError:
-            # Absence only, for the reason ``terminal_keys`` gives: a queue
-            # whose layout has not been created yet has no ``withdrawn``.
-            return frozenset()
-        return frozenset(
-            name[: -len(".json")] for name in names if name.endswith(".json")
-        )
+        return self.records.withdrawn_keys()
 
-    def released_origin_consumers_dir(self) -> Path:
-        """Where the index of released origin-batch consumers lives (#954)."""
-
-        return self.root / RELEASED_ORIGIN_CONSUMERS
 
     def released_origin_consumer_keys(self) -> frozenset[str]:
         """Every consumer key with an entry in the release index (#954).
@@ -26286,12 +25416,7 @@ class PoolQueue:
         listing or entry is unknown, not absence.
         """
 
-        try:
-            names = os.listdir(self.released_origin_consumers_dir())
-        except FileNotFoundError:
-            return frozenset()
-        return frozenset(name[:64] for name in names
-                         if name.endswith(".json") and name[64:65] == ".")
+        return self.records.released_origin_consumer_keys()
 
     def _refuse_released_origin_consumer(self, item: Mapping[str, object],
                                          key: str) -> bool:
@@ -26332,12 +25457,12 @@ class PoolQueue:
             return True
         if release is None:
             return False
-        captured = self._capture_ready_transition(self.item_path(READY, key),
+        captured = self._capture_ready_transition(self.records.item_path(READY, key),
                                                   kind="origin-released")
         if captured is None:
             return True       # the listing was stale: nothing of it is ready
         try:
-            record = _read_json(captured)
+            record = record_store.read_document(captured)
             covered = (self.terminal_outcome_covers(record, action_key=key)
                        if record is not None else None)
         except (OSError, PoolContractError) as exc:
@@ -26371,7 +25496,7 @@ class PoolQueue:
             })
             # Replaced, as ``finish`` files an outcome: an earlier generation's
             # ending under this key is not this row's.
-            _write_json_atomic(self.item_path(FAILED, key), record)
+            self.records.replace_record_at(self.records.item_path(FAILED, key), record)
         self._finish_ready_transition(captured)
         return True
 
@@ -26432,11 +25557,11 @@ class PoolQueue:
             if proof is None:
                 return False
             captured = self._capture_ready_transition(
-                self.item_path(READY, key), kind="dead-input")
+                self.records.item_path(READY, key), kind="dead-input")
             if captured is None:
                 return True       # the listing was stale: nothing of it is ready
             try:
-                record = _read_json(captured)
+                record = record_store.read_document(captured)
                 covered = (self.terminal_outcome_covers(record, action_key=key)
                            if record is not None else None)
             except (OSError, PoolContractError):
@@ -26493,7 +25618,7 @@ class PoolQueue:
                 # pass (#1202 review round 2, non-blocking: the sweep
                 # recovers a real crash; this is the in-process guard).
                 try:
-                    _write_json_atomic(self.item_path(FAILED, key), record)
+                    self.records.replace_record_at(self.records.item_path(FAILED, key), record)
                 except OSError as exc:
                     self._restore_ready_transition(captured, key)
                     self.record_denial(item, "dead_input_dependency_unreadable",
@@ -26515,7 +25640,7 @@ class PoolQueue:
         if key not in self.withdrawn_keys():
             return None
         try:
-            marker = _read_json(self.item_path(WITHDRAWN, key))
+            marker = record_store.value_or_raise(self.records.item(WITHDRAWN, key))
         except (OSError, PoolContractError):
             marker = None
         if isinstance(marker, dict):
@@ -26523,60 +25648,25 @@ class PoolQueue:
         return {"action_key": key, "reason": "",
                 "unreadable": True}
 
-    def superseded_dir(self) -> Path:
-        """Where records go once a generation decision makes them non-live.
-
-        A subdirectory rather than a timestamped sibling, because every reader
-        of ``withdrawn/`` addresses it by ``<key>.json``: ``withdrawn_keys``
-        lists it, ``find_key`` globs it, ``item_path`` builds the name,
-        ``pbrun``'s wait loop lists it and client status screens count ``*.json``
-        in it.  A sibling named ``<key>.<unix>.json`` would look to all five
-        like an action whose key is nonsense; a subdirectory is invisible to
-        every one of them.  It keeps both retired withdrawals and ready/claimed
-        copies dropped because a terminal record already owns their generation,
-        so no queue record disappears without evidence.
-        """
-
-        return self.dir(WITHDRAWN) / "superseded"
-
-    def _file_superseded(
-        self,
-        record: Mapping[str, object] | None,
-        *,
-        key: str,
-        kind: str,
-        **stamps: object,
-    ) -> Path:
-        """Keep a record that is no longer live, under a name of its own."""
-
-        when = _now()
-        payload = dict(record or {})
-        payload["action_key"] = key
-        payload.update(stamps)
-        path = self.superseded_dir() / f"{key}.{when:.6f}.{kind}.json"
-        _write_json_atomic(path, payload)
-        return path
 
     def _supersede_withdrawal(self, action_key: str) -> dict[str, object] | None:
         """Retire the live withdrawal for ``action_key``; return what it said."""
 
-        live = self.item_path(WITHDRAWN, action_key)
-        captured = self.superseded_dir() / (
-            f"{action_key}.{uuid.uuid4().hex}.withdrawal-source"
-        )
+        live = self.records.item_path(WITHDRAWN, action_key)
+        captured = self.records.withdrawal_capture_path(action_key)
         captured.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.rename(live, captured)
         except FileNotFoundError:
             return None
         try:
-            record = _read_json(captured)
+            record = record_store.read_document(captured)
             if record is None:
                 raise PoolContractError(f"empty withdrawal marker: {captured}")
-            self._persist_withdrawal_decision(record)
-            self._file_superseded(
+            self.records.file_withdrawal_decision(record)
+            self.records.file_superseded(
                 record, key=action_key, kind="withdrawal",
-                superseded_unix=_now(), superseded_host=socket.gethostname(),
+                superseded_unix=_now(), superseded_host=socket.gethostname(), when=_now(),
             )
         except BaseException:
             # Failure must not erase the decision, and restoration must not
@@ -26591,62 +25681,21 @@ class PoolQueue:
         captured.unlink()
         return record
 
-    def withdrawal_decision_path(self, record: Mapping[str, object]) -> Path | None:
-        """The durable cancellation address for records with known generation."""
-        try:
-            generation = self.attempt_generation(record)
-        except PoolContractError:
-            return None  # legacy marker without a publication identity
-        return self.dir(WITHDRAWN) / "decisions" / str(record["action_key"]) / f"{generation}.json"
-
-    def _persist_withdrawal_decision(self, record: Mapping[str, object]) -> dict[str, object]:
-        path = self.withdrawal_decision_path(record)
-        if path is None:
-            return dict(record)
-        immutable_files.publish_immutable(path, pb._canonical_bytes(record))
-        return self._read_withdrawal_decision(path)
-
-    def _read_withdrawal_decision(self, path: Path) -> dict[str, object]:
-        try:
-            raw = pb._read_regular_file_nofollow(
-                path, where="withdrawal decision", require_readonly=True)
-            decision = json.loads(raw)
-            if (not isinstance(decision, dict) or decision.get("status") != "withdrawn"
-                    or self.withdrawal_decision_path(decision) != path):
-                raise ValueError("decision identity disagrees with its address")
-        except Exception as exc:
-            raise PoolContractError(f"invalid withdrawal decision: {path}: {exc}") from exc
-        return decision
-
-    def withdrawal_decisions(
-        self, key: str, *, generation: float | None = None,
-    ) -> list[tuple[Path, dict[str, object]]]:
-        """Immutable cancellations for this key, optionally one generation."""
-
-        directory = self.dir(WITHDRAWN) / "decisions" / key
-        if generation is None:
-            paths = _glob(directory, "*.json")
-        else:
-            path = self.withdrawal_decision_path({
-                "action_key": key, "published_unix": generation,
-            })
-            paths = [] if path is None else _glob(directory, path.name)
-        return [(path, self._read_withdrawal_decision(path)) for path in paths]
 
     def _withdraw_ready(self, key: str) -> dict[str, object] | None:
         """Examine captured READY bytes without losing an uncancelled successor."""
         with self._transition_locked(key, blocking=False) as acquired:
             if not acquired:
                 return None
-            captured = self._capture_ready_transition(self.item_path(READY, key),
+            captured = self._capture_ready_transition(self.records.item_path(READY, key),
                                                       kind="withdraw-ready")
             if captured is None:
                 return None
             try:
-                moved = _read_json(captured)
+                moved = record_store.read_document(captured)
                 marker = self.withdrawal_covers(moved, action_key=key) if moved is not None else None
                 if marker is not None:
-                    self._persist_withdrawal_decision(marker)
+                    self.records.file_withdrawal_decision(marker)
                     self._finish_ready_transition(captured)
                     return moved
             except (OSError, PoolContractError, pb.CASUnavailableError):
@@ -26698,16 +25747,16 @@ class PoolQueue:
         if not key:
             return None
         if record is not None:
-            decision = self.withdrawal_decision_path({**record, "action_key": key})
+            decision = self.records.withdrawal_decision_path({**record, "action_key": key})
             if decision is not None:
                 # Enumerate before reading to avoid NFS's negatively cached
                 # absence hiding a cancellation written by another host.
-                for path in _glob(decision.parent, decision.name):
-                    return self._read_withdrawal_decision(path)
+                for path in immutable_files.match_optional(decision.parent, decision.name):
+                    return self.records.withdrawal_decision(path)
         known = self.withdrawn_keys() if withdrawn is None else withdrawn
         if key not in known:
             return None
-        marker = _read_json(self.item_path(WITHDRAWN, key))
+        marker = record_store.value_or_raise(self.records.item(WITHDRAWN, key))
         if marker is None:
             return None
         if record is None:
@@ -26755,13 +25804,7 @@ class PoolQueue:
         if any(character not in "0123456789abcdef" for character in wanted.lower()):
             raise PoolContractError(
                 f"an action key is a hex digest; {wanted!r} is not a prefix of one")
-        seen: set[str] = set()
-        for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN):
-            for path in _glob(self.dir(state), f"{wanted}*.json"):
-                seen.add(path.stem)
-        for directory in _glob(self.dir(WITHDRAWN) / "decisions", f"{wanted}*"):
-            if directory.is_dir() and _glob(directory, "*.json"):
-                seen.add(directory.name)
+        seen = set(self.records.cancellation_prefix(wanted))
         if not seen:
             raise PoolContractError(f"no action in the queue starts with {wanted!r}")
         if len(seen) > 1:
@@ -26858,13 +25901,13 @@ class PoolQueue:
         """
 
         key = str(action_key)
-        self.ensure_layout()
-        withdrawn_path = self.item_path(WITHDRAWN, key)
-        claimed_path = self.item_path(CLAIMED, key)
-        ready_path = self.item_path(READY, key)
+        self.records.ensure_layout()
+        withdrawn_path = self.records.item_path(WITHDRAWN, key)
+        claimed_path = self.records.item_path(CLAIMED, key)
+        ready_path = self.records.item_path(READY, key)
 
-        existing = _read_json(withdrawn_path)
-        record = _read_json(claimed_path)
+        existing = record_store.read_document(withdrawn_path)
+        record = record_store.read_document(claimed_path)
         if expected_claim is not None and (
                 record is None or not _same_claim(record, expected_claim)):
             # Admission selected one exact attempt before taking this key's
@@ -27007,17 +26050,17 @@ class PoolQueue:
             # claimed generation through all mutations and signalling, so
             # an old claim's authorization can never cancel the new READY
             # generation waiting behind it.
-            waiting = _read_json(ready_path)
+            waiting = record_store.read_document(ready_path)
             if waiting is not None and self.withdrawal_covers(waiting, action_key=key) is None:
                 # A repeated operator request can cancel a later submission
                 # queued behind an original attempt that is still stopping.
                 record, origin = waiting, READY
         if record is None:
-            record = _read_json(ready_path)
+            record = record_store.read_document(ready_path)
             origin = READY if record is not None else None
         if record is None and existing is None:
             for state in (DONE, FAILED):
-                finished = _read_json(self.item_path(state, key))
+                finished = record_store.value_or_raise(self.records.item(state, key))
                 if finished is not None:
                     # Nothing to stop and nothing to file.  Reporting this
                     # rather than raising matters: an operator who withdraws an
@@ -27030,16 +26073,16 @@ class PoolQueue:
                         "host": finished.get("finished_host"),
                         "released": 0,
                         "signalled": None,
-                        "path": str(self.item_path(state, key)),
+                        "path": str(self.records.item_path(state, key)),
                         "reason": "",
                     }
-            decisions = self.withdrawal_decisions(key)
+            decisions = self.records.withdrawal_decisions(key)
             if decisions:
                 existing = max(decisions, key=lambda entry: float(entry[1]["published_unix"]))[1]
             else:
                 raise PoolContractError(f"no such action in the queue: {key}")
 
-        lease = _read_json(self.lease_path(key)) or {}
+        lease = record_store.read_document(self.records.lease_path(key)) or {}
         host: str | None = None
         if origin == CLAIMED and isinstance(record, Mapping):
             # Resolve ambiguity before retiring or publishing any decision.
@@ -27123,10 +26166,10 @@ class PoolQueue:
                 # classification.  An ordinary cancellation -- however
                 # shaped its `by` string -- never carries this.
                 filed["membership_handoff"] = handoff_proof
-            filed = self._persist_withdrawal_decision(filed)
-            _write_json_atomic(withdrawn_path, filed)
+            filed = self.records.file_withdrawal_decision(filed)
+            self.records.replace_record_at(withdrawn_path, filed)
         else:
-            filed = self._persist_withdrawal_decision(existing)
+            filed = self.records.file_withdrawal_decision(existing)
 
         # A ready record is ours only after its atomic move and generation
         # check. Publication can replace it between the initial read and now.
@@ -27450,7 +26493,7 @@ class PoolQueue:
             if host != socket.gethostname():
                 raise PoolContractError("CPU allocation belongs to another host")
             ledger = self.ledger(host)
-            tiers = _read_json(ledger.base / "cpu-map.json")
+            tiers = record_store.read_document(ledger.base / "cpu-map.json")
             if tiers is None or ledger.cpu_allocation(key, tiers) != allocation:
                 raise PoolContractError("CPU allocation differs from held reservation")
             cpus = list(allocation["preferred"]) + list(allocation["fallback"])
@@ -27494,7 +26537,7 @@ class PoolQueue:
         if lifetimes:
             assert scope is not None
             item[scratch_lifetime.SCRATCH_LIFETIME_FIELD] = scratch_lifetime.register_attempt(
-                record_store.RecordStore(self.root), self, key, claim_snapshot=item, env={
+                self, key, claim_snapshot=item, env={
                     pb.ACTION_KEY_ENV: key, pb.ACTION_NONCE_ENV: scope.nonce,
                     pb.ACTION_SCOPE_ENV: scope.unit})
         if selected:
@@ -27517,14 +26560,14 @@ class PoolQueue:
         # Name the file before the launch, and clear anything a previous
         # attempt on this key left behind, so what is read afterwards is this
         # attempt's or nothing.
-        status_path = self.action_status_path(key)
+        status_path = self.records.action_status_path(key)
         with suppress(OSError):
             status_path.unlink()
         # Same rule for the progress file, and one more on top of it: the token
         # is minted here, per launch.  Clearing the path bounds a *tidy*
         # previous attempt; a token this launch invented is what bounds an
         # untidy one that outlived SIGKILL and still holds the path open.
-        progress_path = self.action_progress_path(key)
+        progress_path = self.records.action_progress_path(key)
         progress_token = uuid.uuid4().hex
         with suppress(OSError):
             progress_path.unlink()
@@ -28053,7 +27096,7 @@ class PoolQueue:
     def _defer_unstarted_claim(self, item: Mapping[str, object]) -> None:
         """Return a broker-refused launch without recording an execution attempt."""
         key = str(item["action_key"])
-        record = _read_json(self.item_path(CLAIMED, key))
+        record = record_store.value_or_raise(self.records.item(CLAIMED, key))
         if record is None or not _same_claim(record, item):
             return
         if record.get("resource_scope") is not None:
@@ -28065,7 +27108,7 @@ class PoolQueue:
         tombstone, mine = self._entomb_claim(key, expect=read_claim)
         if tombstone is None or not mine:
             return
-        self.lease_path(key).unlink(missing_ok=True)
+        self.records.lease_path(key).unlink(missing_ok=True)
         self._release_reservation(key, host=host)
         self._shape_as_ready_item(record, action_key=key)
         record["maintenance_deferred_unix"] = _now()

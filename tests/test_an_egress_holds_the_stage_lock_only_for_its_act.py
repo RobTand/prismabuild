@@ -188,14 +188,14 @@ def _p99(values: list[float]) -> float:
 def test_a_whole_range_egress_never_parks_the_publishers_for_its_range(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     stage = stage.resolve()
     assert stage_release.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _land_range(queue, stage, root)
 
     # Each publisher's copies are already verified in temporaries; only the

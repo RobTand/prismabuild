@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Generic, Protocol, TypeVar
 
-from . import _bounded_reader as _reader, core as pb, endings, pool
+from . import _bounded_reader as _reader, core as pb, endings, pool, record_store
 from .digest_primitives import sorted_json
 
 POLL_S = 5.0
@@ -582,30 +582,19 @@ def terminal_record(
     ``None``; waiters opt in so corruption is not reported as a timeout.
     """
 
-    try:
-        # Poll by readdir, not by stat.  The queue lives on NFS, where a stat
-        # of a path that did not exist yet is negatively cached: the outcome
-        # landed and a bare ``exists()`` kept answering False.  Listing the
-        # directory revalidates it.
-        if path.name not in os.listdir(path.parent):
-            return None
-    except OSError:
+    observation = record_store.RecordStore.wait_terminal_at(path)
+    if isinstance(observation, record_store.Absent):
         return None
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        # A concurrent requeue can remove an ending after readdir.
-        return None
-    except (OSError, ValueError) as exc:
+    if isinstance(observation, record_store.Unknown):
         if report_unreadable:
+            exc = observation.error
+            if exc is None:
+                raise UnreadableTerminal(path, observation.reason)
             reason = (str(exc.strerror or type(exc).__name__).lower()
                       if isinstance(exc, OSError) else "not valid JSON")
             raise UnreadableTerminal(path, reason) from exc
         return None
-    if not isinstance(record, dict):
-        if report_unreadable:
-            raise UnreadableTerminal(path, "not a JSON object")
-        return None
+    record = observation.value
     if generation is None:
         return record
     theirs = record.get("published_unix")
@@ -643,15 +632,11 @@ def _read_preemption_successor(q, key: str, ending, generation) -> float | None:
     # Reading the marker before the replacement exists is an intermediate
     # transition, not evidence that the preempted action was abandoned.
     with q._transition_locked(key):
-        records = [record for _, record in q.withdrawal_decisions(key)]
+        records = [record for _, record in q.records.withdrawal_decisions(key)]
         records.extend(record for _, record in q.archived_preemption_outcomes(key))
         for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
                       pool.WITHDRAWN):
-            try:
-                record = json.loads(
-                    q.item_path(state, key).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
+            record = q.records.wait_notice_at(q.records.item_path(state, key))
             if isinstance(record, dict):
                 records.append(record)
         # Preserve this reader's historical JSON-object intake. The pure
@@ -671,8 +656,7 @@ def outcome_poll(
     A new poll always starts with a fresh capture. Handoff reads retain the
     existing transition lock; no reader mutates or republishes queue state.
     """
-    watched = [q.item_path(state, key)
-               for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+    watched = q.records.wait_ending_addresses(key)
     found = []
     broken = []
     publication_errors = []
@@ -696,8 +680,8 @@ def outcome_poll(
         if isinstance(answer, endings.RunAnswer):
             return answer.ending, answer.generation
         if isinstance(answer, endings.WithdrawalInputs):
-            decisions = (q.withdrawal_decisions(key) if answer.generation is None
-                         else q.withdrawal_decisions(key, generation=answer.generation))
+            decisions = (q.records.withdrawal_decisions(key) if answer.generation is None
+                         else q.records.withdrawal_decisions(key, generation=answer.generation))
             capture = replace(capture, withdrawals=tuple(decisions))
         elif isinstance(answer, endings.ArchiveInputs):
             capture = replace(capture, archives=tuple(q.archived_generation_outcomes(

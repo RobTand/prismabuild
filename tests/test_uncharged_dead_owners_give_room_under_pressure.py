@@ -36,6 +36,8 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
+from record_store_trust import ObservedTrust
+from prismabuild import kept_reads
 from prismabuild import stage_marks  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
@@ -87,7 +89,7 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
     """
 
     queue, stage, _ = fleet
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     consumer, _generation = base._fail_consumer(queue)
     mover = base._key()
     base._publish(queue, mover, max_attempts=1)
@@ -128,15 +130,15 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
     return consumer, mover
 
 
-def _sweep(queue, stage, pressure):
+def _sweep(queue, stage, pressure, *, index=None):
     return stage_release.sweep(queue, stage_roots={TIER: str(stage)},
-                               pressure=pressure)
+                               pressure=pressure, index=index)
 
 
 def _owned(queue, consumer: str, mover: str) -> bool:
     """Whether the owner's fragment and material are both still filed."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment = residency_map.fragment_path(root, consumer, mover).exists()
     material = reader_lease.material_path(root, consumer, mover).exists()
     assert fragment == material, (fragment, material)
@@ -302,16 +304,15 @@ def test_a_live_pin_protects_every_byte_and_the_next_owner_goes(
     assert pin["ok"], pin
 
     # The first pass sees the pin in the stale-mention census and leaves the
-    # owner out.  The second reaches it through a skip checkpoint (forced
-    # here, since a checkpoint on a directory changed this clock tick is
-    # refused), and the whole eviction declines it.  Each pass takes the
+    # owner out.  The second reaches it through a qualified skip checkpoint from the first pass, and the whole eviction declines it.  Each pass takes the
     # next owner instead.
-    first = _sweep(queue, stage, {TIER: 1})
+    index = kept_reads.CensusIndex(trust=ObservedTrust())
+    first = _sweep(queue, stage, {TIER: 1}, index=index)
     assert _owned(queue, *pinned) and not _owned(queue, *later), first
     assert _for(first, pinned[1]) == []
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_hit",
-                        lambda *args: True)
-    second = _sweep(queue, stage, {TIER: 1})
+    skipped = index.stale_skipped
+    second = _sweep(queue, stage, {TIER: 1}, index=index)
+    assert index.stale_skipped > skipped, "the real qualified checkpoint did not hit"
     assert _owned(queue, *pinned) and not _owned(queue, *last), second
     assert _files(stage, ["pin-00100"]) == [True]
     (receipt,) = _for(second, pinned[1])
@@ -335,13 +336,14 @@ def test_a_live_claim_keeps_the_file(fleet, monkeypatch, claim):
 
     monkeypatch.setattr(stage_release, "_claimed_paths_attributed", attributed)
 
-    first = _sweep(queue, stage, {TIER: 1})
+    index = kept_reads.CensusIndex(trust=ObservedTrust())
+    first = _sweep(queue, stage, {TIER: 1}, index=index)
     assert _owned(queue, *claimed) and not _owned(queue, *later), first
     assert _for(first, claimed[1]) == []
-    # Through a (forced) skip checkpoint, the eviction's own census decides.
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_hit",
-                        lambda *args: True)
-    second = _sweep(queue, stage, {TIER: 1})
+    # Through its actual qualified checkpoint, the eviction's own census decides.
+    skipped = index.stale_skipped
+    second = _sweep(queue, stage, {TIER: 1}, index=index)
+    assert index.stale_skipped > skipped, "the real qualified checkpoint did not hit"
     assert _files(stage, ["claim-00100"]) == [True], second
     (receipt,) = _for(second, claimed[1])
     assert receipt["bytes_deleted"] == 0, receipt
@@ -379,8 +381,8 @@ def test_a_live_co_owner_keeps_the_file(fleet):
     base._publish(queue, live_consumer, max_attempts=1)
     fragment = residency_map.validate_fragment(json.loads(
         residency_map.fragment_path(
-            queue.residency_fragment_root(), *dead).read_text()))
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+            queue.records.residency_fragment_root(), *dead).read_text()))
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         **{key: value for key, value in fragment.items()
            if key not in ("consumer_action_key", "mover_action_key")},
         "consumer_action_key": live_consumer,

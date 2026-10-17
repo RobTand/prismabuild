@@ -30,14 +30,9 @@ KEY = "c" * 64
 class Queue:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.records = pbrun.pool.record_store.RecordStore(root)
         for state in ("done", "failed", "withdrawn"):
             (root / state).mkdir(parents=True)
-
-    def item_path(self, state: str, key: str) -> Path:
-        return self.root / state / f"{key}.json"
-
-    def withdrawal_decisions(self, key: str, **_kwargs) -> list:
-        return []
 
 
 def _ending() -> dict:
@@ -129,7 +124,7 @@ def test_a_patient_wait_outlasts_a_reader_stuck_in_the_kernel(
     """
 
     queue = Queue(tmp_path / "queue")
-    record = queue.item_path("done", KEY)
+    record = queue.records.item_path("done", KEY)
     os.mkfifo(record)
 
     def land():
@@ -162,7 +157,7 @@ def test_a_long_wait_on_a_retained_reader_is_not_silent(
     """While the reader stays in the kernel, the wait says so at its interval."""
 
     queue = Queue(tmp_path / "queue")
-    record = queue.item_path("done", KEY)
+    record = queue.records.item_path("done", KEY)
     os.mkfifo(record)
 
     def land():
@@ -191,7 +186,7 @@ def test_a_reader_still_retained_at_the_deadline_ends_the_wait_naming_it(
     """The deadline comes first: exit 74, the reader named, no second reader."""
 
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
@@ -353,7 +348,7 @@ def test_a_retained_verification_reader_is_waited_out_too(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.item_path("done", KEY).write_text(json.dumps(_ending()), encoding="utf-8")
+    queue.records.item_path("done", KEY).write_text(json.dumps(_ending()), encoding="utf-8")
     stuck = tmp_path / "attempt.fifo"
     os.mkfifo(stuck)
     readable = tmp_path / "readable"
@@ -435,7 +430,7 @@ def test_a_reader_reaped_at_the_deadline_starts_no_new_read(
     """
 
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     started = time.monotonic()
@@ -459,7 +454,7 @@ def test_the_retained_reader_notice_keeps_its_interval(
     """The in-wait notice is throttled, however often the reap is tried."""
 
     queue = Queue(tmp_path / "queue")
-    record = queue.item_path("done", KEY)
+    record = queue.records.item_path("done", KEY)
     os.mkfifo(record)
 
     def land():
@@ -490,7 +485,7 @@ def test_the_read_after_a_reap_waits_out_the_poll_interval(
     """N1: a reaped reader's retry keeps the reaped-timeout path's cadence."""
 
     queue = Queue(tmp_path / "queue")
-    record = queue.item_path("done", KEY)
+    record = queue.records.item_path("done", KEY)
     os.mkfifo(record)
 
     def land():
@@ -517,7 +512,7 @@ def test_the_final_74_states_the_seconds_and_the_host_once(
     """N2: the last line says how long the reader was waited on."""
 
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     monkeypatch.setattr(pbrun.action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
     readers = Readers(monkeypatch)
     _kernel_holds_the_reader_until(monkeypatch, release_at=None)
@@ -543,7 +538,7 @@ def test_a_delivered_snapshot_reader_is_reaped_later_not_left_a_zombie(
     """N7: the #630 snapshot reader missed its reap; the wait collects it."""
 
     queue = Queue(tmp_path / "queue")
-    queue.item_path("done", KEY).write_text(json.dumps(_ending()), encoding="utf-8")
+    queue.records.item_path("done", KEY).write_text(json.dumps(_ending()), encoding="utf-8")
     readers = Readers(monkeypatch)
     # Its two reap attempts inside ``pbstatus`` miss (a starved parent).
     _hold_one_reader(monkeypatch, readers, index=0, calls=2)

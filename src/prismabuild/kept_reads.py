@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 import contextvars
 from dataclasses import dataclass
-from typing import Protocol
+from typing import NamedTuple, Protocol
 import os
 from pathlib import Path
 import select
@@ -35,17 +35,26 @@ def file_versions_enabled() -> bool:
     return _FILE_VERSION_SCOPE.get()
 
 
-def metadata_version(info: "os.stat_result") -> tuple[int, int, int, int, int]:
+class FileVersion(NamedTuple):
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    mode: int
+
+
+def metadata_version(info: "os.stat_result") -> FileVersion:
     """Change evidence for one publication metadata file.
 
     Device and inode catch a replacement, size and mtime catch a rewrite,
-    ctime catches a permission or ownership change that leaves mtime alone.
-    The same kind of stat fence every strict reader already uses; nothing
-    here invents an identity of its own.
+    ctime catches ownership changes that leave mtime alone. Mode is also
+    observed: a permission change can repeat a coarse ctime, and an unreadable
+    file must not retain the publication proof produced while it was readable.
     """
 
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-            int(getattr(info, "st_ctime_ns", 0)))
+    return FileVersion(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                       int(getattr(info, "st_ctime_ns", 0)), info.st_mode)
 
 
 #: The clock a local Linux filesystem stamps a directory's mtime and ctime
@@ -674,7 +683,7 @@ class CensusMemo:
     version is unchanged skips its read and parse, and the version is taken
     with ``fstat`` on the descriptor the pass just opened.  It is the
     publication gate's own reuse fence (``kept_reads.metadata_version``,
-    #761): device, inode, size, mtime and ctime.
+    #761): the canonical ``FileVersion``, including observed mode.
 
     A read that failed is never remembered: unreadable stays freshly
     unreadable.  A claim's derived stage paths are remembered by claim key,
@@ -782,8 +791,8 @@ class CensusIndex(CensusMemo):
 
     Two layers, both fences the census already trusts:
 
-    * **A document** is reused while its file version holds -- device,
-      inode, size, mtime and ctime, taken with ``fstat`` on the descriptor
+    * **A document** is reused while its canonical ``FileVersion`` holds,
+      including observed mode, taken with ``fstat`` on the descriptor
       that read it (:class:`CensusMemo`, the publication gate's #761 fence).
     * **A directory** is not listed again while its ``lstat`` version equals
       a stamp taken before its last listing, and no document in it is opened
@@ -921,7 +930,7 @@ class DirectoryRecords:
     :func:`kept_reads.filesystem_trust.directory_before`, so a directory nothing was
     filed in since is not listed, and a record whose version holds is not
     read.  Every writer of these records files by rename
-    (``pool._write_json_atomic``), which is what both fences stand on.
+    (``RecordStore.replace_record_at``), which is what both fences stand on.
 
     A read that raises is never remembered, and the raise reaches the caller
     exactly as the plain read's would.  One reader keeps one meaning per
@@ -936,7 +945,7 @@ class DirectoryRecords:
     unlink can be given the unlinked file's inode number, so neither the name
     nor the listing's inode number says a record is unchanged.  The #761
     version, ctime included, does -- once its clock tick has passed: two
-    files in one tick can share all five fields, so a version is kept only
+    files in one tick can share every field, so a version is kept only
     under :func:`kept_reads.filesystem_trust.file_version`'s rule (#1045).
     """
 
@@ -1051,7 +1060,7 @@ class DirectoryRecords:
         flight, so a raise, first in name order as a serial read's is, stops
         the read with at most that many reads wasted, and nothing a reader
         did is kept.  ``parse`` must then be safe to call from several
-        threads at once; ``pool._read_json`` is.
+        threads at once; ``pool.record_store.read_document`` is.
         """
 
         out = self._read(directory, select=select, parse=parse, keep=keep,

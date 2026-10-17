@@ -62,7 +62,7 @@ def generation_actions(monkeypatch):
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -163,8 +163,8 @@ def test_foreign_only_off_the_measurements_cpus_admits_the_measurement(
         queue.record_pass(measurement)
     behind = _publish(queue, clock, _key("behind"), {"cpu": 4, "mem_gb": 40})
     assert _claim(queue, capacity, tiers=tiers, cpu_sampler=cpu_sampler) == measurement
-    assert queue.item_path(pool.CLAIMED, measurement).exists()
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
 
 def test_provisional_depth_measures_a_loaded_host(

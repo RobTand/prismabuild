@@ -10,7 +10,7 @@ import tier_loop
 def test_partial_fragment_cannot_be_adopted_as_the_original_full_range(fleet):
     queue, stage, _ = fleet
     consumer, mover = stale_owner(fleet, coherent_names={NAMES[0]})
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment_path = residency_map.fragment_path(root, consumer, mover)
     fragment = json.loads(fragment_path.read_text())
     keep = next(key for key, value in fragment['entries'].items()

@@ -55,7 +55,7 @@ def test_publication_alone_moves_the_action_key(original, tmp_path, monkeypatch,
     second = _one_json_line(capsys.readouterr())
     assert second["status"] == "submitted"
     assert second["action_key"] != action["action_key"]
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
 
 def test_request_bound_reseal_attaches_without_a_second_key(
@@ -67,7 +67,7 @@ def test_request_bound_reseal_attaches_without_a_second_key(
     repeated = _one_json_line(capsys.readouterr())
     assert repeated["status"] == "attached"
     assert repeated["action_key"] == action["action_key"]
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1
     assert pbrun.CONTAINER_WRAPPER_DIR == new
 
 
@@ -89,7 +89,7 @@ def test_receipted_action_is_a_real_cache_hit_after_publication(
     repeated = _one_json_line(capsys.readouterr())
     assert repeated["status"] == "cache_hit"
     assert repeated["action_key"] == action["action_key"]
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert cas.lookup(action) == receipt
 
 
@@ -113,7 +113,7 @@ def test_changed_work_refuses_before_publishing_an_action(
         _run_pbrun(tmp_path, monkeypatch, work, "--detach",
                    "--as-sealed-by", action["action_key"], *options, command=command)
     assert {p: p.read_bytes() for p in (tmp_path / "cas/requests").rglob("*.json")} == before
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1
 
 
 def test_priority_remains_a_queue_hint(original, tmp_path, monkeypatch, capsys):
@@ -156,7 +156,7 @@ def test_damaged_reference_refuses_before_any_new_request(
     with pytest.raises(SystemExit, match="cannot reseal"):
         _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--as-sealed-by", key)
     assert {p: p.read_bytes() for p in (tmp_path / "cas/requests").rglob("*.json")} == before
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1
 
 
 def test_mixed_generation_campaign_reuses_each_rows_own_key(
@@ -183,14 +183,14 @@ def test_mixed_generation_campaign_reuses_each_rows_own_key(
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [row["action_key"] for row in rows] == keys
     assert [row["status"] for row in rows] == ["cache_hit", "cache_hit"]
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert pbrun.CONTAINER_WRAPPER_DIR == third
     # Receipt collection normally asks for the final table rather than detach.
     assert pbcampaign.main(["--transport", "pool", "--wait-s", "0", str(manifest)]) == 0
     table = capsys.readouterr().out
     assert table.count("cache_hit") == 2
     assert all(key[:12] in table for key in keys)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 @pytest.mark.parametrize("key", [None, True, 123, [], {}, "", "abc", "A" * 64, "../bad"])
@@ -226,4 +226,4 @@ def test_reference_cannot_select_an_arbitrary_wrapper(
     pb.PrismaBuildCAS(tmp_path / "cas").publish_action_request(action)
     with pytest.raises(SystemExit, match="not in a retained fleet generation"):
         _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--as-sealed-by", action["action_key"])
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 1

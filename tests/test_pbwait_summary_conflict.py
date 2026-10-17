@@ -25,7 +25,7 @@ def _ending(tmp_path: Path, key: str = KEY, *, status: str = "failed"):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", max_attempts=1)
     assert queue.claim(owner="worker:1") is not None
@@ -61,7 +61,7 @@ def test_conflicting_detail_is_a_read_only_structured_refusal(tmp_path, status):
     assert evidence["mismatched_fields"] == ["detail"]
     assert evidence["detail_fields"] == ["returncode"]
     assert evidence["summary_path"] == str(path)
-    assert evidence["attempt_path"] == str(queue.attempt_path(record, 1))
+    assert evidence["attempt_path"] == str(queue.records.attempt_path(record, 1))
     assert evidence["queue_detail_sha256"] != evidence["adopted_detail_sha256"]
     attempt = evidence["immutable_attempt"]
     assert attempt["status"] == status
@@ -70,7 +70,7 @@ def test_conflicting_detail_is_a_read_only_structured_refusal(tmp_path, status):
         log = queue.root / attempt["logs"][stream]["path"]
         assert hashlib.sha256(log.read_bytes()).hexdigest() == attempt["logs"][stream]["sha256"]
     assert "immutable attempt" in row["note"]
-    assert str(queue.attempt_path(record, 1)) in pbwait.render([row])
+    assert str(queue.records.attempt_path(record, 1)) in pbwait.render([row])
     assert _fingerprints(queue) == before
     # The existing synchronous launcher still refuses, rather than adopting
     # a diagnostic snapshot as a successful terminal outcome.
@@ -100,7 +100,7 @@ def test_legacy_stream_summary_remains_a_refusal_with_verified_references(tmp_pa
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "legacy"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", max_attempts=1)
     assert queue.claim(owner="worker:1") is not None
@@ -120,7 +120,7 @@ def test_legacy_stream_summary_remains_a_refusal_with_verified_references(tmp_pa
     diagnostic = row["integrity_error"]
     assert row["status"] == "record_error" and not row["succeeded"]
     assert diagnostic["detail_fields"] == sorted(metadata + (["stdout"] if len(stdout) > 65536 else []))
-    assert diagnostic["generation"] == queue.attempt_generation(record)
+    assert diagnostic["generation"] == queue.records.attempt_generation(record)
     assert diagnostic["immutable_attempt"]["logs"]["stdout"]["bytes"] == len(stdout)
     assert row["returncode"] is None and row["receipt_published"] is None
     assert _fingerprints(queue) == before

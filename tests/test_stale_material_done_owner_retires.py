@@ -88,7 +88,7 @@ def _entries(stage: Path) -> dict[str, dict[str, object]]:
 def _fragment(queue, stage, consumer, mover) -> None:
     """One real fragment through the supported writer, matching the sidecar."""
 
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -107,7 +107,7 @@ def _write_sidecar(queue, stage, consumer, mover, entries, *,
                    manifest_sha256: str = "a" * 64,
                    generation: str = "a" * 32) -> None:
     reader_lease.write_material(
-        queue.root / pool.RESIDENCY, consumer_action_key=consumer,
+        queue.root / pool.record_store.RESIDENCY, consumer_action_key=consumer,
         mover_action_key=mover, tier_id=tier_id,
         stage_root=str(stage) if stage_root is None else stage_root,
         manifest_sha256=manifest_sha256, generation=generation,
@@ -205,9 +205,9 @@ def _kept(queue, stage, consumer, mover) -> None:
 
     assert all((stage / staged_name(name)).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert mover in queue.tier_ledger(TIER).held_keys()
 
 
@@ -246,7 +246,7 @@ def _successor_args(queue, stage, cas, copier, successor, path, digest,
         "--manifest", str(path), "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(len(entries) * SIZE),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--readers", "1", "--max-readers", "1", "--unpaced"])
 
 
@@ -293,9 +293,9 @@ def test_housekeeping_retires_the_stale_owner_and_the_successor_reads(
         f"stale-material DONE owner {mover[:12]} with {consumer[:12]} was "
         f"not retired by ordinary housekeeping: {receipts}")
     assert not residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert not reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
 
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
@@ -392,7 +392,7 @@ def test_unknown_or_foreign_material_retains(fleet, damage):
     consumer, mover = stale_owner(fleet, material=False, charged=True)
     if damage == "corrupt":
         path = reader_lease.material_path(
-            queue.residency_fragment_root(), consumer, mover)
+            queue.records.residency_fragment_root(), consumer, mover)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
     elif damage == "no-mention":
@@ -493,10 +493,10 @@ def test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes(tmp_path):
     assert not retired, receipts
     assert staged.exists()
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), handoff.CONSUMER_A,
+        queue.records.residency_fragment_root(), handoff.CONSUMER_A,
         handoff.MOVER_A).exists()
     assert reader_lease.material_path(
-        queue.residency_fragment_root(), handoff.CONSUMER_A,
+        queue.records.residency_fragment_root(), handoff.CONSUMER_A,
         handoff.MOVER_A).exists()
     assert handoff.MOVER_A in queue.tier_ledger(
         handoff.STAGE_TIER).held_keys()

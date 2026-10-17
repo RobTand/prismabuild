@@ -12,6 +12,7 @@ import time
 import pytest
 
 from kept_read_clock import after_paths
+from record_store_trust import ObservedTrust
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -40,17 +41,15 @@ def _names(reader: kept_reads.DirectoryRecords):
 def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if kept_reads._COARSE_REALTIME is None:
         pytest.fail("ledger stamp qualification requires Linux's coarse clock")
-    monkeypatch.setattr(
-        kept_reads, '_object_filesystem_type',
-        lambda info, *, path=None, descriptor=None,
-        follow_symlinks=True: "tmpfs")
+    trust = ObservedTrust()
+    trust.fence = lambda: time.clock_gettime_ns(kept_reads._COARSE_REALTIME)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.tier_ledger(TIER)
     ledger.ensure_capacity({KIND: 4})
     assert ledger.acquire(MOVER, {KIND: 1})
     _settle(ledger, monkeypatch)
-    return queue, ledger, kept_reads.DirectoryRecords()
+    return queue, ledger, kept_reads.DirectoryRecords(trust=trust)
 
 
 def _view(ledger: pool.ResourceLedger) -> tuple[int, int, int]:
@@ -146,10 +145,7 @@ def test_a_warm_ledger_is_not_kept_after_filesystem_trust_leaves(
         assert _view(held) == (4, 3, 1)
         assert _view(held) == (4, 3, 1)
         listed, kept = reader.listed, reader.kept
-        monkeypatch.setattr(
-            kept_reads, '_object_filesystem_type',
-            lambda info, *, path=None, descriptor=None,
-            follow_symlinks=True: filesystem)
+        reader.trust.available = False
         assert _view(held) == (4, 3, 1)
         assert _view(held) == (4, 3, 1)
         assert reader.listed > listed
@@ -202,10 +198,7 @@ def test_an_unreadable_namespace_cannot_authorize_minting(
                      "holder": held.held_dir / MOVER,
                      "minted": held.minted_dir}[namespace]
         # Refuse the warm stamp before injecting the actual listing failure.
-        monkeypatch.setattr(
-            kept_reads, '_object_filesystem_type',
-            lambda info, *, path=None, descriptor=None,
-            follow_symlinks=True: "nfs4")
+        reader.trust.available = False
         real = os.listdir
 
         def unreadable(path):
@@ -286,10 +279,7 @@ def test_an_optional_dead_namespace_never_hides_an_unknown_parent_or_child(
     elif failure == "child":
         dead.mkdir()
     _settle(held, monkeypatch)
-    monkeypatch.setattr(
-        kept_reads, '_object_filesystem_type',
-        lambda info, *, path=None, descriptor=None,
-        follow_symlinks=True: "nfs4")
+    reader.trust.available = False
     real = os.listdir
     target = held.minted_dir if failure == "parent" else dead
 

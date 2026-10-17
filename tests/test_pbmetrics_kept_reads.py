@@ -319,18 +319,18 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
     queue = pool.PoolQueue(root)
     with mock.patch.object(pool.socket, "gethostname", lambda: "dl380g10"), \
             mock.patch.object(pool, "_now", lambda: now):
-        queue.ensure_layout()
-        for name in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
-                     pool.WITHDRAWN, pool.WORKERS, pool.MOVERS,
-                     pool.RESIDENCY_PLANS, pool.RESERVATIONS, pool.PASSES):
+        queue.records.ensure_layout()
+        for name in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
+                     pool.record_store.WITHDRAWN, pool.record_store.WORKERS, pool.record_store.MOVERS,
+                     pool.record_store.RESIDENCY_PLANS, pool.RESERVATIONS, pool.record_store.PASSES):
             (root / name).mkdir(parents=True, exist_ok=True)
-        (root / pool.WITHDRAWN / "superseded").mkdir(exist_ok=True)
-        (root / pool.WITHDRAWN / "decisions").mkdir(exist_ok=True)
+        (root / pool.record_store.WITHDRAWN / "superseded").mkdir(exist_ok=True)
+        (root / pool.record_store.WITHDRAWN / "decisions").mkdir(exist_ok=True)
 
         # Terminal history.  About one record in 250 is inside the window.
-        for state, count, status in ((pool.DONE, shape["done"], "executed"),
-                                     (pool.FAILED, shape["failed"], "failed"),
-                                     (pool.WITHDRAWN, shape["withdrawn"], "withdrawn")):
+        for state, count, status in ((pool.record_store.DONE, shape["done"], "executed"),
+                                     (pool.record_store.FAILED, shape["failed"], "failed"),
+                                     (pool.record_store.WITHDRAWN, shape["withdrawn"], "withdrawn")):
             recent = max(2, count // 250)
             for index in range(count):
                 key = _key(state, index)
@@ -342,8 +342,8 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
         # Durable withdrawal decisions, each older than its summary record, so
         # none of them displaces the summary (``pbstatus._ending_paths``).
         for index in range(shape["decisions"]):
-            key = _key(pool.WITHDRAWN, index)
-            directory = root / pool.WITHDRAWN / "decisions" / key
+            key = _key(pool.record_store.WITHDRAWN, index)
+            directory = root / pool.record_store.WITHDRAWN / "decisions" / key
             directory.mkdir()
             finished = now - _age(index, max(2, shape["withdrawn"] // 250))
             _put(directory / "1.000000.json",
@@ -352,7 +352,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
         for index in range(shape["superseded"]):
             key = _key("superseded", index)
             when = now - _age(index, max(2, shape["superseded"] // 30))
-            _put(root / pool.WITHDRAWN / "superseded"
+            _put(root / pool.record_store.WITHDRAWN / "superseded"
                  / f"{key}.{when:.6f}.unstarted-claim.json",
                  {"action_key": key, "claimed_host": HOSTS[index % len(HOSTS)],
                   "claimed_by": f"{HOSTS[index % len(HOSTS)]}:worker-1"}, when)
@@ -361,7 +361,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
         for index in range(shape["movers"]):
             key = _key("mover-receipt", index)
             stamped = now - _age(index, max(2, shape["movers"] // 60))
-            _put(root / pool.MOVERS / f"{key}.json", {
+            _put(root / pool.record_store.MOVERS / f"{key}.json", {
                 "schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": key,
                 "tier_id": STAGE_TIER, "host": "dl380g10", "unix": stamped,
                 "complete": True, "bytes_staged": 2 * storage_tiers.GIB,
@@ -373,7 +373,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
         for index in range(shape["workers"]):
             host = HOSTS[index] if index < len(HOSTS) else f"retired-{index:04d}"
             announced = now - (2.0 if index < len(HOSTS) else 86_400.0 + index)
-            _put(root / pool.WORKERS / f"{host}.json",
+            _put(root / pool.record_store.WORKERS / f"{host}.json",
                  _offer(host, announced, gpu=host != "dl380g10"), announced)
         for host in HOSTS:
             adaptive = root / pool.RESERVATIONS / host / "adaptive"
@@ -421,7 +421,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
                 assert ledger.acquire(_key(f"plan-mover-{index}", 0), {"stage_gib": 1})
             if index % 5 == 0:
                 # A fragment directory whose file names no mover of the plan.
-                fragments = queue.residency_fragment_root() / consumer
+                fragments = queue.records.residency_fragment_root() / consumer
                 fragments.mkdir(parents=True, exist_ok=True)
                 _put(fragments / f"{_key('stranger', index)}.json", {"note": "not ours"})
 
@@ -431,9 +431,9 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
             key = _key("ready", index)
             residency = (_mover_residency(0, storage_tiers.GIB)
                          if index == 0 else None)
-            _put(root / pool.READY / f"{key}.json",
+            _put(root / pool.record_store.READY / f"{key}.json",
                  _item(key, now - 40.0 - index, residency=residency))
-            _put(queue.passes_path(key),
+            _put(queue.records.passes_path(key),
                  {"passes": index + 1, "first_unix": now - 30.0})
         for index in range(shape["claimed"]):
             key = plan_consumers[0] if index == 0 and plan_consumers else _key("claimed", index)
@@ -446,7 +446,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
                          _mover_residency(0, storage_tiers.GIB) if index == 1 else None)
             record = _item(key, now - 300.0, claimed_by=host, claimed=now - 200.0,
                            residency=residency, gpu=host != "dl380g10")
-            _put(root / pool.CLAIMED / f"{key}.json", record)
+            _put(root / pool.record_store.CLAIMED / f"{key}.json", record)
             lease = {"schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": key,
                      "owner": record["claimed_by"], "host": host,
                      "claimed_unix": record["claimed_unix"],
@@ -458,7 +458,7 @@ def build_queue(root: Path, now: float, shape: dict[str, int]) -> pool.PoolQueue
                     "last_accepted": {"phase": "phase-0000",
                                       "reported_unix": now - 800.0,
                                       "units_completed": 3}}
-            _put(queue.lease_path(key), lease)
+            _put(queue.records.lease_path(key), lease)
             _put(root / pool.RESERVATIONS / host / "telemetry" / f"{key}.json", {
                 "action_key": key, "nonce": key[:32], "sampled_unix": now - 1.0,
                 "complete": True, "cpu_seconds": 20.0 + index, "wall_seconds": 10.0,
@@ -507,7 +507,7 @@ def _require_trusted(root: Path) -> None:
     # A skip would certify nothing: a queue on a filesystem whose directory
     # stamps are never trusted (NFS) lists every directory every scrape by
     # design, and the test must say so rather than pass vacuously.
-    stamp = kept_reads.filesystem_trust.directory_before(root / pool.DONE)
+    stamp = kept_reads.filesystem_trust.directory_before(root / pool.record_store.DONE)
     assert stamp is not None, (
         f"{root} is on {kept_reads._filesystem_type(os.lstat(root).st_dev)!r}, "
         "whose directory stamps are not trusted; this test needs a local "
@@ -547,7 +547,7 @@ def test_one_new_ending_is_the_only_record_read(live_shaped, monkeypatch):
     cache = pbmetrics.MetricsCache(live_shaped, 0.0, WINDOW_S, LIMIT)
     _scrape(cache)
     key = _key("late-ending", 0)
-    path = live_shaped / pool.DONE / f"{key}.json"
+    path = live_shaped / pool.record_store.DONE / f"{key}.json"
     _replace(path, _ending(key, "executed", "sparky", time.time() - 1.0,
                            profiled=True))
     try:
@@ -560,7 +560,7 @@ def test_one_new_ending_is_the_only_record_read(live_shaped, monkeypatch):
         assert opened == [str(path)], (
             f"{len(opened)} records opened after one new ending, e.g. "
             f"{Counter(Path(p).parent.name for p in opened).most_common(5)}")
-        assert probe.listings == [str(live_shaped / pool.DONE)]
+        assert probe.listings == [str(live_shaped / pool.record_store.DONE)]
     finally:
         path.unlink()
         settle(live_shaped, monkeypatch)
@@ -648,11 +648,11 @@ def _change(root: Path, scenario: str, serial: int) -> None:
     now = time.time()
     if scenario in ("changed-ending", "changed-ending-and-receipt"):
         key = _key(f"late-ending-{serial}", 0)
-        _replace(root / pool.DONE / f"{key}.json",
+        _replace(root / pool.record_store.DONE / f"{key}.json",
                  _ending(key, "executed", "sparky", now - 1.0, profiled=True))
     if scenario in ("changed-receipt", "changed-ending-and-receipt"):
         key = _key(f"late-receipt-{serial}", 0)
-        _replace(root / pool.MOVERS / f"{key}.json", {
+        _replace(root / pool.record_store.MOVERS / f"{key}.json", {
             "schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": key,
             "tier_id": STAGE_TIER, "host": "dl380g10", "unix": now - 1.0,
             "complete": True, "bytes_staged": storage_tiers.GIB,
@@ -660,11 +660,11 @@ def _change(root: Path, scenario: str, serial: int) -> None:
                             "pool_read_bytes": storage_tiers.GIB}})
     if scenario == "changed-withdrawal":
         key = _key(f"late-withdrawal-{serial}", 0)
-        decision = root / pool.WITHDRAWN / "decisions" / key
+        decision = root / pool.record_store.WITHDRAWN / "decisions" / key
         decision.mkdir(parents=True)
         _replace(decision / "1.000000.json",
                  {"status": "withdrawn", "action_key": key})
-        _replace(root / pool.WITHDRAWN / f"{key}.json",
+        _replace(root / pool.record_store.WITHDRAWN / f"{key}.json",
                  _ending(key, "withdrawn", "sparky", now - 1.0, profiled=False))
 
 
@@ -745,13 +745,13 @@ def _memory(root: Path, tools: Path | None) -> dict[str, object]:
 
     try:
         readings = [scrape("first"), scrape("second")]
-        entries = sum(1 for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN,
-                                      pool.MOVERS)
+        entries = sum(1 for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN,
+                                      pool.record_store.MOVERS)
                       for _ in os.scandir(root / state))
         now = time.time()
         for index in range(GROWTH):
             key = _key("growth", index)
-            _put(root / pool.DONE / f"{key}.json",
+            _put(root / pool.record_store.DONE / f"{key}.json",
                  _ending(key, "executed", "sparky", now - 7200.0 - index,
                          profiled=False), now - 7200.0 - index)
         readings += [scrape("grown"), scrape("grown-second")]

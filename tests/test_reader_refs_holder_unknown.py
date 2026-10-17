@@ -36,7 +36,7 @@ def test_unreadable_owner_dir_signals_unknown(tmp_path) -> None:
     if os.geteuid() == 0:
         pytest.skip("permission-gated census needs a non-root reader")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     owner_dir = _leases(queue)
     (owner_dir / ("p" * 32 + ".lease.json")).write_text("{}")
     os.chmod(owner_dir, 0o000)
@@ -53,7 +53,7 @@ def test_unreadable_leases_root_signals_unknown(tmp_path) -> None:
     if os.geteuid() == 0:
         pytest.skip("permission-gated census needs a non-root reader")
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     root = queue.root / "residency" / "leases"
     _leases(queue)
     os.chmod(root, 0o000)
@@ -68,7 +68,7 @@ def test_corrupt_pin_signals_unknown(tmp_path) -> None:
     """An unparseable pin raises; never another host's business to clear."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     owner_dir = _leases(queue)
     (owner_dir / ("p" * 32 + ".lease.json")).write_text("{}")
     with pytest.raises(ValueError):
@@ -79,7 +79,7 @@ def test_absent_namespace_stays_drained(tmp_path) -> None:
     """Proven absence -- no leases namespace at all -- still returns empty."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     assert reader_lease.refs_for_holder(queue, "any-host") == []
 
 
@@ -99,7 +99,7 @@ def test_membership_gate_retains_on_corrupt_pin(tmp_path) -> None:
 
     fm = _membership_gate()
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     owner_dir = _leases(queue)
     (owner_dir / ("p" * 32 + ".lease.json")).write_text("{}")
     ok, state, _detail = fm.reader_refs_gate(queue, "any-host")
@@ -117,7 +117,7 @@ def test_membership_gate_drains_on_absent_namespace(tmp_path) -> None:
 
     fm = _membership_gate()
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ok, state, detail = fm.reader_refs_gate(queue, "any-host")
     assert (ok, state, detail) == (True, "refs-drained", {"refs": []})
 
@@ -127,7 +127,7 @@ def test_membership_gate_drains_on_empty_enumerated_census(tmp_path) -> None:
 
     fm = _membership_gate()
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _leases(queue)
     ok, state, detail = fm.reader_refs_gate(queue, "any-host")
     assert (ok, state, detail) == (True, "refs-drained", {"refs": []})

@@ -7,6 +7,8 @@ from enum import Enum
 import math
 from pathlib import Path
 
+from . import record_store
+
 DONE = "done"
 FAILED = "failed"
 WITHDRAWN = "withdrawn"
@@ -186,8 +188,7 @@ def publication_generation(value: object) -> float | None:
 
 
 def resolve_current(
-    readable: Mapping[str, tuple[Path, Mapping[str, object]]],
-    unreadable: Sequence[Mapping[str, object]],
+    capture: record_store.TerminalCapture,
 ) -> dict[str, object]:
     """How this key ended, by generation, over one captured record set.
 
@@ -225,6 +226,18 @@ def resolve_current(
     ``action_wait.outcome_poll`` and ``archived_generation_outcomes``, which
     are exact to that generation.
     """
+
+    readable = {}
+    unreadable = []
+    for observation in capture.candidates:
+        address, result = observation.address, observation.result
+        if isinstance(result, record_store.Present):
+            readable[address.state] = (address.path, result.value)
+        elif isinstance(result, record_store.Unknown):
+            exc = result.error
+            unreadable.append({
+                "state": address.state, "path": address.path,
+                "reason": (str(exc) or type(exc).__name__) if exc is not None else result.reason})
 
     def generation(state: str) -> float | None:
         # The one finite-generation owner: an integer past the binary64

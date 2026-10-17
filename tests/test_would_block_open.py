@@ -40,7 +40,7 @@ def test_a_transient_would_block_is_retried(tmp_path, monkeypatch):
 
     monkeypatch.setattr(core.os, "open", flaky)
     monkeypatch.setattr(core.time, "sleep", lambda _s: None)
-    assert core._read_regular_file(target, where="closure") == b'{"ok": true}'
+    assert core.immutable_files.read_regular_leaf(target, where="closure") == b'{"ok": true}'
     assert len(calls) == 3
 
 
@@ -56,7 +56,7 @@ def test_a_persistent_would_block_is_still_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(core.os, "open", always)
     monkeypatch.setattr(core.time, "sleep", lambda _s: None)
     with pytest.raises(core.ActionContractError) as caught:
-        core._read_regular_file(target, where="closure")
+        core.immutable_files.read_regular_leaf(target, where="closure")
     assert "closure" in str(caught.value)
 
 
@@ -72,7 +72,7 @@ def test_every_other_errno_is_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(core.os, "open", missing)
     monkeypatch.setattr(core.time, "sleep", lambda _s: None)
     with pytest.raises(core.ActionContractError):
-        core._read_regular_file(target, where="closure")
+        core.immutable_files.read_regular_leaf(target, where="closure")
     assert len(calls) == 1
 
 
@@ -85,5 +85,5 @@ def test_a_real_fifo_is_refused_rather_than_blocking(tmp_path):
     fifo = tmp_path / "pipe"
     os.mkfifo(fifo)
     with pytest.raises(core.ActionContractError) as caught:
-        core._read_regular_file(fifo, where="closure")
+        core.immutable_files.read_regular_leaf(fifo, where="closure")
     assert "closure" in str(caught.value)

@@ -97,7 +97,7 @@ def _old_submitter(monkeypatch, *argv: str):
 
     def resume() -> None:
         getattr(pbrun, name)(q, publication, **kwargs)
-        assert q.item_path(pool.READY, key).exists()
+        assert q.records.item_path(pool.record_store.READY, key).exists()
 
     return key, resume
 
@@ -136,7 +136,7 @@ def _released_while_paused(tmp_path: Path, monkeypatch, capsys, *options: str,
 
 
 def _failed(queue, key: str) -> dict:
-    record = pool._read_json(queue.item_path(pool.FAILED, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.FAILED, key))
     assert record is not None, "the row was not filed as failed"
     return record
 
@@ -148,9 +148,9 @@ def _assert_refused(queue, key: str, committed: dict) -> None:
     assert record["detail"]["ref"] == committed["ref"]
     assert record["detail"]["released_state"] == "unpublished"
     assert isinstance(record["published_unix"], (int, float))
-    assert not queue.item_path(pool.READY, key).exists()
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    assert list(queue.superseded_dir().glob(f"{key}.*.origin-released.json"
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    assert list(queue.records.superseded_dir().glob(f"{key}.*.origin-released.json"
                                             ".ready-source")), (
         "the ready bytes are kept as evidence")
 
@@ -163,14 +163,14 @@ def _denial(queue, key: str) -> dict:
 
 
 def _index_entries(queue, key: str) -> list[Path]:
-    return sorted(queue.released_origin_consumers_dir().glob(f"{key}.*.json"))
+    return sorted(queue.records.released_origin_consumers_dir().glob(f"{key}.*.json"))
 
 
 def _movers_published(queue, plan: dict) -> list[str]:
     return [mover for mover in residency_plan.mover_keys(plan)
-            if any(queue.item_path(state, mover).exists()
-                   for state in (pool.READY, pool.CLAIMED, pool.DONE,
-                                 pool.FAILED))]
+            if any(queue.records.item_path(state, mover).exists()
+                   for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE,
+                                 pool.record_store.FAILED))]
 
 
 # -- acceptance ----------------------------------------------------------------
@@ -209,7 +209,7 @@ def test_the_tier_loop_stages_nothing_for_a_released_consumer(
         "the old submitter froze its window before its row")
 
     resume()
-    assert queue.item_path(pool.READY, key).exists()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
     _tier_cycle(queue, stage)
     assert _movers_published(queue, plan) == [], (
         "a released consumer's lead was published")
@@ -235,28 +235,28 @@ def test_the_index_entry_precedes_the_record_and_a_rerun_completes_it(
     released_dir = po._released_consumers_dir(queue.root, instance, "b1")
 
     # The entry cannot be filed: nothing is released.
-    real = pool._publish_immutable
+    real = pool.immutable_files.publish_exact
 
-    def no_index(path_, raw, *, where):
-        if Path(path_).parent == queue.released_origin_consumers_dir():
+    def no_index(path_, raw, *, where, conflict_error=pool.PoolContractError):
+        if Path(path_).parent == queue.records.released_origin_consumers_dir():
             raise pool.PoolContractError("index write refused")
-        return real(path_, raw, where=where)
+        return real(path_, raw, where=where, conflict_error=conflict_error)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_publish_immutable", no_index)
+        patch.setattr(pool.immutable_files, 'publish_exact', no_index)
         assert "origin-consumer-release-conflict" in _refused(
             monkeypatch, *_release_argv(committed, key))
     assert not (released_dir / f"{key}.json").exists(), (
         "a release record was filed that the claim's listing cannot see")
 
     # The record cannot be filed: the entry stands alone, which is no release.
-    def no_record(path_, raw, *, where):
+    def no_record(path_, raw, *, where, conflict_error=pool.PoolContractError):
         if Path(path_).parent == released_dir:
             raise pool.PoolContractError("record write refused")
-        return real(path_, raw, where=where)
+        return real(path_, raw, where=where, conflict_error=conflict_error)
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_publish_immutable", no_record)
+        patch.setattr(pool.immutable_files, 'publish_exact', no_record)
         assert "origin-consumer-release-conflict" in _refused(
             monkeypatch, *_release_argv(committed, key))
     assert len(_index_entries(queue, key)) == 1
@@ -291,7 +291,7 @@ def test_an_entry_without_its_record_leaves_the_row_to_run(
     resume()
     claimed = queue.claim(owner="w-consumer", tags=list(TAGS))
     assert claimed is not None and claimed["action_key"] == key
-    assert not queue.item_path(pool.FAILED, key).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
     assert _events(queue, RETIRED) == [] and path.exists()
     queue.finish(key, status="executed")
     [retired] = _events(queue, RETIRED)
@@ -304,14 +304,14 @@ def test_an_unreadable_release_denies_the_claim_and_fails_nothing(
 
     queue, instance, path, committed, key, resume = _declared_by_old_code(
         tmp_path, monkeypatch)
-    queue.ensure_layout()
-    (queue.released_origin_consumers_dir() / f"{key}.{'0' * 64}.json"
+    queue.records.ensure_layout()
+    (queue.records.released_origin_consumers_dir() / f"{key}.{'0' * 64}.json"
      ).write_text("{not json")
 
     resume()
     assert queue.claim(owner="w-consumer", tags=list(TAGS)) is None
-    assert queue.item_path(pool.READY, key).exists()
-    assert not queue.item_path(pool.FAILED, key).exists()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
     assert _denial(queue, key)["reason"] == "origin_consumer_release_unreadable"
 
 
@@ -327,13 +327,13 @@ def test_a_crash_while_filing_the_refusal_is_recovered_and_filed(
         raise OSError("worker died filing the ending")
 
     with monkeypatch.context() as patch:
-        patch.setattr(pool, "_write_json_atomic", crash)
+        patch.setattr(pool.record_store, '_write_json', crash)
         with pytest.raises(OSError, match="worker died"):
             queue.claim(owner="w-consumer", tags=list(TAGS))
-    assert not queue.item_path(pool.READY, key).exists()
-    assert not queue.item_path(pool.FAILED, key).exists()
+    assert not queue.records.item_path(pool.record_store.READY, key).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
 
     assert key in queue.sweep_ready_transitions(grace_s=-1.0)
-    assert queue.item_path(pool.READY, key).exists()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
     assert queue.claim(owner="w-consumer", tags=list(TAGS)) is None
     _assert_refused(queue, key, committed)

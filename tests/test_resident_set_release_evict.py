@@ -101,7 +101,7 @@ def test_close_matches_effective_campaign_and_only_appends_matching_journals(tmp
     store.renew(ids["a_to_b"], {"campaign": "B", "hard_max": 300}, by="test", now=110)
     store.renew(ids["b_to_a"], {"campaign": "A", "hard_max": 300}, by="test", now=110)
     store.renew(ids["a_to_until"], {"until": 150, "hard_max": 200}, by="test", now=110)
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         for set_id in ids.values():
             resident_sets.write_record(store.queue_root / state / (set_id + ".json"),
                                        {"resident_set": set_id})

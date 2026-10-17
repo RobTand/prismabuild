@@ -47,6 +47,7 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
 from kept_read_clock import after_paths
+from record_store_trust import ObservedTrust
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
@@ -98,7 +99,7 @@ def _dead_owner(fleet, destinations: list[Path]) -> tuple[str, str]:
         entries[key] = {"stage_path": str(path), "bytes": SIZE,
                         "sha256": OLD_DIGEST, "file_id": _identity(path)}
     stale._write_sidecar(queue, stage, consumer, mover, entries)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -130,7 +131,7 @@ def _terminal_pair(queue: pool.PoolQueue, stage: Path, destination: Path,
     base._publish(queue, mover, max_attempts=1)
     queue.finish(mover, status="executed", detail={"returncode": 0})
     key = residency_map.residency_map_key(str(destination), 0)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -180,7 +181,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     claimed_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "action_key": key,
@@ -244,7 +245,7 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-def _adoption_world(fleet, count: int, monkeypatch):
+def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
     """A campaign range of already-correct names nothing vouches for.
 
     The #1081 shape -- a promotion killed before it filed its records
@@ -264,10 +265,15 @@ def _adoption_world(fleet, count: int, monkeypatch):
         path.write_bytes(NEW)
     # A quiet pool's claimed/: present and empty, so the claim census
     # reads an empty listing rather than failing one closed.
-    queue.dir(pool.CLAIMED).mkdir(parents=True, exist_ok=True)
-    after_paths(monkeypatch, *destinations, destinations[0].parent, queue.dir(pool.CLAIMED))
+    queue.records.dir(pool.record_store.CLAIMED).mkdir(parents=True, exist_ok=True)
+    after_paths(
+        monkeypatch,
+        *destinations,
+        destinations[0].parent,
+        queue.records.dir(pool.record_store.CLAIMED),
+    )
     successor, copier = base._key(), base._key()
-    publisher = base._publisher(fleet, copier, successor)
+    publisher = base._publisher(fleet, copier, successor, trust=trust)
     return publisher, destinations
 
 
@@ -436,9 +442,9 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
     """
 
     queue, stage, cas = fleet
-    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
-    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_current',
-                        lambda path: None)
+    trust = ObservedTrust()
+    trust.directory_available = False
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch, trust=trust)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None
@@ -537,7 +543,26 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
         if isinstance(path, (str, os.PathLike)) and os.fspath(path) == target:
             scans.append(os.fspath(path))
             if len(scans) == 1:
+                directory = destinations[0].parent
+                previous = directory.stat()
                 partial.write_bytes(b"half a copy")
+                published = directory.stat()
+                version = lambda info: (info.st_mtime_ns, info.st_ctime_ns)
+                if version(published) == version(previous):
+                    # ZFS can publish two namespace changes in one clock tick.
+                    # Keep mtime fixed and wait for a real ctime change.
+                    deadline = time.monotonic() + 1
+                    while (version(directory.stat()) == version(previous)
+                           and time.monotonic() < deadline):
+                        time.sleep(0.001)
+                        os.utime(directory, ns=(published.st_atime_ns,
+                                                published.st_mtime_ns))
+                    changed = directory.stat()
+                    assert version(changed) != version(previous)
+                    assert (changed.st_dev, changed.st_ino, changed.st_mode,
+                            changed.st_nlink, changed.st_size, changed.st_mtime_ns) == (
+                                published.st_dev, published.st_ino, published.st_mode,
+                                published.st_nlink, published.st_size, published.st_mtime_ns)
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", scan)
@@ -628,5 +653,5 @@ def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
     assert len(publisher.invalidated) == 2
     live, tainted = reader_lease.live_for(
         queue, {os.path.normpath(str(pinned))},
-        residency_root=queue.residency_fragment_root())
+        residency_root=queue.records.residency_fragment_root())
     assert live and not tainted, (live, tainted)

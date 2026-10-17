@@ -62,7 +62,7 @@ def _fragment(root: Path, stage: Path, paths: dict[str, Path],
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -81,7 +81,7 @@ def test_a_withdrawn_movers_verified_shards_and_partials_are_both_evicted(fleet)
     partial = _staged_file(
         stage, "row-0076/cache/.model_layers_4_mlp_experts_42_up_proj.pt.partial",
         4096)
-    _fragment(queue.root / pool.RESIDENCY, stage, {"shard": shard})
+    _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     # Withdrawn: no item in the queue names this mover, and its tokens are back.
     assert not queue.tier_ledger(TIER).held_keys()
 
@@ -101,7 +101,7 @@ def test_a_file_a_live_plan_names_is_untouched(fleet):
 
     queue, stage = fleet
     shard = _staged_file(stage, "model-00001-of-00120.safetensors", 8192)
-    _fragment(queue.root / pool.RESIDENCY, stage, {"shard": shard})
+    _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     # The consumer is live and its residency block names this mover as a lead.
     queue.publish(action_key=CONSUMER, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root), worker_script="w.py",
@@ -191,7 +191,7 @@ def test_a_withdrawn_movers_fragment_is_not_attribution(fleet):
 
     queue, stage = fleet
     shard = _staged_file(stage, "model-00088-of-00120.safetensors", 8192)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, {"shard": shard})
     assert residency_map.fragment_path(root, CONSUMER, MOVER).exists()
     assert stage_release.attributed_stage_paths(queue, wanted={MOVER}) == {str(shard)}
@@ -203,7 +203,7 @@ def test_the_sweep_still_evicts_a_held_orphan_by_its_fragment(fleet):
 
     queue, stage = fleet
     shard = _staged_file(stage, "model-00002-of-00120.safetensors", 8192)
-    _fragment(queue.root / pool.RESIDENCY, stage, {"shard": shard})
+    _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     queue.record_move(MOVER, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
         "bytes_staged": 8192, "range_start_bytes": 0, "range_end_bytes": 8192,

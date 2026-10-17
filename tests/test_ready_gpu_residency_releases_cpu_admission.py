@@ -152,12 +152,12 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
     assert plan is not None
     [lead] = residency_plan.leads_for(plan)
     _stage_cycle(queue, stage)
-    lead_row = pool._read_json(queue.item_path(pool.READY, lead))
+    lead_row = pool.record_store.read_document(queue.records.item_path(pool.READY, lead))
     assert lead_row is not None and not lead_row["needs_gpu"]
     assert HOST in lead_row["tags"]
     lead_action = pb.PrismaBuildCAS(tmp_path / "cas").read_action_request(lead)
     assert HOST in lead_action["params"]["placement"]["required_tags"]
-    gpu_row = pool._read_json(queue.item_path(pool.READY, gpu))
+    gpu_row = pool.record_store.read_document(queue.records.item_path(pool.READY, gpu))
     assert gpu_row["needs_gpu"]
     pending = queue.residency_verdict(gpu_row)
     assert pending["state"] == "lead_not_resident"
@@ -173,7 +173,7 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
         gpu_sampler=lambda: gpu_sample(sample, readings))
     assert claimed is not None and claimed["action_key"] == lead
     assert denial(cpu)["reason"] == "deferred_for_ready_gpu"
-    assert queue.item_path(pool.READY, gpu).exists()
+    assert queue.records.item_path(pool.READY, gpu).exists()
 
     assert stage_move.main([*lead_action["params"]["command"][2:],
         "--action-key", lead, "--unpaced", "--max-readers", "1",
@@ -209,5 +209,5 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
         assert claim() == later
         queue.finish(later, status="executed")
     assert not queue.ledger().held_keys()
-    assert not list(queue.dir(pool.READY).glob("*.json"))
-    assert not list(queue.dir(pool.CLAIMED).glob("*.json"))
+    assert not list(queue.records.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.CLAIMED).glob("*.json"))

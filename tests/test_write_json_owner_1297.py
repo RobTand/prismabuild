@@ -8,7 +8,6 @@ Every test below is tmp_path-only.
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import stat
@@ -78,8 +77,11 @@ def test_make_parent_false_still_refuses_a_missing_parent(tmp_path):
         )
 
 
-def test_lane_carries_no_duplicate_and_threads_the_flag():
+def test_lane_carries_no_duplicate_and_threads_the_flag(tmp_path):
     assert not hasattr(sl, "_write_latest")
     assert sl._write_json_atomic is mz._write_json_atomic
-    source = inspect.getsource(sl)
-    assert source.count("trailing_newline=True") == 5
+    target, _record = sl.publish_withdrawal(
+        queue_root=tmp_path / "queue", action_key="a" * 64,
+        by="writer-control", reason="operator decision")
+    assert target.read_bytes().endswith(b"\n")
+    assert json.loads(target.read_bytes())["reason"] == "operator decision"

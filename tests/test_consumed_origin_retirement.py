@@ -158,7 +158,7 @@ def test_a_consumed_handoff_is_retired_after_its_consumer_commits(
     assert json.loads(declaration.read_text()) == {
         "schema": po.ORIGIN_CONSUMER_SCHEMA_V1,
         "consumer_action_key": consumer, "ref": committed["ref"]}
-    assert queue.item_path(pool.READY, consumer).exists()
+    assert queue.records.item_path(pool.record_store.READY, consumer).exists()
 
     assert po.origin_retirement_tick(queue) == [], (
         "a queued consumer holds the batch, and holding it is not news")
@@ -203,7 +203,7 @@ def test_a_failed_consumer_holds_the_batch_until_its_resubmission_executes(
             "ok": True, "declared": True}
     _publish_consumer(queue, consumer)
     _run_consumer(queue, consumer, "failed")
-    assert queue.item_path(pool.FAILED, consumer).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, consumer).exists()
 
     stalled = po.origin_retirement_tick(queue)
     assert stalled == [{
@@ -219,14 +219,14 @@ def test_a_failed_consumer_holds_the_batch_until_its_resubmission_executes(
     assert po.declare_origin_consumer(
         queue, committed["ref"], consumer_action_key=consumer)["declared"]
     _publish_consumer(queue, consumer)
-    assert queue.item_path(pool.FAILED, consumer).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, consumer).exists()
     assert po.origin_retirement_tick(queue) == []
     assert path.exists()
     _run_consumer(queue, consumer, "executed")
     # Its ending retires the earlier generation's failed record (#1117): one
     # key, one terminal record.
-    assert queue.item_path(pool.DONE, consumer).exists()
-    assert not queue.item_path(pool.FAILED, consumer).exists()
+    assert queue.records.item_path(pool.record_store.DONE, consumer).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, consumer).exists()
 
     events = po.origin_retirement_tick(queue)
     assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]
@@ -275,11 +275,11 @@ def test_a_consumer_claimed_between_directory_reads_keeps_its_origin(
                                consumer_action_key=consumer)
     _publish_consumer(queue, consumer)
     _run_consumer(queue, consumer, "executed")
-    done = queue.item_path(pool.DONE, consumer)
+    done = queue.records.item_path(pool.record_store.DONE, consumer)
     previous_ending = done.read_bytes()
     _publish_consumer(queue, consumer)
     assert done.read_bytes() == previous_ending
-    ready = queue.item_path(pool.READY, consumer)
+    ready = queue.records.item_path(pool.record_store.READY, consumer)
     payload = path.read_bytes()
     charge = _charged(queue, instance)
     real_read = Path.read_bytes
@@ -299,7 +299,7 @@ def test_a_consumer_claimed_between_directory_reads_keeps_its_origin(
     events = po.origin_retirement_tick(queue)
 
     assert len(claims) == 1, "the READY-to-CLAIMED move never occurred"
-    assert queue.item_path(pool.CLAIMED, consumer).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, consumer).exists()
     assert not any(event["event"] == po.ORIGIN_RETIRED_EVENT for event in events)
     assert path.read_bytes() == payload
     assert _charged(queue, instance) == charge
@@ -322,15 +322,15 @@ def test_a_claim_in_transition_holds_and_a_widowed_lease_does_not(
     _run_consumer(queue, consumer, "executed")
 
     # A finisher that has moved a claim aside has not filed its ending yet.
-    tombstone = queue.dir(pool.CLAIMED) / (
-        f"{consumer}.1.sparky.1.0badf00d{pool.TOMBSTONE_SUFFIX}")
+    tombstone = queue.records.dir(pool.record_store.CLAIMED) / (
+        f"{consumer}.1.sparky.1.0badf00d{pool.record_store.TOMBSTONE_SUFFIX}")
     tombstone.write_text("{}")
     assert po.origin_retirement_tick(queue) == []
     assert path.exists()
 
     # A lease with no claim is left over, not in flight: the ending answers.
     tombstone.unlink()
-    queue.lease_path(consumer).write_text("{}")
+    queue.records.lease_path(consumer).write_text("{}")
     events = po.origin_retirement_tick(queue)
     assert [(e["event"], e["consumers"]) for e in events] == [
         (po.ORIGIN_RETIRED_EVENT,
@@ -349,7 +349,7 @@ def test_a_failed_attempts_undeclared_batch_is_swept(tmp_path: Path) -> None:
 
     assert po.origin_retirement_tick(queue) == [], "the live attempt keeps it"
     queue.finish(owner, status="failed")
-    assert queue.item_path(pool.FAILED, owner).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, owner).exists()
 
     events = po.origin_retirement_tick(queue)
 

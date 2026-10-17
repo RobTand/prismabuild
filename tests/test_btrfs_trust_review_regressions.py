@@ -145,7 +145,7 @@ def warm_checkpoint(fleet, monkeypatch):
     # Supported queue/fragment/material writers and real terminal history.
     consumer, mover = owner.stale_owner(
         fleet, coherent_names=set(owner.NAMES), replace=False)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment = stage_release.residency_map.fragment_path(root, consumer, mover)
     material = stage_release.reader_lease.material_path(root, consumer, mover)
     parents = {str((stage / owner.staged_name(name)).parent) for name in owner.NAMES}
@@ -168,7 +168,12 @@ def warm_checkpoint(fleet, monkeypatch):
         assert len(first) == 1
         assert first[0]["cacheable"] is True, json.dumps(first[0], sort_keys=True)
         assert first[0]["entries_pruned"] == first[0]["entries_unlinked"] == 0
-        assert stage_release._skip_checkpoint_hit(key, fragment, material)
+        assert stage_release._skip_checkpoint_hit(
+            key,
+            fragment,
+            material,
+            trust=kept_reads.filesystem_trust,
+        )
         assert sweep() == [], "a real inferred checkpoint must warm before trust loss"
         assert (index.stale_skipped, index.stale_censused) == (1, 1)
         files = {str(path): stage_release._path_version(path)
@@ -190,7 +195,11 @@ def _observe_trust_loss(warm, loss):
     # Bare versions have not changed; the refusal must be about current trust.
     for path, version in warm["files"].items():
         assert stage_release._path_version(path) == version
-        bare, trusted = stage_release._fenced_path_version(path, kept_reads.filesystem_trust.file_fence())
+        bare, trusted = stage_release._fenced_path_version(
+            path,
+            kept_reads.filesystem_trust.file_fence(),
+            trust=kept_reads.filesystem_trust,
+        )
         assert bare == version
         if loss.startswith("file-") or loss in ("watch-error", "namespace-change"):
             assert trusted is None
@@ -210,7 +219,7 @@ def test_inferred_skip_checkpoint_refuses_current_trust_loss(warm_checkpoint, lo
     warm = warm_checkpoint
     _observe_trust_loss(warm, loss)
     assert not stage_release._skip_checkpoint_hit(
-        warm["key"], warm["fragment"], warm["material"]), (
+        warm["key"], warm["fragment"], warm["material"], trust=kept_reads.filesystem_trust), (
         "unchanged bare file/directory versions cannot preserve an inferred "
         f"checkpoint after {loss}")
     assert stage_release.skip_checkpoint_usage()["checkpoints"] == 0

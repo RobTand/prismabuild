@@ -17,7 +17,7 @@ def finished_attempt(tmp_path):
     from admitted_queue_fixture import AdmittedQueueFixture
     queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 1, "mem_gb": 2},
                                  default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "d" * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"), checkout_root=str(tmp_path),
                   worker_script="/worker.py", max_attempts=1)

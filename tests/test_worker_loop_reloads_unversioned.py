@@ -32,7 +32,7 @@ def _start(tmp_path, loaded, published, *, continuous=False, poll_s=0, unpublish
                       checkout_root=str(tmp_path), worker_script="worker.py",
                       resources={"cpu": 1, "mem_gb": 1}, max_attempts=1)
     if corrupt_first_files is not None:
-        path = queue.item_path(pool.READY, KEYS[0])
+        path = queue.records.item_path(pool.READY, KEYS[0])
         row = json.loads(path.read_text())
         row["requires_files"] = corrupt_first_files
         path.write_text(json.dumps(row))
@@ -84,8 +84,8 @@ if {corrupt_first_files is not None!r}:
     pool.cpu_admission.adaptive_snapshot.publish = publish_and_track
 def execute(self, item, **kwargs):
     key = item["action_key"]
-    assert json.loads(self.item_path(pool.CLAIMED, key).read_text())["action_key"] == key
-    assert self.lease_path(key).is_file()
+    assert json.loads(self.records.item_path(pool.record_store.CLAIMED, key).read_text())["action_key"] == key
+    assert self.records.lease_path(key).is_file()
     assert kwargs.get("containment") is True
     assert os.sched_getaffinity(0) == affinity
     record("executions.jsonl", key)
@@ -155,8 +155,10 @@ def _assert_paused(queue, tmp_path):
     assert _lines(tmp_path / "executions.jsonl") == []
     assert _lines(tmp_path / "outcomes.jsonl") == []
     assert queue.terminal_keys() == frozenset()
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
-    assert sorted(path.stem for path in queue.dir(pool.READY).glob("*.json")) == KEYS
+    assert list(queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
+    assert sorted(
+        (path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")),
+    ) == KEYS
     assert list((queue.root / "generation-drift").glob("*.json")) == []
 
 
@@ -165,9 +167,11 @@ def _assert_one_completed(queue, tmp_path):
     assert _lines(tmp_path / "outcomes.jsonl") == [
         {"action_key": KEYS[0], "status": "executed", "returncode": 0}]
     assert queue.terminal_keys() == frozenset([KEYS[0]])
-    assert json.loads(queue.item_path(pool.DONE, KEYS[0]).read_text())["status"] == "executed"
-    assert queue.item_path(pool.READY, KEYS[1]).is_file()
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
+    assert json.loads(
+        queue.records.item_path(pool.record_store.DONE, KEYS[0]).read_text(),
+    )["status"] == "executed"
+    assert queue.records.item_path(pool.record_store.READY, KEYS[1]).is_file()
+    assert list(queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
     assert list((queue.root / "generation-drift").glob("*.json")) == []
     assert [offer["runtime_commit"] for offer in queue.offers()] == [KNOWN["commit"]]
 
@@ -191,7 +195,9 @@ def test_known_stale_worker_does_not_refresh_its_offer_or_claim(tmp_path):
         assert queue.terminal_keys() == frozenset()
         assert _lines(tmp_path / "executions.jsonl") == []
         assert _lines(tmp_path / "outcomes.jsonl") == []
-        assert sorted(path.stem for path in queue.dir(pool.READY).glob("*.json")) == KEYS
+        assert sorted(
+            (path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")),
+        ) == KEYS
         records = list((queue.root / "generation-drift").glob("*.json"))
         assert len(records) == 1
         assert json.loads(records[0].read_text())["loaded_commit"] == KNOWN["commit"]
@@ -256,7 +262,7 @@ def test_publication_lost_after_offer_cannot_authorize_a_claim(tmp_path, continu
 def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_path, monkeypatch, value):
     monkeypatch.setenv("PRISMABUILD_BOX_STATE_ROOT", str(tmp_path / "box-state"))
     queue, child = _start(tmp_path, KNOWN, KNOWN, corrupt_first_files=value)
-    before = queue.item_path(pool.READY, KEYS[0]).read_bytes()
+    before = queue.records.item_path(pool.READY, KEYS[0]).read_bytes()
     try:
         output = child.communicate(timeout=30)[0]
         assert child.returncode == 0, output.decode(errors="replace")
@@ -268,10 +274,10 @@ def test_malformed_file_declaration_cannot_stop_worker_offer_or_valid_claim(tmp_
         assert _lines(tmp_path / "outcomes.jsonl") == [
             {"action_key": KEYS[1], "status": "executed", "returncode": 0}]
         assert [offer["runtime_commit"] for offer in queue.offers()] == [KNOWN["commit"]]
-        assert queue.item_path(pool.READY, KEYS[0]).read_bytes() == before
+        assert queue.records.item_path(pool.READY, KEYS[0]).read_bytes() == before
         assert queue.latest_denials({KEYS[0]})[KEYS[0]][0]["reason"] == "malformed_requires_files"
         assert queue.terminal_keys() == frozenset([KEYS[1]])
-        assert not queue.lease_path(KEYS[0]).exists()
+        assert not queue.records.lease_path(KEYS[0]).exists()
         assert queue.ledger().held_keys() == []
     finally:
         _finish(child)

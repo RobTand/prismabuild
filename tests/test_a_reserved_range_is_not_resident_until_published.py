@@ -125,7 +125,7 @@ def _world(tmp_path: Path, *, entries: int = 1) -> tuple[
     paths, manifest, digest = _corpus(tmp_path, entries)
     total = entries * N_BYTES
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     (queue.root / "worker.py").write_text("import sys\n")
     plan = _plan(queue, digest, total)
     residency_plan.freeze(queue, plan)
@@ -209,8 +209,8 @@ def _promotions(events: list[dict]) -> list[dict]:
 def _cursor(queue: pool.PoolQueue) -> dict:
     """The reported per-phase state, through the census the MCP cursor serves."""
 
-    ready = {path.stem for path in queue.dir(pool.READY).glob("*.json")}
-    claimed = {path.stem for path in queue.dir(pool.CLAIMED).glob("*.json")}
+    ready = {path.stem for path in queue.records.dir(pool.record_store.READY).glob("*.json")}
+    claimed = {path.stem for path in queue.records.dir(pool.record_store.CLAIMED).glob("*.json")}
     notes: list[str] = []
     unreadable: list[str] = []
     entry = pbstatus._starvation_plan_entry(
@@ -234,7 +234,7 @@ def _move(queue: pool.PoolQueue, digest: str, manifest_path: Path,
         "--manifest-sha256", digest,
         "--range-start-bytes", "0", "--range-end-bytes", str(total),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 12),
         "--readers", "1", "--max-readers", "1", "--unpaced"]))
 
@@ -246,7 +246,7 @@ def _prefix_fragment(queue: pool.PoolQueue, digest: str,
     staged = queue.root / "stage" / "model" / source.name
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(source.read_bytes())
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": STAGE_TIER, "stage_root": str(queue.root / "stage"),
@@ -267,7 +267,7 @@ def test_a_reservation_before_any_copy_publishes_no_ram(tmp_path: Path) -> None:
     _reserve(queue, digest, N_BYTES)
 
     assert _promotions(_cycles(queue)) == [], "a booking is not bytes"
-    assert not queue.item_path(pool.READY, RAM_MOVER).exists()
+    assert not queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
     assert queue.tier_ledger(RAM_TIER).held().get("ram_gib", 0) == 0
 
     plan = _filed(queue)
@@ -302,7 +302,7 @@ def test_half_a_copy_is_not_full_range_readiness(tmp_path: Path) -> None:
     _prefix_fragment(queue, digest, paths[0])
 
     assert _promotions(_cycles(queue)) == [], "half a range is not the range"
-    assert not queue.item_path(pool.READY, RAM_MOVER).exists()
+    assert not queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
     assert residency_plan.resident_movers(
         queue, _filed(queue), STAGE_TIER) == set()
     assert _cursor(queue)["phases"][0]["stage"]["staged"] is False
@@ -329,7 +329,7 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
     offered = _promotions(tier_loop.ram_residency_window(
         queue, tiers=_tiers(queue)))
     assert [event["phase"] for event in offered] == ["head"]
-    assert queue.item_path(pool.READY, RAM_MOVER).exists()
+    assert queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
 
     promotion = ram_promote.promote(ram_promote.build_parser().parse_args([
         "--pool-root", str(queue.root),
@@ -341,7 +341,7 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
         "--manifest-sha256", digest,
         "--range-start-bytes", "0", "--range-end-bytes", str(N_BYTES),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY)]))
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY)]))
     assert promotion.get("refusal") is None, promotion
     assert promotion["complete"] is True
     queue.record_move(RAM_MOVER, promotion)
@@ -358,14 +358,14 @@ def test_publication_completes_the_transition(tmp_path: Path) -> None:
     assert phase["stage"]["staged"] is True
     assert phase["ram"]["staged"] is True
     assert reader_lease.live_for(
-        queue, None, residency_root=queue.root / pool.RESIDENCY) == ({}, [])
+        queue, None, residency_root=queue.root / pool.record_store.RESIDENCY) == ({}, [])
 
     # ...and the range releases cleanly: files gone, tokens back, and the
     # shared predicate stops calling it resident.
     released = stage_release.evict(
         queue, RAM_MOVER, consumer_action_key=CONSUMER,
         stage_root=str(queue.root / "ram"),
-        residency_root=str(queue.root / pool.RESIDENCY))
+        residency_root=str(queue.root / pool.record_store.RESIDENCY))
     assert not released.get("errors"), released
     assert not promoted.exists()
     assert queue.tier_ledger(RAM_TIER).held().get("ram_gib", 0) == 0
@@ -391,7 +391,7 @@ def test_a_historical_receipt_alone_is_not_residency(tmp_path: Path) -> None:
     _reserve(queue, digest, N_BYTES)
 
     assert _promotions(_cycles(queue)) == [], "a receipt is not a publication"
-    assert not queue.item_path(pool.READY, RAM_MOVER).exists()
+    assert not queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
     assert residency_plan.resident_movers(
         queue, _filed(queue), STAGE_TIER) == set()
 
@@ -421,7 +421,7 @@ def test_an_old_receipt_with_a_new_partial_fragment_is_not_resident(
 
     assert _promotions(_cycles(queue)) == [], (
         "the receipt describes a copy this fragment is not")
-    assert not queue.item_path(pool.READY, RAM_MOVER).exists()
+    assert not queue.records.item_path(pool.record_store.READY, RAM_MOVER).exists()
     assert residency_plan.resident_movers(
         queue, _filed(queue), STAGE_TIER) == set()
     assert _cursor(queue)["phases"][0]["stage"]["staged"] is False

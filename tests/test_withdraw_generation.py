@@ -46,7 +46,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     q = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -79,7 +79,7 @@ def _old_bytes(q: pool.PoolQueue, monkeypatch) -> pool.PoolQueue:
 
 
 def _superseded(q: pool.PoolQueue, key: str) -> list[dict]:
-    directory = q.dir(pool.WITHDRAWN) / "superseded"
+    directory = q.records.dir(pool.record_store.WITHDRAWN) / "superseded"
     if not directory.is_dir():
         return []
     return [
@@ -105,11 +105,11 @@ def test_resubmitting_a_withdrawn_command_runs_it(queue: pool.PoolQueue) -> None
     item = queue.claim()
     assert item is not None, "a re-submission is a new request, not the old one"
     assert item["action_key"] == KEY_A
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
 
     # And it can conclude: the outcome is not swallowed by the stale marker.
     queue.finish(KEY_A, status="executed", detail={"returncode": 0})
-    assert queue.item_path(pool.DONE, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
 
 
 def test_the_marker_is_retired_by_the_resubmission_not_deleted(
@@ -124,17 +124,17 @@ def test_the_marker_is_retired_by_the_resubmission_not_deleted(
 
     _publish(queue, KEY_A)
     queue.withdraw(KEY_A, reason="four suites, one box", by="rob@sparky")
-    assert queue.item_path(pool.WITHDRAWN, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
 
     _publish(queue, KEY_A)
-    assert not queue.item_path(pool.WITHDRAWN, KEY_A).exists(), (
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists(), (
         "the live marker must not answer for a run submitted after it")
     kept = _superseded(queue, KEY_A)
     assert len(kept) == 1 and kept[0]["reason"] == "four suites, one box"
     assert kept[0]["withdrawn_by"] == "rob@sparky"
     assert kept[0]["superseded_unix"] >= kept[0]["withdrawn_unix"]
     # The new item says out loud that it revived a cancelled key.
-    item = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     assert item["supersedes_withdrawal"]["withdrawn_by"] == "rob@sparky"
 
 
@@ -148,7 +148,7 @@ def test_a_withdrawal_still_stops_the_generation_it_was_filed_against(
     queue.withdraw(KEY_A)
     # No re-submission: the marker is live and the key stays unclaimable.
     assert queue.claim() is None
-    assert queue.item_path(pool.WITHDRAWN, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
 
 
 def test_the_losing_half_of_the_race_is_dropped_and_recorded(
@@ -167,13 +167,13 @@ def test_the_losing_half_of_the_race_is_dropped_and_recorded(
     claimed = queue.claim()
     generation = claimed["published_unix"]
     # What the old worker still had open when the withdrawal landed.
-    held = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    held = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text())
 
     queue.withdraw(KEY_A)
-    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(held))
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(held))
     _old_bytes(queue, monkeypatch).finish(KEY_A, status="failed", detail={})
 
-    stranded = queue.item_path(pool.READY, KEY_A)
+    stranded = queue.records.item_path(pool.record_store.READY, KEY_A)
     assert stranded.exists(), "the retry branch really did write one back"
     assert json.loads(stranded.read_text())["published_unix"] == generation
 
@@ -199,11 +199,11 @@ def test_a_fresh_submission_survives_a_marker_that_is_still_live(
 
     _publish(queue, KEY_A)
     queue.withdraw(KEY_A)
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
 
     _publish(queue, KEY_A)
     # Put the withdrawal back, as if the retirement had lost its own race.
-    queue.item_path(pool.WITHDRAWN, KEY_A).write_text(json.dumps(marker))
+    queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).write_text(json.dumps(marker))
 
     item = queue.claim()
     assert item is not None, "a newer generation is not what was withdrawn"
@@ -224,12 +224,12 @@ def test_the_generation_test_does_not_lean_on_the_clock(
 
     _publish(queue, KEY_A)
     queue.withdraw(KEY_A)
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
 
     _publish(queue, KEY_A)
-    queue.item_path(pool.WITHDRAWN, KEY_A).write_text(json.dumps(marker))
+    queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).write_text(json.dumps(marker))
     # The clock stepped back between the withdrawal and the re-submission.
-    ready = queue.item_path(pool.READY, KEY_A)
+    ready = queue.records.item_path(pool.record_store.READY, KEY_A)
     item = json.loads(ready.read_text())
     item["published_unix"] = marker["published_unix"] - 1.0
     ready.write_text(json.dumps(item))
@@ -258,14 +258,14 @@ def test_withdrawing_again_cancels_the_run_that_is_live_now(
     assert queue.claim() is not None
     _publish(queue, KEY_A)                       # generation two, queued behind
     second = json.loads(
-        queue.item_path(pool.READY, KEY_A).read_text())["published_unix"]
+        queue.records.item_path(pool.record_store.READY, KEY_A).read_text())["published_unix"]
 
     queue.withdraw(KEY_A, by="rob", signal_child=False)     # names generation one
     again = queue.withdraw(KEY_A, by="rob", signal_child=False)
 
     assert again["status"] == "withdrawn", "a stale marker is not this decision"
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     assert marker["published_unix"] == second
     # The first decision is kept, not overwritten: it is still the record of
     # who cancelled generation one and why.
@@ -303,8 +303,8 @@ def test_withdrawing_again_cancels_the_claimed_run_it_leaves_uncovered(
                            signal_child=False)
 
     assert again["status"] == "withdrawn", "a stale marker is not this decision"
-    assert again["state"] == pool.CLAIMED
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    assert again["state"] == pool.record_store.CLAIMED
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     assert marker["published_unix"] == running["published_unix"], (
         "the claim was cleaned up, so the marker has to be what stops the child")
     assert queue.withdrawal_covers(running, action_key=KEY_A) is not None
@@ -333,12 +333,12 @@ def test_withdrawing_again_on_a_decision_that_still_stands_is_that_decision(
 
     _publish(queue, KEY_A)
     first = queue.withdraw(KEY_A, by="rob", signal_child=False)
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
 
     again = queue.withdraw(KEY_A, by="someone else", signal_child=False)
 
     assert first["status"] == "withdrawn"
     assert again["status"] == "already_withdrawn"
     assert json.loads(
-        queue.item_path(pool.WITHDRAWN, KEY_A).read_text()) == marker
+        queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text()) == marker
     assert _superseded(queue, KEY_A) == []

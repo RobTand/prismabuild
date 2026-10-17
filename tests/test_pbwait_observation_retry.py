@@ -26,7 +26,7 @@ KEY = "d" * 64
 
 def _queue(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -52,8 +52,8 @@ def _fast_reads(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("state", "status", "returncode", "exit_code"),
     [
-        (pool.DONE, "executed", 0, 0),
-        (pool.FAILED, "failed", 9, 1),
+        (pool.record_store.DONE, "executed", 0, 0),
+        (pool.record_store.FAILED, "failed", 9, 1),
     ],
 )
 def test_patient_wait_reports_a_record_that_becomes_readable(
@@ -61,7 +61,7 @@ def test_patient_wait_reports_a_record_that_becomes_readable(
     state: str, status: str, returncode: int, exit_code: int,
 ) -> None:
     queue = _queue(tmp_path)
-    path = queue.item_path(state, KEY)
+    path = queue.records.item_path(state, KEY)
     os.mkfifo(path)
     readable = tmp_path / "readable.json"
     readable.write_text(json.dumps(_outcome(status, returncode)), encoding="utf-8")
@@ -95,7 +95,7 @@ def test_wait_that_ends_while_the_outcome_is_unavailable_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queue = _queue(tmp_path)
-    os.mkfifo(queue.item_path(pool.DONE, KEY))
+    os.mkfifo(queue.records.item_path(pool.record_store.DONE, KEY))
     _fast_reads(monkeypatch)
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),

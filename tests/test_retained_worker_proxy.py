@@ -375,7 +375,7 @@ def test_real_contained_launch_uses_retained_proxy(
     if affinity:
         cpu = min(os.sched_getaffinity(0))
         tiers = {"preferred": [cpu], "fallback": []}
-        pool._write_json_atomic(
+        pool.record_store._write_json(
             queue.ledger().base / "cpu-map.json", tiers)
         item["cpu_allocation"] = queue.ledger().cpu_allocation(
             item["action_key"], tiers)
@@ -514,6 +514,9 @@ def test_receipt_listed_immutable_owner_tamper_refuses_before_proxy_launch(
     queue, item = _retained_item(tmp_path, worker)
     seen: list = []
     _contained_harness(monkeypatch, tmp_path, queue, item, seen)
-    with pytest.raises(OSError, match="retained runtime hash mismatch: src/prismabuild/immutable_files.py"):
+    with pytest.raises(
+        OSError,
+        match="retained runtime hash mismatch: src/prismabuild/immutable_files.py",
+    ):
         queue.execute(item, containment=True)
     assert seen == [], "a tampered immutable owner must refuse before proxy launch"

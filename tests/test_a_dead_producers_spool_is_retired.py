@@ -63,12 +63,12 @@ def _failed(spool, batch, payload):
     handle = spool.submit_group(batch, entries)
     key = handle["export_key"]
     while (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
-            and mover_row.value.state == pool.READY):
+            and mover_row.value.state == pool.record_store.READY):
         claimed = spool.queue.claim(owner="export-fails", tags=[spool.host])
         assert claimed is not None and claimed["action_key"] == key
         spool.queue.finish(key, status="failed")
     assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
-            and mover_row.value.state == pool.FAILED)
+            and mover_row.value.state == pool.record_store.FAILED)
     return handle
 
 
@@ -139,7 +139,7 @@ def test_a_claimed_export_is_never_touched(tmp_path):
     claim_export(spool, running)
     _withdraw_owner(spool)
     assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(running["export_key"]), Present)
-            and mover_row.value.state == pool.CLAIMED)
+            and mover_row.value.state == pool.record_store.CLAIMED)
     group = spool.directory / "b2"
     before = _tree(group)
 

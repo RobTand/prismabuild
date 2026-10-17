@@ -125,7 +125,7 @@ def test_gpu_first_room_probe_survives_an_existing_whole_box_hold(gpu_first, has
 @pytest.mark.parametrize("error_type", [TypeError, RuntimeError])
 def test_ready_gpu_snapshot_is_observed_only_after_capabilities_match(tmp_path, monkeypatch, error_type):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     reads = pool._ClaimScanReads(queue, ledger=queue.ledger(), tags=frozenset(), has_gpu=True)
     row = {"action_key": "a" * 64, "resources": {"cpu": 1, "gpu": 1},
            "container_images": ["fixture:missing"]}
@@ -167,4 +167,4 @@ def test_real_whole_box_denial_does_not_parse_a_later_rows_gpu_demand(fleet, mon
     assert denial(later)["evidence"]["withheld_kinds"] is None
     assert queue.passes(later) == 0
     assert queue.ledger().held_keys() == [holder]
-    assert queue.item_path(pool.READY, later).exists()
+    assert queue.records.item_path(pool.record_store.READY, later).exists()

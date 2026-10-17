@@ -50,7 +50,7 @@ def _as_host(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
 
 def _queue(root: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(root)
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 

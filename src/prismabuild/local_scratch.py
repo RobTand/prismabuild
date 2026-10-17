@@ -238,7 +238,7 @@ def ephemeral_scratch_path(declaration: Mapping[str, object]) -> Path:
     from .core import canonical_sha256
 
     checked = _scratch_declaration(declaration)
-    # Same submission-generation recipe as PoolQueue.attempt_generation;
+    # Same submission-generation recipe as record_store.RecordStore.attempt_generation;
     # tests pin this agreement. This is not the runtime generation's identity.
     generation = canonical_sha256({
         "action_key": checked["owner_action_key"],
@@ -301,7 +301,7 @@ def bind_ephemeral_scratch(queue, *, root_env: str, name: str,
     try:
         expected = _scratch_claim_envelope(claim_snapshot)
         key = str(expected["action_key"])
-        live = pool._read_json(queue.item_path(pool.CLAIMED, key))
+        live = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
         observed = _scratch_claim_envelope(live)
         if core.canonical_sha256(observed) != core.canonical_sha256(expected):
             raise LocalScratchError("claim snapshot no longer matches the live envelope")
@@ -343,7 +343,9 @@ def bind_ephemeral_scratch(queue, *, root_env: str, name: str,
             "owner_host": host, "owner_attempt": attempt})
         # Refuse a successor observed during the sealed-request/holder reads.
         # This recheck cannot make shared reads atomic or authorize a mutation.
-        final = _scratch_claim_envelope(pool._read_json(queue.item_path(pool.CLAIMED, key)))
+        final = _scratch_claim_envelope(
+            pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key)),
+        )
         if core.canonical_sha256(final) != core.canonical_sha256(expected):
             raise LocalScratchError("claim changed during scratch binding")
         return declaration
@@ -400,7 +402,10 @@ def _scratch_selection_input(variables: Mapping[str, str]) -> object:
         data = raw.encode("utf-8")
         if len(data) > _MAX_DECLARATION_INPUT_BYTES:
             raise LocalScratchError("scratch declaration selection exceeds 16 KiB")
-        selected = core._decode_strict_json(data, where="sealed scratch declaration selection")
+        selected = core.digest_primitives.decode_strict_json(
+            data,
+            where="sealed scratch declaration selection",
+        )
     except (ValueError, UnicodeError, RecursionError) as exc:
         raise LocalScratchError(f"invalid scratch declaration selection: {exc}") from exc
     if selected is None:
@@ -626,7 +631,7 @@ def io_intent(variables, *, transport="pool"):
         raw = variables[IO_ENV]
         if not isinstance(raw, str):
             raise TypeError("traffic declaration is not text")
-        value = core._decode_strict_json(raw.encode(), where=IO_ENV)
+        value = core.digest_primitives.decode_strict_json(raw.encode(), where=IO_ENV)
     except (TypeError, ValueError) as exc:
         raise LocalScratchError(f"{IO_ENV} must be versioned JSON") from exc
     keys = {"schema", "write_bytes", "read_bytes", "profile_contract", "max_profile_age_s"}
@@ -1001,9 +1006,14 @@ class ProfileInputs:
 
     def _source_digests(self):
         from . import core
-        return tuple(core.raw_sha256(core._read_regular_file_nofollow(
-            self.source_root / name, where="installed scratch producer source"))
-                     for name in PRODUCER_FILES)
+        return tuple(
+            (core.raw_sha256(
+                core.immutable_files.read_stable_file(
+                    self.source_root / name,
+                    where="installed scratch producer source",
+                ),
+            ) for name in PRODUCER_FILES),
+        )
 
     def _load(self, ref):
         from . import core, materialize, movement_actions
@@ -1027,10 +1037,12 @@ class ProfileInputs:
         if found is None:
             raise LocalScratchError("scratch producer successful CAS receipt absent")
         receipt = cast(dict[str, Any], found)
-        raw = core._read_regular_file_nofollow(cas.result_path(receipt, action),
-                                              where="scratch profile result", max_bytes=65536,
-                                              require_readonly=True)
-        decoded = core._decode_strict_json(raw, where="scratch profile")
+        raw = core.immutable_files.read_immutable_file(
+            cas.result_path(receipt, action),
+            where="scratch profile result",
+            max_bytes=65536,
+        )
+        decoded = core.digest_primitives.decode_strict_json(raw, where="scratch profile")
         if not isinstance(decoded, dict):
             raise LocalScratchError("scratch profile body must be an object")
         body = cast(dict[str, Any], decoded)
@@ -1114,9 +1126,14 @@ class ProfileInputs:
                 core.verify_code_closure(action["code_closure"], checkout)
                 stamps = [f["path"] for f in action["code_closure"]["files"]
                           if Path(f["path"]).name.startswith(core.PBRUN_STAMP_PREFIX)]
-                stamp = core._decode_strict_json(core._read_regular_file_nofollow(
-                    checkout / stamps[0], where="scratch producer original identity", max_bytes=4096),
-                    where="scratch producer original identity")
+                stamp = core.digest_primitives.decode_strict_json(
+                    core.immutable_files.read_stable_file(
+                        checkout / stamps[0],
+                        where="scratch producer original identity",
+                        max_bytes=4096,
+                    ),
+                    where="scratch producer original identity",
+                )
                 if not isinstance(stamp, dict):
                     raise LocalScratchError("scratch producer identity stamp malformed")
                 stamp = cast(dict[str, Any], stamp)
@@ -1131,9 +1148,14 @@ class ProfileInputs:
                     placement=params["placement"], container_images=())
                 if variables[PROFILE_OWNER_ENV] != expected_owner:
                     raise LocalScratchError("scratch producer owner/marker not derived from sealed intent")
-                actual = tuple(core.raw_sha256(core._read_regular_file_nofollow(
-                    checkout / name, where="scratch producer source"))
-                               for name in PRODUCER_FILES)
+                actual = tuple(
+                    (core.raw_sha256(
+                        core.immutable_files.read_stable_file(
+                            checkout / name,
+                            where="scratch producer source",
+                        ),
+                    ) for name in PRODUCER_FILES),
+                )
                 if actual != expected:
                     raise LocalScratchError("executed scratch producer source differs from installed producer")
             self.verified.add(key)
@@ -1147,7 +1169,7 @@ class ProfileInputs:
                 raw = stream.read(65537)
             if len(raw) > 65536:
                 raise LocalScratchError("scratch profile config exceeds bounded metadata size")
-            config = core._decode_strict_json(raw, where="scratch profile config")
+            config = core.digest_primitives.decode_strict_json(raw, where="scratch profile config")
             if (not isinstance(config, dict) or set(config) != {"schema", "profiles"}
                     or config["schema"] != CONFIG_SCHEMA or not isinstance(config["profiles"], list)):
                 raise LocalScratchError("scratch profile config malformed")

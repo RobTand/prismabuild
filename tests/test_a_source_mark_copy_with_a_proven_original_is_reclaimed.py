@@ -51,7 +51,7 @@ def _stage_copy(stage: Path, mount: Path, name: str,
 @pytest.fixture()
 def fleet(tmp_path: Path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(
@@ -316,7 +316,7 @@ def test_a_produced_output_copy_never_moves(fleet) -> None:
 def test_a_fragment_owner_never_moves(fleet) -> None:
     queue, stage, mount, _quarantine, _good = fleet
     consumer, mover = "c" * 64, "d" * 64
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -339,7 +339,7 @@ def test_a_fragment_owner_never_moves(fleet) -> None:
 def test_a_pin_owner_never_moves(fleet) -> None:
     queue, stage, mount, _quarantine, good = fleet
     consumer, mover = "c" * 64, "d" * 64
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     target = _staged(stage, mount, NAMES[0])
     map_key = residency_map.residency_map_key(str(mount / NAMES[0]), 0)
     entry = {"stage_path": str(target), "bytes": SIZE, "offset": 0,
@@ -416,7 +416,7 @@ def test_a_mover_in_flight_refuses_the_pass(fleet) -> None:
 def test_an_unreadable_reference_record_refuses_the_pass(fleet) -> None:
     queue, stage, mount, _quarantine, _good = fleet
     path = residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, "c" * 64, "d" * 64)
+        queue.root / pool.record_store.RESIDENCY, "c" * 64, "d" * 64)
     path.parent.mkdir(parents=True)
     path.write_text("{")
 
@@ -691,7 +691,7 @@ def test_a_receipt_without_a_fragment_keeps_its_copy(fleet):
 
 def test_an_unreadable_ready_record_refuses_all_moves(fleet):
     queue, stage, mount, quarantine, good = fleet
-    queue.item_path(pool.READY, "7" * 64).write_text("{")
+    queue.records.item_path(pool.record_store.READY, "7" * 64).write_text("{")
     got = _reclaim(fleet, apply=True, run_id="bad-ready")
     assert got["complete"] is False
     assert all(_staged(stage, mount, name).exists() for name in NAMES)
@@ -742,7 +742,7 @@ def test_a_consumer_without_a_fragment_keeps_its_input(fleet, claim):
 def test_a_range_receipt_without_a_fragment_keeps_its_extent(fleet):
     queue, stage, mount, quarantine, good = fleet
     key, digest = _reference_action(fleet)
-    queue.item_path(pool.READY, key).unlink()
+    queue.records.item_path(pool.record_store.READY, key).unlink()
     queue.record_move(key, {
         "tier_id": TIER, "stage_root": str(stage), "complete": True,
         "manifest_sha256": digest, "range_start_bytes": 0,
@@ -760,7 +760,7 @@ def test_a_late_fragment_blocks_removal(fleet, monkeypatch):
     def add_fragment(source, dest, size, **kwargs):
         sha = real_copy(source, dest, size, **kwargs)
         if source == target:
-            residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+            residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": "c" * 64, "mover_action_key": "d" * 64,
                 "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,
@@ -893,7 +893,7 @@ def test_a_stage_parent_substitution_cannot_move_a_referenced_copy(fleet, monkey
         if source == target:
             target.parent.rename(relocated)
             target.parent.symlink_to(relocated, target_is_directory=True)
-            residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+            residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": "c" * 64, "mover_action_key": "d" * 64,
                 "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,

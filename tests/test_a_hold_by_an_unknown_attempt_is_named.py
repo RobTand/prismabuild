@@ -63,7 +63,7 @@ def _events(events, name):
 def _drop_row(queue: pool.PoolQueue, key: str) -> None:
     """The holder's queue row is lost: no record of its key anywhere."""
 
-    queue.item_path(pool.CLAIMED, key).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
     assert isinstance(RecordStore(queue.root).standing(key), Absent)
 
 
@@ -157,8 +157,8 @@ def test_a_queued_holder_is_named_with_why(tmp_path: Path) -> None:
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
     holder = _foreign_holder(tmp_path, queue, template, path)
     owner = holder["owner_action_key"]
-    row = queue.item_path(pool.CLAIMED, owner)
-    os.replace(row, queue.item_path(pool.READY, owner))
+    row = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    os.replace(row, queue.records.item_path(pool.record_store.READY, owner))
 
     held = _events(po.origin_retirement_tick(queue), HELD)
     assert [holder["why"] for holder in held[0]["holders"]] == ["queued"], held

@@ -2691,14 +2691,7 @@ def published_generation(q, key: str, path) -> float | None:
     run the record belongs to.
     """
 
-    candidates = [Path(path)]
-    for state in (pool.CLAIMED, pool.DONE, pool.FAILED):
-        candidates.append(q.item_path(state, key))
-    for candidate in candidates:
-        try:
-            value = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for value in q.records.published_records(key, Path(path)):
         stamped = value.get("published_unix") if isinstance(value, dict) else None
         if isinstance(stamped, (int, float)) and not isinstance(stamped, bool):
             return float(stamped)
@@ -2720,12 +2713,7 @@ def outstanding_submission(q, key: str, *, lane_root=None):
         generation = lane.get("published_unix")
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("slurm", float(generation), lane))
-    for state in (pool.READY, pool.CLAIMED):
-        try:
-            item = json.loads(
-                q.item_path(state, key).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for item in q.records.live_submission_records(key):
         generation = item.get("published_unix") if isinstance(item, dict) else None
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("pool", float(generation), item))
@@ -2737,23 +2725,7 @@ def outstanding_submission(q, key: str, *, lane_root=None):
     # existed and a caller reading ``done/`` found nothing (the 6d88c0b15b18
     # canary's leg 3).  The pool's own claim gate treats both suffixes as a
     # live claim (``already_claimed``); agree with it.
-    suffixes = (pool.TOMBSTONE_SUFFIX, pool.LATE_FINISH_SUFFIX)
-    try:
-        names = os.listdir(q.dir(pool.CLAIMED))
-    except OSError:
-        names = []
-    for name in names:
-        if not (name.startswith(f"{key}.") and name.endswith(suffixes)):
-            continue
-        try:
-            item = json.loads(
-                (q.dir(pool.CLAIMED) / name).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # Gone because the finish just filed its ending, or not a record:
-            # either way the terminal read that follows answers.
-            continue
-        if not isinstance(item, dict) or item.get("action_key") != key:
-            continue
+    for item in q.records.finishing_submission_records(key):
         generation = item.get("published_unix")
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("pool", float(generation), item))
@@ -2869,7 +2841,9 @@ def _live_submission_records(q, key: str, *, lane_root=None):
         if not job_id:
             return None
         return found
-    if q.item_path(pool.READY, key).exists():
+    if bool(
+        pool.record_store.value_or_raise(q.records.item_presence(pool.record_store.READY, key)),
+    ):
         return found
     age = q.lease_age(key)
     if age is not None and age < pool.LEASE_TIMEOUT_S:
@@ -2889,8 +2863,7 @@ def _attachment_value(q, key: str, *, lane_root=None):
             attempt=int(submission.get("attempt") or 1))
         job_id = str(submission.get("job_id") or "")
     else:
-        ready = q.item_path(pool.READY, key)
-        record = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+        record = q.records.attachment_item_address(key)
         job_id = ""
     return {"transport": transport, "generation": generation,
             "job_id": job_id, "submission": str(record)}
@@ -3295,7 +3268,7 @@ def cached_outcome(
     print(f"pbrun: {key[:12]} is already in the CAS; nothing submitted",
           file=sys.stderr, flush=True)
     host = socket.gethostname()
-    existing = Path(queue_root) / pool.DONE / f"{key}.json"
+    existing = Path(queue_root) / pool.record_store.DONE / f"{key}.json"
     if not existing.exists():
         slurm_lane.publish_outcome(
             queue_root=queue_root,
@@ -3949,22 +3922,22 @@ def _file_slurm_withdrawal(
     name that did not exist yet is negatively cached, so ``exists()`` keeps
     answering False after the ending has landed.  On a stale answer this verb
     filed a withdrawal over a run already in ``done/`` and reported work that
-    succeeded as cancelled.  ``slurm_lane._read_json_object`` is the general
+    succeeded as cancelled.  ``RecordStore.polled_object_at`` is the general
     form of that revalidation; ``read_withdrawal_marker`` itself is pinned to
     ``withdrawn/`` and this loop reads all three terminal directories.
     """
 
     key = str(submission["action_key"])
     published_unix = _submission_generation(submission)
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
-        filed = queue_root / state / f"{key}.json"
-        filed_record = slurm_lane._read_json_object(filed)
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
+        filed = pool.record_store.RecordStore(queue_root).item_path(state, key)
+        filed_record = pool.record_store.RecordStore.polled_object_at(filed)
         if filed_record is None:
             continue
         theirs = slurm_lane._record_generation(filed_record)
         if theirs is None or theirs != published_unix:
             continue
-        if state == pool.WITHDRAWN:
+        if state == pool.record_store.WITHDRAWN:
             # A bare marker is a withdrawal still in flight (or one whose
             # scancel never landed); only a record carrying the job's ending
             # says this generation is over.
@@ -4072,11 +4045,9 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     """
 
     key = str(submission["action_key"])
-    filed = queue_root / pool.WITHDRAWN / f"{key}.json"
-    try:
-        record = json.loads(filed.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
+    records = pool.record_store.RecordStore(queue_root)
+    filed = records.item_path(pool.record_store.WITHDRAWN, key)
+    record = records.wait_notice_at(filed)
     if not isinstance(record, dict):
         return
     if not slurm_lane._same_generation(filed, _submission_generation(submission)):
@@ -4085,7 +4056,7 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     if not isinstance(detail, dict) or "cancelled_with" not in detail:
         return
     detail["scancel_accepted_unix"] = time.time()
-    materialize._write_json_atomic(filed, record, trailing_newline=True)
+    pool.record_store.RecordStore(queue_root).replace_lane_item_at(filed, record)
 
 
 def withdraw_main(q, prefixes, *, reason: str = "", by: str = "") -> int:
@@ -4232,18 +4203,22 @@ def verify_retained_wrapper(prefix: str, *, where: str) -> Path:
             or generation.parent != SH / "runtime-generations"
             or generation.name.startswith(".")):
         raise ValueError(f"{where}: wrapper is not in a retained fleet generation")
-    raw_version = pb._read_regular_file_nofollow(
-        generation / "RUNTIME_VERSION.json", where=where,
-        require_readonly=True, max_bytes=1024 * 1024)
-    version = pb._decode_strict_json(raw_version, where=where)
+    raw_version = pb.immutable_files.read_immutable_file(
+        generation / "RUNTIME_VERSION.json",
+        where=where,
+        max_bytes=1024 * 1024,
+    )
+    version = pb.digest_primitives.decode_strict_json(raw_version, where=where)
     if (not isinstance(version, dict)
             or version.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
             or version.get("generation") != generation.name
             or not isinstance(version.get("files"), dict)):
         raise ValueError(f"{where}: invalid retained generation receipt")
-    shim = pb._read_regular_file_nofollow(
-        wrapper / "docker", where=where, require_readonly=True,
-        max_bytes=16 * 1024 * 1024)
+    shim = pb.immutable_files.read_immutable_file(
+        wrapper / "docker",
+        where=where,
+        max_bytes=16 * 1024 * 1024,
+    )
     if hashlib.sha256(shim).hexdigest() != version["files"].get("tools/docker"):
         raise ValueError(f"{where}: retained Docker wrapper differs from its receipt")
     return wrapper
@@ -7757,7 +7732,7 @@ def publish_consumer_row(q, action: Mapping[str, object],
                     f"pbrun: renewing {key[:12]}: retired "
                     f"{len(renewal['retired'])} predecessor cancellation "
                     f"marker(s); their decisions stay under "
-                    f"{q.superseded_dir()}", file=sys.stderr, flush=True)
+                    f"{q.records.superseded_dir()}", file=sys.stderr, flush=True)
             publication = publication_row(
                 action, args=args, queue=q,
                 tested_repository=template.get("tested_repository"))
@@ -8130,12 +8105,8 @@ def submit_and_publish(args, *, publication_canary_intent=None,
     # content hash, so re-submitting one is how anybody asks for the same work
     # again -- and a submission that silently revived somebody's cancellation
     # would be as bad as the blacklist it replaced.
-    superseding = None
-    try:
-        superseding = json.loads(
-            q.item_path("withdrawn", key).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        superseding = None
+    superseding = q.records.wait_notice_at(
+        q.records.item_path(pool.record_store.WITHDRAWN, key))
 
     # A consumer of consumed produced-output batches is filed against them
     # before its row exists, so their retirement cannot run ahead of it.  A
@@ -8196,8 +8167,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
             # The same display path ``_attachment_value`` names, read once:
             # this process started nothing, so it reports where the run it
             # joined lives rather than a submission of its own.
-            ready = q.item_path(pool.READY, key)
-            display_path = ready if ready.exists() else q.item_path(pool.CLAIMED, key)
+            display_path = q.records.attachment_item_address(key)
             print(sorted_json(action_client.detached_submission_record(
                 key,
                 transport="pool",

@@ -134,7 +134,7 @@ def test_a_box_holding_neither_the_id_nor_the_repo_digest_still_denies(tmp_path)
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_absent"
     assert denial["evidence"]["absent"] == [BARE]
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_an_unknown_inventory_stays_unknown_for_placement_and_claim(tmp_path):
@@ -146,7 +146,7 @@ def test_an_unknown_inventory_stays_unknown_for_placement_and_claim(tmp_path):
     assert queue.claim(capacity=CAPACITY, tags=["gb10", *CLAIM_TAGS],
                        observed_images=None) is None
     assert denials(queue)[-1]["reason"] == "container_image_presence_unknown"
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 @pytest.mark.parametrize("inventory,keeps_room", [
@@ -188,13 +188,13 @@ def test_a_busy_gpu_row_keeps_room_only_where_its_image_is_present(
         by_key = {entry["action_key"]: entry for entry in denials(queue)}
         assert by_key[KEY_A]["evidence"]["gpu_room_kept"] == gpu_demand
         assert by_key[cpu_key]["reason"] == "deferred_for_ready_gpu_row"
-        assert queue.item_path(pool.READY, cpu_key).exists()
+        assert queue.records.item_path(pool.record_store.READY, cpu_key).exists()
         assert queue.claim(capacity=CAPACITY, has_gpu=True,
                            tags=[*CLAIM_TAGS, "test-box"],
                            observed_images=inventory)["action_key"] == KEY_A
     else:
         assert claimed is not None and claimed["action_key"] == cpu_key
-        assert queue.item_path(pool.READY, KEY_A).exists()
+        assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 # --------------------------------------------------------------------------

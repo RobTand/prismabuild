@@ -14,7 +14,7 @@ def test_direct_gpu_publication_requires_a_gpu_host_without_rewriting_the_row(tm
                    capacity={"cpu": 2, "mem_gb": 2})
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1, "gpu": 1})
-    path = queue.item_path(pool.READY, "a" * 64)
+    path = queue.records.item_path(pool.READY, "a" * 64)
     before = path.read_bytes()
     row = json.loads(before)
     assert row["needs_gpu"] is False
@@ -26,7 +26,7 @@ def test_direct_gpu_publication_requires_a_gpu_host_without_rewriting_the_row(tm
     assert path.read_bytes() == before
     denials = queue.latest_denials({"a" * 64})["a" * 64]
     assert denials[0]["reason"] == "placement_mismatch"
-    assert not queue.lease_path("a" * 64).exists()
+    assert not queue.records.lease_path("a" * 64).exists()
     assert queue.passes("a" * 64) == 0
     assert queue.ledger().held_keys() == []
 
@@ -48,15 +48,15 @@ def test_falsey_nonmapping_declarations_are_refused_before_publication(tmp_path,
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1})
     queue.withdraw("a" * 64, reason="retained declaration refusal control")
-    withdrawn = queue.item_path(pool.WITHDRAWN, "a" * 64)
+    withdrawn = queue.records.item_path(pool.WITHDRAWN, "a" * 64)
     before = withdrawn.read_bytes()
     with pytest.raises(pool.PoolContractError, match="path-to-kind mapping"):
         queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                       worker_script="/worker.py", resources={"cpu": 1}, **{field: value})
     assert withdrawn.read_bytes() == before
-    assert not queue.item_path(pool.READY, "a" * 64).exists()
-    assert not queue.item_path(pool.CLAIMED, "a" * 64).exists()
-    assert not queue.lease_path("a" * 64).exists()
+    assert not queue.records.item_path(pool.READY, "a" * 64).exists()
+    assert not queue.records.item_path(pool.CLAIMED, "a" * 64).exists()
+    assert not queue.records.lease_path("a" * 64).exists()
 
     queue.publish(action_key="b" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1}, **{field: {}})
@@ -92,7 +92,7 @@ def test_a_malformed_advertisement_cannot_supply_positive_presence(tmp_path, fie
 
 def test_a_malformed_gpu_image_requirement_keeps_no_room_for_a_busy_row(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     row = {"action_key": "a" * 64, "resources": {"cpu": 1, "gpu": 1}, "container_images": [7]}
 
     assert queue._ready_gpu_row_room(
@@ -136,7 +136,7 @@ def test_combined_offer_and_claim_use_current_evidence_at_each_capability_gate(t
                        images=eligibility.ImageAnswers.from_observed([image], None)))
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1}, **declarations)
-    path = queue.item_path(pool.READY, "a" * 64)
+    path = queue.records.item_path(pool.READY, "a" * 64)
     before = path.read_bytes()
     references = [image]
     if fault == "interpreter":
@@ -159,7 +159,7 @@ def test_combined_offer_and_claim_use_current_evidence_at_each_capability_gate(t
         assert path.read_bytes() == before
         assert queue.passes("a" * 64) == 0
         assert queue.ledger().held_keys() == []
-        assert not queue.lease_path("a" * 64).exists()
+        assert not queue.records.lease_path("a" * 64).exists()
 
 
 @pytest.mark.parametrize("corruption", [
@@ -173,7 +173,7 @@ def test_census_distinguishes_malformed_declarations_from_an_unplaceable_row(tmp
     queue.announce(host="observed", tags=[], has_gpu=False, capacity={"cpu": 1})
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1})
-    path = queue.item_path(pool.READY, "a" * 64)
+    path = queue.records.item_path(pool.READY, "a" * 64)
     row = json.loads(path.read_text())
     row.update(corruption)
     path.write_text(json.dumps(row))
@@ -183,7 +183,7 @@ def test_census_distinguishes_malformed_declarations_from_an_unplaceable_row(tmp
     assert census["unreadable"] == 1
     assert census["unplaceable"] == 0
     assert path.is_file()
-    assert not queue.lease_path("a" * 64).exists()
+    assert not queue.records.lease_path("a" * 64).exists()
 
 
 @pytest.mark.parametrize("gpu", ["false", 1, None])
@@ -222,7 +222,7 @@ def test_falsey_malformed_images_cannot_cross_actual_offer_or_claim_ingress(tmp_
     queue.announce(host="observer", tags=[], has_gpu=False, capacity={"cpu": 1})
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1})
-    path = queue.item_path(pool.READY, "a" * 64)
+    path = queue.records.item_path(pool.READY, "a" * 64)
     row = json.loads(path.read_text())
     row["container_images"] = value
     path.write_text(json.dumps(row))
@@ -234,7 +234,7 @@ def test_falsey_malformed_images_cannot_cross_actual_offer_or_claim_ingress(tmp_
 
     assert queue.latest_denials({"a" * 64})["a" * 64][0]["reason"] == "malformed_container_images"
     assert path.read_bytes() == before
-    assert not queue.lease_path("a" * 64).exists()
+    assert not queue.records.lease_path("a" * 64).exists()
     assert queue.passes("a" * 64) == 0
     assert queue.ledger().held_keys() == []
 
@@ -261,7 +261,7 @@ def test_a_code_tag_without_its_declaration_cannot_authorize_a_claim(tmp_path, t
                       worker_script="/worker.py", tags=[tag], resources={"cpu": 1})
     queue.publish(action_key="a" * 64, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", resources={"cpu": 1})
-    path = queue.item_path(pool.READY, "a" * 64)
+    path = queue.records.item_path(pool.READY, "a" * 64)
     row = json.loads(path.read_text())
     row["tags"] = [tag]
     path.write_text(json.dumps(row))
@@ -272,7 +272,7 @@ def test_a_code_tag_without_its_declaration_cannot_authorize_a_claim(tmp_path, t
 
     assert queue.latest_denials({"a" * 64})["a" * 64][0]["reason"] == reason
     assert path.read_bytes() == before
-    assert not queue.lease_path("a" * 64).exists()
+    assert not queue.records.lease_path("a" * 64).exists()
     assert queue.passes("a" * 64) == 0
     assert queue.ledger().held_keys() == []
 

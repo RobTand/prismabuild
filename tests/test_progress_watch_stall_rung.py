@@ -42,14 +42,14 @@ def test_a_boundary_report_refunds_its_read_without_dependency_credit(tmp_path, 
     watch.path.write_text(json.dumps({
         "schema": core.PROGRESS_RECORD_SCHEMA_V1, "token": "launch",
         "phase": "run", "units_completed": 1}))
-    original = core._read_regular_file_nofollow
+    original = core.immutable_files._read_file
 
     def delayed_read(*args, **kwargs):
         raw = original(*args, **kwargs)
         clock.now += 3.0
         return raw
 
-    monkeypatch.setattr(core, "_read_regular_file_nofollow", delayed_read)
+    monkeypatch.setattr(core.immutable_files, '_read_file', delayed_read)
     check = watch.check_stall(pool.WaitEvidenceSources(unexpected, unexpected, unexpected, unexpected))
     assert check.expired is False
     assert check.checkpoint_s == 3.0

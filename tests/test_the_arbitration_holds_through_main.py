@@ -54,7 +54,7 @@ def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
         "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(ram.TOTAL),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096", "--readers", "1", "--max-readers", "1",
         "--unpaced"])
     receipt = queue.move_record(mover)
@@ -65,7 +65,7 @@ def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
 def test_a_second_pass_of_one_consumer_replaces_its_siblings_changed_copy(
         tmp_path: Path, monkeypatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
     manifest, digest, body = ram._manifest(tmp_path, null_digest=True)
     paths = [tmp_path / "stage" / stage_move.stage_relative(

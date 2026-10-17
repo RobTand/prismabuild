@@ -163,7 +163,7 @@ class Consumer:
         return bool(self.queue.tier_ledger(TIER).holder_tokens(self.mover(ordinal)))
 
     def lead_published(self) -> bool:
-        return (self.queue.item_path(pool.READY, self.mover(0)).exists()
+        return (self.queue.records.item_path(pool.record_store.READY, self.mover(0)).exists()
                 or self.held(0))
 
 
@@ -316,7 +316,7 @@ def test_an_unreadable_output_census_defers_only_the_newcomer(
     assert gate["reason"] == window_credit.REASON_DEFER_UNKNOWN
     assert "template unreadable" in str(gate["commitment"]["error"])
     # The reader's last in-horizon phase still publishes.
-    assert queue.item_path(pool.READY, reader.mover(5)).exists()
+    assert queue.records.item_path(pool.record_store.READY, reader.mover(5)).exists()
 
 
 @pytest.mark.parametrize("landed", [(0, 1), tuple(range(6))])
@@ -337,7 +337,7 @@ def test_a_reader_whose_plan_does_not_read_defers_the_newcomer(
     queue, stage = _fixture_queue(tmp_path, 24)
     reader = _reader(queue, stage, landed=landed)
     newcomer = Consumer(queue, stage, "b")
-    plan_path = Path(queue.residency_plan_path(reader.key))
+    plan_path = Path(queue.records.residency_plan_path(reader.key))
     plan_path.unlink()
     plan_path.write_text("{")
 
@@ -368,7 +368,7 @@ def test_a_ready_window_whose_plan_does_not_read_defers_the_newcomer(
     admitted = Consumer(queue, stage, "a")
     admitted.land(0)
     newcomer = Consumer(queue, stage, "b")
-    plan_path = Path(queue.residency_plan_path(admitted.key))
+    plan_path = Path(queue.records.residency_plan_path(admitted.key))
     plan_path.unlink()
     plan_path.write_text("{")
 
@@ -544,7 +544,7 @@ def test_a_reader_that_slows_keeps_the_footprint_it_was_charged(
 
     # The first pass published ``phase-10``, inside the 14 GiB horizon; it
     # is queued, so it counts as the reader's own and as queued demand once.
-    assert queue.item_path(pool.READY, reader.mover(10)).exists()
+    assert queue.records.item_path(pool.record_store.READY, reader.mover(10)).exists()
     _report(queue, reader.key, phase="phase-5", reported_unix=now - 10.0)
 
     second = tier_loop.residency_window(queue, tiers=tiers)
@@ -595,10 +595,10 @@ def _report(queue: pool.PoolQueue, key: str, *, phase: str,
             reported_unix: float) -> None:
     """File a later accepted phase under the same claim."""
 
-    item = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
     # The fixture's claim names another host than the one writing the lease,
     # which a lease refresh refuses; the first lease is simply replaced.
-    queue.lease_path(key).unlink()
+    queue.records.lease_path(key).unlink()
     queue.write_lease(
         key, owner="horizon-fixture", claim_snapshot=item,
         progress_observation={
@@ -689,7 +689,7 @@ def _live_r12(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
 
 def _lead_published(queue: pool.PoolQueue, label: str, lead: str) -> bool:
     mover = replay._mover(label, lead)
-    return (queue.item_path(pool.READY, mover).exists()
+    return (queue.records.item_path(pool.record_store.READY, mover).exists()
             or bool(queue.tier_ledger(TIER).holder_tokens(mover)))
 
 

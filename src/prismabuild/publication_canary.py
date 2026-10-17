@@ -8,6 +8,8 @@ finish, withdrawal and process death do not replenish that budget.
 """
 from __future__ import annotations
 
+from . import immutable_files
+
 import hashlib
 import math
 from pathlib import Path
@@ -59,8 +61,8 @@ def slot_path(root: Path, value: Mapping[str, str]) -> Path:
 def load(root: Path, value: Mapping[str, str], key: str) -> dict[str, object]:
     path = slot_path(root, value)
     try:
-        raw = pb._read_regular_file_nofollow(path, where="publication canary grant")
-        grant = pb._decode_strict_json(raw, where="publication canary grant")
+        raw = immutable_files.read_stable_file(path, where="publication canary grant")
+        grant = pb.digest_primitives.decode_strict_json(raw, where="publication canary grant")
     except (OSError, ValueError) as exc:
         raise ValueError(f"publication canary grant unavailable: {exc}") from exc
     if (not isinstance(grant, dict) or grant.get("schema") != SCHEMA
@@ -90,7 +92,7 @@ def mint(root: Path, action: Mapping[str, object], *, run_id: str) -> Path:
         raise ValueError("publication canary mint requires sealed intent and run id")
     path = slot_path(root, value)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pb._atomic_write_new_json(path, {
+    pb.write_new_json(path, {
         "schema": SCHEMA, **value, "action_key": checked["action_key"],
         "execution_timeout_s": EXECUTION_TIMEOUT_S, "run_id": run_id,
         "published_unix": None,

@@ -159,7 +159,7 @@ def _keep_plan(queue: pool.PoolQueue, stage: Path, consumer: str,
                     "range_start_bytes": 0, "range_end_bytes": total}},
             "egress_row": _row(queue, base._key(), {"cpu": 1, "mem_gb": 1}),
         }]))
-    assert queue.residency_plan_path(consumer).exists()
+    assert queue.records.residency_plan_path(consumer).exists()
 
 
 def _row(queue: pool.PoolQueue, key: str,
@@ -258,7 +258,7 @@ class _World:
             "--manifest-sha256", self.digest,
             "--range-start-bytes", "0",
             "--range-end-bytes", str(self.total),
-            "--residency-root", str(self.queue.residency_fragment_root()),
+            "--residency-root", str(self.queue.records.residency_fragment_root()),
             "--readers", "1", "--max-readers", "1", "--unpaced"])
         receipt = self.queue.move_record(self.copier)
         assert isinstance(receipt, dict)
@@ -367,9 +367,9 @@ def test_a_live_owner_is_a_terminal_conflict_naming_both_owners(
                                                  before.st_mtime_ns)
     assert path.read_bytes() == OLD
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
     # The refused mover holds nothing, and its window is retired by name.
     assert queue.tier_ledger(TIER).holder_tokens(world.copier) == {}
@@ -409,17 +409,17 @@ def test_an_owner_whose_ending_is_unproven_is_never_replaced(
     # and only the mover's ending proof meets the missing fact.
     world.claim()
     if guard == "consumer-lease":
-        queue.lease_path(consumer).write_text("{}")
+        queue.records.lease_path(consumer).write_text("{}")
     elif guard == "mover-lease":
-        queue.lease_path(mover).write_text("{}")
+        queue.records.lease_path(mover).write_text("{}")
     elif guard == "mover-queued":
         queue.publish(action_key=mover, cas_root="/cas", checkout_root="/co",
                       worker_script="/w.py", resources={"cpu": 1},
                       max_attempts=1, recompute=True)
-        assert queue.item_path(pool.READY, mover).exists()
+        assert queue.records.item_path(pool.record_store.READY, mover).exists()
     elif guard == "unreadable-fragment":
         path = residency_map.fragment_path(
-            queue.residency_fragment_root(), base._key(), base._key())
+            queue.records.residency_fragment_root(), base._key(), base._key())
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
     name = _divergent(order)

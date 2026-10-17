@@ -10,12 +10,12 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
 
 def _row(queue, key):
-    return pool._read_json(queue.item_path(pool.READY, key))
+    return pool.record_store.read_document(queue.records.item_path(pool.READY, key))
 
 
 def _assert_ready_unheld(queue, key):
-    assert queue.item_path(pool.READY, key).is_file()
-    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.READY, key).is_file()
+    assert not queue.records.item_path(pool.CLAIMED, key).exists()
     assert queue.ledger("sparklina").holder_tokens(key) == {}
 
 
@@ -49,7 +49,7 @@ def test_an_ordinary_claim_skips_gang_and_untrusted_movement_reads(gang_fleet, m
     monkeypatch.setattr(_gang, "resident_hold", _unexpected)
     monkeypatch.setattr(queue, "_gang_prelaunch_blocker", _unexpected)
     assert claim("sparklina", ready=[_row(queue, key)]) == key
-    record = pool._read_json(queue.item_path(pool.CLAIMED, key))
+    record = pool.record_store.read_document(queue.records.item_path(pool.CLAIMED, key))
     assert record["claimed_host"] == "sparklina"
     assert "gang_backfill" not in record
     assert queue.ledger("sparklina").held_keys() == [key]
@@ -81,7 +81,7 @@ def test_gang_diagnostic_failure_keeps_the_active_handler(gang_fleet, monkeypatc
     assert caught.value is write_error
     assert observed[-1] == ("gang_contract_invalid", cause)
     _assert_ready_unheld(queue, key)
-    assert queue.item_path(pool.READY, peer).is_file()
+    assert queue.records.item_path(pool.READY, peer).is_file()
     assert _gang.elections(queue, group, 2) == {}
 
 
@@ -111,7 +111,7 @@ def test_a_failed_census_is_cached_after_real_gang_preparation(gang_fleet, monke
         assert refusal["reason"] == "measurement_census_unavailable"
         assert refusal["evidence"]["unavailable"] == "native characterization refusal"
         _assert_ready_unheld(queue, key)
-    assert queue.item_path(pool.READY, peer).is_file()
+    assert queue.records.item_path(pool.READY, peer).is_file()
 
 
 def test_a_gang_reservation_denial_is_published_while_H_is_held(gang_fleet, monkeypatch):
@@ -157,7 +157,7 @@ def test_an_existing_election_skips_resident_and_prelaunch_observation(
                       "sparky" if existing == "foreign" else "sparklina", clock[0])
     row = _row(queue, key)
     row["resident_set"] = "a" * 64
-    pool._write_json_atomic(queue.item_path(pool.READY, key), row)
+    pool.record_store._write_json(queue.records.item_path(pool.READY, key), row)
     monkeypatch.setattr(_gang, "resident_hold", _unexpected)
     monkeypatch.setattr(queue, "_gang_prelaunch_blocker", _unexpected)
     assert claim("sparklina", ready=[row]) is None
@@ -181,7 +181,7 @@ def test_resident_preference_precedes_prelaunch_and_keeps_its_fallback(
     group, (key, peer) = members("resident-arbitration")
     row = _row(queue, key)
     row["resident_set"] = resident
-    pool._write_json_atomic(queue.item_path(pool.READY, key), row)
+    pool.record_store._write_json(queue.records.item_path(pool.READY, key), row)
     events = []
     hold = {"set_id": "a" * 64, "preferred_host": "sparky"}
     blocker = {"group": group, "pending": [peer]}

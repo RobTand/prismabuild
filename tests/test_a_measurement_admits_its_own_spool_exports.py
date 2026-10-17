@@ -165,7 +165,7 @@ def _holding_measurement(tmp_path: Path, monkeypatch):
     import pbrun
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     measurement = pbrun.seal_action_from_template(
         _template(measurement=True, command=["python", "stage_a.py"]))
@@ -245,7 +245,7 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
         decision = denial["evidence"]["decision"]
         assert decision["reason"] == "measurement_holder", decision
         assert decision["holder"] == holder, decision
-        assert queue.item_path(pool.READY, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
 
     own_key = _publish(queue, cas, _export(queue, measurement, owner=holder, batch_id="g1"),
                        EXPORT_DEMAND)
@@ -253,7 +253,7 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
     claim = _claim(queue, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == own_key
     for key in foreign:
-        assert queue.item_path(pool.READY, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
         assert queue.passes(key) >= 2
         denial = _denial(queue, key)
         assert denial["reason"] == "adaptive_cpu_refused_starved", denial

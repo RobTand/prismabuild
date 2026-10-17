@@ -98,7 +98,7 @@ def _acquire(queue, mover: str, token: str,
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -143,7 +143,7 @@ def test_double_acquire_refcounts_window(fleet) -> None:
     staged = stage / "model" / "w.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x01" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/w.safetensors", staged, 4096)
 
@@ -184,7 +184,7 @@ def test_retry_token_is_idempotent(fleet) -> None:
     staged = stage / "model" / "r.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x07" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/r.safetensors", staged, 4096)
 
@@ -210,7 +210,7 @@ def test_forked_child_reads_under_pin_after_parent_stops_releasing(fleet
     staged = stage / "model" / "k.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x0b" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/k.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "fork-token")
@@ -276,7 +276,7 @@ def test_aba_republish_refuses_old_pin_and_acquires_new(fleet) -> None:
     staged = stage / "model" / "z.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x04" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     source = "/mnt/shared/model/z.safetensors"
     _publish(root, stage, CONSUMER, MOVER, source, staged, 4096, "b" * 64)
     old = _acquire(queue, MOVER, "aba-token")
@@ -306,7 +306,7 @@ def test_retiring_binds_generation_not_path(fleet) -> None:
     staged = stage / "model" / "y.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x03" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     source = "/mnt/shared/model/y.safetensors"
     _publish(root, stage, CONSUMER, MOVER, source, staged, 4096)
     held = _acquire(queue, MOVER, "retire-token")
@@ -345,7 +345,7 @@ def test_cover_proves_full_window_across_movers(fleet) -> None:
     first.parent.mkdir(parents=True)
     first.write_bytes(b"\x11" * 1024)
     second.write_bytes(b"\x22" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/pkg/shard.bin", first, 1024, "b" * 64)
     # Second range of the same pool file lives under its staged name.
@@ -398,7 +398,7 @@ def test_corrupt_pin_taints_egress_closed(fleet) -> None:
     staged = stage / "model" / "t.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x06" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/t.safetensors", staged, 4096)
     leases = reader_lease.leases_root(queue)
@@ -420,7 +420,7 @@ def test_malformed_retiring_fails_closed_then_recovers(fleet) -> None:
     staged = stage / "model" / "m.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x08" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/m.safetensors", staged, 4096)
     leases = reader_lease.leases_root(queue)
@@ -473,7 +473,7 @@ def test_containment_needs_terminal_and_attestation(fleet) -> None:
     staged = stage / "model" / "q.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x0d" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/q.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "contain-token")
@@ -503,7 +503,7 @@ def test_containment_needs_terminal_and_attestation(fleet) -> None:
 
     # A terminal record for a DIFFERENT attempt (a retry is current) with no
     # history for this one: retain, not forever-proof.
-    failed = queue.dir(pool.FAILED)
+    failed = queue.records.dir(pool.record_store.FAILED)
     failed.mkdir(parents=True, exist_ok=True)
     (failed / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "failed",
@@ -542,7 +542,7 @@ def test_terminal_telemetry_match_releases_without_history(fleet) -> None:
     staged = stage / "model" / "h.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x0e" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/h.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "telemetry-token")
@@ -552,7 +552,7 @@ def test_terminal_telemetry_match_releases_without_history(fleet) -> None:
     cert = {"action_key": CONSUMER, "nonce": "n1", "scope_id": "s1",
             "host": "test-host"}
     _attest(queue, scope_empty=True)
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "executed",
@@ -574,7 +574,7 @@ def test_attestation_body_must_bind_the_attempt(fleet) -> None:
     staged = stage / "model" / "b.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x0f" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/b.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "bind-token")
@@ -604,7 +604,7 @@ def test_open_pinned_refuses_an_unknown_key(fleet) -> None:
     staged = stage / "model" / "u.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x10" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/u.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "exact-key-token")
@@ -621,7 +621,7 @@ def test_context_miss_does_not_stick(fleet) -> None:
     staged = stage / "model" / "c.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x11" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     source = "/mnt/shared/model/c.safetensors"
     _fragment(root, stage, CONSUMER, MOVER, source, staged, 4096)
     context: dict = {}
@@ -642,7 +642,7 @@ def test_concurrent_acquire_release_keeps_exact_refs(fleet) -> None:
     staged = stage / "model" / "v.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x12" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/v.safetensors", staged, 4096)
 
@@ -707,7 +707,7 @@ def test_legacy_enumerators_ignore_lease_namespaces(fleet) -> None:
     staged = stage / "model" / "g.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x0e" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/g.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "namespace-token")
@@ -735,7 +735,7 @@ def test_open_refuses_a_released_ref_dict(fleet) -> None:
     staged = stage / "model" / "e.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x13" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     source = "/mnt/shared/model/e.safetensors"
     _publish(root, stage, CONSUMER, MOVER, source, staged, 4096)
     acquired = _acquire(queue, MOVER, "stale-token")
@@ -756,7 +756,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
     import socket
 
     queue, stage = fleet
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     nonce = "n" * 32
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
@@ -768,7 +768,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
                            "scope_id": "unit-1"}}))
     env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
            "PRISMABUILD_RESIDENCY_MAP": str(
-               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json"),
+               queue.root / pool.record_store.RESIDENCY / f"{CONSUMER}.map.json"),
            "PRISMABUILD_ACTION_NONCE": nonce,
            "PRISMABUILD_ACTION_SCOPE": "unit-1"}
     got = reader_lease.injected_context(queue, env=env)
@@ -809,7 +809,7 @@ def test_injected_context_comes_from_pb_sources(fleet,
                             "scope_id": ""}}))
     bare = {"PRISMABUILD_ACTION_KEY": CONSUMER,
             "PRISMABUILD_RESIDENCY_MAP": str(
-                queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
+                queue.root / pool.record_store.RESIDENCY / f"{CONSUMER}.map.json")}
     assert reader_lease.injected_context(
         queue, env={**bare,
                     "PRISMABUILD_ACTION_NONCE": nonce,
@@ -842,7 +842,7 @@ def test_legacy_inspection_never_acquires(fleet) -> None:
     """inspect_claim_context reports the claim unqualified; acquire refuses it."""
 
     queue, stage = fleet
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER, "claimed_by": "worker-7",
@@ -857,7 +857,7 @@ def test_legacy_inspection_never_acquires(fleet) -> None:
     # The inspection carries no launch binding, so strict context refuses.
     env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
            "PRISMABUILD_RESIDENCY_MAP": str(
-               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json")}
+               queue.root / pool.record_store.RESIDENCY / f"{CONSUMER}.map.json")}
     assert reader_lease.injected_context(
         queue, env=env)["refusal"] == "no-launch-context"
 
@@ -871,7 +871,7 @@ def test_acquire_for_carries_fleet_identity_into_refs(fleet) -> None:
     staged = stage / "model" / "f.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x15" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/f.safetensors", staged, 4096)
     ctx = {"queue_root": str(queue.root), "action_key": CONSUMER,
@@ -905,7 +905,7 @@ def test_open_revalidates_ram_epoch(fleet) -> None:
     staged = stage / "model" / "p.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x16" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
@@ -956,7 +956,7 @@ def test_adopted_generation_is_stable_reuse(fleet) -> None:
     staged = stage / "model" / "s.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x14" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     generation = _publish(root, stage, CONSUMER, MOVER,
                           "/mnt/shared/model/s.safetensors", staged, 4096)
     material = reader_lease.read_material(root, CONSUMER, MOVER)
@@ -1105,7 +1105,7 @@ def _connected_setup(queue, stage, root, tmp_path, broker, nonce, token,
     control = scope.create()
     assert control["scope_id"] == scope.unit
     unit = scope.unit
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
         "action_key": CONSUMER, "claimed_by": worker,
@@ -1186,7 +1186,7 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
     staged = stage / "model" / "j.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x17" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/j.safetensors", staged, 4096)
     nonce = "b" * 32
@@ -1230,7 +1230,7 @@ def test_ordinary_completion_reclaims_after_broker_containment(fleet,
         "unix": 1789880000.0}) + "\n")
 
     # Terminal broker telemetry from the execution path (their record).
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "executed",
@@ -1257,7 +1257,7 @@ def test_release_refs_keeps_worker_correspondence(fleet) -> None:
     staged = stage / "model" / "w2.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x18" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/w2.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "worker-token",
@@ -1266,7 +1266,7 @@ def test_release_refs_keeps_worker_correspondence(fleet) -> None:
     assert acquired["ok"]
     target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
               "ref_id": acquired["ref_id"]}
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "executed",
@@ -1338,13 +1338,13 @@ def test_egress_auto_reclaims_contained_pins(fleet) -> None:
     staged = stage / "model" / "auto.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x19" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/auto.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "auto-token")
     assert acquired["ok"]
     _attest(queue, scope_empty=True)
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "executed",
@@ -1366,7 +1366,7 @@ def test_bare_withdrawn_record_frees_nothing(fleet) -> None:
     staged = stage / "model" / "wd.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x1a" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/wd.safetensors", staged, 4096)
     acquired = _acquire(queue, MOVER, "withdrawn-token")
@@ -1374,7 +1374,7 @@ def test_bare_withdrawn_record_frees_nothing(fleet) -> None:
     target = {"consumer_action_key": CONSUMER, "pin_id": acquired["pin_id"],
               "ref_id": acquired["ref_id"]}
     _attest(queue, scope_empty=True)
-    withdrawn = queue.dir(pool.WITHDRAWN)
+    withdrawn = queue.records.dir(pool.record_store.WITHDRAWN)
     withdrawn.mkdir(parents=True, exist_ok=True)
     (withdrawn / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "reason": "superseded"}))
@@ -1398,7 +1398,7 @@ def test_resolve_window_covers_from_published_material(fleet) -> None:
     first.parent.mkdir(parents=True)
     first.write_bytes(b"\x21" * 1024)
     second.write_bytes(b"\x22" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/pkg/shard.bin", first, 1024, "b" * 64)
     residency_map.write_fragment(root, {
@@ -1464,7 +1464,7 @@ def test_distinct_same_shape_files_never_share_a_pin(fleet) -> None:
     first.parent.mkdir(parents=True)
     first.write_bytes(b"\x31" * 4096)
     second.write_bytes(b"\x32" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key_a = residency_map.residency_map_key("/mnt/shared/model/a.bin", 0)
     key_b = residency_map.residency_map_key("/mnt/shared/model/b.bin", 0)
     residency_map.write_fragment(root, {
@@ -1572,7 +1572,7 @@ def test_covers_for_keys_both_tiers_minimal(fleet) -> None:
     stage_file.parent.mkdir(parents=True)
     stage_file.write_bytes(b"\x41" * 1024)
     ram_file.write_bytes(b"\x42" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     stage_key = residency_map.residency_map_key("/mnt/shared/s.bin", 0)
     ram_key = residency_map.residency_map_key("/mnt/shared/r.bin", 0)
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/s.bin",
@@ -1634,7 +1634,7 @@ def test_staged_sidecar_with_epoch_refuses_at_write(fleet) -> None:
     staged = stage / "model" / "e2.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x43" * 64)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     identity = reader_lease.stat_identity(str(staged))
     assert identity is not None
     with pytest.raises(reader_lease.ReaderLeaseError):
@@ -1677,7 +1677,7 @@ def test_owner_and_material_namespace_stay_split(fleet) -> None:
     staged = stage / "model" / "o.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x51" * 2048)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key("/mnt/shared/model/o.bin", 0)
     _publish(root, stage, PRODUCER, MOVER, "/mnt/shared/model/o.bin",
              staged, 2048, "b" * 64)
@@ -1712,7 +1712,7 @@ def test_owner_and_material_namespace_stay_split(fleet) -> None:
     assert blocked["entries_deleted"] == 0
     # ...and the READER's terminal (never the producer's) reclaims it.
     _attest_for(queue, READER, "n1", worker="worker-7")
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{READER}.json").write_text(json.dumps(
         {"action_key": READER, "status": "executed",
@@ -1782,7 +1782,7 @@ def test_contradictory_covers_refuse(fleet) -> None:
     staged = stage / "model" / "cc.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x61" * 512)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key("/mnt/shared/cc.bin", 0)
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/cc.bin",
              staged, 512, "b" * 64)
@@ -1817,7 +1817,7 @@ def test_cover_lookup_caches_valid_reuses_valid_only(fleet) -> None:
     staged = stage / "model" / "v2.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x63" * 256)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key("/mnt/shared/v2.bin", 0)
     context: dict = {}
     assert reader_lease.covers_for_keys(
@@ -1870,13 +1870,13 @@ def test_withdrawn_with_telemetry_reclaims_automatically(fleet) -> None:
     staged = stage / "model" / "aw.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x64" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER,
              "/mnt/shared/model/aw.bin", staged, 4096)
     acquired = _acquire(queue, MOVER, "auto-withdraw-token")
     assert acquired["ok"]
     _attest(queue, scope_empty=True)
-    withdrawn = queue.dir(pool.WITHDRAWN)
+    withdrawn = queue.records.dir(pool.record_store.WITHDRAWN)
     withdrawn.mkdir(parents=True, exist_ok=True)
     (withdrawn / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "withdrawn",
@@ -1894,7 +1894,7 @@ def test_mixed_half_control_refuses_without_intent_synthesis(fleet) -> None:
     """Strict: control scope without control nonce refuses; intent never fills it."""
 
     queue, stage = fleet
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     nonce = "n" * 32
     (claimed / f"{CONSUMER}.json").write_text(json.dumps({
@@ -1906,7 +1906,7 @@ def test_mixed_half_control_refuses_without_intent_synthesis(fleet) -> None:
         "resource_scope_intent": {"action_key": CONSUMER, "nonce": nonce}}))
     env = {"PRISMABUILD_ACTION_KEY": CONSUMER,
            "PRISMABUILD_RESIDENCY_MAP": str(
-               queue.root / pool.RESIDENCY / f"{CONSUMER}.map.json"),
+               queue.root / pool.record_store.RESIDENCY / f"{CONSUMER}.map.json"),
            "PRISMABUILD_ACTION_NONCE": nonce,
            "PRISMABUILD_ACTION_SCOPE": "unit-1"}
     refused = reader_lease.injected_context(queue, env=env)
@@ -1927,7 +1927,7 @@ def test_split_namespace_full_lifecycle_direct_calls(fleet) -> None:
     staged = stage / "model" / "ox.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x52" * 2048)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key("/mnt/shared/model/ox.bin", 0)
     _publish(root, stage, PRODUCER, MOVER, "/mnt/shared/model/ox.bin",
              staged, 2048, "b" * 64)
@@ -2065,7 +2065,7 @@ def test_foreign_owner_certificate_never_releases(fleet) -> None:
     staged = stage / "model" / "fo.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x65" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key("/mnt/shared/fo.bin", 0)
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/fo.bin",
              staged, 1024, "b" * 64)
@@ -2085,7 +2085,7 @@ def test_foreign_owner_certificate_never_releases(fleet) -> None:
         "settled": False, "empty": True, "tickets_pending": False,
         "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
-    failed = queue.dir(pool.FAILED)
+    failed = queue.records.dir(pool.record_store.FAILED)
     failed.mkdir(parents=True, exist_ok=True)
     (failed / f"{FOREIGN}.json").write_text(json.dumps(
         {"action_key": FOREIGN, "status": "failed",
@@ -2107,7 +2107,7 @@ def test_tombstone_without_settlement_retains(fleet) -> None:
     staged = stage / "model" / "ts.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x66" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/ts.bin",
              staged, 1024, "b" * 64)
     acquired = _acquire(queue, MOVER, "tomb-token")
@@ -2124,7 +2124,7 @@ def test_tombstone_without_settlement_retains(fleet) -> None:
         "settled": False, "empty": True, "tickets_pending": False,
         "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "executed",
@@ -2146,7 +2146,7 @@ def test_missing_tickets_pending_is_unknown_never_proof(fleet) -> None:
     staged = stage / "model" / "ut.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x69" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/ut.bin",
              staged, 1024, "b" * 64)
     acquired = _acquire(queue, MOVER, "unknown-tickets-token")
@@ -2165,7 +2165,7 @@ def test_missing_tickets_pending_is_unknown_never_proof(fleet) -> None:
         "settled": False, "empty": True,
         "stopped_unix": 1789870000.0,
         "unix": 1789880000.0}) + "\n")
-    done_dir = queue.dir(pool.DONE)
+    done_dir = queue.records.dir(pool.record_store.DONE)
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / f"{CONSUMER}.json").write_text(json.dumps(
         {"action_key": CONSUMER, "status": "executed",
@@ -2294,14 +2294,14 @@ def test_shortcut_recovery_republishes_missing_proof(
     from prismabuild import resource_scope
 
     queue, stage = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     nonce = "b" * 32
     with _ConnectedBroker(tmp_path) as broker:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
         unit, host, worker, staged, acquired = _connected_setup(
             queue, stage, root, tmp_path, broker, nonce, "shortcut-token")
         record = json.loads(
-            (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text())
+            (queue.records.dir(pool.record_store.CLAIMED) / f"{CONSUMER}.json").read_text())
         first = queue.cleanup_action_containers(record)
         assert first["complete"] is True
         assert "released" not in first["resource_scope"]["released"]
@@ -2344,14 +2344,14 @@ def test_connected_sdk_ref_reclaims_through_egress(
     from prismabuild import resource_scope
 
     queue, stage = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     nonce = "b" * 32
     with _ConnectedBroker(tmp_path) as broker:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
         unit, host, worker, staged, acquired = _connected_setup(
             queue, stage, root, tmp_path, broker, nonce, "connected-token")
         terminal = queue.finish(CONSUMER, status="executed", detail={})
-        assert terminal == queue.item_path(pool.DONE, CONSUMER)
+        assert terminal == queue.records.item_path(pool.record_store.DONE, CONSUMER)
         done = json.loads(terminal.read_text())
         cleanup = done["resource_scope_cleanup"]
         first = cleanup["released"]
@@ -2406,7 +2406,7 @@ def test_finish_write_failure_heals_on_egress_tick(
     from prismabuild import resource_scope
 
     queue, stage = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     nonce = "c" * 32
     with _ConnectedBroker(tmp_path) as broker:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
@@ -2436,7 +2436,7 @@ def test_finish_write_failure_heals_on_egress_tick(
                     CONSUMER, status="executed", detail={})
             finally:
                 os.chmod(attest_dir, 0o755)
-        assert terminal == queue.item_path(pool.DONE, CONSUMER)
+        assert terminal == queue.records.item_path(pool.record_store.DONE, CONSUMER)
         assert reader_lease.read_scope_attestation(
             queue, CONSUMER, nonce) is None
         done = json.loads(terminal.read_text())
@@ -2482,7 +2482,7 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
 
     OWNER = "a" * 64
     queue, stage = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     nonce = "d" * 32
     with _ConnectedBroker(tmp_path) as broker:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
@@ -2491,7 +2491,7 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
             source="/mnt/shared/tk.bin", name="tk.bin", size=1024,
             owner=OWNER)
         control = json.loads(
-            (queue.dir(pool.CLAIMED) / f"{CONSUMER}.json").read_text()
+            (queue.records.dir(pool.record_store.CLAIMED) / f"{CONSUMER}.json").read_text()
         )["resource_scope"]
         # External daemon state: no marker (a previous cleanup already
         # closed the owner leg), but the scope leg still lists one
@@ -2508,10 +2508,10 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         assert queue.ledger(host).acquire(CONSUMER, {"cpu": 1}) is True
         assert queue.claim_reservation_hosts(CONSUMER) == [host]
         pending_path = queue.finish(CONSUMER, status="executed", detail={})
-        assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
-        assert not queue.item_path(pool.DONE, CONSUMER).exists()
+        assert pending_path == queue.records.item_path(pool.record_store.CLAIMED, CONSUMER)
+        assert not queue.records.item_path(pool.record_store.DONE, CONSUMER).exists()
         retained = json.loads(
-            queue.item_path(pool.CLAIMED, CONSUMER).read_text())
+            queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).read_text())
         assert isinstance(retained.get("finish_pending"), dict)
         # The settlement was really submitted and refused, release
         # retired, export stayed unproven: the pool filed False.
@@ -2538,7 +2538,7 @@ def test_unsettled_ticket_retains_then_settles_through_reaper(
         # production path to DONE.
         daemon["scope"] = []
         assert queue.reap_stale() == []
-        terminal = queue.item_path(pool.DONE, CONSUMER)
+        terminal = queue.records.item_path(pool.record_store.DONE, CONSUMER)
         assert terminal.exists()
         assert queue.ledger(host).held().get("cpu", 0) == 0
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
@@ -2609,7 +2609,7 @@ def test_released_refs_let_unproven_finish_publish(
     from prismabuild import resource_scope
 
     queue, stage = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     nonce = "b" * 32
     with _ConnectedBroker(tmp_path) as broker:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
@@ -2618,8 +2618,8 @@ def test_released_refs_let_unproven_finish_publish(
             source="/mnt/shared/gt.bin", name="gt.bin", size=1024)
         broker.authority.records[unit]["container_tickets"] = ["ticket-1"]
         pending_path = queue.finish(CONSUMER, status="executed", detail={})
-        assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
-        assert not queue.item_path(pool.DONE, CONSUMER).exists()
+        assert pending_path == queue.records.item_path(pool.record_store.CLAIMED, CONSUMER)
+        assert not queue.records.item_path(pool.record_store.DONE, CONSUMER).exists()
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof, dict)
         assert proof["scope_empty"] is False
@@ -2633,7 +2633,7 @@ def test_released_refs_let_unproven_finish_publish(
             queue, acquired["pin_id"], acquired["ref_id"],
             consumer_action_key=CONSUMER) is True
         assert queue.reap_stale() == []
-        terminal = queue.item_path(pool.DONE, CONSUMER)
+        terminal = queue.records.item_path(pool.record_store.DONE, CONSUMER)
         assert terminal.exists()
         still = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(still, dict)
@@ -2661,7 +2661,7 @@ def test_broker_transport_down_retains_then_reaper_recovers(
     from prismabuild import resource_scope
 
     queue, stage = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     nonce = "f" * 32
     with _ConnectedBroker(tmp_path) as broker:
         monkeypatch.setattr(resource_scope, "BROKER_SOCKET", broker.endpoint)
@@ -2673,8 +2673,8 @@ def test_broker_transport_down_retains_then_reaper_recovers(
         broker.server.server_close()
         broker.endpoint.unlink(missing_ok=True)
         pending_path = queue.finish(CONSUMER, status="executed", detail={})
-        assert pending_path == queue.item_path(pool.CLAIMED, CONSUMER)
-        assert not queue.item_path(pool.DONE, CONSUMER).exists()
+        assert pending_path == queue.records.item_path(pool.record_store.CLAIMED, CONSUMER)
+        assert not queue.records.item_path(pool.record_store.DONE, CONSUMER).exists()
         assert reader_lease.read_scope_attestation(
             queue, CONSUMER, nonce) is None
         kept = stage_release.evict(queue, MOVER,
@@ -2691,7 +2691,7 @@ def test_broker_transport_down_retains_then_reaper_recovers(
             kwargs={"poll_interval": 0.01}, daemon=True)
         broker.thread.start()
         assert queue.reap_stale() == []
-        terminal = queue.item_path(pool.DONE, CONSUMER)
+        terminal = queue.records.item_path(pool.record_store.DONE, CONSUMER)
         assert terminal.exists()
         proof = reader_lease.read_scope_attestation(queue, CONSUMER, nonce)
         assert isinstance(proof, dict)
@@ -2713,7 +2713,7 @@ def test_unknown_scan_never_reports_released(fleet) -> None:
     staged = stage / "model" / "uc.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x68" * 1024)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _publish(root, stage, CONSUMER, MOVER, "/mnt/shared/uc.bin",
              staged, 1024, "b" * 64)
     acquired = _acquire(queue, MOVER, "unknown-token")

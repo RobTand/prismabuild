@@ -35,7 +35,7 @@ OPERATOR = "operator-box"
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -89,18 +89,18 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
     assert result["stop_pending"]["holder_host"] == HOLDER
     # The claim and lease stay: they are the ownership record for a payload
     # that has not stopped, and the reaper needs them to conclude it.
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.lease_path(KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
     assert queue.ledger(HOLDER).available() == {}
     assert queue.ledger(HOLDER).held() == {"cpu": 1}
 
     # The decision itself is durable straight away, as it always was.
-    filed = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     assert filed["status"] == "withdrawn"
     assert filed["reason"] == "cancel remotely"
 
     # Withdrawal never rewrites the claiming worker's ownership record.
-    live = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text())
     assert "stop_pending" not in live
     assert "withdrawn_note" not in live
 
@@ -129,13 +129,13 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
             claim_snapshot=claimed,
         )
 
-    assert destination == queue.item_path(pool.WITHDRAWN, KEY_A)
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert destination == queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A)
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger(HOLDER).held() == {}
     assert queue.ledger(HOLDER).available() == {"cpu": 1}
     # Nothing is filed as a failure: a cancellation is a decision.
-    assert not queue.item_path(pool.FAILED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
     # Only now is the holder's token available to somebody else.
     _publish(queue, KEY_B)
@@ -155,10 +155,10 @@ def test_a_local_withdrawal_defers_release_to_the_claiming_worker(
     result = queue.withdraw(KEY_A, reason="changed my mind")
     assert result["stop_pending"] is not None
     assert result["released"] == 0
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     queue.finish(KEY_A, status="withdrawn", claim_snapshot=claimed)
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().available() == {"cpu": 1}
 
 

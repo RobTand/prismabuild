@@ -21,7 +21,7 @@ def _collision(queue, clock):
     assert original is not None
     clock[0] += 1
     _publish(queue)
-    successor = json.loads(queue.item_path(pool.READY, KEY).read_bytes())
+    successor = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())
     return original, successor
 
 
@@ -42,7 +42,7 @@ def test_queue_retains_typed_exact_successor_after_it_finishes(queue, clock, end
         "published_unix": original["published_unix"], "successor": successor,
     }
     assert decision.path == (queue.root / "publication-endings" / KEY
-                             / f"{queue.attempt_generation(original)}.json")
+                             / f"{queue.records.attempt_generation(original)}.json")
     assert decision.path.stat().st_mode & 0o222 == 0
     raw = decision.path.read_bytes()
     retry = queue.claim(owner="successor", capacity=DEMAND)
@@ -56,7 +56,7 @@ def test_queue_retains_typed_exact_successor_after_it_finishes(queue, clock, end
 @pytest.mark.parametrize("persisted", [False, True])
 def test_interrupted_collision_keeps_first_persisted_successor(queue, clock, monkeypatch, persisted):
     original, first = _collision(queue, clock)
-    address = queue.publication_ending_path(original)
+    address = queue.records.publication_ending_path(original)
     publish = immutable_files.publish_immutable
 
     def unavailable(path, raw, *args, **kwargs):
@@ -70,11 +70,11 @@ def test_interrupted_collision_keeps_first_persisted_successor(queue, clock, mon
         patch.setattr(immutable_files, "publish_immutable", unavailable)
         with pytest.raises(OSError, match="decision write uncertain"):
             _end_claim(queue, original, "finish_retry", clock)
-    attempt = queue.attempt_path(original, 1)
+    attempt = queue.records.attempt_path(original, 1)
     attempt_bytes = attempt.read_bytes()
     clock[0] += 1
     _publish(queue)
-    later = json.loads(queue.item_path(pool.READY, KEY).read_bytes())
+    later = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_bytes())
     clock[0] += pool.LEASE_TIMEOUT_S + pool.HEARTBEAT_S + 1
     queue.sweep_finish_tombstones()
     decision = queue.publication_ending(KEY, generation=original["published_unix"])
@@ -83,8 +83,8 @@ def test_interrupted_collision_keeps_first_persisted_successor(queue, clock, mon
     assert decision.successor_published_unix == expected["published_unix"]
     assert decision.record["successor"] == expected
     assert attempt.read_bytes() == attempt_bytes
-    assert not queue.attempt_path(original, 2).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.attempt_path(original, 2).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
 
 
 def test_public_decoder_validates_evidence_without_queue_reads(queue, clock, monkeypatch):
@@ -96,7 +96,7 @@ def test_public_decoder_validates_evidence_without_queue_reads(queue, clock, mon
     def unexpected_read(*args, **kwargs):
         pytest.fail("decoding an observed publication ending performed I/O")
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", unexpected_read)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', unexpected_read)
     assert queue.decode_publication_supersession(decision.path, decision.record) == decision
     changed = {**decision.record, "successor": {**successor, "action_key": "0" * 64}}
     with pytest.raises(pool.PoolContractError):

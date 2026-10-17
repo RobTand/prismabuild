@@ -118,7 +118,7 @@ def test_the_pull_queue_smoke_still_publishes_one_ready_item(
     assert printed["action_key"] == printed["sealed_action_key"]
     item = Path(printed["where"])
     assert item.is_file()
-    assert item.parent.name == pool.READY
+    assert item.parent.name == pool.record_store.READY
     assert json.loads(item.read_text(encoding="utf-8"))["checkout_root"] == str(
         tmp_path / "checkout")
 

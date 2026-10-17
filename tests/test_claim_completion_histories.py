@@ -14,7 +14,7 @@ KEY = "c" * 64
 
 def _queue(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker", resources={"cpu": 1, "mem_gb": 1})
     return queue
@@ -23,7 +23,7 @@ def _queue(tmp_path):
 @pytest.mark.parametrize("phase", ["terminal", "claim-record", "lease"])
 def test_unhandled_publication_errors_stay_outside_uncertain_cleanup(tmp_path, monkeypatch, phase):
     queue = _queue(tmp_path)
-    ready = queue.item_path(pool.READY, KEY).read_bytes()
+    ready = queue.records.item_path(pool.READY, KEY).read_bytes()
     cause = LookupError("publication boundary")
     exits = []
     abandon = pool._ClaimReservation.abandon
@@ -37,20 +37,20 @@ def test_unhandled_publication_errors_stay_outside_uncertain_cleanup(tmp_path, m
         terminal = queue.terminal_outcome_covers
 
         def fail_terminal(*args, **kwargs):
-            if queue.item_path(pool.CLAIMED, KEY).exists():
+            if queue.records.item_path(pool.CLAIMED, KEY).exists():
                 raise cause
             return terminal(*args, **kwargs)
 
         monkeypatch.setattr(queue, "terminal_outcome_covers", fail_terminal)
     elif phase == "claim-record":
-        write = pool._write_json_atomic
+        write = pool.record_store._write_json
 
         def fail_write(path, *args, **kwargs):
-            if path == queue.item_path(pool.CLAIMED, KEY):
+            if path == queue.records.item_path(pool.CLAIMED, KEY):
                 raise cause
             return write(path, *args, **kwargs)
 
-        monkeypatch.setattr(pool, "_write_json_atomic", fail_write)
+        monkeypatch.setattr(pool.record_store, '_write_json', fail_write)
     else:
         def fail_lease(*args, **kwargs):
             raise cause
@@ -61,9 +61,9 @@ def test_unhandled_publication_errors_stay_outside_uncertain_cleanup(tmp_path, m
     assert caught.value is cause
     assert exits == []
     assert queue.ledger().holder_tokens(KEY) == {"cpu": 1, "mem_gb": 1}
-    assert not queue.item_path(pool.READY, KEY).exists()
-    assert not queue.lease_path(KEY).exists()
-    claimed = queue.item_path(pool.CLAIMED, KEY)
+    assert not queue.records.item_path(pool.READY, KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
+    claimed = queue.records.item_path(pool.CLAIMED, KEY)
     if phase == "lease":
         assert json.loads(claimed.read_text())["claimed_by"] == "publication-owner"
     else:
@@ -74,7 +74,7 @@ def test_unhandled_publication_errors_stay_outside_uncertain_cleanup(tmp_path, m
 
 def test_incomplete_commit_keeps_a_newer_ready_publication_byte_exact(tmp_path, monkeypatch):
     queue = _queue(tmp_path)
-    old = queue.item_path(pool.READY, KEY).read_bytes()
+    old = queue.records.item_path(pool.READY, KEY).read_bytes()
     ledger = queue.ledger()
     commit = pool.ResourceLedger.commit_acquire
     newer = []
@@ -85,16 +85,16 @@ def test_incomplete_commit_keeps_a_newer_ready_publication_byte_exact(tmp_path, 
             assert filed == 2
             queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/new-checkout",
                           worker_script="/worker", resources={"cpu": 2, "mem_gb": 1}, priority=17)
-            newer.append(queue.item_path(pool.READY, KEY).read_bytes())
+            newer.append(queue.records.item_path(pool.READY, KEY).read_bytes())
             return 0
         return filed
 
     monkeypatch.setattr(pool.ResourceLedger, "commit_acquire", commit_then_publish)
     assert queue.claim(owner="incomplete-owner", capacity={"cpu": 2, "mem_gb": 2}) is None
     assert len(newer) == 1 and newer[0] != old
-    assert queue.item_path(pool.READY, KEY).read_bytes() == newer[0]
-    assert queue.item_path(pool.CLAIMED, KEY).read_bytes() == old
-    assert not queue.lease_path(KEY).exists()
+    assert queue.records.item_path(pool.READY, KEY).read_bytes() == newer[0]
+    assert queue.records.item_path(pool.CLAIMED, KEY).read_bytes() == old
+    assert not queue.records.lease_path(KEY).exists()
     assert ledger.held_keys() == []
     assert ledger.available() == {"cpu": 2, "mem_gb": 2}
 
@@ -121,10 +121,10 @@ def test_late_scratch_boundary_refuses_before_any_probe_or_borrow(fleet, monkeyp
     for host in (SLOW, FAST):
         assert fleet.queue.ledger(host).held_keys() == []
         assert fleet.queue.ledger(host).available() == CAPACITY
-    assert not fleet.queue.lease_path(fleet.key).exists()
-    assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
-    assert fleet.queue.item_path(pool.READY, fleet.key).exists()
-    assert not fleet.queue.passes_path(fleet.key).exists()
+    assert not fleet.queue.records.lease_path(fleet.key).exists()
+    assert not fleet.queue.records.item_path(pool.CLAIMED, fleet.key).exists()
+    assert fleet.queue.records.item_path(pool.READY, fleet.key).exists()
+    assert not fleet.queue.records.passes_path(fleet.key).exists()
 
 
 def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candidate(tmp_path, monkeypatch):
@@ -132,19 +132,19 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
     from test_pool_tier_reservations import STAGE, TIER, _denial, _publish
 
     queue = pool.PoolQueue(tmp_path / "views-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 2})
     first, second = "d" * 64, "e" * 64
     _publish(queue, first, {"cpu": 1, "mem_gb": 1, STAGE: 1}, priority=10)
     _publish(queue, second, {"cpu": 1, "mem_gb": 1, STAGE: 1}, priority=0)
-    second_bytes = queue.item_path(pool.READY, second).read_bytes()
+    second_bytes = queue.records.item_path(pool.READY, second).read_bytes()
     listed, plans, scans, replaced = [], [], [], []
     listdir, rename = pool.os.listdir, pool.os.rename
     fresh_plan, census = queue._fresh_reader_plan, measurement.CensusReader._census
 
     def observe_list(path):
         value = listdir(path)
-        if path == queue.dir(pool.CLAIMED):
+        if path == queue.records.dir(pool.CLAIMED):
             listed.append(list(value))
         return value
 
@@ -158,9 +158,9 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
         return census(self, directory)
 
     def replace_then_rename(src, dst):
-        if src == queue.item_path(pool.READY, first):
+        if src == queue.records.item_path(pool.READY, first):
             _publish(queue, first, {"cpu": 2, "mem_gb": 1, STAGE: 1}, priority=10)
-            replaced.append(queue.item_path(pool.READY, first).read_bytes())
+            replaced.append(queue.records.item_path(pool.READY, first).read_bytes())
             rename(src, dst)
             queue.announce_tier({"tier_id": TIER, pool.READER_PLAN_FIELD: {
                 "declared_wait": [{"mover_action_key": "f" * 64}]}})
@@ -173,8 +173,8 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
     monkeypatch.setattr(measurement.CensusReader, "_census", observe_census)
     assert queue.claim(owner="views-owner", capacity={"cpu": 8, "mem_gb": 8}) is None
     assert len(replaced) == 1
-    assert queue.item_path(pool.READY, first).read_bytes() == replaced[0]
-    assert queue.item_path(pool.READY, second).read_bytes() == second_bytes
+    assert queue.records.item_path(pool.READY, first).read_bytes() == replaced[0]
+    assert queue.records.item_path(pool.READY, second).read_bytes() == second_bytes
     assert _denial(queue, first)["reason"] == "claimed_record_changed"
     assert _denial(queue, second)["reason"] == "deferred_for_declared_wait"
     assert len(listed) == 3
@@ -183,5 +183,5 @@ def test_changed_generation_refreshes_all_three_pass_views_before_the_next_candi
     assert queue.ledger().held_keys() == []
     assert queue.ledger().available() == {"cpu": 8, "mem_gb": 8}
     assert queue.tier_ledger(TIER).available() == {"stage_gib": 2}
-    assert list(queue.dir(pool.CLAIMED).iterdir()) == []
-    assert not queue.passes_path(first).exists() and not queue.passes_path(second).exists()
+    assert list(queue.records.dir(pool.CLAIMED).iterdir()) == []
+    assert not queue.records.passes_path(first).exists() and not queue.records.passes_path(second).exists()

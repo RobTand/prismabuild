@@ -260,7 +260,7 @@ class MetricsFixture(unittest.TestCase):
 
         metrics = pbmetrics.Metrics()
         with mock.patch.object(
-            pbmetrics.pool, "_read_json",
+            pbmetrics.pool.record_store, '_read_json',
             side_effect=AssertionError("terminal payload was opened twice"),
         ):
             readable = pbmetrics._terminal_metrics(

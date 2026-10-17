@@ -88,7 +88,7 @@ def _args(queue, stage, cas, mover: str, consumer: str, manifest: Path,
         "--manifest", str(manifest), "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(len(entries) * SIZE),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--readers", "1", "--max-readers", "1", "--unpaced"])
 
 
@@ -105,7 +105,7 @@ def _fragment_no_sidecar(queue, stage: Path, consumer: str, mover: str,
     """
 
     key = residency_map.residency_map_key(str(path), 0)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),

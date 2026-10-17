@@ -91,7 +91,7 @@ def _assert_conserved(ledger: pool.ResourceLedger, kind: str,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.mint_tier_capacity(TIER, {"stage_gib": 8})
     return q
 
@@ -99,7 +99,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 @pytest.fixture()
 def ram_queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-ram-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.ledger(HOST).ensure_capacity({"cpu": 80, "mem_gb": 64})
     q.mint_tier_capacity(RAM_TIER, {"ram_gib": 12})
     return q

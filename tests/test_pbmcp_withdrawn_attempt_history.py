@@ -65,14 +65,14 @@ def withdrawn(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _publish(queue, tmp_path, KEY)
     assert queue.claim() is not None
     requeued = queue.finish(
         KEY, status="failed",
         detail={"returncode": 1, "elapsed_s": 0.759, "status": "failed",
                 "stdout": STDOUT, "stderr": STDERR})
-    assert requeued == queue.item_path(pool.READY, KEY)
+    assert requeued == queue.records.item_path(pool.record_store.READY, KEY)
     queue.withdraw(KEY, reason="producer timed out", by="rob",
                    signal_child=False)
     return queue, _session(queue, tmp_path)
@@ -85,7 +85,7 @@ def done(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _publish(queue, tmp_path, DONE_KEY)
     assert queue.claim() is not None
     queue.finish(DONE_KEY, status="executed",
@@ -96,11 +96,11 @@ def done(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
 
 def _record(queue: pool.PoolQueue, key: str = KEY) -> dict:
     return json.loads(
-        queue.item_path(pool.WITHDRAWN, key).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text(encoding="utf-8"))
 
 
 def _rewrite(queue: pool.PoolQueue, record: dict, key: str = KEY) -> None:
-    queue.item_path(pool.WITHDRAWN, key).write_text(
+    queue.records.item_path(pool.record_store.WITHDRAWN, key).write_text(
         json.dumps(record), encoding="utf-8")
 
 

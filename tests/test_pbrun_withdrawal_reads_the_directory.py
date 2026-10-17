@@ -125,8 +125,8 @@ def test_an_ending_the_client_has_not_revalidated_still_stops_the_withdrawal(
     """
 
     queue_root = tmp_path / "pb-queue"
-    _ending(queue_root, pool.DONE)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.DONE)
+    _ending(queue_root, pool.record_store.DONE)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.DONE)
 
     marker = pbrun._file_slurm_withdrawal(
         queue_root, _submission(), reason="stale", by="rob",
@@ -134,7 +134,7 @@ def test_an_ending_the_client_has_not_revalidated_still_stops_the_withdrawal(
     )
 
     assert marker is None
-    assert not (queue_root / pool.WITHDRAWN / f"{KEY}.json").exists()
+    assert not (queue_root / pool.record_store.WITHDRAWN / f"{KEY}.json").exists()
 
 
 def test_a_failed_ending_is_read_through_the_same_revalidation(
@@ -143,8 +143,8 @@ def test_a_failed_ending_is_read_through_the_same_revalidation(
     """All three terminal directories, not the one the test happened to pick."""
 
     queue_root = tmp_path / "pb-queue"
-    _ending(queue_root, pool.FAILED)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.FAILED)
+    _ending(queue_root, pool.record_store.FAILED)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.FAILED)
 
     assert pbrun._file_slurm_withdrawal(
         queue_root, _submission(), reason="stale", by="rob",
@@ -164,7 +164,7 @@ def test_an_action_still_running_is_withdrawn_as_before(tmp_path: Path) -> None:
 
     assert marker is not None
     filed = json.loads(
-        (queue_root / pool.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8")
+        (queue_root / pool.record_store.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8")
     )
     assert filed["status"] == "withdrawn"
     assert filed["reason"] == "superseded"

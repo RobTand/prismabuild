@@ -45,7 +45,7 @@ def _offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {KIND: 4, FILL: mb_s}
-    pool._write_json_atomic(path, record)
+    pool.record_store._write_json(path, record)
 
 
 def _sealed(world, key: str) -> dict:
@@ -54,8 +54,8 @@ def _sealed(world, key: str) -> dict:
 
 
 def _row(world, key: str) -> dict:
-    for state in (pool.READY, pool.CLAIMED):
-        row = pool._read_json(world.q.item_path(state, key))
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
+        row = pool.record_store.value_or_raise(world.q.records.item(state, key))
         if row is not None:
             return row
     raise AssertionError(f"no live row for {key[:12]}")

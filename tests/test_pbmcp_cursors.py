@@ -134,7 +134,7 @@ def test_a_fleet_where_nobody_was_staged_has_no_cursors_to_report(
 def test_an_unreadable_plan_is_a_row_that_says_so(
     session: pbmcp.Session, fleet: fx.Fleet,
 ) -> None:
-    path = fleet.queue_root / pool.RESIDENCY_PLANS / f"{fx.CONSUMER_KEY}.json"
+    path = fleet.queue_root / pool.record_store.RESIDENCY_PLANS / f"{fx.CONSUMER_KEY}.json"
     path.chmod(0o644)
     path.write_text("{ not json")
     body = session.call("pb_cursors")

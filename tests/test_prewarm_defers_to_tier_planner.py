@@ -20,7 +20,7 @@ import prewarm_loop  # noqa: E402
 
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 

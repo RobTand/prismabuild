@@ -71,7 +71,7 @@ def offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, FILL: mb_s}
-    pool._write_json_atomic(path, record)
+    pool.record_store._write_json(path, record)
 
 
 def sealed(spool, batch) -> dict:
@@ -96,7 +96,7 @@ def file_prior_receipt(queue, owner, *, rate=60.0, unix=2000.0,
               "flushes": 3, "mb_per_s_file_side": rate}
     exports = Path(queue.root) / "exports"
     exports.mkdir(parents=True, exist_ok=True)
-    pool._write_json_atomic(exports / f"{key}.json", record)
+    pool.record_store._write_json(exports / f"{key}.json", record)
 
 
 def claim(spool):
@@ -253,7 +253,7 @@ def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
 
     foreign = second_paced_write(spool, 60)
     assert claim(spool) is None         # no measurement, no second writer
-    assert spool.queue.item_path(pool.READY, foreign).exists()
+    assert spool.queue.records.item_path(pool.record_store.READY, foreign).exists()
     denial = al._denial(spool.queue, foreign)
     assert denial["reason"] == "tier_reservation_unavailable", denial
 

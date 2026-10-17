@@ -59,7 +59,7 @@ def _config(checkout: Path, capabilities: dict) -> None:
 
 def _stub_queue(tmp_path: Path, monkeypatch, *, tags, answers=()):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(
         host="fenced-box",
         tags=list(tags),

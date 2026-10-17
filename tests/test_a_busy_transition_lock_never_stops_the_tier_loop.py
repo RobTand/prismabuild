@@ -101,10 +101,10 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
 
 
 def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.item_path(pool.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
     source.unlink()
 
 
@@ -161,7 +161,7 @@ class _Pass:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -210,15 +210,15 @@ def test_a_busy_consumer_lock_skips_that_consumer_and_the_next_pass_converges(
     assert busy[0]["holder_pid"] == holder.pid
     # Skipped, not half-done: nothing was withdrawn and the plan stays filed.
     for mover in movers:
-        assert queue.item_path(pool.READY, mover).exists()
-    assert queue.residency_plan_path(FIRST).exists()
+        assert queue.records.item_path(pool.record_store.READY, mover).exists()
+    assert queue.records.residency_plan_path(FIRST).exists()
 
     holder.release()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not _busy(events, FIRST)
     assert {event["mover"] for event in events if event.get("withdrawn")} == set(movers)
-    assert not queue.residency_plan_path(FIRST).exists()
+    assert not queue.records.residency_plan_path(FIRST).exists()
 
 
 def test_a_busy_mover_lock_skips_that_mover_and_keeps_the_plan_until_it_goes(
@@ -247,16 +247,16 @@ def test_a_busy_mover_lock_skips_that_mover_and_keeps_the_plan_until_it_goes(
     assert busy[0]["holder_pid"] == holder.pid
     # The other mover is withdrawn this pass; the busy one waits, and the
     # plan stays filed because the next pass needs it to find that mover.
-    assert queue.item_path(pool.WITHDRAWN, free_mover).exists()
-    assert queue.item_path(pool.READY, busy_mover).exists()
-    assert queue.residency_plan_path(FIRST).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, free_mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, busy_mover).exists()
+    assert queue.records.residency_plan_path(FIRST).exists()
 
     holder.release()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not _busy(events, busy_mover)
     assert busy_mover in {event["mover"] for event in events if event.get("withdrawn")}
-    assert not queue.residency_plan_path(FIRST).exists()
+    assert not queue.records.residency_plan_path(FIRST).exists()
 
 
 def test_a_busy_child_lock_defers_the_reap_to_the_next_pass(
@@ -283,14 +283,14 @@ def test_a_busy_child_lock_defers_the_reap_to_the_next_pass(
     assert len(busy) == 1, run.events
     assert busy[0]["consumer"] == FIRST
     assert busy[0]["holder_pid"] == holder.pid
-    assert queue.residency_plan_path(FIRST).exists()
+    assert queue.records.residency_plan_path(FIRST).exists()
 
     holder.release()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not _busy(events, child)
     assert any(event.get("event") == "residency-plan-reaped" for event in events)
-    assert not queue.residency_plan_path(FIRST).exists()
+    assert not queue.records.residency_plan_path(FIRST).exists()
 
 
 def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited(
@@ -389,6 +389,6 @@ def test_a_stuck_loop_is_visible_from_outside_as_an_aged_announcement(
             f'{int(stuck_for)}' in text), [
         line for line in text.splitlines() if "announce_age" in line]
 
-    row = pbmcp._tier_row(json.loads(queue.tier_record_path(TIER).read_text()))
+    row = pbmcp._tier_row(json.loads(queue.records.tier_record_path(TIER).read_text()))
     assert row["announced_age_s"] > pool.OFFER_TIMEOUT_S
     assert row["liveness_refresh"]["after"] == "sweep_orphans"

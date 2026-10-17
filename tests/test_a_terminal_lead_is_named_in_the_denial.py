@@ -31,7 +31,7 @@ CONSUMER = "2" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -79,7 +79,7 @@ def test_a_failed_lead_is_terminal_not_pending(queue: pool.PoolQueue) -> None:
     assert denial["evidence"]["residency"]["pending"] == [
         {"lead": MOVER, "status": "failed"}]
     # The signal changed; the disposition did not: still ready, still unaged.
-    assert queue.item_path(pool.READY, CONSUMER).exists()
+    assert queue.records.item_path(pool.record_store.READY, CONSUMER).exists()
     assert queue.passes(CONSUMER) == 0
 
 

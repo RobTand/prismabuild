@@ -55,7 +55,7 @@ FORBIDDEN_OS = frozenset({
 })
 
 #: Methods that mutate, lock, or read a whole log, matched on the last
-#: component so that ``pool._write_json_atomic`` and a bare
+#: component so that ``pool.record_store._write_json`` and a bare
 #: ``_write_json_atomic`` are both caught. ``attempt_outcomes`` and
 #: ``attempt_ending`` are here for the log reason rather than the
 #: write reason: they read every stdout and stderr whole to verify a digest,
@@ -67,7 +67,7 @@ FORBIDDEN_METHODS = frozenset({
     "ensure_layout", "_transition_locked", "record_pass", "claim", "publish",
     "withdraw", "finish", "announce", "serve_once", "reap_stale",
     "_write_json_atomic", "publish_immutable", "_publish_immutable",
-    "_atomic_write_new_json", "publish_action_request", "publish_result",
+    "write_new_json", "publish_action_request", "publish_result",
     "ingest_input", "attempt_outcomes", "attempt_ending",
     "archived_preemption_outcomes",
 })
@@ -222,7 +222,7 @@ def test_every_tool_answers_with_every_write_replaced_by_a_refusal(
     def refuse(*args, **kwargs):
         raise _Refused("pbmcp reached a store writer")
 
-    monkeypatch.setattr(pbmcp.pool, "_write_json_atomic", refuse)
+    monkeypatch.setattr(pbmcp.pool.record_store, '_write_json', refuse)
     monkeypatch.setattr(immutable_files, "publish_immutable", refuse)
 
     session = pbmcp.Session(queue_root=fleet.queue_root,

@@ -173,7 +173,7 @@ def _file_receipts(queue: pool.PoolQueue, stage: Path, digest: str, *,
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
@@ -274,7 +274,7 @@ def _stage_copy(stage: Path, name: str, *, marked: bool = True) -> Path:
 
 def _live_fragment(queue: pool.PoolQueue, stage: Path, names: list[str],
                    digest: str) -> None:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": LIVE_CONSUMER, "mover_action_key": LIVE_MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": digest,
@@ -319,7 +319,7 @@ def test_an_egress_receipt_filed_with_its_own_schema_is_evidence(
     queue, stage, *_rest = fleet
     _populate(stage)
     key = fleet[7]
-    record = json.loads(queue.move_path(key).read_text())
+    record = json.loads(queue.records.move_path(key).read_text())
     queue.record_move(key, {**record, "schema": pool.POOL_EGRESS_SCHEMA_V1})
     assert queue.move_record(key)["schema"] == pool.POOL_EGRESS_SCHEMA_V1
 
@@ -448,7 +448,7 @@ def test_a_fragment_that_cannot_be_validated_refuses_the_whole_pass(
 
     queue, stage, *_rest = fleet
     _populate(stage)
-    corrupt = (queue.root / pool.RESIDENCY / LIVE_CONSUMER
+    corrupt = (queue.root / pool.record_store.RESIDENCY / LIVE_CONSUMER
                / f"{LIVE_MOVER}.json")
     corrupt.parent.mkdir(parents=True)
     corrupt.write_text('{"schema": "prismaquant.prismabuild.residency_map')
@@ -599,7 +599,7 @@ def test_an_absent_receipt_is_no_evidence_at_all(fleet, which: str) -> None:
 
     queue, stage, *_rest = fleet
     _populate(stage)
-    queue.move_path(fleet[6] if which == "head" else fleet[7]).unlink()
+    queue.records.move_path(fleet[6] if which == "head" else fleet[7]).unlink()
 
     got = _recover(fleet, apply=True)
     assert got["complete"] is False and got["entries_retired"] == 0
@@ -621,9 +621,9 @@ def test_a_receipt_filed_under_another_actions_key_is_refused(
     queue, stage, _cas, _digest, _originals, *_rest = fleet
     _populate(stage)
     key = fleet[6] if which == "head" else fleet[7]
-    record = json.loads(queue.move_path(key).read_text())
+    record = json.loads(queue.records.move_path(key).read_text())
     record["action_key"] = "7" * 64
-    queue.move_path(key).write_text(json.dumps(record))
+    queue.records.move_path(key).write_text(json.dumps(record))
 
     got = _recover(fleet, apply=True)
     assert got["complete"] is False

@@ -82,12 +82,12 @@ raise SystemExit(code)
     result = subprocess.run([sys.executable, "-B", str(script)], env=environment, capture_output=True,
                             text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
-    state = pool.FAILED if fails else pool.DONE
-    assert json.loads(queue.item_path(state, keys[0]).read_text())["status"] == (
+    state = pool.record_store.FAILED if fails else pool.record_store.DONE
+    assert json.loads(queue.records.item_path(state, keys[0]).read_text())["status"] == (
         "failed" if fails else "executed")
-    assert queue.item_path(pool.READY, keys[1]).exists()
-    assert not list(queue.dir(pool.CLAIMED).glob("*.json"))
-    assert not list(queue.dir(pool.CLAIMED).glob("*.lease"))
+    assert queue.records.item_path(pool.record_store.READY, keys[1]).exists()
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.CLAIMED).glob("*.lease"))
     records = list((queue.root / "generation-drift").glob("*.json"))
     assert len(records) == int(stop_kind == "generation")
     if records:

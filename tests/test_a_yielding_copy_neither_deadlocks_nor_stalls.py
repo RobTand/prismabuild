@@ -163,7 +163,7 @@ def test_a_reader_plan_refreshes_at_its_injected_hold_boundary(
     other, waited = _plan(queue, OTHER, clock), _plan(queue, WAITED, clock)
     assert not other.yields()
     assert waited.exempt()
-    path = queue.tier_record_path(TIER)
+    path = queue.records.tier_record_path(TIER)
     original_inode = path.stat().st_ino
 
     clock.advance(0.125)
@@ -207,7 +207,7 @@ def _standing_mover(tmp_path: Path):
                          "manifest_sha256": "9" * 64, "manifest_bytes": 4 * GIB,
                          "range_start_bytes": 2 * GIB,
                          "range_end_bytes": 4 * GIB}
-    queue.item_path(pool.CLAIMED, str(item["action_key"])).write_text(
+    queue.records.item_path(pool.record_store.CLAIMED, str(item["action_key"])).write_text(
         json.dumps(item))
     return queue, item
 
@@ -216,12 +216,12 @@ def _waited_claimed(queue: pool.PoolQueue, clock: _Clock) -> None:
     """``WAITED`` claimed on ``TIER``, as the worker will read it."""
 
     _publish_mover(queue, WAITED, 0)
-    source = queue.item_path(pool.READY, WAITED)
+    source = queue.records.item_path(pool.record_store.READY, WAITED)
     record = json.loads(source.read_text())
     source.unlink()
     record.update({"claimed_unix": clock.time() - 5.0,
                    "claimed_by": "waited-fixture", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, WAITED).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, WAITED).write_text(json.dumps(record))
 
 
 def _publish_progress(path: Path, token: str, clock: _Clock) -> None:
@@ -374,7 +374,7 @@ def test_the_grace_applies_again_once_the_waited_copy_leaves_the_plan(
     prior_credit = []
 
     def remove_waited() -> None:
-        observation = json.loads(queue.lease_path(str(item["action_key"])).read_text())[
+        observation = json.loads(queue.records.lease_path(str(item["action_key"])).read_text())[
             "progress_observation"]
         credit = observation["reader_plan_exempt_s"]
         assert credit > 0
@@ -418,7 +418,7 @@ def test_a_reader_plan_credit_is_applied_once_per_virtual_interval(
     _announce(queue, [(WAITED, "claimed")])
     policy = pool.progress_policy(item, None)
     assert policy is not None
-    path = queue.action_progress_path(str(item["action_key"]))
+    path = queue.records.action_progress_path(str(item["action_key"]))
     token = "virtual-launch"
     watch = pool.ProgressWatch(path, token, policy, started=clock.monotonic())
     verdict = queue.reader_plan_stand_aside(item)

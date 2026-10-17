@@ -76,7 +76,7 @@ def _payload() -> bytes:
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue
 
 
@@ -120,7 +120,7 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -133,7 +133,7 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
 def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     fragments = residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, consumer)
+        queue.root / pool.record_store.RESIDENCY, consumer)
     entries = residency_map.compose(fragments)["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
     return Path(str(next(iter(entries.values()))["stage_path"]))
@@ -184,7 +184,7 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
     })
     key = str(action["action_key"])
     cas.publish_action_request(action)
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     row = claimed / f"{key}.json"
     row.write_text(json.dumps({
@@ -222,12 +222,12 @@ def _world(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path, str, Path]:
 
 def _fragment_path(queue: pool.PoolQueue, consumer: str, mover: str) -> Path:
     return residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
 
 
 def _material_path(queue: pool.PoolQueue, consumer: str, mover: str) -> Path:
     return reader_lease.material_path(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
 
 
 def _evict(queue: pool.PoolQueue, stage: Path, *, mover: str = MOVER_A,
@@ -288,7 +288,7 @@ def test_an_egress_during_a_live_promotion_keeps_the_sources_proof(
     assert _material_path(queue, CONSUMER_A, MOVER_A).exists(), (
         "the surviving bytes lost their material sidecar")
     composed = residency_map.compose(residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, CONSUMER_A))["entries"]
+        queue.root / pool.record_store.RESIDENCY, CONSUMER_A))["entries"]
     assert [str(entry["stage_path"]) for entry in composed.values()] == [
         str(staged)], "the consumer's map must still name the staged range"
 
@@ -341,7 +341,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     receipt = _evict(queue, stage)
     assert receipt["entries_deferred"] == 1
     assert receipt["retiring"] is False
-    leases = reader_lease.leases_root(queue, queue.root / pool.RESIDENCY)
+    leases = reader_lease.leases_root(queue, queue.root / pool.record_store.RESIDENCY)
     marks, tainted = reader_lease.retiring_for(leases, MOVER_A)
     assert (marks, tainted) == ([], []), (
         "a handoff-only deferral must not close this generation")
@@ -362,7 +362,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -386,7 +386,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     # Negative control: the mark this deferral deliberately did not write
     # would have refused that promotion.
     material = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, CONSUMER_A, MOVER_A)
+        queue.root / pool.record_store.RESIDENCY, CONSUMER_A, MOVER_A)
     assert isinstance(material, dict)
     reader_lease.write_retiring(
         leases, consumer_action_key=CONSUMER_A, mover_action_key=MOVER_A,
@@ -406,7 +406,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -532,10 +532,10 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     assert proof.get("ok"), proof
     live, taint = reader_lease.live_for(
         queue, {os.path.normpath(str(staged))},
-        residency_root=queue.root / pool.RESIDENCY)
+        residency_root=queue.root / pool.record_store.RESIDENCY)
     assert taint == [] and live.get(os.path.normpath(str(staged))), (
         "the fixture must leave a real live pin, not a proof-only cover")
-    leases = reader_lease.leases_root(queue, queue.root / pool.RESIDENCY)
+    leases = reader_lease.leases_root(queue, queue.root / pool.record_store.RESIDENCY)
 
     during = _evict(queue, stage)
     assert during["entries_deferred"] == 1, during

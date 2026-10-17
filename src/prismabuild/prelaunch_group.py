@@ -165,7 +165,7 @@ def group_dir(queue: pool.PoolQueue, unit: str, tier_id: str) -> Path:
 def _read_receipt(path: Path) -> tuple[str, dict | None, str | None]:
     """Read one receipt as absent, record or unknown with its reason."""
     try:
-        raw = pool._read_json(path)
+        raw = pool.record_store.read_document(path)
     except OSError as exc:
         return ("unknown", None, f"receipt unreadable: {exc!r}")
     except pool.PoolContractError as exc:
@@ -460,9 +460,13 @@ def _count_shared_pinned(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
     if len(names) < span:
         return
     try:
-        if queue.item_path(pool.CLAIMED, mover).exists():
+        if bool(
+            pool.record_store.value_or_raise(
+                queue.records.item_presence(pool.record_store.CLAIMED, mover),
+            ),
+        ):
             return
-        done = pool._read_json(queue.item_path(pool.DONE, mover))
+        done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, mover))
     except (OSError, pool.PoolContractError, ValueError):
         found.funding_unknown.append(mover)
         return
@@ -992,8 +996,16 @@ def _birth_record(queue: pool.PoolQueue, tier_id: str, mover: str, kind: str,
 
 def _row_is_ready(queue: pool.PoolQueue, mover: str) -> bool:
     """True while the mover's row waits to be claimed, never once claimed."""
-    return (queue.item_path(pool.READY, mover).exists()
-            and not queue.item_path(pool.CLAIMED, mover).exists())
+    return (bool(
+        pool.record_store.value_or_raise(
+            queue.records.item_presence(pool.record_store.READY, mover),
+        ),
+    )
+            and not bool(
+                pool.record_store.value_or_raise(
+                    queue.records.item_presence(pool.record_store.CLAIMED, mover),
+                ),
+            ))
 
 
 def _rotate_record(queue: pool.PoolQueue, mover: str, tier_id: str,
@@ -1127,8 +1139,16 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         raise ValueError(f"the chunk needs its live plan: {exc!r}")
     kind = storage_tiers.capacity_kind_of(tier_id)
     ledger = queue.tier_ledger(tier_id)
-    if not (queue.item_path(pool.READY, mover).exists()
-            or queue.item_path(pool.CLAIMED, mover).exists()):
+    if not (bool(
+        pool.record_store.value_or_raise(
+            queue.records.item_presence(pool.record_store.READY, mover),
+        ),
+    )
+            or bool(
+                pool.record_store.value_or_raise(
+                    queue.records.item_presence(pool.record_store.CLAIMED, mover),
+                ),
+            )):
         return PublishOutcome("refused", ["prelaunch-mover-unpublished"],
                               None, 0)
     try:
@@ -1343,9 +1363,13 @@ def _republished(record: Mapping[str, object], tier_id: str, mover: str,
 
 def _release_row_state(queue: pool.PoolQueue, mover: str) -> str:
     """One mover's row state: claimed, ready, or gone."""
-    if queue.item_path(pool.CLAIMED, mover).exists():
+    if pool.record_store.value_or_raise(
+        queue.records.item_presence(pool.record_store.CLAIMED, mover),
+    ):
         return "claimed"
-    if queue.item_path(pool.READY, mover).exists():
+    if pool.record_store.value_or_raise(
+        queue.records.item_presence(pool.record_store.READY, mover),
+    ):
         return "ready"
     return "gone"
 
@@ -1385,7 +1409,11 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                 or mover in shared
                 or not _chunk_binds(intent, record, mover)):
             continue
-        if _release_row_state(queue, mover) == "claimed":
+        try:
+            if _release_row_state(queue, mover) == "claimed":
+                continue
+        except (OSError, pool.PoolContractError, ValueError):
+            events.append("prelaunch-unknown-evidence")
             continue
         generation = record.get("generation")
         try:
@@ -1400,7 +1428,12 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             events.append("prelaunch-unknown-evidence")
             continue
         tokens = _record_tokens(record) or []
-        if _release_row_state(queue, mover) == "ready":
+        try:
+            state = _release_row_state(queue, mover)
+        except (OSError, pool.PoolContractError, ValueError):
+            events.append("prelaunch-unknown-evidence")
+            continue
+        if state == "ready":
             try:
                 held = set(pool.held_names_visible(ledger, mover))
             except (OSError, pool.PoolContractError, ValueError):
@@ -1492,7 +1525,7 @@ def has_holdings(queue: pool.PoolQueue, unit: str) -> bool:
                 return True
     prefix = f"{HOLDER_PREFIX}{unit[:16]}-"
     try:
-        base = queue.root / pool.TIER_RESERVATIONS
+        base = queue.root / pool.record_store.TIER_RESERVATIONS
         tiers = [p for p in base.iterdir() if p.is_dir()]
     except FileNotFoundError:
         tiers = []

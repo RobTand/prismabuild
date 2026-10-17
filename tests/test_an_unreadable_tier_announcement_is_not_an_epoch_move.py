@@ -44,7 +44,7 @@ def held(tmp_path: Path):
     """A RAM pin acquired under ``epoch-1``, and what opening it needs."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     stage_release.register_stage_root(queue, tier_id=STAGE_TIER,
@@ -52,7 +52,7 @@ def held(tmp_path: Path):
     staged = stage / "model" / "p.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x16" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key = residency_map.residency_map_key(SOURCE, 0)
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
@@ -155,7 +155,7 @@ def test_torn_bytes_once_then_the_same_epoch_opens(held, monkeypatch):
 
     from prismabuild import core
 
-    real_read = core._read_regular_file_nofollow
+    real_read = core.immutable_files._read_file
     torn: list[Path] = []
 
     def tearing(path, **kwargs):
@@ -164,7 +164,7 @@ def test_torn_bytes_once_then_the_same_epoch_opens(held, monkeypatch):
             return b'{"tier_id": "ram:testhost", "epo'
         return real_read(path, **kwargs)
 
-    monkeypatch.setattr(core, "_read_regular_file_nofollow", tearing)
+    monkeypatch.setattr(core.immutable_files, '_read_file', tearing)
     fd, serving = _open(held)
     try:
         assert torn, "the torn read was never served"

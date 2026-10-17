@@ -80,12 +80,12 @@ class Fleet:
 
     def record(self, state: str, key: str) -> dict:
         return json.loads(
-            self.queue.item_path(state, key).read_text(encoding="utf-8"))
+            self.queue.records.item_path(state, key).read_text(encoding="utf-8"))
 
     def attempt_log(self, key: str, attempt: int = 1, stream: str = "stdout") -> Path:
-        record = self.record(pool.DONE, key)
+        record = self.record(pool.record_store.DONE, key)
         outcome = json.loads(
-            self.queue.attempt_path(record, attempt).read_text(encoding="utf-8"))
+            self.queue.records.attempt_path(record, attempt).read_text(encoding="utf-8"))
         return self.queue_root / str(outcome["logs"][stream]["path"])
 
 
@@ -95,7 +95,7 @@ def build(base: Path, *, host: str = "fixture-box") -> Fleet:
     fleet = Fleet(base)
     fleet.checkout.mkdir(parents=True, exist_ok=True)
     queue = pool.PoolQueue(fleet.queue_root)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     common = {
         "cas_root": fleet.cas_root,
         "checkout_root": str(fleet.checkout),
@@ -308,13 +308,13 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
         "manifest_sha256": CONSUMER_MANIFEST,
         "manifest_bytes": 4 * STARVED_GIB,
         "leads": residency_plan.leads_for(plan)})
-    ready_path = queue.item_path(pool.READY, CONSUMER_KEY)
+    ready_path = queue.records.item_path(pool.record_store.READY, CONSUMER_KEY)
     record = json.loads(ready_path.read_text())
     record.update({"claimed_unix": now - 100, "claimed_host": host,
                    "claimed_by": f"worker-{host}"})
-    queue.item_path(pool.CLAIMED, CONSUMER_KEY).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, CONSUMER_KEY).write_text(json.dumps(record))
     ready_path.unlink()
-    queue.lease_path(CONSUMER_KEY).write_text(json.dumps({
+    queue.records.lease_path(CONSUMER_KEY).write_text(json.dumps({
         "action_key": CONSUMER_KEY, "owner": record["claimed_by"], "host": host,
         "claimed_unix": record["claimed_unix"],
         "published_unix": record["published_unix"],
@@ -375,7 +375,7 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
         "capacity_bytes": 8 * STARVED_GIB, "sampled_unix": now - 5,
         "epoch": RAM_EPOCH, "window_gib": 4})
     published = json.loads(
-        queue.item_path(pool.READY, _hexkey("mover1")).read_text())
+        queue.records.item_path(pool.record_store.READY, _hexkey("mover1")).read_text())
     denials = {
         "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
             "mover": {"action_key": _hexkey("mover1"),

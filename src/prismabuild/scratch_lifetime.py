@@ -22,7 +22,7 @@ def build_scratch_lifetime_selection(entries: object) -> dict[str, object]:
     """Build one sealed versioned lifetime selection, validated, with no I/O.
 
     The pool validates the same shape again at publication; the SDK builds the
-    exact object the sealed ``scratch_declarations.DECLARATIONS_ENV`` variable carries. A builder
+    exact object the sealed ``DECLARATIONS_ENV`` variable carries. A builder
     output never grants cleanup, quota, or deletion authority. The builder
     enforces the pool's 16 KiB sealed-input bound on its canonical bytes.
     """
@@ -483,11 +483,12 @@ def _clean_scratch_directory(declaration: Mapping[str, object], identity: object
 
 
 def register_attempt(
-    store: RecordStore, queue, action_key: str, *, claim_snapshot: Mapping[str, object], env: Mapping[str, str],
+    queue, action_key: str, *, claim_snapshot: Mapping[str, object], env: Mapping[str, str],
 ) -> dict[str, object] | None:
     """Commit ownership through the existing claim/lease owner before launch."""
     from .pool import _check_claim_lease_identity
 
+    store = queue.records
     with queue._transition_locked(str(action_key)):
         selected = selections(
             scratch_declarations._sealed_scratch_variables(claim_snapshot))
@@ -552,7 +553,7 @@ def durable_owner(store: RecordStore, record: Mapping[str, object], *, scope_onl
     except ScratchOwnerConflict as exc:
         raise scratch_declarations.LocalScratchError(str(exc)) from exc
     field = SCRATCH_LIFETIME_FIELD
-    if store.is_scratch_lease(path, key) and live is not None and field in live:
+    if path == store.lease_path(key) and live is not None and field in live:
         envelope = validate_record(live[field])["claim_envelope"]
         for claim_field, lease_field in (("action_key", "action_key"),
                                         ("claimed_by", "owner"), ("claimed_host", "host"),
@@ -585,7 +586,7 @@ def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping
         record, scope_only=scope_only, owner_path=owner_path)
     if live is None or scratch_declarations._scratch_claim_envelope(live) != checked["claim_envelope"]:
         raise scratch_declarations.LocalScratchError("scratch lifetime durable owner unavailable")
-    lease = None if scope_only or store.is_scratch_lease(path, key) else _scratch_record_value(store.lease(key))
+    lease = None if scope_only or path == store.lease_path(key) else _scratch_record_value(store.lease(key))
     if not scope_only:
         _check_claim_lease_identity(key, live, lease)
     if lease is not None:
@@ -613,19 +614,20 @@ def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping
                     or before["cleaned"] and not after["cleaned"]):
                 raise scratch_declarations.LocalScratchError("scratch lifetime mirror regressed")
     if live.get(field) != checked:
-        store.write_scratch_owner(path, {**live, field: checked})
+        store.replace_record_at(path, {**live, field: checked})
     if isinstance(record, dict):
         record[field] = checked
     if lease is not None and lease.get(field) != checked:
-        store.write_scratch_lease(key, {**lease, field: checked})
+        store.replace_record_at(store.lease_path(key), {**lease, field: checked})
 
 
-def finalize(store: RecordStore, queue, action_key: str, record: Mapping[str, object],
+def finalize(queue, action_key: str, record: Mapping[str, object],
                                  *, export: object, scope_only=False,
                                  owner_path: Path | None = None) -> dict[str, object]:
     """Only stopped attempt descendants permit consuming owned scratch."""
     from .pool import _same_claim
 
+    store = queue.records
     with queue._transition_locked(str(action_key)):
         field = SCRATCH_LIFETIME_FIELD
         _, durable = durable_owner(store,

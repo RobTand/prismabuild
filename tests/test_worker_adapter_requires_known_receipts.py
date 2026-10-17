@@ -42,7 +42,7 @@ CASES = [
 def test_public_adapter_requires_a_known_pair(tmp_path, loaded, published, verdict):
     queue, cas, action = prepare(tmp_path, REPOSITORY)
     key = action["action_key"]
-    ready = queue.item_path(pool.READY, key)
+    ready = queue.records.item_path(pool.record_store.READY, key)
     original_ready = ready.read_bytes()
     for name, kind in (("loaded.json", loaded), ("published.json", published)):
         if RECEIPTS[kind] is not None:
@@ -90,10 +90,10 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
         "outcome": output["outcome"]["status"] if output["outcome"] else None,
         "declined_as_drift": "runtime moved" in output.get("declined", ""),
         "drift_incidents": len(drifts), "cas_receipt": receipt is not None,
-        "done": queue.item_path(pool.DONE, key).exists(),
-        "failed": queue.item_path(pool.FAILED, key).exists(),
+        "done": queue.records.item_path(pool.record_store.DONE, key).exists(),
+        "failed": queue.records.item_path(pool.record_store.FAILED, key).exists(),
         "ready_unchanged": ready.exists() and ready.read_bytes() == original_ready,
-        "claims": list(queue.dir(pool.CLAIMED).glob("*.json")),
+        "claims": list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json")),
         "held": queue.ledger().held(),
     }
     expected = {
@@ -136,7 +136,7 @@ raise SystemExit(run_adapter(Path({str(tmp_path)!r}), repository))
         assert runs[0]["scope"] == control["scope_id"]
         assert set(payload["affinity"]) <= set(runs[0]["affinity"])
         assert set(runs[0]["affinity"]) <= set(process["affinity"])
-        terminal = json.loads(queue.item_path(pool.DONE, key).read_text())
+        terminal = json.loads(queue.records.item_path(pool.record_store.DONE, key).read_text())
         allocation = terminal["cpu_allocation"]
         assert payload["affinity"] == sorted(allocation["preferred"] + allocation["fallback"])
         operations = [call["op"] for call in calls]

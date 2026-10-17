@@ -91,7 +91,7 @@ def build_forest(queue: pool.PoolQueue, stage: Path, *, empty_dirs: int,
     anyway.
     """
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     root.mkdir(parents=True, exist_ok=True)
     counts = collections.Counter()
     for index in range(empty_dirs):
@@ -476,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
     assert stage_release.register_stage_root(

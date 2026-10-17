@@ -1378,7 +1378,7 @@ def test_an_attached_pbrun_joins_a_running_job_instead_of_submitting_again(
     assert f"already running (slurm job {running.job_id})" in err
     assert "attaching to it rather than submitting a second copy" in err
     ending = json.loads(
-        (queue / pool.FAILED / f"{action['action_key']}.json").read_text())
+        (queue / pool.record_store.FAILED / f"{action['action_key']}.json").read_text())
     assert ending["detail"]["slurm"]["job_id"] == running.job_id
     # And the same exit code a caller that had submitted this job would read
     # for this ending: it completed and published no receipt.

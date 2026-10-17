@@ -234,7 +234,7 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
     (whole-phase) ``ram``, which stays ``None`` so the existing shape holds."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan()
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}), residency={

@@ -63,12 +63,13 @@ def test_registration_keeps_intent_parent_leaf_and_mirror_order(lifetime, monkey
         return ("ready" if evidence["registration_complete"] else "leaf" if entry["identity"]
                 else "parent" if entry["parent_identity"] else "intent")
 
-    for name, label in (("write_scratch_owner", "owner"), ("write_scratch_lease", "lease")):
-        original = getattr(RecordStore, name)
-        def write(self, path, record, original=original, label=label):
+    original = RecordStore.replace_record_at
+    def write(self, path, record):
+        if scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
+            label = "lease" if path == self.lease_path(item["action_key"]) else "owner"
             events.append((label, phase(record)))
-            return original(self, path, record)
-        monkeypatch.setattr(RecordStore, name, write)
+        return original(self, path, record)
+    monkeypatch.setattr(RecordStore, "replace_record_at", write)
     for name, label in (("_prepare_scratch_directory", "prepare"),
                         ("_create_scratch_directory", "create"),
                         ("_check_registered_scratch_directory", "check")):
@@ -77,9 +78,9 @@ def test_registration_keeps_intent_parent_leaf_and_mirror_order(lifetime, monkey
             events.append(label)
             return original(*args)
         monkeypatch.setattr(scratch_lifetime, name, step)
-    lease_before = pool._read_json(queue.lease_path(item["action_key"]))
+    lease_before = pool.record_store.read_document(queue.records.lease_path(item["action_key"]))
     scope = item["resource_scope"]
-    scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"],
+    scratch_lifetime.register_attempt(queue, item["action_key"],
         claim_snapshot=item, env={pb.ACTION_KEY_ENV: item["action_key"],
                                  pb.ACTION_NONCE_ENV: scope["nonce"],
                                  pb.ACTION_SCOPE_ENV: scope["scope_id"]})
@@ -87,7 +88,7 @@ def test_registration_keeps_intent_parent_leaf_and_mirror_order(lifetime, monkey
                       ("owner", "parent"), ("lease", "parent"), "create",
                       ("owner", "leaf"), ("lease", "leaf"), "check",
                       ("owner", "ready"), ("lease", "ready")]
-    lease_after = pool._read_json(queue.lease_path(item["action_key"]))
+    lease_after = pool.record_store.read_document(queue.records.lease_path(item["action_key"]))
     assert {k: v for k, v in lease_after.items() if k != scratch_lifetime.SCRATCH_LIFETIME_FIELD} == lease_before
 
 
@@ -102,15 +103,15 @@ def test_persistent_only_owner_does_not_read_containment_or_directories(runtime,
     queue._start_resource_scope(item)
     monkeypatch.setattr(queue, "_scope_from_record", lambda *a: pytest.fail("needless containment read"))
     monkeypatch.setattr(scratch_lifetime, "_prepare_scratch_directory", lambda *a: pytest.fail("persistent directory read"))
-    scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={})
-    assert scratch_lifetime.finalize(RecordStore(queue.root), queue, item["action_key"], item,
+    scratch_lifetime.register_attempt(queue, item["action_key"], claim_snapshot=item, env={})
+    assert scratch_lifetime.finalize(queue, item["action_key"], item,
                                      export=None) == {"complete": True, "used": True}
     assert not Path(variables["CACHE_ROOT"]).exists()
 
 
 def test_durably_cleaned_owner_does_not_requery_scope(lifetime, monkeypatch):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
-    assert scratch_lifetime.finalize(RecordStore(queue.root), queue, item["action_key"], item, export=None)["complete"]
+    assert scratch_lifetime.finalize(queue, item["action_key"], item, export=None)["complete"]
     monkeypatch.setattr(queue, "_scope_from_record", lambda *a: pytest.fail("needless containment read"))
     monkeypatch.setattr(scratch_lifetime, "_clean_scratch_directory", lambda *a: pytest.fail("consumed directory revisited"))
-    assert scratch_lifetime.finalize(RecordStore(queue.root), queue, item["action_key"], item, export=None)["complete"]
+    assert scratch_lifetime.finalize(queue, item["action_key"], item, export=None)["complete"]

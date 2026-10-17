@@ -50,7 +50,7 @@ def _unprovable(fleet, tmp_path, monkeypatch, cause: str):
     world = loop._World(fleet, tmp_path, monkeypatch, order)
     if cause == "unreadable-fragment":
         path = residency_map.fragment_path(
-            queue.residency_fragment_root(), base._key(), base._key())
+            queue.records.residency_fragment_root(), base._key(), base._key())
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
     return world, consumer, mover, loop._staged(stage, loop._divergent(order))
@@ -148,7 +148,7 @@ def test_an_ending_that_settles_by_itself_is_never_counted(
                       worker_script="/w.py", resources={"cpu": 1},
                       max_attempts=1, recompute=True, tags=["nowhere"])
     else:
-        queue.lease_path(consumer).write_text("{}")
+        queue.records.lease_path(consumer).write_text("{}")
     for _run in range(BOUND + 1):
         rc, receipt = world.run()
         assert rc == 0 and receipt.get("refusal") is None, (

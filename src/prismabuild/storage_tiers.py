@@ -126,7 +126,7 @@ ARC_DATA_CACHE_SETTINGS = frozenset({"all"})
 FILL_KIND = "fill_mb_s_pool_side"
 #: The record field the tier publishes it under, same spelling as the token.
 FILL_RECORD_FIELD = "fill_mb_s_pool_side"
-TIER_DEMAND_SEPARATOR = "@"
+from .record_store import TIER_DEMAND_SEPARATOR
 #: Host-ledger holder prefix for a RAM-tier fill's memory hold (#1222).  The
 #: holder takes host ``mem_gb`` tokens and nothing else: it is a mirror of
 #: bytes resident in the tmpfs, never an action, and runs no process.  The

@@ -226,7 +226,7 @@ def _on(monkeypatch, host):
 def test_scratch_larger_than_a_box_is_never_claimed_there_and_is_claimed_where_it_fits(
         tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
     need = ls.scratch_terms({SPILL[0]: "/s", SPILL[1]: str(SPILL_BYTES),
                              PAIRS: ":".join(SPILL)})[KIND]
@@ -249,7 +249,7 @@ def test_scratch_larger_than_a_box_is_never_claimed_there_and_is_claimed_where_i
 def test_two_scratch_holders_cannot_jointly_exceed_one_box(tmp_path, monkeypatch):
     _on(monkeypatch, "box")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     first, second = "b" * 64, "c" * 64
     _publish(queue, first, SPILL_GIB)
     _publish(queue, second, SPILL_GIB)
@@ -263,13 +263,13 @@ def test_two_scratch_holders_cannot_jointly_exceed_one_box(tmp_path, monkeypatch
     assert denial["reason"].startswith("reservation_unavailable")
     assert denial["evidence"]["token_shortage"]["resource"] == KIND
     assert queue.ledger().held()[KIND] == SPILL_GIB <= capacity[KIND]
-    assert queue.item_path(pool.READY, waiting).exists()
+    assert queue.records.item_path(pool.record_store.READY, waiting).exists()
 
 
 def test_two_holders_that_fit_together_are_both_claimed(tmp_path, monkeypatch):
     _on(monkeypatch, "box")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _publish(queue, "d" * 64, 100)
     _publish(queue, "e" * 64, 100)
     capacity = {"cpu": 4, "mem_gb": 8, KIND: 200}
@@ -280,7 +280,7 @@ def test_two_holders_that_fit_together_are_both_claimed(tmp_path, monkeypatch):
 
 def test_submission_is_refused_when_every_matching_box_declares_too_little(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for host in ("sparky", "sparklina"):
         queue.announce(host=host, tags=["gb10", host], has_gpu=False,
                        capacity={"cpu": 2, "mem_gb": 4, KIND: 32})

@@ -26,7 +26,7 @@ def _metadata_only_cycle(tmp_path: Path) -> pool.PoolQueue:
     """One tier cycle over a stage dataset that forbids the ARC to cache it."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def discover(**_kwargs):
         return {TIER: {
@@ -71,7 +71,7 @@ def test_pbstatus_starvation_shows_the_newest_host_event(tmp_path):
     import pbstatus
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tier_loop._emit(queue, HOST, {"event": "ram-admission-refused", "tier_id": TIER})
     tier_loop._emit(queue, HOST, {"event": "ram-epoch-changed", "tier_id": TIER})
 

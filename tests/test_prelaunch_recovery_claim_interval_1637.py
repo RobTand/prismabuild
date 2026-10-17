@@ -211,7 +211,7 @@ def test_a_claim_is_deferred_when_the_funding_record_cannot_be_read(
     assert _tokens(queue, first) == 1
     monkeypatch.setattr(queue, "transfer_tier_reservation_count", real)
 
-    restore = breaker(queue.funding_path(first, TIER))
+    restore = breaker(queue.records.funding_path(first, TIER))
     try:
         got = queue.claim(tags=["dl380g10"], owner="w-unreadable")
         state = {"claimed": None if got is None else str(got["action_key"])[-8:],

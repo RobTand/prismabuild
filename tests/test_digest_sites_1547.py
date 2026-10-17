@@ -33,6 +33,22 @@ def main_definitions(path, names, *, revision=MAIN, **bindings):
     return SimpleNamespace(**namespace)
 
 
+def historical_core(tmp_path):
+    source = subprocess.run(
+        ["git", "show", f"{MAIN}:src/prismabuild/core.py"], cwd=ROOT,
+        check=True, text=True, capture_output=True).stdout
+    imports = [node for node in ast.walk(ast.parse(source))
+               if isinstance(node, ast.ImportFrom)]
+    assert all(node.level == 0 for node in imports)
+    assert all(not (node.module or "").startswith("prismabuild") for node in imports)
+    path = tmp_path / "historical_core.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location("digest_sites_historical_core", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def fleet_module(name):
     path = ROOT / "tools" / "fleet" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"digest_sites_{name}", path)
@@ -53,7 +69,7 @@ def test_checkout_json_digest_hashes_exact_read_bytes(tmp_path):
     path = tmp_path / "record.json"
     path.write_bytes(raw)
     old = main_definitions("src/prismabuild/checkout_recovery.py", ["_json"],
-                           pb=core, MAX_JSON_BYTES=recovery.MAX_JSON_BYTES,
+                           pb=historical_core(tmp_path), MAX_JSON_BYTES=recovery.MAX_JSON_BYTES,
                            _refuse=lambda text: pytest.fail(text))
     assert recovery._json(path, "test record") == old._json(path, "test record")
 
@@ -106,9 +122,14 @@ def test_recovery_main_result_bytes_and_nonfinite_refusal_match_main(monkeypatch
 
 def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     module = fleet_module("pbgang")
+    historical_pool = SimpleNamespace(**vars(module.pool))
+    historical_pool.PoolQueue = lambda path: SimpleNamespace(
+        item_path=lambda state, key: key,
+        residency_plan_path=lambda key: tmp_path / f"missing-{key}.json")
+    historical_pool._read_json = lambda path: {}
     old = main_definitions("tools/fleet/pbgang.py", ["main"],
                            argparse=module.argparse, secrets=module.secrets, sys=sys,
-                           subprocess=module.subprocess, pool=module.pool, _gang=module._gang,
+                           subprocess=module.subprocess, pool=historical_pool, _gang=module._gang,
                            SH=module.SH, SCHEMA=module.SCHEMA, __doc__=module.__doc__,
                            load=module._pbgang_load_manifest,
                            member_command=module.member_command, withdraw=module.withdraw)
@@ -120,9 +141,8 @@ def test_gang_main_result_bytes_match_main(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs:
         SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"status": "submitted", "action_key": next(keys)})))
     monkeypatch.setattr(module.pool, "PoolQueue", lambda path:
-        SimpleNamespace(item_path=lambda state, key: key,
-                        residency_plan_path=lambda key: tmp_path / f"missing-{key}.json"))
-    monkeypatch.setattr(module.pool, "_read_json", lambda path: {})
+        SimpleNamespace(records=module.pool.record_store.RecordStore(tmp_path / "queue")))
+    monkeypatch.setattr(module.pool.record_store, "_read_json", lambda path: {})
     monkeypatch.setattr(module._gang, "publish_group", lambda *args, **kwargs:
         {"skew_s": 1.25, "priority": 7})
 

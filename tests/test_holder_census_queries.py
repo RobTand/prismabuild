@@ -124,7 +124,7 @@ def test_claim_commit_distinguishes_absent_metadata_from_a_present_empty_record(
         queue.finish(KEY, status='executed', detail={})
     else:
         assert claimed is None
-        assert queue.item_path(pool.READY, KEY).exists()
+        assert queue.records.item_path(pool.record_store.READY, KEY).exists()
         records = adaptive_cpu.read_json(
             adaptive_cpu.local_state_base(ledger.base) / pool.CLAIM_DENIALS)['records']
         assert any(record['action_key'] == KEY

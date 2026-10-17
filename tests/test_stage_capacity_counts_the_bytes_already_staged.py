@@ -60,7 +60,7 @@ def _landed(queue, mover, gib, *, complete=True):
 
 def test_staged_bytes_are_capacity_not_a_deduction(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     first = _cycle(queue, tmp_path, 600 * GIB)
     ledger = queue.tier_ledger(TIER)
     assert ledger.capacity()[KIND] == 600
@@ -91,7 +91,7 @@ def test_an_in_flight_reservation_is_not_free_supply(tmp_path):
     window (#623).  The supply is 600 and 200 of it is spoken for.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
     ledger = queue.tier_ledger(TIER)
     assert ledger.acquire(MOVER, {KIND: 200})          # claimed, copying, no receipt
@@ -121,7 +121,7 @@ def test_an_in_flight_reservation_is_not_free_supply(tmp_path):
 def test_a_copy_that_fell_short_is_still_in_flight(tmp_path):
     """An incomplete receipt pins nothing; until its tokens go, they deduct."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
     ledger = queue.tier_ledger(TIER)
     assert ledger.acquire(MOVER, {KIND: 200})
@@ -135,7 +135,7 @@ def test_a_copy_that_fell_short_is_still_in_flight(tmp_path):
 def test_writable_below_the_in_flight_reservation_mints_without_raising(tmp_path):
     """Late in a copy ZFS reports less than the copy still holds; free is 0, not an error."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
     ledger = queue.tier_ledger(TIER)
     assert ledger.acquire(MOVER, {KIND: 200})
@@ -146,7 +146,7 @@ def test_writable_below_the_in_flight_reservation_mints_without_raising(tmp_path
 
 def test_a_release_returns_the_supply_to_what_zfs_reports(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
     ledger = queue.tier_ledger(TIER)
     assert ledger.acquire(MOVER, {KIND: 200})
@@ -163,7 +163,7 @@ def test_a_record_without_a_writable_source_is_minted_as_before(tmp_path):
     """A fake or legacy record that does not say ``zfs available`` is not
     reinterpreted: its capacity is taken as the whole supply, as it was."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,

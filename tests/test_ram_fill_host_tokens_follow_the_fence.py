@@ -31,7 +31,7 @@ RAM_TIER = storage_tiers.tier_id("ram", HOST)
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger(HOST)
     ledger.ensure_capacity({"cpu": 80, "mem_gb": 256})
     queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 300})

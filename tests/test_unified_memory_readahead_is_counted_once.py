@@ -83,7 +83,7 @@ def test_the_basis_is_still_the_memory_reservation() -> None:
 
 
 def _set_domain(queue: pool.PoolQueue, key: str, domain: str) -> None:
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     item = json.loads(path.read_text())
     item["gpu_admission"]["memory_domain"] = domain
     path.write_text(json.dumps(item))

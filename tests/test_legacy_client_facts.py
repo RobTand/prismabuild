@@ -19,7 +19,7 @@ def test_legacy_cli_exit_is_preserved_with_only_valid_numeric_facts(tmp_path, ra
     queue = Queue(tmp_path / 'queue')
     record = _ending('failed', raw)
     record['detail'].update(action_returncode='9', action_signal=False, receipt_published='true')
-    queue.item_path('failed', KEY).write_text(json.dumps(record))
+    queue.records.item_path('failed', KEY).write_text(json.dumps(record))
     outcome = client.await_pool_outcome(queue, KEY, patience=action_wait.ProbeOnce(0))
     assert outcome.ending.exit_code == expected
     assert type(outcome.ending.exit_code) is int

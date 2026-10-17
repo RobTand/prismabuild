@@ -59,7 +59,7 @@ OWN_DEFERRED = "own-copy-in-flight"
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.mint_tier_capacity(TIER, {"stage_gib": 1})
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -156,7 +156,7 @@ def _move_args(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(size),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2", "--max-readers", "2", "--unpaced",
     ])
@@ -186,7 +186,7 @@ def _completed_gap(queue: pool.PoolQueue, tmp_path: Path, stage: Path,
 
 
 def _mutate_receipt(queue: pool.PoolQueue, key: str, **overrides: object) -> None:
-    path = queue.move_path(key)
+    path = queue.records.move_path(key)
     record = json.loads(path.read_text())
     record.update(overrides)
     path.write_text(json.dumps(record))
@@ -214,7 +214,7 @@ def _assert_deferred(queue: pool.PoolQueue, key: str, consumer: str,
     assert receipt["tokens_decharged"] == 0, (label, receipt)
     assert staged.exists(), label
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, key).exists(), label
+        queue.root / pool.record_store.RESIDENCY, consumer, key).exists(), label
     assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
     assert _free(queue) == 0, label
 
@@ -228,7 +228,7 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
 
     queue, stage = fleet
     key, _digest, staged = _completed_gap(queue, tmp_path, stage)
-    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
     assert _free(queue) == 0
 
@@ -238,7 +238,7 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
     # The worker's terminal transition: the claim row goes, the complete
     # receipt keeps the tier tokens pinned (residency_pin_holds).
     queue.finish(key, status="executed")
-    assert not queue.item_path(pool.CLAIMED, key).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.tier_ledger(TIER).holder_tokens(key) == {"stage_gib": 1}
 
     after = _evict(queue, key, CONSUMER, stage)
@@ -250,12 +250,12 @@ def test_a_completed_own_copy_defers_then_retires_after_the_claim(fleet,
     assert after["tokens_decharged"] == 0
     assert not staged.exists()
     assert residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, CONSUMER) == []
+        queue.root / pool.record_store.RESIDENCY, CONSUMER) == []
     assert queue.tier_ledger(TIER).holder_tokens(key) == {}
     assert _free(queue) == 1, "the one token comes back exactly once"
     # The mover's own content-addressed receipt survives the retirement: the
     # egress retires bytes and charge, never another node's evidence.
-    assert queue.move_path(key).exists()
+    assert queue.records.move_path(key).exists()
 
 
 def test_the_second_retirement_of_the_range_is_a_no_op(fleet, tmp_path) -> None:
@@ -303,7 +303,7 @@ def test_distinct_groups_run_through_one_token_without_loss(fleet,
 
 
 def _unlink_receipt(queue, key, _stage):
-    queue.move_path(key).unlink()
+    queue.records.move_path(key).unlink()
 
 
 def _incomplete(queue, key, _stage):
@@ -348,7 +348,7 @@ def _another_host(queue, key, _stage):
 
 
 def _no_stamp(queue, key, _stage):
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(path.read_text())
     record.pop("claimed_unix", None)
     path.write_text(json.dumps(record))
@@ -374,7 +374,7 @@ def test_no_receipt_shape_settles_a_live_own_claim(fleet, tmp_path, name,
 
     queue, stage = fleet
     key, _digest, staged = _completed_gap(queue, tmp_path, stage)
-    assert queue.move_path(key).exists(), name
+    assert queue.records.move_path(key).exists(), name
     mutate(queue, key, stage)
 
     receipt = _evict(queue, key, CONSUMER, stage)
@@ -405,7 +405,7 @@ def test_a_foreign_claimant_still_protects_the_bytes(fleet, tmp_path) -> None:
     assert receipt["tokens_released"] == 0
     assert receipt["tokens_decharged"] == 1, "the duplicate lives on"
     assert staged.exists()
-    assert queue.item_path(pool.CLAIMED, foreign).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, foreign).exists()
 
 
 def test_an_own_live_claim_outranks_a_foreign_one(fleet, tmp_path) -> None:

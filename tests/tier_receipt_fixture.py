@@ -30,7 +30,7 @@ def start(root, loaded, published, *, mode="stop", once=False, interval=0.001,
     else:
         (root / "parked").mkdir()
     queue = pool.PoolQueue(root / "queue")
-    receipt = queue.root / pool.PREWARM / "boundary-input.json"
+    receipt = queue.root / pool.record_store.PREWARM / "boundary-input.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text("{" if mode == "fail-stop" else json.dumps({"receipt_probe": "actual bytes"}))
     (root / "arcstats").write_text(f"size 4 0\nc 4 {1 << 30}\nc_max 4 {1 << 30}\n")
@@ -83,7 +83,7 @@ def observed_return(frame, event, value):
     assert os.sched_getaffinity(0) == affinity
     code = frame.f_code
     fences = {{"fence-construct": pool.PoolQueue.__init__.__code__,
-               "fence-layout": pool.PoolQueue.ensure_layout.__code__, "fence-adopt": role._start.__code__}}
+               "fence-layout": pool.record_store.RecordStore.ensure_layout.__code__, "fence-adopt": role._start.__code__}}
     if code == fences.get({mode!r}) and "fence" not in handled:
         handled.add("fence")
         (root / "fence-reached").touch()
@@ -177,7 +177,7 @@ def unknown_boundary(role):
 
 
 def state(role, *, cycles, layout, parked=0, failed=False):
-    assert (role.queue.root / pool.READY).exists() is layout
+    assert (role.queue.root / pool.record_store.READY).exists() is layout
     assert (role.root / "receipt-read").exists() is bool(cycles or failed)
     assert (role.root / "floor-finished").exists() is bool(cycles or failed)
     tiers = role.queue.tiers()

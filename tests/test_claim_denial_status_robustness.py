@@ -25,7 +25,7 @@ def ready_denial(tmp_path):
                   checkout_root="/mnt/shared/status-fixture",
                   worker_script=ROOT / "tools/prismabuild_worker.py",
                   resources={"cpu": 1}, tags=["box"])
-    record = json.loads(queue.item_path(pool.READY, key).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     path = queue.ledger("box").base / "adaptive" / pool.CLAIM_DENIALS
     path.parent.mkdir(parents=True, exist_ok=True)
     denial = {"action_key": key, "published_unix": record["published_unix"],
@@ -69,9 +69,9 @@ def test_claim_keeps_prior_host_denial_visible_with_age(ready_denial, monkeypatc
 def test_denial_read_error_preserves_job_but_reports_incomplete(ready_denial, monkeypatch):
     queue, key, path, denial, write = ready_denial
     original = pbstatus._pool_sidecar
-    monkeypatch.setattr(pbstatus, "_pool_sidecar", lambda candidate:
+    monkeypatch.setattr(pbstatus, "_pool_sidecar", lambda candidate, *, reader=None:
                         PermissionError("denial read denied") if candidate == path
-                        else original(candidate))
+                        else original(candidate, reader=reader))
     result = pbstatus.read_pool(queue.root)
     assert result["jobs"][0]["state"] == "READY"
     assert result["queue"]["ready"] == 1

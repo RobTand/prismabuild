@@ -113,7 +113,7 @@ def stage(work: Path, queue: pool.PoolQueue, window: dict[str, object],
         "--manifest-sha256", str(window["sha256"]),
         "--range-start-bytes", "0", "--range-end-bytes", str(window["bytes"]),
         "--manifest", str(window["path"]),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--readers", str(workers), "--max-readers", str(workers),
         "--warm-after-copy", "never", "--unpaced",
     ])
@@ -133,7 +133,7 @@ def promote_argv(work: Path, queue: pool.PoolQueue, window: dict[str, object],
             "--manifest-sha256", str(window["sha256"]),
             "--range-start-bytes", "0", "--range-end-bytes", str(window["bytes"]),
             "--manifest", str(window["path"]),
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
             "--readers", str(workers), "--max-readers", str(workers),
             "--receipt", str(receipt)]
 
@@ -269,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         setup_started = time.monotonic()
         queue = pool.PoolQueue(work / "pb-queue")
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         window = make_range(work, args.entries, args.entry_mib * MIB)
         stage(work, queue, window, args.workers)
         (work / "ram").mkdir()
@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         published = identities(paths)
 
         # What a kill before the end-of-range records leaves.
-        residence = queue.root / pool.RESIDENCY
+        residence = queue.root / pool.record_store.RESIDENCY
         residency_map.fragment_path(residence, CONSUMER, RAM_MOVER).unlink()
         reader_lease.material_path(residence, CONSUMER, RAM_MOVER).unlink()
 

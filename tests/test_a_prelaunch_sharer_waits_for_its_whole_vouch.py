@@ -70,7 +70,7 @@ def _shared(tmp_path: Path, *, declared: bool, monkeypatch):
     namespace = _namespace(FIRST, MANIFEST, start, end)
     _land(queue, stage, consumer=namespace, manifest=MANIFEST, mover=mover,
           name="phase-0", start=start, end=end)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     source = json.loads(residency_map.fragment_path(root, namespace, mover).read_text())
     key = residency_map.residency_map_key(LATE, 0)
     source["entries"][key] = {"stage_path": str(stage / "late.bin"), "bytes": 1,
@@ -86,14 +86,14 @@ def _cycle(queue: pool.PoolQueue, stage: Path) -> None:
 
 
 def _verdict(queue: pool.PoolQueue, key: str) -> dict[str, object]:
-    item = json.loads(queue.item_path(pool.READY, key).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     return queue.residency_verdict(item)
 
 
 def _date_the_late_entry(queue, stage, namespace, mover, key) -> None:
     """The material now dates the entry the fan-out was waiting for."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     material = reader_lease.read_material(root, namespace, mover)
     assert isinstance(material, dict)
     entries = dict(material["entries"])
@@ -113,11 +113,11 @@ def test_a_declared_sharer_is_not_admitted_on_a_partial_vouch(
         tmp_path, declared=True, monkeypatch=monkeypatch)
     _fan_out(queue, stage)
     _cycle(queue, stage)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     mine = json.loads(residency_map.fragment_path(root, SECOND, mover).read_text())
     assert key not in mine["entries"], "the fixture must reproduce the partial fan-out"
     assert [mover] == list(residency_map.read_map(
-        queue.residency_map_path(SECOND))["leads"]), "the map names its lead"
+        queue.records.residency_map_path(SECOND))["leads"]), "the map names its lead"
     verdict = _verdict(queue, SECOND)
     assert verdict["state"] == "map_incomplete", verdict
     assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES
@@ -136,10 +136,10 @@ def test_the_same_sharer_is_admitted_once_the_vouch_is_whole(
     assert _verdict(queue, SECOND)["state"] == "map_incomplete"
     _date_the_late_entry(queue, stage, namespace, mover, key)
     _fan_out(queue, stage)                      # the fragment is whole ...
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     mine = json.loads(residency_map.fragment_path(root, SECOND, mover).read_text())
     assert key in mine["entries"], "the fixture must complete the fragment first"
-    assert key not in residency_map.read_map(queue.residency_map_path(SECOND))["entries"]
+    assert key not in residency_map.read_map(queue.records.residency_map_path(SECOND))["entries"]
     held, passes = queue.ledger().held(), queue.passes(SECOND)
     verdict = _verdict(queue, SECOND)           # ... and the map is not yet
     assert verdict["state"] == "map_incomplete", verdict
@@ -200,7 +200,7 @@ def test_the_claim_pass_waits_and_names_the_denial(
     _cycle(queue, stage)
     held = queue.ledger().held()
     assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
-    assert queue.item_path(pool.READY, SECOND).exists()
+    assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
     denial = _denial(queue, SECOND)
     assert denial is not None and denial["reason"] == "residency_map_incomplete", denial
     evidence = denial["evidence"]["residency"]                     # type: ignore[index]
@@ -215,7 +215,7 @@ def _partial_sharer(tmp_path: Path, monkeypatch):
     _fan_out(queue, stage)
     _cycle(queue, stage)
     assert _verdict(queue, SECOND)["state"] == "map_incomplete"
-    source = residency_map.fragment_path(queue.residency_fragment_root(), namespace, mover)
+    source = residency_map.fragment_path(queue.records.residency_fragment_root(), namespace, mover)
     return queue, source
 
 
@@ -225,7 +225,7 @@ def _waits(queue: pool.PoolQueue, key: str, source: Path) -> None:
 
     held, passes = queue.ledger().held(), queue.passes(key)
     assert queue.claim(owner="worker", capacity={"cpu": 4, "mem_gb": 4}) is None
-    assert queue.item_path(pool.READY, key).exists()
+    assert queue.records.item_path(pool.record_store.READY, key).exists()
     denial = _denial(queue, key)
     assert denial is not None and denial["reason"] == "residency_map_unreadable", denial
     assert str(source) in denial["evidence"]["residency"]["error"]   # type: ignore[index]

@@ -50,7 +50,7 @@ RUNNING_MANIFEST = "a" * 64
 
 
 def _tier_plan(queue: pool.PoolQueue) -> dict[str, object]:
-    return json.loads(queue.tier_record_path(TIER).read_text())["reader_plan"]
+    return json.loads(queue.records.tier_record_path(TIER).read_text())["reader_plan"]
 
 
 def _listed(queue: pool.PoolQueue) -> list[str]:
@@ -60,8 +60,8 @@ def _listed(queue: pool.PoolQueue) -> list[str]:
 def _claim_row(queue: pool.PoolQueue, key: str, *, host: str = "dl380g10") -> None:
     """Move ``key`` from ``ready/`` to ``claimed/`` as a worker's claim does."""
 
-    ready = queue.item_path(pool.READY, key)
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps({
+    ready = queue.records.item_path(pool.record_store.READY, key)
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps({
         **json.loads(ready.read_text()), "claimed_unix": time.time(),
         "claimed_by": f"{host}:1:fixture", "claimed_host": host}))
     ready.unlink()
@@ -87,14 +87,14 @@ def _end_earlier_generation(queue: pool.PoolQueue, row: dict[str, object]) -> fl
 
     queue.publish(**row)
     key = str(row["action_key"])
-    record = json.loads(queue.item_path(pool.READY, key).read_text())
-    done = queue.item_path(pool.DONE, key)
+    record = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
+    done = queue.records.item_path(pool.record_store.DONE, key)
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text(json.dumps({
         **record, "status": "executed", "claimed_unix": time.time(),
         "claimed_host": "dl380g10", "finished_unix": time.time(),
         "finished_host": "dl380g10"}))
-    queue.item_path(pool.READY, key).unlink()
+    queue.records.item_path(pool.record_store.READY, key).unlink()
     time.sleep(0.01)
     return float(record["published_unix"])
 
@@ -134,7 +134,7 @@ def test_a_ready_consumers_lead_is_listed_and_claimed_before_other_copies(
         f"the lead a ready consumer is refused on is not in the reader plan: {rows}")
     assert rows[0]["consumers"] == [WAITING]
     assert rows[0]["ready_consumers"] == [WAITING]
-    assert rows[0]["state"] == pool.READY
+    assert rows[0]["state"] == pool.record_store.READY
 
     claimed = []
     for _ in range(6):
@@ -159,7 +159,7 @@ def _move_args(queue: pool.PoolQueue, stage: Path, manifest: Path, digest: str,
         "--consumer-action-key", consumer, "--tier-id", TIER,
         "--stage-root", str(stage), "--manifest-sha256", digest,
         "--manifest", str(manifest),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--range-start-bytes", str(start), "--range-end-bytes", str(end),
         "--readers", "1", "--max-readers", "1",
         "--warm-after-copy", "never", "--unpaced",
@@ -265,7 +265,7 @@ def test_ready_leads_fill_only_the_room_under_the_measured_cap(
 
 def _terminal_queue(tmp_path: Path) -> tuple[pool.PoolQueue, str]:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     mover = _hexkey("mover")
     return queue, mover
 
@@ -292,7 +292,7 @@ def test_a_lead_claimed_again_is_not_terminal_and_the_denial_names_the_claim(
     ended = _end_earlier_generation(queue, _mover_row(queue, mover))
     queue.publish(**_mover_row(queue, mover), recompute=True)
     _claim_row(queue, mover)
-    live = json.loads(queue.item_path(pool.CLAIMED, mover).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, mover).read_text())
     _publish_waiting(queue, mover)
 
     assert queue.claim(owner="worker", capacity={"cpu": 4}, tags=["sparky"]) is None
@@ -302,12 +302,12 @@ def test_a_lead_claimed_again_is_not_terminal_and_the_denial_names_the_claim(
     assert denial["reason"] == "residency_lead_not_resident", denial["reason"]
     [entry] = denial["evidence"]["residency"]["pending"]
     assert entry["lead"] == mover
-    assert entry["status"] == pool.CLAIMED, entry
+    assert entry["status"] == pool.record_store.CLAIMED, entry
     assert entry["live"]["claimed_host"] == "dl380g10"
     assert entry["live"]["published_unix"] == live["published_unix"]
     assert entry["replaces"]["status"] == "unpinned"
     assert entry["replaces"]["published_unix"] == ended
-    assert queue.item_path(pool.READY, WAITING).exists()
+    assert queue.records.item_path(pool.record_store.READY, WAITING).exists()
 
 
 def test_a_lead_queued_again_reads_ready_not_terminal(tmp_path: Path) -> None:
@@ -317,10 +317,10 @@ def test_a_lead_queued_again_reads_ready_not_terminal(tmp_path: Path) -> None:
     _publish_waiting(queue, mover)
 
     verdict = queue.residency_verdict(
-        json.loads(queue.item_path(pool.READY, WAITING).read_text()))
+        json.loads(queue.records.item_path(pool.record_store.READY, WAITING).read_text()))
 
     assert verdict["state"] == "lead_not_resident", verdict
-    assert verdict["pending"][0]["status"] == pool.READY, verdict
+    assert verdict["pending"][0]["status"] == pool.record_store.READY, verdict
 
 
 def test_an_ending_of_the_live_records_own_generation_stays_terminal(
@@ -334,8 +334,8 @@ def test_an_ending_of_the_live_records_own_generation_stays_terminal(
     queue, mover = _terminal_queue(tmp_path)
     queue.publish(**_mover_row(queue, mover))
     _claim_row(queue, mover)
-    claimed = json.loads(queue.item_path(pool.CLAIMED, mover).read_text())
-    done = queue.item_path(pool.DONE, mover)
+    claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, mover).read_text())
+    done = queue.records.item_path(pool.record_store.DONE, mover)
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text(json.dumps({**claimed, "status": "executed",
                                 "finished_unix": time.time()}))
