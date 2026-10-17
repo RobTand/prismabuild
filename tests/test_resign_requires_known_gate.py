@@ -40,7 +40,7 @@ def test_resign_requires_known_gate_even_with_a_proved_empty_census(
     initial = authority.admin(0, {"op": "maintenance_status"})
     assert initial["health"] is True and initial["draining"] is False, initial
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     runtime = tmp_path / "private-runtime"
     runtime.mkdir()
     native_census = park_proof.proc_census
