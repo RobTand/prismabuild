@@ -291,15 +291,39 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
     timestamp are real records rather than assertions), tier announcements
     beside minted ledgers, a ram promotion fragment, a published-but-unstaged
     mover for phase two, and adaptive claim denials for the host and the
-    mover.  The clock is read at build time rather than frozen, so the ages
-    the tools derive are asserted approximately in the tests.
+    mover. The observation clock starts after landed-file construction, so
+    setup cost does not change the ages asserted approximately by the tests.
     """
 
     fleet = build(base, host=host)
     queue = fleet.queue
-    now = time.time()
     plan = _two_phase_plan(queue, stage_root=str(base / "stage"))
     residency_plan.freeze(queue, plan)
+    # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
+    # as a ready mover and staged nowhere.
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.ledger(RAM_TIER.split(":", 1)[1]).ensure_capacity({"mem_gb": 8})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(STAGE_TIER).take(_hexkey('mover0'), {'stage_gib': 2})
+    assert queue.tier(RAM_TIER).take(_hexkey('rampromote0'), {'ram_gib': 2})
+    # Landed means landed (#759): the booking above is the room, and these
+    # are the records a finished copy leaves.  The promotion's fragment
+    # names the ram root it landed on, under the announced epoch, which is
+    # what ``ram_promote`` writes and what the census now reports.
+    residency_publication.publish_landed_files(
+        queue, consumer_action_key=CONSUMER_KEY,
+        mover_action_key=_hexkey("mover0"), tier_id=STAGE_TIER,
+        stage_root=base / "stage", manifest_sha256=CONSUMER_MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB)
+    residency_publication.publish_landed_files(
+        queue, consumer_action_key=CONSUMER_KEY,
+        mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
+        stage_root=base / "ram", manifest_sha256=CONSUMER_MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB,
+        epoch=RAM_EPOCH)
+    # Date the observations after the actual landed-file work. Its cost
+    # is setup, not part of the configured cursor/claim/denial ages.
+    now = time.time()
     # The consumer, claimed and quiet on its first phase.  Filed directly
     # rather than through claim(): the claim gate admits a consumer only once
     # its leads are resident, and the census reads the claim, not the gate.
@@ -328,28 +352,6 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
             "child": {"alive": True, "pid_count": 3, "cpu_seconds": 12.0,
                       "silent_s": 700.0}}}))
     fleet.consumer_reported_unix = now - 800  # type: ignore[attr-defined]
-    # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
-    # as a ready mover and staged nowhere.
-    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
-    queue.ledger(RAM_TIER.split(":", 1)[1]).ensure_capacity({"mem_gb": 8})
-    queue.tier(RAM_TIER).mint({'ram_gib': 8})
-    assert queue.tier(STAGE_TIER).take(_hexkey('mover0'), {'stage_gib': 2})
-    assert queue.tier(RAM_TIER).take(_hexkey('rampromote0'), {'ram_gib': 2})
-    # Landed means landed (#759): the booking above is the room, and these
-    # are the records a finished copy leaves.  The promotion's fragment
-    # names the ram root it landed on, under the announced epoch, which is
-    # what ``ram_promote`` writes and what the census now reports.
-    residency_publication.publish_landed_files(
-        queue, consumer_action_key=CONSUMER_KEY,
-        mover_action_key=_hexkey("mover0"), tier_id=STAGE_TIER,
-        stage_root=base / "stage", manifest_sha256=CONSUMER_MANIFEST,
-        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB)
-    residency_publication.publish_landed_files(
-        queue, consumer_action_key=CONSUMER_KEY,
-        mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
-        stage_root=base / "ram", manifest_sha256=CONSUMER_MANIFEST,
-        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB,
-        epoch=RAM_EPOCH)
     queue.publish(**_tier_row(_hexkey("mover1"),
                               {STAGE_KIND: 2, "mem_gb": 1}, queue),
                    residency={
