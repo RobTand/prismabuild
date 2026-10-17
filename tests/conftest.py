@@ -69,12 +69,17 @@ TEST_RUNTIME_EVIDENCE_PREFIX = "prismabuild-test-runtime: "
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     """Keep unavailable runtime observations separate from test outcomes."""
     import json
+    import platform
 
     record = dict(complete=False, version=list(sys.version_info[:3]),
                   description=sys.version, files=list(config.args))
     try:
         executable = Path(sys.executable).resolve()
         running = Path("/proc/self/exe").read_bytes()
+        source_root = Path(__file__).resolve().parents[1]
+        selected = sorted({str(item.path.relative_to(source_root))
+                           for item in terminalreporter._session.items
+                           if item.path.is_relative_to(source_root)})
         record.update(complete=True,
             executable=dict(path=sys.executable, resolved_path=str(executable),
                 bytes=len(running), sha256=pb_core.raw_sha256(running)),
@@ -82,7 +87,12 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             affinity=sorted(os.sched_getaffinity(0)),
             native_threads={name: os.environ.get(name) for name in (
                 "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
-            conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()))
+            conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()),
+            kernel=platform.uname()._asdict(),
+            selected_files=selected,
+            selected_source_sha256={name: pb_core.raw_sha256((source_root / name).read_bytes())
+                                    for name in selected},
+            exitstatus=int(exitstatus))
     except (OSError, RuntimeError, AttributeError) as exc:
         record["complete"] = False
         record["reason"] = f"{type(exc).__name__}: {exc}"
@@ -1135,32 +1145,3 @@ def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_c
             monkeypatch.setattr(module, "configured_store", lambda: store)
         if getattr(module, "store_for", None) is not None:
             monkeypatch.setattr(module, "store_for", fixture_store)
-
-
-def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Retain the actual interpreter and source used by each admitted action."""
-    import hashlib
-    import json
-    import platform
-
-    executable = Path('/proc/self/exe').resolve()
-    executable_bytes = executable.read_bytes()
-    source_root = Path(__file__).resolve().parents[1]
-    selected = sorted({str(item.path.relative_to(source_root))
-                       for item in terminalreporter._session.items
-                       if item.path.is_relative_to(source_root)})
-    source_hashes = {name: hashlib.sha256((source_root / name).read_bytes()).hexdigest()
-                     for name in selected}
-    record = {
-        'version': sys.version, 'version_info': list(sys.version_info),
-        'executable': sys.executable, 'resolved_executable': str(executable),
-        'executable_bytes': len(executable_bytes),
-        'executable_sha256': hashlib.sha256(executable_bytes).hexdigest(),
-        'kernel': platform.uname()._asdict(),
-        'selected_files': selected, 'selected_source_sha256': source_hashes,
-        'affinity': sorted(os.sched_getaffinity(0)),
-        'native_bounds': {key: os.environ.get(key) for key in (
-            'OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')},
-        'exitstatus': int(exitstatus),
-    }
-    terminalreporter.write_line('pbtest-runtime: ' + json.dumps(record, sort_keys=True))
