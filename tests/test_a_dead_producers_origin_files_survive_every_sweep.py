@@ -83,7 +83,7 @@ def _strand_holding(producer: _Producer, batch_id: str, res: dict, path: Path,
         "range_start_bytes": 0, "range_end_bytes": len(payload),
         "bytes_staged": len(payload), "complete": True})
     q.finish(mover, status="executed")
-    assert producer.fleet.ledger.holder_tokens(mover), "its tokens are held"
+    assert producer.fleet.ledger.holdings(mover), "its tokens are held"
 
 
 def _identity(path: Path) -> tuple[int, bytes]:

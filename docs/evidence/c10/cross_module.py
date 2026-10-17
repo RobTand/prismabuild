@@ -74,7 +74,7 @@ def analyze(root):
         tree = ast.parse((root / path).read_text(), filename=path)
         module = module_name(path)
         unit = dict(tree=tree, module=module, names=imported_names(tree, module),
-                    seeds=defaultdict(set), external_returns={}, generation=0)
+                    seeds=defaultdict(set), external_returns={}, parameter_shapes={}, generation=0)
         units[path] = unit
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -93,14 +93,36 @@ def analyze(root):
             raise RuntimeError("tier argument propagation did not converge")
         for unit in units.values():
             stamp = (tuple((name, tuple(sorted(values))) for name, values in sorted(unit["seeds"].items())),
-                     repr(unit["external_returns"]))
+                     repr(unit["external_returns"]), repr(unit["parameter_shapes"]))
             if unit.get("stamp") == stamp:
                 continue
             unit["scopes"], unit["aliases"], unit["returns"], unit["fields"] = move["caller_aliases"](
-                unit["tree"], unit["seeds"], unit["external_returns"], details=True)
+                unit["tree"], unit["seeds"], unit["external_returns"], details=True,
+                parameter_shapes=unit["parameter_shapes"])
             unit["stamp"] = stamp
         for path, unit in units.items():
             scopes, aliases = unit["scopes"], unit["aliases"]
+            for function in ast.walk(unit["tree"]):
+                if not isinstance(function, ast.FunctionDef):
+                    continue
+                for argument in (*function.args.args, *function.args.kwonlyargs):
+                    annotation = argument.annotation
+                    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+                        try:
+                            annotation = ast.parse(annotation.value, mode="eval").body
+                        except SyntaxError:
+                            continue
+                    annotated = targets.get(resolve(annotation, unit["names"], unit["module"]))
+                    if annotated is None or annotated[2] is None:
+                        continue
+                    annotated_unit = units[annotated[0]]
+                    value = exported_shape({"@class": annotated[2]}, annotated_unit["fields"])
+                    if not value:
+                        continue
+                    parameters = unit["parameter_shapes"].setdefault(function.name, {})
+                    if parameters.get(argument.arg) != value:
+                        parameters[argument.arg] = value
+                        changed = True
             for call in ast.walk(unit["tree"]):
                 if not isinstance(call, ast.Call):
                     continue
@@ -162,7 +184,9 @@ def analyze(root):
                 seeds={path: {name: sorted(values) for name, values in unit["seeds"].items()}
                        for path, unit in units.items() if unit["seeds"]},
                 external_returns={path: unit["external_returns"] for path, unit in units.items()
-                                  if unit["external_returns"]})
+                                  if unit["external_returns"]},
+                parameter_shapes={path: unit["parameter_shapes"] for path, unit in units.items()
+                                  if unit["parameter_shapes"]})
 
 
 def main():

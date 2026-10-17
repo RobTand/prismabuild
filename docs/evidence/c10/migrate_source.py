@@ -70,7 +70,7 @@ def bound_tier(node, aliases):
     return tier_call(node) or (node is not None and spelling(node) in aliases)
 
 
-def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
+def caller_aliases(tree, seeds=None, external_returns=None, *, details=False, parameter_shapes=None):
     parents, scopes = {}, {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -102,6 +102,8 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
                 aliases[function].add(arg.arg)
     returns, values = {}, {}
     for function in all_functions:
+        for name, value in (parameter_shapes or {}).get(function.name, {}).items():
+            values[function, name] = value
         for arg in (*function.args.args, *function.args.kwonlyargs):
             annotation = arg.annotation
             if isinstance(annotation, ast.Name) and annotation.id in classes:
@@ -315,11 +317,11 @@ class CallerMove(ast.NodeTransformer):
         return node
 
 
-def migrate_callers(root, path, seeds=None, external_returns=None):
+def migrate_callers(root, path, seeds=None, external_returns=None, parameter_shapes=None):
     source = path.read_text()
     original = ast.parse(source)
     tree = copy.deepcopy(original)
-    scopes, aliases = caller_aliases(tree, seeds, external_returns)
+    scopes, aliases = caller_aliases(tree, seeds, external_returns, parameter_shapes=parameter_shapes)
     mover = CallerMove(scopes, aliases)
     tree = mover.visit(tree)
     original_nodes = {(n.lineno, n.col_offset, n.end_lineno, n.end_col_offset, type(n)): n

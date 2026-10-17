@@ -33,6 +33,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import tier_holdings
 from prismabuild import pool, reader_lease, window_credit  # noqa: E402
 import tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import _cycle  # noqa: E402
@@ -207,16 +208,16 @@ def _refuse(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _ledger_unreadable_in_relief(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``ledger.available()`` raises inside the relief pass only."""
+    """``TierLedger.free_supply()`` raises inside the relief pass only."""
 
-    original = pool.ResourceLedger.available
+    original = tier_holdings.TierLedger.free_supply
 
     def available(self, *args, **kwargs):
         if sys._getframe(1).f_code.co_name == "evict_beyond_horizon":
             raise OSError(5, "EIO")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(pool.ResourceLedger, "available", available)
+    monkeypatch.setattr(tier_holdings.TierLedger, "free_supply", available)
 
 
 FAULTS = {"refused": _refuse, "unknown": _ledger_unreadable_in_relief}

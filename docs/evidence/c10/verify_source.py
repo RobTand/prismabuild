@@ -142,7 +142,8 @@ def main():
             declaration_changes[path] = [list(key) + [count] for key, count in removed.items()]
         scopes, aliases = migration["caller_aliases"](
             before, closure.get("seeds", {}).get(path),
-            restored_shapes(closure.get("external_returns", {}).get(path, {})))
+            restored_shapes(closure.get("external_returns", {}).get(path, {})),
+            parameter_shapes=restored_shapes(closure.get("parameter_shapes", {}).get(path, {})))
         normalized = migration["CallerMove"](scopes, aliases).visit(before)
         old, new = assertion_keys(normalized), assertion_keys(after)
         original_count += old.total()
@@ -187,7 +188,8 @@ def main():
                 continue
             scopes, aliases = migration["caller_aliases"](
                 tree, closure.get("seeds", {}).get(relative),
-                restored_shapes(closure.get("external_returns", {}).get(relative, {})))
+                restored_shapes(closure.get("external_returns", {}).get(relative, {})),
+                parameter_shapes=restored_shapes(closure.get("parameter_shapes", {}).get(relative, {})))
             for node in ast.walk(tree):
                 if (isinstance(node, ast.Call) and len(node.args) > 1
                         and isinstance(node.args[1], ast.Constant)
