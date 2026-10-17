@@ -12,6 +12,7 @@ from prismabuild import (
     adaptive_gpu, candidate_policy, capability_eligibility, contracts,
     core as pb, pool, residency_map, residency_plan, storage_tiers,
 )
+from prismabuild import data_manifest as manifest_codec
 from test_measurement_drains_gpu_backfill import (
     cpu_sample, fleet as fleet_fixture, gpu_sample,
 )
@@ -121,7 +122,7 @@ def test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_v
     material = b"real staged bytes\n" * 256
     source.write_bytes(material)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
         "annotations": {"phases": [{"name": "read", "bytes": len(material),
                                     "cumulative_bytes": len(material)}]},
         "mount_prefix": str(source.parent), "entry_count": 1,
