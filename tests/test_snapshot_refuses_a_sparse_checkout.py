@@ -69,7 +69,7 @@ def test_a_sparse_checkout_is_refused_before_anything_is_sealed(
     assert _git(checkout, "sparse-checkout", "set", "keep").returncode == 0
     assert not (checkout / "away").exists()
 
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(submit_core.SubmissionRefused) as refusal:
         _seal(checkout, tmp_path / "cas")
 
     message = str(refusal.value)
@@ -89,7 +89,7 @@ def test_a_path_marked_skip_worktree_by_hand_is_refused_too(
     ).returncode == 0
     (checkout / "away" / "b.txt").write_text("edited but invisible to add\n")
 
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(submit_core.SubmissionRefused) as refusal:
         _seal(checkout, tmp_path / "cas")
 
     assert "away/b.txt" in str(refusal.value)

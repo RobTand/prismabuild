@@ -50,7 +50,7 @@ def test_one_checkout_sealed_into_two_stores_lands_in_both(tmp_path: Path) -> No
     checkout = _producer_checkout(tmp_path / "source")
     first = pb.PrismaBuildCAS(tmp_path / "first-cas")
     second = pb.PrismaBuildCAS(tmp_path / "second-cas")
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
 
     one = fleet_submit.seal_checkout_snapshot(checkout, cas=first)
     two = fleet_submit.seal_checkout_snapshot(checkout, cas=second)
@@ -66,7 +66,7 @@ def test_the_same_store_still_bundles_one_tree_once(tmp_path: Path) -> None:
 
     checkout = _producer_checkout(tmp_path / "source")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
 
     calls = 0
     import pbrun
