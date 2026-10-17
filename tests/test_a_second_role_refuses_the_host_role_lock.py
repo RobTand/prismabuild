@@ -58,7 +58,7 @@ TIERS = "tier_loop.py"
 
 #: The lock-file name the contract pins, independent of the generation a
 #: script was loaded from.
-LOCK_NAME = "prismabuild.prewarm_loop.lock"
+LOCK_NAME = "prewarm_loop.lock"
 
 
 def _lock_path(root: Path, script: str = STORAGE) -> Path:

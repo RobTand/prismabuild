@@ -428,7 +428,7 @@ def run_cycles(args) -> int:
 
     po.origin_retirement_tick = counter.step("origin_retirement_tick",
                                              recorded_tick)
-    stage_release.sweep = counter.step("prismabuild.stage_release.sweep",
+    stage_release.sweep = counter.step("stage_release.sweep",
                                        stage_release.sweep)
     receipts = tier_loop.ReceiptCache()
     liveness = (tier_loop.Liveness(interval_s=args.interval_s)

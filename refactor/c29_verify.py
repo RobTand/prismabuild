@@ -61,7 +61,7 @@ def run(root: Path) -> dict:
     paths = git(root, 'ls-tree', '-r', '--name-only', BASE).splitlines()
     evidence = {'base': BASE, 'moves': MOVES, 'functions': [], 'assertions': [],
                 'imports_before': [], 'imports_after': [], 'core_manifest_calls': [],
-                'literal_entry_names_preserved': {}, 'historical_locator': []}
+                'literal_entry_names_preserved': {}, 'historical_locator': [], 'literal_owner_references_preserved': []}
     for old, new in MOVES.items():
         before = git(root, 'show', f'{BASE}:{old}')
         after = (root / new).read_text()
@@ -92,6 +92,14 @@ def run(root: Path) -> dict:
         before = git(root, 'show', f'{BASE}:{path}')
         after = target.read_text()
         a, b = ast.parse(owner_source(before, path)), ast.parse(after)
+        def module_literals(tree):
+            return Counter(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)
+                           and isinstance(n.value, str)
+                           and any(n.value.startswith(name + '.') for name in MODULES))
+        wire_before, wire_after = module_literals(ast.parse(before)), module_literals(b)
+        assert not wire_before - wire_after, (path, wire_before - wire_after)
+        if wire_before:
+            evidence['literal_owner_references_preserved'].append({'path': path, 'literals': dict(wire_before)})
         for row in imports(ast.parse(before)):
             if row.get('module') in MODULES:
                 evidence['imports_before'].append({'path': path, **row})

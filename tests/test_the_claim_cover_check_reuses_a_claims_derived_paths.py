@@ -108,7 +108,7 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
 
 
 def _publisher(queue: pool.PoolQueue, stage: Path, cas: Path,
-              mover: str) -> "prismabuild.stage_move._StagedPublisher":
+              mover: str) -> "stage_move._StagedPublisher":
     return stage_move._StagedPublisher(
         queue=queue, stage_root=stage, residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,

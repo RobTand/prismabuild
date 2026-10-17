@@ -43,7 +43,6 @@ def migrate_imports(text: str) -> str:
                       rf"\1from prismabuild import {name}", text)
         text = re.sub(rf"\bfrom {name} import\b", f"from prismabuild.{name} import", text)
         # Quoted imports and patch targets also occur inside embedded Python.
-        text = re.sub(rf'(["\x27]){name}(?=[.](?!py["\x27])[A-Za-z_])', rf"\1prismabuild.{name}", text)
         text = re.sub(rf'(import_module\(["\x27]){name}(["\x27])',
                       rf"\1prismabuild.{name}\2", text)
         text = text.replace(f'("{name}", "SH",', f'("prismabuild.{name}", "SH",')
