@@ -117,7 +117,7 @@ def pytest_generate_tests(metafunc):
         return
     kinds = [kind for kind in KINDS if protocol_group(kind) == metafunc.cls.domain]
     if "variant" in metafunc.fixturenames:
-        shapes = [(kind, variant) for kind in kinds if kind.variant_readers for variant in kind.variants[1:]]
+        shapes = [(kind, variant) for kind in kinds if kind.variant_readers for variant, _ in kind.variant_readers]
         metafunc.parametrize("kind,variant", shapes, ids=[kind.name + "-" + variant for kind, variant in shapes])
     elif "kind" in metafunc.fixturenames:
         metafunc.parametrize("kind", kinds, ids=[kind.name for kind in kinds])
@@ -126,6 +126,14 @@ def pytest_generate_tests(metafunc):
 
 
 class RecordContract:
+    def verify_variant_boundaries(self, kind, variant, generations, tmp_path):
+        from dataclasses import replace
+        selected = replace(kind, variants=(variant,),
+                           field_policy=dict(kind.variant_field_policies).get(variant, kind.field_policy),
+                           negative_field=dict(kind.variant_negative_fields).get(variant, kind.negative_field))
+        self.test_unknown_fields_follow_real_consumer_policy(selected, generations, tmp_path / "unknown")
+        self.test_invalid_record_reaches_both_real_consumer_boundaries(selected, generations, tmp_path / "foreign")
+
     def test_supported_consumers_read_exact_production_writes_or_immutable_source_inputs(self, case, generations, writer_sources, tmp_path):
         label = case.replace("/", "-")
         current = write(ROOT, case, tmp_path / "new-writer", evidence=evidence(label + "-new-writer.json"),

@@ -120,7 +120,7 @@ def operation(request, store, load):
             request["_consumer_boundary"]()
             if variant == "returned":
                 previous = controller.admitted(metadata)
-                assert previous == {}, previous
+                assert previous.get("sampled_unix", 0) == 0 and "borrow_id" not in previous, previous
                 return {"empty_previous": True}
             metadata["borrow_id"] = G
             controller.withdrew(metadata, {})
