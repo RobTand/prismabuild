@@ -24,6 +24,7 @@ The batch classes the replay asserts on:
 * ``reclaimed``: the 36 whose origin was already reclaimed, with no files.
 """
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -169,7 +170,7 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
 
     for mover, record in bundle["funding"].items():
         record["template_sha256"] = tsha
-        checked = queue.validate_output_funding(record)
+        checked = queue.funding.validate_output(record)
         path = queue.records.funding_output_retired_path(mover, str(checked["tier_id"]))
         path.parent.mkdir(parents=True, exist_ok=True)
         pool.immutable_files.write_json_atomic(path, checked)

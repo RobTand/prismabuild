@@ -1,5 +1,6 @@
 """Real prepaid-output writers and broker protocol over a private cgroup double."""
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -282,7 +283,7 @@ class Outputs:
             class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
             paths=[str(path)])
         assert prewrite.get("ok") is True, prewrite
-        staged = q.stage_output_intent(
+        staged = q.funding.stage_output(
             tier_id=tier, owner_key=owner, mover_key=mover, instance=inst,
             template=template, batch_id="b1", descriptors=descs)
         ref = pool.PoolQueue.build_produced_output_batch_ref(
@@ -295,7 +296,7 @@ class Outputs:
                              "range_end_bytes": len(payload)}, produced_output_batch=ref)
         row = pool.read_queue_record(q.records.item_path(pool.record_store.READY, mover))
         assert isinstance(row, dict)
-        funded = q.fund_output_batch(
+        funded = q.funding.fund_output(
             tier_id=tier, owner_key=owner, mover_key=mover, instance=inst,
             template=template, batch_id="b1", descriptors=descs)
         committed = po.commit_batch(q, inst, template, descs, batch_id="b1",
