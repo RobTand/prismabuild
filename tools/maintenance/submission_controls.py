@@ -28,10 +28,14 @@ def compare_submission_sources(repo: Path, output: Path):
                                          ('candidate', repo, CONTROLS), ('focus', repo, FOCUS)]:
             environment = dict(os.environ, PYTHONPATH=os.pathsep.join(
                 str(checkout / path) for path in ('src', 'tools/fleet', 'tests')))
-            command = [sys.executable, 'tools/fleet/pbtest_outcomes.py', '-q', '--tb=short', *selected]
+            command = [sys.executable, '-c',
+                'import pbtest_outcomes; raise SystemExit(pbtest_outcomes.main())',
+                '-q', '--tb=short', *selected]
             run = subprocess.run(command, cwd=checkout, env=environment, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, text=True)
             (output / f'controls-{name}.log').write_text(run.stdout)
+            if 'pbtest-outcomes: ' not in run.stdout or 'pbtest-completion: ' not in run.stdout:
+                raise RuntimeError(f'{name}: control produced no native outcome or completion record')
             results[name] = {'returncode': run.returncode, 'command': command,
                 'failed': [line for line in run.stdout.splitlines() if line.startswith(('FAILED ', 'ERROR '))]}
     (output / 'controls-result.json').write_text(json.dumps(results, indent=2) + '\n')
