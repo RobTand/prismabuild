@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter, defaultdict
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -15,6 +14,10 @@ import textwrap
 
 BASE = "fe416690b87aba99ad30c7df4f95ac8da47055d5"
 HELPERS = {"_publish", "_queue", "_item"}
+
+
+def fixture_blob(source):
+    return subprocess.check_output(["git", "hash-object", "--stdin"], input=source.encode()).decode().strip()
 
 
 def fixture_sources(root, ref=None):
@@ -112,7 +115,7 @@ def fixture_inventory(sources):
             rows.append(dict(id=f"{path}::{'.'.join(scope)}::{kind}#{counters[scope, kind]}",
                              path=path, scope=scope, kind=kind, line=node.lineno,
                              source=ast.unparse(node), consumers=consumers,
-                             source_sha256=hashlib.sha256(source.encode()).hexdigest()))
+                             source_git_blob=fixture_blob(source)))
         # The review's 79-file lexical upper bound also includes clock reads and
         # embedded programs, which must not disappear from the occurrence map.
         for index, line in enumerate(source.splitlines(), 1):
@@ -138,7 +141,8 @@ def fixture_graph(sources):
                 names = [module, *(module + "." + alias.name for alias in node.names)]
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 # importlib/path-based fixtures are part of the exported graph.
-                names = re.findall(r"(?:tests/)?((?:test_|[a-z_]+fixture)[a-z_0-9]+)\.py", node.value)
+                names = [node.value, *re.findall(
+                    r"(?:tests/)?((?:test_|[a-z_]+fixture)[a-z_0-9]+)\.py", node.value)]
             edges[path].update(modules[name] for name in names if name in modules and modules[name] != path)
     return {path: sorted(edges[path]) for path in sorted(sources)}
 
@@ -189,10 +193,10 @@ def main():
                   counts=dict(Counter(row["kind"] for row in rows)),
                   files={kind: len({r["path"] for r in rows if r["kind"] == kind})
                          for kind in {r["kind"] for r in rows}},
-                  original_sources={p: hashlib.sha256(s.encode()).hexdigest() for p, s in before.items()},
+                  original_sources={p: fixture_blob(s) for p, s in before.items()},
                   original_occurrences=rows, current_occurrences=fixture_inventory(after),
                   checks=fixture_preservation(before, after, changed),
-                  changed_files=changed, importer_graph=graph,
+                  changed_files=changed, importer_graph=graph, original_importer_graph=fixture_graph(before),
                   transitive_affected=sorted(affected))
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: report[key] for key in ("base", "counts", "files", "changed_files")},

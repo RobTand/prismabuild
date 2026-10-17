@@ -5,12 +5,11 @@ import argparse
 import ast
 from collections import Counter
 from copy import deepcopy
-import hashlib
 import json
 from pathlib import Path
 import re
 
-from fleet_fixture_inventory import BASE, fixture_sources, fixture_checks
+from fleet_fixture_inventory import BASE, fixture_sources, fixture_checks, fixture_blob
 
 READ_ONLY = ("tests/compat/", "tests/test_current_tier_compat_composition.py")
 DEFAULTS = {"cas_root": "/cas", "checkout_root": "/co", "worker_script": "/w.py"}
@@ -33,8 +32,22 @@ FILED_RECORDS = {
 }
 
 
-def fixture_form(node):
-    return ast.dump(node, include_attributes=False)
+def fixture_pretty(node, indent=0):
+    single = ast.unparse(node)
+    if len(single) + indent <= 100:
+        return single
+    pad, inner = " " * indent, " " * (indent + 4)
+    if isinstance(node, ast.Call):
+        parts = [fixture_pretty(value, indent + 4) for value in node.args]
+        parts.extend((keyword.arg + "=" if keyword.arg else "**")
+                     + fixture_pretty(keyword.value, indent + 4)
+                     for keyword in node.keywords)
+        return ast.unparse(node.func) + "(\n" + "".join(inner + part + ",\n" for part in parts) + pad + ")"
+    if isinstance(node, ast.Dict):
+        parts = [(ast.unparse(key) + ": " if key else "**") + fixture_pretty(value, indent + 4)
+                 for key, value in zip(node.keys, node.values)]
+        return "{\n" + "".join(inner + part + ",\n" for part in parts) + pad + "}"
+    return single
 
 
 class FixtureText:
@@ -52,6 +65,19 @@ class FixtureText:
     def replace(self, node, replacement):
         start, end = self.span(node)
         self.edits.append((start, end, replacement.encode()))
+
+    def expression(self, node, replacement):
+        self.replace(node, fixture_pretty(ast.parse(replacement, mode="eval").body, node.col_offset))
+
+    def delete_statement(self, node):
+        start = self.offsets[node.lineno - 1]
+        end = self.offsets[node.end_lineno]
+        if isinstance(node, ast.FunctionDef) and node.col_offset == 0:
+            for index in range(node.end_lineno, min(node.end_lineno + 2, len(self.offsets) - 1)):
+                if self.raw[self.offsets[index]:self.offsets[index + 1]].strip():
+                    break
+                end = self.offsets[index + 1]
+        self.edits.append((start, end, b""))
 
     def finish(self):
         raw = self.raw
@@ -248,10 +274,10 @@ def fixture_migrate(path, source, sources):
                 replacements.append((call, replacement))
         except ValueError:
             continue
-        text.replace(function, "")
+        text.delete_statement(function)
         removed.add(function)
         for call, replacement in replacements:
-            text.replace(call, replacement)
+            text.expression(call, replacement)
         imports.update({"ActionRows"} if mode == "publish" else
                        ({"FleetWorld", "Admission"} if "Admission(" in expression else
                         {"FleetWorld"} if "FleetWorld(" in expression else set()))
@@ -275,7 +301,7 @@ def fixture_migrate(path, source, sources):
                 except ValueError:
                     continue
                 text.replace(statement.value, expression)
-                text.replace(following, "")
+                text.delete_statement(following)
                 imports.add("FleetWorld")
                 if "Admission(" in expression:
                     imports.add("Admission")
@@ -296,7 +322,7 @@ def fixture_migrate(path, source, sources):
                 call.func = ast.Attribute(ast.Call(ast.Name("ActionRows", ast.Load()),
                                                   [call.func.value], []), "publish", ast.Load())
                 replacement = ast.unparse(call)
-                text.replace(node, replacement)
+                text.expression(node, replacement)
                 imports.add("ActionRows")
                 rows.append(dict(kind="composed-publish", line=node.lineno,
                                  old=ast.unparse(node), new=replacement,
@@ -319,7 +345,7 @@ def fixture_migrate(path, source, sources):
             raise ValueError("filed record gained a wire-format contract: " + path)
         replacement = (ast.unparse(address.func.value) + ".replace_record_at("
                        + ast.unparse(address) + ", " + ast.unparse(encoder.args[0]) + ")")
-        text.replace(node, replacement)
+        text.expression(node, replacement)
         rows.append(dict(kind="filed-record", line=node.lineno, old=ast.unparse(node), new=replacement,
                          payload=ast.dump(encoder.args[0]), address=ast.dump(address)))
         found.add(node.lineno)
@@ -348,13 +374,18 @@ def fixture_migrate(path, source, sources):
 
 
 def re_helper_reference(source, module, name):
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+    aliases = set()
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[-1] == module:
             if any(alias.name == name for alias in node.names):
                 return True
-        if isinstance(node, ast.Import) and any(alias.name.split(".")[-1] == module for alias in node.names):
-            return True
-    return False
+        if isinstance(node, ast.Import):
+            aliases.update(alias.asname or alias.name for alias in node.names
+                           if alias.name.split(".")[-1] == module)
+    return any(isinstance(node, ast.Attribute) and node.attr == name
+               and isinstance(node.value, ast.Name) and node.value.id in aliases
+               for node in ast.walk(tree))
 
 
 def main():
@@ -379,8 +410,8 @@ def main():
             if current not in (original, result):
                 raise ValueError("unowned source change: " + path)
             (args.root / path).write_text(result)
-        rows.append(dict(path=path, original_sha256=hashlib.sha256(original.encode()).hexdigest(),
-                         current_sha256=hashlib.sha256(result.encode()).hexdigest(),
+        rows.append(dict(path=path, original_git_blob=fixture_blob(original),
+                         current_git_blob=fixture_blob(result),
                          complete_current_source_matches=current == result, recipes=recipes))
     args.output.write_text(json.dumps(dict(base=BASE, files=rows, applied=args.apply), indent=2) + "\n")
     print(json.dumps(dict(files=len(rows), recipes=dict(Counter(r["kind"] for row in rows for r in row["recipes"])),

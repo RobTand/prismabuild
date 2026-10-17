@@ -40,9 +40,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
-
-
-
 def _warm(q: pool.PoolQueue, key: str) -> None:
     q.record_prewarm(key, {
         "host": "dl380g10", "manifest_sha256": "a" * 64,
