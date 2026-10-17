@@ -108,3 +108,25 @@ print(json.dumps({"owner": str(pathlib.Path(owner.__file__).resolve()),
     assert missing.returncode == 2, missing.stderr
     assert "the following arguments are required: --queue, --manifest, --manifest-sha256" in missing.stderr
     assert missing.stdout == ""
+
+
+def test_scope_qualifier_cold_physical_entry(physical_entry, tmp_path):
+    generation, directory = physical_entry
+    entry = directory / "qualify_resource_scope.py"
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    identity = _cold(entry, unrelated, "-c", '''
+import json, pathlib, runpy, sys
+entry = runpy.run_path(sys.argv[1], run_name="physical_entry_control")
+owner = sys.modules[entry["ResourceScope"].__module__]
+print(json.dumps({"owner": str(pathlib.Path(owner.__file__).resolve()),
+                  "class": entry["ResourceScope"] is owner.ResourceScope}))
+''', str(entry))
+    assert identity.returncode == 0, identity.stderr
+    assert json.loads(identity.stdout) == {
+        "owner": str(generation / "src" / "prismabuild" / "resource_scope.py"), "class": True}
+    # Help exits in argparse before qualify(), so this cold entry control never
+    # creates a scope, allocates memory or starts a qualification workload.
+    help_result = _cold(entry, unrelated, str(entry), "--help")
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--docker-image" in help_result.stdout
