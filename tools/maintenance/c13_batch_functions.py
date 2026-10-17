@@ -116,7 +116,15 @@ def main():
     expected=ast.FunctionDef(name='repins',args=current.args,body=repins.body,decorator_list=[])
     blocks['one_scope_origin_repins']=c13_body(expected)==c13_body(current)
     result=dict(base=BASE,functions=rows,blocks=blocks,equal=sum(x['status']=='normalized-body-equal' for x in rows))
+    expected_seams={'_attempt_owned_paths','_live_path_owner','_TickReads.path_owners',
+                    '_unknown_attempt_detail',
+                    'canonical_expected_id','_commitments_path','commit_batch',
+                    '_file_origin_repins','_retire_consumed_batch_locked','due_mover_rows'}
+    actual_seams={row['original'] for row in rows if row['status']!='normalized-body-equal'}
+    result['expected_seams']=sorted(expected_seams)
+    result['qualified']=len(rows)==234 and actual_seams==expected_seams and all(blocks.values())
     Path(sys.argv[1]).write_text(json.dumps(result,indent=2)+'\n')
     print(json.dumps({'original':len(rows),'equal':result['equal'],'blocks':blocks,'seams':[r['original'] for r in rows if r['status']!='normalized-body-equal']}))
+    raise SystemExit(0 if result['qualified'] else 1)
 
 if __name__=='__main__':main()

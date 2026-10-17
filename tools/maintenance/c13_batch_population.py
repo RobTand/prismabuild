@@ -43,10 +43,12 @@ def c13_population(root):
             elif isinstance(node,ast.Constant) and isinstance(node.value,str):
                 imports.update(aliases.get(node.value,()))
         graph[file]=sorted(imports-{file})
-    def closure(roots):
+    def closure(roots, *, tests_only=False):
         reached=set(roots)
         while True:
-            more={path for path,imports in graph.items() if set(imports)&reached}-reached
+            more={path for path,imports in graph.items()
+                  if (not tests_only or path.startswith('tests/'))
+                  and set(imports)&reached}-reached
             if not more:return sorted(reached)
             reached.update(more)
     pattern='produced_output|produced_spool|test_prepaid_writer_integration|test_consumed_origin_retirement|test_write_only_produced_output|test_produced_output|r13_1053_replay'
@@ -57,7 +59,11 @@ def c13_population(root):
     seeds.update(['tests/test_batch_ledger_ownership.py','tests/test_duplication_baseline.py'])
     # Keep the native boundary seed to test/fixture modules. Reverse edges
     # include every test that implicitly imports a changed domain fixture.
-    domain=closure(seeds)
+    # Do not travel from test fixture -> benchmark -> publisher file list ->
+    # conftest -> all tool tests. Those strings describe published contents;
+    # they do not make each tool a consumer of the batch fixture. Keep that
+    # conservative graph in the full export for Root instead.
+    domain=closure(seeds,tests_only=True)
     selected=sorted(p for p in domain if p.startswith('tests/test_') and p.count('/')==1)
     changed=set(subprocess.check_output(['git','diff','--name-only',BASE],cwd=root,text=True).splitlines())
     changed_prod={p for p in changed if p.startswith(('src/','tools/fleet/')) and p.endswith('.py')}
@@ -65,7 +71,7 @@ def c13_population(root):
     return dict(base=BASE,head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),
                 seeds=sorted(seeds),selected_whole_files=selected,domain_closure=domain,
                 full_transitive_importers=broad,imports=graph,
-                note='Source selection only. No native collection, test pass or whole-root credit. Queue-transitive population is exported for Root and not submitted here.')
+                note='Source selection only. No native collection, test pass or whole-root credit. Native boundary selection follows all test-to-test fixture edges. The full conservative graph, including quoted path and Queue-transitive edges, is exported for Root and not submitted here.')
 
 
 def main():
