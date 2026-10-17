@@ -22,6 +22,7 @@ export's completion is fed through ``PoolQueue._learn_export``, the hook its
 resource-scope cleanup calls, with its landing time stated.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -65,11 +66,14 @@ def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
     action = core.seal_action(request)
     cas.publish_action_request(action)
     owner = str(action["action_key"])
-    queue.publish(action_key=owner, cas_root=str(cas_root),
-                  worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
-                  checkout_root=str(tmp_path / "mover-checkout"),
-                  resources={**demand, **oc.owner_demand_terms(template)},
-                  produced_output_template=template)
+    ActionRows(queue).publish(
+        owner,
+        cas_root=str(cas_root),
+        worker_script=str(fx.REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(tmp_path / 'mover-checkout'),
+        resources={**demand, **oc.owner_demand_terms(template)},
+        produced_output_template=template,
+    )
     return owner
 
 

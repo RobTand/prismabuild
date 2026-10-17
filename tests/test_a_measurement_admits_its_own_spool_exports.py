@@ -23,6 +23,7 @@ measurement is claimed through the real adaptive path, so its holder carries
 the metadata a live measurement does.  Only the CPU sample is stated.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 from prismabuild import submission as submit_core
 
 import hashlib
@@ -107,9 +108,15 @@ def _claim(queue: pool.PoolQueue, cpu_sampler):
 def _publish(queue: pool.PoolQueue, cas: pb.PrismaBuildCAS, action, demand) -> str:
     cas.publish_action_request(action)
     key = str(action["action_key"])
-    queue.publish(action_key=key, cas_root=str(cas.root), checkout_root="/co",
-                  worker_script="worker.py", resources=dict(demand), tags=[HOST],
-                  priority=-10)
+    ActionRows(queue).publish(
+        key,
+        cas_root=str(cas.root),
+        checkout_root='/co',
+        worker_script='worker.py',
+        resources=dict(demand),
+        tags=[HOST],
+        priority=-10,
+    )
     return key
 
 
