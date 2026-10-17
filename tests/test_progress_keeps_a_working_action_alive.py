@@ -24,6 +24,7 @@ from prismabuild import core as pb, pool, progress  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -888,7 +889,7 @@ def _claim_with(queue, key, observation, *, tmp_path, overrides=()):
     lease["progress_observation"] = observation
     lease.update(overrides)
     queue.records.lease_path(key).write_text(json.dumps(lease), encoding="utf-8")
-    return next(row for row in pbstatus.read_pool(queue.root)["jobs"]
+    return next(row for row in fleet_census.rows(queue.root).value["jobs"]
                 if row["action_key"] == key)
 
 

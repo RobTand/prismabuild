@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun
 from prismabuild import submission as submit_core
 import pbmcp
+from prismabuild import census as fleet_census
 import pbstatus
 import pbwait
 import pool_reset
@@ -241,7 +242,7 @@ def test_readers_accept_a_concluded_withdrawal(scoped, monkeypatch, reader):
         plans, skipped = pool_reset.plan_resets(queue, cas_root=Path(item["cas_root"]))
         assert plans == skipped == []  # Only failed/ is eligible for reset.
     elif reader == "pbstatus":
-        rows = [row for row in pbstatus.read_endings(queue.root, limit=10) if row["action_key"] == key]
+        rows = [row for row in fleet_census.endings(queue.root, limit=10) if row["action_key"] == key]
         assert rows and all(row["status"] == "withdrawn" and row["unreadable"] is None for row in rows)
     elif reader == "pbrun":
         assert submit_core.action_client.report_pool_outcome(queue, key, wait_s=1) == submit_core.action_client.WITHDRAWN_EXIT
