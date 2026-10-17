@@ -124,7 +124,10 @@ def main():
     residual, unknown, parse_errors = [], defaultdict(list), []
     owner = ast.parse((args.root / "src/prismabuild/tier_holdings.py").read_text())
     owner_class = next(n for n in owner.body if isinstance(n, ast.ClassDef) and n.name == "TierLedger")
-    methods = {n.name for n in owner_class.body if isinstance(n, ast.FunctionDef)} | {"tier_id", "records"}
+    methods = {n.name for n in owner_class.body if isinstance(n, ast.FunctionDef)}
+    methods.update(n.attr for n in ast.walk(owner_class)
+                   if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                   and n.value.id == "self" and isinstance(n.ctx, ast.Store))
     for top in ("src", "tools", "tests"):
         for path in sorted((args.root / top).rglob("*.py")):
             relative = str(path.relative_to(args.root))

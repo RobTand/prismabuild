@@ -54,7 +54,7 @@ def tier_call(node):
             and node.func.attr in {"tier_ledger", "tier"})
 
 
-def caller_aliases(tree):
+def caller_aliases(tree, seeds=None):
     parents, scopes = {}, {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -67,6 +67,13 @@ def caller_aliases(tree):
     for node in ast.walk(tree):
         scopes[node] = scope(node)
     aliases = {n: set() for n in set(scopes.values())}
+    for function in functions.values():
+        aliases[function].update((seeds or {}).get(function.name, ()))
+        for arg in (*function.args.args, *function.args.kwonlyargs):
+            annotation = arg.annotation
+            if ((isinstance(annotation, ast.Attribute) and annotation.attr == "TierLedger")
+                    or isinstance(annotation, ast.Name) and annotation.id == "TierLedger"):
+                aliases[function].add(arg.arg)
     returns, values = {}, {}
     def is_tier(node, enclosing):
         return tier_call(node) or (isinstance(node, ast.Name) and node.id in aliases[enclosing])
