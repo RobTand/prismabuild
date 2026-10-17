@@ -761,11 +761,13 @@ def _worker_finish(
         str(disposition), attempts, adopted))
 
 
-def conclude(queue, policy: WorkerFinish) -> Path:
+def conclude(queue, policy: WorkerFinish | ExpiredClaim) -> Path | None:
     """Run the complete conclusion selected by a named policy over this queue."""
     if isinstance(policy, WorkerFinish):
         return _worker_finish(queue, policy.action_key, status=policy.status,
                               detail=policy.detail, claim_snapshot=policy.claim_snapshot)
+    if isinstance(policy, ExpiredClaim):
+        return _expired_claim(queue, policy)
     raise TypeError(f"unsupported conclusion policy: {type(policy).__name__}")
 
 
@@ -866,3 +868,283 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
     if transition is Transition.FINISH and disposition in {DONE, FAILED}:
         queue.retire_residency_plan(key)
     return destination
+
+
+def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
+    from . import pool
+
+    key, record, read_claim = policy.action_key, policy.record, policy.original
+    holder, age, terminal_keys = policy.holder, policy.lease_age, policy.terminal_keys
+    path = queue.records.item_path(CLAIMED, key)
+    container_cleanup = queue.cleanup_action_containers(record, reason="lease_lost")
+    if not container_cleanup["complete"]:
+        pending = dict(record)
+        queue._note_cleanup_attempt(pending, record, container_cleanup)
+        queue.records.replace_record_at(path, pending)
+        return None
+    terminal = queue.terminal_outcome_covers(
+        record, action_key=key, terminal=terminal_keys
+    )
+    if terminal is not None:
+        # The worker already filed this exact generation.  A stale
+        # directory view or a cycle racing the final unlink may still
+        # expose its old claim, but that copy is cleanup, not a retry.
+        state, outcome = terminal
+        queue.records.file_superseded(
+            record, key=key, kind="terminal-claim", status="dropped",
+            dropped_unix=pool._now(), dropped_host=socket.gethostname(),
+            reason="stale claim belongs to a generation already filed "
+                   f"under {state}",
+            terminal_status=outcome.get("status"), when=pool._now(),
+        )
+        queue._release_reservation(
+            key, host=holder if isinstance(holder, str) else socket.gethostname(),
+            # Judged on the record that was *filed*, not on this
+            # stale copy: the ending already concluded, and if it
+            # kept its tier tokens the bytes are on the stage.
+            # Releasing them here would leave occupancy nothing can
+            # attribute -- every reclaim path (an egress, the orphan
+            # sweep) walks the tier's held keys, so a key released
+            # while its files remain is capacity no mechanism can
+            # ever take back.
+            keep_tier=queue.pin_holds_tier_tokens(outcome, key))
+        path.unlink(missing_ok=True)
+        queue.records.lease_path(key).unlink(missing_ok=True)
+        return None
+    if queue.withdrawal_covers(record, action_key=key) is not None:
+        if ("scratch_declaration_record" in record
+                or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
+            queue.records.file_superseded(record, key=key,
+                                  kind="scratch-declarations-after-withdrawal", when=pool._now())
+        # A withdrawal that could not finish its own cleanup -- the
+        # operator's box died mid-verb, say -- leaves a claimed record
+        # whose lease nobody refreshes.  Requeueing that is the one
+        # thing withdrawal exists to prevent, so conclude it here
+        # instead: capacity back, records gone, nothing counted as
+        # reaped because nothing was returned to the pool.
+        tombstone, mine = queue._entomb_claim(key, expect=read_claim)
+        if not mine or tombstone is None:
+            return None
+        queue.records.lease_path(key).unlink(missing_ok=True)
+        queue._release_reservation(
+            key, host=holder if isinstance(holder, str) else socket.gethostname())
+        tombstone.unlink(missing_ok=True)
+        return None
+    # The filename is the identity; a record that disagrees with it, or
+    # has lost it, must not be written back to a queue directory where
+    # every consumer addresses items by key.
+    record["action_key"] = key
+    prior_attempts = int(record.get("attempts", 0))
+    if (age is None
+            and record.get("withdrawn_unix") is None
+            and not bool(
+                record_store.value_or_raise(
+                    queue.records.attempt_presence(record, prior_attempts + 1),
+                ),
+            )
+            # Consumed output funding proves this claim already
+            # persisted its lease; a subsequently missing lease
+            # cannot restore its one-use entitlement (#848).
+            and queue._spent_output_retry_stop(record) is None):
+        # Nothing ever ran under this claim, so nothing failed under
+        # it.  ``claim`` writes the lease before it returns and
+        # ``execute`` writes the child pid into it before the payload
+        # is launched, so a claim with no lease at all never reached a
+        # launch; and no attempt is published under the number this
+        # claim would take, so no other writer recorded one either.
+        #
+        # Both halves are needed.  A lease is also absent from a claim
+        # a *finisher* archived and then died holding:
+        # ``sweep_finish_tombstones`` restores exactly that record, and
+        # relies on this path archiving at the same attempt number so
+        # first-writer-wins hands the item the finisher's real outcome.
+        # ``finish`` publishes the attempt before it entombs the claim,
+        # so the attempt on disk is what tells the two apart.
+        #
+        # Charging an attempt here is what turned a stalled claimant
+        # into lost work: measured on this fleet, a single pool-record
+        # operation took 45 s against a 30 s grace, and
+        # ``0a44f2e0f62c`` came back ``lease_lost_max_attempts`` with
+        # empty stdout and stderr -- an action that never started,
+        # unrunnable, out of a queue another box could have taken it
+        # from.  Widening the grace only moves the guess; the window
+        # has no upper bound on this filesystem.  Releasing does not
+        # need one, because it asks what happened rather than how long
+        # it took.
+        #
+        # A withdrawn claim is the one thing a release must not
+        # touch. ``withdraw`` closes the retry with an immutable,
+        # generation-scoped decision, and ``withdrawal_covers`` reads
+        # that decision even after a later publication retires the
+        # visible summary. A release does not charge an attempt, but
+        # it would put work the operator cancelled straight back in
+        # the queue, so this branch explicitly excludes any covered
+        # generation.
+        #
+        # This does not stop a reaper taking a live-but-blocked
+        # claimant's claim -- that is not knowable across boxes.  It
+        # stops the taking from destroying the work. A resumed
+        # claimant must pass the exact-claim launch/heartbeat guards.
+        # Its late report cannot use the uncharged attempt number:
+        # that slot now belongs to the successor's first execution.
+        queue.records.file_superseded(
+            record, key=key, kind="unstarted-claim", status="released",
+            released_unix=pool._now(), released_host=socket.gethostname(),
+            reason="claim released without an attempt: no lease was "
+                   "written and no attempt was published", when=pool._now(),
+        )
+        # Counted, not bounded.  A bound would be the constant this
+        # issue exists to avoid, and a release costs an execution
+        # nothing; a key whose count climbs is a box that cannot start
+        # work, which is the thing to go and look at.
+        record["unstarted_releases"] = int(
+            record.get("unstarted_releases", 0) or 0) + 1
+        destination = queue._shape_as_ready_item(record, action_key=key)
+        tombstone, mine = queue._entomb_claim(key, expect=read_claim)
+        if not mine or tombstone is None:
+            # A retry is live under this key and owns everything the
+            # branch below would have taken.  Nothing has been written
+            # outside the superseded filing, which is evidence rather
+            # than state.
+            return None
+        queue.records.lease_path(key).unlink(missing_ok=True)
+        queue._release_reservation(
+            key, host=holder if isinstance(holder, str) else socket.gethostname())
+        try:
+            published = queue._publish_requeued_claim(
+                record, action_key=key, tombstone=tombstone,
+                superseded_kind="unstarted-requeue",
+                superseded_reason="a newer publication already owns ready "
+                                  "after unstarted claim release",
+            )
+        except (OSError, pb.PrismaBuildError):
+            try:
+                os.link(tombstone, path)
+            except OSError:
+                pass
+            else:
+                tombstone.unlink(missing_ok=True)
+            return None
+        tombstone.unlink(missing_ok=True)
+        if published == destination:
+            return destination
+        return None
+    attempts = prior_attempts + 1
+    limit = int(record.get("max_attempts", pool.DEFAULT_MAX_ATTEMPTS))
+    if (
+        prior_attempts
+        and "attempt_history" not in record
+        and "attempt_history_missing_before" not in record
+    ):
+        # Runtime rollout can meet a record already requeued by older
+        # bytes.  State the irrecoverable prefix honestly and archive
+        # from this attempt onward; inventing links would be worse,
+        # while refusing the record would strand live work.
+        record["attempt_history_missing_before"] = prior_attempts
+    terminal = attempts >= limit
+    finished_unix = pool._now()
+    finished_host = socket.gethostname()
+    attempt_record = dict(record)
+    attempt_record.update(
+        {
+            "finished_unix": finished_unix,
+            "finished_host": finished_host,
+        }
+    )
+    telemetry = (container_cleanup.get("resource_scope") or {}).get("telemetry") or {}
+    resource_failure = queue._resource_failure(telemetry)
+    recovery_detail = {
+        "reason": "claim lease expired before an outcome was filed",
+        "lease_age_s": age,
+    }
+    if telemetry:
+        recovery_detail["resource_telemetry"] = telemetry
+    if resource_failure:
+        recovery_detail.update(termination_reason=resource_failure,
+                               termination_evidence=telemetry.get("termination_evidence"),
+                               returncode=137)
+    record["attempt_history"] = queue.archive_attempt(
+        attempt_record,
+        attempt=attempts,
+        status="failed" if resource_failure else (
+            "lease_lost_max_attempts" if terminal else "lease_lost"),
+        disposition=FAILED if terminal else "requeued",
+        detail=recovery_detail,
+    )
+    record["attempts"] = attempts
+    adopted = queue.attempt_ending(record)
+    record.update(
+        {
+            "status": adopted["status"],
+            "finished_unix": adopted["finished_unix"],
+            "finished_host": adopted["finished_host"],
+            "detail": adopted["detail"],
+        }
+    )
+    disposition = adopted["disposition"]
+    if disposition in {DONE, FAILED}:
+        # The immutable winner may be the finisher, not this reaper.
+        # File the exact transition it proved rather than the local
+        # lease observation that lost the first-writer race.
+        record["schema"] = pool.POOL_OUTCOME_SCHEMA_V1
+        destination = queue.records.item_path(str(disposition), key)
+    else:
+        destination = queue._shape_as_ready_item(record, action_key=key)
+    # Same ordering as ``finish``, and for the same reason: this loop
+    # published the requeue and only then unlinked the claim and lease,
+    # so a worker that claimed the requeue inside that window had its
+    # claim and lease deleted by this reaper.
+    tombstone, mine = queue._entomb_claim(key, expect=read_claim)
+    if not mine or tombstone is None:
+        # A retry is live under this key: its claim, lease and
+        # reservation are its own.  This loop has written nothing
+        # outside the attempt archive, which is immutable and
+        # first-writer-wins, so leaving now costs the key nothing.
+        return None
+    queue.records.lease_path(key).unlink(missing_ok=True)
+    if disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
+        # The reaper files the terminal record the claimant never
+        # could (#999), so it owns the same pre-release question
+        # ``finish`` asks: which lenders left while the borrow
+        # still wrote.  Requeue branches skip this -- a live retry
+        # re-borrows, and its own ``finish`` will answer.  Best
+        # effort, as in ``finish``.
+        with suppress(Exception):
+            queue.note_fill_borrow_end(record)
+    # Whatever the outcome, the dead claimant's capacity goes back.  A
+    # reservation outliving its holder is the starvation bug's shape.
+    queue._release_reservation(
+        key, host=holder if isinstance(holder, str) else socket.gethostname(),
+        # A terminal spent-output attempt may have copied only a
+        # prefix. Its existing material pin still owns occupancy;
+        # stopping retries does not retire that material.
+        keep_tier=(adopted.get("output_retry_stopped") is True
+                   and queue.pin_holds_tier_tokens(record, key)))
+    try:
+        if disposition in {DONE, FAILED}:
+            queue.records.replace_record_at(destination, record)
+        else:
+            destination = queue._publish_requeued_claim(
+                record, action_key=key, tombstone=tombstone,
+                superseded_kind="retry-superseded",
+                superseded_reason="a newer publication already owns ready "
+                                  "after an earlier claim ended",
+            )
+    except (OSError, pb.PrismaBuildError):
+        # Put the claim back rather than leave the key with no record
+        # anywhere.  Link first: the tombstone must not replace a claim
+        # that appeared while this was in flight.
+        try:
+            os.link(tombstone, path)
+        except OSError:
+            pass
+        else:
+            tombstone.unlink(missing_ok=True)
+        return None
+    tombstone.unlink(missing_ok=True)
+    if disposition in {DONE, FAILED} or destination == queue.records.item_path(
+        READY,
+        key,
+    ):
+        return destination
+
