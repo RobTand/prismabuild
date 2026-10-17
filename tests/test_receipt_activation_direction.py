@@ -116,3 +116,98 @@ def test_fresh_publication_refuses_unaware_installed_reader_before_writes(privat
         publisher._run_publication(publication_args(dry_run=dry_run))
     assert publisher.MIRROR.resolve() == previous
     assert set(private_store.iterdir()) == before
+
+
+@pytest.mark.parametrize("remove_pair", [False, True])
+def test_same_bridge_pair_transition_requires_its_current_complete_epoch(private_store, monkeypatch, remove_pair):
+    import time
+    from test_rollout_coordinator import post_host
+
+    bridge = prepared_receipt_bridge()
+    previous = generation(private_store, "old", "bridge", tuple(RECEIPT_LEAVES) if remove_pair else ())
+    target = generation(private_store, "new", "bridge", () if remove_pair else tuple(RECEIPT_LEAVES))
+    for root in (previous, target):
+        publisher._seal_generation(root)
+    publisher.MIRROR.symlink_to(previous)
+    checkout = private_store.parent / "bridge-source"
+    updater = checkout / "tools/fleet/upgrade_client.py"
+    updater.parent.mkdir(parents=True)
+    updater.write_bytes(bridge)
+    monkeypatch.setattr(publisher, "CHECKOUT", checkout)
+    monkeypatch.setattr(publisher, "FINAL_BARRIER_QUALIFICATION_GUARD", False)
+    offers = private_store.parent / "pb-queue/workers"
+    offers.mkdir(parents=True)
+    for host in ("one", "two"):
+        (offers / (host + ".json")).write_text(json.dumps({
+            "schema": "prismaquant.prismabuild.pool_offer.v1", "host": host,
+            "announced_unix": time.time()}))
+    agent = publisher._agent_definitions()
+    digest = hashlib.sha256(bridge).hexdigest()
+    for host in ("one", "two"):
+        agent.post_marker(private_store.parent / "rollout", "agents/" + agent.attestation_name(host, digest),
+                          agent.canonical_json(agent.attestation_body(host, digest)))
+    assert publisher._activate_existing("new", dry_run=False, wait_s=0) == 75
+    epoch = publisher._rollout_view()["intent"]["epoch"]
+    post_host(epoch, "one", "drained")
+    assert publisher._barrier_step(epoch)["missing"] == ["two"]
+    assert publisher.MIRROR.resolve() == previous
+    post_host(epoch, "two", "drained")
+    assert publisher._barrier_step(epoch)["state"] == "activated"
+    assert publisher.MIRROR.resolve() == target
+    post_host(epoch, "one", "rotated")
+    assert publisher._barrier_step(epoch)["missing"] == ["two"]
+    assert "resume.json" not in publisher._rollout_view(epoch)["markers"]
+    post_host(epoch, "two", "rotated")
+    assert publisher._barrier_step(epoch)["state"] == "resume_authorized"
+    for host in ("one", "two"):
+        post_host(epoch, host, "resumed")
+    assert publisher._barrier_step(epoch)["state"] == "completed"
+
+
+def test_final_updater_does_not_relax_the_same_agent_barrier(private_store, monkeypatch):
+    previous = generation(private_store, "previous", "bridge", tuple(RECEIPT_LEAVES))
+    target = generation(private_store, "target", "final", tuple(RECEIPT_LEAVES))
+    for root in (previous, target):
+        publisher._seal_generation(root)
+    publisher.MIRROR.symlink_to(previous)
+    monkeypatch.setattr(publisher, "FINAL_BARRIER_QUALIFICATION_GUARD", False)
+    assert require_reachable(target, previous)
+    with pytest.raises(SystemExit, match="same rollout-aware updater"):
+        publisher._activate_existing("target", dry_run=False, wait_s=0)
+    assert publisher.MIRROR.resolve() == previous
+    assert not (private_store.parent / "rollout/epochs").exists()
+
+
+def test_predeploy_refuses_the_actual_a174_direction_before_issuing_approval(tmp_path):
+    import runpy
+    import sys
+    import time
+    from prismabuild.compatibility_window import content_digest
+
+    sys.path.insert(0, str(ROOT / "tests/compat/support"))
+    from record_compat import retained
+
+    validate = runpy.run_path(str(ROOT / "tests/compat/support/compat_predeploy.py"))["validate"]
+    window = ROOT / "tests/compat/generations/window.json"
+    declared = json.loads(window.read_bytes())["rollback"]
+    with retained() as generations:
+        name, old, _ = generations[0]
+        assert name == declared["generation"]
+        receipt_raw = (old / "RUNTIME_VERSION.json").read_bytes()
+        receipt = json.loads(receipt_raw)
+        designation = tmp_path / "designation.json"
+        designation.write_text(json.dumps({"rollback": {**declared, "directory": str(old.resolve()),
+            "receipt_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+            "content_sha256": content_digest(receipt["files"])}}))
+        raw = json.dumps({"complete": True, "nodes": [
+            {"node": "one", "state": "live", "runtime_commit": declared["commit"]}]}).encode()
+        (tmp_path / "status.json").write_bytes(raw)
+        census = tmp_path / "census.json"
+        census.write_text(json.dumps({"status_file": "status.json", "status_sha256": hashlib.sha256(raw).hexdigest(),
+                                      "status_exit": 0, "captured_unix": time.time()}))
+        out = tmp_path / "predeploy-approval.json"
+        args = SimpleNamespace(census=census, window=window, designation=designation,
+                               generations=old.parent, candidate=ROOT, out=out)
+        with pytest.raises(WindowError, match="receipt-member"):
+            validate(args)
+        assert not out.exists()
