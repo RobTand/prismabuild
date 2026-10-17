@@ -67,7 +67,7 @@ def world_roomy(tmp_path, *, payload_max: int):
 def offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     """Mint ``mb_s`` fill tokens and announce them, as the tier loop does."""
 
-    queue.mint_tier_capacity(fx.TIER, {fx.KIND: 4, FILL: mb_s})
+    queue.tier(fx.TIER).mint({fx.KIND: 4, FILL: mb_s})
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, FILL: mb_s}
@@ -137,10 +137,10 @@ def test_two_paced_exports_from_two_producers_share_the_tier(tmp_path):
     claimed_second = claim(spool)
     assert claimed_second is not None and claimed_second["action_key"] == foreign
 
-    ledger = spool.queue.tier_ledger(fx.TIER)
-    assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
-    assert ledger.holder_tokens(foreign).get(FILL) == 104
-    assert ledger.available().get(FILL, 0) == 0      # the offer bounds the sum
+    ledger = spool.queue.tier(fx.TIER)
+    assert ledger.holdings(first['export_key']).get(FILL) == 60
+    assert ledger.holdings(foreign).get(FILL) == 104
+    assert ledger.free_supply().get(FILL, 0) == 0      # the offer bounds the sum
 
 
 def test_two_measured_exports_share_the_tier_while_a_third_borrows(tmp_path):
@@ -177,10 +177,10 @@ def test_two_measured_exports_share_the_tier_while_a_third_borrows(tmp_path):
     assert claimed_second is not None \
         and claimed_second["action_key"] == second["export_key"]
 
-    ledger = spool.queue.tier_ledger(fx.TIER)
-    assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
-    assert ledger.holder_tokens(second["export_key"]).get(FILL) == 60
-    assert ledger.available().get(FILL, 0) == 44   # the offer bounds the sum
+    ledger = spool.queue.tier(fx.TIER)
+    assert ledger.holdings(first['export_key']).get(FILL) == 60
+    assert ledger.holdings(second['export_key']).get(FILL) == 60
+    assert ledger.free_supply().get(FILL, 0) == 44   # the offer bounds the sum
 
     third = spool.submit_group("b3", base.prepare(spool, "b3")[2])
     assert sealed(spool, "b3")["params"]["demand"][FILL_DEMAND] == 60
@@ -194,9 +194,9 @@ def test_two_measured_exports_share_the_tier_while_a_third_borrows(tmp_path):
     assert borrow["owner"] == spool.owner
     # The borrow takes no token: the siblings still hold their 60 each,
     # and the ledger still bounds the unborrowed sum at the offer.
-    assert ledger.holder_tokens(first["export_key"]).get(FILL) == 60
-    assert ledger.holder_tokens(second["export_key"]).get(FILL) == 60
-    assert ledger.holder_tokens(third["export_key"]).get(FILL) == 44
+    assert ledger.holdings(first['export_key']).get(FILL) == 60
+    assert ledger.holdings(second['export_key']).get(FILL) == 60
+    assert ledger.holdings(third['export_key']).get(FILL) == 44
 
 
 def test_a_pacer_bound_receipt_prices_its_achieved_rate(tmp_path):
@@ -226,8 +226,8 @@ def test_a_pacer_bound_receipt_prices_its_achieved_rate(tmp_path):
     foreign = second_paced_write(spool, 104)
     claimed_second = claim(spool)
     assert claimed_second is not None and claimed_second["action_key"] == foreign
-    ledger = spool.queue.tier_ledger(fx.TIER)
-    assert ledger.available().get(FILL, 0) == 0      # the offer bounds the sum
+    ledger = spool.queue.tier(fx.TIER)
+    assert ledger.free_supply().get(FILL, 0) == 0      # the offer bounds the sum
 
 
 def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
@@ -248,8 +248,8 @@ def test_an_export_with_no_measured_rate_takes_the_whole_offer(tmp_path):
 
     claimed = claim(spool)
     assert claimed is not None and claimed["action_key"] == first["export_key"]
-    ledger = spool.queue.tier_ledger(fx.TIER)
-    assert ledger.available().get(FILL, 0) == 0     # the whole offer is held
+    ledger = spool.queue.tier(fx.TIER)
+    assert ledger.free_supply().get(FILL, 0) == 0     # the whole offer is held
 
     foreign = second_paced_write(spool, 60)
     assert claim(spool) is None         # no measurement, no second writer

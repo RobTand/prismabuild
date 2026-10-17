@@ -62,8 +62,7 @@ def _publish(fleet: fx.Fleet, key: str) -> None:
 def fleet(tmp_path: Path) -> fx.Fleet:
     built = fx.build(tmp_path)
     queue = built.queue
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8,
-                                    storage_tiers.FILL_KIND: 200})
+    queue.tier(TIER).mint({'stage_gib': 8, storage_tiers.FILL_KIND: 200})
     queue.announce_tier({
         "schema": "prismabuild.storage_tier.v1",
         "tier": "stage", "tier_id": TIER, "host": "fixture-box",

@@ -159,7 +159,7 @@ def _fan_out(queue: pool.PoolQueue, stage: Path) -> None:
 
 
 def _held(queue: pool.PoolQueue) -> int:
-    return int(queue.tier_ledger(TIER).held().get("stage_gib", 0))
+    return int(queue.tier(TIER).holdings().get('stage_gib', 0))
 
 
 def _egress(queue: pool.PoolQueue, stage: Path, plan: dict[str, object],
@@ -660,16 +660,15 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
         _published, staged = tier_loop._mover_state(queue, plans[key], TIER)
         lead = str(plans[key]["phases"][0]["mover_row"]["action_key"])  # type: ignore[index]
         assert lead in staged, (key[:12], sorted(staged))
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     ranges: dict[tuple[int, int], list[str]] = {}
-    for holder in ledger.held_keys():
+    for holder in ledger.holders():
         receipt = queue.move_record(holder)
-        if isinstance(receipt, dict) and ledger.holder_tokens(holder):
+        if isinstance(receipt, dict) and ledger.holdings(holder):
             ranges.setdefault((int(receipt["range_start_bytes"]),
                                int(receipt["range_end_bytes"])), []).append(holder)
     assert all(len(holders) == 1 for holders in ranges.values()), ranges
-    held = {holder: int(ledger.holder_tokens(holder).get("stage_gib", 0))
-            for holder in ledger.held_keys()}
+    held = {holder: int(ledger.holdings(holder).get('stage_gib', 0)) for holder in ledger.holders()}
     movers = sum(gib for holder, gib in held.items()
                  if not holder.startswith(window_credit.GRANT_PREFIX))
     fences = sum(gib for holder, gib in held.items()
