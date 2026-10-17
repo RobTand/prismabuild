@@ -38,8 +38,6 @@ not an atomic scheduler snapshot or a process-liveness proof.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-import contextvars
 import importlib.util
 import json
 import math
@@ -678,36 +676,8 @@ def _name_the_job_ahead(jobs: list[dict]) -> None:
         job["note"] = f"{job['note']}; {note}" if job.get("note") else note
 
 
-#: The reader that serves this census's queue reads while one is installed
-#: (:func:`kept_reads`), or ``None`` for the plain reads below.  ``pbmetrics``
-#: installs the one it keeps between scrapes, so a directory nothing was filed
-#: in since the last scrape is not listed again and a record whose version
-#: holds is not read again (#1020).  Every other caller reads plainly.
-_KEPT_READS: contextvars.ContextVar[object | None] = contextvars.ContextVar(
-    "pbstatus_kept_reads", default=None)
-
-
-@contextmanager
-def kept_reads(reader):
-    """Serve the census's directory and sidecar reads from ``reader``.
-
-    ``reader`` answers :func:`_pool_records`, :func:`_pool_sidecar`,
-    :func:`_starvation_sidecar`, :func:`read_endings` and the claim-denial
-    host listing with the same values and the same failures the plain reads
-    return.  ``pbmetrics`` passes the reader it keeps between scrapes
-    (#1020); nothing else sets one, so every other caller reads afresh.
-    """
-
-    token = _KEPT_READS.set(reader)
-    try:
-        yield reader
-    finally:
-        _KEPT_READS.reset(token)
-
-
-def _pool_records(directory: Path) -> tuple[dict[str, dict | None], list[str]]:
+def _pool_records(directory: Path, *, reader=None) -> tuple[dict[str, dict | None], list[str]]:
     """Audit a live directory without treating failed reads as an empty queue."""
-    reader = _KEPT_READS.get()
     if reader is not None:
         return reader.pool_records(directory)
     try:
@@ -849,9 +819,8 @@ def _child_note(child: object) -> str:
     return clause
 
 
-def _pool_sidecar(path: Path) -> dict | None | Exception:
+def _pool_sidecar(path: Path, *, reader=None) -> dict | None | Exception:
     """Retain read failures for the row that owns this observation."""
-    reader = _KEPT_READS.get()
     if reader is not None:
         return reader.sidecar(path)
     parsed = pool.record_store.RecordStore.diagnostic_sidecar_at(path)
@@ -943,13 +912,12 @@ def _reservation_hosts(queue: pool.PoolQueue, notes: list[str]) -> list[Path]:
     return hosts
 
 
-def _pool_claim_denials(queue: pool.PoolQueue) -> tuple[list[dict], list[str]]:
+def _pool_claim_denials(queue: pool.PoolQueue, *, reader=None) -> tuple[list[dict], list[str]]:
     """Read optional host snapshots without turning a bad diagnostic into a bad job."""
     denials, notes = [], []
-    reader = _KEPT_READS.get()
     try:
         if reader is not None:
-            hosts = reader.subdirectories(queue.root / pool.RESERVATIONS)
+            hosts = reader.claim_denial_hosts(queue)
         else:
             hosts = _reservation_hosts(queue, notes)
     except FileNotFoundError:
@@ -957,7 +925,7 @@ def _pool_claim_denials(queue: pool.PoolQueue) -> tuple[list[dict], list[str]]:
     except OSError as exc:
         return denials, [f"pool claim denials: {exc}"]
     for directory in sorted(hosts):
-        snapshot = _pool_sidecar(directory / 'adaptive' / pool.CLAIM_DENIALS)
+        snapshot = _pool_sidecar(directory / 'adaptive' / pool.CLAIM_DENIALS, reader=reader)
         if snapshot is None:
             continue  # Older workers and hosts that have skipped nothing.
         if isinstance(snapshot, Exception):
@@ -1007,7 +975,7 @@ def _claim_denials_for(record: dict, denials: Sequence[dict], *, now: float) -> 
     return [by_host[host] for host in sorted(by_host)]
 
 
-def read_pool(queue_root: str | Path) -> dict:
+def read_pool(queue_root: str | Path, *, reader=None) -> dict:
     """Read worker offers, active records and existing admission evidence.
 
     This is a non-atomic diagnostic census, never a new admission decision.
@@ -1016,9 +984,9 @@ def read_pool(queue_root: str | Path) -> dict:
     sampling time, so a later stalled read cannot extend any earlier lifetime.
     """
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS)
-    ready, ready_notes = _pool_records(queue.records.dir(pool.record_store.READY))
-    claimed, claim_notes = _pool_records(queue.records.dir(pool.record_store.CLAIMED))
+    workers, worker_notes = _pool_records(queue.root / pool.record_store.WORKERS, reader=reader)
+    ready, ready_notes = _pool_records(queue.records.dir(pool.record_store.READY), reader=reader)
+    claimed, claim_notes = _pool_records(queue.records.dir(pool.record_store.CLAIMED), reader=reader)
     admission = {}
     for host, offer in workers.items():
         if _valid_pool_offer(host, offer):
@@ -1026,18 +994,18 @@ def read_pool(queue_root: str | Path) -> dict:
             # one canonicalizes its lock and probes every ancestor (#1528).
             base = queue.root / pool.RESERVATIONS / host / "adaptive"
             admission[host] = {
-                'cpu': _pool_sidecar(base / 'cpu-sample.json'),
-                'gpu': _pool_sidecar(base / 'gpu-state.json') if offer.get('has_gpu') else None,
+                'cpu': _pool_sidecar(base / 'cpu-sample.json', reader=reader),
+                'gpu': _pool_sidecar(base / 'gpu-state.json', reader=reader) if offer.get('has_gpu') else None,
             }
     sidecars = {}
     for state, records in ((pool.record_store.READY, ready), (pool.record_store.CLAIMED, claimed)):
         for key, record in records.items():
             if _valid_pool_item(key, record):
                 path = queue.records.passes_path(key) if state == pool.record_store.READY else queue.records.lease_path(key)
-                sidecars[state, key] = _pool_sidecar(path)
-    prewarms = {key: _pool_sidecar(queue.records.prewarm_path(key))
+                sidecars[state, key] = _pool_sidecar(path, reader=reader)
+    prewarms = {key: _pool_sidecar(queue.records.prewarm_path(key), reader=reader)
                 for key, record in ready.items() if _valid_pool_item(key, record)}
-    denial_records, denial_notes = _pool_claim_denials(queue)
+    denial_records, denial_notes = _pool_claim_denials(queue, reader=reader)
     now = time.time()
     notes = [*worker_notes, *ready_notes, *claim_notes, *denial_notes]
     # The half of ``notes`` that means "this census is missing something",
@@ -1281,16 +1249,6 @@ STARVATION_QUIET_FRACTION = 0.5
 STARVATION_CHILD_SILENT_S = 30.0
 
 
-def _starvation_sidecar(path: Path) -> dict | None | Exception:
-    """One claim-adjacent record for the starvation census, failures retained."""
-
-    reader = _KEPT_READS.get()
-    if reader is not None:
-        return reader.sidecar(path)
-    try:
-        return pool.record_store.read_document(path)
-    except (OSError, ValueError) as exc:
-        return exc
 
 
 def _starvation_accepted_phase(lease: Mapping[str, object] | None) -> str | None:
@@ -1415,7 +1373,7 @@ def _starvation_holders(queue: pool.PoolQueue, tier_id: str,
 def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                            *, ready: set[str], claimed: set[str],
                            notes: list[str], unreadable: list[str],
-                           now: float) -> dict:
+                           now: float, reader=None) -> dict:
     """One residency plan's promotion state, derived, never decided."""
 
     prefix = key[:12]
@@ -1438,7 +1396,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
              "ready" if key in ready else "absent")
     accepted: str | None = None
     if state == "claimed":
-        lease = _starvation_sidecar(queue.records.lease_path(key))
+        lease = _pool_sidecar(queue.records.lease_path(key), reader=reader)
         if isinstance(lease, Exception):
             notes.append(f"starvation plan {prefix} lease: {lease}")
             unreadable.append(f"starvation plan {prefix} lease: {lease}")
@@ -1829,7 +1787,7 @@ def _starvation_commitment_waits(tiers: Sequence[Mapping[str, object]]) -> list[
     return waits
 
 
-def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict]:
+def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str], reader=None) -> list[dict]:
     """Top claim-denial reasons per host, and the ones blocking movers.
 
     The snapshot holds each host's latest verdict per action generation
@@ -1840,7 +1798,7 @@ def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict
     has since left the active queue reads as unknown rather than as either.
     """
 
-    denials, denial_notes = _pool_claim_denials(queue)
+    denials, denial_notes = _pool_claim_denials(queue, reader=reader)
     notes.extend(denial_notes)
     movers: set[str] = set()
     live: set[str] = set()
@@ -1851,7 +1809,7 @@ def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict
             notes.append(f"starvation mover join {state}: {exc}")
             continue
         for path in paths:
-            record = _starvation_sidecar(path)
+            record = _pool_sidecar(path, reader=reader)
             if not isinstance(record, dict):
                 continue
             key = record.get("action_key")
@@ -2179,7 +2137,7 @@ def read_blocked_origins(queue_root: str | Path) -> dict:
             "complete": not found["unreadable"]}
 
 
-def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict:
+def read_starvation(queue_root: str | Path, *, now: float | None = None, reader=None) -> dict:
     """Answer "what is waiting on data" as one JSON-serializable blob.
 
     A non-atomic diagnostic census over the pool queue root, reusing
@@ -2201,7 +2159,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
 
     moment = time.time() if now is None else float(now)
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    census = read_pool(queue_root)
+    census = read_pool(queue_root, reader=reader)
     notes = list(census.get("notes", []))
     unreadable = list(census.get("queue", {}).get("unreadable", []))
     jobs = census.get("jobs", [])
@@ -2212,7 +2170,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         if job.get("state") != "CLAIMED":
             continue
         key = str(job.get("action_key"))
-        claim = _starvation_sidecar(queue.records.item_path(pool.record_store.CLAIMED, key))
+        claim = _pool_sidecar(queue.records.item_path(pool.record_store.CLAIMED, key), reader=reader)
         if isinstance(claim, Exception) or not isinstance(claim, dict):
             notes.append(f"starvation claim {key[:12]}: {claim}")
             unreadable.append(f"starvation claim {key[:12]}: {claim}")
@@ -2220,7 +2178,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         residency = claim.get("residency")
         if not isinstance(residency, Mapping) or not residency.get("leads"):
             continue  # Not a consumer: nothing to wait on.
-        lease = _starvation_sidecar(queue.records.lease_path(key))
+        lease = _pool_sidecar(queue.records.lease_path(key), reader=reader)
         if isinstance(lease, Exception):
             notes.append(f"starvation lease {key[:12]}: {lease}")
             unreadable.append(f"starvation lease {key[:12]}: {lease}")
@@ -2256,7 +2214,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         unreadable.append(f"starvation residency plans: {exc}")
         plan_paths = []
     for path in plan_paths:
-        raw = _starvation_sidecar(path)
+        raw = _pool_sidecar(path, reader=reader)
         if isinstance(raw, Exception):
             notes.append(f"starvation plan {path.stem[:12]}: {raw}")
             unreadable.append(f"starvation plan {path.stem[:12]}: {raw}")
@@ -2265,10 +2223,10 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
             continue
         plans.append(_starvation_plan_entry(
             queue, path.stem, raw, ready=ready, claimed=claimed,
-            notes=notes, unreadable=unreadable, now=moment))
+            notes=notes, unreadable=unreadable, now=moment, reader=reader))
     tiers = _starvation_tiers(queue, now=moment, notes=notes, unreadable=unreadable)
     commitment_waits = _starvation_commitment_waits(tiers)
-    denial_top = _starvation_denials(queue, notes=notes)
+    denial_top = _starvation_denials(queue, notes=notes, reader=reader)
     starved = _starvation_starved(jobs)
     for entry in starved:
         # The sequence, not only the latest verdict (#991).
@@ -2451,8 +2409,7 @@ def _unreadable_reason(exc: Exception) -> str:
     return "not valid JSON"
 
 
-def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
-                 ) -> list[dict]:
+def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT, reader=None) -> list[dict]:
     """Describe how the newest actions ended, under either transport.
 
     Args:
@@ -2480,7 +2437,6 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
     do not consume the field.
     """
 
-    reader = _KEPT_READS.get()
     if reader is not None:
         return reader.endings(Path(queue_root), limit)
     rows = [ending_row(entry, queue_root)

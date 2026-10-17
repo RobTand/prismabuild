@@ -461,7 +461,7 @@ class KeptReads:
             self._files.pop(name, None)
         return value
 
-    # -- the pbstatus census's reads (``pbstatus.kept_reads``) -----------------
+    # -- the pbstatus census's explicit reads ------------------------------
 
     def pool_records(self, directory: Path) -> tuple[dict[str, dict | None], list[str]]:
         """``pbstatus._pool_records``, from the kept listing."""
@@ -556,6 +556,12 @@ class KeptReads:
     def released_claim_filings(self, queue_root):
         self._named.add(os.fspath(Path(queue_root) / pool.record_store.WITHDRAWN / 'superseded'))
         return self.queue_store(Path(queue_root)).released_claim_filings()
+
+    def claim_denial_hosts(self, queue):
+        directory = queue.root / pool.RESERVATIONS
+        store = self.queue_store(queue.root)
+        return self._from_store(directory, 'claim-denial-hosts',
+                                lambda: store.claim_denial_hosts_at(directory))
 
 
 #: The ``_reads`` meaning of a :meth:`KeptReads.history` listing.
@@ -778,8 +784,7 @@ def _terminal_metrics(
     # that exists but cannot be listed still fails the read below.
     accessible = all(reader.available(Path(queue_root) / state)
                      for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN))
-    with pbstatus.kept_reads(reader):
-        endings = pbstatus.read_endings(queue_root, limit=limit)
+    endings = pbstatus.read_endings(queue_root, limit=limit, reader=reader)
     selected = [
         row for row in endings
         if (age := _number(now - float(row.get("finished_unix", -math.inf)))) is not None
@@ -1032,8 +1037,7 @@ def _starvation_metrics(
     *,
     now: float,
     window_seconds: float,
-    reader: KeptReads | None = None,
-) -> bool:
+    reader: KeptReads | None = None, census_reader=None) -> bool:
     """Fleet starvation gauges: tier fill, denials, mover depth (issue #661).
 
     Read-only derivation from records the fleet already files, following this
@@ -1116,7 +1120,7 @@ def _starvation_metrics(
 
     # -- per-host denial counts by reason, windowed ------------------------
     try:
-        denials, _denial_notes = pbstatus._pool_claim_denials(queue)
+        denials, _denial_notes = pbstatus._pool_claim_denials(queue, reader=census_reader)
     except Exception:
         denials = []
         ok = False
@@ -1323,7 +1327,7 @@ def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
                  movers: frozenset[str], ram_tier_id: str | None, *,
                  ready: set[str], claimed: set[str], claimed_listed: set[str],
                  announced: Mapping[str, Mapping[str, object]],
-                 receipts: Mapping[str, pool.record_store.HistoryEntry] | None) -> tuple | None:
+                 receipts: Mapping[str, pool.record_store.HistoryEntry] | None, census_reader=None) -> tuple | None:
     """Everything one plan's census reads outside its fenced directories.
 
     ``pbstatus._starvation_plan_entry`` reads, besides the plan itself, the
@@ -1352,7 +1356,7 @@ def _plan_inputs(reader: KeptReads, queue: pool.PoolQueue, key: str,
     state = ("claimed" if key in claimed else "ready" if key in ready else "absent")
     accepted = None
     if state == "claimed":
-        lease = pbstatus._starvation_sidecar(queue.records.lease_path(key))
+        lease = pbstatus._pool_sidecar(queue.records.lease_path(key), reader=census_reader)
         if isinstance(lease, Exception):
             return None
         accepted = pbstatus._starvation_accepted_phase(lease)
@@ -1398,7 +1402,7 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
                  claimed_listed: set[str],
                  announced: Mapping[str, Mapping[str, object]],
                  receipts: Mapping[str, pool.record_store.HistoryEntry] | None,
-                 now: float) -> _PlanCensus:
+                 now: float, census_reader=None) -> _PlanCensus:
     """One plan's census, reused while nothing it read has changed.
 
     The census (``pbstatus._starvation_plan_entry``) lists the consumer's
@@ -1419,7 +1423,7 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
         if (_plan_inputs(reader, queue, key, movers, ram_tier_id, ready=ready,
                          claimed=claimed, claimed_listed=claimed_listed,
                          announced=announced,
-                         receipts=receipts) == inputs
+                         receipts=receipts, census_reader=census_reader) == inputs
                 and reader.holds(fences)):
             reader.reused += 1
             return census
@@ -1443,12 +1447,12 @@ def _plan_census(reader: KeptReads, queue: pool.PoolQueue, path: Path,
         inputs = _plan_inputs(reader, queue, key, movers, ram_tier_id, ready=ready,
                               claimed=claimed, claimed_listed=claimed_listed,
                               announced=announced,
-                              receipts=receipts)
+                              receipts=receipts, census_reader=census_reader)
     notes: list[str] = []
     unreadable: list[str] = []
     census = _project_plan(pbstatus._starvation_plan_entry(
         queue, key, raw, ready=ready, claimed=claimed, notes=notes,
-        unreadable=unreadable, now=now), unreadable)
+        unreadable=unreadable, now=now, reader=census_reader), unreadable)
     # Only a census with nothing to report is kept: a ledger holder that
     # could not be read is a note, not an unreadable plan, and its ``False``
     # must be read again rather than kept.
@@ -1465,8 +1469,7 @@ def _promotion_metrics(
     *,
     now: float,
     window_seconds: float,
-    reader: KeptReads | None = None,
-) -> bool:
+    reader: KeptReads | None = None, census_reader=None) -> bool:
     """Per-tier promotion lag, mover depth, and delivery (issue #660 backend).
 
     Read-only derivation from records the fleet already files, following this
@@ -1576,7 +1579,7 @@ def _promotion_metrics(
     waiting: dict[str, int] = defaultdict(int)
     quiet_max: dict[str, float] = {}
     for key in consumers:
-        lease = pbstatus._starvation_sidecar(queue.records.lease_path(key))
+        lease = pbstatus._pool_sidecar(queue.records.lease_path(key), reader=census_reader)
         if isinstance(lease, Exception):
             ok = False
             continue
@@ -1644,7 +1647,7 @@ def _promotion_metrics(
         census = _plan_census(reader, queue, path, entry, ready=ready,
                               claimed=claimed, claimed_listed=claimed_listed,
                               announced=announced,
-                              receipts=receipts, now=now)
+                              receipts=receipts, now=now, census_reader=census_reader)
         unreadable = unreadable or census.unreadable
         if not census.valid:
             invalid_plans += 1
@@ -1834,11 +1837,10 @@ def collect_metrics(
     reader = KeptReads() if reader is None else reader
     reader.begin()
     try:
-        with pbstatus.kept_reads(reader):
-            return _collect(queue_root, now=now,
-                            terminal_window_seconds=terminal_window_seconds,
-                            terminal_limit=terminal_limit, previous=previous,
-                            reader=reader, started=started)
+        return _collect(queue_root, now=now,
+                        terminal_window_seconds=terminal_window_seconds,
+                        terminal_limit=terminal_limit, previous=previous,
+                        reader=reader, started=started)
     finally:
         reader.end()
 
@@ -1858,7 +1860,7 @@ def _collect(
     metrics = Metrics()
     success = True
     try:
-        census = pbstatus.read_pool(root)
+        census = pbstatus.read_pool(root, reader=reader)
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         census = {"nodes": [], "jobs": [], "queue": {"ready": None, "claimed": None}}
         success = False
@@ -2162,7 +2164,7 @@ def _collect(
         success = _starvation_metrics(
             metrics, root, now=sampled,
             window_seconds=terminal_window_seconds, reader=reader,
-        ) and success
+         census_reader=reader) and success
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         success = False
 
@@ -2170,7 +2172,7 @@ def _collect(
         success = _promotion_metrics(
             metrics, root, now=sampled,
             window_seconds=terminal_window_seconds, reader=reader,
-        ) and success
+         census_reader=reader) and success
     except Exception:  # A scrape reports the failure rather than dropping HTTP.
         success = False
         metrics.family(

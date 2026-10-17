@@ -1199,7 +1199,7 @@ def _cursor_census(queue_root: Path, *, now: float) -> dict:
     rows: list[dict] = []
     for name in names:
         key = name[:-len(".json")]
-        raw = pbstatus._starvation_sidecar(root / pool.record_store.RESIDENCY_PLANS / name)
+        raw = pbstatus._pool_sidecar(root / pool.record_store.RESIDENCY_PLANS / name)
         if isinstance(raw, Exception) or not isinstance(raw, Mapping):
             reason = str(raw) if isinstance(raw, Exception) else "not a JSON object"
             note = f"cursors plan {key[:12]}: {reason}"
@@ -1247,7 +1247,7 @@ def _cursor_row(queue: pool.PoolQueue, key: str,
     }
     if not entry.get("valid") or entry.get("state") != "claimed":
         return row
-    lease = pbstatus._starvation_sidecar(queue.records.lease_path(key))
+    lease = pbstatus._pool_sidecar(queue.records.lease_path(key))
     if isinstance(lease, Exception):
         note = f"cursors lease {key[:12]}: {lease}"
         notes.append(note)

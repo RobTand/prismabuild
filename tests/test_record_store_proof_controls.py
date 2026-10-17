@@ -40,6 +40,9 @@ def test_store_does_not_restore_a_previous_capture_after_proof_loss(tmp_path, mo
             store.state_records(record_store.READY)
     else:
         path.write_text('{"v":2}')
+        rewritten = path.stat()
+        os.utime(path, ns=(rewritten.st_atime_ns, rewritten.st_mtime_ns + 1))
+        assert path.stat().st_mtime_ns != rewritten.st_mtime_ns
         trust.directory_versions[str(path.parent)] = (*original[:3], original[3] + 1)
         native_read = Path.read_bytes
         reads = []
