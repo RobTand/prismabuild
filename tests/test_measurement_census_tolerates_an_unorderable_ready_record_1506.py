@@ -11,6 +11,7 @@ the census wrong.  A CLAIMED record is a running incumbent, and one the census
 cannot read is unknown, so that stays strict.  Identity mismatches stay strict.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -40,9 +41,13 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _publish(queue: pool.PoolQueue, key: str) -> Path:
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co",
-                  worker_script=queue.root / "worker.py", resources={"cpu": 1})
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     return queue.records.item_path(pool.record_store.READY, key)
 
 
