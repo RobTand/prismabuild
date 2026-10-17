@@ -1,7 +1,7 @@
 """The preemption successor an agent is told about, read without the lock.
 
 ``pbrun.action_wait._read_preemption_successor`` is the authority on which generation a stopped
-one was requeued as, and it answers under ``_transition_locked`` because it is
+one was requeued as, and it answers under ``action_transition_lock`` because it is
 deciding what to tell a waiter.  ``pbmcp`` is reporting, not participating, so
 it re-derives the same answer unlocked -- and re-deriving is only honest if it
 reads the same evidence.  The evidence that is easy to miss is the immutable
