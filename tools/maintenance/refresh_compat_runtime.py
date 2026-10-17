@@ -1,4 +1,4 @@
-"""Adopt source-identity-only runtime goldens from a verified PB capture."""
+"""Adopt source-identity-only current goldens from a verified PB capture."""
 from __future__ import annotations
 
 import argparse
@@ -38,27 +38,36 @@ def refresh(args):
     if not (len(parents) == 1):
         raise ValueError('capture integrity check failed: len(parents) == 1')
     producer = parents[0]
-    unchanged = ["src", "tools/prismabuild_worker.py", "tests/compat/support"]
+    unchanged = ["src", "tools/fleet", "tools/prismabuild_worker.py", "tests/compat/support"]
     drift = subprocess.check_output(
         ["git", "-C", str(root), "diff", "--name-only", producer, "--", *unchanged],
         text=True).splitlines()
     if not (not drift):
         raise ValueError(('capture source differs from current production/driver', drift))
-    prior = data / "goldens-receipt.jsonl"
+    intent = args.profile == "upgrade-intent"
+    suffix = "rollout" if intent else "receipt"
+    expected = ({"upgrade-intent/armed"} if intent else
+                {kind + "/" + variant for kind in
+                 ("core-receipt", "core-attestation", "core-runtime")
+                 for variant in ("in-process", "script")})
+    prior = data / f"goldens-{suffix}.jsonl"
     old_raw = prior.read_bytes()
-    before = {row["case"]: row for row in rows(prior)}
+    before = {row["case"]: row for row in rows(prior) if row["case"] in expected}
     current = {row["case"]: row for row in rows(capture / "goldens.jsonl")}
-    expected = {kind + "/" + variant for kind in
-                ("core-receipt", "core-attestation", "core-runtime")
-                for variant in ("in-process", "script")}
     if not (set(before) == set(current) == set(report['selected_cases']) == expected):
         raise ValueError("capture integrity check failed: set(before) == set(current) == set(report['selected_cases']) == expected")
-    if not ((capture / 'historical.jsonl').read_bytes() == (data / 'historical-receipt.jsonl').read_bytes()):
+    historical_path = data / f"historical-{suffix}.jsonl"
+    historical = b"".join(line for line in historical_path.read_bytes().splitlines(keepends=True)
+                           if json.loads(line)["case"] in expected)
+    if not ((capture / 'historical.jsonl').read_bytes() == historical):
         raise ValueError('historical bytes changed')
     changes = {}
     identities = {}
-    for name in ("core", "digest_primitives"):
-        raw = (root / "src/prismabuild" / (name + ".py")).read_bytes()
+    members = ({"agent": "tools/fleet/upgrade_client.py", "coordinator": "tools/fleet/publish_runtime.py"}
+               if intent else {name: "src/prismabuild/" + name + ".py"
+                               for name in ("core", "digest_primitives")})
+    for name, member in members.items():
+        raw = (root / member).read_bytes()
         identities[name] = dict(bytes=len(raw), sha256=sha(raw))
     for case in sorted(expected):
         old = base64.b64decode(before[case]["raw"], validate=True)
@@ -66,6 +75,16 @@ def refresh(args):
         if not (sha(old) == before[case]['sha256'] and sha(new) == current[case]['sha256']):
             raise ValueError("capture integrity check failed: sha(old) == before[case]['sha256'] and sha(new) == current[case]['sha256']")
         changes[case] = differences(json.loads(old), json.loads(new))
+        if intent:
+            if not ({row['path'] for row in changes[case]} <= {"/agent_sha256", "/coordinator_sha256"}):
+                raise ValueError('upgrade intent changed outside source identities')
+            body = json.loads(new)
+            for name, identity in identities.items():
+                if body[name + "_sha256"] != identity["sha256"]:
+                    raise ValueError('upgrade intent does not bind actual selected source bytes')
+            if not changes[case]:
+                raise ValueError('capture did not change this current-source golden')
+            continue
         prefix = ("/producer/runtime" if case.startswith("core-receipt/") else
                   "/runtime" if case.startswith("core-attestation/") else "")
         allowed = {prefix + "/runtime_sha256"}
@@ -84,36 +103,61 @@ def refresh(args):
         for name, identity in identities.items():
             if not (all((runtime[name][field] == value for field, value in identity.items()))):
                 raise ValueError('capture integrity check failed: all((runtime[name][field] == value for field, value in identity.items()))')
-    archive = data / "history-controls" / ("superseded-runtime-" + sha(old_raw)[:16])
+    label = "upgrade-intent" if intent else "runtime"
+    archive = data / "history-controls" / ("superseded-" + label + "-" + sha(old_raw)[:16])
     if not (not archive.exists()):
         raise ValueError('old current bytes already archived; inspect partial adoption')
+    if args.report.exists():
+        raise ValueError('adoption report already exists')
     with tempfile.TemporaryDirectory(prefix="adopt-runtime-") as tmp:
         staged = Path(tmp)
         subprocess.run([sys.executable, str(root / "tests/compat/support/adopt_compat_capture.py"),
                         "--capture", str(capture), "--destination", str(staged),
-                        "--suffix", "receipt", "--primary-audit", str(args.primary_audit)], check=True)
-        if not ((staged / 'historical-receipt.jsonl').read_bytes() == (data / 'historical-receipt.jsonl').read_bytes()):
+                        "--suffix", suffix, "--primary-audit", str(args.primary_audit)], check=True)
+        if not ((staged / f'historical-{suffix}.jsonl').read_bytes() == historical):
             raise ValueError("capture integrity check failed: (staged / 'historical-receipt.jsonl').read_bytes() == (data / 'historical-receipt.jsonl').read_bytes()")
-        if not (not (staged / 'absent-participants-receipt.jsonl').exists()):
+        if not (not (staged / f'absent-participants-{suffix}.jsonl').exists()):
             raise ValueError("capture integrity check failed: not (staged / 'absent-participants-receipt.jsonl').exists()")
         archive.mkdir(parents=True)
         (archive / prior.name).write_bytes(old_raw)
-        provenance = dict(reason="Only attested Core/digest source identities and dependent self-digests changed; actual writer bytes independently reproduced and unchanged retained consumers accepted both directions.",
-                          sha256=sha(old_raw), records=len(before), credit="superseded current-source fixture; no supported historical-generation credit",
+        reason = ("Only actual updater/coordinator source identities changed" if intent else
+                  "Only attested Core/digest source identities and dependent self-digests changed")
+        provenance = dict(reason=reason + "; actual writer bytes independently reproduced and unchanged retained consumers accepted both directions.",
+                          sha256=sha(old_raw), records=len(rows(prior)), selected_cases=sorted(expected),
+                          credit="superseded current-source fixture; no supported historical-generation credit",
+                          previous_current_commit=subprocess.check_output(
+                              ["git", "-C", str(root), "log", "-1", "--format=%H", "--", str(prior.relative_to(root))],
+                              text=True).strip(),
+                          historical_sha256=sha(historical_path.read_bytes()),
                           capture_source_parent=producer, differences=changes)
-        old_manifest = data / "capture-receipt.json"
+        old_manifest = data / f"capture-{suffix}.json"
         if old_manifest.exists():
             shutil.copyfile(old_manifest, archive / old_manifest.name)
         (archive / "provenance.json").write_text(sorted_json(provenance) + "\n")
         for path in archive.iterdir():
             path.chmod(0o444)
-        for name in ("goldens-receipt.jsonl", "capture-receipt.json"):
+        adopted = {row["case"]: line for line in (staged / prior.name).read_bytes().splitlines(keepends=True)
+                   for row in [json.loads(line)]}
+        replacement = b"".join(adopted.get(json.loads(line)["case"], line)
+                               for line in old_raw.splitlines(keepends=True))
+        (staged / prior.name).chmod(0o644)
+        (staged / prior.name).write_bytes(replacement)
+        manifest_path = staged / f"capture-{suffix}.json"
+        adoption = json.loads(manifest_path.read_bytes())
+        adoption["retained_current_cases"] = [row["case"] for row in rows(prior)
+                                             if row["case"] not in expected]
+        adoption["superseded_current_archive"] = str(archive.relative_to(root))
+        adoption["files"] = {prior.name: sha(replacement),
+                             historical_path.name: sha(historical_path.read_bytes())}
+        manifest_path.chmod(0o644)
+        manifest_path.write_text(sorted_json(adoption) + "\n")
+        for name in (prior.name, f"capture-{suffix}.json"):
             target = data / name
             if target.exists():
                 target.chmod(0o644)
             shutil.copyfile(staged / name, target)
             target.chmod(0o444)
-    result = dict(cases=6, historical_rows_byte_exact=12, source_identities=identities,
+    result = dict(cases=len(expected), historical_rows_byte_exact=len(historical.splitlines()), source_identities=identities,
                   archive=str(archive.relative_to(root)), capture_source_parent=producer,
                   current_goldens_sha256=sha(prior.read_bytes()), differences=changes)
     with args.report.open("x") as stream:
@@ -124,6 +168,7 @@ def refresh(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--profile", choices=("runtime", "upgrade-intent"), default="runtime")
     parser.add_argument("--capture", type=Path, required=True)
     parser.add_argument("--primary-audit", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)

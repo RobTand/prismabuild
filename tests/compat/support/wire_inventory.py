@@ -148,6 +148,15 @@ def evaluate(node, values):
     return ast.literal_eval(node)
 
 
+def source_expression(node, source):
+    if any(isinstance(part, ast.JoinedStr) for part in ast.walk(node)):
+        segment = ast.get_source_segment(source, node)
+        if segment is None:
+            raise ValueError('interpolated expression has no selected source bytes')
+        return segment
+    return ast.unparse(node)
+
+
 def audit(root, observations=None):
     observations = observations if observations is not None else {}
     observations.update({key: [] for key in ("parsed_sources", "unparsed_sources", "unresolved_schema_builders", "serialization_sites")})
@@ -176,7 +185,7 @@ def audit(root, observations=None):
             else:
                 captured["historical"][item["generation"]].add(item["case"])
     wire_ids = {row["name"]: wire for wire, row in known.items()}
-    constants, imports = {}, {}
+    constants, imports, exports = {}, {}, {}
     for unit, tree in sources(root, observations):
         path = unit["path"]
         module = module_name(path)
@@ -205,6 +214,23 @@ def audit(root, observations=None):
                 for name in node.names:
                     aliases[name.asname or name.name] = name.name
         imports[path, unit["block"]] = (local, aliases)
+        exports.update({module + "." + name: origin for name, origin in aliases.items()})
+
+    def imported_constant(name):
+        visited = set()
+        while name not in visited:
+            if name in constants:
+                return constants[name]
+            visited.add(name)
+            prefix = name
+            while prefix:
+                if prefix in exports:
+                    name = exports[prefix] + name[len(prefix):]
+                    break
+                prefix = prefix.rsplit(".", 1)[0] if "." in prefix else ""
+            else:
+                return None
+        return None
     rows = defaultdict(lambda: {"occurrences": [], "schema_builders": [], "json_boundaries": [], "reader_checks": []})
     policies = []
     for source_file in observations["parsed_sources"]:
@@ -219,14 +245,14 @@ def audit(root, observations=None):
         def resolve(node, scope):
             imported = scope.get("__wire_imports__", aliases)
             if isinstance(node, ast.Name):
-                return scope.get(node.id, local.get(node.id, constants.get(imported.get(node.id))))
+                return scope.get(node.id, local.get(node.id, imported_constant(imported.get(node.id, node.id))))
             if isinstance(node, ast.Attribute):
                 head, tail = node, []
                 while isinstance(head, ast.Attribute):
                     tail.insert(0, head.attr)
                     head = head.value
                 if isinstance(head, ast.Name):
-                    return constants.get(imported.get(head.id, head.id) + "." + ".".join(tail))
+                    return imported_constant(imported.get(head.id, head.id) + "." + ".".join(tail))
             if isinstance(node, ast.Constant):
                 return node.value
             return None
@@ -255,8 +281,9 @@ def audit(root, observations=None):
             values["__wire_imports__"] = imported
             return values
 
-        def walk(node, owner="<module>", embedded=False, scope=None):
+        def walk(node, owner="<module>", embedded=False, scope=None, source=None):
             scope = local if scope is None else scope
+            source = snippet.decode() if source is None else source
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 owner = (owner + "." + node.name).removeprefix("<module>.")
                 scope = scope_values(node, scope)
@@ -265,7 +292,7 @@ def audit(root, observations=None):
                     rows[node.value]["occurrences"].append({"path": path, "owner": owner, "line": node.lineno, "embedded": embedded})
                 elif "schema" in node.value:
                     try:
-                        walk(ast.parse(node.value), owner + ":embedded", True, scope)
+                        walk(ast.parse(node.value), owner + ":embedded", True, scope, node.value)
                     except SyntaxError:
                         pass
             schema, names, expansion, schema_node = None, [], False, None
@@ -294,14 +321,14 @@ def audit(root, observations=None):
                 if target.endswith("_exact_mapping"):
                     for kw in node.keywords:
                         if kw.arg == "keys":
-                            pin(kw.value, owner, scope)
+                            pin(kw.value, owner, scope, source)
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub) and isinstance(node.left, ast.Call) and isinstance(node.left.func, ast.Name) and node.left.func.id == "set":
-                pin(node.right, owner, scope)
+                pin(node.right, owner, scope, source)
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if isinstance(target, ast.Name) and re.fullmatch(r"_?(?:allowed|optional|required|keys|fields)|.*_(?:KEYS|FIELDS)", target.id):
-                        pin(node.value, owner, scope, binding=target.id)
+                        pin(node.value, owner, scope, source, binding=target.id)
             if isinstance(node, ast.Compare):
                 pairs = zip((node.left, *node.comparators[:-1]), node.comparators)
                 for left, right in pairs:
@@ -311,25 +338,25 @@ def audit(root, observations=None):
                         fields = right if is_keys(left) else left
                         if isinstance(fields, (ast.Tuple, ast.List)) and any(isinstance(part, ast.Set) for part in fields.elts):
                             for part in fields.elts:
-                                pin(part, owner, scope)
+                                pin(part, owner, scope, source)
                         elif not is_keys(fields):
-                            pin(fields, owner, scope)
+                            pin(fields, owner, scope, source)
                 for expression in ast.walk(node):
                     wire = resolve(expression, scope)
-                    if isinstance(wire, str) and WIRE.fullmatch(wire) and "schema" in ast.unparse(node).lower():
+                    if isinstance(wire, str) and WIRE.fullmatch(wire) and "schema" in source_expression(node, source).lower():
                         rows[wire]["reader_checks"].append({"path": path, "owner": owner, "line": node.lineno,
-                                                           "expression": ast.unparse(node), "embedded": embedded})
+                                                           "expression": source_expression(node, source), "embedded": embedded})
             if isinstance(schema, str) and WIRE.fullmatch(schema):
                 rows[schema]["schema_builders"].append({"path": path, "owner": owner, "line": node.lineno,
                                                         "fields": sorted(names), "expansion": expansion, "embedded": embedded})
             elif schema_node is not None:
                 observations["unresolved_schema_builders"].append({"path": path, "owner": owner, "line": node.lineno,
-                                                                   "schema": ast.unparse(schema_node), "fields": sorted(names),
+                                                                   "schema": source_expression(schema_node, source), "fields": sorted(names),
                                                                    "embedded": embedded})
             for child in ast.iter_child_nodes(node):
-                walk(child, owner, embedded, scope)
+                walk(child, owner, embedded, scope, source)
 
-        def pin(node, owner, scope, **extra):
+        def pin(node, owner, scope, source, **extra):
             try:
                 fields = evaluate(node, scope)
             except (ValueError, TypeError, KeyError, IndexError):
@@ -337,7 +364,7 @@ def audit(root, observations=None):
             if isinstance(fields, (set, frozenset, list, tuple)) and all(isinstance(k, str) for k in fields):
                 policies.append({"path": path, "owner": owner, "fields": sorted(fields), **extra})
             else:
-                policies.append({"path": path, "owner": owner, "unresolved": ast.unparse(node), **extra})
+                policies.append({"path": path, "owner": owner, "unresolved": source_expression(node, source), **extra})
 
         walk(tree, "<module>" if source_file["block"] is None else
              ("<shell-json@" if source_file["shell_template"] else "<shell-python@") + source_file["block"] + ">")
@@ -443,14 +470,23 @@ def main():
     review_path = args.root / "tests/compat/dynamic_schema_dispositions.jsonl"
     reviews = [json.loads(line) for line in review_path.read_text().splitlines()] if review_path.exists() else []
     reviewed = set()
+    review_problems = []
     for review in reviews:
-        assert hashlib.sha256((args.root / review["path"]).read_bytes()).hexdigest() == review["source_sha256"], review
+        source_path = args.root / review["path"]
+        if not source_path.is_file() or hashlib.sha256(source_path.read_bytes()).hexdigest() != review["source_sha256"]:
+            review_problems.append(dict(problem="reviewed source changed or moved", review=review))
+            continue
         matches = [row for row in dynamic if all(row[key] == review[key] for key in ("path", "owner", "line", "schema", "fields"))]
-        assert len(matches) == 1 and review["reason"], "stale or ambiguous dynamic-schema review"
+        if len(matches) != 1 or not review["reason"]:
+            review_problems.append(dict(problem="stale or ambiguous dynamic-schema review", review=review))
+            continue
         identity = review["path"], review["owner"], review["line"]
-        assert identity not in reviewed
+        if identity in reviewed:
+            review_problems.append(dict(problem="duplicate dynamic-schema review", review=review))
+            continue
         reviewed.add(identity)
     observations["dynamic_schema_reviews"] = reviews
+    observations["source_review_problems"] = review_problems
     observations["unreviewed_dynamic_schema_builders"] = [row for row in dynamic
         if (row["path"], row["owner"], row["line"]) not in reviewed]
     args.out.mkdir(parents=True, exist_ok=False)
@@ -473,7 +509,7 @@ def main():
     for path in args.out.iterdir():
         path.chmod(0o444)
     print(json.dumps(summary, sort_keys=True))
-    if args.require_complete and (any("requires" in row["disposition"] for row in rows)
+    if review_problems or args.require_complete and (any("requires" in row["disposition"] for row in rows)
                                   or observations["unreviewed_dynamic_schema_builders"]
                                   or any(row["python_suffix"] or row["contains_wire_schema"]
                                          for row in observations["unparsed_sources"])):
