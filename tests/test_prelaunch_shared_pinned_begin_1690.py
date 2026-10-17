@@ -356,7 +356,7 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
         assert record["consumer_action_key"] == second
         row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
         assert isinstance(row, dict)
-        covered, _generation = queue.funding.cover_window(TIER, row, "stage_gib", 40 if mover != movers[3] else 1)
+        covered, _generation = queue.funding.cover_window(TIER, row, "stage_gib", 40 if mover != movers[3] else 1).credit
         assert covered == (40 if mover != movers[3] else 1), (mover[-8:], covered)
     # Execute both unpinned chunks through their fences; each claim pays
     # no second stage charge and consumes its fence on landing.
@@ -594,7 +594,7 @@ def test_shared_recovery_preserves_request_amount_and_admits(
     assert len(names) == 127
     for mover, gib in zip(movers[2:], (40, 1)):
         row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
-        assert queue.funding.cover_window(TIER, row, "stage_gib", gib)[0] == gib
+        assert queue.funding.cover_window(TIER, row, "stage_gib", gib).credit[0] == gib
     stage_root = Path(tiers[TIER]["mountpoint"])
     for _ in range(2):
         mover = _claim_chunk(queue, 0)

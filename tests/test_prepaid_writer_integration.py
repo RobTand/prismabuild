@@ -572,7 +572,7 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     generation = str(res["generation"])
     # Mover READY, never claimed, no receipt/lease/terminal: every legacy
     # release precondition holds -- only the filed-commit guard protects.
-    assert q.funding.release_output(mover, TIER, generation=generation) is False
+    assert q.funding.release_output(mover, TIER, generation=generation).released is False
     rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     # The claim still works after the refused release.
@@ -601,7 +601,7 @@ def test_abort_guards_the_precommit_authority(tmp_path: Path) -> None:
     assert refused.get("refusal") == "prepaid-intent-exists-retain", refused
     # Retire the never-started intent first, then abort proceeds.
     assert q.funding.release_output(mover, TIER,
-                                    generation=generation) is True
+                                    generation=generation).released is True
     # Origin files now decide: present files retain (producer disposal).
     again = bl.BatchLedger.abort(q, inst, template, batch_id="b1")
     assert again.get("ok") is False

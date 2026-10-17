@@ -153,7 +153,7 @@ def _uncovered(queue, movers, gib_of) -> dict[str, tuple]:
         if not queue.records.item_path(pool.record_store.READY, mover).exists():
             continue
         covered = queue.funding.cover_window(TIER, _row(queue, mover), "stage_gib",
-                                     gib_of[mover])
+                                     gib_of[mover]).credit
         if covered[0] != gib_of[mover]:
             out[mover[-8:]] = covered
     return out

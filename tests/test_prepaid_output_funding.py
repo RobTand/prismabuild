@@ -219,7 +219,7 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
     # Consumed never re-covers.
     row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict)
-    assert q.funding.output_funded_cover(TIER, row, KIND, 1) == (0, None)
+    assert q.funding.output_funded_cover(TIER, row, KIND, 1).credit == (0, None)
     _moved_nothing(q, mover)
     q.finish(mover, status="executed")
     # Owner retains its other token until it finishes.
@@ -577,7 +577,7 @@ def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
     gen = str(funded["generation"])
     # Mover not yet claimed: release proves nonexecution (no CLAIMED, no
     # pinned DONE) and succeeds.
-    assert q.funding.release_output(mover, TIER, generation=gen) is True
+    assert q.funding.release_output(mover, TIER, generation=gen).released is True
     rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "released"
     # Retired credit never falls through to fresh acquisition (R3): the mover
@@ -855,7 +855,7 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> Non
     assert q.funding.output_funded_cover(
         TIER, pool.record_store.value_or_raise(
             q.records.item(pool.record_store.READY, mover),
-        ) or {}, KIND, 1) == (0, None)
+        ) or {}, KIND, 1).credit == (0, None)
     # Cleanup: release mover + owner holdings via normal paths preserves sum.
     assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
     assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED) == held_before
@@ -893,12 +893,12 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     # FAILED terminal + move receipt with staged bytes + lease.
     q.claim(owner="w-nrel")
     # Mover CLAIMED exists => release refuses.
-    assert q.funding.release_output(mover, TIER, generation=gen) is False
+    assert q.funding.release_output(mover, TIER, generation=gen).released is False
     q.finish(mover, status="failed")
     # FAILED terminal exists (even though finish released its unfunded
     # remainder/tokens) => release still refuses (uncertain physical lifetime,
     # attempt history proves execution started).
-    assert q.funding.release_output(mover, TIER, generation=gen) is False
+    assert q.funding.release_output(mover, TIER, generation=gen).released is False
     # True not-started cancellation on a fresh mover/batch releases once:
     # prewrite b2, stage (READY never claimed, no receipt/lease/terminal).
     mover2 = _hexkey("nrel-mover2")
@@ -917,7 +917,7 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
         template=template, batch_id="b2", descriptors=descs2)
     assert staged2.get("ok") is True, staged2
     assert q.funding.release_output(
-        mover2, TIER, generation=str(staged2["generation"])) is True
+        mover2, TIER, generation=str(staged2["generation"])).released is True
     rec2 = q.funding.read_output(mover2, TIER)
     assert rec2 is not None and rec2["state"] == "released"
 
@@ -1048,7 +1048,7 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None
     assert ledger.free_supply().get(KIND, 0) + ledger.holdings(owner).get(KIND, 0) == cap
     row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
-    assert q.funding.output_funded_cover(TIER, row, KIND, 1) == (0, None)
+    assert q.funding.output_funded_cover(TIER, row, KIND, 1).credit == (0, None)
 
 
 def test_unreadable_census_finish_retains(tmp_path: Path, broker) -> None:

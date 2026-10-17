@@ -505,7 +505,7 @@ def test_republished_mover_rotates_to_a_fresh_generation(tmp_path) -> None:
                               float(republished["published_unix"]))
     assert second.status == "published"
     assert second.generation != first.generation
-    assert queue.funding.cover_window(TIER, republished, "stage_gib", 2)[1] == second.generation
+    assert queue.funding.cover_window(TIER, republished, "stage_gib", 2).credit[1] == second.generation
 
 
 def test_mover_claim_uses_funding_without_a_second_charge(tmp_path) -> None:
@@ -521,7 +521,7 @@ def test_mover_claim_uses_funding_without_a_second_charge(tmp_path) -> None:
     published = queue.funding.bind_chunk( TIER, unit, holder, plan,
                                  _leg(plan, first), float(row["published_unix"]))
     assert published.status == "published"
-    assert queue.funding.cover_window(TIER, row, "stage_gib", 2) == (2, published.generation)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (2, published.generation)
     free_before = ledger.free_supply().get('stage_gib')
     got = queue.claim(tags=["dl380g10"], owner="w-mover")
     assert got is not None and got["action_key"] == first
