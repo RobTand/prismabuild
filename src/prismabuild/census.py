@@ -873,6 +873,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     # skipped by the reader, exactly as the consumer's own compose sees it.
     fragments_known = True
     fragments = []
+    expected_fragment_keys = set(residency_plan.mover_keys(plan)) | set(residency_plan.ram_mover_keys(plan))
     try:
         directory = residency_map.fragment_path(
             queue.records.residency_fragment_root(), key, key).parent
@@ -888,6 +889,8 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                 raise observed_fragment.error
             fragments.append(residency_map.validate_fragment(observed_fragment.record))
         except (OSError, ValueError) as exc:
+            if path.stem not in expected_fragment_keys:
+                continue
             note = f"starvation plan {prefix} fragment {path.name}: {exc}"
             notes.append(note)
             unreadable.append(note)

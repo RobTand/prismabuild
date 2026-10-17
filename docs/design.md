@@ -16191,6 +16191,8 @@ Selected denial-read errors and unreadable filed receipts retain partial
 coverage. An unreadable fragment population yields null fragment presence.
 Optional offer-sample errors make the section partial while the legacy queue
 population count keeps its own, narrower completeness meaning.
+Fragment error coverage follows C21's declared mover names: invalid foreign
+files remain tolerated, while a failed directory or named mover stays unknown.
 
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.
