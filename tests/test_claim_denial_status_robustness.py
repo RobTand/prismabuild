@@ -69,9 +69,9 @@ def test_claim_keeps_prior_host_denial_visible_with_age(ready_denial, monkeypatc
 def test_denial_read_error_preserves_job_but_reports_incomplete(ready_denial, monkeypatch):
     queue, key, path, denial, write = ready_denial
     original = pbstatus._pool_sidecar
-    monkeypatch.setattr(pbstatus, "_pool_sidecar", lambda candidate:
+    monkeypatch.setattr(pbstatus, "_pool_sidecar", lambda candidate, *, reader=None:
                         PermissionError("denial read denied") if candidate == path
-                        else original(candidate))
+                        else original(candidate, reader=reader))
     result = pbstatus.read_pool(queue.root)
     assert result["jobs"][0]["state"] == "READY"
     assert result["queue"]["ready"] == 1

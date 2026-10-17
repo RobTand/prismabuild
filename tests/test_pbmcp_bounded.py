@@ -46,7 +46,7 @@ def test_a_census_that_never_returns_is_reported_not_awaited(
 ) -> None:
     fleet = fx.build(tmp_path)
 
-    def never(_queue_root):
+    def never(_queue_root, *, reader=None):
         time.sleep(600)
 
     monkeypatch.setattr(pbmcp.pbstatus, "read_pool", never)

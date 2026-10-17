@@ -181,8 +181,8 @@ def test_pool_freshness_uses_the_completed_census(
         (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": started}))
     original_records, original_read = pbstatus._pool_records, pool.record_store._read_json
 
-    def stalled_records(directory):
-        result = original_records(directory)
+    def stalled_records(directory, *, reader=None):
+        result = original_records(directory, reader=reader)
         if directory.name == stall_at and controlled_clock.time() == started:
             controlled_clock.advance(1000)
         return result

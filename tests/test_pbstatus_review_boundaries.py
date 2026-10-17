@@ -31,7 +31,7 @@ import os,sys,time
 sys.path.insert(0, 'tools/fleet')
 import pbstatus
 pbstatus.wedged_peers = lambda: {'peers': [], 'scanned': 0, 'truncated': False, 'note': None}
-pbstatus.read_pool = lambda root: time.sleep(4)
+pbstatus.read_pool = lambda root, *, reader=None: time.sleep(4)
 pbstatus.os.kill = lambda pid, sig: None
 raise SystemExit(pbstatus.main(['--transport', 'pool', '--json', '--timeout-s', '0.05']))
 '''
@@ -84,10 +84,10 @@ def test_abandoned_reader_does_not_retain_unrelated_flock(tmp_path, monkeypatch)
 
 def test_error_does_not_report_complete_census(monkeypatch, capsys):
     monkeypatch.setattr(pbstatus, 'wedged_peers', lambda: {'peers': [], 'scanned': 0, 'truncated': False, 'note': None})
-    def unavailable(root):
+    def unavailable(root, *, reader=None):
         raise PermissionError('queue unavailable')
     monkeypatch.setattr(pbstatus, 'read_pool', unavailable)
-    monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit: [])
+    monkeypatch.setattr(pbstatus, 'read_endings', lambda root, limit, *, reader=None: [])
     monkeypatch.setattr(pbstatus, 'queue_root_note', lambda root, **kwargs: None)
     pbstatus.main(['--transport', 'pool', '--json'])
     report = json.loads(capsys.readouterr().out)

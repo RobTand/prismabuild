@@ -2460,6 +2460,14 @@ class RecordStore:
         return frozenset(keys)
 
 
+    def claim_denial_hosts_at(self, directory: Path) -> list[Path]:
+        """Host directories at the domain-held reservation-ledger root."""
+        records = (kept_reads.DirectoryRecords() if self._records is None
+                   else self._records)
+        return [path for path, _ in records.read(
+            directory, select=_directory_entry, parse=_listed)]
+
+
 
 
 def _write_json(
@@ -2660,30 +2668,44 @@ def _freeze_json(value: object) -> object:
 
 
 def _thaw_json(value: object) -> object:
-    """Give each caller all of its own mutable containers."""
-    if not isinstance(value, (_JsonObject, _JsonArray)):
+    """Copy frozen or parsed JSON containers without a lower recursion limit."""
+    objects = (_JsonObject, dict)
+    arrays = (_JsonArray, list)
+    if isinstance(value, objects):
+        root = {}
+    elif isinstance(value, arrays):
+        root = []
+    else:
         return value
-    root = {} if isinstance(value, _JsonObject) else []
     pending = [(value, root)]
     while pending:
         current, result = pending.pop()
-        children = (current.members if isinstance(current, _JsonObject)
-                    else enumerate(current.members))
+        if isinstance(current, _JsonObject):
+            children = current.members
+        elif isinstance(current, dict):
+            children = current.items()
+        else:
+            children = enumerate(current.members if isinstance(current, _JsonArray) else current)
+        is_array = isinstance(result, list)
         for key, child in children:
-            out = ({} if isinstance(child, _JsonObject)
-                   else [] if isinstance(child, _JsonArray) else child)
-            if isinstance(result, list):
+            if isinstance(child, objects):
+                out = {}
+            elif isinstance(child, arrays):
+                out = []
+            else:
+                out = child
+            if is_array:
                 result.append(out)
             else:
                 result[key] = out
-            if isinstance(child, (_JsonObject, _JsonArray)):
+            if out is not child:
                 pending.append((child, out))
     return root
 
 
 def independent_document(record: JsonRecord) -> JsonRecord:
     """Detach every JSON container without imposing a lower recursion limit."""
-    return _thaw_json(_freeze_json(record))
+    return _thaw_json(record)
 
 
 @dataclass(frozen=True)

@@ -263,7 +263,7 @@ def test_a_prompt_error_is_not_a_complete_read(tmp_path, monkeypatch, capsys):
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
 
-    def refuse(root):
+    def refuse(root, *, reader=None):
         raise PermissionError("queue unavailable")
 
     monkeypatch.setattr(pbstatus, "read_pool", refuse)
@@ -289,7 +289,7 @@ def test_an_ending_read_that_raises_is_not_a_complete_read(
     queue = pool.PoolQueue(tmp_path / "queue")
     queue.records.ensure_layout()
 
-    def refuse(root, limit):
+    def refuse(root, limit, *, reader=None):
         raise PermissionError("done/ unavailable")
 
     monkeypatch.setattr(pbstatus, "read_endings", refuse)
