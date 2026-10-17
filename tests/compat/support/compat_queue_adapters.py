@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+import uuid
 
 M, C, G, D = "a" * 64, "c" * 64, "7" * 32, "9" * 64
 
@@ -29,9 +30,23 @@ def operate(request, store, load):
                              batch_id="batch0", manifest_digest=D)
             else:
                 value.update(consumer_action_key=C, plan_sha256=D)
-            writer(value)
+            if not output and variant in ("prelaunch-birth", "prelaunch-binding", "reserve-fence"):
+                uuid.uuid4 = lambda: uuid.UUID(G)
+                if variant == "reserve-fence":
+                    queue.mint_tier_capacity("stage:compat", {"stage_gib": 1})
+                    assert queue.reserve_fence("stage:compat", C, value, 1)
+                else:
+                    group = load("prismabuild.prelaunch_group")
+                    arguments = dict(tier_id="stage:compat", consumer=C, digest=D, mover=M,
+                                     start=0, end=8, kind="stage_gib", published=50.0, tokens=value["tokens"])
+                    if variant == "prelaunch-birth":
+                        assert group._birth_record(queue, **arguments) == G
+                    else:
+                        writer(group._fresh_binding(**arguments))
+            else:
+                writer(value)
             steps = {"reserved": [], "transferring": ["transferring"],
-                     "consumed": ["transferring", "consumed"], "released": ["transferring", "released"]}[variant]
+                     "consumed": ["transferring", "consumed"], "released": ["transferring", "released"]}.get(variant, [])
             for state in steps:
                 value["state"] = state
                 writer(value, expect_generation=G)
@@ -40,7 +55,8 @@ def operate(request, store, load):
             path.write_bytes(base64.b64decode(request["raw"]))
             request["_consumer_boundary"]()
             value = reader(M, "stage:compat")
-            assert value and value["state"] == variant, "funding reader refused binding"
+            expected = variant if variant in ("reserved", "transferring", "consumed", "released") else "reserved"
+            assert value and value["state"] == expected, "funding reader refused binding"
             return value
     elif family in ("q-denials", "q-denial-transitions"):
         path = (queue.denial_transitions_path(M) if family == "q-denial-transitions" else
