@@ -5795,8 +5795,18 @@ records `drain_resolves: false` in the denial evidence; foreign GPU processes
 (including exempt vLLM serving), invalid/stale GPU samples and device-state
 refusals therefore do not starve CPU work. A gang member elected elsewhere
 or a measurement reserved on another host likewise has no CPU veto here.
-Missing or unrelated verdicts leave the original protection in place, and a
-pool-holder drain still protects the GPU row. This exception shares the
+All residency refusal states in `candidate_policy.RESIDENCY_REFUSAL_STATES`
+also release the CPU veto, consistently with the room rule in #1169. The
+persisted host-denial evidence must be a mapping with a known refusal state
+and, for the lead family, a nonempty pending list of lead keys and nonempty
+status strings. The recorded reason must equal `candidate_policy.residency_denial`
+of that evidence, including its terminal-lead classification. Missing, malformed,
+unknown or mismatched evidence keeps protection. Ordinary GPU admission keeps
+checking residency and replaces the denial on reevaluation. While a lead is in
+flight, admitted CPU work may occupy the box's memory. Once residency lands,
+a GPU row reserving the full 104 GiB Spark budget then waits for CPU work to
+drain. This is the accepted #1169 behavior.
+A pool-holder drain still protects the GPU row. This exception shares the
 existing lock-free host-denial snapshot used for carried withholds, adds no
 lock or timeout, and grants no GPU or CPU admission credit.
 
