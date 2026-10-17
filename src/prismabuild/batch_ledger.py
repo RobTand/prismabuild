@@ -2421,8 +2421,23 @@ class BatchFacets:
         return self._entry.get("staged_paths")
 
     @property
-    def retiring(self) -> object:
-        return self._entry.get("retiring")
+    def is_retiring(self) -> bool:
+        return bool(self._entry.get("retiring"))
+
+    @property
+    def delete_intent(self) -> OriginDeleteIntent | None:
+        retiring = self._entry.get("retiring")
+        if isinstance(retiring, Mapping):
+            return OriginDeleteIntent(retiring)
+        if retiring:
+            raise oc.ProducedOutputError(
+                "unknown-retain: retiring record is corrupt")
+        return None
+
+    def origin_charge(self, batch_id: str) -> int:
+        return sum(oc.output_class_bytes(
+            self._entry.get("class_bytes"),
+            where=f"committed batch {batch_id!r}").values())
 
     @property
     def has_retirement_report(self) -> bool:
@@ -2442,6 +2457,21 @@ class BatchFacets:
 
     def effective_origins(self, filed, sealed):
         return effective_origin_identity(filed, sealed, self._entry)
+
+
+class OriginDeleteIntent:
+    """The selected durable delete decision, distinct from its truthiness guard."""
+
+    def __init__(self, decision: Mapping[str, object]):
+        self._decision = decision
+
+    @property
+    def reason(self) -> str:
+        return str(self._decision.get("reason") or "")
+
+    @property
+    def consumers(self) -> list[object]:
+        return list(self._decision.get("consumers") or [])
 
 
 class StageCopy:

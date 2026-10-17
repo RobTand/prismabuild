@@ -3310,7 +3310,7 @@ def _release_origin_consumer_locked(
                 "no declarations to release")
         if entry.origin_reclaimed:
             raise oc.ProducedOutputError(f"origin-batch-reclaimed: {batch_id}")
-        if entry.retiring:
+        if entry.is_retiring:
             raise oc.ProducedOutputError(f"origin-batch-retiring: {batch_id}")
         if consumer not in bl.declared_consumers(
                 queue.root, instance, batch_id, checked_ref):
@@ -3486,7 +3486,7 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
                 "over this manifest digest")
         if entry.origin_reclaimed:
             raise oc.ProducedOutputError(f"origin-batch-reclaimed: {batch_id}")
-        if entry.retiring:
+        if entry.is_retiring:
             raise oc.ProducedOutputError(f"origin-batch-retiring: {batch_id}")
         if entry.lifetime != oc.ORIGIN_LIFETIME_CONSUMED:
             return {"ok": True, "declared": False}
@@ -3815,7 +3815,7 @@ def _retire_consumed_batch_locked(
         entry = batches.retirement(batch_id, reads=tick)
         ref = oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.required_manifest))
         try:
-            total = sum(oc.output_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
+            total = entry.origin_charge(batch_id)
         except oc.ProducedOutputError as exc:
             return _unfiled_report(instance, batch_id, {
                 "event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "ref": ref,
@@ -3834,13 +3834,13 @@ def _retire_consumed_batch_locked(
             if entry.quiet_retirement():
                 entry.file()
 
-        retiring = entry.retiring
-        if isinstance(retiring, Mapping):
-            reason = str(retiring.get("reason") or "")
-            consumers = list(retiring.get("consumers") or [])
-        elif retiring:
+        try:
+            retiring = entry.delete_intent
+        except oc.ProducedOutputError as exc:
             return report({"event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, **base,
-                           "reason": "unknown-retain: retiring record is corrupt"})
+                           "reason": str(exc)})
+        if retiring is not None:
+            reason, consumers = retiring.reason, retiring.consumers
         elif _held_for_deferred(instance, deferred_holds):
             quiet()
             return None
@@ -4733,7 +4733,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             except oc.ProducedOutputError as exc:
                 unreadable.append(f"{where}: {exc}")
                 continue
-            due = [(batch_id, entry) for batch_id, entry in sorted(batches.items()) if isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (entry.lifetime == oc.ORIGIN_LIFETIME_CONSUMED) and (not entry.origin_reclaimed) and (not entry.retiring)]
+            due = [(batch_id, entry) for batch_id, entry in sorted(batches.items()) if isinstance(entry, bl.BatchFacets) and entry.kind == 'origin' and (entry.lifetime == oc.ORIGIN_LIFETIME_CONSUMED) and (not entry.origin_reclaimed) and (not entry.is_retiring)]
             try:
                 outstanding = batches.outstanding_prewrite_ids()
             except OSError as exc:
@@ -4793,7 +4793,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     consumers = (_resolved_consumers(
                         queue, instance, batch_id, checked_ref, declared)
                         if declared else [])
-                    total = sum(oc.output_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
+                    total = entry.origin_charge(batch_id)
                 except (oc.ProducedOutputError, KeyError, ValueError) as exc:
                     unreadable.append(f"{where}/{batch_id}: {exc}")
                     continue
