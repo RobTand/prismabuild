@@ -4658,8 +4658,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
             or not batch_id):
         return unknown("its output funding record does not name this mover's batch")
     residency = queue.root / pool.record_store.RESIDENCY
-    scope = (residency / oc.OUTPUT_SCOPES_SUBDIR / owner
-             / f"{template_id}.{nonce}")
+    scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
     try:
         instance = oc.validate_instance(
             json.loads((scope / "instance.json").read_text()))

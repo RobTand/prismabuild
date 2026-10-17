@@ -13438,9 +13438,8 @@ class PoolQueue:
         total = bound_range[1] - bound_range[0]
         # Deterministic instance path (no scan).
         try:
-            inst_path = (Path(self.root) / "residency"
-                         / oc.OUTPUT_SCOPES_SUBDIR / owner_key
-                         / f"{template_id}.{owner_nonce}" / "instance.json")
+            inst_path = (bl.attempt_scope(self.root, owner_key, template_id,
+                                          owner_nonce) / "instance.json")
             try:
                 with open(inst_path, "rb") as handle:
                     raw_inst = handle.read(64 * 1024 + 1)
@@ -13585,9 +13584,8 @@ class PoolQueue:
             return False
         total = bound_range[1] - bound_range[0]
         try:
-            inst_path = (Path(self.root) / "residency"
-                         / oc.OUTPUT_SCOPES_SUBDIR / owner_key
-                         / f"{template_id}.{owner_nonce}" / "instance.json")
+            inst_path = (bl.attempt_scope(self.root, owner_key, template_id,
+                                          owner_nonce) / "instance.json")
             try:
                 with open(inst_path, "rb") as handle:
                     raw_inst = handle.read(64 * 1024 + 1)

@@ -325,5 +325,31 @@
   "splits": {
     "commit_batch": "BatchLedger.publish_stage",
     "_file_origin_repins": "BatchLedger.repin_scope"
-  }
+  },
+  "address_substitutions": [
+    {
+      "path": "src/prismabuild/pool.py",
+      "occurrences": 2,
+      "old": "(Path(self.root) / \"residency\"\n                         / oc.OUTPUT_SCOPES_SUBDIR / owner_key\n                         / f\"{template_id}.{owner_nonce}\" / \"instance.json\")",
+      "new": "(bl.attempt_scope(self.root, owner_key, template_id,\n                                          owner_nonce) / \"instance.json\")"
+    },
+    {
+      "path": "src/prismabuild/stage_release.py",
+      "occurrences": 1,
+      "old": "(residency / oc.OUTPUT_SCOPES_SUBDIR / owner\n             / f\"{template_id}.{nonce}\")",
+      "new": "bl.attempt_scope(queue.root, owner, template_id, nonce)"
+    },
+    {
+      "path": "tools/fleet/tier_loop.py",
+      "occurrences": 2,
+      "old": "(residency / oc.OUTPUT_SCOPES_SUBDIR / owner\n                 / f\"{template_id}.{nonce}\")",
+      "new": "bl.attempt_scope(queue.root, owner, template_id, nonce)"
+    },
+    {
+      "path": "src/prismabuild/action_edges.py",
+      "occurrences": 1,
+      "old": "(Path(queue_root) / \"residency\" / oc.OUTPUT_SCOPES_SUBDIR\n             / producer_key / f\"{template_id}.{nonce}\")",
+      "new": "bl.attempt_scope(queue_root, producer_key, template_id, nonce)"
+    }
+  ]
 }

@@ -914,8 +914,7 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     changed.
     """
 
-    scope = (Path(queue_root) / "residency" / oc.OUTPUT_SCOPES_SUBDIR
-             / producer_key / f"{template_id}.{nonce}")
+    scope = bl.attempt_scope(queue_root, producer_key, template_id, nonce)
     try:
         instance = oc.validate_instance(json.loads(
             (scope / "instance.json").read_text()))

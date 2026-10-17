@@ -7965,8 +7965,7 @@ def _stranded_producer_dead(queue: pool.PoolQueue,
         return ("unknown", owner)
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / oc.OUTPUT_SCOPES_SUBDIR / owner
-                 / f"{template_id}.{nonce}")
+        scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
         instance = oc.validate_instance(
             json.loads((scope / "instance.json").read_text()))
         template = oc.validate_template(json.loads(
@@ -8017,8 +8016,7 @@ def _stranded_prewrite_paths_absent(queue: pool.PoolQueue,
         return (False, "funding binding unreadable")
     try:
         residency = queue.root / pool.record_store.RESIDENCY
-        scope = (residency / oc.OUTPUT_SCOPES_SUBDIR / owner
-                 / f"{template_id}.{nonce}")
+        scope = bl.attempt_scope(queue.root, owner, template_id, nonce)
         instance = oc.validate_instance(
             json.loads((scope / "instance.json").read_text()))
     except (OSError, ValueError):
