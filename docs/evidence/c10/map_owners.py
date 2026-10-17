@@ -72,6 +72,9 @@ def main():
                            original=describe(original["PoolQueue." + old]),
                            current_owner=destination, current_path=tier_path,
                            current=describe(current[destination])))
+        if old == "release_tier_reservations":
+            owners[-1]["physical_egress_owner"] = dict(
+                owner="egress_all", path=tier_path, source=describe(current["egress_all"]))
     window = index(source(args.base, "src/prismabuild/window_credit.py"))
     for old, new in (("cancel", "cancel_fence"), ("held_grants", "held_grants")):
         owners.append(dict(original_owner=old, original_path="src/prismabuild/window_credit.py",

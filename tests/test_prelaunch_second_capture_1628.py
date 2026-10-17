@@ -66,7 +66,7 @@ def _end_first_capture(queue, consumer, unit, movers, final="consumed"):
             mover, TIER, expect="transferring", advance_to=final,
             generation=str(record["generation"]))
         queue.records.item_path(pool.record_store.READY, mover).unlink()
-        tier_holdings.release_unspent_all(queue, mover, authority=tier_holdings.Unspent.NEVER_STARTED)
+        tier_holdings.egress_all(queue, mover)
     queue.records.item_path(pool.record_store.READY, consumer).unlink()
     tier_holdings.release_unspent_all(queue, unit.holder, authority=tier_holdings.Unspent.NEVER_STARTED)
 
