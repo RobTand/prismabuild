@@ -1786,7 +1786,7 @@ class _StagedPublisher:
         for key in ((mover,) if consumer == self.consumer else pair):
             for state in (pool.record_store.READY, pool.record_store.CLAIMED):
                 try:
-                    self.queue.records.item_path(state, key).stat()
+                    self.queue.records.item_metadata(state, key)
                 except FileNotFoundError:
                     continue
                 except OSError as exc:
@@ -1884,7 +1884,7 @@ class _StagedPublisher:
             if why:
                 for state in (pool.record_store.CLAIMED, pool.record_store.READY):
                     try:
-                        self.queue.records.item_path(state, consumer).stat()
+                        self.queue.records.item_metadata(state, consumer)
                     except FileNotFoundError:
                         continue
                     except OSError as exc:
@@ -3028,7 +3028,7 @@ class _ReaderPlan:
             return
         self._stamp = stamp
         try:
-            record = json.loads(path.read_text())
+            record = self.queue.records.text_document_at(path)
         except (OSError, ValueError):
             self._declared = self._reading = frozenset()
             self._announced = None

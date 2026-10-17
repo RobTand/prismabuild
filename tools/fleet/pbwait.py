@@ -116,30 +116,7 @@ def _prefix_candidates(q, text: str, *, lane_root=None) -> list[str]:
         for record in slurm_lane.resolve_recorded(
             text, root=lane_root, report_unavailable=True)
     }
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
-                  pool.record_store.WITHDRAWN):
-        try:
-            names = os.listdir(q.records.dir(state))
-        except FileNotFoundError:
-            continue
-        found.update(
-            entry[: -len(".json")] for entry in names
-            if entry.startswith(text) and entry.endswith(".json")
-        )
-    decisions = q.records.dir(pool.record_store.WITHDRAWN) / "decisions"
-    try:
-        decision_names = os.listdir(decisions)
-    except FileNotFoundError:
-        decision_names = []
-    for name in decision_names:
-        if not name.startswith(text):
-            continue
-        try:
-            entries = os.listdir(decisions / name)
-        except FileNotFoundError:
-            continue
-        if any(entry.endswith(".json") for entry in entries):
-            found.add(name)
+    found.update(q.records.wait_prefix(text))
     return sorted(found)
 
 

@@ -1858,9 +1858,7 @@ def _starvation_denials(queue: pool.PoolQueue, *, notes: list[str]) -> list[dict
     live: set[str] = set()
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         try:
-            with os.scandir(queue.records.dir(state)) as entries:
-                paths = sorted(Path(entry.path) for entry in entries
-                               if entry.name.endswith(".json"))
+            paths = queue.records.required_slot_paths(state)
         except OSError as exc:
             notes.append(f"starvation mover join {state}: {exc}")
             continue
@@ -2002,17 +2000,14 @@ def _starvation_host_events(queue: pool.PoolQueue, *, notes: list[str],
 
     out: list[dict] = []
     try:
-        names = sorted(os.listdir(queue.records.host_events_dir()))
+        hosts = queue.records.host_event_writers()
     except FileNotFoundError:
         return out
     except OSError as exc:
         notes.append(f"starvation host events: {exc}")
         unreadable.append(f"starvation host events: {exc}")
         return out
-    for name in names:
-        if not name.endswith(".jsonl"):
-            continue
-        host = name[: -len(".jsonl")]
+    for host in hosts:
         events = queue.host_events(host)
         if not events:
             continue
@@ -2265,9 +2260,7 @@ def read_starvation(queue_root: str | Path, *, now: float | None = None) -> dict
         })
     plans: list[dict] = []
     try:
-        with os.scandir(queue.root / pool.record_store.RESIDENCY_PLANS) as entries:
-            plan_paths = sorted(Path(entry.path) for entry in entries
-                                if entry.name.endswith(".json"))
+        plan_paths = queue.records.required_plan_paths()
     except FileNotFoundError:
         plan_paths = []  # No staged consumer has ever filed a plan.
     except OSError as exc:
@@ -2388,56 +2381,9 @@ def recent_ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]
     expanding record payloads. Filesystem errors propagate; callers must bound
     the shared-mount read.
     """
-    return _ending_paths(queue_root, limit)
+    return pool.record_store.RecordStore(queue_root).recent_ending_paths(limit)
 
 
-def _ending_paths(queue_root: str | Path, limit: int) -> list[os.DirEntry]:
-    """The ``limit`` newest terminal records by modification time.
-
-    Only the directory entries are stat'ed here.  Reading every record on the
-    shared mount to print twenty rows is the slow path this exists to avoid,
-    and an absent directory is a fleet that has not run under that transport
-    rather than an error.
-    """
-
-    entries: list[tuple[float, os.DirEntry]] = []
-    withdrawal_mtimes: dict[str, float] = {}
-    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
-        directory = Path(queue_root) / state
-        try:
-            with os.scandir(directory) as scan:
-                for entry in scan:
-                    if not entry.name.endswith(".json") or not entry.is_file():
-                        continue
-                    entries.append((entry.stat().st_mtime, entry))
-                    if state == pool.record_store.WITHDRAWN:
-                        withdrawal_mtimes[entry.name[:-5]] = entry.stat().st_mtime
-        except FileNotFoundError:
-            try:
-                directory.stat()
-            except FileNotFoundError:
-                continue
-            # A predicate would also return False on EACCES/EIO in Python 3.14.
-            # Only a second ENOENT proves this optional directory is absent.
-            raise  # The directory exists, but a selected entry was not readable.
-    # A cancellation is durable before its visible summary is written. Keep
-    # that ending visible if the operator crashed between the two writes.
-    decisions = Path(queue_root) / pool.record_store.WITHDRAWN / "decisions"
-    try:
-        with os.scandir(decisions) as scan:
-            directories = [entry for entry in scan if entry.is_dir()]
-    except FileNotFoundError:
-        directories = []
-    for directory in directories:
-        with os.scandir(directory.path) as scan:
-            candidates = [(entry.stat().st_mtime, entry) for entry in scan
-                          if entry.name.endswith(".json")]
-        if candidates:
-            newest = max(candidates, key=lambda pair: pair[0])
-            if newest[0] > withdrawal_mtimes.get(directory.name, float("-inf")):
-                entries.append(newest)
-    entries.sort(key=lambda pair: pair[0], reverse=True)
-    return [entry for _, entry in entries[: max(0, int(limit))]]
 
 
 def _transport(record: Mapping[str, object]) -> str:
@@ -2495,23 +2441,8 @@ def _unreadable_row(entry: os.DirEntry, reason: str) -> dict:
     }
 
 
-class _EndingRecordTooLarge(ValueError):
-    pass
 
 
-def _read_ending(entry: os.DirEntry, queue_root: str | Path) -> dict:
-    """Read one selected terminal record without an unbounded allocation."""
-
-    if entry.stat().st_size > MAX_ENDING_RECORD_BYTES:
-        raise _EndingRecordTooLarge
-    path = Path(entry.path)
-    if path.parent.parent.name == "decisions":
-        return pool.PoolQueue(Path(queue_root)).records.withdrawal_decision(path)
-    with path.open("rb") as handle:
-        raw = handle.read(MAX_ENDING_RECORD_BYTES + 1)
-    if len(raw) > MAX_ENDING_RECORD_BYTES:
-        raise _EndingRecordTooLarge
-    return json.loads(raw)
 
 
 def _unreadable_reason(exc: Exception) -> str:
@@ -2523,7 +2454,7 @@ def _unreadable_reason(exc: Exception) -> str:
     is a fault rather than a write still in flight.
     """
 
-    if isinstance(exc, _EndingRecordTooLarge):
+    if isinstance(exc, pool.record_store.EndingRecordTooLarge):
         return f"record exceeds {MAX_ENDING_RECORD_BYTES}-byte reader limit"
     if isinstance(exc, PermissionError):
         return "permission denied"
@@ -2565,7 +2496,7 @@ def read_endings(queue_root: str | Path, *, limit: int = DEFAULT_RECENT,
     if reader is not None:
         return reader.endings(Path(queue_root), limit)
     rows = [ending_row(entry, queue_root)
-            for entry in _ending_paths(queue_root, limit)]
+            for entry in recent_ending_paths(queue_root, limit)]
     _annotate_current_endings(rows, queue_root)
     rows.sort(key=lambda row: row["finished_unix"], reverse=True)
     return rows
@@ -2649,7 +2580,8 @@ def ending_row(entry: os.DirEntry, queue_root: str | Path) -> dict:
     """
 
     try:
-        record = _read_ending(entry, queue_root)
+        record = pool.record_store.RecordStore(queue_root).selected_ending(
+            entry, max_bytes=MAX_ENDING_RECORD_BYTES)
     except (OSError, ValueError, pool.PoolContractError) as exc:
         # Not dropped. ``limit`` sliced the newest records before any of
         # them was read, so dropping one printed the same empty table a

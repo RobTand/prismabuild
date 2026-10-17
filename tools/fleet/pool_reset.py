@@ -311,7 +311,7 @@ def plan_resets(
         # same note on ``fleet_submit.submit``.
         cas_root = SH / "cas"
 
-    failed = sorted(queue.records.dir(pool.record_store.FAILED).glob("*.json"))
+    failed = queue.records.json_slot_paths(pool.record_store.FAILED)
     # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
     # a cancelled action still reaches ``failed/``: a worker running bytes that
     # predate ``withdraw`` files its own outcome there (the verb writes
@@ -331,7 +331,7 @@ def plan_resets(
     skipped: list[tuple[str, str]] = []
     for path in failed:
         try:
-            record = json.loads(path.read_text())
+            record = queue.records.text_document_at(path)
         except (OSError, ValueError) as exc:
             skipped.append((path.stem[:12], f"unreadable: {exc}"))
             continue

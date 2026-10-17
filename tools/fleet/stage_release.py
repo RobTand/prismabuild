@@ -3630,19 +3630,12 @@ class _TerminalNames:
         self._queue = queue
         self._seen: dict[tuple[str, str], bool] = {}
         for state in (pool.record_store.FAILED, pool.record_store.WITHDRAWN, pool.record_store.DONE):
-            if not statmod.S_ISDIR(os.stat(queue.records.dir(state)).st_mode):
-                raise NotADirectoryError(
-                    errno.ENOTDIR, "terminal directory is not a directory",
-                    str(queue.records.dir(state)))
+            queue.records.require_terminal_directory(state)
 
     def has(self, state: str, key: str) -> bool:
         found = self._seen.get((state, key))
         if found is None:
-            try:
-                os.lstat(self._queue.records.item_path(state, key))
-                found = True
-            except FileNotFoundError:
-                found = False
+            found = self._queue.records.item_entry_present(state, key)
             self._seen[(state, key)] = found
         return found
 

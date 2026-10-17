@@ -100,9 +100,9 @@ def claim_holding(queue, host: str) -> str | None:
     """The action key of a claimed item that names ``host``, if any."""
 
     directory = queue.records.dir(pool.record_store.CLAIMED)
-    if not directory.is_dir():
+    if not queue.records.state_directory_present(pool.record_store.CLAIMED):
         return None
-    for path in sorted(directory.glob("*.json")):
+    for path in queue.records.json_slot_paths(pool.record_store.CLAIMED):
         record = _read(path)
         if record is None:
             continue
