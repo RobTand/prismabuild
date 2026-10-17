@@ -6590,14 +6590,10 @@ def _protect_tier_advances(
     horizon_of=None,
     claim_order: Mapping[str, Mapping[str, object]] | None = None,
     store=None,
-) -> dict[str, object]:
+) -> funding.AdvanceProtection:
     """Gate newcomers and fence protected nexts on every local tier, one pass.
 
-    Returns ``{"gated": {(key, tier_id): {...}}, "protected":
-    {(key, tier_id): {...}}, "grants": {(key, tier_id): grant_key},
-    "permitted": {(key, tier_id): {...}},
-    "unknown_ready": bool, "unknown_tiers": {...},
-    "unknown_consumers": {(key, tier_id)}, "events": [...]}``.  Positive
+    Returns named pass facts in ``AdvanceProtection``. Positive
     publication authority: a window may publish movers on a tier this cycle
     only when ``(key, tier_id)`` is in ``permitted`` -- either its advance
     is retained (bound fence, blind-held grant, or already-landed mover) or
