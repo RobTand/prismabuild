@@ -57,7 +57,7 @@ def qualify_current_rollback(args):
     def result(identity):
         response = next(row for row in responses if row.get("id") == identity)
         value = json.loads(response["result"]["content"][0]["text"])
-        assert value["complete"] is True and not value["timed_out_sections"] and not value["unavailable_sections"]
+        assert value["complete"] is True and not value["timed_out"] and not value["unavailable"] and not value["abandoned_readers"]
         assert value.get("generation_stale") is False
         return value
     status, runtime = result(2), result(3)
