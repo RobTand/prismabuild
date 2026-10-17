@@ -132,11 +132,11 @@ ARTIFACT_CLASSES = frozenset({"payload", "checkpoint", "temp"})
 
 
 
-_HEX = frozenset("0123456789abcdef")
+OUTPUT_KEY_HEX = frozenset("0123456789abcdef")
 
 
 
-_HEX32 = 32
+NONCE_HEX_LENGTH = 32
 
 
 
@@ -147,15 +147,15 @@ class ProducedOutputError(ValueError):
 
 def output_key(value: object, *, where: str) -> str:
     if (not isinstance(value, str) or len(value) != 64
-            or any(c not in _HEX for c in value)):
+            or any(c not in OUTPUT_KEY_HEX for c in value)):
         raise ProducedOutputError(f"{where} must be a 64-character hex key")
     return value
 
 
 
-def _hex32(value: object, *, where: str) -> str:
+def output_nonce(value: object, *, where: str) -> str:
     if (not isinstance(value, str) or len(value) != 32
-            or any(c not in _HEX for c in value)):
+            or any(c not in OUTPUT_KEY_HEX for c in value)):
         raise ProducedOutputError(f"{where} must be a 32-character hex nonce")
     return value
 
@@ -168,7 +168,7 @@ def output_name(value: object, *, where: str) -> str:
 
 
 
-def _abs_norm(value: object, *, where: str) -> str:
+def absolute_output_path(value: object, *, where: str) -> str:
     if not isinstance(value, str) or not value.startswith("/"):
         raise ProducedOutputError(f"{where} must be an absolute path")
     normal = os.path.normpath(value)
@@ -194,7 +194,7 @@ def _positive_int(value: object, *, where: str) -> int:
 
 
 
-def _nonneg_int(value: object, *, where: str) -> int:
+def nonnegative_output_integer(value: object, *, where: str) -> int:
     checked = _int_exact(value, where=where)
     if checked < 0:
         raise ProducedOutputError(f"{where} must be non-negative")
@@ -235,7 +235,7 @@ def validate_template(value: object) -> dict[str, object]:
     if type(value.get("version")) is not int or value.get("version") != 1:
         raise ProducedOutputError("template version must be integer 1")
     template_id = output_name(value.get("template_id"), where="template template_id")
-    prefix = _abs_norm(value.get("output_prefix"), where="template output_prefix")
+    prefix = absolute_output_path(value.get("output_prefix"), where="template output_prefix")
     slots = value.get("slots")
     if not isinstance(slots, Mapping) or not slots:
         raise ProducedOutputError("template slots must be a non-empty object")
@@ -264,9 +264,9 @@ def validate_template(value: object) -> dict[str, object]:
             "template durable_maxima must carry payload/checkpoint/temp maxima")
     payload = _positive_int(maxima.get("payload_max_bytes"),
                             where="template durable_maxima.payload_max_bytes")
-    checkpoint = _nonneg_int(maxima.get("checkpoint_max_bytes"),
+    checkpoint = nonnegative_output_integer(maxima.get("checkpoint_max_bytes"),
                              where="template durable_maxima.checkpoint_max_bytes")
-    temp = _nonneg_int(maxima.get("temp_max_bytes"),
+    temp = nonnegative_output_integer(maxima.get("temp_max_bytes"),
                        where="template durable_maxima.temp_max_bytes")
     demands = value.get("working_demands")
     if not isinstance(demands, Mapping) or not demands:
@@ -291,10 +291,10 @@ def validate_template(value: object) -> dict[str, object]:
         if not isinstance(spec, Mapping) or set(spec) != {"minimum_gib", "window_gib"}:
             raise ProducedOutputError(
                 f"template working_demands[{tier!r}] must carry minimum/window GiB")
-        minimum = _nonneg_int(spec.get("minimum_gib"),
+        minimum = nonnegative_output_integer(spec.get("minimum_gib"),
                               where=f"template working_demands[{tier}].minimum_gib")
         if write_only:
-            window = _nonneg_int(
+            window = nonnegative_output_integer(
                 spec.get("window_gib"),
                 where=f"template working_demands[{tier}].window_gib")
             if minimum or window:
@@ -406,13 +406,13 @@ def validate_instance(value: object) -> dict[str, object]:
     attempt = value.get("owner_attempt")
     if not isinstance(attempt, Mapping) or set(attempt) != {"nonce", "scope_id"}:
         raise ProducedOutputError("instance owner_attempt must carry nonce + scope_id")
-    nonce = _hex32(attempt.get("nonce"), where="instance owner_attempt.nonce")
+    nonce = output_nonce(attempt.get("nonce"), where="instance owner_attempt.nonce")
     scope_id = output_name(attempt.get("scope_id"), where="instance owner_attempt.scope_id")
     source = value.get("attempt_source")
     if source != "broker-launch":
         raise ProducedOutputError(
             "instance attempt_source must be broker-launch (both halves)")
-    prefix = _abs_norm(value.get("output_prefix"), where="instance output_prefix")
+    prefix = absolute_output_path(value.get("output_prefix"), where="instance output_prefix")
     return {
         "schema": INSTANCE_SCHEMA_V1,
         "version": 1,
@@ -427,7 +427,7 @@ def validate_instance(value: object) -> dict[str, object]:
 
 
 
-def _require_bound_contract(
+def bound_output_contract(
     template: Mapping[str, object], instance: Mapping[str, object]
 ) -> tuple[dict[str, object], dict[str, object]]:
     """The single admitted-template boundary every mutation reuses.
@@ -528,7 +528,7 @@ def validate_descriptor(value: object, template: Mapping[str, object],
             f"descriptor class {cls!r} disagrees with slot {slot!r} class "
             f"{slot_class!r}")
     raw_path = value.get("path")
-    _abs_norm(raw_path, where="descriptor path")
+    absolute_output_path(raw_path, where="descriptor path")
     assert isinstance(raw_path, str)
     _resolve_contained(str(checked_template["output_prefix"]), raw_path,
                        where="descriptor path")
@@ -598,7 +598,7 @@ def manifest_object_set_id(
         digest = spec.get("sha256")
         if digest is not None and not (
                 isinstance(digest, str) and len(digest) == 64
-                and all(c in _HEX for c in digest)):
+                and all(c in OUTPUT_KEY_HEX for c in digest)):
             raise ProducedOutputError("expected sha256 must be hex or null")
         parts.append(f"{key}:{size}:{digest}")
     return digest_primitives.raw_sha256("|".join(parts).encode())
@@ -635,7 +635,7 @@ def output_manifest_sha256(descriptors: list[Mapping[str, object]]) -> str:
 
 
 
-def _check_class_bytes(value: object, *, where: str) -> dict[str, int]:
+def output_class_bytes(value: object, *, where: str) -> dict[str, int]:
     """Exact class-bytes shape: all three classes, type-is-int, non-negative.
 
     Anything else (missing keys, strings, negatives, bools) is corrupt
@@ -647,7 +647,7 @@ def _check_class_bytes(value: object, *, where: str) -> dict[str, int]:
         raise ProducedOutputError(f"{where} must name payload/checkpoint/temp")
     out: dict[str, int] = {}
     for cls in ("payload", "checkpoint", "temp"):
-        out[cls] = _nonneg_int(value.get(cls), where=f"{where}.{cls}")
+        out[cls] = nonnegative_output_integer(value.get(cls), where=f"{where}.{cls}")
     return out
 
 
@@ -688,11 +688,11 @@ def namespace_for_batch_reference(*, owner_action_key: str,
         "owner_action_key": output_key(owner_action_key,
                                    where="reference owner_action_key"),
         "owner_attempt": {
-            "nonce": _hex32(nonce, where="reference nonce"),
+            "nonce": output_nonce(nonce, where="reference nonce"),
             "scope_id": output_name(scope_id, where="reference scope_id"),
         },
         "attempt_source": "broker-launch",
-        "output_prefix": _abs_norm(output_prefix,
+        "output_prefix": absolute_output_path(output_prefix,
                                    where="reference output_prefix"),
         "bound_unix": 0,
     })
@@ -746,7 +746,7 @@ BATCH_STATE_RECLAIMED = "reclaimed"
 
 
 
-def _checked_origin_ref(value: object) -> dict[str, str]:
+def checked_origin_ref(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping) or set(value) != {
             "schema", "owner_action_key", "owner_nonce", "template_id",
             "batch_id", "manifest_digest"}:
@@ -759,7 +759,7 @@ def _checked_origin_ref(value: object) -> dict[str, str]:
     return {"schema": ORIGIN_BATCH_REF_SCHEMA_V1,
             "owner_action_key": output_key(value.get("owner_action_key"),
                                        where="origin batch ref owner_action_key"),
-            "owner_nonce": _hex32(value.get("owner_nonce"),
+            "owner_nonce": output_nonce(value.get("owner_nonce"),
                                   where="origin batch ref owner_nonce"),
             "template_id": output_name(value.get("template_id"),
                                  where="origin batch ref template_id"),
@@ -770,7 +770,7 @@ def _checked_origin_ref(value: object) -> dict[str, str]:
 
 
 
-def _strict_int(value: object, *, where: str) -> int:
+def strict_output_integer(value: object, *, where: str) -> int:
     # Exact JSON integers only: bools, strings, floats, and objects are
     # corrupt counts, never zero. `int()` would coerce them all.
     if type(value) is not int:
@@ -818,20 +818,20 @@ DEAD_PRODUCER_BATCH_RETIRED_EVENT = "output-dead-producer-batch-retired"
 
 
 
-_ENDED_ATTEMPT_STATES = frozenset({"dead", "succeeded"})
+ENDED_ATTEMPT_STATES = frozenset({"dead", "succeeded"})
 
 
 
-_STALLED_CONSUMER_STATES = frozenset(
+STALLED_CONSUMER_STATES = frozenset(
     {"failed", "withdrawn", "unpublished", "unknown"})
 
 
 
-_RESOLVED_CONSUMER_STATES = frozenset({"succeeded", "released", "superseded"})
+RESOLVED_CONSUMER_STATES = frozenset({"succeeded", "released", "superseded"})
 
 
 
-_TERMINAL_CONSUMER_STATES = frozenset({"failed", "withdrawn"})
+TERMINAL_CONSUMER_STATES = frozenset({"failed", "withdrawn"})
 
 
 

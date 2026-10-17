@@ -118,6 +118,18 @@ def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
             name=resolve(node)
             return ast.Name(id=identity(name),ctx=node.ctx)
         def visit_Call(self,node):
+            # Exact receiver/type substitutions for the captured commitment map.
+            # Canonical capture/file byte recipes are independently AST-proved.
+            if (resolve(node.func)=='isinstance' and len(node.args)==2
+                    and isinstance(node.args[0],ast.Name)):
+                target=resolve(node.args[1])
+                if node.args[0].id=='batches' and target=='prismabuild.batch_ledger.BatchCapture':
+                    node.args[1]=ast.Name(id='dict',ctx=ast.Load())
+                elif node.args[0].id=='entry' and target=='prismabuild.batch_ledger.BatchFacets':
+                    return ast.Call(func=ast.Name(id='isinstance'),args=[self.visit(node.args[0]),ast.Name(id='collections.abc.Mapping')],keywords=[])
+            # The retired reservation_holder had exactly this one return.
+            if resolve(node.func)==OLD+'reservation_holder':
+                return ast.Call(func=ast.Name(id=OLD+'instance_namespace'),args=[self.visit(x) for x in node.args],keywords=[self.visit(k) for k in node.keywords])
             # C31 current fixture setup now uses C10's already-owned tier API.
             if (isinstance(node.func,ast.Attribute) and node.func.attr=='take'
                     and isinstance(node.func.value,ast.Call)

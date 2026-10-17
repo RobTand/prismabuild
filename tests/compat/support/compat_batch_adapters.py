@@ -60,14 +60,14 @@ def committed(store, load, variant):
     descriptor = oc.validate_descriptor({"schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": cls, "artifact_class": cls,
         "path": str(path), "bytes": 8, "sha256": None if variant == "null" else hashlib.sha256(b"contents").hexdigest(),
         "producer_generation": G, "owner_action_key": C, "owner_attempt": dict(instance["owner_attempt"])}, template, instance)
-    physical_identity = bl._portable_identity_of
+    physical_identity = bl.portable_origin_identity
     # These are writer input facts. Restore the real function before any
     # retained consumer runs; no physical file identity is claimed here.
-    bl._portable_identity_of = lambda info: {"ino": 2, "size": info.st_size, "mtime_ns": 3, "ctime_ns": 4}
+    bl.portable_origin_identity = lambda info: {"ino": 2, "size": info.st_size, "mtime_ns": 3, "ctime_ns": 4}
     try:
         def commit():
             if template.get("write_only") or variant == "readback-origin":
-                landed = {str(path): bl._portable_identity_of(path.stat())} if variant == "readback-origin" else None
+                landed = {str(path): bl.portable_origin_identity(path.stat())} if variant == "readback-origin" else None
                 return bl.BatchLedger.commit_origin(queue, instance, template, [descriptor], batch_id="batch", landed=landed,
                     lifetime="consumed" if variant in ("origin-consumed", "consumed") else "retain")
             return po.commit_batch(queue, instance, template, [descriptor], batch_id="batch", tier=TIER, mover_key=M)
@@ -76,7 +76,7 @@ def committed(store, load, variant):
         if variant.endswith("replay"):
             assert commit().get("duplicate") is True
     finally:
-        bl._portable_identity_of = physical_identity
+        bl.portable_origin_identity = physical_identity
     path = queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR / oc.instance_namespace(instance) / "batch.json"
     return po, pool, core, queue, template, instance, descriptor, path
 
@@ -144,7 +144,7 @@ def operate(request, store, load):
         else:
             if not write:
                 request["_consumer_boundary"]()
-                return oc._checked_origin_ref(json.loads(base64.b64decode(request["raw"])))
+                return oc.checked_origin_ref(json.loads(base64.b64decode(request["raw"])))
             value = oc.origin_batch_ref(instance, batch_id="batch", manifest_digest=oc.output_manifest_sha256([descriptor]))
             codec = runpy.run_path(str(Path(__file__).with_name("compat_core_adapters.py")))["manifest_owner"](core, load)
             body = {"schema": codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {"produced_output_batches": [value]},

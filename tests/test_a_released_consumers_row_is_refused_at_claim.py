@@ -288,7 +288,7 @@ def test_an_entry_without_its_record_leaves_the_row_to_run(
 
     queue, instance, path, committed, key, resume = _declared_by_old_code(
         tmp_path, monkeypatch)
-    po._index_release(queue, key, oc._checked_origin_ref(committed["ref"]))
+    po._index_release(queue, key, oc.checked_origin_ref(committed["ref"]))
     assert len(_index_entries(queue, key)) == 1
 
     resume()

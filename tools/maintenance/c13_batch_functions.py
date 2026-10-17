@@ -69,7 +69,7 @@ def c13_body(fn):
     body=[x for x in body if not (isinstance(x,ast.Assign) and len(x.targets)==1
           and isinstance(x.targets[0],ast.Name) and x.targets[0].id.removeprefix('local:') in ('path','entry')
           and isinstance(x.value,ast.Attribute) and isinstance(x.value.value,ast.Name)
-          and x.value.value.id.removeprefix('local:')=='self' and x.value.attr in ('path','entry'))]
+          and x.value.value.id.removeprefix('local:')=='self' and x.value.attr in ('path','entry','_entry'))]
     body=[x for x in body if not (isinstance(x,ast.Assign) and any(
           isinstance(t,ast.Attribute) and t.attr=='lease_timeout_s' for t in x.targets))]
     return ast.dump(ast.Module(body=body,type_ignores=[]),include_attributes=False)
@@ -90,7 +90,7 @@ def main():
         elif parent in m['facets']:
             target='batch_ledger';new='BatchFacets.'+m['facets'][parent]
         elif parent in m['methods']:
-            target='batch_ledger';new='BatchLedger.'+m['methods'][parent]
+            target='batch_ledger';new=('BatchCapture.' if m['methods'][parent] in ('retire_materialization','retire_first_copy','record_staged_paths','file_retirement','origin_gate') else 'BatchLedger.')+m['methods'][parent]
         elif parent in ('_read_commitments','_write_commitments'):
             target='batch_ledger';new='BatchLedger.'+{'_read_commitments':'capture','_write_commitments':'file'}[parent]
         elif parent in m['owner']:

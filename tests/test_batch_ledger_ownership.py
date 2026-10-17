@@ -30,7 +30,7 @@ def original_records():
     assert {n.name for n in nodes} == names
     namespace = dict(json=json, os=os, Path=Path, tempfile=tempfile, Mapping=Mapping,
                      ProducedOutputError=oc.ProducedOutputError,
-                     _check_class_bytes=oc._check_class_bytes)
+                     _check_class_bytes=oc.output_class_bytes)
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                  BASE + '/produced_output.py', 'exec'), namespace)
     return namespace

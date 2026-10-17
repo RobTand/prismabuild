@@ -222,7 +222,7 @@ def test_a_pinned_deferred_release_still_lands_so_its_key_is_refused(
     key = str(ae.read_release(queue.root, pending)["action_key"])
     assert isinstance(RecordStore(queue.root).standing(key), Absent)
     assert ae.request_wrapper(tmp_path / "cas", key, where="test") == str(old)
-    assert bl._consumer_state(queue, key) == "unpublished"
+    assert bl.consumer_state(queue, key) == "unpublished"
 
     assert "origin-consumer-release-pending" in _refused(
         monkeypatch, *_release_argv(committed, key))
@@ -230,7 +230,7 @@ def test_a_pinned_deferred_release_still_lands_so_its_key_is_refused(
 
     [resumed] = edges._released(dr.release_tick(queue))
     assert (resumed["action_key"], resumed["resumed"]) == (key, True)
-    assert bl._consumer_state(queue, key) == "live"
+    assert bl.consumer_state(queue, key) == "live"
     assert "origin-consumer-live" in _refused(
         monkeypatch, *_release_argv(committed, key))
 
@@ -254,7 +254,7 @@ def test_a_submitter_between_its_declaration_and_its_row_holds_off_the_release(
 
     def racing(q, action, template, *, key, **kwargs):
         # Declared, row not yet published: an operator releases it now.
-        assert bl._consumer_state(queue, key) == "unpublished"
+        assert bl.consumer_state(queue, key) == "unpublished"
         seen["key"] = key
         seen["operator"] = _release_elsewhere(
             queue, committed, key, live=live, cas=tmp_path / "cas")
@@ -267,7 +267,7 @@ def test_a_submitter_between_its_declaration_and_its_row_holds_off_the_release(
     assert "refusal" in operator, (
         f"the release landed while the row was still to come: {operator}")
     assert "origin-consumer-submitting" in str(operator["refusal"])
-    assert bl._consumer_state(queue, key) == "live"
+    assert bl.consumer_state(queue, key) == "live"
     assert not bl._released_consumers_dir(queue.root, instance, "b1").exists()
     after = _release_elsewhere(queue, committed, key, live=live,
                                cas=tmp_path / "cas")

@@ -59,11 +59,11 @@ def operate(request, store, load):
     path.write_bytes(base64.b64decode(request["raw"]))
     request["_consumer_boundary"]()
     if family == "out-consumer":
-        keys = bl._declared_consumers(queue.root, instance, "batch", ref)
+        keys = bl.declared_consumers(queue.root, instance, "batch", ref)
         assert keys == [consumer]
         return {"consumers": keys}
     if family == "out-release":
-        result = bl._consumer_release(queue.root, instance, "batch", consumer, ref)
+        result = bl.read_consumer_release(queue.root, instance, "batch", consumer, ref)
     else:
         result = po.origin_consumer_release(queue, consumer)
     assert result and result["consumer_action_key"] == consumer

@@ -420,7 +420,7 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     ok = bl.BatchLedger.admit(queue, instance, template)
     assert ok["ok"] is True
     assert ok["admission"]["minimum_gib"][STAGE_TIER] == 1
-    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(oc.instance_namespace(instance)) == {}
     # The funded-claim primitive family is delivered, so this answers the
     # window DECLARATION the producer seals against -- per-batch funding
     # (exact owner->mover transfer) remains the authority, and this call
@@ -437,7 +437,7 @@ def test_admission_record_and_funded_window_gate(tmp_path: Path) -> None:
     assert declared["batch_ref_schema"] == \
         pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
     # Declaration only: it acquires nothing for the reservation holder.
-    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(oc.instance_namespace(instance)) == {}
     assert po.admit_funded_window(
         queue, instance, template,
         need_gib_per_tier={"prismabuild-stage:other": 1})["refusal"] == \
@@ -492,7 +492,7 @@ def test_minimum_transfer_no_double_charge(tmp_path: Path) -> None:
                                 mover_key=MOVER0)
     assert committed["ok"] is True
     assert queue.tier(STAGE_TIER).holdings(MOVER0) == {STAGE_BARE: 1}
-    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(oc.instance_namespace(instance)) == {}
     batch_ns = committed["batch_namespace"]
     assert queue.tier(STAGE_TIER).holdings(batch_ns) == {}
 
@@ -1102,7 +1102,7 @@ def test_two_windows_rollover_tick_and_ram_refusal(tmp_path: Path,
                                       lease_sdk=rlc)
     assert second["ok"] is True and second["released"] == 0
     assert queue.tier(STAGE_TIER).holdings(MOVER1) == {}
-    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(oc.instance_namespace(instance)) == {}
 
 
 def test_owner_superseded_retain(tmp_path: Path) -> None:
@@ -1372,7 +1372,7 @@ def test_crash_unknown_retains_and_taint_fails_closed(tmp_path: Path) -> None:
     retained = po.safe_release_instance(queue, instance, template)
     assert retained["ok"] is False
     assert retained["refusal"].startswith("unknown-retain")
-    assert queue.tier(STAGE_TIER).holdings(po.reservation_holder(instance)) == {}
+    assert queue.tier(STAGE_TIER).holdings(oc.instance_namespace(instance)) == {}
 
 
 def test_prefix_escape_and_bool_rejection(tmp_path: Path) -> None:
@@ -1464,7 +1464,7 @@ def test_owner_namespace_separation_and_object_set(tmp_path: Path) -> None:
     instance = bound["instance"]
     namespace = oc.instance_namespace(instance)
     assert namespace != OWNER and len(namespace) == 64
-    assert po.reservation_holder(instance) == namespace
+    assert oc.instance_namespace(instance) == namespace
     path = bl.declare_instance(queue.root, instance)
     assert OWNER in str(path) and namespace not in str(path)
     twin_a = {"0:/src/alpha.pt": {"bytes": 4096, "sha256": "a" * 64}}

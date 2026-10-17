@@ -243,7 +243,16 @@
     "_read_landed_origins": "read_landed_origins",
     "_landed_identity": "landed_identity",
     "_apply_origin_repins": "apply_origin_repins",
-    "_effective_origin_identity": "effective_origin_identity"
+    "_effective_origin_identity": "effective_origin_identity",
+    "_origin_verdict_unlocked": "verify_origins_unlocked",
+    "_load_origin_batch": "resolve_origin_batch",
+    "_origin_ref_scope": "origin_scope",
+    "_declared_consumers": "declared_consumers",
+    "_consumer_release": "read_consumer_release",
+    "_consumer_state": "consumer_state",
+    "_portable_identity_of": "portable_origin_identity",
+    "_held_by_unknown_event": "unknown_holder_report",
+    "_unknown_path_holders": "unknown_path_holders"
   },
   "changed_callers": [
     "src/prismabuild/action_edges.py",
@@ -334,7 +343,20 @@
   "leaf_names": {
     "_hex64": "output_key",
     "_name": "output_name",
-    "mint_generation": "mint_output_generation"
+    "mint_generation": "mint_output_generation",
+    "_require_bound_contract": "bound_output_contract",
+    "_checked_origin_ref": "checked_origin_ref",
+    "_hex32": "output_nonce",
+    "_HEX": "OUTPUT_KEY_HEX",
+    "_HEX32": "NONCE_HEX_LENGTH",
+    "_check_class_bytes": "output_class_bytes",
+    "_ENDED_ATTEMPT_STATES": "ENDED_ATTEMPT_STATES",
+    "_TERMINAL_CONSUMER_STATES": "TERMINAL_CONSUMER_STATES",
+    "_RESOLVED_CONSUMER_STATES": "RESOLVED_CONSUMER_STATES",
+    "_STALLED_CONSUMER_STATES": "STALLED_CONSUMER_STATES",
+    "_abs_norm": "absolute_output_path",
+    "_nonneg_int": "nonnegative_output_integer",
+    "_strict_int": "strict_output_integer"
   },
   "splits": {
     "commit_batch": "BatchLedger.publish_stage",

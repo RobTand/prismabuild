@@ -11,7 +11,6 @@ from this spool and never publishes (#1034).
 from __future__ import annotations
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
-from prismabuild import pool as c13_pool
 
 import argparse
 from contextlib import contextmanager
@@ -470,7 +469,7 @@ class ProducedSpool:
     def __init__(self, queue, instance, template, *, cas_root, root,
                  max_bytes=32 << 30):
         self.queue = queue
-        self.template, self.instance = oc._require_bound_contract(template, instance)
+        self.template, self.instance = oc.bound_output_contract(template, instance)
         self.owner = str(self.instance["owner_action_key"])
         self.cas_root = str(cas_root)
         self.max_bytes = _positive(max_bytes, "max_bytes")
@@ -1235,7 +1234,7 @@ class _OtherClaims:
         try:
             claims = bl.spool_claims(
                 self.queue, instance, template, wanted,
-                lease_timeout_s=c13_pool.LEASE_TIMEOUT_S)
+                lease_timeout_s=pool.LEASE_TIMEOUT_S)
         except (oc.ProducedOutputError, OSError, ValueError) as exc:
             reason = str(exc)
             if not reason.startswith("unknown-retain"):
@@ -1256,7 +1255,7 @@ class _OtherClaims:
         if not claims:
             raise SpoolError(f"{refusal}: no attempt's records name {path}")
         for claim in claims:
-            if claim["owner_state"] not in oc._ENDED_ATTEMPT_STATES:
+            if claim["owner_state"] not in oc.ENDED_ATTEMPT_STATES:
                 raise SpoolError(f"{refusal}: {path} is named by {_claim_text(claim)}")
         committed = [claim for claim in claims
                      if claim["owner_kind"] == "batch" or claim["owner_state"] == "succeeded"]
@@ -1950,7 +1949,7 @@ def retire_namespace(queue, directory):
     result.update(owner=owner, owner_attempt=dict(instance["owner_attempt"]))
     state = bl.producer_attempt_state(queue, instance)
     result["attempt_state"] = state
-    if state not in oc._ENDED_ATTEMPT_STATES:
+    if state not in oc.ENDED_ATTEMPT_STATES:
         return {**result, "kept": f"owner-attempt-{state}"}
     released, discarded, kept = [], [], []
     held = 0.0

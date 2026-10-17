@@ -117,11 +117,9 @@ BATCH_STATE_COMMITTED = oc.BATCH_STATE_COMMITTED
 BATCH_STATE_RETIRING = oc.BATCH_STATE_RETIRING
 BATCH_STATE_RECLAIMED = oc.BATCH_STATE_RECLAIMED
 ProducedOutputError = oc.ProducedOutputError
-from . import pool as c13_pool
+from . import pool
 _RENAMEAT2: list[object] = []
 _KEPT_PREWRITES: dict[str, tuple[tuple[object, ...], str]] = {}
-_INDEXED_ATTEMPTS: set[tuple[str, str, str]] = set()
-_INDEX_MARKED: set[str] = set()
 from . import core, digest_primitives
 
 from . import claim_identity
@@ -459,7 +457,7 @@ def bind_instance(queue, template: Mapping[str, object], *,
         if control.get("action_key") == owner:
             candidate = control.get("nonce")
             if (isinstance(candidate, str) and len(candidate) == 32
-                    and all(c in oc._HEX for c in candidate)):
+                    and all(c in oc.OUTPUT_KEY_HEX for c in candidate)):
                 claim_nonce = candidate
             unit = control.get("scope_id")
             if isinstance(unit, str) and unit:
@@ -529,14 +527,6 @@ def bind_instance(queue, template: Mapping[str, object], *,
 # Admission credit (bound record, NOT ledger tokens) + per-batch prewrite
 # --------------------------------------------------------------------------
 
-def reservation_holder(instance: Mapping[str, object]) -> str:
-    """Legacy name for the instance namespace (kept for audit continuity).
-
-    Since the liveness R2 ruling this is NOT a ledger holder: no standing
-    tokens are acquired under it. Physical tokens live only under batch
-    namespaces (pre-transfer) and mover keys (post-transfer)."""
-
-    return oc.instance_namespace(instance)
 
 
 
@@ -573,7 +563,7 @@ def refill_window(queue, instance: Mapping[str, object],
     from prismabuild import storage_tiers as tiers_mod
 
     try:
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
     except oc.ProducedOutputError:
         return {"ok": False, "refusal": "template-mismatch"}
@@ -769,11 +759,6 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
 # --------------------------------------------------------------------------
 
 
-def reserve_working_minimum(queue, instance: Mapping[str, object],
-                            template: Mapping[str, object]) -> dict[str, object]:
-    """Deprecated alias of `admit_instance` (binding metadata, never funding)."""
-
-    return bl.BatchLedger.admit(queue, instance, template)
 
 
 def admit_funded_window(queue, instance: Mapping[str, object],
@@ -872,7 +857,7 @@ def commit_batch(queue, instance: Mapping[str, object],
     from prismabuild import storage_tiers as tiers_mod
 
     try:
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
     except oc.ProducedOutputError:
         return {"ok": False, "refusal": "template-mismatch"}
@@ -1812,7 +1797,7 @@ def ensure_batch_materialized(queue, instance: Mapping[str, object],
         return answer
     # Only the timestamps of a digest-carrying origin moved: read it here,
     # with no lock held, and let the locked pass re-stat and file the re-pins.
-    verdict = bl._origin_verdict_unlocked(queue.root, instance, template,
+    verdict = bl.verify_origins_unlocked(queue.root, instance, template,
                                        batch_id, where="restage")
     if not verdict.get("ok"):
         return {"ok": False, "step": "origin",
@@ -1833,7 +1818,7 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
     """One pass of `ensure_batch_materialized`; ``verified`` are hashed re-pins."""
 
     try:
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
     except oc.ProducedOutputError:
         return {"ok": False, "step": "validate", "refusal": "template-mismatch"}
@@ -2103,7 +2088,7 @@ def load_origin_batches(queue_root: str | Path,
     write (`_file_origin_repins`), whatever the number of batches.
     """
 
-    loaded = [bl._load_origin_batch(queue_root, ref) for ref in refs]
+    loaded = [bl.resolve_origin_batch(queue_root, ref) for ref in refs]
     _file_origin_repins(queue_root, loaded)
     return [item for item, _repins in loaded]
 
@@ -2838,7 +2823,7 @@ def retire_batch(queue, instance: Mapping[str, object],
     from prismabuild import core as core_mod
 
     try:
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
     except oc.ProducedOutputError as exc:
         return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -2996,7 +2981,7 @@ def retire_staged_batches(queue, instance: Mapping[str, object],
     """
 
     try:
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
     except oc.ProducedOutputError as exc:
         refusal = {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -3222,12 +3207,12 @@ def origin_consumer_release(queue, key: str) -> dict[str, object] | None:
             raise oc.ProducedOutputError(
                 f"unknown-retain: release index {name} does not name "
                 f"{consumer[:12]}")
-        checked_ref = oc._checked_origin_ref(body.get("ref"))
+        checked_ref = oc.checked_origin_ref(body.get("ref"))
         if queue.records.released_origin_consumer_path(consumer, checked_ref).name != name:
             raise oc.ProducedOutputError(
                 f"unknown-retain: release index {name} names another batch")
-        instance, _template = bl._origin_ref_scope(queue.root, checked_ref)
-        release = bl._consumer_release(queue.root, instance,
+        instance, _template = bl.origin_scope(queue.root, checked_ref)
+        release = bl.read_consumer_release(queue.root, instance,
                                     checked_ref["batch_id"], consumer,
                                     checked_ref)
         if release is not None:
@@ -3282,9 +3267,9 @@ def release_origin_consumer(queue, ref: Mapping[str, object], *,
     `ProducedOutputError` naming the refusal.
     """
 
-    checked_ref = oc._checked_origin_ref(ref)
+    checked_ref = oc.checked_origin_ref(ref)
     consumer = oc.output_key(consumer_action_key, where="consumer_action_key")
-    instance, template = bl._origin_ref_scope(queue.root, checked_ref)
+    instance, template = bl.origin_scope(queue.root, checked_ref)
     if not template.get("write_only"):
         # A read-back owner's origin batch (#1034) is its own; no other
         # action reads it, so its retirement need not wait for one.
@@ -3327,19 +3312,19 @@ def _release_origin_consumer_locked(
             raise oc.ProducedOutputError(f"origin-batch-reclaimed: {batch_id}")
         if entry.retiring:
             raise oc.ProducedOutputError(f"origin-batch-retiring: {batch_id}")
-        if consumer not in bl._declared_consumers(
+        if consumer not in bl.declared_consumers(
                 queue.root, instance, batch_id, checked_ref):
             raise oc.ProducedOutputError(
                 f"origin-consumer-undeclared: {consumer[:12]} did not declare "
                 f"{batch_id}")
-        if bl._consumer_release(queue.root, instance, batch_id, consumer,
+        if bl.read_consumer_release(queue.root, instance, batch_id, consumer,
                              checked_ref) is not None:
             # A record filed before the index existed (#945's releases) gets
             # its entry here, so running the release again makes the claim
             # see it (#954).
             _index_release(queue, consumer, checked_ref)
             return {"ok": True, "released": False, "state": "released"}
-        state = bl._consumer_state(queue, consumer)
+        state = bl.consumer_state(queue, consumer)
         if state == "live":
             raise oc.ProducedOutputError(
                 f"origin-consumer-live: {consumer[:12]} is queued, claimed or "
@@ -3353,29 +3338,19 @@ def _release_origin_consumer_locked(
                     "the CAS nothing shows that no submitter can publish it")
             sealed = _unpublished_release_evidence(
                 queue, consumer, live_runtime=live_runtime, cas_root=cas_root)
-        elif state not in oc._TERMINAL_CONSUMER_STATES:
+        elif state not in oc.TERMINAL_CONSUMER_STATES:
             raise oc.ProducedOutputError(
                 f"origin-consumer-not-terminal: {consumer[:12]} is {state}; "
                 "only a failed, withdrawn or unpublished consumer can be "
                 "released")
-        directory = bl._released_consumers_dir(queue.root, instance, batch_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        body = {"schema": oc.ORIGIN_CONSUMER_RELEASE_SCHEMA_V1,
-                "consumer_action_key": consumer, "ref": dict(checked_ref),
-                "state": state, "by": str(by), "reason": str(reason),
-                "released_unix": time.time(), **sealed}
+        publication = bl.ConsumerReleaseFile.prepare(
+            queue.root, instance, batch_id, consumer, checked_ref,
+            state=state, by=by, reason=reason, sealed=sealed)
         # The index first (#954). The record is what makes the release real
         # to the retirement tick; a record the claim's listing could not see
         # would let a row for this key run while the tick deletes its batch.
         _index_release(queue, consumer, checked_ref)
-        try:
-            immutable_files.publish_exact(
-                directory / f"{consumer}.json",
-                core._compact_ascii_lf_bytes(body)[:-1].decode("ascii").encode() + b"\n",
-                where="produced-output origin consumer release", conflict_error=pool_mod.PoolContractError)
-        except pool_mod.PoolContractError as exc:
-            raise oc.ProducedOutputError(
-                f"origin-consumer-release-conflict: {exc}") from None
+        publication.file()
     return {"ok": True, "released": True, "state": state}
 
 
@@ -3443,16 +3418,16 @@ def _resolved_consumers(queue, instance: Mapping[str, object], batch_id: str,
     declared_set = set(declared)
     consumers: list[dict[str, object]] = []
     for key in declared:
-        state = bl._consumer_state(queue, key)
+        state = bl.consumer_state(queue, key)
         item: dict[str, object] = {"action_key": key, "state": state}
         if state == "unpublished":
             # Released only through `release_origin_consumer`'s proof that
             # nothing can publish the key (#945); nothing supersedes it.
-            if bl._consumer_release(queue.root, instance, batch_id, key,
+            if bl.read_consumer_release(queue.root, instance, batch_id, key,
                                  checked_ref) is not None:
                 item["state"] = "released"
-        elif state in oc._TERMINAL_CONSUMER_STATES:
-            if bl._consumer_release(queue.root, instance, batch_id, key,
+        elif state in oc.TERMINAL_CONSUMER_STATES:
+            if bl.read_consumer_release(queue.root, instance, batch_id, key,
                                  checked_ref) is not None:
                 item["state"] = "released"
             else:
@@ -3491,9 +3466,9 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
 
     from prismabuild import pool as pool_mod
 
-    checked_ref = oc._checked_origin_ref(ref)
+    checked_ref = oc.checked_origin_ref(ref)
     consumer = oc.output_key(consumer_action_key, where="consumer_action_key")
-    instance, template = bl._origin_ref_scope(queue.root, checked_ref)
+    instance, template = bl.origin_scope(queue.root, checked_ref)
     if not template.get("write_only"):
         # A read-back owner's origin batch (#1034) is its own; no other
         # action reads it, so its retirement need not wait for one.
@@ -3515,7 +3490,7 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
             raise oc.ProducedOutputError(f"origin-batch-retiring: {batch_id}")
         if entry.lifetime != oc.ORIGIN_LIFETIME_CONSUMED:
             return {"ok": True, "declared": False}
-        if bl._consumer_release(queue.root, instance, batch_id, consumer,
+        if bl.read_consumer_release(queue.root, instance, batch_id, consumer,
                              checked_ref) is not None:
             # A released key no longer holds the batch, so a row for it
             # could outlive the delete (#945).
@@ -3523,17 +3498,8 @@ def declare_origin_consumer(queue, ref: Mapping[str, object], *,
                 f"origin-consumer-released: {consumer[:12]}'s declaration of "
                 f"{batch_id} was released; this key cannot read the batch "
                 "again")
-        directory = bl._consumers_dir(queue.root, instance, batch_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        body = {"schema": oc.ORIGIN_CONSUMER_SCHEMA_V1,
-                "consumer_action_key": consumer, "ref": dict(checked_ref)}
-        try:
-            immutable_files.publish_exact(
-                directory / f"{consumer}.json",
-                core._compact_ascii_lf_bytes(body)[:-1].decode("ascii").encode() + b"\n",
-                where="produced-output origin consumer", conflict_error=pool_mod.PoolContractError)
-        except pool_mod.PoolContractError as exc:
-            raise oc.ProducedOutputError(f"origin-consumer-conflict: {exc}") from None
+        bl.file_consumer_declaration(
+            queue.root, instance, batch_id, consumer, checked_ref)
     return {"ok": True, "declared": True}
 
 
@@ -3554,7 +3520,7 @@ def dead_input_hint(queue, item: Mapping[str, object], hints) -> bool:
     try:
         owner = oc.output_key(str(ref.get("owner_action_key") or ""),
                        where="reference owner_action_key")
-        nonce = oc._hex32(str(ref.get("owner_nonce") or ""),
+        nonce = oc.output_nonce(str(ref.get("owner_nonce") or ""),
                        where="reference nonce")
     except oc.ProducedOutputError:
         return False
@@ -3615,7 +3581,7 @@ def dead_input_dependency(
                        where="reference owner_action_key")
         template_id = oc.output_name(str(ref.get("template_id") or ""),
                             where="reference template_id")
-        nonce = oc._hex32(str(ref.get("owner_nonce") or ""),
+        nonce = oc.output_nonce(str(ref.get("owner_nonce") or ""),
                        where="reference nonce")
         scope_id = oc.output_name(str(ref.get("owner_scope_id") or ""),
                          where="reference scope_id")
@@ -3792,17 +3758,8 @@ def _retire_consumed_batch(queue, instance: Mapping[str, object],
         # With no lock held: one read of each origin whose timestamps alone
         # moved.  A refusal is kept as one, and the locked pass reports it.
         for path, (published, observed, sha256) in outcome.pending.items():
-            repin, why = bl._verify_origin_content(path, published, observed,
-                                                sha256, where="retire")
-            if repin is not None:
-                verified[path] = repin
-            else:
-                # Other bytes are `origin-changed`, as before #1111; a read
-                # that failed is `origin-unverified`, and the next tick reads
-                # it again.
-                changed = (path, bl._identity_key(observed), sha256) in bl._CONTENT_REFUSED
-                verified[path] = {"refused": why, "reason": (
-                    "origin-changed" if changed else "origin-unverified")}
+            verified[path] = bl.retirement_origin_proof(
+                path, published, observed, sha256, where="retire")
     # An origin moved again between its read and the lock: the next tick
     # decides, from what is there then.
     return None
@@ -3826,7 +3783,7 @@ def _retire_consumed_batch_locked(
 
     from prismabuild import reader_lease as lease_mod
 
-    tick = reads if reads is not None else bl.LedgerReads(queue, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S)
+    tick = reads if reads is not None else bl.LedgerReads(queue, lease_timeout_s=pool.LEASE_TIMEOUT_S)
     commitments_path = bl.BatchLedger.for_instance(queue.root, instance).path
     try:
         # This prefix's lock and every overlapping template's (#1063), from
@@ -3858,7 +3815,7 @@ def _retire_consumed_batch_locked(
         entry = batches.retirement(batch_id, reads=tick)
         ref = oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.required_manifest))
         try:
-            total = sum(oc._check_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
+            total = sum(oc.output_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
         except oc.ProducedOutputError as exc:
             return _unfiled_report(instance, batch_id, {
                 "event": oc.ORIGIN_RETIREMENT_REFUSED_EVENT, "ref": ref,
@@ -3888,9 +3845,9 @@ def _retire_consumed_batch_locked(
             quiet()
             return None
         else:
-            checked_ref = oc._checked_origin_ref(ref)
+            checked_ref = oc.checked_origin_ref(ref)
             try:
-                declared = bl._declared_consumers(
+                declared = bl.declared_consumers(
                     queue.root, instance, batch_id, checked_ref)
             except oc.ProducedOutputError as exc:
                 return report({"event": oc.ORIGIN_RETIREMENT_STALLED_EVENT, **base,
@@ -3902,9 +3859,9 @@ def _retire_consumed_batch_locked(
                 except oc.ProducedOutputError as exc:
                     return report({"event": oc.ORIGIN_RETIREMENT_STALLED_EVENT,
                                    **base, "consumers": [], "reason": str(exc)})
-                if not all(item["state"] in oc._RESOLVED_CONSUMER_STATES
+                if not all(item["state"] in oc.RESOLVED_CONSUMER_STATES
                            for item in consumers):
-                    if any(item["state"] in oc._STALLED_CONSUMER_STATES
+                    if any(item["state"] in oc.STALLED_CONSUMER_STATES
                            for item in consumers):
                         return report({"event": oc.ORIGIN_RETIREMENT_STALLED_EVENT,
                                        **base, "consumers": consumers})
@@ -3923,7 +3880,7 @@ def _retire_consumed_batch_locked(
                 # succeeded, never runs again under its nonce; a stale
                 # ``live`` only waits for the next cycle.
                 ended = ({"dead"} if template.get("write_only")
-                         else oc._ENDED_ATTEMPT_STATES)
+                         else oc.ENDED_ATTEMPT_STATES)
                 attempt = instance["owner_attempt"]
                 assert isinstance(attempt, dict)
                 if bl.attempt_state(tick.generation(
@@ -3967,7 +3924,7 @@ def _retire_consumed_batch_locked(
 
         def classify(path: str) -> tuple[str, str]:
             try:
-                live = bl._portable_identity_of(os.lstat(path))
+                live = bl.portable_origin_identity(os.lstat(path))
             except FileNotFoundError:
                 return ("absent", "")
             except OSError as exc:
@@ -4022,7 +3979,7 @@ def _retire_consumed_batch_locked(
                        for holder in owners.unknown_holders(path)]
             if unknown:
                 return report({"event": oc.ORIGIN_HELD_BY_UNKNOWN_EVENT, **base,
-                               **bl._held_by_unknown_event(unknown, queue.root)})
+                               **bl.unknown_holder_report(unknown, queue.root)})
             quiet()
             return None
         pending: list[str] = []
@@ -4120,7 +4077,7 @@ def _is_committed_file(info: os.stat_result,
     without all three is never a match.
     """
 
-    live = bl._portable_identity_of(info)
+    live = bl.portable_origin_identity(info)
     fields = ("ino", "size", "mtime_ns")
     return (all(recorded.get(field) is not None for field in fields)
             and all(live.get(field) == recorded.get(field) for field in fields))
@@ -4520,7 +4477,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
     generation = reads.generation(str(instance["owner_action_key"]))
-    if bl.attempt_state(generation, str(attempt["nonce"])) not in oc._ENDED_ATTEMPT_STATES:
+    if bl.attempt_state(generation, str(attempt["nonce"])) not in oc.ENDED_ATTEMPT_STATES:
         for key in keys.values():
             _UNFILED_REPORTS.pop(key, None)
         return []
@@ -4584,7 +4541,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
             queue, instance, template, records, reads)
         for batch_id, disposition in dispositions.items():
             base = {"prewrite": _batch_report_key(instance, batch_id),
-                    "class_bytes": dict(records[batch_id]["class_bytes"])}
+                    "class_bytes": dict(records[batch_id].class_bytes)}
             action = disposition["action"]
             kept = inputs.get(batch_id)
             if action in ("orphaned", "hold") and kept is not None:
@@ -4608,7 +4565,7 @@ def _sweep_ended_prewrites(queue, instance: Mapping[str, object],
                 # once per change, not held silently.
                 reports.append((batch_id, {
                     "event": oc.ORIGIN_HELD_BY_UNKNOWN_EVENT, **base,
-                    **bl._held_by_unknown_event(disposition["unknown"],
+                    **bl.unknown_holder_report(disposition["unknown"],
                                              queue.root)}))
             elif action == "hold":
                 _UNFILED_REPORTS.pop(keys[batch_id], None)
@@ -4665,7 +4622,7 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
     attempt = instance["owner_attempt"]
     assert isinstance(attempt, dict)
     generation = reads.generation(str(instance["owner_action_key"]))
-    if bl.attempt_state(generation, str(attempt["nonce"])) not in oc._ENDED_ATTEMPT_STATES:
+    if bl.attempt_state(generation, str(attempt["nonce"])) not in oc.ENDED_ATTEMPT_STATES:
         return []
     directory = bl.prewrites_dir(queue.root, instance)
     records: dict[str, bl.PrewriteFacts] = {}
@@ -4683,7 +4640,7 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
         if disposition["action"] == "orphaned":
             listed.append({
                 "prewrite": _batch_report_key(instance, batch_id),
-                "class_bytes": dict(records[batch_id]["class_bytes"]),
+                "class_bytes": dict(records[batch_id].class_bytes),
                 "paths": disposition["paths"],
                 "superseded": disposition["superseded"],
                 "held": disposition["held"],
@@ -4692,8 +4649,8 @@ def _orphaned_prewrites(queue, instance: Mapping[str, object],
               and disposition.get("unknown")):
             held.append({
                 "prewrite": _batch_report_key(instance, batch_id),
-                "class_bytes": dict(records[batch_id]["class_bytes"]),
-                **bl._held_by_unknown_event(disposition["unknown"], queue.root)})
+                "class_bytes": dict(records[batch_id].class_bytes),
+                **bl.unknown_holder_report(disposition["unknown"], queue.root)})
         elif (disposition["action"] == "refused"
               and disposition["reason"] == "unknown-retain"):
             unreadable.append(
@@ -4761,7 +4718,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
         unreadable.append(f"output scopes: {exc}")
         return found()
     holds: set[tuple[str, str]] | None = None
-    reads = bl.LedgerReads(queue, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S)
+    reads = bl.LedgerReads(queue, lease_timeout_s=pool.LEASE_TIMEOUT_S)
     for owner in owners:
         try:
             scopes = sorted(child for child in (scopes_root / owner).iterdir()
@@ -4789,7 +4746,7 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                 # before its instance is read.
                 if (bl.attempt_state(reads.generation(owner),
                                    scope.name.rpartition(".")[2])
-                        not in oc._ENDED_ATTEMPT_STATES):
+                        not in oc.ENDED_ATTEMPT_STATES):
                     continue
             try:
                 instance = oc.validate_instance(json.loads(
@@ -4830,19 +4787,19 @@ def blocked_origin_batches(queue) -> dict[str, list]:
             for batch_id, entry in due:
                 try:
                     ref = oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.required_manifest))
-                    checked_ref = oc._checked_origin_ref(ref)
-                    declared = bl._declared_consumers(
+                    checked_ref = oc.checked_origin_ref(ref)
+                    declared = bl.declared_consumers(
                         queue.root, instance, batch_id, checked_ref)
                     consumers = (_resolved_consumers(
                         queue, instance, batch_id, checked_ref, declared)
                         if declared else [])
-                    total = sum(oc._check_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
+                    total = sum(oc.output_class_bytes(entry.class_bytes, where=f'committed batch {batch_id!r}').values())
                 except (oc.ProducedOutputError, KeyError, ValueError) as exc:
                     unreadable.append(f"{where}/{batch_id}: {exc}")
                     continue
                 # What the tick would retire now, but for a hold by an
                 # attempt whose state is unknown (#1065).
-                retirable = (all(item["state"] in oc._RESOLVED_CONSUMER_STATES
+                retirable = (all(item["state"] in oc.RESOLVED_CONSUMER_STATES
                                  for item in consumers) if declared
                              else bl.attempt_state(
                                  reads.generation(owner),
@@ -4852,19 +4809,19 @@ def blocked_origin_batches(queue) -> dict[str, list]:
                     try:
                         if scope_owners is None:
                             scope_owners = reads.path_owners(instance, template)
-                        holders = bl._unknown_path_holders(scope_owners, entry.paths or [])
+                        holders = bl.unknown_path_holders(scope_owners, entry.paths or [])
                     except (oc.ProducedOutputError, OSError, ValueError) as exc:
                         unreadable.append(f"{where}/{batch_id}: owners: {exc}")
                         holders = []
                     if holders:
                         held_by_unknown.append({
                             "ref": ref, "bytes": total,
-                            **bl._held_by_unknown_event(holders, queue.root)})
+                            **bl.unknown_holder_report(holders, queue.root)})
                 if not declared:
                     continue
                 holding = [item for item in consumers
-                           if item["state"] not in oc._RESOLVED_CONSUMER_STATES]
-                if holding and all(item["state"] in oc._TERMINAL_CONSUMER_STATES
+                           if item["state"] not in oc.RESOLVED_CONSUMER_STATES]
+                if holding and all(item["state"] in oc.TERMINAL_CONSUMER_STATES
                                    for item in holding):
                     blocked.append({'ref': ref, 'bytes': total, 'consumers': consumers, 'holding': [str(item['action_key']) for item in holding], 'reported': entry.has_retirement_report})
     return found()
@@ -4876,31 +4833,6 @@ def blocked_origin_batches(queue) -> dict[str, list]:
 #: Queue roots whose attempt index this process has marked complete.
 
 
-def _backfill_attempt(queue_root: str | Path, owner: str, scope_name: str) -> bool:
-    """Index one scope the tick listed, if it is not yet (#1053).
-
-    A scope filed before the index existed, or by a producer running code
-    that predates it, has no pointer; the tick files it, idempotently.
-    Returns False when it could not be filed.
-    """
-
-    key = (str(queue_root), owner, scope_name)
-    if key in _INDEXED_ATTEMPTS:
-        return True
-    template_id, dot, nonce = scope_name.rpartition(".")
-    if (not dot or not template_id or len(owner) != 64
-            or len(nonce) != oc._HEX32 or any(c not in oc._HEX for c in nonce)):
-        # Not an attempt's scope (an older flat spelling): nothing to index.
-        _INDEXED_ATTEMPTS.add(key)
-        return True
-    pointer = bl._attempts_root(queue_root) / template_id / f"{owner}.{nonce}"
-    try:
-        if not os.path.lexists(pointer):
-            bl._index_attempt(queue_root, owner, template_id, nonce)
-    except oc.ProducedOutputError:
-        return False
-    _INDEXED_ATTEMPTS.add(key)
-    return True
 
 
 class _DeadStagedReports:
@@ -5222,7 +5154,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
     except OSError:
         return events
     templates_root = Path(queue.root) / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
-    reads = bl.LedgerReads(queue, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S, trust=trust)
+    reads = bl.LedgerReads(queue, lease_timeout_s=pool.LEASE_TIMEOUT_S, trust=trust)
     indexed = True
     # What unreleased deferred consumers will read (#913), read once and only
     # when some batch is due.  A queue that cannot say keeps every batch for
@@ -5242,7 +5174,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
         visits = [by_key[key] for key in budget.order(
             oc.ORIGIN_RETIREMENT_UNITS, list(by_key))]
     for owner, scope in visits:
-        indexed = _backfill_attempt(queue.root, owner, scope.name) and indexed
+        indexed = bl.backfill_attempt(queue.root, owner, scope.name) and indexed
         nonce = scope.name.rpartition(".")[2]
         try:
             batches = reads.entries(scope)
@@ -5258,7 +5190,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
             continue
         ended = (bl.attempt_state(reads.generation(owner), nonce)
                  if staged or not due else "")
-        if not due and ended not in oc._ENDED_ATTEMPT_STATES:
+        if not due and ended not in oc.ENDED_ATTEMPT_STATES:
             # Only an ended attempt's prewrites and stage copies are the
             # tick's (#949, #1053).  The scope is named for the attempt's
             # nonce, so a producer that can still commit costs no
@@ -5300,7 +5232,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
             finally:
                 if scope_budget is not None:
                     scope_budget.done(oc.ENDED_PREWRITES_UNIT)
-        if staged and ended in oc._ENDED_ATTEMPT_STATES:
+        if staged and ended in oc.ENDED_ATTEMPT_STATES:
             events.extend(_retire_dead_staged_batches(
                 queue, instance, template, staged, batches,
                 producer_state=ended, reads=reads, budget=scope_budget))
@@ -5330,14 +5262,7 @@ def origin_retirement_tick(queue, *, budget=None, trust=None) -> list[dict[str, 
                     scope_budget.done(oc.CONSUMED_RETIREMENT_UNIT)
             if event is not None:
                 events.append(event)
-    if indexed and str(queue.root) not in _INDEX_MARKED:
-        try:
-            if not os.path.lexists(bl._attempts_root(queue.root)
-                                   / oc.ATTEMPT_INDEX_COMPLETE):
-                bl._mark_attempt_index_complete(queue.root)
-            _INDEX_MARKED.add(str(queue.root))
-        except oc.ProducedOutputError:
-            pass
+    bl.finish_attempt_index(queue.root, complete=indexed)
     return events
 
 
@@ -5558,7 +5483,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
     from prismabuild import pool as pool_mod
 
     try:
-        checked_template, checked = oc._require_bound_contract(template, instance)
+        checked_template, checked = oc.bound_output_contract(template, instance)
     except oc.ProducedOutputError as exc:
         if "template-mismatch" in str(exc):
             return {"ok": False, "refusal": "template-mismatch"}
@@ -6015,4 +5940,4 @@ def recover_batches(queue, instance: Mapping[str, object],
     return events
 
 
-__all__ = ['batch_record', 'batch_records', 'BATCH_STATE_COMMITTED', 'BATCH_STATE_RETIRING', 'BATCH_STATE_RECLAIMED', 'ProducedOutputError', 'template_path', 'declare_template', 'bind_instance', 'reservation_holder', 'admit_funded_window', 'reserve_working_minimum', 'commit_batch', 'load_origin_batch', 'load_origin_batches', 'origin_batch_manifest', 'place_origin_batches', 'verify_placed_origin_batches', 'publish_prepaid_batch', 'refill_window', 'unheld_window_gib', 'build_stage_manifest', 'retire_batch', 'declare_origin_consumer', 'release_origin_consumer', 'origin_consumer_release', 'blocked_origin_batches', 'origin_retirement_tick', 'safe_release_instance', 'output_scope_tick', 'recover_batches', 'build_declaration', 'declared_template', 'bind_declared_instance']
+__all__ = ['batch_record', 'batch_records', 'BATCH_STATE_COMMITTED', 'BATCH_STATE_RETIRING', 'BATCH_STATE_RECLAIMED', 'ProducedOutputError', 'template_path', 'declare_template', 'bind_instance', 'admit_funded_window', 'commit_batch', 'load_origin_batch', 'load_origin_batches', 'origin_batch_manifest', 'place_origin_batches', 'verify_placed_origin_batches', 'publish_prepaid_batch', 'refill_window', 'unheld_window_gib', 'build_stage_manifest', 'retire_batch', 'declare_origin_consumer', 'release_origin_consumer', 'origin_consumer_release', 'blocked_origin_batches', 'origin_retirement_tick', 'safe_release_instance', 'output_scope_tick', 'recover_batches', 'build_declaration', 'declared_template', 'bind_declared_instance']

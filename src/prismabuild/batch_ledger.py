@@ -78,7 +78,7 @@ def scope_dir(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
 def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> Path:
     """File one bound instance immutably; a conflicting body refuses."""
 
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     checked = oc.validate_instance(instance)
     attempt = checked["owner_attempt"]
@@ -96,9 +96,9 @@ def declare_instance(queue_root: str | Path, instance: Mapping[str, object]) -> 
             path,
             raw,
             where="produced-output instance",
-            conflict_error=pool_mod.PoolContractError,
+            conflict_error=record_store.PoolContractError,
         )
-    except pool_mod.PoolContractError as exc:
+    except record_store.PoolContractError as exc:
         raise oc.ProducedOutputError(
             f"a different instance is already filed for this owner/template/nonce: {exc}"
         ) from None
@@ -124,32 +124,32 @@ def _index_attempt(queue_root: str | Path, owner_action_key: str,
     different body is already filed under the name.
     """
 
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     owner = oc.output_key(owner_action_key, where="attempt owner_action_key")
     template = oc.output_name(template_id, where="attempt template_id")
-    attempt = oc._hex32(nonce, where="attempt nonce")
+    attempt = oc.output_nonce(nonce, where="attempt nonce")
     directory = _attempts_root(queue_root) / template
     raw = (core._compact_ascii_lf_bytes({"owner_action_key": owner, "nonce": attempt,
                        "template_id": template})[:-1].decode("ascii") + "\n").encode()
     try:
         directory.mkdir(parents=True, exist_ok=True)
         immutable_files.publish_exact(directory / f"{owner}.{attempt}", raw,
-                                    where="produced-output attempt index", conflict_error=pool_mod.PoolContractError)
-    except (OSError, pool_mod.PoolContractError) as exc:
+                                    where="produced-output attempt index", conflict_error=record_store.PoolContractError)
+    except (OSError, record_store.PoolContractError) as exc:
         raise oc.ProducedOutputError(
             f"unknown-retain: attempt index: {exc}") from None
 
 
 def _mark_attempt_index_complete(queue_root: str | Path) -> None:
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     root = _attempts_root(queue_root)
     try:
         root.mkdir(parents=True, exist_ok=True)
         immutable_files.publish_exact(root / oc.ATTEMPT_INDEX_COMPLETE, b"1\n",
-                                    where="produced-output attempt index", conflict_error=pool_mod.PoolContractError)
-    except (OSError, pool_mod.PoolContractError) as exc:
+                                    where="produced-output attempt index", conflict_error=record_store.PoolContractError)
+    except (OSError, record_store.PoolContractError) as exc:
         raise oc.ProducedOutputError(
             f"unknown-retain: attempt index: {exc}") from None
 
@@ -331,7 +331,7 @@ def template_attempts(queue_root: str | Path, template_ids: Collection[str]
                     f"unknown-retain: attempt index: {exc}") from None
             for name in names:
                 owner, dot, nonce = name.partition(".")
-                if (dot and len(owner) == 64 and len(nonce) == oc._HEX32
+                if (dot and len(owner) == 64 and len(nonce) == oc.NONCE_HEX_LENGTH
                         and not name.startswith(".")):
                     found.add((owner, template_id, nonce))
         return sorted(found)
@@ -352,7 +352,7 @@ def template_attempts(queue_root: str | Path, template_ids: Collection[str]
                 f"unknown-retain: scopes {owner[:12]}: {exc}") from None
         for name in names:
             template_id, dot, nonce = name.rpartition(".")
-            if dot and template_id in wanted and len(nonce) == oc._HEX32:
+            if dot and template_id in wanted and len(nonce) == oc.NONCE_HEX_LENGTH:
                 found.add((owner, template_id, nonce))
     return sorted(found)
 
@@ -795,7 +795,7 @@ class RetirementOwners:
 
     def pending(self, path: str) -> dict[str, str] | None:
         for owner, nonce, foreign, _committed, prewritten, state in self._attempts:
-            if state in oc._ENDED_ATTEMPT_STATES:
+            if state in oc.ENDED_ATTEMPT_STATES:
                 continue
             batch_id = prewritten.get(path)
             if batch_id is not None:
@@ -847,7 +847,7 @@ def _unknown_attempt_detail(generation: KeyStanding,
     The hold it causes stays in place; only the report says so.
     """
 
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     if isinstance(generation, Absent):
         why = "no-queue-row"
@@ -857,11 +857,11 @@ def _unknown_attempt_detail(generation: KeyStanding,
         why = "moving"
     else:
         state, record = generation.value.state, generation.value.record
-        if state == pool_mod.READY:
+        if state == record_store.READY:
             why = "queued"
-        elif state == pool_mod.CLAIMED:
+        elif state == record_store.CLAIMED:
             why = "claim-names-no-nonce"
-        elif state == pool_mod.DONE:
+        elif state == record_store.DONE:
             status = str(record.get("status"))
             if status not in ("executed", "cache_hit"):
                 why = f"done-status-{status}"
@@ -897,7 +897,7 @@ def _newest_write_ns(version: object) -> int | None:
     return newest
 
 
-def _held_by_unknown_event(holders: Sequence[Mapping[str, object]],
+def unknown_holder_report(holders: Sequence[Mapping[str, object]],
                            queue_root: str | Path) -> dict[str, object]:
     """An `ORIGIN_HELD_BY_UNKNOWN_EVENT`'s body, without its subject (#1065).
 
@@ -933,7 +933,7 @@ def _held_by_unknown_event(holders: Sequence[Mapping[str, object]],
     return event
 
 
-def _unknown_path_holders(owners: RetirementOwners, paths: Sequence[object]
+def unknown_path_holders(owners: RetirementOwners, paths: Sequence[object]
                           ) -> list[dict[str, object]]:
     """The retirement's hold test over ``paths``, for the listing (#1065).
 
@@ -977,7 +977,7 @@ def read_prewrite(path: Path) -> dict[str, object] | None:
     if not isinstance(raw, Mapping):
         raise oc.ProducedOutputError("prewrite record is corrupt")
     record = dict(raw)
-    record["class_bytes"] = oc._check_class_bytes(
+    record["class_bytes"] = oc.output_class_bytes(
         record.get("class_bytes"), where="prewrite class_bytes")
     paths = record.get("paths", [])
     if not isinstance(paths, list) or any(
@@ -1037,7 +1037,7 @@ def publish_prewrite(queue, instance: Mapping[str, object], *,
     `require_prewrite` owns the idempotent-replay interpretation.
     """
 
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     directory = prewrites_dir(queue.root, instance)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1051,7 +1051,7 @@ def publish_prewrite(queue, instance: Mapping[str, object], *,
         path,
         raw,
         where="produced-output prewrite",
-        conflict_error=pool_mod.PoolContractError,
+        conflict_error=record_store.PoolContractError,
     )
     return path
 
@@ -1218,13 +1218,13 @@ def _class_sums(batches: Mapping[str, object]) -> dict[str, int]:
         if record.get("origin_reclaimed"):
             continue
         for cls in sums:
-            sums[cls] += oc._check_class_bytes(
+            sums[cls] += oc.output_class_bytes(
                 record.get("class_bytes"),
                 where=f"committed batch {batch_id!r}")[cls]
     return sums
 
 
-def _portable_identity_of(info) -> dict[str, int]:
+def portable_origin_identity(info) -> dict[str, int]:
     """The existing origin-identity tuple for one stat result.
 
     `reader_lease.portable_identity` is the fleet's one spelling of server-side
@@ -1267,7 +1267,7 @@ def origin_identity_at_commit(sealed: list[dict[str, object]]
         if int(info.st_size) != int(desc["bytes"]):
             return (None, {"ok": False, "refusal": "descriptor-size-mismatch",
                            "path": path})
-        identity[path] = _portable_identity_of(info)
+        identity[path] = portable_origin_identity(info)
     return (identity, None)
 
 
@@ -1295,7 +1295,7 @@ def read_landed_origins(sealed: list[dict[str, object]],
     for desc in sealed:
         path = str(desc["path"])
         try:
-            live = _portable_identity_of(os.lstat(path))
+            live = portable_origin_identity(os.lstat(path))
         except OSError:
             continue
         got = verified.get(path)
@@ -1527,7 +1527,7 @@ def check_origin_identity(filed: Mapping[str, object],
         if published.get("size") != int(desc["bytes"]):
             return {"ok": False, "refusal": "restage-origin-proof-missing"}
         try:
-            live = _portable_identity_of(os.lstat(path))
+            live = portable_origin_identity(os.lstat(path))
         except OSError as exc:
             return {"ok": False, "refusal": f"restage-origin-unstatable: {exc}"}
         if lease_mod.file_id_matches(published, live):
@@ -1586,7 +1586,7 @@ def apply_origin_repins(entry: Mapping[str, object],
     for repin in repins:
         path = str(repin["path"])
         try:
-            live = _portable_identity_of(os.lstat(path))
+            live = portable_origin_identity(os.lstat(path))
         except OSError as exc:
             return (None, {"refusal": f"restage-origin-unstatable: {exc}"})
         if not lease_mod.file_id_matches(repin["to"], live):
@@ -1665,7 +1665,7 @@ def _prewrite_paths(prefix: str, paths: list[str]) -> list[str]:
     containment: _PrewriteContainment | None = None
     planned_paths: list[str] = []
     for path in paths:
-        candidate = oc._abs_norm(path, where="prewrite paths[]")
+        candidate = oc.absolute_output_path(path, where="prewrite paths[]")
         if containment is None:
             containment = _PrewriteContainment(prefix)
         containment.check(candidate)
@@ -1739,13 +1739,13 @@ def _public_batch_record(queue_root: str | Path,
     }
 
 
-def _origin_verdict_unlocked(queue_root, instance: Mapping[str, object],
+def verify_origins_unlocked(queue_root, instance: Mapping[str, object],
                              template: Mapping[str, object], batch_id: str, *,
                              where: str) -> dict[str, object]:
     """`_check_origin_identity` with reads, on a lockless read of the batch (#1111)."""
 
     try:
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
         entry = BatchLedger.for_instance(queue_root, checked_instance).capture()["batches"].get(batch_id)
         if not isinstance(entry, Mapping):
@@ -1758,7 +1758,7 @@ def _origin_verdict_unlocked(queue_root, instance: Mapping[str, object],
                                   where=where)
 
 
-def _origin_ref_scope(queue_root: str | Path, checked_ref: Mapping[str, str]
+def origin_scope(queue_root: str | Path, checked_ref: Mapping[str, str]
                       ) -> tuple[dict[str, object], dict[str, object]]:
     """The filed instance and template a checked ref names, bound together.
 
@@ -1796,12 +1796,12 @@ def _origin_ref_scope(queue_root: str | Path, checked_ref: Mapping[str, str]
     return instance, template
 
 
-def _load_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
+def resolve_origin_batch(queue_root: str | Path, ref: Mapping[str, object]
                        ) -> tuple[dict[str, object], list[dict[str, object]]]:
     """One batch resolved with no lock held, and the re-pins it needs filed."""
 
-    checked_ref = oc._checked_origin_ref(ref)
-    instance, template = _origin_ref_scope(queue_root, checked_ref)
+    checked_ref = oc.checked_origin_ref(ref)
+    instance, template = origin_scope(queue_root, checked_ref)
     if not template.get("write_only"):
         raise oc.ProducedOutputError(
             "origin-batch-not-write-only: its template stages its batches")
@@ -1850,7 +1850,7 @@ def _released_consumers_dir(queue_root: str | Path,
     return scope_dir(queue_root, instance) / "released-consumers" / batch_id
 
 
-def _consumer_release(queue_root: str | Path, instance: Mapping[str, object],
+def read_consumer_release(queue_root: str | Path, instance: Mapping[str, object],
                       batch_id: str, key: str,
                       checked_ref: Mapping[str, str]) -> dict[str, object] | None:
     """The operator's release of one declaration, or ``None``; raise if bad."""
@@ -1873,7 +1873,7 @@ def _consumer_release(queue_root: str | Path, instance: Mapping[str, object],
     return dict(body)
 
 
-def _declared_consumers(queue_root: str | Path, instance: Mapping[str, object],
+def declared_consumers(queue_root: str | Path, instance: Mapping[str, object],
                         batch_id: str,
                         checked_ref: Mapping[str, str]) -> list[str]:
     """The consumer action keys filed for one batch, sorted.
@@ -1927,7 +1927,7 @@ def record_nonce(record: Mapping[str, object] | None) -> str:
     return ""
 
 
-def _consumer_state(queue, key: str) -> str:
+def consumer_state(queue, key: str) -> str:
     """How a declared consumer stands, for retirement.
 
     ``succeeded`` (its latest generation is ``done`` as executed or a cache
@@ -1935,7 +1935,7 @@ def _consumer_state(queue, key: str) -> str:
     ``unpublished`` (declared but no row filed) or ``unknown``.
     """
 
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     standing = RecordStore(queue.root).standing(key)
     if isinstance(standing, Absent):
@@ -1945,15 +1945,15 @@ def _consumer_state(queue, key: str) -> str:
     if isinstance(standing.value, Moving):
         return "live"
     state, record = standing.value.state, standing.value.record
-    if state in (pool_mod.CLAIMED, pool_mod.READY):
+    if state in (record_store.CLAIMED, record_store.READY):
         return "live"
-    if state == pool_mod.DONE:
+    if state == record_store.DONE:
         if record.get("status") in ("executed", "cache_hit"):
             return "succeeded"
         return "unknown"
-    if state == pool_mod.FAILED:
+    if state == record_store.FAILED:
         return "failed"
-    if state == pool_mod.WITHDRAWN:
+    if state == record_store.WITHDRAWN:
         return "withdrawn"
     return "unknown"
 
@@ -1987,19 +1987,19 @@ def attempt_state(generation: KeyStanding,
     reads the key once.
     """
 
-    from prismabuild import record_store as pool_mod
+    from prismabuild import record_store
 
     if not isinstance(generation, Present) or isinstance(generation.value, Moving):
         return "unknown"
     state, record = generation.value.state, generation.value.record
-    if state == pool_mod.CLAIMED:
+    if state == record_store.CLAIMED:
         live = record_nonce(record)
         if not live:
             return "unknown"
         return "live" if live == nonce else "dead"
-    if state in (pool_mod.FAILED, pool_mod.WITHDRAWN):
+    if state in (record_store.FAILED, record_store.WITHDRAWN):
         return "dead"
-    if state == pool_mod.DONE:
+    if state == record_store.DONE:
         finished = record_nonce(record)
         if record.get("status") not in ("executed", "cache_hit") or not finished:
             return "unknown"
@@ -2262,7 +2262,7 @@ class BatchFacets:
         for index, item in enumerate(raw):
             if (not isinstance(item, Mapping)
                     or len(str(item.get("mover_key") or "")) != 64
-                    or any(c not in oc._HEX for c in str(item.get("mover_key") or ""))
+                    or any(c not in oc.OUTPUT_KEY_HEX for c in str(item.get("mover_key") or ""))
                     or not isinstance(item.get("tier"), str)
                     or not item.get("tier")
                     or type(item.get("generation")) is not int
@@ -2385,51 +2385,51 @@ class BatchFacets:
 
 
     @property
-    def manifest(self):
+    def manifest(self) -> object:
         return self._entry.get("manifest_digest")
 
     @property
-    def required_manifest(self):
+    def required_manifest(self) -> object:
         return self._entry["manifest_digest"]
 
     @property
-    def namespace(self):
+    def namespace(self) -> object:
         return self._entry.get("batch_namespace")
 
     @property
-    def first_mover(self):
+    def first_mover(self) -> object:
         return self._entry.get("mover_key")
 
     @property
-    def tier(self):
+    def tier(self) -> object:
         return self._entry.get("tier")
 
     @property
-    def class_bytes(self):
+    def class_bytes(self) -> object:
         return self._entry.get("class_bytes")
 
     @property
-    def paths(self):
+    def paths(self) -> object:
         return self._entry.get("paths")
 
     @property
-    def staged_paths(self):
+    def staged_paths(self) -> object:
         return self._entry.get("staged_paths")
 
     @property
-    def retiring(self):
+    def retiring(self) -> object:
         return self._entry.get("retiring")
 
     @property
-    def has_retirement_report(self):
+    def has_retirement_report(self) -> bool:
         return "retirement_report" in self._entry
 
     @property
-    def active(self):
+    def active(self) -> StageCopy:
         return StageCopy(self.active_copy)
 
     @property
-    def history(self):
+    def history(self) -> list[StageCopy]:
         return [StageCopy(item) for item in self.copies]
 
     def open(self, queue_root, instance, template, batch_id):
@@ -2443,78 +2443,78 @@ class BatchFacets:
 class StageCopy:
     """One named copy answer; construction performs no validation or reads."""
 
-    def __init__(self, row):
+    def __init__(self, row) -> None:
         self._row = row
 
     @property
-    def mover_key(self):
+    def mover_key(self) -> object:
         return self._row.get("mover_key")
 
     @property
-    def tier(self):
+    def tier(self) -> object:
         return self._row.get("tier")
 
     @property
-    def generation(self):
+    def generation(self) -> object:
         return self._row.get("generation")
 
     @property
-    def retired(self):
+    def retired(self) -> object:
         return self._row.get("retired")
 
     @property
-    def state(self):
+    def state(self) -> object:
         return self._row.get("state")
 
     @property
-    def source(self):
+    def source(self) -> object:
         return self._row.get("source")
 
     @property
-    def staged_paths(self):
+    def staged_paths(self) -> object:
         return self._row.get("staged_paths")
 
     @property
-    def host(self):
+    def host(self) -> object:
         return self._row.get("host")
 
     @property
-    def fill_mb_s_pool_side(self):
+    def fill_mb_s_pool_side(self) -> object:
         return self._row.get("fill_mb_s_pool_side")
 
 
 class PrewriteFacts:
     """A validated reservation; separate export and commit questions stay named."""
 
-    def __init__(self, record):
+    def __init__(self, record) -> None:
         self._record = record
 
     @property
-    def owner(self):
+    def owner(self) -> object:
         return self._record.get("owner_action_key")
 
     @property
-    def attempt(self):
+    def attempt(self) -> object:
         return self._record.get("owner_attempt")
 
     @property
-    def attempt_binding(self):
+    def attempt_binding(self) -> dict[str, object]:
         # Missing and explicitly null attempts retain their original meanings.
         return dict(self._record.get("owner_attempt", {}))
 
     @property
-    def tier(self):
+    def tier(self) -> object:
         return self._record.get("tier")
 
     @property
-    def paths(self):
+    def paths(self) -> list[str]:
         return self._record["paths"]
 
     @property
-    def class_bytes(self):
+    def class_bytes(self) -> dict[str, int]:
         return self._record["class_bytes"]
 
-    def matches_commit(self, instance, tier, sealed):
+    def matches_commit(self, instance, tier, sealed) -> bool:
         prewrite = self._record
         return not (prewrite.get("tier") != tier
                 or not actual_within_ceiling(prewrite, sealed)
@@ -2525,7 +2525,7 @@ class PrewriteFacts:
                 or dict(prewrite.get("owner_attempt", {})) != dict(
                     instance["owner_attempt"]))
 
-    def omitted_absent(self, sealed):
+    def omitted_absent(self, sealed) -> bool:
         return planned_omitted_absent(self._record, sealed)
 
 
@@ -2544,22 +2544,22 @@ class BatchLedger:
         return cls(scope_dir(queue_root, instance) / "commitments.json")
 
     @classmethod
-    def at_scope(cls, scope: Path):
+    def at_scope(cls, scope: Path) -> BatchLedger:
         """Address an already selected scope without reading its bindings."""
         return cls(scope / "commitments.json")
 
     @property
-    def instance_path(self):
+    def instance_path(self) -> Path:
         return self.path.parent / "instance.json"
 
-    def prewrite_path(self, batch_id):
+    def prewrite_path(self, batch_id) -> Path:
         return self.path.parent / "prewrites" / f"{batch_id}.prewrite.json"
 
-    def prewrite(self, batch_id):
+    def prewrite(self, batch_id) -> PrewriteFacts | None:
         record = read_prewrite(self.prewrite_path(batch_id))
         return None if record is None else PrewriteFacts(record)
 
-    def entries(self):
+    def entries(self) -> BatchCapture:
         """Capture one generation of entries; no entry history is read eagerly."""
         return BatchCapture(self, self.capture())
 
@@ -2591,7 +2591,7 @@ class BatchLedger:
         Raises ProducedOutputError on any mismatch.
         """
 
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
         oc.output_name(batch_id, where="batch_id")
         oc.output_key(mover_key, where="precommit mover_key")
@@ -3001,7 +3001,7 @@ class BatchLedger:
         """
 
         try:
-            checked_template, checked_instance = oc._require_bound_contract(
+            checked_template, checked_instance = oc.bound_output_contract(
                 template, instance)
         except oc.ProducedOutputError:
             return {"ok": False, "refusal": "template-mismatch"}
@@ -3061,7 +3061,7 @@ class BatchLedger:
         """
 
         try:
-            checked_template, checked_instance = oc._require_bound_contract(
+            checked_template, checked_instance = oc.bound_output_contract(
                 template, instance)
         except oc.ProducedOutputError:
             return {"ok": False, "refusal": "template-mismatch"}
@@ -3073,7 +3073,7 @@ class BatchLedger:
             return {"ok": False, "refusal": "prewrite-classes-must-name-all-three"}
         planned = {}
         for cls in ("payload", "checkpoint", "temp"):
-            planned[cls] = oc._nonneg_int(class_bytes.get(cls),
+            planned[cls] = oc.nonnegative_output_integer(class_bytes.get(cls),
                                        where=f"prewrite class_bytes.{cls}")
         if not isinstance(paths, list) or not paths:
             return {"ok": False, "refusal": "prewrite-paths-required"}
@@ -3185,7 +3185,7 @@ class BatchLedger:
         """
 
         try:
-            checked_template, checked_instance = oc._require_bound_contract(
+            checked_template, checked_instance = oc.bound_output_contract(
                 template, instance)
         except oc.ProducedOutputError:
             return {"ok": False, "refusal": "template-mismatch"}
@@ -3335,10 +3335,10 @@ class BatchLedger:
         or a typed refusal.
         """
 
-        from prismabuild import record_store as pool_mod
+        from prismabuild import record_store
 
         try:
-            checked_template, checked_instance = oc._require_bound_contract(
+            checked_template, checked_instance = oc.bound_output_contract(
                 template, instance)
         except oc.ProducedOutputError:
             return {"ok": False, "refusal": "template-mismatch"}
@@ -3470,8 +3470,8 @@ class BatchLedger:
                     immutable_files.publish_exact(
                         batch_path,
                         core._compact_ascii_lf_bytes(record)[:-1].decode("ascii").encode() + b"\n",
-                        where="produced-output batch", conflict_error=pool_mod.PoolContractError)
-                except pool_mod.PoolContractError as exc:
+                        where="produced-output batch", conflict_error=record_store.PoolContractError)
+                except record_store.PoolContractError as exc:
                     # A crash after this record and before the entry below: the same
                     # batch, over the same identities, resumes from what is filed.
                     # Anything else is a different batch under this id.
@@ -3538,7 +3538,7 @@ class BatchLedger:
         from the list.
         """
 
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
         commitments = BatchLedger.for_instance(queue.root, checked_instance).capture()
         batches = commitments["batches"]
@@ -3579,7 +3579,7 @@ class BatchLedger:
         unknown is never read as empty.
         """
 
-        checked_template, checked_instance = oc._require_bound_contract(
+        checked_template, checked_instance = oc.bound_output_contract(
             template, instance)
         oc.output_name(batch_id, where="batch_id")
         commitments = BatchLedger.for_instance(queue.root, checked_instance).capture()
@@ -3619,7 +3619,7 @@ class BatchLedger:
         """
 
         try:
-            checked_template, checked_instance = oc._require_bound_contract(
+            checked_template, checked_instance = oc.bound_output_contract(
                 template, instance)
         except oc.ProducedOutputError:
             return {"ok": False, "refusal": "template-mismatch"}
@@ -3744,7 +3744,7 @@ class BatchLedger:
         sealed = [oc.validate_descriptor(entry, checked_template,
                                       checked_instance)
                   for entry in entries]
-        if oc._strict_int(filed.get("entry_count"),
+        if oc.strict_output_integer(filed.get("entry_count"),
                        where="batch record entry_count") != len(sealed):
             raise oc.ProducedOutputError("unknown-retain: batch-record-count")
         classes = {"payload": 0, "checkpoint": 0, "temp": 0}
@@ -3754,11 +3754,11 @@ class BatchLedger:
         if not isinstance(stored_classes, Mapping):
             raise oc.ProducedOutputError("unknown-retain: batch-record-classes")
         for cls in classes:
-            if int(classes[cls]) != oc._strict_int(
+            if int(classes[cls]) != oc.strict_output_integer(
                     stored_classes.get(cls),
                     where=f"committed batch {batch_id!r}.{cls}"):
                 raise oc.ProducedOutputError("unknown-retain: batch-record-classes")
-        if sum(classes.values()) != oc._strict_int(
+        if sum(classes.values()) != oc.strict_output_integer(
                 filed.get("total_bytes"), where="batch record total_bytes"):
             raise oc.ProducedOutputError("unknown-retain: batch-record-total")
         if oc.output_manifest_sha256(sealed) != str(filed.get("manifest_digest")):
@@ -3792,7 +3792,7 @@ class BatchLedger:
         """
 
         try:
-            checked_template, checked_instance = oc._require_bound_contract(
+            checked_template, checked_instance = oc.bound_output_contract(
                 template, instance)
         except oc.ProducedOutputError as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -4088,25 +4088,25 @@ class BatchCapture:
     and file points stay explicit; there is no implicit refresh or transaction.
     """
 
-    def __init__(self, ledger, record):
+    def __init__(self, ledger, record) -> None:
         self.ledger = ledger
         self._record = record
         self._batches = record["batches"]
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self._batches)
 
-    def __contains__(self, batch_id):
+    def __contains__(self, batch_id) -> bool:
         return batch_id in self._batches
 
     def __iter__(self):
         return iter(self._batches)
 
-    def __getitem__(self, batch_id):
+    def __getitem__(self, batch_id) -> BatchFacets | None:
         entry = self._batches[batch_id]
         return BatchFacets(entry) if isinstance(entry, Mapping) else None
 
-    def lookup(self, batch_id):
+    def lookup(self, batch_id) -> BatchFacets | None:
         entry = self._batches.get(batch_id)
         return BatchFacets(entry) if isinstance(entry, Mapping) else None
 
@@ -4137,20 +4137,20 @@ class BatchCapture:
 
 
     @property
-    def charges(self):
+    def charges(self) -> dict[str, int]:
         return _class_sums(self._batches)
 
     @property
-    def unretired_staged(self):
+    def unretired_staged(self) -> list[str]:
         return _unretired_staged_batches(self._batches)
 
-    def file(self, *, admission=False, reads=None):
+    def file(self, *, admission=False, reads=None) -> None:
         if reads is not None:
             # Invalidate even when the subsequent canonical write fails (#992).
             reads.forget(self.ledger.path.parent)
         self.ledger.file(self._record if admission else {"batches": self._batches})
 
-    def retirement(self, batch_id, *, reads):
+    def retirement(self, batch_id, *, reads) -> RetirementEntry:
         entry = self._batches[batch_id]
         return RetirementEntry(self, batch_id, dict(entry), reads)
 
@@ -4390,13 +4390,13 @@ class BatchCapture:
 class RetirementEntry(BatchFacets):
     """A selected private entry copy, filed at the existing retirement points."""
 
-    def __init__(self, capture, batch_id, entry, reads):
+    def __init__(self, capture, batch_id, entry, reads) -> None:
         super().__init__(entry)
         self._capture = capture
         self._batch_id = batch_id
         self._reads = reads
 
-    def file(self):
+    def file(self) -> None:
         self._capture._batches[self._batch_id] = self._entry
         self._capture.file(reads=self._reads)
 
@@ -4472,6 +4472,109 @@ def prewrite_inputs(record_path: Path, record: PrewriteFacts | None,
         return (version, dirs, tuple(version_of(item) for item in dirs))
     except oc.ProducedOutputError:
         return None
+
+
+def file_consumer_declaration(queue_root, instance, batch_id, consumer, checked_ref):
+    from . import record_store
+
+    directory = _consumers_dir(queue_root, instance, batch_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    body = {"schema": oc.ORIGIN_CONSUMER_SCHEMA_V1,
+            "consumer_action_key": consumer, "ref": dict(checked_ref)}
+    try:
+        immutable_files.publish_exact(
+            directory / f"{consumer}.json",
+            core._compact_ascii_lf_bytes(body)[:-1].decode("ascii").encode() + b"\n",
+            where="produced-output origin consumer", conflict_error=record_store.PoolContractError)
+    except record_store.PoolContractError as exc:
+        raise oc.ProducedOutputError(f"origin-consumer-conflict: {exc}") from None
+
+
+class ConsumerReleaseFile:
+    """One prepared release body; its queue index is filed before publication."""
+
+    def __init__(self, directory, consumer, body) -> None:
+        self._directory = directory
+        self._consumer = consumer
+        self._body = body
+
+    @classmethod
+    def prepare(cls, queue_root, instance, batch_id, consumer, checked_ref, *,
+                state, by, reason, sealed) -> ConsumerReleaseFile:
+        directory = _released_consumers_dir(queue_root, instance, batch_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        body = {"schema": oc.ORIGIN_CONSUMER_RELEASE_SCHEMA_V1,
+                "consumer_action_key": consumer, "ref": dict(checked_ref),
+                "state": state, "by": str(by), "reason": str(reason),
+                "released_unix": time.time(), **sealed}
+        return cls(directory, consumer, body)
+
+    def file(self) -> None:
+        from . import record_store
+
+        directory, consumer, body = self._directory, self._consumer, self._body
+        try:
+            immutable_files.publish_exact(
+                directory / f"{consumer}.json",
+                core._compact_ascii_lf_bytes(body)[:-1].decode("ascii").encode() + b"\n",
+                where="produced-output origin consumer release", conflict_error=record_store.PoolContractError)
+        except record_store.PoolContractError as exc:
+            raise oc.ProducedOutputError(
+                f"origin-consumer-release-conflict: {exc}") from None
+
+
+def retirement_origin_proof(path, published, observed, sha256, *, where):
+    """A verified re-pin, or the same retained content/refusal observation."""
+    repin, why = _verify_origin_content(path, published, observed, sha256,
+                                       where=where)
+    if repin is not None:
+        return repin
+    changed = (path, _identity_key(observed), sha256) in _CONTENT_REFUSED
+    return {"refused": why, "reason": (
+        "origin-changed" if changed else "origin-unverified")}
+
+
+_INDEXED_ATTEMPTS: set[tuple[str, str, str]] = set()
+_INDEX_MARKED: set[str] = set()
+
+
+def backfill_attempt(queue_root: str | Path, owner: str, scope_name: str) -> bool:
+    """Index one scope the tick listed, if it is not yet (#1053).
+
+    A scope filed before the index existed, or by a producer running code
+    that predates it, has no pointer; the tick files it, idempotently.
+    Returns False when it could not be filed.
+    """
+
+    key = (str(queue_root), owner, scope_name)
+    if key in _INDEXED_ATTEMPTS:
+        return True
+    template_id, dot, nonce = scope_name.rpartition(".")
+    if (not dot or not template_id or len(owner) != 64
+            or len(nonce) != oc.NONCE_HEX_LENGTH or any(c not in oc.OUTPUT_KEY_HEX for c in nonce)):
+        # Not an attempt's scope (an older flat spelling): nothing to index.
+        _INDEXED_ATTEMPTS.add(key)
+        return True
+    pointer = _attempts_root(queue_root) / template_id / f"{owner}.{nonce}"
+    try:
+        if not os.path.lexists(pointer):
+            _index_attempt(queue_root, owner, template_id, nonce)
+    except oc.ProducedOutputError:
+        return False
+    _INDEXED_ATTEMPTS.add(key)
+    return True
+
+
+
+def finish_attempt_index(queue_root, *, complete):
+    if complete and str(queue_root) not in _INDEX_MARKED:
+        try:
+            if not os.path.lexists(_attempts_root(queue_root)
+                                   / oc.ATTEMPT_INDEX_COMPLETE):
+                _mark_attempt_index_complete(queue_root)
+            _INDEX_MARKED.add(str(queue_root))
+        except oc.ProducedOutputError:
+            pass
 
 
 def spool_claims(queue, instance, template, wanted, *, lease_timeout_s):
