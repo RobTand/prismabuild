@@ -1,28 +1,98 @@
 {
+  "acceptance_record": "compatibility_acceptance_2026-10-17.json",
   "base": "416a1eccebaea4ef224e0ddef8f6a1fe424756b4",
   "branch": "sol/refactor-compatibility-corpus-20261016",
   "catalogue": {
-    "additive": 89,
-    "caller_input_cases": 11,
-    "cases": 377,
-    "closed": 62,
+    "additive": 103,
+    "caller_input_cases": 14,
+    "cases": 475,
+    "closed": 64,
     "configuration_source_cases": 3,
-    "goldens": 377,
+    "goldens": 475,
     "historical_absence_observations_without_codec_credit": 14,
-    "historical_records": 740,
-    "kinds": 152,
+    "historical_records": 936,
+    "historical_records_by_generation": {
+      "a17477b2b206-1791745175-65dffa700dfb": 467,
+      "unpublished-bridge-6fa9b780304d": 469
+    },
+    "kinds": 168,
+    "prepared_bridge_is_supported_window_member": false,
     "presence_only": 1,
-    "production_writer_cases": 363
+    "production_writer_cases": 458
+  },
+  "completed_prior_unit": {
+    "actions": 20,
+    "architecture_passed": 8,
+    "node_mapping": "original-node-mapping-unit-03.json",
+    "passed": 1400,
+    "primary_audit": "verified-complete-unit-03.json",
+    "scope": "Earlier 474-case source; not the final 475-case gate.",
+    "selected": 1418,
+    "skipped": 18,
+    "source_pin": "6990d6ac9c592cbdf087504c2af95e4e8285d4d7"
   },
   "evidence_root": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/compatibility-corpus/",
+  "future_integration": [
+    {
+      "change": "Current attempt_outcomes ownership migrates to PoolQueue.attempt_ending and endings.resolve_attempt once. Historical closures retain actual old owners.",
+      "owner": "root C06"
+    },
+    {
+      "change": "New client_channel.py private FD schema 1 has two strict atomic JSON records between same-RUNTIME_ROOT parent and pbrun/recovery. Add an invocation-control disposition bound to actual integrated source. It has no durable queue record or rolling-worker participant.",
+      "evidence": [
+        "active/c06-root-design/frontend-callers-r2/qualification.json",
+        "active/c06-root-design/client-exit-site-audit.json"
+      ],
+      "not_in_this_frozen_native_source": true,
+      "owner": "root C06",
+      "root_current_pin": "928c66dd1",
+      "root_reported_qualified_pin": "1815b58f6"
+    }
+  ],
+  "honest_limits": [
+    "Selected native population executed on dl380g10; sensor/process/custody inputs are explicit private fixture facts, not hardware/drain/performance qualification.",
+    "Optional older ARM capture action 7f607f031a9e06714a8a59c6e255955355011db3a485a2b2c2e9e80fc872bd52 has no acceptance credit and is left unchanged.",
+    "The 221 symbolic field expressions remain visible and pinned; source discovery is not runtime coverage.",
+    "Original a174 Git object remains unavailable; the 1299-file equivalence to qualified 2a source is explicit separate provenance."
+  ],
   "inventory": {
+    "carrier_census": "json-carrier-census-03.json",
     "closed_field_sets": 292,
     "closed_policy_modules": 51,
+    "complete_constructor_reconciliation": "passed",
     "complete_kind_capture_gate": "passed",
-    "evidence": "inventory-v24/",
+    "constructor_dispositions": {
+      "decoder_normalization": 11,
+      "derived_projection": 3,
+      "executed_production_constructor": 227,
+      "identity_domain": 6,
+      "in_memory_state": 8,
+      "operator_control": 68,
+      "qualification_fixture_constructor": 29,
+      "reader_projection": 6
+    },
+    "constructor_reconciliation_evidence": "writer-reconciliation-final-04.json",
+    "dispositions": {
+      "catalogued_adapter": 168,
+      "derived_projection": 3,
+      "identity_domain": 13,
+      "operator_control": 57,
+      "retired_api": 16,
+      "retired_rejected_schema": 1,
+      "test_or_history_reference": 37
+    },
+    "dynamic_schema_sites": 6,
+    "evidence": "inventory-v29/",
+    "exact_constructor_source_reviews": 54,
+    "filename_or_validator_prefix_constructor_exemptions": false,
     "production_constructor_sites": 358,
+    "serialization_sites_all_scopes": 2086,
+    "source_bound_dynamic_schema_reviews": 6,
     "symbolic_field_expressions": 221,
-    "unversioned": 1,
+    "uncovered_case_writers": 0,
+    "uncovered_constructor_sites": 0,
+    "unreviewed_dynamic_schema_sites": 0,
+    "unversioned": 16,
     "wire_ids": 279
   },
   "nonclaims": [
@@ -38,43 +108,187 @@
     "verified-recovery-and-controls-03.json",
     "verified-writer-variants-02.json",
     "verified-backlog-01.json",
-    "audit-refusals-backlog-01.json"
+    "audit-refusals-backlog-01.json",
+    "verified-predeploy-08.json",
+    "verified-builders-01.json",
+    "verified-builders-02.json",
+    "verified-final-writer-captures-01.json",
+    "verified-movement-reproduction-01.json",
+    "verified-generator-stability-and-retired-tier-01.json",
+    "verified-builder-native-01.json",
+    "verified-complete-unit-02.json",
+    "verified-backlog-03-02.json",
+    "verified-canary-builder-01.json",
+    "verified-predeploy-09.json",
+    "verified-complete-unit-03.json",
+    "verified-complete-unit-04.json",
+    "receipt-link-audit-final-04.json"
   ],
-  "qualification_source_pin": "b98348b6f484f0c3e0531394fee336511d9e17cb",
-  "qualification_state": "awaiting corrected complete native gate and primary audit",
+  "production_module_overlap": {
+    "d38_gate": 2,
+    "docker": 1,
+    "fleet_membership": 1,
+    "pb_gc": 1,
+    "pbcampaign": 4,
+    "pbcanary": 1,
+    "pbcanary_legs.leg3": 1,
+    "pbmergeq": 1,
+    "pbrun": 7,
+    "pbstatus": 1,
+    "pbtest_capabilities": 1,
+    "prismabuild._bounded_reader": 1,
+    "prismabuild._gang": 5,
+    "prismabuild._measurement_reservation": 1,
+    "prismabuild.action_edges": 5,
+    "prismabuild.adaptive_cpu": 9,
+    "prismabuild.adaptive_gpu": 2,
+    "prismabuild.box_window": 2,
+    "prismabuild.checkout_recovery": 1,
+    "prismabuild.container_images": 3,
+    "prismabuild.core": 17,
+    "prismabuild.decomposition": 12,
+    "prismabuild.filesystem_floor": 5,
+    "prismabuild.gpu_capacity": 1,
+    "prismabuild.local_resident": 1,
+    "prismabuild.local_scratch": 8,
+    "prismabuild.movement_actions": 2,
+    "prismabuild.pool": 42,
+    "prismabuild.prelaunch_group": 10,
+    "prismabuild.produced_output": 15,
+    "prismabuild.produced_spool": 4,
+    "prismabuild.progress": 3,
+    "prismabuild.publication_canary": 1,
+    "prismabuild.reader_lease": 4,
+    "prismabuild.residency_map": 3,
+    "prismabuild.residency_plan": 5,
+    "prismabuild.resident_sets": 4,
+    "prismabuild.resource_scope": 1,
+    "prismabuild.runtime_publication": 2,
+    "prismabuild.slurm_lane": 4,
+    "prismabuild.storage_tiers": 3,
+    "publish_runtime": 3,
+    "qualify_rollout": 1,
+    "ram_promote": 2,
+    "resource_broker": 3,
+    "seal_and_publish": 1,
+    "shape_gate": 2,
+    "stage_move": 3,
+    "stage_reclaim": 3,
+    "stage_release": 2,
+    "tier_loop": 2,
+    "upgrade_client": 6
+  },
+  "qualification": {
+    "action_keys": [
+      "1a4ddee5e6255777a992992614026584d6aaf7e78d1653be0a21d745007c6c70",
+      "fa6d4ad7240f5be6e74926eaeb05a41313d6784be56bfca8b25b87f8fd3a492b",
+      "47e247841b65a4688ea70bd19126529d9a91525e02db89eaca5c51f5990c0ed5",
+      "3d9ffd6899ed9cd7c5d311654e54ff7119bd96e54f79df61326f7b31bdc42d73",
+      "c18df09fc66dff80b7c35cfc8a87543f6f1c6a608e6c5db6a484e60a7fea8e4b",
+      "abc21fc4828459b0c9ff73d70c0052c4723f6631746ebe3efa9079530849d78a",
+      "a2cfa1926c5b191e1abef24ed6a6dbc627d6982e5cd66f2d8697387e84048b89",
+      "89dd6a5531064bb1fc44a7e56d39de3f868d5271347a41925dfac23e5b4e221d",
+      "3359cc943f067a3d25cccea349d6ee3cc02f99c1bd8c93f9a4ace0eb3bcb3b31",
+      "5b274e975e8a0e048eb9511fa13c71c2a4afbd5ed5bd0703a6ec2668e5643967",
+      "c6f1552ac0d25ec205c0a68a56f21e4c01b84f64e4371bfcfa97776f18f121ae",
+      "72f12b6fd22e6286dc99ec9fb151ff67d778eee92df98b4aa401d5d2c63a64f4",
+      "45b7471f5fc3f053752219b0965bcb42e361d0c0e22bfea0b89500071f9cf46c",
+      "615418d214710017c4bae703f5741475ef434b56ca6c2307e9c4dd6993adca0a",
+      "ecbbd6e0f22d9bee3d3a2294b2b07e9a0bd7c416cb9d6ff6f6bf07f0486dcecc",
+      "0333f9953c0091e450365d0f971c2c109e612359e0a1f1e293d672c848aff737",
+      "ad5f4b5ed9816a7d8d2d09af73397f18b7965beab4b40504c6be520b236cb72e",
+      "e3adcc3675504bb8d998d8d657d5d6240d8c96a0fb7f1ff1424a12db2ee8f068",
+      "b6a43cbb22d6c2b091b504aa19374bc23df755bcb91777ce3d5b680276c2a140",
+      "7f6c166aa8dc0038423adc657b70c771ba04adefa69763b2b33f34aed2f41a2a"
+    ],
+    "all_current_golden_wire_hashes_match_native_proofs": true,
+    "architecture_passed": 8,
+    "case_operations": {
+      "input-reader": 14,
+      "source-reader": 3,
+      "write": 458
+    },
+    "current_case_proofs": 475,
+    "deselected": 0,
+    "native_nodes": 1419,
+    "native_summary": "complete-unit-04-native-summary.json",
+    "no_new_code_or_corpus_after_pin": true,
+    "original_node_mapping": "original-node-mapping-final-04.json",
+    "original_nodes_uniquely_mapped_to_passing_owners": 514,
+    "passed": 1401,
+    "primary_actions": 20,
+    "primary_audit": "verified-complete-unit-04.json",
+    "producer_input_and_executable_check": "receipt-link-audit-final-04.json",
+    "root_standards_check": "unit-04-root-gate-check.json",
+    "skip_reason": "18 existing recovery positive-identity controls require CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN to stat map_files; no waiver or physical abandonment claim",
+    "skipped": 18,
+    "source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
+    "whole_files": 22
+  },
+  "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
+  "qualification_source_tree": "cb52dea829f92a9af1d46afce5820e4793a7d050",
+  "qualification_state": "complete local C31/B11/D10 implementation and qualification at the frozen source pin; root integration and rollout remain separate",
+  "raw_byte_audit": {
+    "evidence": "historical-immutability-audit-04.json",
+    "previous_failed_audit": "historical-immutability-audit-02.json",
+    "prior_fixture_file_versions": 131,
+    "resolution": "Superseded current-source runtime goldens now also have a portable raw archive. Historical deployed and bridge bytes never changed.",
+    "retained_byte_for_byte": 131
+  },
   "remaining_gates": [
-    "corrected complete current-source native population including all eight architecture cases",
-    "constructor branch reconciliation and explicit uncovered-site report",
-    "fresh complete live census plus all rollback bytes",
-    "original 514-node to current-owner mapping",
-    "root independent integration qualification",
-    "B09 bridge publication only with separate authorization, fleet convergence and actual generation designation",
-    "physical G-to-bridge rollback"
+    "Root independent review and integration against its final C01/C05/C06/C28 source and complete caller qualification.",
+    "A future rollout reruns the complete live census, exact target bytes, reachable-protocol checks and supported-window corpus. Saved freshness is not deployment approval.",
+    "B09 requires separate authorization to publish the prepared bridge, actual fleet convergence before the proof leaf, and designation of its actual immutable generation directory, receipt and content digest.",
+    "Actual physical G-to-bridge rollback and all B09 first-deployment/physical gates remain Root work."
   ],
   "requirements": [
     {
       "claim": "Catalogue drives actual production adapters and native populations; retired/control/history kinds have source-bound dispositions.",
+      "evidence": [
+        "verified-complete-unit-04.json",
+        "writer-reconciliation-final-04.json",
+        "original-node-mapping-final-04.json",
+        "unit-04-root-gate-check.json",
+        "verified-predeploy-09.json"
+      ],
       "id": "c31.r01",
+      "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
       "source": [
         "src/prismabuild/record_kinds.py",
         "tests/compat/support/wire_inventory.py",
         "tests/compat/support/reconcile_record_writers.py"
       ],
-      "state": "implemented; final constructor reconciliation pending"
+      "state": "locally qualified: complete source inventory and strict constructor/case reconciliation"
     },
     {
       "claim": "Read-only production-writer fixtures and complete provenance-checked historical closures; no live raw queue/CAS samples.",
+      "evidence": [
+        "verified-complete-unit-04.json",
+        "writer-reconciliation-final-04.json",
+        "original-node-mapping-final-04.json",
+        "unit-04-root-gate-check.json",
+        "verified-predeploy-09.json"
+      ],
       "id": "c31.r02",
+      "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
       "source": [
         "tests/compat/generations/",
         "tests/compat/writer-sources/",
         "tests/compat/support/compat_sources.py"
       ],
-      "state": "implemented; fresh window validation pending"
+      "state": "locally qualified for the observed live-plus-designated window; prepared bridge remains a control"
     },
     {
       "claim": "Every selected case checks golden writer bytes and both actual reader directions or explicit immutable absence; field and real production-mutant controls remain.",
+      "evidence": [
+        "verified-complete-unit-04.json",
+        "writer-reconciliation-final-04.json",
+        "original-node-mapping-final-04.json",
+        "unit-04-root-gate-check.json",
+        "verified-predeploy-09.json"
+      ],
       "id": "c31.r03",
+      "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
       "source": [
         "tests/record_compat_contract.py",
         "tests/test_record_compatibility.py",
@@ -88,33 +302,57 @@
         "tests/test_record_compatibility_decomposition.py",
         "tests/compat/field_sets.json"
       ],
-      "state": "qualification pending"
+      "state": "locally qualified: all real writer/input/source cases and both reader directions, golden bytes, field boundaries and production-mutant controls"
     },
     {
       "claim": "Live generations plus designated rollback; a174 designation only without optional B09 proof member. Prepared bridge has no publication or rollback designation.",
+      "evidence": [
+        "verified-complete-unit-04.json",
+        "writer-reconciliation-final-04.json",
+        "original-node-mapping-final-04.json",
+        "unit-04-root-gate-check.json",
+        "verified-predeploy-09.json"
+      ],
       "id": "c31.r04",
+      "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
       "source": [
         "docs/compatibility_rollback_designation.json",
         "src/prismabuild/compatibility_window.py",
         "tests/compat/support/compat_predeploy.py"
       ],
-      "state": "product choice resolved; local window implemented; rollout gates pending"
+      "state": "local policy and fresh source-window validation complete; integration and rollout gates remain"
     },
     {
+      "evidence": [
+        "verified-complete-unit-04.json",
+        "writer-reconciliation-final-04.json",
+        "original-node-mapping-final-04.json",
+        "unit-04-root-gate-check.json",
+        "verified-predeploy-09.json"
+      ],
       "id": "B11",
+      "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
       "source": [
         "docs/compatibility_corpus_2026-10-16.md"
       ],
-      "state": "implementation present; complete local acceptance pending"
+      "state": "complete local implementation and qualification; root integration pending"
     },
     {
+      "evidence": [
+        "verified-complete-unit-04.json",
+        "writer-reconciliation-final-04.json",
+        "original-node-mapping-final-04.json",
+        "unit-04-root-gate-check.json",
+        "verified-predeploy-09.json"
+      ],
       "id": "D10",
+      "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e",
       "source": [
         "tests/compat/support/compat_isolate.py",
         "tests/compat/support/audit_compat_actions.py",
         "tests/compat/support/map_record_test_nodes.py"
       ],
-      "state": "implementation present; final native/source/import verification pending"
+      "state": "complete local closure, isolation, source/import and both-direction qualification; physical rollout not claimed"
     }
   ],
   "retained_failures": [
@@ -125,7 +363,31 @@
     "recovery-capture-02",
     "protocol-sanity-native-01-controller.log",
     "absence-controls-native-02-controller.log",
-    "controls-trace-03-controller.log"
+    "controls-trace-03-controller.log",
+    "complete-unit-02.json",
+    "generator-order-red-01",
+    "failed-primary-audit-attempt-04.json",
+    "failed-primary-audit-attempt-05.json",
+    "writer-positive-proof-gap-01.json"
   ],
-  "scope": "C31/B11/D10 local implementation; root integration and deployment are separate"
+  "scope": "C31/B11/D10 local implementation; root integration and deployment are separate",
+  "window_capture": {
+    "action_key": "e6110d8b569d1d08249fd94b0d9a3c4ffb9eecad0c233e7cd9f284b9e4366923",
+    "captured_at": "2026-10-17T02:40:36.856874+00:00",
+    "complete": true,
+    "designation": "compatibility_rollback_designation.json",
+    "distinct_live_generations": [
+      "a17477b2b206-1791745175-65dffa700dfb"
+    ],
+    "excluded_offline_host": "DESKTOP-P5UOGNJ",
+    "freshness_claim": "validation was immediate inside this action; a future rollout must recapture",
+    "healthy_live_hosts": [
+      "dl380g10",
+      "sparklina",
+      "sparky"
+    ],
+    "primary_audit": "verified-predeploy-09.json",
+    "qualification": "predeploy-proof-09.json",
+    "qualification_source_pin": "1925ce605158951f58837fb36765e1962dfab77e"
+  }
 }

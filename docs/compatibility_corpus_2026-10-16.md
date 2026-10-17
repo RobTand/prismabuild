@@ -12,7 +12,7 @@ publication, deployment or live-store mutation authority.
 
 `src/prismabuild/record_kinds.py` records 168 kinds with wire identity, location,
 field policy, accepted legacy shapes, actual reader and writer references,
-and 474 cases. These comprise 457 production-writer scenarios, 14 caller inputs
+and 475 cases. These comprise 458 production-writer scenarios, 14 caller inputs
 and three immutable configuration sources. Caller inputs and configurations
 earn no runtime-writer credit. The policies are 64 closed, 103 additive and one
 presence-only safety reader. That last reader deliberately treats malformed
@@ -50,6 +50,12 @@ owner, line and field reviews. Unreviewed or stale dynamic sites fail the gate.
 Discovery alone does not qualify their runtime paths.
 `reconcile_record_writers.py` joins source constructors to actual executed-line
 proofs from verified native logs and reports uncovered constructors explicitly.
+Fifty-four reviews pin each constructor to its source hash, owner, line and
+fields. They distinguish internal normalization and private qualification
+inputs from active writers. Filename
+and validator-prefix exemptions are forbidden. The active canary
+`pbcanary_legs.leg3.manifest_for_run` has its own reproduced writer scenario;
+its incomplete `build()` skeleton earns no standalone wire credit.
 
 ## Supported window and rollback transition
 
@@ -85,7 +91,10 @@ and validates it immediately inside one admitted action. It requires complete,
 fresh evidence, unambiguous live-generation identity and the exact rollback
 directory, receipt and all 1,299 file hashes. A changed live generation requires
 recapture and corpus qualification; it never relabels the rollback target.
-A future rollout must rerun this check. A saved green capture is not permanent
+The latest check at the final source pin captured complete status at
+`2026-10-17T02:40:36.856874+00:00`: dl380g10, sparky and sparklina were healthy
+and live, all reporting the designated a174 commit. The deployed and prepared
+closures remain byte-verified. A future rollout must rerun this check. A saved green capture is not permanent
 support or deployment approval. `pb_gc`'s explicit movement-receipt retirement
 precondition includes every live reader and the designated rollback target.
 
@@ -112,8 +121,8 @@ the actual old consumer still runs in its own deployed closure. They do not
 invent a deployed writer, fill missing siblings from the candidate, or combine
 writer source with the old reader's search path.
 
-There are 474 current golden records and 934 historical records: 466 from the
-live/designated a174 closure and 468 from the prepared bridge control. Fourteen
+There are 475 current golden records and 936 historical records: 467 from the
+live/designated a174 closure and 469 from the prepared bridge control. Fourteen
 immutable participant-absence observations have no codec credit: D38 caller
 inputs, the actual a174 shape-gate absence and the introduced publication-ending
 namespace. A real old queue listing and validator control also observes the new
@@ -132,10 +141,24 @@ were published and terminal; none was duplicated after app cancellation.
 The current complete-unit gate includes all eight protocol files, standalone
 negative controls, window and inventory checks, the whole architecture file,
 Core/result/source-pin consumers and the four corrected fixture files. Its
-source pin, actual population, primary chains and final status are recorded in
-`refactor_c31_status_2026-10-16.json` when verification completes. Earlier green
-cohorts do not qualify later source. Native writer branch proofs are compressed
-into the actual primary stdout log, so they need no newer optional pytest flag.
+verified final population is 1,419 native nodes: 1,401 passes and 18 existing
+recovery capability skips. All eight architecture cases passed, with no
+deselection. Twenty successful primary chains bind the exact frozen source,
+logs, runtime, inputs, CAS receipts and completed native teardown. Producer
+input lists and actual local executable bytes also match. The skip requires
+CAP_CHECKPOINT_RESTORE or CAP_SYS_ADMIN for `map_files` identity; it grants no
+physical abandonment proof. Earlier green cohorts do not qualify later source.
+
+The final frozen source is `1925ce605158951f58837fb36765e1962dfab77e`;
+`complete-unit-04` repeats the relevant 22 whole files after adding the active
+canary writer and correcting source-reference resolution. The previous
+`complete-unit-03` at `6990d6ac9c592cbdf087504c2af95e4e8285d4d7` remains
+unchanged and is audited separately. The final reconciler joins all 475 actual
+case proofs to the golden wire hashes and all 358 production constructor sites:
+227 executed constructors and 131 source-reviewed identity, normalization,
+projection or control sites, with zero uncovered sites or cases. All original
+514 actual-consumer nodes map to unique passing current owners. Native writer
+branch proofs are compressed into the actual primary stdout log, so they need no newer optional pytest flag.
 
 An actual Core change emitted `immutable_files` inside closed
 `worker_runtime.v1`. Twelve reverse reads failed in action
@@ -149,8 +172,8 @@ No historical bytes were repaired to make a test pass. The six superseded
 current-runtime goldens remain byte-for-byte in
 `tests/compat/history-controls/superseded-current-runtime/`; their actual Core
 source digests changed when commit `96daf6252` relocated the generator path in
-a Core comment. Even that comment change alters the attested source hash. They are
-provenance controls, not the final current writer bytes.
+a Core comment. Even that comment change alters the attested source hash.
+They are provenance controls, not the final current writer bytes.
 
 Other controls reject closure tampering, candidate-path poisoning, counterfeit
 code with an old filename, setup-only reader calls, unknown closed fields and
@@ -203,7 +226,7 @@ physical abandonment, broker RootGO or deployed drain safety. Profile cost and
 configuration scenarios qualify their selected consumer boundaries separately
 from full CAS profile-source authentication.
 
-Current and legacy metadata references overlap 51 modules, especially PoolQueue
+Current and legacy metadata references overlap 52 modules, especially PoolQueue
 (42 kinds), Core (17), produced output (15), decomposition (12) and prelaunch
 groups (10). This overlap is an integration review obligation, not a request to
 move those owners or create aliases.
@@ -221,6 +244,12 @@ Root evidence is `active/c06-root-design/frontend-callers-r2/qualification.json`
 and `client-exit-site-audit.json`.
 If C05 changes `immutable_files.py`, regenerate the Core pin and current runtime
 goldens; never rewrite historical runtime goldens.
+
+`compatibility_acceptance_2026-10-17.json` records this local unit only. The
+current staged-read policy and unrelated ledger axes remain unchanged. No
+power-loss durability or staged application workload is qualified here.
+An older optional ARM capture remains uncredited; the final native population
+ran on dl380g10.
 
 Bulk evidence is under
 `/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/compatibility-corpus/`.
