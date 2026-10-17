@@ -177,9 +177,9 @@ def test_repair_between_scan_and_quarantine_survives(
     _foreign_writes_a_broken_record(queue)
     real_file = lifecycle._file_unreadable
 
-    def repair_then_file(path: Path, *, reason: str) -> str | None:
+    def repair_then_file(owned_queue, path: Path, *, reason: str) -> str | None:
         _publish(queue, path.stem)
-        return real_file(queue, path, reason=reason)
+        return real_file(owned_queue, path, reason=reason)
 
     monkeypatch.setattr(lifecycle, "_file_unreadable", repair_then_file)
     assert queue.quarantine_orphans() == []

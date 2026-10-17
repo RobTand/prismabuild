@@ -772,6 +772,10 @@ def conclude(queue, policy: WorkerFinish | ExpiredClaim) -> Path | None:
         return _sweep_finish_tombstones(queue, grace_s=policy.grace_s)
     if isinstance(policy, OrphanQuarantine):
         return _quarantine_orphans(queue)
+    if isinstance(policy, ReadyRecovery):
+        return _sweep_ready_transitions(queue, grace_s=policy.grace_s)
+    if isinstance(policy, WidowedLeaseRecovery):
+        return _sweep_widowed_leases(queue, timeout_s=policy.timeout_s)
     raise TypeError(f"unsupported conclusion policy: {type(policy).__name__}")
 
 
@@ -1145,7 +1149,7 @@ def _sweep_finish_tombstones(
     claimed = queue.records.dir(CLAIMED)
     if not queue.records.state_directory_present(CLAIMED):
         return swept
-    queue._sweep_orphan_requeue_staging(claimed, grace_s=grace_s)
+    _sweep_orphan_requeue_staging(queue, claimed, grace_s=grace_s)
     now = pool._now()
     for tombstone in queue.records.finishing_paths():
         parts = tombstone.name.split(".", 2)
@@ -1499,3 +1503,183 @@ def _quarantine_orphans(queue) -> list[str]:
 @dataclass(frozen=True)
 class OrphanQuarantine:
     pass
+
+
+def _sweep_ready_transitions(queue, *, grace_s: float) -> list[str]:
+    """Recover interrupted READY examinations under the same key lock.
+
+    No reservation belongs to this transition. A live successor is never
+    overwritten, and an ending suppresses a usable source only when its
+    generation is covered. Unknown reads retain the source for another
+    sweep. An unusable orphan source is restored so quarantine can finish
+    publishing its observable ending through the ordinary path.
+    """
+    from . import pool
+    recovered: list[str] = []
+    for captured in sorted(immutable_files.scan_optional(queue.root / "ready-transitions")):
+        parts = captured.name.split(".")
+        if (len(parts) != 5 or parts[-1] != "json"
+                or parts[3] not in {"orphan", "withdraw-ready",
+                                    "origin-released", "dead-input"}
+                or len(parts[0]) != 64
+                or any(c not in "0123456789abcdef" for c in parts[0])):
+            continue
+        key = parts[0]
+        try:
+            age = pool._now() - int(parts[1]) / 1_000_000
+        except ValueError:
+            continue
+        if age <= grace_s:
+            continue
+        with queue.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                continue
+            try:
+                record = record_store.read_document(captured)
+                # A prior helper or sweep already concluded this capture.
+                if record is None and not captured.exists():
+                    continue
+                # List first: a negatively cached missing name must not
+                # hide a successor or a terminal publication on NFS.
+                present = {
+                    state: queue.records.listed_item_present(state, key)
+                    for state in (READY, CLAIMED, DONE, FAILED)
+                }
+                superseded = present[READY] or present[CLAIMED]
+                if not superseded:
+                    # A listed but unreadable/empty ending is unknown,
+                    # including for a stub without generation metadata.
+                    for state in (DONE, FAILED):
+                        if present[state] and record_store.value_or_raise(
+                            queue.records.item(state, key),
+                        ) is None:
+                            raise PoolContractError(f"unreadable terminal record: {state}/{key}")
+                    terminal = frozenset({key}) if present[DONE] or present[FAILED] else frozenset()
+                    superseded = (
+                        queue.terminal_outcome_covers(record, action_key=key,
+                                                    terminal=terminal) is not None
+                        or queue.withdrawal_covers(record, action_key=key) is not None
+                        or (record is not None
+                            and not queue._ready_record_usable(record, key)
+                            and bool(terminal))
+                    )
+                if superseded:
+                    queue._finish_ready_transition(captured)
+                elif not queue._restore_ready_transition(captured, key):
+                    continue
+            except (OSError, PoolContractError, pb.CASUnavailableError):
+                continue
+            recovered.append(key)
+    return recovered
+
+
+def _sweep_widowed_leases(queue, *, timeout_s: float) -> list[str]:
+    """Remove leases in ``claimed/`` whose item record is gone.
+
+    Both cleanup paths unlink the lease beside the record they conclude --
+    ``finish`` on every branch, ``reap_stale`` on every outcome -- so a
+    lease with no record should not exist.  One did: ``daf08495c8bb`` sat
+    in the live queue for seven and a half hours, its pid long dead, with
+    no ``.json`` beside it and no mechanism that would ever look at it
+    again.  How it was widowed is not established, and this sweep is not a
+    theory about that; it is the observation that nothing swept it.
+
+    It reads as live work to anything counting ``claimed/``, which is what
+    an operator reads when asking whether the fleet is busy, and it is the
+    one shape ``quarantine_orphans`` does not cover -- that sweep is over
+    ``ready``, this one is its mirror.
+
+    Aged past ``timeout_s`` before removal, for the same reason
+    ``reap_stale`` waits: ``claim()`` writes the lease *after* the rename,
+    so a lease that briefly has no record beside it may simply be a claim
+    mid-flight in the other direction.  Host tokens still held under the
+    key go back, because a reservation outliving its holder is the
+    starvation bug's shape -- but tier tokens do not, when the key's filed
+    ending pins a staged range: those are meant to outlive the claim, and
+    releasing them leaves occupancy nothing can attribute.
+    """
+    from . import pool
+
+    swept: list[str] = []
+    claimed = queue.records.dir(CLAIMED)
+    if not queue.records.state_directory_present(CLAIMED):
+        return swept
+    now = pool._now()
+    for lease in queue.records.claimed_lease_paths():
+        key = lease.name[: -len(".lease")]
+        with queue.action_transition_lock(key, blocking=False) as acquired:
+            if not acquired:
+                continue
+            if bool(record_store.value_or_raise(queue.records.item_presence(CLAIMED, key))):
+                continue
+            record = record_store.read_document(lease) or {}
+            beat = record.get("heartbeat_unix")
+            try:
+                age = now - float(beat)
+            except (TypeError, ValueError):
+                try:
+                    age = now - lease.stat().st_mtime
+                except OSError:
+                    continue
+            if age <= timeout_s:
+                continue
+            try:
+                host = queue.resolve_claim_holder(key, record)
+            except AmbiguousClaimHolder as exc:
+                print(f"pool lease sweep: {exc}", file=sys.stderr)
+                continue
+            if host is not None:
+                record["host"] = host
+            container_cleanup = queue.cleanup_action_containers(record, scratch_owner_path=lease)
+            if not container_cleanup["complete"]:
+                continue
+            # "Any tokens still held under the key go back" is right for a
+            # host ledger, where a reservation outliving its holder is the
+            # starvation bug.  It is wrong for a tier: a mover's tier
+            # tokens are *meant* to outlive its claim, from ``finish``
+            # until an egress deletes the bytes, so a widowed lease beside
+            # a filed ending that pins must leave them alone.
+            queue._release_reservation(key, host=host,
+                                     keep_tier=queue._filed_pin_holds(key))
+            lease.unlink(missing_ok=True)
+            swept.append(key)
+    return swept
+
+
+def _sweep_orphan_requeue_staging(queue, claimed: Path, *, grace_s: float) -> None:
+    """Unlink only aged staging siblings whose exact tombstone is gone."""
+    from . import pool
+    for source in immutable_files.match_optional(claimed, ".*.tombstone.tmp"):
+        # The hostname is verbatim writer text, not a validated host tag.
+        matched = re.fullmatch(
+            r"\.([0-9a-f]{64})\.(?:0|-?[1-9][0-9]*)\.[^\x00/]*\."
+            r"[1-9][0-9]*\.[0-9a-f]{8}\.tombstone\.tmp",
+            source.name,
+        )
+        if matched is None:
+            continue
+        with queue.action_transition_lock(matched[1], blocking=False) as acquired:
+            if not acquired:
+                continue
+            try:
+                entry = source.lstat()
+                if not stat.S_ISREG(entry.st_mode) or pool._now() - entry.st_mtime <= grace_s:
+                    continue
+                # List under the key lock: a cached negative stat cannot
+                # authorize removing a live publisher's staging source.
+                if source.name[1:-len(".tmp")] in os.listdir(claimed):
+                    continue
+                source.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+
+
+@dataclass(frozen=True)
+class ReadyRecovery:
+    grace_s: float
+
+
+@dataclass(frozen=True)
+class WidowedLeaseRecovery:
+    timeout_s: float
