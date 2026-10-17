@@ -108,7 +108,7 @@ def test_decomposed_refusals_retain_each_childs_diagnosis(tmp_path, monkeypatch,
     work = logical_checkout(tmp_path)
     store = patch_store(monkeypatch, root=tmp_path)
     d38_config.write_text('{"d38_enforce": true}')
-    request = _request(2)
+    request = _request()
     request["common"].update(cwd=str(work),
         demand={"cpu": 1, "mem_gb": 1, "gpu": 1}, here=True)
     records, frozen = pbcampaign.decompose(request, transport="pool", priority=-10)
