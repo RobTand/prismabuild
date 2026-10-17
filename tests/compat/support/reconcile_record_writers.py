@@ -105,12 +105,6 @@ def reconcile(root, inventory, records):
                 row["reason"] = wire.get("classification", {}).get("reason", wire.get("disposition_reason"))
             elif row["constructor_cases"]:
                 row["disposition"] = "executed_production_constructor"
-            elif owner.rsplit(".", 1)[-1].startswith(("validate_", "_validate_")):
-                row["disposition"] = "decoder_normalization"
-                row["reason"] = "reader returns a normalized internal value; publication owner is separately catalogued"
-            elif Path(path).name.startswith(("bench_", "qualify_", "verify_")) or "/pbcanary_legs/" in path or path.endswith("/shape_gate.py"):
-                row["disposition"] = "qualification_fixture_constructor"
-                row["reason"] = "source control fixture; not a fleet generation participant or runtime producer"
             else:
                 row["disposition"] = "uncovered_constructor"
             rows.append(row)
