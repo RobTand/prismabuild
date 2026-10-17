@@ -5826,3 +5826,543 @@ def prepare(args: SubmissionRequest, *, store: FleetStore, display: DisplaySink 
         repository_root,
         early_paths,
         max_bytes=args.checkout_snapshot_max_bytes,
+    )
+    require_untransformed_checkout(repository_root, early_paths)
+    require_checkout_owned_scripts(
+        command, cwd, repository_root=repository_root
+    )
+    portable_checkout = True
+    logical_cwd = cwd.relative_to(repository_root).as_posix() or "."
+
+    # `run_local_action` builds the child's environment from *these* and
+    # nothing else, so an empty dict is not "inherit the caller". Keep the
+    # caller's additions separate as well: placement resolves argv[0] against
+    # the complete declared PATH, while its conservative data-path screen must
+    # not mistake fleet-owned defaults for caller-owned external inputs.
+    variables = {} if args.no_default_env else {
+        "HOME": "/home/rob",
+        "TMPDIR": "/home/rob/tmp",
+        "TRITON_CACHE_DIR": "/home/rob/.triton-cache",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+    caller_variables: dict[str, str] = {}
+    for entry in args.env:
+        if "=" not in entry:
+            raise SubmissionRefused(f"--env expects K=V, got {entry!r}")
+        key, value = entry.split("=", 1)
+        if key in {CONTAINER_OWNER_ENV, CONTAINER_MARKER_ENV}:
+            raise SubmissionRefused(
+                f"pbrun: {key} is derived by the container lifecycle; "
+                "callers may not set it")
+        variables[key] = value
+        caller_variables[key] = value
+
+    demand = _parse_demand(args.demand)
+    require_disk_metadata_scope(demand, transport=args.transport)
+    if args.gpu_memory_gb is not None:
+        try:
+            adaptive_gpu.memory_budget_bytes(args.gpu_memory_gb)
+        except ValueError as exc:
+            args.refuse_argument(f"--gpu-memory-gb: {exc}")
+    if args.gpu:
+        demand.setdefault("gpu", 1)
+        demand.setdefault("mem_gb", 16)
+    demand.setdefault("mem_gb", 4)
+    # Cores are a demand like any other, and the default of one is what makes
+    # this safe to add to a live fleet: every action already in flight keeps
+    # the admission it had.  What it buys is a way for an action that will
+    # take twenty-four cores to SAY twenty-four, which nothing could express
+    # before -- and on 2026-09-04 four `pytest -n 24` runs each declaring
+    # `mem_gb=4` were admitted to one 80-core box together, load average 371.
+    if args.cpus < 1:
+        raise SubmissionRefused("--cpus must be at least 1")
+    demand.setdefault("cpu", args.cpus)
+    if not args.no_default_env:
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            variables.setdefault(name, str(demand["cpu"]))
+    # A produced-output producer's local spool window -- accounted by default
+    # when the environment declares a bound (#905), opt-in otherwise (#747) --
+    # and any bounded local scratch it declares (#911).  Derived like the
+    # template's tier demand, never typed: ``_parse_demand`` has already
+    # refused a typed ``spool_gb``.  With neither declared this adds nothing,
+    # and the demand is byte-for-byte what it was.
+    demand.update(local_disk_terms(variables, transport=args.transport))
+
+    if args.anywhere and args.here:
+        raise SubmissionRefused("--anywhere and --here contradict each other")
+    if args.anywhere and args.tag:
+        # The same contradiction with the second constraint spelled as a
+        # class rather than as a hostname: --anywhere asserts that every
+        # eligible worker can run this action, and --tag says only the boxes
+        # offering that tag may.  Both landed before, and --anywhere won the
+        # part the SLURM lane reads -- an action tagged x86 went to the
+        # default partition as portable work.
+        raise SubmissionRefused(
+            "--anywhere and --tag contradict each other: --anywhere asserts "
+            "every eligible worker can run this action, and --tag admits only "
+            "the boxes offering "
+            f"{', '.join(sorted(set(args.tag)))}.  Drop whichever is not true."
+        )
+    target_evidence = None
+    target_evidence_path = getattr(args, "target_evidence", None)
+    if target_evidence_path is not None:
+        missing = [name for name, present in (
+            ("--measurement", args.measurement),
+            ("--host-class", args.host_class is not None),
+            ("the pool transport", args.transport == "pool")) if not present]
+        if missing:
+            raise SubmissionRefused(
+                "pbrun: --target-evidence needs " + ", ".join(missing) + ": it "
+                "stands in for the local probe of a class-scoped pool "
+                "measurement (#1598)")
+        target_evidence = load_target_evidence(
+            target_evidence_path, host_class=args.host_class)
+        emit_display(display, 
+            f"pbrun: sealing the facts of class {args.host_class} from "
+            f"--target-evidence {target_evidence_path}, not from this box; "
+            "each worker checks them against its own live facts before it runs",
+            channel="stderr", flush=True)
+    require_host_class_scope(
+        measurement=args.measurement, host_class=args.host_class,
+        transport=args.transport, anywhere=args.anywhere,
+    )
+    pool_measurement = args.measurement and args.transport == "pool"
+    pool_measurement_class = pool_measurement and args.host_class is not None
+    # One bounded offer snapshot serves default-class proof and the later
+    # admission advice. Explicit placement and measurements never read it here.
+    q = None
+    offer_snapshot = None
+
+    def offer_queue():
+        nonlocal q, offer_snapshot
+        if q is None:
+            q = pool.PoolQueue(store.queue_root)
+        if offer_snapshot is None:
+            offer_snapshot = bounded_offer_snapshot(q)
+        return offer_snapshot
+
+    # Check original inputs before the collector binds external relative paths.
+    if portable_checkout:
+        require_relocatable_checkout(command[1:], variables, cwd, repository_root=repository_root)
+    # Resolve against the same shim-prefixed PATH the captured action receives.
+    invocation_environment = {
+        **variables, "PATH": f"{wrapper_dir}:{variables.get('PATH') or '/usr/local/bin:/usr/bin:/bin'}"}
+    tags, dependency_queries, command, bound_caller = placement_contract(
+        cwd,
+        explicit=[*args.tag, *([args.host_class] if pool_measurement_class else [])],
+        here=args.here or (pool_measurement and not pool_measurement_class),
+        hostname=socket.gethostname(), portable_checkout=portable_checkout,
+        command=command, repository_root=repository_root,
+        environment=invocation_environment, caller_environment=caller_variables,
+        anywhere=args.anywhere, needs_gpu=bool(demand.get("gpu")),
+        offer_queue=offer_queue if args.transport == "pool" else None,
+    store=store, display=display)
+    variables = {**variables, **bound_caller}
+    tags = pool.normalize_placement_tags(tags)
+    if args.host_class is not None:
+        # The class rides the placement axis, the same way --tag does, so the
+        # action key moves with it and the SLURM lane seals it as
+        # --constraint.  A union rather than a replacement: a hostname pin a
+        # box-local executable earned stays, and the class narrows it further.
+        tags = pool.normalize_placement_tags([*tags, args.host_class])
+    tags = pool.normalize_placement_tags([
+        *tags, *contracts.declared_contract_tags(contracts.Publication(
+            progress=progress_policy,
+            awaited_batch=getattr(args, "awaited_batch", None) is not None
+                and progress_policy is not None,
+            gang=gang is not None, container_images=bool(images),
+            scratch_io=scratch_io_intent(variables, transport=args.transport) is not None,
+            requires_files=bool(requirements)))])
+    require_reachable_runtime(
+        tags, hostname=socket.gethostname(), runtime_root=store.runtime_root)
+    # Other paths retain lazy discovery until submission advice needs it.
+
+    placement = {"required_tags": tags}
+    if args.exclusive and args.transport == "slurm":
+        # SLURM already has a word for the whole device.  ``gpu:1`` and
+        # ``shard:N`` are mutually exclusive requests against one GPU, so
+        # exclusivity is a different GRES name rather than a bigger count, and
+        # the count the pool had to read off worker offers is not needed.
+        demand["gpu"] = args.gpu_capacity or 1
+        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
+    elif args.exclusive:
+        # "All of one box" is a fact about the boxes, and guessing it does not
+        # fail loudly -- it fails as an action nobody can ever claim.  The
+        # default was 4 while sparky declares 2 and sparklina 1, so every
+        # --exclusive submission asked for twice the slots that exist and sat
+        # in ``ready`` forever.  Read it from what the fleet announces, which
+        # needs the placement tags, so it happens after them.
+        demand["gpu"] = args.gpu_capacity or exclusive_gpu_demand(
+            offer_queue(), tags)
+        demand["mem_gb"] = max(int(demand.get("mem_gb", 0)), 16)
+
+    produced_template_opt = getattr(args, "produced_output_template", None)
+    if produced_template_opt is not None:
+        if args.transport != "pool":
+            raise SubmissionRefused(
+                "pbrun: --produced-output-template needs the pull queue: "
+                "tier working-window reservations live in the pool ledgers")
+        from prismabuild import produced_output as produced_mod
+
+        # Bounded pre-read for demand derivation only; freeze captures once
+        # and cross-checks, so a file swapped between here and there fails
+        # closed there rather than sealing drifted demand.
+        try:
+            with open(produced_template_opt, "rb") as handle:
+                raw_pre = handle.read(pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES + 1)
+        except OSError as exc:
+            raise SubmissionRefused(
+                f"pbrun: cannot read --produced-output-template: {exc}") from None
+        if len(raw_pre) > pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES:
+            raise SubmissionRefused(
+                "pbrun: --produced-output-template exceeds "
+                f"{pb.PRODUCED_OUTPUT_TEMPLATE_MAX_BYTES} bytes")
+        try:
+            pre_body = json.loads(raw_pre.decode())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template is not JSON: {exc}") from None
+        try:
+            pre_validated = produced_mod.validate_template(pre_body)
+            pre_terms = produced_mod.owner_demand_terms(pre_validated)
+        except produced_mod.ProducedOutputError as exc:
+            raise SubmissionRefused(
+                f"pbrun: --produced-output-template invalid: {exc}") from None
+        # The explicit user reservation (CPU/memory/GPU) is preserved; the
+        # qualified tier demand is derived from the bounded working window,
+        # never typed by hand and never the durable corpus.
+        for qualified, need in pre_terms.items():
+            if qualified in demand:
+                raise SubmissionRefused(
+                    f"pbrun: --demand must not name tier demand {qualified!r}: "
+                    "the produced-output template derives it")
+            demand[qualified] = int(need)
+
+    if portable_checkout:
+        require_relocatable_checkout(
+            command[:1], {}, cwd, repository_root=repository_root
+        )
+
+    # A CPU slot must not be able to run GPU work.  The pool's whole claim is
+    # that the ledger knows what is on each accelerator, and that claim was
+    # false in one direction: an action submitted WITHOUT ``--gpu`` inherited a
+    # visible device and ran CUDA anyway.  A pytest suite queued as a 4 GB CPU
+    # action executed its ``skipif(not torch.cuda.is_available())`` tests on a
+    # box whose GPU slots were held by somebody else -- work the ledger could
+    # not see, contending with work it had promised exclusivity to.
+    #
+    # The rule is enforced the way ``require_pool.py`` enforces its own escape
+    # hatch, by the kernel rather than by belief: with no device visible the
+    # child cannot do GPU work, so a mis-declared action fails instead of
+    # stealing.  Declaring a device on a slot that did not reserve one is the
+    # mis-declaration itself, so it is refused rather than honoured -- the fix
+    # is ``--gpu``, and the message says so.  This applies under
+    # ``--no-default-env`` too: an empty environment means every device is
+    # visible, which is the case this exists for.
+    declared = variables.get("CUDA_VISIBLE_DEVICES")
+    try:
+        require_gpu_memory_scope(
+            gpu_memory_gb=args.gpu_memory_gb, gpu=bool(demand.get("gpu")),
+            transport=args.transport,
+        )
+    except ValueError as exc:
+        args.refuse_argument(str(exc))
+    try:
+        require_progress_scope(
+            progress=progress_policy, transport=args.transport)
+        require_awaited_batch_scope(
+            awaited=getattr(args, "awaited_batch", None),
+            progress=progress_policy, transport=args.transport)
+    except ValueError as exc:
+        args.refuse_argument(str(exc))
+    if not demand.get("gpu"):
+        if declared not in (None, ""):
+            raise SubmissionRefused(
+                f"pbrun: this action reserves no GPU but sets "
+                f"CUDA_VISIBLE_DEVICES={declared!r}.\n"
+                "A CPU slot that touches the GPU is work the ledger cannot "
+                "see, contending with work it promised exclusivity to.\n"
+                "Add --gpu (and --gpu-capacity N if you need more than one "
+                "slot), or drop the variable.")
+        variables["CUDA_VISIBLE_DEVICES"] = ""
+
+    template = freeze(
+        command=command,
+        cwd=cwd,
+        logical_cwd=logical_cwd,
+        demand=demand,
+        placement=placement,
+        variables=variables,
+        determinism=determinism,
+        retry_policy=retry_policy,
+        host_class=args.host_class,
+        measurement=args.measurement,
+        transport=args.transport,
+        pool_measurement_class=bool(pool_measurement_class),
+        target_evidence=target_evidence,
+        # A deferred submission's manifest is built at release (#913); its
+        # static part is ingested beside the template, never sealed into it.
+        data_manifest_path=(None if getattr(args, "after", None)
+                            else args.data_manifest),
+        produced_output_template_path=produced_template_opt,
+        checkout_snapshot_max_bytes=args.checkout_snapshot_max_bytes,
+        snapshot_refs=args.snapshot_ref,
+        exclusive=args.exclusive,
+        gpu_memory_gb=args.gpu_memory_gb,
+        execution_timeout_s=args.timeout_s,
+        progress=progress_policy,
+        awaited_batch=getattr(args, "awaited_batch", None),
+        profile=args.profile,
+        container_image_refs=images,
+        d38_namespace=(d38_gate.load_namespace(args.d38_namespace)[1]
+                       if getattr(args, "d38_namespace", None) else None),
+        wrapper_dir=wrapper_dir,
+        dependency_queries=dependency_queries,
+        gang=gang,
+        resident_set=getattr(args, "resident_set", None),
+        requires_files=requirements,
+    store=store)
+    return {
+        "args": args,
+        "template": template,
+        "cwd": cwd,
+        "portable_checkout": portable_checkout,
+        "offer_queue": offer_queue,
+    }
+
+
+def announce_placement(
+    queue,
+    action: Mapping[str, object],
+    *,
+    args: SubmissionRequest,
+    cwd: Path,
+    portable_checkout: bool,
+display: DisplaySink = discard_display) -> None:
+    """Say how this work will be placed, and refuse it if it cannot be.
+
+    Four notices and one refusal, all of them about one intent -- the tags,
+    the GPU need and the demand -- which is why they are one function.  A
+    decomposed campaign calls it once, before it publishes any child: the
+    children of one plan share their whole placement, so asking the census N
+    times would print the same paragraph N times and answer it N times.
+
+    The refusal is the part that must not be skipped.  A required tag no box
+    has offered is not a slow submission -- the item matches no worker's
+    filter, so it sits in ``ready`` while every idle worker polls past it --
+    and a campaign that published forty such children would have forty of
+    them to withdraw.
+    """
+
+    params = action["params"]
+    tags = params["placement"]["required_tags"]
+    demand = params["demand"]
+    progress_policy = args.progress_policy
+    intent = {"tags": tags, "needs_gpu": bool(demand.get("gpu")), "resources": demand}
+    if params.get("container_images"):
+        # The sealed requirement, so every verdict below -- placeable,
+        # placement_hosts, the refusal -- reads the same matcher a claim does.
+        intent["container_images"] = list(params["container_images"])
+    if params.get("interpreter"):
+        # Same authority for the interpreter (#1263): the probe carries the
+        # sealed path and the capability tag publish will add, so placeable
+        # answers for the row it is about to write.
+        intent["interpreter"] = str(params["interpreter"])
+        intent["tags"] = [*tags, contracts.INTERPRETER_TAG]
+    if params.get("local_dependencies"):
+        intent["local_dependencies"] = dict(params["local_dependencies"])
+    if params.get("requires_files"):
+        # Same authority for the digest requirements (#1495): the probe
+        # carries the sealed declarations and the capability tag publish adds, so
+        # placeable answers for the row it is about to write.
+        intent["requires_files"] = [dict(entry) for entry in params["requires_files"]]
+        intent["tags"] = pool.normalize_placement_tags(
+            [*tags, contracts.DEPENDENCY_DIGEST_TAG])
+    # Say how wide this action is before saying it was queued.  A pin is a
+    # consequence of the checkout path, and nothing used to report it, so a
+    # submitter narrowed the fleet to one box without being told.
+    notice = pin_notice(
+        queue,
+        intent,
+        cwd=cwd,
+        hostname=socket.gethostname(),
+        here=args.here,
+        portable_checkout=portable_checkout,
+    )
+    if notice:
+        emit_display(display, notice, channel="stderr", flush=True)
+
+    # An offer can be fresh but stamped ahead of this submitter. Keep that
+    # discrepancy visible, including an offer too far ahead to use at all.
+    for host, skew in queue.offer_clock_skews().items():
+        disposition = "tolerated" if skew <= pool.OFFER_FUTURE_TOLERANCE_S else "ignored"
+        emit_display(display, 
+            f"pbrun: {host} offer announced {skew:.3f}s in the future "
+            f"(clock skew; {disposition}, limit {pool.OFFER_FUTURE_TOLERANCE_S:g}s)",
+            channel="stderr", flush=True,
+        )
+
+    # Before the placement verdicts, not after.  ``intent`` now requires
+    # ``PROGRESS_TAG``, so on a fleet that offers none the generic "no recorded
+    # worker can run this action" would fire first and name a tag the operator
+    # never typed.  Asked of the boxes eligible on every OTHER tag, which is
+    # also the honest question: of the boxes that could run this work, which
+    # can keep its stall policy?
+    progress_tags = contracts.declared_contract_tags(contracts.Publication(
+        progress=progress_policy,
+        awaited_batch=progress_policy is not None
+            and getattr(args, "awaited_batch", None) is not None))
+    progress_notice = progress_contract_notice(
+        queue,
+        {**intent, "tags": [
+            t for t in tags
+            if t not in progress_tags
+        ]},
+        policy=progress_policy,
+        requested_timeout_s=args.timeout_s,
+        awaited_batch=getattr(args, "awaited_batch", None),
+    )
+    if progress_notice:
+        emit_display(display, progress_notice, channel="stderr", flush=True)
+
+    image_notice = container_image_notice(queue, intent)
+    if image_notice:
+        emit_display(display, image_notice, channel="stderr", flush=True)
+
+    # Refuse work the RECORDED fleet cannot run, at the one moment the caller
+    # is still watching.  A required tag no box has offered is not a slow
+    # submission: the item matches no worker's placement filter, so it sits in
+    # `ready` -- counted, reported as pending -- while every idle worker polls
+    # past it until `--wait-s` expires a day later.
+    #
+    # Capability and liveness are deliberately different reads of the SAME
+    # matcher.  Worker offers expire for claiming and fleet-width diagnostics,
+    # but the latest record from each host remains evidence of what that box
+    # can fit.  dl380g10 and gx10-6b77 have both spent longer than the 120 s TTL
+    # inside work; while they were between announcements a fresh nonmatching
+    # offer made ``placeable`` answer False and pbrun rejected a caller willing
+    # to wait two hours.  An unbounded age reads retained capability and lets
+    # ``--wait-s`` own an offline/busy box.  ``None`` still means no worker has
+    # ever announced and stays a warning, so a fleet whose loops predate the
+    # registry can submit unchecked.
+    #
+    # Images are one more term in the same matcher, and they make the refusal
+    # sharper rather than a new kind of check: a declared reference no
+    # recorded eligible offer positively reports is exactly as unplaceable as
+    # a tag no box offers, and it fails here instead of in the container
+    # (#714).
+    # The interpreter's own verdict first (#1266 review): absent raises below
+    # with the path named; unknown publishes with a notice and probes the
+    # rest of the intent WITHOUT the interpreter requirement, because the
+    # first submission of any path is unknown by construction and refusing it
+    # would deadlock the tool on its own first use -- the claim-time stat is
+    # the guard, and the fleet's next poll answers for the path.
+    probe_intent = intent
+    if intent.get("interpreter"):
+        verdict, path = interpreter_submission_verdict(queue, intent)
+        if verdict == "unknown":
+            emit_display(display, f"pbrun: no worker has answered for the interpreter "
+                  f"{path} yet; the action publishes, the claim-time check "
+                  "guards every box, and the fleet's next poll places it "
+                  "where the path lives.", channel="stderr", flush=True)
+            probe_intent = {
+                name: value for name, value in intent.items()
+                if name != "interpreter"}
+            probe_intent["tags"] = [
+                tag for tag in probe_intent.get("tags") or []
+                if tag != contracts.INTERPRETER_TAG]
+    # The digest requirements' verdict (#1495), asked where the caller is
+    # still watching, in the interpreter's shape (#1266): a fleet that offers
+    # no dependency-digest capability is refused -- nothing can ever claim
+    # the row, and unlike a first path there is no first use that must
+    # publish; a unanimous absent is refused naming the paths; a capable box
+    # that has not answered for a path yet publishes with a notice, because
+    # the claim gate hashes the bytes on every box and the fleet's next poll
+    # answers for them.
+    if intent.get("requires_files"):
+        verdict = queue.dependency_placement_verdict(probe_intent)
+        paths = ", ".join(sorted(
+            str(entry["path"]) for entry in intent["requires_files"]))
+        if verdict == "unknown_capability":
+            raise SubmissionRefused(
+                "pbrun: no recorded worker offers the "
+                f"{contracts.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"nothing can ever claim this action's pinned dependencies "
+                f"({paths}); run a worker generation that carries the "
+                "contract before submitting it (#1495)\n"
+                + "\n".join(contracts.contract_remedies([contracts.DEPENDENCY_DIGEST_TAG])))
+        if verdict == "absent":
+            raise SubmissionRefused(
+                "pbrun: every recorded worker that could claim this action "
+                f"names its required dependencies absent: {paths} (#1495)")
+        if verdict == "unknown_paths":
+            emit_display(display, 
+                "pbrun: no worker has answered for the required "
+                f"dependencies ({paths}) yet; the action publishes, the "
+                "claim-time digest check guards every box, and the fleet's "
+                "next poll places it where the bytes live.",
+                channel="stderr", flush=True)
+            probe_intent = {
+                name: value for name, value in probe_intent.items()
+                if name != "requires_files"}
+            probe_intent["tags"] = [tag for tag in probe_intent.get("tags") or []
+                                    if tag != contracts.DEPENDENCY_DIGEST_TAG]
+    live_verdict = queue.placeable(probe_intent)
+    capability_verdict = queue.placeable(
+        probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+    if capability_verdict is False:
+        # The counterfactuals below start from ``probe_intent``, the intent the
+        # verdict above was asked of (#1595).  An unknown interpreter is
+        # already out of it.  Starting from ``intent`` kept the interpreter
+        # requirement, so every question failed on the interpreter and the
+        # missing image or capability was never named.  The interpreter keeps
+        # its own verdict, asked of ``intent`` below.
+        images = (queue.image_placement_census(
+            probe_intent, max_age_s=RECORDED_OFFER_MAX_AGE_S)
+            if intent.get("container_images") else None)
+        image_blocked = bool(images and images["capable"])
+        capability_blocked = bool(images and images["eligible"] and not image_blocked)
+        image_line = ""
+        if image_blocked:
+            image_line = (
+                "  container images: "
+                + ", ".join(intent["container_images"])
+                + " (no recorded eligible worker reports "
+                + ("it" if len(intent["container_images"]) == 1 else "them")
+                + ")\n")
+        elif capability_blocked:
+            image_line = (
+                "  container images: " + ", ".join(intent["container_images"])
+                + f" (no eligible worker offers {contracts.CONTAINER_IMAGE_TAG})\n")
+        interpreter_line = ""
+        if intent.get("interpreter"):
+            # Absent is unanimous and final (#1266 review): every capable
+            # eligible offer answered, and every answer named the path
+            # missing.  Anything less is unknown, which publishes with a
+            # notice instead of refusing -- a first submission is unknown by
+            # construction, and the claim-time stat remains the guard.
+            verdict, _path = interpreter_submission_verdict(queue, intent)
+            if verdict == "absent":
+                interpreter_line = (
+                    "  interpreter:    " + str(intent["interpreter"])
+                    + " (every recorded eligible worker names it absent)\n")
+        capacity_line = ("" if image_blocked or capability_blocked else
+                         placement_capacity_notice(queue, probe_intent))
+        remedy = (
+            "Load or pull the image on a box that offers these tags and the "
+            f"{contracts.CONTAINER_IMAGE_TAG} capability, then wait for its worker's "
+            "next inventory refresh. An image declaration is a claim-time "
+            "requirement, so a box that cannot positively show it will not "
+            "run the action."
+            if image_line else
+            "Fix the listed capacity demand or required tags, or wait for an "
+            "offer that can fit them."
+        )
+        if capability_blocked:
+            remedy = (f"Start a worker offering {contracts.CONTAINER_IMAGE_TAG} "
+                      "on an eligible box; its image inventory must then "
+                      "report the declared reference.")
+        if interpreter_line:
+            remedy = (
