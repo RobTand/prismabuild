@@ -7152,7 +7152,11 @@ def publish_consumer_row(q, action: Mapping[str, object],
                 "produced_output_template"]
         if before_publish is not None:
             before_publish()
-        queued_path, generation = publish_or_attach(q, publication, key=key, display=display)
+        if producer is not None:
+            queued_path = publish_or_refuse(q, publication)
+            generation = published_generation(q, key, queued_path)
+        else:
+            queued_path, generation = publish_or_attach(q, publication, key=key, display=display)
     return queued_path, generation
 
 
@@ -7252,7 +7256,12 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
                          transport=args.transport, store=store, display=display)
     request_path = prepared.get("request_path") or cas.publish_action_request(action)
 
-    cached = cas.lookup(action) if args.detach else None
+    # A movement receipt describes an earlier host-side effect; a deferred
+    # release must still file its generation. Compiled producers retain their
+    # existing queue/SLURM dispatch semantics. Only ordinary client submissions
+    # and decomposed children use the detached cache and attachment shortcuts.
+    detached_probe = args.detach and producer is None and prepared.get("movement") is None and not gate_before_request
+    cached = cas.lookup(action) if detached_probe else None
     if cached is not None:
         identity = action_client.CachedClientIdentity(key, store.queue_root, Path(cas.root),
             action_client.ClientTransport(args.transport), cached['result']['sha256'])
@@ -7273,7 +7282,7 @@ def _publish_sealed(action, prepared, *, args: SubmissionRequest, store: FleetSt
         )), flush=True)
         return report.finish(action_client.ClientSubmitted(identity))
 
-    if args.detach:
+    if detached_probe:
         # Not in the CAS, but perhaps already running: a campaign whose waiter
         # died is re-run to find out where it got to, and every row still on a
         # node must be attached to rather than submitted again.

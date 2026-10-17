@@ -120,6 +120,17 @@ def test_gpu_children_cannot_skip_enforced_d38(tmp_path, monkeypatch, d38_config
     assert len(records) == len(frozen["children"])
     assert {row["status"] for row in records} == {"refused"}
     assert not list((store.queue_root / pool.READY).glob("*.json"))
+    from prismabuild.submission_types import ProducerPublication
+    native = ProducerPublication(worker_script=store.wrapper_dir / "prismabuild_worker.py",
+        checkout_root=None, tags=(), needs_gpu=True, resources={"cpu": 1, "mem_gb": 1},
+        retry_safe=None, lane_root=None, job_entry=store.wrapper_dir / "slurm_job.py")
+    action = frozen["children"][0]
+    cas = core.PrismaBuildCAS(store.cas_root)
+    result = submission.submit_producer(action, cas=cas,
+        request_path=cas.publish_action_request(action), producer=native,
+        request=SubmissionRequest(cwd=str(work), detach=True), store=store)
+    assert isinstance(result, SubmissionRefused)
+    assert not list((store.queue_root / pool.READY).glob("*.json"))
 
 
 def test_staged_publication_reaches_the_same_gate_and_ownership_transaction(tmp_path, monkeypatch):

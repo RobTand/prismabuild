@@ -339,7 +339,7 @@ def test_a_manifest_row_is_refused_before_anything_is_sealed(tmp_path):
 def test_a_producer_submitting_a_sealed_action_keeps_the_requirement(tmp_path):
     action = {"action_key": "c" * 64, "params": {"container_images": [REF_A]}}
     fleet_submit.submit(
-        action, cas=SimpleNamespace(root=tmp_path / "cas", lookup=lambda action: None),
+        action, cas=SimpleNamespace(root=tmp_path / "cas"),
         request_path=tmp_path / "request.json", transport="pool",
         worker_script=tmp_path / "worker.py", checkout_root=tmp_path / "co",
         tags=["gb10"], resources={"cpu": 1, "mem_gb": 1},
@@ -355,7 +355,7 @@ def test_a_producer_cannot_smuggle_an_image_requirement_onto_slurm(tmp_path):
     action = {"action_key": "c" * 64, "params": {"container_images": [REF_A]}}
     with pytest.raises(fleet_submit.SubmitRefused, match="SLURM"):
         fleet_submit.submit(
-            action, cas=SimpleNamespace(root=tmp_path / "cas", lookup=lambda action: None),
+            action, cas=SimpleNamespace(root=tmp_path / "cas"),
             request_path=tmp_path / "request.json", transport="slurm",
             worker_script=tmp_path / "worker.py",
             checkout_root=tmp_path / "co", tags=["gb10"],
