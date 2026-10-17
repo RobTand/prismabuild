@@ -683,7 +683,7 @@ class CensusMemo:
     version is unchanged skips its read and parse, and the version is taken
     with ``fstat`` on the descriptor the pass just opened.  It is the
     publication gate's own reuse fence (``kept_reads.metadata_version``,
-    #761): device, inode, size, mtime and ctime.
+    #761): the canonical ``FileVersion``, including observed mode.
 
     A read that failed is never remembered: unreadable stays freshly
     unreadable.  A claim's derived stage paths are remembered by claim key,
@@ -791,8 +791,8 @@ class CensusIndex(CensusMemo):
 
     Two layers, both fences the census already trusts:
 
-    * **A document** is reused while its file version holds -- device,
-      inode, size, mtime and ctime, taken with ``fstat`` on the descriptor
+    * **A document** is reused while its canonical ``FileVersion`` holds,
+      including observed mode, taken with ``fstat`` on the descriptor
       that read it (:class:`CensusMemo`, the publication gate's #761 fence).
     * **A directory** is not listed again while its ``lstat`` version equals
       a stamp taken before its last listing, and no document in it is opened
@@ -930,7 +930,7 @@ class DirectoryRecords:
     :func:`kept_reads.filesystem_trust.directory_before`, so a directory nothing was
     filed in since is not listed, and a record whose version holds is not
     read.  Every writer of these records files by rename
-    (``pool._write_json_atomic``), which is what both fences stand on.
+    (``RecordStore.replace_record_at``), which is what both fences stand on.
 
     A read that raises is never remembered, and the raise reaches the caller
     exactly as the plain read's would.  One reader keeps one meaning per
@@ -945,7 +945,7 @@ class DirectoryRecords:
     unlink can be given the unlinked file's inode number, so neither the name
     nor the listing's inode number says a record is unchanged.  The #761
     version, ctime included, does -- once its clock tick has passed: two
-    files in one tick can share all five fields, so a version is kept only
+    files in one tick can share every field, so a version is kept only
     under :func:`kept_reads.filesystem_trust.file_version`'s rule (#1045).
     """
 

@@ -210,7 +210,9 @@ def _checkout_recovery_terminal(queue: pool.PoolQueue, key: str, proc: Path) -> 
                 or float(heartbeat) > time.time() - pool.LEASE_TIMEOUT_S):
             _checkout_recovery_refuse('present lease is malformed or live')
         lifetime['lease'] = dict(sha256=lease_sha,
-                                identity=_checkout_recovery_identity(queue.records.lease_file_metadata(key)))
+                                identity=_checkout_recovery_identity(
+                                    queue.records.lease_file_metadata(key),
+                                ))
     pids = set()
     for source in (record, lease or {}):
         for field in ('pid', 'child_pid'):

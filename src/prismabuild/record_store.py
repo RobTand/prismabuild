@@ -263,13 +263,13 @@ def _read_json_fresh(path: Path) -> dict[str, object] | None:
 def read_bounded_document(
     path: Path, *, max_bytes: int | None
 ) -> dict[str, object] | None:
-    """``_read_json`` through Core's bounded, no-follow replaced-leaf reader.
+    """``_read_json`` through the native bounded, no-follow replaced-leaf reader.
 
     ``max_bytes is None`` is exactly :func:`_read_json`, so every uncapped
     caller keeps its behaviour.  With a cap the record is read as a stable,
     non-symlink regular file no larger than the bound (the writer replaces
     the name with ``os.replace``, so the replaced-leaf retry is the correct
-    one) and decoded by Core's strict JSON reader, which refuses duplicate
+    one) and decoded by the digest owner's strict JSON reader, which refuses duplicate
     keys and non-finite numbers.  The mutable queue rows are writable by
     design, so no read-only requirement is imposed here; the immutable
     attempt logs and CAS objects keep their own stricter checks (#1446).
@@ -297,7 +297,11 @@ def read_bounded_document(
     return value
 
 
-def read_confirmed_document(path: Path, *, max_bytes: int | None = None) -> dict[str, object] | None:
+def read_confirmed_document(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> dict[str, object] | None:
     """Read after an error-visible directory refresh; never trust a cached miss."""
     names = os.listdir(path.parent)
     if path.name not in names:
@@ -910,7 +914,9 @@ class RecordStore:
         return attempt
 
     def late_finish_path(self, record: Mapping[str, object]) -> Path:
-        identity = digest_primitives.canonical_sha256({field: record.get(field) for field in _CLAIM_IDENTITY})
+        identity = digest_primitives.canonical_sha256(
+            {field: record.get(field) for field in _CLAIM_IDENTITY},
+        )
         return self.dir(CLAIMED) / f"{record['action_key']}.{identity}{LATE_FINISH_SUFFIX}"
 
     def released_origin_consumers_dir(self) -> Path:
@@ -1008,7 +1014,13 @@ class RecordStore:
             return Unknown("record-unreadable", path, exc)
         return Absent() if value is None else Present(value)
 
-    def confirmed_item(self, state: str, key: str, *, max_bytes: int | None = None) -> ReadResult[JsonRecord]:
+    def confirmed_item(
+        self,
+        state: str,
+        key: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> ReadResult[JsonRecord]:
         path = self.item_path(state, key)
         try:
             value = read_confirmed_document(path, max_bytes=max_bytes)
@@ -1178,7 +1190,9 @@ class RecordStore:
         return self.released_origin_consumers_dir() / f"{consumer}.{digest}.json"
 
     def residency_supersession_path(self, consumer: str, digest: str) -> Path:
-        return self.residency_plan_path(consumer).parent / "superseded" / f"{consumer}.{digest}.superseded.json"
+        return self.residency_plan_path(
+            consumer,
+        ).parent / "superseded" / f"{consumer}.{digest}.superseded.json"
 
     @staticmethod
     def lane_unreadable_name(path: Path, stamp: int, token: str) -> str:
@@ -1205,7 +1219,10 @@ class RecordStore:
         return self.mover_archive_dir() / f"{digest}.json"
 
     def withdrawn_finish_path(self, key: str, record: Mapping[str, object]) -> Path:
-        return self.superseded_dir() / f"{key}.{self.attempt_generation(record)}.withdrawn-finish.json"
+        return self.superseded_dir(
+        ) / f"{key}.{self.attempt_generation(
+            record,
+        )}.withdrawn-finish.json"
 
     @staticmethod
     def summary_lock_path(path: Path) -> Path:
@@ -1531,7 +1548,10 @@ class RecordStore:
     def maintenance_key_live(self, key: str, *, error_type) -> bool:
         return any(self.maintenance_live_key(entry.name) == key
                    for state in (READY, CLAIMED)
-                   for entry in immutable_files.scan_custodied(self.root / state, error_type=error_type))
+                   for entry in immutable_files.scan_custodied(
+                       self.root / state,
+                       error_type=error_type,
+                   ))
 
     def maintenance_key_states(self, *, error_type) -> tuple[set[str], dict[str, float]]:
         live: set[str] = set()
@@ -2468,8 +2488,6 @@ class RecordStore:
             directory, select=_directory_entry, parse=_listed)]
 
 
-
-
 def _write_json(
     path: Path, payload: Mapping[str, object], *, make_parent: bool = True,
     trailing_newline: bool = False, text: str = "canonical",
@@ -2574,7 +2592,6 @@ def key_shaped(value: object) -> bool:
             and all(character in "0123456789abcdef" for character in value))
 
 
-
 #: That event's file, ``residency-events/<consumer>/<host>`` + this: beside
 #: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
 #: one writer, the host's tier loop, and a reader is not it.
@@ -2618,8 +2635,6 @@ class ClaimedNames:
 
     def blocks(self, key: str) -> bool:
         return f"{key}.json" in self.names or _claimed_name_blocks(self.finishes, key)
-
-
 
 
 def _inspection_json_keys_at(directory: Path) -> list[str]:
@@ -2784,7 +2799,6 @@ def _retirement_entry(entry) -> bool:
     return entry.name in (MOVERS_RETIREMENT_CHECKPOINT, MOVERS_RETIREMENT_STATE)
 
 
-
 def _json_name(name: str) -> bool:
     return name.endswith(".json")
 
@@ -2847,23 +2861,12 @@ _RELEASE_FILING = re.compile(
     r'\A(?P<key>[0-9a-f]{64})\.(?P<when>[0-9]+\.[0-9]{6})\.unstarted-claim\.json\Z')
 
 
-
 _SUPERSEDED_MARKER_SUFFIX = ".superseded.json"
 
 #: The characters a reaped plan body's reason slug is built from
 #: (``residency_plan._retired_slug``).
 _SLUG_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyz0123456789-")
-
-
-
-
-
-
-
-
-
-
 
 
 def _active_marker_key(name: str) -> str | None:

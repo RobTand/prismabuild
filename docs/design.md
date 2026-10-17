@@ -1842,7 +1842,7 @@ public name:
   for each input named in `input_limits`, its owned bytes under that cap. Every
   read is bounded before it is consumed: the selected terminal row, the
   selected immutable attempt, that attempt's stdout, the sealed request and
-  the exact execution receipt each go through Core's stable, no-follow
+  the exact execution receipt each go through the native stable, no-follow
   regular-file reader. The result cap is applied before the payload is opened
   or hashed, the selected attempt's stdout is the only log read, and no
   historical attempt expansion or canonical action-winner fallback runs. The
@@ -3200,8 +3200,9 @@ than claiming a zero-gap filesystem snapshot.
 shared no-follow directory operations. Its temporary inode is mode 0444 and
 fsynced before linking through the held parent descriptor. It fsyncs the parent,
 checks the winning inode and directory identity, and removes its temporary name.
-Core retains its stable regular-read algorithms and exports the actual shared
-CASTamperError and CASUnavailableError classes. With no `where`, publication's
+The native owner also holds the stable regular-read algorithms. Core
+exports the identical shared CASTamperError and CASUnavailableError classes. With no
+`where`, publication's
 body retains raw OSError; a supplied name retains its existing adaptation and
 cause. The directory-open and cleanup boundaries keep their own current errors.
 The isolated local-scratch producer seals the new sibling with recorder,
@@ -7959,8 +7960,8 @@ they are a layout migration; this settles it on the current layout.
 
 The publication gate's range-directory hint (#1028): the in-flight-partial
 census a re-decision passes lists its range directory once per
-`_trusted_directory_stamp` -- the stamp taken before the scan, the listing
-remembered only while a fresh directory version (`_current_directory_version`,
+`FilesystemTrust.directory_before` -- the stamp taken before the scan, the listing
+remembered only while a fresh directory version (`FilesystemTrust.directory_current`,
 the #1004/#1208 fence) still equals it -- and every name revalidates with
 that one directory version, re-listing only a directory that moved. A
 version the directory's own clock tick refuses, and a scan the directory
@@ -8229,12 +8230,11 @@ recorded the loop at about 99% of one core.
 The loop now keeps what it read from one cycle to the next, on its
 `ReceiptCache`, in two readers that share one rule:
 
-- `stage_release.DirectoryRecords` holds the queue records: the receipt
-  directories, `ready/`, `claimed/`, the `withdrawn/` names and the RAM tier's
-  fragment records. Every step of a cycle that reads `ready/` or `claimed/`
-  reads through it (`stage_release.queue_records`, served for the cycle by
-  `queue_records_from`), so the three reads per cycle are one.
-- `stage_release.CensusIndex` holds the residency census: each namespace's
+- `kept_reads.DirectoryRecords` supplies retained evidence to the cycle's
+  explicit `RecordStore.kept` questions for receipts, state records and
+  withdrawal names. Helpers receive that Store directly. Residency's
+  `EpochRecords` uses the same C11 reader for fragment headers.
+- `kept_reads.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
 - `ReceiptCache.ledger_records` reuses the existing `DirectoryRecords` reader
@@ -8290,7 +8290,7 @@ mount namespace and until the kernel signals a mount or unmount (`POLLPRI`
 on `/proc/self/mountinfo`), because anonymous device numbers are shared by
 ZFS, tmpfs, NFS, overlay and FUSE mounts and handed out again after an
 unmount. The trust is re-checked on
-every reuse, not only when the stamp is taken: `_current_directory_version`
+every reuse, not only when the stamp is taken: `FilesystemTrust.directory_current`
 returns the four fields only on a filesystem that is still one of those
 (#1208), so a mount change under a kept listing makes the comparison miss.
 `DirectoryRecords` then drops what that listing parsed as well -- the trust
@@ -8299,7 +8299,7 @@ of the directory again, as a plain read on the new filesystem reads it. On
 the NFS export every directory is listed every time, as before. Two things
 are outside the argument. A file rewritten in place does not touch its
 directory. Every
-writer of these records files by rename (`pool._write_json_atomic`,
+writer of these records files by rename (`RecordStore.replace_record_at`,
 `residency_map.write_fragment`), and the two readers differ in what they
 rely on:
 
@@ -8433,7 +8433,8 @@ rename-only writer assumptions above remain unchanged.
 
 **A changed directory is read by record version.** When a directory's stamp
 moved, it is listed and every entry is `stat`-ed. A record whose #761 version
-(device, inode, size, `mtime_ns`, `ctime_ns`) is unchanged is not parsed
+(`FileVersion`: device, inode, size, `mtime_ns`, `ctime_ns`, mode) is unchanged is not
+parsed
 again. Every entry is `stat`-ed, not only names the reader has not seen,
 because a receipt is replaced under its own name (a mover re-run under the
 same key files its receipt again, and a prewarm receipt is pruned and filed
@@ -8443,8 +8444,8 @@ name nor the inode number says a record is unchanged; the full version does.
 **A file version is kept only once its tick has passed (#1045).** The full
 version is not enough on its own: a file unlinked and another created under
 its name in one clock tick can be given the freed inode number, and with the
-same size all five fields match. So each kept file version carries the
-directory stamp's rule (`stage_move._keepable_version`): the coarse realtime
+same size every version field can match. So each kept file version carries the
+directory stamp's rule (`FilesystemTrust.file_version`): the coarse realtime
 clock is read before the listing (or before the open, for the census's
 `fstat` reads), and a version whose `ctime_ns` is not strictly before that
 read is not kept. The record is still returned; it is read again on the next
@@ -8475,7 +8476,7 @@ every body to learn no marker covered it (2.48 s in
 `residency_plan.superseded` plus 1.46 s in `read_filed` in one 10 s cycle).
 One names-only snapshot of the supersession marker directory is now taken
 per pass, through `DirectoryRecords.names` when a cycle is running
-(`stage_release.queue_records_reader`). A `done/` consumer whose key no
+(`RecordStore.residency_supersession_keys`). A `done/` consumer whose key no
 marker name carries is refused before its plan is read; a marker written
 after the snapshot is seen on the next pass. A key the snapshot names runs
 the existing locked checks unchanged, as does an unreadable listing or a
@@ -8490,8 +8491,8 @@ absence.
 `/stage/prewarm` held 50,303 prewarm-marked files (302 GB) that the
 reconcile re-walked and re-probed every cycle, deleting none (2.81 s of the
 same cycle). `CensusIndex` now keeps each stage directory under
-`_trusted_directory_stamp` and each file's `(version, kind, mover)` under
-`_keepable_version` (#1045): a directory whose stamp holds is not listed
+`FilesystemTrust.directory_before` and each file's `(version, kind, mover)` under
+`FilesystemTrust.file_version` (#1045): a directory whose stamp holds is not listed
 again, and a file whose version holds is not probed again. Every entry is
 still `lstat`-ed -- a `setxattr` or an in-place write moves a file's ctime
 without moving its parent -- and the caller's `attributed`/`named` sets and
@@ -8689,7 +8690,7 @@ read was one stretch. On 2026-09-25 one cycle on dl380g10 took 153.6 s,
 `pb-queue` lives on. The stage record reached 121 s, and a Stage B row died
 with `StagedRangeNotLanded`. `ReceiptCache.read` now takes the loop's
 `Liveness` and hands `Liveness.checkpoint` to
-`stage_release.DirectoryRecords.read`, which calls it after each entry the
+`kept_reads.DirectoryRecords.read`, which calls it after each entry the
 listing yields, once the listing is complete, and before each entry is
 stat-ed and parsed. `ReceiptCache.read` also checkpoints after each
 directory. The label is `receipts:<directory>`, so a refresh made there
@@ -8766,7 +8767,7 @@ measured, as `prewarm_loop.MAX_READERS` is for bulk reads. The cold read
 now costs (receipts / readers) × latency.
 
 Only the `stat` and the parse run on a reader. A reader takes a run of
-consecutive entries, at most `stage_release.READ_RUN_MAX` (16) and fewer
+consecutive entries, at most `kept_reads.READ_RUN_MAX` (16) and fewer
 when there are too few entries to give every reader two runs, and at most
 `2 × readers` runs are in flight. Handing an entry to a thread and taking
 its result back costs about as much as a warm `stat`, so one entry per
@@ -9020,15 +9021,16 @@ the life of the server; `--once` and `collect_metrics` without a reader use a
 fresh one, which reads everything. The reader keeps listings under the #992
 stamp argument above and, where it helps, a value computed from a directory
 under a fence taken before the computation and checked after it. It keeps
-only what the gauges read, never whole records:
+history metadata and derived values under those fences. Active record
+snapshots stay under C11 and yield independent records to their consumers:
 
 - **Terminal history.** `done/`, `failed/`, `withdrawn/`, each withdrawal
-  decision directory and `movers/` are kept by `KeptReads.history`, not by
+  decision directory and `movers/` use Store's fixed history questions, not
   `DirectoryRecords`. A changed one is walked as the plain reader walks it:
   one `scandir`, one `stat` per name, and nothing else per name. An entry
-  whose #761 version held is the same object as before, carrying what was
-  derived from it. The window's 500 rows are projected by
-  `pbstatus.ending_row` and kept on their entries. The selection is the plain
+  whose #761 version held is the same immutable object as before. The exporter
+  keeps its derived values under that entry's identity. The window's 500 rows are projected by
+  `pbstatus.ending_row` and kept by the exporter under their entry identities. The selection is the plain
   reader's, `heapq.nlargest` over the same sequence the plain reader sorts,
   so ties fall in the same order. The selection itself is kept, fenced on
   `done/`, `failed/`, `withdrawn/`, `withdrawn/decisions/` and each decision
@@ -9090,7 +9092,7 @@ raises leaves nothing behind.
   census of every such plan once.
 
 Over NFS no stamp is trusted, so every refresh reads everything, as before.
-Every queue writer files by rename (`pool._write_json_atomic`,
+Every queue writer files by rename (`RecordStore.replace_record_at`,
 `residency_map.write_fragment`), which is what the kept listings rely on, as
 the tier loop's do: a record rewritten in place does not change its directory
 and is not seen until the directory next changes.
@@ -9142,7 +9144,8 @@ A changed refresh first cost 0.354 s against the previous exporter's
 0.186 s. The cost was not the `stat`s, which matched the plain walk's, but
 what was done per name in Python: `DirectoryRecords` built a `Path` for each
 of the 30,000 names, sorted them by name, and called the parse for each.
-`KeptReads.history` does none of that: its per-name work is the `scandir`
+The historical `KeptReads.history` walk, now Store-owned, does none of that: its
+per-name work is the `scandir`
 entry, the `stat` and one version compare. The cProfile of a new-ending
 refresh shows the rest: 0.24 s of 0.32 s (instrumented) in the endings
 selection, of which the `stat`s are 0.06 s and the probe's own wrappers most
@@ -11238,7 +11241,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   opened first the same read saw the receipt in 0.04 s to 0.25 s
   (`tools/fleet/qualify_record_visibility.py`, both arms run on the real
   mount). `PoolQueue.move_record` and every leg of `RecordStore.mover`
-  therefore go through `pool._read_json_fresh`: a miss opens and closes the
+  therefore use Store's best-effort miss refresh: a miss opens and closes the
   parent, then reads once more. The live legs matter as much as the terminal
   ones, because `_publish_output_mover_row` republishes on "absent" and
   `_tier_host_egress` republishes an egress whose row it does not read as
@@ -11246,8 +11249,8 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   misses republished each egress three times with `recompute`, so each ran
   four times (three no-op re-runs) and each retirement took more than 20 s.
   Opening
-  is used rather than the listing `slurm_lane._read_json_object` and
-  `pbrun.terminal_record` use, because these reads are polled several times a
+  is used rather than the listing `RecordStore.polled_object_at` and
+  `RecordStore.wait_terminal_at` use, because these reads are polled several times a
   second and a listing costs what the directory holds (`done` held 17,117
   names on 2026-09-21). A hit costs nothing extra, and the revalidation is
   best effort: a parent that cannot be opened leaves the first answer.
@@ -14459,11 +14462,11 @@ carry the same rule (#1045, #1070). Every writer of a fragment or material
 sidecar replaces it by rename (`residency_map._write_atomic`,
 `reader_lease.write_material`), so the first change after the census read
 normally installs a new inode, but two rename cycles in one clock tick can be
-given the freed inode number the census read, and at the same size all five
-fields of the version match. So the owner's own fragment and material are
+given the freed inode number the census read, and at the same size every
+field of the version can match. So the owner's own fragment and material are
 installed only at a version whose ctime is strictly before a clock read taken
 before their `lstat` (`stage_release._fenced_path_version`, applying
-`stage_move._keepable_version`), and a co-owner fragment only at the version
+`FilesystemTrust.file_version`), and a co-owner fragment only at the version
 the census memo kept, which the memo keeps under the same rule (#1045). Every
 later change to a file, a new file under its name included, is stamped at or
 after that clock read and so moves the ctime. A document changed in the tick
@@ -16094,8 +16097,10 @@ read. An inaccessible checkout is unavailable, rather than a digest based on
 an unresolved spelling. The existing claim format and producer identity are
 unchanged.
 
-MCP's record and terminal-entry readers use the public read-only
-`pool.read_queue_record` and `pbstatus.recent_ending_paths` interfaces. Receipt
+MCP's queue record and terminal-entry intake uses RecordStore's fixed
+inspection questions. `pbstatus.recent_ending_paths` remains its public
+adapter over actual native directory entries. An invalid current live slot
+reports a bounded unavailable section before an older ending can answer. Receipt
 self-consistency uses core's immutable `CAS_RECEIPT_BODY_KEYS`,
 `CAS_RECEIPT_KEYS` and `LOCAL_RESULT_CLAIM_BODY_KEYS`, shared with the producer.
 These interfaces do not acquire locks, verify full worker attestations or add
@@ -17930,21 +17935,22 @@ contents to agree. Each observation reads claimed before ready, then checks
 claimed sidecar names for tombstones or late finishes. Intent and lease names
 alone do not establish a transition. Without a live row or transition, the
 latest `published_unix` among done, failed, and withdrawn answers for the key.
-A missing, boolean, or nonnumeric stamp, an equal newest stamp, an unreadable
-record, or an unreadable sidecar listing leaves the answer unknown. The
-existing bare float conversion remains unchanged, including its overflow and
-non-finite-number behavior.
+A missing, boolean, nonnumeric, non-finite or overflowing stamp, an equal
+newest stamp, an unreadable record, or an unreadable sidecar listing leaves
+the answer unknown. An unavailable generation never authorizes retention
+cleanup.
 
 These reads acquire no lock, impose no deadline, and do not refresh cached
-missing names. They use the existing `pool.read_queue_record` transport, whose
-empty-file and I/O behavior is unchanged. Queue names and record bytes are
+missing names. They use RecordStore's plain intake, whose missing/empty and direct I/O
+behavior is unchanged. `pool.read_queue_record` remains its documented public
+adapter. Queue names and record bytes are
 unchanged.
 
 `RecordStore(root).mover(key)` owns the separate polling question. It reads
 claimed, ready, done, failed, and withdrawn in fixed order and returns the
 first readable row as `Present[QueueRow]`. It preserves the live legs' non-None
 predicate and the terminal legs' Mapping predicate. Every leg uses the
-existing `pool._read_json_fresh` transport: a missing or empty record gets a
+Store-owned best-effort miss-refresh profile: a missing or empty record gets a
 best-effort parent open and one retry, while a hit needs no parent open. A
 parent-open failure preserves the missing answer. Any other Exception leaves
 the poll `Unknown`, retaining the failing path and original exception object.
@@ -17964,9 +17970,59 @@ policies. Operations that previously raised a read error re-raise that exact
 object inside their original error boundary. The public SDK claimed-record
 read retains its distinct empty-record policy.
 
-Claim readers outside produced-output, plain and kept-read adapter closure, queue
-publication, and the remaining liveness and prefix readers are unfinished c05
-work. The documented PoolQueue and SDK read APIs are preserved.
+RecordStore also owns claim, liveness, prefix, inspection, history and
+publication intake. PoolQueue and the SDK retain their documented domain
+adapters. Pool captures terminal candidates once and passes the typed
+`TerminalCapture` to its pure ending resolver; observation and ending policy
+have separate owners.
+
+Named questions fix their directory selection, serial read order and error
+profile. Plain historical JSON stays permissive. Strict bounded intake keeps
+its existing UTF-8, duplicate-key, non-finite, nesting and byte limits. A
+confirmed read still lists before either conclusion. Immutable attempt
+recovery still refreshes every canonical parent only after the first missing
+read, retries once when that exact name was listed, and preserves its
+`StaleAbsenceError` distinction.
+
+Queue writers share `replace_record_at` when their contracts agree. Its path
+must be a canonical Store address or the exact address held by a domain
+transition. Distinct first-writer, immutable-conflict, sorted-LF, fsync,
+PID-temporary and missing-parent retry profiles remain distinct operations.
+Store owns names and framing. The caller still owns its transition lock,
+validated generation, publication order, ring limits and retention decision.
+The reader-release diagnostic keeps stderr before path creation, append
+before readback, and the original domain-selected tail replacement.
+
+`RecordStore.kept(root, records=...)` explicitly uses an existing C11
+`DirectoryRecords`. Its fixed queue, receipt, diagnostic and history questions
+use the same intake as the plain path. State bulk reads preserve their
+existing immutable-byte capture followed by fresh permissive decoding per
+result. Receipt and diagnostic readers retain their separate callback error
+profiles. Native callback failures abort capture; no exception response is
+kept. Retained values are bytes or private frozen values, and every returned
+record has independent nested mutable containers. There is no ambient queue-reader
+context or caller parsing
+callback. Tier-cycle helpers receive the Store explicitly. Residency fragment
+and material grammar remains in its domain owner.
+
+C11 `DirectoryCaptures` and `FilesystemTrust` own retained evidence. A supplied
+trust owner follows the receipt, census, ledger, fragment and publisher
+readers. LinuxFilesystemTrust is the single production adapter. Failed
+acquisition, lost hit proof, aborted capture and failed commit cannot restore
+an older capture. By-key claims, standing, confirmed terminals and attempt
+recovery always use fresh native reads, including when invoked on a kept
+Store. Status and metrics pass their census reader explicitly. A private
+metrics helper's own reader remains separate from that former context role,
+so its standalone plain reporter defaults keep their original behavior.
+Existing domain projection and timing policy stays with its owner.
+
+C11's in-memory `FileVersion` names device, inode, size, mtime, ctime and mode.
+Observed mode prevents an unreadable publication from keeping its earlier
+proof when coarse ctime repeats. Consumers use the named fields instead of
+duplicating a tuple length. This does not change a persisted record format.
+RecordStore imports only the native, digest and C11 owners, with no reverse
+dependency on Pool, Core or Materialize. Source ownership does not establish
+runtime deployment or staged workload acceptance.
 
 
 ### Staged drain policy and counted-note ownership
@@ -18071,8 +18127,13 @@ access form,
 so isolated, installed and retained source bundles keep their own dependency
 and exception identity. The attested member set is unchanged, and current,
 historical optional-member and retained receipt-listed proof rules remain in
-force. This ownership move does not complete the wider queue RecordStore work.
+force. The wider queue questions, plain/kept adapters and publication
+profiles are owned by RecordStore as described above.
 
-The three variable-mode native producers are `action_result`,
-`checkout_recovery`, and `pool_reconcile`. Each selects its immutable or stable
-reader before calling it, preserving its existing flag and read timing.
+The current variable-mode native producers are `action_result` and
+`checkout_recovery`. They select their immutable or stable reader at the
+original call position. Historical native wave N2 also had `pool_reconcile`
+as a third variable producer. Its current reconciliation questions use fixed
+immutable/stable profiles in RecordStore, with the same custody and strict
+decoding boundaries. Three native reader profiles remain after retirement
+of the single-link reader.

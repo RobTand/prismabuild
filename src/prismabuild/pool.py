@@ -2410,8 +2410,6 @@ def _finite_generation(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
-
-
 def _retirement_checkpoint_digest(body: Mapping[str, object]) -> str:
     """The self-consistency digest of one checkpoint body, digest field excluded."""
 
@@ -5257,8 +5255,6 @@ _READY_PLACEMENT: contextvars.ContextVar[
         "pool_ready_placement", default=None)
 
 
-
-
 @contextmanager
 def ready_placement(tags: Iterable[str], has_gpu: bool) -> Iterator[None]:
     """List ``ready/`` for the claimant ``(tags, has_gpu)`` inside the block."""
@@ -7031,7 +7027,9 @@ class PoolQueue:
             if (decision is None or not handoff
                     or visible is None
                     or visible.get("published_unix") != preempted_claim.get("published_unix")
-                    or bool(record_store.value_or_raise(self.records.item_presence(READY, action_key)))
+                    or bool(
+                        record_store.value_or_raise(self.records.item_presence(READY, action_key)),
+                    )
                     or (live is not None and not _same_claim(live, preempted_claim))
                     or not self._preemption_eligible(preempted_claim)):
                 raise PoolContractError("preemption handoff changed before requeue")
@@ -7931,7 +7929,11 @@ class PoolQueue:
                     "reason": "receipt unreadable"}
         if not present:
             return {"action_key": key, "pruned": False, "reason": "absent"}
-        if bool(record_store.value_or_raise(self.records.item_presence(DONE, key))) or bool(record_store.value_or_raise(self.records.item_presence(FAILED, key))):
+        if bool(
+            record_store.value_or_raise(self.records.item_presence(DONE, key)),
+        ) or bool(
+            record_store.value_or_raise(self.records.item_presence(FAILED, key)),
+        ):
             try:
                 path.unlink()
             except OSError:
@@ -9285,10 +9287,18 @@ class PoolQueue:
             path = root / name
             try:
                 if (bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
-                        or bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key)))):
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
+                        )):
                     continue      # live, whatever the caller's set covered
-                if (bool(record_store.value_or_raise(self.records.item_presence(DONE, key))) or bool(record_store.value_or_raise(self.records.item_presence(FAILED, key)))
-                        or bool(record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key)))):
+                if (bool(
+                    record_store.value_or_raise(self.records.item_presence(DONE, key)),
+                ) or bool(
+                    record_store.value_or_raise(self.records.item_presence(FAILED, key)),
+                )
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key)),
+                        )):
                     why = "terminal"
                 elif moment - path.stat().st_mtime > DENIAL_TRANSITIONS_RETENTION_S:
                     why = "retention"
@@ -9370,9 +9380,15 @@ class PoolQueue:
                 path = self.records.passes_path(key)
                 try:
                     if (bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
-                            or bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key)))):
+                            or bool(
+                                record_store.value_or_raise(
+                                    self.records.item_presence(CLAIMED, key),
+                                ),
+                            )):
                         continue
-                    if not any(bool(record_store.value_or_raise(self.records.item_presence(state, key)))
+                    if not any(bool(
+                        record_store.value_or_raise(self.records.item_presence(state, key)),
+                    )
                                for state in (DONE, FAILED, WITHDRAWN)):
                         continue
                     inspected += 1
@@ -9380,8 +9396,14 @@ class PoolQueue:
                     with self._transition_locked(key, blocking=False) as acquired:
                         if not acquired:
                             continue
-                        if (bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
-                                or bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key)))):
+                        if (bool(
+                            record_store.value_or_raise(self.records.item_presence(READY, key)),
+                        )
+                                or bool(
+                                    record_store.value_or_raise(
+                                        self.records.item_presence(CLAIMED, key),
+                                    ),
+                                )):
                             continue
                         record = record_store.read_document(path)
                         if (record is None or record.get("action_key") != key
@@ -9448,16 +9470,24 @@ class PoolQueue:
                         torn = _gang.teardown(self, group)
                 if torn is not None:
                     for key in keys:
-                        if bool(record_store.value_or_raise(self.records.item_presence(READY, key))):
+                        if bool(
+                            record_store.value_or_raise(self.records.item_presence(READY, key)),
+                        ):
                             try:
                                 self.withdraw(key, reason=f"gang teardown: {torn.get('reason')}",
                                               by=f"gang:{group}")
                             except (PoolContractError, OSError, pb.PrismaBuildError):
                                 continue
-                if any(bool(record_store.value_or_raise(self.records.item_presence(READY, key))) or bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key)))
+                if any(bool(
+                    record_store.value_or_raise(self.records.item_presence(READY, key)),
+                ) or bool(
+                    record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
+                )
                        for key in keys):
                     continue
-                if not all(any(bool(record_store.value_or_raise(self.records.item_presence(state, key)))
+                if not all(any(bool(
+                    record_store.value_or_raise(self.records.item_presence(state, key)),
+                )
                                for state in (DONE, FAILED, WITHDRAWN)) for key in keys):
                     continue
                 shutil.rmtree(_gang.state_dir(self, group), ignore_errors=True)
@@ -9496,11 +9526,19 @@ class PoolQueue:
             try:
                 if (len(key) != 64 or not directory.is_dir()
                         or bool(record_store.value_or_raise(self.records.item_presence(READY, key)))
-                        or bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, key)))
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(CLAIMED, key)),
+                        )
                         or bool(record_store.value_or_raise(self.records.plan_presence(key)))):
                     continue
-                if (bool(record_store.value_or_raise(self.records.item_presence(DONE, key))) or bool(record_store.value_or_raise(self.records.item_presence(FAILED, key)))
-                        or bool(record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key)))):
+                if (bool(
+                    record_store.value_or_raise(self.records.item_presence(DONE, key)),
+                ) or bool(
+                    record_store.value_or_raise(self.records.item_presence(FAILED, key)),
+                )
+                        or bool(
+                            record_store.value_or_raise(self.records.item_presence(WITHDRAWN, key)),
+                        )):
                     why = "terminal"
                 else:
                     newest = max((entry.stat().st_mtime for entry in directory.iterdir()),
@@ -9593,7 +9631,8 @@ class PoolQueue:
 
         key = record_store.residency_action_key(action_key)
         moment = _now() if now is None else float(now)
-        live, listed = live_records if live_records is not None else self.records.advisory_live_rows()
+        live, listed = live_records if live_records is not None else self.records.advisory_live_rows(
+        )
         errors: list[str] = list(listed)
         roles: dict[str, str] = {
             child: "produced_export" for child, (_state, record) in sorted(live.items())
@@ -9623,7 +9662,9 @@ class PoolQueue:
             state, record = live.get(child, (None, None))
             if state is None:
                 try:
-                    if not bool(record_store.value_or_raise(self.records.item_presence(FAILED, child))):
+                    if not bool(
+                        record_store.value_or_raise(self.records.item_presence(FAILED, child)),
+                    ):
                         continue      # unpublished, done, or withdrawn: not waited on
                 except OSError:
                     continue
@@ -13323,7 +13364,9 @@ class PoolQueue:
         # cannot advance a state or edit a binding.
         try:
             if current is None:
-                if bool(record_store.value_or_raise(self.records.funding_presence(mover, str(tier_id)))):
+                if bool(
+                    record_store.value_or_raise(self.records.funding_presence(mover, str(tier_id))),
+                ):
                     # Appeared or unreadable since the read above (the
                     # mover lock makes the funding writer race impossible,
                     # so this is unknown evidence): retain, defer.
@@ -13352,7 +13395,9 @@ class PoolQueue:
 
         try:
             if not (bool(record_store.value_or_raise(self.records.item_presence(READY, mover)))
-                    or bool(record_store.value_or_raise(self.records.item_presence(CLAIMED, mover)))):
+                    or bool(
+                        record_store.value_or_raise(self.records.item_presence(CLAIMED, mover)),
+                    )):
                 return 0
             return int(self.transfer_tier_reservation(
                 tier_id, grant, mover, faults=faults))
@@ -19378,7 +19423,11 @@ class PoolQueue:
         return (chosen["measured_unix"], offer["announced_unix"],
                 self.records.attempt_generation(checked), checked.get("attempts", 0))
 
-    def _read_peer_observation(self, host: str, offer: Mapping) -> _peer_placement.PeerObservation | None:
+    def _read_peer_observation(
+        self,
+        host: str,
+        offer: Mapping,
+    ) -> _peer_placement.PeerObservation | None:
         """Share #1262 peer evidence without repeated shared-mount reads (#351).
 
         GPU hosts leave CPU-only work to fitting CPU-only peers (#1262).
@@ -22758,7 +22807,8 @@ class PoolQueue:
                     if ("scratch_declaration_record" in record
                             or local_scratch.SCRATCH_LIFETIME_FIELD in record):
                         self.records.file_superseded(record, key=key,
-                                              kind="scratch-declarations-after-withdrawal", when=_now())
+                                              kind="scratch-declarations-after-withdrawal", when=_now(
+                                              ))
                     # A withdrawal that could not finish its own cleanup -- the
                     # operator's box died mid-verb, say -- leaves a claimed record
                     # whose lease nobody refreshes.  Requeueing that is the one
@@ -22780,7 +22830,11 @@ class PoolQueue:
                 prior_attempts = int(record.get("attempts", 0))
                 if (age is None
                         and record.get("withdrawn_unix") is None
-                        and not bool(record_store.value_or_raise(self.records.attempt_presence(record, prior_attempts + 1)))
+                        and not bool(
+                            record_store.value_or_raise(
+                                self.records.attempt_presence(record, prior_attempts + 1),
+                            ),
+                        )
                         # Consumed output funding proves this claim already
                         # persisted its lease; a subsequently missing lease
                         # cannot restore its one-use entitlement (#848).
@@ -23645,7 +23699,9 @@ class PoolQueue:
                 )
                 # The moved bytes remain evidence. Neither a terminal ending nor
                 # a new live record under the same key belongs to this stub.
-                if not any(bool(record_store.value_or_raise(self.records.item_presence(state, path.stem)))
+                if not any(bool(
+                    record_store.value_or_raise(self.records.item_presence(state, path.stem)),
+                )
                            for state in (READY, CLAIMED, DONE, FAILED)):
                     self.records.file_record_if_absent_at(
                         self.records.item_path(FAILED, path.stem),
@@ -24358,7 +24414,11 @@ class PoolQueue:
         self.records.file_superseded(
             evidence, key=str(record["action_key"]), kind="late-finish",
             status=status, detail=detail, finished_unix=_now(),
-            finished_host=socket.gethostname(), outcome=str(result.relative_to(self.root)), when=_now())
+            finished_host=socket.gethostname(
+            ), outcome=str(
+                result.relative_to(self.root),
+            ), when=_now(
+            ))
         path.unlink(missing_ok=True)
         return result
 
@@ -25404,7 +25464,11 @@ class PoolQueue:
                 exc = result.error
                 unreadable.append({
                     "state": address.state, "path": address.path,
-                    "reason": (str(exc) or type(exc).__name__) if exc is not None else result.reason})
+                    "reason": (str(
+                        exc,
+                    ) or type(
+                        exc,
+                    ).__name__) if exc is not None else result.reason})
 
         def generation(state: str) -> float | None:
             # The one finite-generation owner: an integer past the binary64
