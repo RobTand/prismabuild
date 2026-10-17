@@ -4,6 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import runpy
+import base64
+import hashlib
+import uuid
 
 
 def helper(name):
@@ -55,3 +58,44 @@ def manifest(core, store, load, variant):
     placed = po.place_origin_batches(queue.root, static, [{"phase": "origin", "refs": refs}])
     po.verify_placed_origin_batches(queue.root, placed)
     return placed
+
+
+def output_funding(request, store, load):
+    variant = request["case"].split("/", 1)[1]
+    pool = load("prismabuild.pool")
+    queue = pool.PoolQueue(store / "queue")
+    mover, owner, nonce, tier = "a" * 64, "c" * 64, "7" * 32, "prismabuild-stage:compat"
+    path = queue.funding_output_path(mover, tier)
+    if request["op"] == "read":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(base64.b64decode(request["raw"]))
+        request["_consumer_boundary"]()
+        value = queue.read_output_funding(mover, tier)
+        assert value and value["state"] == ("reserved" if variant == "stage-intent" else "transferring")
+        return value
+    uuid.uuid4 = lambda: uuid.UUID(nonce)
+    po, pool, core, queue, template, instance = helper("compat_batch_adapters.py")["context"](store, load, "staged")
+    assert queue.tier_ledger(tier).acquire(owner, {"stage_gib": 1})
+    origin = Path(template["output_prefix"]) / "payload.bin"
+    assert po.require_prewrite(queue, instance, template, batch_id="batch", tier=tier,
+        class_bytes={"payload": 8, "checkpoint": 0, "temp": 0}, paths=[str(origin)])["ok"]
+    origin.parent.mkdir(parents=True)
+    origin.write_bytes(b"contents")
+    descriptor = po.validate_descriptor({"schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "payload", "artifact_class": "payload",
+        "path": str(origin), "bytes": 8, "sha256": hashlib.sha256(b"contents").hexdigest(),
+        "producer_generation": nonce, "owner_action_key": owner, "owner_attempt": dict(instance["owner_attempt"])}, template, instance)
+    args = dict(tier_id=tier, owner_key=owner, mover_key=mover, instance=instance,
+                template=template, batch_id="batch", descriptors=[descriptor])
+    if variant == "stage-intent":
+        result = queue.stage_output_intent(**args)
+    else:
+        ref = queue.build_produced_output_batch_ref(instance=instance, template=template,
+            batch_id="batch", descriptors=[descriptor], tier_id=tier)
+        queue.publish(action_key=mover, cas_root=store / "cas", checkout_root="/compat/checkout",
+            worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, "stage_gib@" + tier: 1},
+            residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier, "manifest_sha256": po.output_manifest_sha256([descriptor]),
+                       "manifest_bytes": 8, "range_start_bytes": 0, "range_end_bytes": 8}, produced_output_batch=ref)
+        result = queue.fund_output_batch(**args)
+    assert result["ok"], result
+    return {"raw": base64.b64encode(path.read_bytes()).decode(),
+            "fixture_facts": ["private supplied owner claim; actual eight-byte prewrite and tier token transfer"]}

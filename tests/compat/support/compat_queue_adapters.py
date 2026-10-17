@@ -5,12 +5,16 @@ import base64
 import json
 import time
 import uuid
+from pathlib import Path
+import runpy
 
 M, C, G, D = "a" * 64, "c" * 64, "7" * 32, "9" * 64
 
 
 def operate(request, store, load):
     family, variant = request["case"].split("/", 1)
+    if family == "q-output-funding" and variant in ("stage-intent", "fund-direct"):
+        return runpy.run_path(str(Path(__file__).with_name("compat_builder_adapters.py")))["output_funding"](request, store, load)
     pool = load("prismabuild.pool")
     queue = pool.PoolQueue(store / "queue")
     write = request["op"] == "write"
