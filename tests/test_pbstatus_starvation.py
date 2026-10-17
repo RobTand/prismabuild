@@ -152,7 +152,9 @@ def starved_queue(tmp_path, monkeypatch):
         "mountpoint": str(tmp_path / "ram"),
         "capacity_bytes": 8 * GIB, "sampled_unix": NOW - 5,
         "epoch": EPOCH, "window_gib": 4})
-    published = json.loads(queue.records.item_path(pool.record_store.READY, _hexkey("mover1")).read_text())
+    published = json.loads(
+        queue.records.item_path(pool.record_store.READY, _hexkey("mover1")).read_text(),
+    )
     denials = {
         "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
             "mover": {"action_key": _hexkey("mover1"),
@@ -162,7 +164,8 @@ def starved_queue(tmp_path, monkeypatch):
                       "denied_unix": NOW - 10},
             "consumer": {"action_key": CONSUMER,
                          "published_unix": json.loads(
-                             queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).read_text()
+                             queue.records.item_path(pool.record_store.CLAIMED, CONSUMER).read_text(
+                             )
                          )["published_unix"],
                          "host": HOST, "reason": "adaptive_cpu_refused",
                          "evidence": {}, "denied_unix": NOW - 20}}}

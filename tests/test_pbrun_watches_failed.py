@@ -32,8 +32,6 @@ class _Queue:
             (root / name).mkdir(parents=True, exist_ok=True)
 
 
-
-
 def _file(queue: _Queue, state: str, key: str, payload: dict) -> None:
     queue.records.item_path(state, key).write_text(json.dumps(payload), encoding="utf-8")
 

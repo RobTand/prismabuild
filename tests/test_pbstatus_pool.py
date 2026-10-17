@@ -133,7 +133,8 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
     denial_path.parent.mkdir(parents=True, exist_ok=True)
     denial_path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {"fixture": {
         "action_key": key, "published_unix": json.loads(
-            live_pool.records.item_path(pool.record_store.READY, key).read_text())["published_unix"],
+            live_pool.records.item_path(pool.record_store.READY, key).read_text(
+            ))["published_unix"],
         "host": "cpu-box", "reason": "adaptive_cpu_refused",
         "evidence": {"cpu_sample": {"busy_cpus": 3.9, "psi_some": 0.2}},
         "denied_unix": controlled_clock.time(),

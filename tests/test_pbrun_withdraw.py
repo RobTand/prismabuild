@@ -51,8 +51,6 @@ class _Queue:
             (root / name).mkdir(parents=True, exist_ok=True)
 
 
-
-
 def _wait(monkeypatch, queue, key: str, wait_s: float = 5.0):
     monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
     return pbrun.await_outcome(queue, key, wait_s=wait_s)
