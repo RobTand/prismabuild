@@ -253,7 +253,7 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
         "tier_id": RAM_TIER, "host": "dl380g10",
         "mountpoint": str(tmp_path / "ram"), "epoch": EPOCH,
         "capacity_bytes": 8 * GIB})
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER, mover_action_key=_key(0, 0),
         tier_id=RAM_TIER, stage_root=tmp_path / "ram",
         manifest_sha256=MANIFEST, range_start_bytes=0,

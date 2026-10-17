@@ -61,7 +61,8 @@ def _chunk(phase: int, chunk: int, start: int, end: int) -> dict:
     }
 
 
-def _plan(*, phases: int = 3, chunk_gib: int = 1) -> dict[str, object]:
+def _plan(*, phases: int = 3, chunk_gib: int = 1,
+          stage_root: str = "/stage/prewarm") -> dict[str, object]:
     """Phases of two stage chunks each, all sealed, frozen via build_plan."""
 
     built = []
@@ -78,7 +79,7 @@ def _plan(*, phases: int = 3, chunk_gib: int = 1) -> dict[str, object]:
         start = end
     return residency_plan.build_plan(
         consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
-        stage_root="/stage/prewarm", manifest_sha256=MANIFEST,
+        stage_root=stage_root, manifest_sha256=MANIFEST,
         manifest_bytes=start, phases=built)
 
 
@@ -232,7 +233,7 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    plan = _plan()
+    plan = _plan(stage_root=str(tmp_path / "stage"))
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}), residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
@@ -242,9 +243,9 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
     assert queue.tier(STAGE_TIER).take(_key(0, 0), {'stage_gib': 1})
     # The booking above is the room; these are the records the finished
     # copy left, which is what the census now reports (#759).
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER, mover_action_key=_key(0, 0),
-        tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+        tier_id=STAGE_TIER, stage_root=tmp_path / "stage",
         manifest_sha256=MANIFEST, range_start_bytes=0, range_end_bytes=GIB)
 
     entry = fleet_census._starvation_plan_entry(
