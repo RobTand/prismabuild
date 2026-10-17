@@ -19014,6 +19014,28 @@ Coordinator writer sources not shipped with a deployed reader have separate
 provenance and separate processes. Private fixture facts confer no physical
 custody, drain, performance or RootGO credit.
 
+Native historical byte reproduction selects an explicit qualified archival
+replay runtime from the `archival-replay` test capability. That source
+declaration is the sole executable path and SHA-256 authority. The test
+descriptor adds the full Python version, resolved path, executable size and ELF
+identity. The archival child verifies `/proc/self/exe`, its isolated flags,
+assigned affinity and inherited environment before running the unchanged
+retained driver. Complete inherited environment values are bound by a canonical
+digest. The environment observation logs only native thread variables, TMPDIR
+and TZ values. The driver then changes TMPDIR to its private store as its
+retained source requires.
+That private value is labelled source-derived unless observed.
+
+The current writer and both forward and reverse readers use the main declared
+gate interpreter. Historical replay still compares every byte with the immutable
+historical row. Direct retained shape writers also run under the gate interpreter
+in separate controls, preserving the observed 3.12 gzip discrepancy. Operation
+proofs distinguish the main gate, archival replay and each real read direction.
+The original capture interpreter and timezone remain unknown where original
+metadata did not record them. Replay qualification supplies no original capture
+identity. Source support does not establish a deployed capability or a fresh
+runtime pass.
+
 Core's closed `worker_runtime.v1` cannot grow an `immutable_files` field while
 retained readers reject additions. Instead attested Core source pins the helper
 SHA-256, checks the loaded helper and rechecks its bytes before receipt
