@@ -10,12 +10,12 @@ from pathlib import Path
 import re
 
 from wire_inventory import catalogue, sources
+from compat_references import module_paths
 
 
 def reference_path(root, reference):
     module, qualified = reference.split(":", 1)
-    names = (["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
-             ["tools/fleet/" + module + ".py", "tools/" + module + ".py"])
+    names = module_paths(module)
     path = next((root / name for name in names if (root / name).is_file()), None)
     if path is None:
         return {"reference": reference, "present": False}

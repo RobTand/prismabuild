@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.compatibility_window import require_reachable
+from compat_references import module_paths
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
@@ -50,12 +51,7 @@ def probe_wire(kind, body):
 
 def reached(observed, reference):
     module, qualified = reference.split(":")
-    if module.startswith("prismabuild."):
-        paths = {"src/" + module.replace(".", "/") + ".py"}
-    else:
-        paths = {"tools/" + module + ".py", "tools/fleet/" + module + ".py"}
-    if module == "docker":
-        paths.update({"tools/docker", "tools/fleet/docker"})
+    paths = module_paths(module)
     return any(call[0] in paths and call[3] == qualified
                for call in observed.get("calls", []))
 
@@ -70,15 +66,13 @@ def historical_absence(root, case, manifest):
     paths = []
     for reference in (kind.reader,) + kind.legacy_readers:
         module = reference.split(":")[0]
-        paths.extend(["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
-                     ["tools/" + module + ".py", "tools/fleet/" + module + ".py"])
+        paths.extend(module_paths(module))
     if any((root / path).is_file() for path in paths):
         if kind.older_input_absence:
             return None
         for reference in (kind.reader,) + kind.writers + kind.legacy_readers + kind.legacy_writers:
             module, qualified = reference.split(":")
-            candidates = (["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
-                          ["tools/" + module + ".py", "tools/fleet/" + module + ".py"])
+            candidates = module_paths(module)
             for candidate in candidates:
                 if not (root / candidate).is_file():
                     continue
@@ -158,8 +152,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         present = []
         for reference in kind.writers:
             module = reference.split(":", 1)[0]
-            candidates = (["src/" + module.replace(".", "/") + ".py"] if module.startswith("prismabuild.") else
-                          ["tools/" + module + ".py", "tools/fleet/" + module + ".py"])
+            candidates = module_paths(module)
             if any((root / path).is_file() for path in candidates):
                 present.append(reference)
         result["caller_input_constructor_verified"] = any(reached(result, reference) for reference in present) if present else None
