@@ -55,6 +55,13 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import container_images, core as pb, local_dependencies, pool, slurm_lane  # noqa: E402
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused, FleetStore, ProducerPublication
+from prismabuild import submission, action_client
+
+def configured_store():
+    return store_for(__file__, root=SH)
+
 
 TRANSPORTS = ("pool", "slurm")
 DEFAULT_TRANSPORT_ENV = "PRISMABUILD_TRANSPORT"
@@ -124,28 +131,10 @@ def default_transport() -> str:
     somebody says otherwise on the command line.
     """
 
-    from_environment = os.environ.get(DEFAULT_TRANSPORT_ENV)
-    if from_environment:
-        if from_environment not in TRANSPORTS:
-            raise SystemExit(
-                f"{DEFAULT_TRANSPORT_ENV}={from_environment} is not a "
-                f"transport this code has ({', '.join(TRANSPORTS)}). "
-                "Unset it or spell it the way the fleet does."
-            )
-        return from_environment
     try:
-        receipt = json.loads(
-            (RUNTIME_ROOT / "RUNTIME_VERSION.json").read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError):
-        return "pool"
-    declared = receipt.get("default_transport")
-    # A receipt that names a transport this code does not have is a receipt
-    # from the future.  Refusing to guess is cheap; guessing is a submission
-    # into a queue nobody drains.
-    if isinstance(declared, str) and declared in TRANSPORTS:
-        return declared
-    return "pool"
+        return submission.default_transport(store=configured_store())
+    except SubmissionRefused as exc:
+        raise SystemExit(exc.reason or exc.returncode) from None
 
 
 def add_transport_argument(parser: argparse.ArgumentParser) -> None:
@@ -181,60 +170,10 @@ def seal_checkout_snapshot(
     cas: pb.PrismaBuildCAS,
     max_bytes: int | None = None,
 ) -> dict[str, object]:
-    """Seal one checkout as the immutable snapshot the lane addresses.
-
-    ``pbrun`` owns this sequence -- roster, size and transform bounds, bundle
-    with ancestry, CAS ingest -- and it is imported rather than reproduced, so
-    a producer's snapshot and an interactive ``pbrun``'s are the same object
-    under the same rules.
-
-    Args:
-        checkout_root: The tree the action runs in. Must be a Git worktree.
-        cas: The store the bundle is ingested into.
-        max_bytes: A lowered local-disk bound, or ``None`` for pbrun's own.
-
-    Returns:
-        The ``params.checkout_snapshot`` record, cached per store and
-        working-tree state.
-
-    Raises:
-        SubmitRefused: The tree cannot be sealed, with pbrun's own reason.
-    """
-
-    import pbrun  # deferred: only the SLURM lane needs the sealer
-
-    root = Path(checkout_root)
-    bound = (
-        pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES if max_bytes is None else int(max_bytes)
-    )
     try:
-        identity = pb.git_checkout_identity(root)
-    except pb.ActionContractError as exc:
-        raise SubmitRefused(
-            f"{root}: the SLURM lane addresses a checkout through a sealed "
-            f"snapshot, and this one cannot be identified: {exc}"
-        ) from None
-    cached = _SNAPSHOT_CACHE.get(
-        key := (
-            str(cas.root),
-            str(root),
-            str(identity["head"]),
-            str(identity["dirty_sha256"]),
-        )
-    )
-    if cached is not None:
-        return cached
-    try:
-        snapshot = pbrun.build_git_checkout_snapshot(
-            root, cas=cas, max_bytes=bound, expected_identity=identity
-        )
-    except SystemExit as exc:
-        # ``pbrun``'s sealer refuses by exiting, which is right for a terminal
-        # and wrong for a library: a dispatcher must get a refusal it can name
-        # the action against, not a process that stops mid-loop.
-        raise SubmitRefused(f"{root}: {exc}") from None
-    _SNAPSHOT_CACHE[key] = snapshot
-    return snapshot
+        return submission.snapshot_for_producer(checkout_root, cas=cas, max_bytes=max_bytes)
+    except SubmissionRefused as exc:
+        raise SubmitRefused(exc.reason) from None
 
 
 def seal_checkout_into_action(
@@ -244,65 +183,10 @@ def seal_checkout_into_action(
     checkout_root: str | Path,
     max_bytes: int | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Re-seal one action around a snapshot of the tree it runs in.
-
-    Args:
-        action: The sealed action the producer built, carrying no snapshot.
-        cas: The store the bundle is ingested into.
-        checkout_root: The tree the action runs in.
-        max_bytes: A lowered local-disk bound, or ``None`` for pbrun's own.
-
-    Returns:
-        The re-sealed action and its snapshot record. The action key differs
-        from the caller's, because the snapshot is part of what will run.
-
-    Raises:
-        SubmitRefused: The tree cannot be sealed, or the action addresses the
-            submitter's checkout by an absolute path the snapshot cannot
-            carry.
-    """
-
-    import pbrun  # deferred: only the SLURM lane relocates a checkout
-
-    snapshot = seal_checkout_snapshot(
-        checkout_root, cas=cas, max_bytes=max_bytes
-    )
-    # Sealing a tree makes the action portable, and only sealing does not make
-    # it relocatable: an argv token or an environment variable holding an
-    # absolute path into the submitter's checkout still reads the submitter's
-    # bytes on whichever node the scheduler picked.  Two client producers
-    # shipped exactly that as ``PYTHONPATH``, so a worker verified the sealed
-    # encoder in its private checkout, imported the shared one, and published
-    # the result under the sealed key.  ``pbrun`` already refuses this for an
-    # interactive submission; the same guard, not a second one, decides it
-    # here, and it decides before anything is queued.
-    task = action.get("task")
-    environment = action.get("environment")
-    argv = list(task.get("argv") or ()) if isinstance(task, Mapping) else []
-    variables = (
-        environment.get("variables") if isinstance(environment, Mapping) else None
-    )
     try:
-        pbrun.require_relocatable_checkout(
-            [str(token) for token in argv],
-            {
-                str(name): str(value)
-                for name, value in (
-                    variables.items() if isinstance(variables, Mapping) else ()
-                )
-            },
-            Path(checkout_root),
-        )
-    except SystemExit as exc:
-        raise SubmitRefused(
-            f"{str(action['action_key'])[:12]}: {exc}"
-        ) from None
-    body = {name: value for name, value in action.items() if name != "action_key"}
-    params = dict(body.get("params") or {})
-    params["checkout_snapshot"] = snapshot
-    body["params"] = params
-    body["inputs"] = list(body.get("inputs") or []) + [snapshot["input"]]
-    return pb.seal_action(body), snapshot
+        return submission.seal_producer_checkout(action, cas=cas, checkout_root=checkout_root, max_bytes=max_bytes)
+    except SubmissionRefused as exc:
+        raise SubmitRefused(exc.reason) from None
 
 
 def submit(
@@ -370,7 +254,6 @@ def submit(
             anything is queued.
     """
 
-    if transport not in TRANSPORTS:
         raise SubmitRefused(f"unknown transport {transport!r}")
     key = str(action["action_key"])
     # The sealed action is the authority for a declared image requirement; the
