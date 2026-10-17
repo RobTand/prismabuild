@@ -900,19 +900,10 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
                else str(queue.root.parent / "cas"))
     census_memo = kept_reads.CensusMemo()
     census_started = time.perf_counter()
-    hinted: set[str] = set()
     try:
-        hinted, _hint_taint = staged_path.attributed_census(
-            queue, wanted=None, residency_root=residency_root,
-            memo=census_memo)
-        hint_pins, _hint_pin_taint = stage_release.reader_lease.live_for(
-            queue, None, residency_root=residency_root,
-            memo=census_memo.pins)
-        hinted |= set(hint_pins)
-        staged_path.claimed_paths(queue, tier_id, own_cas,
-                                     memo=census_memo)
-        staged_path.claimed_source_paths(queue, stage, own_cas,
-                                            memo=census_memo)
+        staged_path.source_mark_census(
+            queue, tier_id=tier_id, stage=stage, cas_root=own_cas,
+            residency_root=residency_root, memo=census_memo, hint=True)
     except (OSError, ValueError, pool.PoolContractError):
         pass
     census_s = time.perf_counter() - census_started
@@ -1011,63 +1002,16 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
 
     pruned: list[Path] = []
 
-    def _held_reclaim() -> dict[str, object]:
-        parse_counts = census_memo.counts()
-        validate_started = time.perf_counter()
-        try:
-            in_flight = staged_path.movers_in_flight(queue, tier_id=tier_id)
-        except (OSError, pool.PoolContractError, ValueError) as exc:
-            receipt["skipped"] = "queue_census_unreadable"
+    def _held_reclaim(verdict: staged_path.RetainedPaths, parse_counts,
+                       validate_started: float) -> dict[str, object]:
+        if verdict.refusal:
+            receipt["skipped"] = verdict.refusal
             receipt["complete"] = False
-            receipt["errors"] = [str(exc)]
+            receipt["errors"] = list(verdict.errors)
+            if verdict.movers_in_flight:
+                receipt["movers_in_flight"] = list(verdict.movers_in_flight)
             return receipt
-        if in_flight:
-            receipt["skipped"] = "movers_in_flight"
-            receipt["movers_in_flight"] = sorted(in_flight)
-            receipt["complete"] = False
-            receipt["errors"] = ["movers_in_flight"]
-            return receipt
-        attributed, attribution_taint = staged_path.attributed_census(
-            queue, wanted=None, residency_root=residency_root,
-            memo=census_memo)
-        if attribution_taint:
-            receipt["skipped"] = "attribution_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [
-                f"ownership uncertain: {item}"
-                for item in attribution_taint[
-                    :staged_path.ATTRIBUTION_TAINT_LIMIT]]
-            return receipt
-        pin_owners, pin_taint = stage_release.reader_lease.live_for(
-            queue, None, residency_root=residency_root,
-            memo=census_memo.pins)
-        if pin_taint:
-            receipt["skipped"] = "pin_census_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [f"ownership uncertain: {item}"
-                                 for item in pin_taint]
-            return receipt
-        attributed |= set(pin_owners)
-        claimed, claim_taint = staged_path.claimed_paths(
-            queue, tier_id, own_cas, memo=census_memo)
-        if claim_taint:
-            receipt["skipped"] = "claim_census_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [f"ownership uncertain: {item}"
-                                 for item in claim_taint]
-            return receipt
-        for relative in claimed:
-            attributed.add(os.path.normpath(os.path.join(str(stage),
-                                                         str(relative))))
-        handoffs, handoff_taint = staged_path.claimed_source_paths(
-            queue, stage, own_cas, memo=census_memo)
-        if handoff_taint:
-            receipt["skipped"] = "promotion_census_unreadable"
-            receipt["complete"] = False
-            receipt["errors"] = [f"ownership uncertain: {item}"
-                                 for item in handoff_taint]
-            return receipt
-        attributed |= {os.path.normpath(str(one)) for one in handoffs}
+        attributed = set(verdict.paths)
         try:
             # Read, not used per file: the ledger names action keys,
             # never paths, so it cannot attribute a copy. The read
@@ -1335,9 +1279,11 @@ def reclaim_source_marks(queue: pool.PoolQueue, *, tier_id: str,
         return receipt
 
     asked = time.perf_counter()
-    with staged_path.ownership(
-            queue, stage, role="reclaim-source-marks") as granted:
-        result = _held_reclaim()
+    with staged_path.source_mark_authority(
+            queue, tier_id=tier_id, stage=stage, cas_root=own_cas,
+            residency_root=residency_root, memo=census_memo) as authority:
+        granted, verdict, parse_counts, validate_started = authority
+        result = _held_reclaim(verdict, parse_counts, validate_started)
     released = time.perf_counter()
     if "entries" not in result:
         result["entries"] = [

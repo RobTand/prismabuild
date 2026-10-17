@@ -1719,6 +1719,66 @@ def ownership_census(queue: pool.PoolQueue, mover_action_key: str, *,
             "tainted": fragment_taint + claimed_taint + pin_taint + source_taint}
 
 
+@dataclass(frozen=True)
+class RetainedPaths:
+    paths: frozenset[str] = frozenset()
+    refusal: str = ""
+    errors: tuple[str, ...] = ()
+    movers_in_flight: tuple[str, ...] = ()
+
+
+def source_mark_census(queue: pool.PoolQueue, *, tier_id: str, stage: Path,
+                       cas_root: str, residency_root,
+                       memo: kept_reads.CensusMemo, hint: bool = False) -> RetainedPaths:
+    """One source-mark retention verdict, preserving conditional census reads."""
+    if not hint:
+        try:
+            moving = movers_in_flight(queue, tier_id=tier_id)
+        except (OSError, pool.PoolContractError, ValueError) as exc:
+            return RetainedPaths(refusal="queue_census_unreadable", errors=(str(exc),))
+        if moving:
+            return RetainedPaths(refusal="movers_in_flight", errors=("movers_in_flight",),
+                                 movers_in_flight=tuple(sorted(moving)))
+    attributed, taint = attributed_census(
+        queue, wanted=None, residency_root=residency_root, memo=memo)
+    if taint and not hint:
+        return RetainedPaths(refusal="attribution_unreadable", errors=tuple(
+            f"ownership uncertain: {item}" for item in taint[:ATTRIBUTION_TAINT_LIMIT]))
+    pins, taint = reader_lease.live_for(
+        queue, None, residency_root=residency_root, memo=memo.pins)
+    if taint and not hint:
+        return RetainedPaths(refusal="pin_census_unreadable", errors=tuple(
+            f"ownership uncertain: {item}" for item in taint))
+    attributed |= set(pins)
+    claims, taint = claimed_paths(queue, tier_id, cas_root, memo=memo)
+    if taint and not hint:
+        return RetainedPaths(refusal="claim_census_unreadable", errors=tuple(
+            f"ownership uncertain: {item}" for item in taint))
+    if not hint:
+        for relative in claims:
+            attributed.add(os.path.normpath(os.path.join(str(stage), str(relative))))
+    sources, taint = claimed_source_paths(queue, stage, cas_root, memo=memo)
+    if taint and not hint:
+        return RetainedPaths(refusal="promotion_census_unreadable", errors=tuple(
+            f"ownership uncertain: {item}" for item in taint))
+    if not hint:
+        attributed |= {os.path.normpath(str(one)) for one in sources}
+    return RetainedPaths(frozenset(attributed))
+
+
+@contextmanager
+def source_mark_authority(queue: pool.PoolQueue, *, tier_id: str, stage: Path,
+                          cas_root: str, residency_root, memo: kept_reads.CensusMemo):
+    """Re-census under the existing ownership lock and keep it through the act."""
+    with ownership(queue, stage, role="reclaim-source-marks") as granted:
+        parse_counts = memo.counts()
+        validate_started = time.perf_counter()
+        verdict = source_mark_census(
+            queue, tier_id=tier_id, stage=stage, cas_root=cas_root,
+            residency_root=residency_root, memo=memo)
+        yield granted, verdict, parse_counts, validate_started
+
+
 def claimed_source_paths(queue: pool.PoolQueue, stage: Path,
                           cas_root: str | Path | None = None,
                           memo: kept_reads.CensusMemo | None = None,
