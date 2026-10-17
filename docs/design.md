@@ -16155,7 +16155,7 @@ loader creates no bytecode, and runtime publication installs no host unit.
 
 ### Census ownership, C27
 
-`prismabuild.census` owns the fixed questions `offers`, `rows`, `denials`,
+`prismabuild.census` owns the fixed questions `offers`, `action_rows`, `denials`,
 `tiers`, `movers`, `plans`, `waits` and `blocked_origins`. Each returns a
 `Section` with its value, declared inputs, selection bounds and independent
 `complete`, `partial` or `unavailable` coverage. Known observations survive

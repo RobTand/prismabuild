@@ -7,7 +7,6 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 import errno
-import heapq
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
@@ -16,7 +15,6 @@ from pathlib import Path
 import re
 import signal
 import socket
-import stat as statmod
 import sys
 import threading
 import time
@@ -27,7 +25,6 @@ from runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import census as fleet_census, pool  # noqa: E402
-from prismabuild import kept_reads
 
 
 DEFAULT_QUEUE_ROOT = fleet_census.DEFAULT_QUEUE_ROOT
@@ -138,29 +135,6 @@ def _resource_samples(values: object) -> list[tuple[str, float]]:
         if mapping is not None and number is not None:
             result.append((mapping[0], number * mapping[1]))
     return result
-
-
-# --------------------------------------------------------------------------
-# Kept reads (#1020)
-# --------------------------------------------------------------------------
-#
-# A scrape used to read the queue from nothing: every state directory listed,
-# every terminal record and movement receipt stat-ed, every residency plan
-# parsed and censused.  ``fleet_census.KeptReads`` is what one exporter keeps between
-# scrapes instead, under the fences the tier loop's census already trusts
-# (#992): a directory is not listed again while its ``lstat`` version equals
-# a stamp taken before its last listing (``kept_reads.filesystem_trust.directory_before``), and a record is not read again while its file version holds
-# (``kept_reads.DirectoryRecords``).  Every queue writer files by rename,
-# which is what both fences stand on.  A stamp is never trusted on a network
-# filesystem or inside the clock tick it was taken in, so on NFS every
-# listing repeats, by design: the exporter belongs on the queue's own host.
-#
-# What is kept is what the gauges need, never whole records: a terminal
-# record's row, a receipt's projection, a plan's census totals.  Whatever
-# failed to read is never kept, so unreadable stays freshly unreadable, and
-# anything no longer on disk is dropped when its directory is next listed.
-# A listing that could not ``stat`` every entry fails the scrape exactly as
-# the plain walk's raise does, and is not kept either.
 
 
 @dataclass
@@ -634,24 +608,7 @@ def _starvation_metrics(
     return ok
 
 
-#: How many of the newest mover receipts one snapshot examines. The
-#: ``movers/`` directory is append-only with one JSON per movement node, so
-#: the scan is bounded by file modification time and the content window is
-#: applied after the read -- the same shape as the terminal record limit,
-#: with its own constant because the two populations differ.
-_MOVE_RECEIPT_CAP = 1000
-
-#: Tier label for a record that names no usable tier. One value, never an
-#: action key: the unknown bucket keeps the series accounting complete
-#: without growing label cardinality with the queue.
 _UNKNOWN_TIER = "unknown"
-
-
-#: A record that could not be read or did not parse: never kept, so it is read
-#: again next scrape.
-_UNREADABLE = object()
-#: A file in ``movers/`` that is not a movement receipt (an egress record).
-_NOT_A_RECEIPT = object()
 
 
 def _promotion_metrics(metrics: Metrics, queue_root: Path, *, now: float,

@@ -4,9 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-import errno
 import heapq
-import json
 import math
 import os
 from pathlib import Path
@@ -15,7 +13,7 @@ import shlex
 import time
 from typing import Generic, Literal, TypeVar
 
-from . import (action_edges, core as pb, pool, produced_output, residency_map, residency_plan,
+from . import (core as pb, pool, produced_output, residency_map, residency_plan,
                storage_tiers, window_credit, slurm_lane as sl)
 from . import kept_reads
 read_cache = kept_reads
@@ -1578,7 +1576,7 @@ def starvation(queue_root: str | Path, *, now: float | None = None, reader=None)
     """Answer "what is waiting on data" as one JSON-serializable blob.
 
     A non-atomic diagnostic census over the pool queue root, reusing
-    :func:`active` for the queue walk: claims and leases for quiet
+    :func:`action_rows` for the queue walk: claims and leases for quiet
     consumers, plans and fragments for promotion state, tier announcements
     and ledgers for fill and occupancy, denial snapshots for who blocks
     movers.  Nothing here writes, nothing admits, nothing schedules.

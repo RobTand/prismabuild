@@ -44,7 +44,6 @@ import math
 import os
 from pathlib import Path
 import re
-import shlex
 import stat
 import subprocess
 import sys
@@ -62,10 +61,7 @@ from prismabuild import census as fleet_census  # noqa: E402
 from prismabuild import (  # noqa: E402
     _bounded_reader as _reader, core as pb, pool, slurm_lane as sl,
 )
-from prismabuild import action_edges, kept_reads as read_cache  # noqa: E402
-from prismabuild import produced_output  # noqa: E402
-from prismabuild import residency_map, residency_plan, storage_tiers  # noqa: E402
-from prismabuild import window_credit  # noqa: E402
+from prismabuild import action_edges  # noqa: E402
 
 #: Where the fleet keeps the queue both transports file their endings in.  The
 #: same spelling ``pbrun`` and ``pool_reset`` use.
@@ -157,12 +153,6 @@ def canary_lines(summary: Mapping[str, object] | None) -> list[str]:
 #: own 60 s, deliberately: a ``pbrun`` waiting on a job is willing to wait for
 #: a busy controller, and a person looking at a status screen is not.
 COMMAND_TIMEOUT_S = 20.0
-
-# Terminal rows are summaries, but pull-queue writers can copy complete action
-# logs into them. One audit result made a single row 213.2 MiB, so merely asking
-# for recent status expanded the collector past its service memory limit. The
-# immutable attempt log remains the interface for fetching full output.
-MAX_ENDING_RECORD_BYTES = 8 * 1024 * 1024
 
 #: How long the whole run has to read the shared queue root.  A diagnostic
 #: that can wait forever is worse than one that says it could not read the
@@ -625,59 +615,6 @@ def _name_the_job_ahead(jobs: list[dict]) -> None:
             else "waiting for another job of the same action"
         )
         job["note"] = f"{job['note']}; {note}" if job.get("note") else note
-
-
-#: What a lease must say about itself before either observation on it is read.
-
-
-#: An offer this old marks its box ``retired`` in the node census (#1040): the
-#: loop that wrote it is not restarting, the box left.  One day is far past
-#: ``pool.OFFER_TIMEOUT_S`` (a supervisor replaces a loop within minutes) and
-#: short enough that a decommissioned box stops reading as a transient outage.
-
-
-#: How much of a draining offer's holder and reason the node census reports.
-#: The worker bounds them before publishing (200 and 1000); these bounds keep
-#: a foreign or corrupt record from turning one status row into a wall of
-#: text, and the census is the reader that would have to print it.
-
-
-# --------------------------------------------------------------------------
-# Starvation telemetry (--starvation, issue #661)
-# --------------------------------------------------------------------------
-#
-# One JSON blob answering "what is waiting on data": which claimed consumers
-# look stalled on their leads, what each residency plan has staged and
-# promoted, where the read cursor stands against the promoted frontier, what
-# the tiers currently offer and hold, and which claim denials block movers.
-#
-# Read-only and zero new state: every section below derives from records the
-# fleet already files (claims, leases, plans, fragments, tier announcements,
-# ledgers, denial snapshots).  Whatever cannot be derived from those records
-# is emitted as the string ``"not_observable"`` with its entry in the
-# ``not_observable`` gap list saying what would have to be recorded -- that
-# list is a deliverable for the MCP observability design (#660), not an
-# error.
-
-#: Schema of the --starvation JSON blob.
-
-#: What ``not_observable`` fields are spelled, so a reader can test one field
-#: rather than the absence of one.
-
-#: A claimed consumer counts as waiting on data past half its progress grace
-#: with a payload scope to match.  A reporting heuristic, never admission:
-#: the watchdog owns liveness, this owns the sentence "look here first".
-
-#: Payload silence corroborating a quiet claim.  Same standing as the
-#: fraction above: a number this blob reports beside the verdict, not a gate.
-
-
-#: Schema of the --blocked-origins JSON blob (#926).
-
-
-#: What frees an orphaned prewrite (#949, #1053): the one remedy the tier
-#: cycle's event names too. PB never deletes a file whose identity no commit
-#: recorded, so the operator does.
 
 
 def pool_node_lines(nodes: Sequence[Mapping[str, object]]) -> list[str]:
