@@ -72,7 +72,8 @@ def operate(request, store, load):
             if variant == "qualification":
                 qualification, upgrade = load("qualify_rollout"), load("upgrade_client")
                 source = store / "source"
-                for member in set(upgrade.MEMBERS.values()) | {"tools/fleet/publish_runtime.py"}:
+                for member in set(upgrade.MEMBERS.values()) | {
+                        upgrade.OPTIONAL_MEMBERS["park_proof.py"], "tools/fleet/publish_runtime.py"}:
                     target = source / member
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(b"# private qualification wire fixture member\n")

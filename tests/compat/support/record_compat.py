@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.compatibility_window import require_reachable
-from compat_references import module_paths, generation_reference
+from compat_references import module_paths, generation_reference, absence_module_paths
 
 HERE = Path(__file__).resolve().parent
 CAPTURE = ROOT / "tests/compat/generations"
@@ -214,8 +214,7 @@ def historical_absence(root, case, manifest):
         assert kind.caller_input and not kind.writers
     paths = []
     for reference in (kind.reader,) + kind.legacy_readers:
-        module = reference.split(":")[0]
-        paths.extend(module_paths(module))
+        paths.extend(absence_module_paths(root, reference))
     if any((root / path).is_file() for path in paths):
         if kind.older_input_absence:
             return None

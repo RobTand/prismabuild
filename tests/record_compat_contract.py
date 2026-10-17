@@ -56,7 +56,7 @@ class WriterEvidence:
     def __init__(self):
         self.records = {}
 
-    def observe(self, record, raw):
+    def observe(self, record, raw, *, fixture_origin=None):
         case = record["request"]
         assert case not in self.records
         fields = ("returncode", "isolated", "no_site", "compiled_source_code_verified", "catalogued_entry_verified",
@@ -64,7 +64,8 @@ class WriterEvidence:
                   "selected_adapter_sha256", "request", "sys_path", "interpreter")
         self.records[case] = {key: record[key] for key in fields}
         self.records[case].update(wire_sha256=hashlib.sha256(raw).hexdigest(),
-                                  fixture_origin=GOLDENS[case].get("origin", "production writer"))
+                                  fixture_origin=(GOLDENS[case].get("origin", "production writer")
+                                                  if fixture_origin is None else fixture_origin))
 
     def pytest_terminal_summary(self, terminalreporter):
         for case, value in sorted(self.records.items()):

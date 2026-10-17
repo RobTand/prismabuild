@@ -28,6 +28,15 @@ CURRENT_PRIOR_ENTRIES.update({
 })
 
 
+def absence_module_paths(root, reference):
+    """Declare the fixed historical module even when both relocated owners are absent."""
+    paths = module_paths(reference.split(":")[0])
+    prior = CURRENT_PRIOR_ENTRIES.get(reference)
+    if prior is not None and not any((root / path).is_file() for path in paths):
+        return module_paths(prior.split(":")[0])
+    return paths
+
+
 def _has_definition(root, reference):
     module, name = reference.split(":")
     path = next((root / item for item in module_paths(module) if (root / item).is_file()), None)

@@ -53,9 +53,18 @@ def operate(request, store, load):
             generation.mkdir(parents=True)
             source = Path(module.__file__).resolve()
             root = source.parents[2] if source.parent.name == "fleet" else source.parents[1]
-            present = {name: relative for name, relative in module.OPTIONAL_MEMBERS.items()
-                       if (root / relative).is_file()}
-            members = {**module.MEMBERS, **(present if variant == "optional" else {})}
+            if variant == "required":
+                optional = {}
+            elif variant == "optional":
+                optional = {"gpu_capacity.py": module.OPTIONAL_MEMBERS["gpu_capacity.py"]}
+            elif variant == "current-all-members":
+                optional = module.OPTIONAL_MEMBERS
+                assert set(optional) == {"gpu_capacity.py", "park_proof.py",
+                                         "digest_primitives.py", "generation_receipt.py"}
+            else:
+                raise ValueError(f"unknown runtime export population: {variant}")
+            assert all((root / relative).is_file() for relative in optional.values())
+            members = {**module.MEMBERS, **optional}
             files = {}
             for name, relative in members.items():
                 # Bytes are deterministic supplied member fixtures. This
@@ -69,11 +78,19 @@ def operate(request, store, load):
                 "schema": "prismaquant.prismabuild.runtime_version.v1", "generation": generation.name,
                 "commit": "a" * 40, "files": files}))
             raw = module.encode_export({"runtime": str(generation), "generation_store": str(generation.parent)})
+            if variant == "current-all-members":
+                return {"raw": base64.b64encode(raw).decode(),
+                        "fixture_population": {"case": request["case"],
+                            "required_members": sorted(module.MEMBERS), "optional_members": sorted(optional),
+                            "credit": "current export codec fixtures; no installed-member or cross-version acceptance"}}
         else:
             request["_consumer_boundary"]()
             version, blobs = module.decode_export(base64.b64decode(request["raw"]))
             assert version["commit"] == "a" * 40 and set(module.MEMBERS) <= set(blobs)
-            assert ("gpu_capacity.py" in blobs) == (variant == "optional")
+            if variant == "current-all-members":
+                assert set(blobs) == set(module.MEMBERS) | set(module.OPTIONAL_MEMBERS)
+            else:
+                assert ("gpu_capacity.py" in blobs) == (variant == "optional")
             return version
     elif family == "upgrade-local":
         agent = module.Upgrader({"install_dir": str(store / "install"), "state_dir": str(store / "state")})
