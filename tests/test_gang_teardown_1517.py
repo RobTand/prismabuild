@@ -16,6 +16,7 @@ from prismabuild import _gang, pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 def _both_claimed(queue, publish, finish, gclaim, members, **kwargs):
@@ -114,13 +115,13 @@ def test_pbrun_seals_a_gang_member_and_refuses_retries():
     base = ["--cwd", ".", "--transport", "pool", "--gang-group", "c" * 32, "--gang-size", "2", "--gang-index", "1",
             "--", "true"]
     args = pbrun.parse_args(base)
-    assert pbrun.gang_declaration(args) == {"group": "c" * 32, "size": 2, "index": 1}
+    assert submit_core.gang_declaration(args) == {"group": "c" * 32, "size": 2, "index": 1}
     for extra in (["--retry-safe", "--max-attempts", "2"],):
         with pytest.raises(SystemExit, match="one attempt"):
-            pbrun.gang_declaration(pbrun.parse_args([*extra, *base]))
+            submit_core.gang_declaration(pbrun.parse_args([*extra, *base]))
     with pytest.raises(SystemExit, match="go together"):
-        pbrun.gang_declaration(pbrun.parse_args(["--cwd", ".", "--transport", "pool", "--gang-size", "2", "--", "true"]))
-    assert pbrun.gang_declaration(pbrun.parse_args(["--cwd", ".", "--", "true"])) is None
+        submit_core.gang_declaration(pbrun.parse_args(["--cwd", ".", "--transport", "pool", "--gang-size", "2", "--", "true"]))
+    assert submit_core.gang_declaration(pbrun.parse_args(["--cwd", ".", "--", "true"])) is None
 
 
 def test_a_member_whose_lease_is_lost_tears_the_gang_down(gang_fleet, monkeypatch):

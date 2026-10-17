@@ -8,6 +8,7 @@ interpreter exists", which is how CPU-only work pinned itself onto the GPU
 hosts and idled both GPUs for 100 minutes on 2026-09-28.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 import os
@@ -232,13 +233,15 @@ def test_pbrun_derives_the_interpreter_from_an_absolute_python():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]
                            / "tools" / "fleet"))
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    assert pbrun.interpreter_of(
+    assert submit_core.interpreter_of(
         ["/home/rob/venvs/x/bin/python", "-m", "pytest"]) == \
         "/home/rob/venvs/x/bin/python"
-    assert pbrun.interpreter_of(["python3", "-m", "pytest"]) is None
-    assert pbrun.interpreter_of(["/usr/bin/env", "python"]) is None
-    assert pbrun.interpreter_of([]) is None
+    assert submit_core.interpreter_of(["python3", "-m", "pytest"]) is None
+    assert submit_core.interpreter_of(["/usr/bin/env", "python"]) is None
+    assert submit_core.interpreter_of([]) is None
 
 
 def test_pbtest_refuses_a_path_no_recorded_worker_reports(tmp_path, capsys):
@@ -322,7 +325,7 @@ def test_pbrun_publishes_a_first_submission_with_a_notice(tmp_path, capsys):
     _announce_live(queue, "sparky")
     _announce_live(queue, "sparklina")
 
-    verdict = pbrun.interpreter_submission_verdict(
+    verdict = submit_core.interpreter_submission_verdict(
         queue, {"tags": [], "interpreter": PQ_PYTHON,
                 "resources": {"cpu": 1, "mem_gb": 1}})
 
@@ -332,7 +335,7 @@ def test_pbrun_publishes_a_first_submission_with_a_notice(tmp_path, capsys):
     refused = _queue_at(tmp_path / "refused")
     _announce_live(refused, "sparky", absent=[PQ_PYTHON])
     _announce_live(refused, "sparklina", absent=[PQ_PYTHON])
-    verdict = pbrun.interpreter_submission_verdict(
+    verdict = submit_core.interpreter_submission_verdict(
         refused, {"tags": [], "interpreter": PQ_PYTHON,
                   "resources": {"cpu": 1, "mem_gb": 1}})
     assert verdict[0] == "absent", verdict

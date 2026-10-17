@@ -6,6 +6,7 @@ tests and the live ZFS case retain their own samples. Host disk occupancy
 therefore cannot turn an admission scenario into an unrelated floor refusal.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 import multiprocessing
@@ -742,6 +743,8 @@ def test_cli_register_status_check_refresh(tmp_path, capsys, monkeypatch, ample_
 
 def _pbrun_world(tmp_path, monkeypatch):
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     _stable(tmp_path)
     fleet = tmp_path / "fleet"
@@ -749,7 +752,7 @@ def _pbrun_world(tmp_path, monkeypatch):
     queue.ensure_layout()
     (fleet / "cas").mkdir(parents=True)
     _register(queue, fleet / "cas", filesystem_gib=4, filesystem_ledger="fs-test")
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path),
                                       "--filesystem-growth-gib", "2", "--", "true"])
     ledger = pool.ResourceLedger(queue.root / ff.FILESYSTEM_RESERVATIONS, host="fs-test")
@@ -765,10 +768,10 @@ def test_pbrun_holds_growth_while_publishing_and_releases_before_waiting(
         # The real submission body is replaced only here, to observe the
         # allowance while it would run; the guard and ledger are real.
         seen["held"] = ledger.held().get("filesystem_gib", 0)
-        return lambda: report.finish(pbrun.action_client.ClientCommand(
+        return lambda: report.finish(submit_core.action_client.ClientCommand(
             seen.setdefault("waited_with", ledger.held().get("filesystem_gib", 0))))
 
-    monkeypatch.setattr(pbrun, "submit_and_publish", publish)
+    monkeypatch.setattr(submit_core, '_prepare_and_publish', publish)
     pbrun.main()
     assert seen == {"held": 2, "waited_with": 0}
 
@@ -778,7 +781,7 @@ def test_pbrun_below_the_floor_submits_nothing_and_says_why(
     pbrun, queue, ledger = _pbrun_world(tmp_path, monkeypatch)
     key = ff.bindings(queue.root)[0]["key"]
     _leave(queue, key, 1)
-    monkeypatch.setattr(pbrun, "submit_and_publish",
+    monkeypatch.setattr(submit_core, '_prepare_and_publish',
                         lambda *a, **k: pytest.fail("nothing may be submitted"))
     with pytest.raises(SystemExit, match="below its floor; nothing submitted"):
         pbrun.main()

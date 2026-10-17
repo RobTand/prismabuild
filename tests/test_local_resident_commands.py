@@ -185,6 +185,8 @@ def test_renew_command_uses_the_policy_and_keeps_the_body_immutable(tmp_path, ca
 def test_dispatch_builds_a_real_snapshot_and_publishes_verified_requests(tmp_path, monkeypatch, capsys):
     import pbresident
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     store, record, spec = world(tmp_path)
     monkeypatch.setattr(local_resident.time, "time", lambda: 120)
     checkout = tmp_path / "checkout"
@@ -194,7 +196,7 @@ def test_dispatch_builds_a_real_snapshot_and_publishes_verified_requests(tmp_pat
                       ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "fixture"]):
         subprocess.run(["git", "-C", str(checkout), *arguments], check=True, capture_output=True)
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SH", shared)
+    patch_store(monkeypatch, client=pbrun, root=shared)
     queue = pool.PoolQueue(store.queue_root)
     queue.announce_tier({"tier_id": "local:test-host", "host": "test-host", "mountpoint": spec["root"],
         "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"})

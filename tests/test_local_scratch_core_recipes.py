@@ -8,6 +8,7 @@ Pbrun's action code closure contains only its identity stamp; the five producer
 sources are proved from the sealed checkout snapshot through the real materializer.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -197,8 +198,8 @@ def _refreeze_changed_private_core(fleet, base):
         "--cwd", str(fleet.work), "--transport", "pool", "--no-default-env", "--tag", "gb10",
         "--cpus", "1", "--demand", "mem_gb=4", "--timeout-s", "30", *extra,
         "--", *base["params"]["command"]])
-    template = pbrun.prepare_submission(args)["template"]
-    return pbrun.seal_action_from_template(template)
+    template = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render)["template"]
+    return submit_core.seal(template)
 
 
 def test_harmless_changed_recipe_core_snapshot_executes_but_three_source_qualification_refuses(
