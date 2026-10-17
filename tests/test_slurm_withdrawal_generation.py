@@ -30,6 +30,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WORKER = REPOSITORY / "tools" / "prismabuild_worker.py"
@@ -105,10 +106,10 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
         withdrawn.append(1)
         # Another process resolves the record this call just published and
         # runs the real withdrawal: marker, terminal record, then scancel.
-        assert pbrun.withdraw_slurm_main(
+        assert submit_core.withdraw_slurm_main(
             [KEY], lane_root=lane, queue_root=queue, by="audit-operator",
             reason="stop this generation", squeue=fleet.squeue,
-        ) == 0
+        store=pbrun.configured_store(), display=pbrun.render) == 0
         assert marker.exists()
 
     monkeypatch.setattr(sl, "_write_json_atomic", write_then_withdraw)

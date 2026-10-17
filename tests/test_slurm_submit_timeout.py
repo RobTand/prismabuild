@@ -25,6 +25,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_singleton import ACTION, FakeCAS, KEY, REPOSITORY  # noqa: E402
 
@@ -245,7 +246,7 @@ def test_pbrun_reports_an_unknown_fate_as_no_verdict(
         returncode=1,
         stderr="slurm_load_jobs error: Unable to contact slurm controller "
                "(connect failure)\n")
-    code = pbrun.slurm_outcome(
+    code = submit_core.slurm_outcome(
         ACTION,
         cas=FakeCAS(tmp_path / "cas"),
         request_path=tmp_path / "request.json",
@@ -254,10 +255,10 @@ def test_pbrun_reports_an_unknown_fate_as_no_verdict(
         queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
         sbatch=_hanging_sbatch(seen),
         squeue=_controller(seen, [], reply=down),
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
     err = capsys.readouterr().err
-    assert code == pbrun.action_client.GAVE_UP_EXIT
+    assert code == submit_core.action_client.GAVE_UP_EXIT
     assert "the fate of this submission is unknown" in err
     assert "slurm refused this action" not in err
     assert f"pb-{KEY[:12]}" in err

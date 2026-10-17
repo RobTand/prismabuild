@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool, slurm_lane as sl  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "9f" * 32
 
@@ -112,10 +113,10 @@ def _cancelled(controller: Path) -> list[str]:
 def _withdraw(tmp_path: Path, **kwargs) -> int:
     lane_root = tmp_path / "lane"
     _lane_record(lane_root)
-    return pbrun.withdraw_slurm_main(
+    return submit_core.withdraw_slurm_main(
         [KEY[:12]], by="rob@sparky", lane_root=lane_root,
         queue_root=tmp_path / "pb-queue", **kwargs,
-    )
+    store=pbrun.configured_store(), display=pbrun.render)
 
 
 def test_it_cancels_the_sibling_the_singleton_is_holding(
