@@ -33,13 +33,13 @@ def test_funded_mover_authority_requires_known_history(tmp_path, successor, corr
         _prewrite(world.q, world.inst, world.template, "b1", descriptors)
         published = world.first_publish("b1", descriptors)
     mover = str(published["mover_key"])
-    funded = world.q.read_output_funding(mover, TIER)
+    funded = world.q.funding.read_output(mover, TIER)
     assert funded is not None
-    assert world.q._output_batch_authority(funded) is True
+    assert world.q.funding._output_batch_authority(funded) is True
     if corrupt:
         rows = world.entry("b1").get("materializations", [])
         _install(world, [None, *rows], batch_retired=successor)
-    assert world.q._output_batch_authority(funded) is (not corrupt)
+    assert world.q.funding._output_batch_authority(funded) is (not corrupt)
 
 
 def test_the_admitted_history_control_reports_its_actual_interpreter(capsys):
