@@ -31,7 +31,7 @@ def staged_replay_capture(checkout: Path, data: Path):
     queue.records.ensure_layout()
     root = queue.records.residency_fragment_root()
     manifest, digest, body = fixture._manifest(data)
-    stage_move.FRAGMENT_PUBLISH_S = 1e12
+    stage_move.FRAGMENT_PUBLISH_S = 3600.0
     queue.tier(fixture.STAGE_TIER).mint({"stage_gib": 4})
     assert queue.tier(fixture.STAGE_TIER).take(fixture.STAGE_MOVER, {"stage_gib": 1})
     events, wires, generations, epochs = [], [], {}, {}
@@ -97,7 +97,7 @@ def staged_replay_capture(checkout: Path, data: Path):
     try:
         stage_receipt = stage_move.move(fixture._stage_args(
             data, queue, manifest, digest, fixture.CONSUMER, fixture.STAGE_MOVER))
-        assert stage_receipt["complete"] and stage_receipt["bytes_copied"] == fixture.TOTAL
+        assert stage_receipt["complete"] and stage_receipt["bytes_staged"] == fixture.TOTAL
         queue.record_move(fixture.STAGE_MOVER, stage_receipt)
         owner.register_stage_root(queue, tier_id=fixture.STAGE_TIER, stage_root=data / "stage")
 
@@ -110,7 +110,7 @@ def staged_replay_capture(checkout: Path, data: Path):
         assert queue.tier(fixture.RAM_TIER).take(fixture.RAM_MOVER, {"ram_gib": 1})
         ram_receipt = ram_promote.promote(fixture._promote_args(
             data, queue, manifest, digest, fixture.RAM_MOVER))
-        assert ram_receipt["complete"] and ram_receipt["bytes_copied"] == fixture.TOTAL
+        assert ram_receipt["complete"] and ram_receipt["bytes_staged"] == fixture.TOTAL
         queue.record_move(fixture.RAM_MOVER, ram_receipt)
         owner.register_stage_root(queue, tier_id=fixture.RAM_TIER, stage_root=ram)
 
@@ -120,6 +120,7 @@ def staged_replay_capture(checkout: Path, data: Path):
             consumer_action_key=fixture.OTHER_CONSUMER, tier_id=fixture.STAGE_TIER,
             phase="read", range_start_bytes=0, range_end_bytes=fixture.TOTAL, residency_root=root)
         assert adopted["adopted"] and adopted["tokens_moved"] == 1
+        assert queue.move_record(fixture.OTHER_STAGE_MOVER)["bytes_copied"] == 0
         assert before == {str(p): reader_lease.stat_identity(str(p)) for p in fixture._named(data / "stage", body)}
 
         phase[0] = "shrink"
@@ -158,7 +159,7 @@ def staged_replay_capture(checkout: Path, data: Path):
     finally:
         residency_map.write_fragment, reader_lease.write_material, Path.unlink = actual_fragment, actual_material, actual_unlink
     return {"events": events, "wire_documents": wires,
-            "facts": {"stage_bytes": stage_receipt["bytes_copied"], "ram_bytes": ram_receipt["bytes_copied"],
+            "facts": {"stage_bytes": stage_receipt["bytes_staged"], "ram_bytes": ram_receipt["bytes_staged"],
                       "adopted_without_replacement": True, "shrunk": pruned["entries_pruned"],
                       "stage_deleted": egress["entries_deleted"], "ram_deleted": egress_ram["entries_deleted"],
                       "second_egress_released": again["tokens_released"]}}
