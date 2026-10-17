@@ -241,7 +241,10 @@ def test_ending_archives_declarations_but_does_not_delete_or_carry_to_retry(
     outcome = {"status": "executed" if returncode == 0 else "failed", "returncode": returncode}
     queue.finish(item["action_key"], status=outcome["status"], detail=outcome, claim_snapshot=item)
     ending = pool.record_store.value_or_raise(
-        queue.records.item(pool.record_store.DONE if returncode == 0 else pool.record_store.READY, item["action_key"]),
+        queue.records.item(
+            pool.record_store.DONE if returncode == 0 else pool.record_store.READY,
+            item["action_key"],
+        ),
     )
     assert ending is not None
     history = ending["attempt_history"]

@@ -99,7 +99,10 @@ def test_scope_contradiction_in_lease_is_retained_not_overwritten(runtime, monke
         lease[field]["scope_id"] = "prismabuild-job" + hashlib.sha256(
             (item["action_key"] + nonce).encode()).hexdigest()[:32] + ".slice"
     pool.record_store._write_json(queue.records.lease_path(item["action_key"]), lease)
-    claim_before = queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).read_bytes(
+    claim_before = queue.records.item_path(
+        pool.record_store.CLAIMED,
+        item["action_key"],
+    ).read_bytes(
     )
     lease_before = queue.records.lease_path(item["action_key"]).read_bytes()
     held = queue.ledger().held()

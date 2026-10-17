@@ -910,8 +910,16 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     from kept_read_clock import after_paths
     after_paths(monkeypatch, fragment, material, tmp_path)
     fence = kept_reads.filesystem_trust.file_fence()
-    fragment_version = stage_release._fenced_path_version(fragment, fence, trust=kept_reads.filesystem_trust)[1]
-    material_version = stage_release._fenced_path_version(material, fence, trust=kept_reads.filesystem_trust)[1]
+    fragment_version = stage_release._fenced_path_version(
+        fragment,
+        fence,
+        trust=kept_reads.filesystem_trust,
+    )[1]
+    material_version = stage_release._fenced_path_version(
+        material,
+        fence,
+        trust=kept_reads.filesystem_trust,
+    )[1]
     directory_stamp = kept_reads.filesystem_trust.directory_evidence(tmp_path)
     assert fragment_version is not None and material_version is not None
     assert directory_stamp is not None, "checkpoint fixture needs trusted local storage"
@@ -927,7 +935,12 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     stage_release._retain_skip_checkpoints([one])
     assert install(one)
     assert not install(two), "an undiscovered owner is never cached"
-    assert stage_release._skip_checkpoint_hit(one, fragment, material, trust=kept_reads.filesystem_trust)
+    assert stage_release._skip_checkpoint_hit(
+        one,
+        fragment,
+        material,
+        trust=kept_reads.filesystem_trust,
+    )
 
     stage_release._retain_skip_checkpoints([one, two])
     assert install(two)
@@ -935,7 +948,12 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     stage_release._retain_skip_checkpoints([two])
     assert set(stage_release._skip_checkpoints) == {two}, (
         "an owner the sweep no longer discovers loses its checkpoint")
-    assert not stage_release._skip_checkpoint_hit(one, fragment, material, trust=kept_reads.filesystem_trust)
+    assert not stage_release._skip_checkpoint_hit(
+        one,
+        fragment,
+        material,
+        trust=kept_reads.filesystem_trust,
+    )
 
     # A full cache refuses; it never evicts the checkpoint it holds.
     stage_release._retain_skip_checkpoints([one, two])
@@ -944,7 +962,12 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     stage_release._retain_skip_checkpoints([one, two])
     assert not install(one)
     assert set(stage_release._skip_checkpoints) == {two}
-    assert stage_release._skip_checkpoint_hit(two, fragment, material, trust=kept_reads.filesystem_trust)
+    assert stage_release._skip_checkpoint_hit(
+        two,
+        fragment,
+        material,
+        trust=kept_reads.filesystem_trust,
+    )
     monkeypatch.undo()
 
     # A stamp of None, or co-owner documents never read, is never installed.

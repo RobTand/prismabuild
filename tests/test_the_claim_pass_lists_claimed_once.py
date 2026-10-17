@@ -287,7 +287,9 @@ def test_scan_reads_take_the_prior_verdict_on_first_use_and_keep_it_after_a_rena
     assert prior[identity]["reason"] == "reservation_unavailable_withholding"
     assert not reads.claimed_hint(item["action_key"])
     queue.record_denial(item, "transition_busy")
-    queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]).write_text(
+        json.dumps(item),
+    )
     assert not reads.claimed_hint(item["action_key"])
     reads.renamed_into_claimed()
     assert reads.claimed_hint(item["action_key"])

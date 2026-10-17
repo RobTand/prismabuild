@@ -146,7 +146,11 @@ def test_ordinary_failure_still_retries_and_can_succeed(tmp_path):
               max_attempts=3, retry_safe=True)
     first = q.claim(owner="first")
     assert first is not None
-    assert q.finish(key, status="failed", claim_snapshot=first).parent.name == pool.record_store.READY
+    assert q.finish(
+        key,
+        status="failed",
+        claim_snapshot=first,
+    ).parent.name == pool.record_store.READY
     second = q.claim(owner="second")
     assert second is not None and second["attempts"] == 1
     ended = q.finish(key, status="executed", claim_snapshot=second)

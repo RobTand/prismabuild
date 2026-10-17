@@ -318,7 +318,11 @@ def test_crash_before_leaf_creation_can_settle_without_deletion_authority(lifeti
     pending = live_record(queue, item)
     assert pending[FIELD]["entries"][0]["parent_identity"] is not None
     queue.finish(item["action_key"], status="failed", detail={}, claim_snapshot=pending)
-    assert queue.ledger().held() == {} and queue.records.item_path(pool.record_store.READY, item["action_key"]).exists(
+    assert queue.ledger().held(
+    ) == {} and queue.records.item_path(
+        pool.record_store.READY,
+        item["action_key"],
+    ).exists(
     )
 
 
@@ -340,7 +344,11 @@ def test_cleanup_mirror_failure_keeps_capacity_until_repaired(lifetime, monkeypa
     assert live_record(queue, item)[FIELD]["entries"][0]["cleaned"] is True
     monkeypatch.setattr(pool.record_store, '_write_json', write)
     queue.reap_stale()
-    assert queue.ledger().held() == {} and queue.records.item_path(pool.record_store.DONE, item["action_key"]).exists(
+    assert queue.ledger().held(
+    ) == {} and queue.records.item_path(
+        pool.record_store.DONE,
+        item["action_key"],
+    ).exists(
     )
 
 
@@ -367,10 +375,16 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
         with pytest.raises(OSError, match="fixture withdrawal before release"):
             queue.finish(key, status="withdrawn", detail=outcome, claim_snapshot=item)
     tombstones = list(
-        queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
     )
     assert len(tombstones) == 1 and queue.ledger().held()
-    assert not leaf(item).exists() and not queue.records.item_path(pool.record_store.CLAIMED, key).exists(
+    assert not leaf(item).exists(
+    ) and not queue.records.item_path(
+        pool.record_store.CLAIMED,
+        key,
+    ).exists(
     )
     monkeypatch.setattr(scratch, "_clean_scratch_directory", lambda *a:
                         pytest.fail("durably consumed scratch must not be revisited"))
@@ -418,12 +432,16 @@ def test_published_ending_tombstone_recovers_without_rewriting_ending(
             queue.finish(key, status=outcome["status"], detail=outcome, claim_snapshot=item)
     before = ending.read_bytes()
     assert list(
-        queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
     )
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert ending.read_bytes() == before and queue.ledger().held() == {}
     assert not list(
-        queue.records.dir(pool.record_store.CLAIMED).glob(f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}"),
+        queue.records.dir(pool.record_store.CLAIMED).glob(
+            f"{key}.*{pool.record_store.TOMBSTONE_SUFFIX}",
+        ),
     )
     assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
@@ -441,7 +459,11 @@ def test_widowed_scratch_lease_retains_charge_until_exact_cleanup_recovers(lifet
     assert (leaf(item) / "temp").read_bytes() == b"temporary"
     assert queue.sweep_widowed_leases(timeout_s=-1) == [key]
     assert queue.ledger().held() == {} and not queue.records.lease_path(key).exists()
-    assert not leaf(item).exists() and not queue.records.item_path(pool.record_store.CLAIMED, key).exists(
+    assert not leaf(item).exists(
+    ) and not queue.records.item_path(
+        pool.record_store.CLAIMED,
+        key,
+    ).exists(
     )
     assert (Path(variables["CACHE_ROOT"]) / "compiled").read_bytes() == b"persistent"
 
