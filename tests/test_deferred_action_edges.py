@@ -236,7 +236,9 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     summary = [event for event in events if event["event"] == dr.TICK_EVENT]
     assert summary[0]["released"] == 1 and summary[0]["elapsed_s"] >= 0
     assert ae.read_published(queue.root, pending)["action_key"] == key
-    assert json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())["priority_reason"] == "producer gate"
+    assert json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(),
+    )["priority_reason"] == "producer gate"
     assert "priority_reason" not in _request(tmp_path, key)["params"]
     # Declared against the batch (#914), so its retirement waits for it.
     assert (po._consumers_dir(queue.root, instance, "b1")

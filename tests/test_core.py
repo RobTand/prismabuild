@@ -1333,7 +1333,7 @@ def test_stable_file_identity_refuses_wrong_address_before_metadata_retry(
             payload,
             where="test payload",
             expected_sha256="0" * 64,
-            expected_bytes=len(b'wrong address'),
+            expected_bytes=len(b"wrong address"),
         )
     assert open_count == 1
 
@@ -3022,7 +3022,7 @@ def test_cas_lookup_rejects_receipt_parent_swapped_after_open(
         outside
         / "v3"
         / str(action["action_key"])[:2]
-        / f"{action["action_key"]}.json"
+        / f"{action['action_key']}.json"
     )
     hostile.parent.mkdir(parents=True)
     hostile.write_text("{}\n", encoding="utf-8")

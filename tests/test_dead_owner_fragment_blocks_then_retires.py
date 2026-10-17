@@ -309,10 +309,14 @@ def test_missing_or_unknown_authority_is_not_absence(fleet, which):
     queue, stage, _ = fleet
     consumer, mover = _dead_owner(fleet)
     if which == 'decision':
-        marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, mover).read_bytes())
+        marker = json.loads(
+            queue.records.item_path(pool.record_store.WITHDRAWN, mover).read_bytes(),
+        )
         queue.records.withdrawal_decision_path(marker).unlink()
     elif which == 'attempt':
-        failed = json.loads(queue.records.item_path(pool.record_store.FAILED, consumer).read_bytes())
+        failed = json.loads(
+            queue.records.item_path(pool.record_store.FAILED, consumer).read_bytes(),
+        )
         queue.records.attempt_path(failed, failed['attempts']).unlink()
     else:
         path = {'receipt': queue.records.move_path(mover),
@@ -347,7 +351,11 @@ def test_republication_after_census_retains_new_generation(fleet, monkeypatch, o
     monkeypatch.setattr(stage_release, '_fragment_census', census)
     stage_release.sweep(queue, stage_roots={TIER: str(stage)}, pressure={TIER: 0})
     _assert_retained(queue, stage, consumer, mover)
-    assert queue.records.item_path(pool.record_store.READY, consumer if owner == 'consumer' else mover).exists()
+    assert queue.records.item_path(
+        pool.record_store.READY,
+        consumer if owner == 'consumer' else mover,
+    ).exists(
+    )
 
 
 def _probe_locks(root, keys, result):

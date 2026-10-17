@@ -129,7 +129,9 @@ def test_satisfied_claim_retains_configuration_and_observation_evidence(tmp_path
     assert evidence['status'] == 'satisfied'
     assert evidence['observed_unix'] == 1000.
     assert len(evidence['requirements_sha256']) == 64
-    assert evidence == json.loads(q.records.item_path(pool.record_store.CLAIMED, KEY).read_text())['container_class_verdict']
+    assert evidence == json.loads(
+        q.records.item_path(pool.record_store.CLAIMED, KEY).read_text(),
+    )['container_class_verdict']
 
 
 @pytest.mark.parametrize('container', [True, False])
@@ -297,7 +299,9 @@ def test_real_worker_poll_publishes_class_refusal_and_preserves_native_polling(t
     monkeypatch.setattr(loop.pool.PoolQueue, 'serve_once', lambda *a, **k: seen.append(k))
     assert loop._run_loop(Event()) == 0
     q = pool.PoolQueue(tmp_path / 'pb-queue')
-    offer = json.loads((q.root / pool.record_store.WORKERS / (socket.gethostname()+'.json')).read_text())
+    offer = json.loads(
+        (q.root / pool.record_store.WORKERS / (socket.gethostname()+'.json')).read_text(),
+    )
     assert offer['container_class_verdict']['reason'] == 'required_image_missing'
     assert offer['container_images'] == [CONTENT, OTHER]
     if draining:

@@ -16,13 +16,23 @@ def failed_plan(queue):
 
 def test_28000_unrelated_terminals_skip_reads_and_real_plan_still_withdraws(queue, monkeypatch):
     mover = failed_plan(queue)
-    history = [queue.records.dir(base.pool.record_store.DONE) / (f'{index:064x}.json') for index in range(28000)]
+    history = [queue.records.dir(
+        base.pool.record_store.DONE,
+    ) / (f'{index:064x}.json') for index in range(
+        28000,
+    )]
     unrelated = {path.stem for path in history}
     scan, read, live = base.pool.immutable_files.scan_optional, base.pool.record_store._read_json, base.residency_plan.live_state
     calls = []
 
     def listed(path):
-        return history if Path(path) == queue.records.dir(base.pool.record_store.DONE) else scan(path)
+        return history if Path(
+            path,
+        ) == queue.records.dir(
+            base.pool.record_store.DONE,
+        ) else scan(
+            path,
+        )
 
     def read_only_candidates(path, *args, **kwargs):
         assert Path(path).stem not in unrelated, 'irrelevant historical terminal body was read'
