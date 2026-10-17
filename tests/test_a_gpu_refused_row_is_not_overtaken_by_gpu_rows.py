@@ -23,6 +23,7 @@ that cannot place a row takes no lock; and every withhold stays bounded.
 Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import hashlib
 from pathlib import Path
@@ -277,7 +278,7 @@ def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) ->
 @pytest.fixture()
 def ledger_clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     return now
 
 

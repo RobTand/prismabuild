@@ -15,6 +15,7 @@ it, to name the busy key in a ``transition-lock-busy`` event, and to finish
 the work on the next pass once the holder lets go.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import hashlib
 import json
@@ -107,7 +108,10 @@ def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
     source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.FAILED, consumer),
+        record,
+    )
     source.unlink()
 
 
@@ -349,7 +353,7 @@ def test_a_cycle_that_lets_a_record_age_past_the_horizon_says_it_overran(
     """A completed long cycle is marked on its ``tier-cycle`` line."""
 
     clock = [1_000_000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
     liveness = tier_loop.Liveness(interval_s=5.0)
     record = {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": TIER,
               "tier": "stage", "host": "dl380g10", "sampled_unix": clock[0]}

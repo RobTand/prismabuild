@@ -107,7 +107,10 @@ def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
     source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.records.item_path(pool.record_store.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.FAILED, consumer),
+        record,
+    )
     source.unlink()
 
 
@@ -117,7 +120,7 @@ def _claim(queue: pool.PoolQueue, key: str) -> None:
     source.unlink()
     item.update({"action_key": key, "claimed_unix": 1000.0,
                  "claimed_by": "worker", "claimed_host": "dl380g10"})
-    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(item))
+    queue.records.replace_record_at(queue.records.item_path(pool.record_store.CLAIMED, key), item)
 
 
 @pytest.fixture()

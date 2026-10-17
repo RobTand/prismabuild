@@ -10,6 +10,7 @@ of 188, so no mover could be admitted and every stage-fed consumer waited on a
 lead that could not land (#636).
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -38,11 +39,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return q
 
 
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw) -> None:
-    q.publish(action_key=key, cas_root=q.root / "cas", checkout_root=q.root / "co",
-              worker_script=q.root / "worker.py", resources=resources, **kw)
-
-
 def _residency() -> dict[str, object]:
     return {
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
@@ -52,8 +48,16 @@ def _residency() -> dict[str, object]:
 
 
 def _claim_mover(q: pool.PoolQueue, key: str = MOVER) -> dict[str, object]:
-    _publish(q, key, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, FILL_KIND: 188},
-             residency=_residency(), max_attempts=1, retry_safe=False)
+    ActionRows(q).publish(
+        key,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2, FILL_KIND: 188},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+    )
     claimed = q.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == key
     return claimed
@@ -75,8 +79,16 @@ def test_a_mover_that_kept_its_pin_still_returns_its_bandwidth(
     assert claimed["action_key"] == MOVER
 
     # And the next mover, which asks for the same 188, can now be admitted.
-    _publish(queue, OTHER, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, FILL_KIND: 188},
-             residency=_residency(), max_attempts=1, retry_safe=False)
+    ActionRows(queue).publish(
+        OTHER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2, FILL_KIND: 188},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+    )
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8},
                        tags=["dl380g10"]) is not None
 
