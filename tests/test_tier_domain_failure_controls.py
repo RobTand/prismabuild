@@ -25,11 +25,13 @@ def test_short_advance_rolls_back_only_its_own_host_take(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     seeded(queue, 1)
 
+    host_before = pool.held_names_visible(queue.ledger(HOST), "ram-host:" + GRANT)
     result = queue.tier(TIER).take_advance(GRANT, 1, 'ram_gib')
 
     assert result == ("tier-short", "tier pool refused the take")
     assert queue.tier(TIER).holdings(GRANT) == {'ram_gib': 1}
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
+    assert pool.held_names_visible(queue.ledger(HOST), "ram-host:" + GRANT) == host_before
 
 
 def test_unknown_advance_retains_the_preexisting_host_half(tmp_path, monkeypatch):
@@ -44,11 +46,13 @@ def test_unknown_advance_retains_the_preexisting_host_half(tmp_path, monkeypatch
         return original(ledger, key, demand)
 
     monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", interrupted)
+    host_before = pool.held_names_visible(queue.ledger(HOST), "ram-host:" + GRANT)
     result = queue.tier(TIER).take_advance(GRANT, 1, 'ram_gib')
 
     assert result == ("unknown", f"tier ledger unreadable: {fault!r}")
     assert queue.tier(TIER).holdings(GRANT) == {'ram_gib': 1}
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
+    assert pool.held_names_visible(queue.ledger(HOST), "ram-host:" + GRANT) == host_before
 
 
 @pytest.mark.parametrize("failed_count", [1, 3])
