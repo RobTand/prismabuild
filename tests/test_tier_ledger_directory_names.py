@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import kept_reads
 from prismabuild import pool  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import tier_holdings
 
 TIER = "prismabuild-stage:test-ledger"
