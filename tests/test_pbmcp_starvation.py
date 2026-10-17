@@ -21,8 +21,10 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 sys.path.insert(0, str(REPOSITORY / "tests"))
 
+
 import pbmcp  # noqa: E402
 import pbmcp_fixture as fx  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 DEADLINE_S = 1.0
@@ -49,7 +51,7 @@ def test_waiting_claims_carry_the_quiet_arithmetic_and_the_child(
 ) -> None:
     body = session.call("pb_starvation")
     assert body["complete"] is True and body["timed_out"] == []
-    assert body["starvation_schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert body["starvation_schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert body["census_complete"] is True
     assert len(body["waiting_claims"]) == 1
     claim = body["waiting_claims"][0]
@@ -63,7 +65,7 @@ def test_waiting_claims_carry_the_quiet_arithmetic_and_the_child(
     assert claim["child"]["cpu_seconds"] == pytest.approx(12.0)
     assert claim["waiting_on_data"] is True
     assert claim["waiting_rule"], "a boolean without its inputs is an opinion"
-    assert claim["cpu_growth"] == pbstatus.NOT_OBSERVABLE
+    assert claim["cpu_growth"] == fleet_census.NOT_OBSERVABLE
 
 
 def test_residency_plans_say_what_blocks_the_promotion(
@@ -118,12 +120,12 @@ def test_starved_ready_items_travel_with_the_answer(
     """The items a box will not withhold for arrive as pbstatus lists them (#924)."""
 
     assert session.call("pb_starvation")["starved"] == []
-    reader = pbmcp.pbstatus.read_starvation
+    reader = pbmcp.fleet_census.starvation
     row = {"action_key_prefix": "aaaaaaaaaaaa", "host": "fixture-box",
            "reason": "reservation_unavailable_starved",
            "why": "holder_does_not_drain_soon",
            "holders": [{"action_key": "683cb3caa5ea", "bound": "unbounded"}]}
-    monkeypatch.setattr(pbmcp.pbstatus, "read_starvation",
+    monkeypatch.setattr(fleet_census, "starvation",
                         lambda *args, **kwargs: {**reader(*args, **kwargs),
                                                  "starved": [row]})
     assert session.call("pb_starvation")["starved"] == [row]
@@ -145,7 +147,7 @@ def test_a_census_that_never_returns_is_reported_not_awaited(
     def never(*_args, **_kwargs):
         time.sleep(600)
 
-    monkeypatch.setattr(pbmcp.pbstatus, "read_starvation", never)
+    monkeypatch.setattr(fleet_census, "starvation", never)
     bounded = pbmcp.Session(queue_root=fleet.queue_root,
                             cas_root=fleet.cas_root,
                             repo_link=fleet.repo_link,

@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 
 NOW = 10_000.0
@@ -97,7 +98,7 @@ class MetricsFixture(unittest.TestCase):
             (self.queue / name).mkdir(parents=True)
         for patcher in (
             mock.patch.object(pbmetrics.time, "time", return_value=NOW),
-            mock.patch.object(pbmetrics.pbstatus.time, "time", return_value=NOW),
+            mock.patch.object(fleet_census.time, "time", return_value=NOW),
             mock.patch.object(pool, "_now", return_value=NOW),
         ):
             patcher.start()
@@ -288,7 +289,7 @@ class MetricsFixture(unittest.TestCase):
         _write(path, record)
         os.utime(path, (NOW - 10, NOW - 10))
 
-        with mock.patch.object(pbmetrics.pbstatus, "MAX_ENDING_RECORD_BYTES", 512):
+        with mock.patch.object(fleet_census, "MAX_ENDING_RECORD_BYTES", 512):
             text = self.collect(terminal_window_seconds=60, terminal_limit=20)
 
         self.assertIn(
@@ -538,7 +539,7 @@ class MetricsFixture(unittest.TestCase):
         self.assertNotIn(" Inf", text)
 
     def test_terminal_failure_has_a_separate_failure_gauge(self) -> None:
-        with mock.patch.object(pbmetrics.pbstatus, "read_endings", side_effect=OSError("offline")):
+        with mock.patch.object(fleet_census, "read_endings", side_effect=OSError("offline")):
             text = self.collect()
         self.assertIn('prismabuild_terminal_collection_success 0', text)
         self.assertIn('prismabuild_collection_success 0', text)

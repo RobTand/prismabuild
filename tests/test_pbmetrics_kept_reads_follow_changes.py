@@ -37,6 +37,7 @@ from test_pbmetrics_kept_reads import (  # noqa: E402
 )
 
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 import supervise  # noqa: E402
 from prismabuild import role_session
@@ -68,7 +69,7 @@ class Scrapes:
         self.patch = monkeypatch
         self.root = root
         self.now = now
-        self.reader = pbmetrics.KeptReads()
+        self.reader = fleet_census.KeptReads()
 
     def check(self, label: str) -> str:
         kept = shaped.queue_readings(_collect(self.root, self.now, self.reader))
