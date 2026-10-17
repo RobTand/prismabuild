@@ -37,7 +37,7 @@ def context(store, load, variant):
     record.update(claimed_by="compat-owner", claimed_host="compat-host", claimed_unix=100.0,
                   resource_scope={"action_key": C, "nonce": G, "scope_id": scope})
     path.unlink()
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, C), record)
+    queue.records.replace_record_at(queue.item_path(pool.CLAIMED, C), record)
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=C, claim_snapshot=record,
         env={"PRISMABUILD_ACTION_KEY": C, "PRISMABUILD_ACTION_NONCE": G, "PRISMABUILD_ACTION_SCOPE": scope})
@@ -108,7 +108,7 @@ def operate(request, store, load):
         else:
             record = json.loads(path.read_bytes())
             record["produced_output"] = json.loads(base64.b64decode(request["raw"]))
-            pool._write_json_atomic(path, record)
+            queue.records.replace_record_at(path, record)
             request["_consumer_boundary"]()
             return po.declared_template(queue, C)
     else:

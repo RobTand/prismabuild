@@ -51,7 +51,7 @@ def operate(request, store, load):
         # Exercise the supported legacy unscoped terminal API for this fixture.
         claim.pop("resource_scope")
         claim.update(max_attempts=1, retry_safe=False)
-        pool._write_json_atomic(claim_path, claim)
+        queue.records.replace_record_at(claim_path, claim)
         ended = queue.finish(owner, status="failed", detail={"returncode": 1})
         assert not claim_path.exists(), {"ended": str(ended), "producer_state": bl.producer_attempt_state(queue, instance)}
         ref = queue.build_produced_output_batch_ref(instance=instance, template=template,

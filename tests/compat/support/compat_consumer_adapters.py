@@ -40,7 +40,7 @@ def operate(request, store, load):
                 record = json.loads(published.read_bytes())
                 record.update(claimed_by="compat-consumer", claimed_host="compat-host", claimed_unix=100.0)
                 published.unlink()
-                pool._write_json_atomic(queue.item_path(pool.CLAIMED, consumer), record)
+                queue.records.replace_record_at(queue.item_path(pool.CLAIMED, consumer), record)
                 queue.finish(consumer, status="failed")
         assert po.release_origin_consumer(queue, ref, consumer_action_key=consumer, by="compat",
                                           reason="ended", **release_args)["released"]
