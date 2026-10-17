@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Promote one staged range from the SSD stage into the tmpfs (#640).
 
 The ram tier's movement node.  The stage mover copies pool -> stage; this
@@ -51,12 +50,8 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
 
-sys.path.insert(0, str(generation_root(__file__) / "src"))
-
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import materialize  # noqa: E402
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
@@ -65,7 +60,7 @@ from prismabuild import reader_lease  # noqa: E402
 from prismabuild import residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 
-from stage_move import (  # noqa: E402
+from prismabuild.stage_move import (  # noqa: E402
     _Copier, _StagedPublisher, _delta, bound_unproven_endings, cpu_seconds,
     load_manifest, own_action_key, prior_move_record, proc_io,
     retire_conflicted_window, stage_relative,
