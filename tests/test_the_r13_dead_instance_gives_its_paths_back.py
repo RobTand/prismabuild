@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 import r13_1053_replay as r13  # noqa: E402
 import test_prepaid_writer_integration as fx  # noqa: E402
