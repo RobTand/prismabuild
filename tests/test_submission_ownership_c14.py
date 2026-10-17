@@ -16,7 +16,7 @@ def _request(tmp_path, monkeypatch, **changes):
     work = _checkout(tmp_path)
     store = patch_store(monkeypatch, root=tmp_path)
     request = SubmissionRequest(cwd=str(work), command=("/bin/bash", "-c", "printf ok"),
-                                no_default_env=True, anywhere=True, detach=True)
+                                no_default_env=True, here=True, detach=True)
     return store, replace(request, **changes)
 
 
@@ -91,6 +91,7 @@ def test_decomposed_children_reach_the_gate_and_keep_repository_identity(tmp_pat
     store = patch_store(monkeypatch, root=tmp_path)
     request = logical()
     request["common"]["cwd"] = str(work)
+    request["common"]["here"] = True
     calls = []
     judge = submission.d38_gate.judge_publication
 
@@ -114,7 +115,7 @@ def test_gpu_children_cannot_skip_enforced_d38(tmp_path, monkeypatch, d38_config
     store = patch_store(monkeypatch, root=tmp_path)
     d38_config.write_text('{"d38_enforce": true}')
     request = logical()
-    request["common"].update(cwd=str(work), demand={"cpu": 1, "mem_gb": 1, "gpu": 1}, tags=["gb10"])
+    request["common"].update(cwd=str(work), demand={"cpu": 1, "mem_gb": 1, "gpu": 1}, tags=["gb10"], here=True)
     records, frozen = pbcampaign.decompose(request, transport="pool", priority=-10)
     assert len(records) == len(frozen["children"])
     assert {row["status"] for row in records} == {"refused"}
