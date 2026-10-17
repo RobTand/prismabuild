@@ -502,10 +502,6 @@
    "src/prismabuild/decomposition.py",
    "src/prismabuild/residency_plan.py"
   ],
-  "cancel": [
-   "src/prismabuild/slurm_lane.py",
-   "src/prismabuild/window_credit.py"
-  ],
   "canonical_json": [
    "tools/fleet/pbcanary_legs/common.py",
    "tools/fleet/upgrade_client.py"
