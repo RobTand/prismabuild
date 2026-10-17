@@ -12,6 +12,9 @@ class WindowError(ValueError):
     pass
 
 
+RECEIPT_MEMBERS = frozenset({"generation_receipt.py", "digest_primitives.py"})
+
+
 def client_protocol(root, *, receipt=None):
     root = Path(root)
     candidates = (root / "tools/fleet/upgrade_client.py", root / "tools/upgrade_client.py")
@@ -46,13 +49,37 @@ def client_protocol(root, *, receipt=None):
 
 def require_reachable(candidate, rollback):
     forward, target = client_protocol(candidate), client_protocol(rollback)
+    return require_client_transition(forward, target)
+
+
+def require_client_transition(forward, target):
+    for row in (forward, target):
+        present = set(row["present"]) & RECEIPT_MEMBERS
+        if present and present != RECEIPT_MEMBERS:
+            raise WindowError("incomplete receipt reader dependency closure")
+        if row["receipt_reader_protocol"] == 1 and present != RECEIPT_MEMBERS:
+            raise WindowError("receipt reader requires both installed dependencies")
     union = set(forward["present"]) | set(target["present"])
+    if union & RECEIPT_MEMBERS and any(row["receipt_member_protocol"] != 1 for row in (forward, target)):
+        raise WindowError("receipt client transition requires receipt-member recovery protocol 1 in both updaters")
     if union and any(row["optional_protocol"] != 2 for row in (forward, target)):
         raise WindowError("optional member transition requires dependency-aware protocol 2")
     if "park_proof.py" in union and any(row["proof_protocol"] != 2 for row in (forward, target)):
         raise WindowError("B09 proof member requires a protocol-2 bridge rollback target; a17477 is unreachable")
     return {"candidate": forward, "rollback": target,
             "physical_rollback": "separate qualification required"}
+
+
+def require_receipt_participants(direction, installed, roster):
+    sources = (direction["candidate"], direction["rollback"])
+    if not any(set(row["present"]) & RECEIPT_MEMBERS for row in sources):
+        return
+    if not installed or set(installed) != set(roster):
+        raise WindowError("receipt activation requires current installed updater proof for every enrolled participant; "
+                          "a separately authorized installed-reader bootstrap is required")
+    capable = {row["updater_sha256"] for row in sources if row["receipt_member_protocol"] == 1}
+    if any(digest not in capable for digest in installed.values()):
+        raise WindowError("current installed updater lacks receipt-member recovery protocol 1")
 
 
 def require_predeploy(window, status, *, captured_unix=None, max_age_s=300, now=None):

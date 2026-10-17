@@ -69,7 +69,7 @@ def validate(args):
     root = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(root / "src"))
     from prismabuild.compatibility_window import (
-        WindowError, require_generation, require_predeploy, require_reachable,
+        WindowError, require_generation, require_predeploy, require_reachable, require_receipt_participants,
     )
     envelope = json.loads(args.census.read_bytes())
     path = args.census.parent / envelope["status_file"]
@@ -101,6 +101,7 @@ def validate(args):
     target = args.generations / rollback["generation"]
     require_generation(target, rollback)
     facts = require_reachable(args.candidate, target)
+    require_receipt_participants(facts, None, hosts)
     if designation.get("requires_no_proof_member") and "park_proof.py" in facts["candidate"]["present"]:
         raise WindowError("a174 designation does not authorize a B09 proof-member deployment")
     immutable(args.out, {"hosts": hosts, "rollback": rollback, "protocols": facts,

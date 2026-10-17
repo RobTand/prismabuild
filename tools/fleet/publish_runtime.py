@@ -64,6 +64,10 @@ _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
 sys.path.insert(0, str(CHECKOUT / "src"))
 from prismabuild import fleet_roster  # noqa: E402
+from prismabuild.compatibility_window import (  # noqa: E402
+    RECEIPT_MEMBERS, WindowError, client_protocol, require_client_transition,
+    require_receipt_participants,
+)
 from prismabuild.digest_primitives import raw_sha256  # noqa: E402
 from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
@@ -1484,6 +1488,65 @@ def _barrier_generation(name):
         raise SystemExit(f"cannot qualify barrier generation {name}: {exc}") from exc
 
 
+def _require_reader_direction(target, *, rollout, receipt=None, files=None):
+    """Source transport is necessary; rolling has no current installed quorum."""
+    try:
+        roots = (target, MIRROR.resolve(strict=True) if MIRROR.exists() else None)
+        observations = []
+        for root, captured in zip(roots, (receipt, None)):
+            has_updater = root is not None and any((root / member).is_file() for member in
+                ("tools/fleet/upgrade_client.py", "tools/upgrade_client.py"))
+            observations.append(client_protocol(root, receipt=captured) if has_updater else None)
+        if files is not None and observations[0] is not None:
+            captured = observations[0]
+            if files.get(captured["updater_member"]) != captured["updater_sha256"]:
+                raise WindowError("candidate updater differs from the captured publication manifest")
+        if any(row is None for row in observations):
+            if any(row and set(row["present"]) & RECEIPT_MEMBERS for row in observations):
+                raise WindowError("receipt activation requires current installed updater proof; "
+                                  "a separately authorized installed-reader bootstrap is required")
+            return
+        direction = require_client_transition(*observations)
+        if rollout == "rolling":
+            require_receipt_participants(direction, None, ())
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"refusing reader-first activation: {exc}") from exc
+
+
+def _require_epoch_receipt_participants(view):
+    """Drained participants proved installed AND executing intent agent bytes."""
+    try:
+        generations = tuple(_barrier_generation(view["intent"][key])
+                            for key in ("to_generation", "from_generation"))
+        sources = tuple(client_protocol(root, receipt=GenerationReceipt(receipt))
+                        for root, receipt in generations)
+        direction = require_client_transition(*sources)
+        if not any(set(row["present"]) & RECEIPT_MEMBERS for row in sources):
+            return
+        intent = view["intent"]
+        if any(row["updater_sha256"] != intent["agent_sha256"] for row in sources):
+            raise WindowError("receipt epoch requires the same installed updater in both generations")
+        if _barrier_roster(tuple(reversed(generations))) != intent["roster"]:
+            raise WindowError("receipt epoch enrolled participant identities changed")
+        _, missing = _quorum(view, "drained")
+        if missing:
+            raise WindowError(f"current installed updater quorum is missing: {missing}")
+        agent = _assert_coordinator_identity(view)
+        for host in intent["roster"]:
+            marker = view["markers"][agent.marker_name(host, "drained")]
+            if (marker["posted_unix"] < intent["armed_unix"]
+                    or ("installed_agent_sha256" in marker
+                        and marker["installed_agent_sha256"] != intent["agent_sha256"])):
+                raise WindowError(f"current installed updater proof differs for {host}")
+        # _rollout_status checks installed and executing hashes against this
+        # intent before posting its epoch-bound drained marker. History is
+        # never consulted for this current participant proof.
+        installed = {host: intent["agent_sha256"] for host in intent["roster"]}
+        require_receipt_participants(direction, installed, intent["roster"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"refusing reader-first epoch activation: {exc}") from exc
+
+
 def _barrier_roster(generations):
     """Freeze the union of old/new boxes; a roster edit cannot drop a member.
 
@@ -1629,6 +1692,7 @@ def _barrier_step(epoch, *, rollback_reason=None):
         if missing:
             return {"epoch": epoch, "state": "draining", "missing": missing, "failed": failures, "complete": False}
         if "rollback.json" not in markers:
+            _require_epoch_receipt_participants(view)
             _decision(view, "rollback", direction="rollback", observed=drained,
                       reason=rollback_reason or f"member rotation failed on {', '.join(failures)}")
             return {"epoch": epoch, "state": "rollback_declared", "complete": False}
@@ -1639,6 +1703,7 @@ def _barrier_step(epoch, *, rollback_reason=None):
         if live != source:
             raise SystemExit("rollout symlink moved before the fleet drain quorum")
         return {"epoch": epoch, "state": "draining", "missing": missing, "complete": False}
+    _require_epoch_receipt_participants(view)
     activation = "reverted" if rollback else "activated"
     if activation + ".json" not in markers:
         if live not in (source, target):
@@ -1717,6 +1782,7 @@ def _arm_barrier(name, *, wait_s=300):
     if source[1]["files"][member] != sha:
         raise SystemExit("barrier requires the same rollout-aware updater in both generations; "
                          "converge a reviewed rolling bridge first")
+    _require_reader_direction(target[0], receipt=GenerationReceipt(target[1]), rollout="barrier")
     roster = _barrier_roster((source, target))
     # Historical presence is only the inexpensive bootstrap check. Fresh
     # participant markers, durable holds and quorums grant actual movement.
@@ -1808,6 +1874,7 @@ def _activate_existing_locked(
             f"{generation}: receipt is not readable (not a JSON object); this "
             "is not a generation to point the live runtime at."
         )
+    _require_reader_direction(generation, receipt=GenerationReceipt(receipt), rollout=rollout)
     if rollout == "barrier":
         # A rollback publishes no manifest, so the value to prove the fleet
         # against is the one already recorded in the generation being restored.
@@ -2212,6 +2279,8 @@ def _run_publication(args) -> int:
     # which of its members are programs refuses here, not halfway
     # through a tree it then has to clean up.
     index_modes = _git_index_modes()
+    if not args.stage_only:
+        _require_reader_direction(CHECKOUT, rollout=args.rollout, files=published)
     if args.rollout == "barrier" and not args.stage_only:
         member = _agent_definitions().MEMBERS["upgrade_client.py"]
         agent_sha = published.get(member)

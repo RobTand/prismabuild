@@ -18928,6 +18928,27 @@ proves that limitation. Root's C31 preparation/deployment gates own refusing tha
 source transition. Record readability alone does not establish transport safety.
 Prepared bridge source grants no live activation or rollback designation. The
 live and designated rollback generation remains a17477b2b206adf79d89e65c7b9d09584f0bfa34.
+Current compatibility-window questions use the same captured receipt and
+source-declaration owners. Updater parsing and its digest use one captured
+read. Retained record inspection qualifies each captured generation's own
+closure; it grants no candidate installation or rollback direction.
+
+Fresh publication and existing-generation activation apply the source direction
+policy before writes. A receipt-pair rolling transition refuses because
+historical attestations cannot prove the current installed updater. Stage-only
+preparation activates nothing and remains available. Existing epoch activation,
+reversion and resume require exact enrolled identities and the current drained
+quorum. The participant checks its executing and installed updater against the
+intent before posting that epoch-bound proof. Sealed source alone supplies no
+installed proof, and completed epochs cannot authorize another transition.
+
+The existing same-updater and same-coordinator barrier prerequisites remain.
+A bridge's pair addition or removal can satisfy them. Changing from that bridge
+to the final importing updater cannot use a rolling history claim or relax those
+prerequisites. It requires a separately authorized installed-reader bootstrap
+and activation assessment. The current predeploy census exposes no such
+installed proof and refuses receipt-pair deployment. No bootstrap or live
+rollout is authorized or qualified by the source/corpus checks.
 See [the receipt architecture](c15_receipt_architecture.md) and the rerunnable
 source and evidence tools under `docs/evidence` for exact caller and ship maps.
 
