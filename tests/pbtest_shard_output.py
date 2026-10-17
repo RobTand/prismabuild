@@ -73,9 +73,6 @@ def submission_command(command):
 
 def shard_environment(command):
     """Read only the pbrun --env values before the command separator."""
-    if "--request-json" in command:
-        request = json.loads(command[command.index("--request-json") + 1])
-        return dict(entry.split("=", 1) for entry in request["env"])
     flags = list(command[:command.index("--")])
     return dict(flags[index + 1].split("=", 1)
                 for index, flag in enumerate(flags) if flag == "--env")
@@ -83,8 +80,7 @@ def shard_environment(command):
 
 def admitted_child(command, *, environment=None):
     """Execute a generated child inside a test's admitted action, with env."""
-    child = (json.loads(command[command.index("--request-json") + 1])["command"]
-             if "--request-json" in command else command[command.index("--") + 1:])
+    child = command[command.index("--") + 1:]
     return child, {
         **(os.environ if environment is None else environment), **shard_environment(command)}
 

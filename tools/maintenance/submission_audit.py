@@ -192,6 +192,10 @@ def inspect(root: Path) -> dict:
         actual = (root / relative).read_bytes()
         old = subprocess.check_output(["git", "show", f"{BASE}:{relative}"], cwd=root)
         protected[relative] = {"sha256": submission_source_digest(actual), "unchanged": actual == old}
+    immutable_changes = subprocess.check_output([
+        "git", "diff", "--name-only", "--diff-filter=MDRT", BASE, "--", "tests/fixtures", "docs"
+    ], cwd=root, text=True).splitlines()
+    immutable_changes = [path for path in immutable_changes if path != "docs/design.md"]
     old_api = {node.name for node in ast.parse(baseline["tools/fleet/pbrun.py"]).body
                if isinstance(node, (ast.FunctionDef, ast.ClassDef))} - CLI
     current_api = {node.name for node in ast.parse((root / "tools/fleet/pbrun.py").read_text()).body
@@ -209,6 +213,7 @@ def inspect(root: Path) -> dict:
         "deleted_pbrun_api": sorted(old_api), "retained_legacy_api": sorted(old_api & current_api),
         "missing_definitions": missing_definitions, "missing_assertions": missing_assertions,
         "changed_assertions": changed, "unreviewed_assertion_changes": unreviewed,
+        "immutable_artifact_changes": immutable_changes,
         "tests": tests, "assertions": assertions,
         "base_test_definitions": base_definitions, "base_assertions": base_assertions}
 
@@ -223,14 +228,14 @@ def main():
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({key: result[key] for key in ("syntax_errors", "legacy_references", "embedded_legacy",
         "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions",
-        "unreviewed_assertion_changes")} | {
+        "unreviewed_assertion_changes", "immutable_artifact_changes")} | {
         "protected": all(row["unchanged"] for row in result["protected"].values()),
         "deleted_api_count": len(result["deleted_pbrun_api"]), "test_files": len(result["tests"]),
         "test_definitions": sum(result["tests"].values()), "assertions": sum(result["assertions"].values()),
         "changed_assertion_files": len(result["changed_assertions"])}))
     return bool(any(result[key] for key in ("syntax_errors", "legacy_references", "embedded_legacy",
         "forbidden", "retained_legacy_api", "missing_definitions", "missing_assertions",
-        "unreviewed_assertion_changes")) or
+        "unreviewed_assertion_changes", "immutable_artifact_changes")) or
         not all(row["unchanged"] for row in result["protected"].values()))
 
 

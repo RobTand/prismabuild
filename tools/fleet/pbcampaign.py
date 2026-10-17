@@ -9,14 +9,11 @@ Rows are independent.  There is no DAG here and there is not meant to be: what
 the fleet needs is fan-out, and a dependency is expressible as a later
 manifest.
 
-**Every row goes through ``pbrun``'s own seal path.**  ``pbrun`` is the only
-sealer of shell-command actions, so this builds the command line ``pbrun``
-would have been typed and calls ``pbrun.main`` with it.  The action key a row
-produces is therefore the key a hand-typed ``pbrun`` produces for the same row,
-byte for byte -- re-submitting is a CAS hit that runs nothing, and a row can be
-reproduced at the terminal from the manifest alone.  (In process rather than as
-a subprocess: it is the same ``main`` with the same argv either way, and the
-in-process form does not pay N interpreter starts.)
+Every row uses the package's shared sealing and publication path, as ``pbrun``
+does. A row becomes a typed request, and its action key is the key a hand-typed
+``pbrun`` produces for the same row. Re-submitting is a CAS hit that runs
+nothing. The recorded reproduction flags let an operator repeat the row at
+the terminal from the manifest alone.
 
 Nothing here knows what the commands are for.  A row is argv, a working tree,
 a demand and some tags; the tool that reads it must stay usable by any producer

@@ -9,8 +9,9 @@ somewhere no worker drains, and publishing succeeds, so nothing says so.
 This is deliberately *not* ``pbrun``.  These producers build their own action
 bodies -- their own closures, environments and result paths -- and routing them
 through ``pbrun`` would re-seal the work as a shell command and lose exactly
-that.  What they share with ``pbrun`` is only the last step: hand the sealed
-action to the pull queue, or to the SLURM lane.  That step is here, once.
+that. What they share with ``pbrun`` is the package publication tail: hand the
+sealed action to the pull queue or to the SLURM lane. This adapter builds the
+producer declaration and returns its existing submission location to callers.
 
 **The lane addresses a checkout only through the action's sealed snapshot.**
 ``slurm_job`` materializes ``params.checkout_snapshot`` on the node that won
@@ -20,7 +21,7 @@ nothing at all.  Refusing a ``checkout_root``-addressed action was the whole
 answer, and it was the wrong half of one: every producer in this tree builds
 exactly that shape, so the refusal fired 120 times on one export and named no
 way forward.  So a checkout root given for the SLURM lane is *sealed* here --
-through ``pbrun``'s own snapshot builder, not a second one -- and the action
+through the package snapshot builder -- and the action
 that reaches the scheduler is the snapshot-addressed action the node needs.
 
 **Sealing moves the action key once, and only for an action that had none.**
