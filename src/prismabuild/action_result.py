@@ -260,7 +260,7 @@ def _bind_attempt(
             f"pool attempt did not exit zero: {returncode!r}")
 
 
-def _result_announcement(stdout: bytes) -> Mapping[str, object]:
+def decode_result_announcement(stdout: bytes) -> Mapping[str, object]:
     """The one worker result announcement in a selected attempt's stdout.
 
     ``core.main`` prints its result object as the last stdout line; the object
@@ -588,7 +588,7 @@ def read_verified_action_result(
     if len(stdout) != declared_bytes or pb.raw_sha256(stdout) != declared_sha:
         raise ActionResultError("the selected attempt stdout differs from its address")
 
-    announcement = _result_announcement(stdout)
+    announcement = decode_result_announcement(stdout)
     announced_receipt = announcement.get("receipt")
     assert isinstance(announced_receipt, Mapping)
     receipt_sha256 = announced_receipt.get("receipt_sha256")

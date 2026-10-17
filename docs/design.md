@@ -181,7 +181,54 @@ is shared across detached-key threads. The ordinary reader wire shape remains
 those values on serialization. Malformed reader identities retain their raw
 records, refuse recovery and start no second reader. The existing own-child
 waitpid and SIGCHLD behavior is preserved; ordinary waits acquire no persistent
-ownership fence or new pidfd. Typed exit/recovery and the submission channel remain separate C06 work.
+ownership fence or new pidfd.
+`action_client.await_pool_outcome` returns the observed ending, typed client
+verdict and whole-client reader history. Its renderer consumes those captured
+facts without reading the queue again. `report_pool_outcome` is the integer
+shell adapter; the former integer wait API and its callers are retired together.
+A direct wait owns a reader-history scope; a wait inside a client joins that
+client's existing scope. Ordinary nested client scopes remain independent.
+Only an active collector can certify a complete client history. Outside a
+collector, history is incomplete and cannot authorize read-only recovery.
+Unreadable terminal data has a distinct verdict and retains exit 1. This
+separation preserves the existing human output and exit selection. The typed
+core takes `WaitUntil` or `ProbeOnce`; its shell adapter retains `wait_s`.
+Read-only recovery passes the original absolute deadline to the core.
+The private event protocol bounds one client's identity and ending to two
+1 KiB records. Its parent launcher owns a fresh pipe for each process, drains
+events alongside human output and closes the parent's writer after `Popen`.
+After the client exits it reads only the remaining bounded bytes and stops
+without waiting for pipe EOF. A descendant retaining the writer cannot extend
+that wait. The descriptor is private client transport; it is not an action
+input. `pbrun` validates it before preparation can fork, emits the accepted
+identity once and then emits one typed ending. Client report scopes cover
+in-process campaign submissions; later waiter threads own separate scopes.
+
+`ClientExecution` records the selected client return code separately from the
+launcher return code, scheduler state and signal, action return code and signal,
+and receipt-published fact. SLURM retains its receipt precedence: a receipt
+selects client success even after a scheduler failure, while scheduler exit zero
+without a receipt selects failure. Unknown scheduler state and unknown submission
+fate remain unsettled results, not patience expiry or execution failure.
+
+`pbtest` obtains identities, offer retries, recovery and execution timeouts from
+this channel. Quoted action output cannot select those decisions. Recognizing
+SLURM `TIMEOUT` as an execution timeout is an explicit classification correction;
+the former label scan missed it. Human diagnostics and native test records remain
+output. ENOSPC text remains a display classification. The eight former prose
+questions and `runpy` CLI recovery are retired. A missing or contradictory event
+stream authorizes no retry or recovery. The test frontend reports a channel
+problem once per shard; this diagnostic does not change the process or test
+verdict. Package recovery runs once, reads the
+original pool generation, and emits an ending on a fresh pipe without submitting.
+
+Cached replay uses a typed result digest. The parent uses its configured CAS
+root, reads the sealed request, verifies the receipt, compares the announced
+result digest and asks Core for the verified result path. A foreign payload
+path, ambiguous announcement or different digest grants no replay. Replay
+failure preserves the client exit and original output and reports its reason.
+The frontend unit still needs qualification; full C06 also requires its NFS
+supplement, final C05 ports and the integrated suite.
 This infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
@@ -11356,7 +11403,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   its `FileNotFoundError`, so a missing record is never read as a pass. A
   name that is listed and still cannot be opened raises
   `pool.StaleAbsenceError`; `pbrun` reports it as `OutcomeNotYetVisible`,
-  a kind of reaped timeout, so `await_outcome` and `pbwait` go back to
+  a kind of reaped timeout, so `report_pool_outcome` and `pbwait` go back to
   observation and read again inside their deadline, and a zero-patience
   read stays exit 74. Only a miss pays for the listings.
 * **Origin reachability is typed at the mover (#804).** A produced-output
@@ -18263,8 +18310,9 @@ retains submission, publication, transport and command orchestration. The
 package operation imports no CLI. `pbwait` keeps SLURM resume in its durable
 parent, after bounded observation, and checks receipts before scheduler state.
 This ownership change does not change queue records or the reserved-exit clamp.
-The dedicated typed client channel and replacement of pbtest's runpy recovery
-remain a separate, required C06 unit.
+The private client channel and package recovery follow the bounded protocol
+above. C05 read-port reconciliation and integrated qualification remain required.
+
 
 
 ### Capability evidence and live qualification (C03)

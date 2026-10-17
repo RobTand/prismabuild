@@ -107,14 +107,23 @@ _CLIENT_READERS: contextvars.ContextVar[ClientReaderHistory | None] = contextvar
 
 
 @contextlib.contextmanager
-def client_readers():
+def client_readers(*, join: bool = False):
     """Keep abandonment for the whole client, even after a child is reaped."""
+    existing = _CLIENT_READERS.get()
+    if join and existing is not None:
+        yield existing
+        return
     history = ClientReaderHistory()
     token = _CLIENT_READERS.set(history)
     try:
         yield history
     finally:
         _CLIENT_READERS.reset(token)
+
+
+def client_reader_history() -> ReaderHistory:
+    history = _CLIENT_READERS.get()
+    return history.snapshot() if history is not None else ReaderHistory(complete=False)
 
 
 @dataclass
@@ -349,7 +358,7 @@ def read_observation(section: str, read, *, budget_s: float):
     kind = str(result.get("type") or "RuntimeError")
     message = str(result.get("error") or "reader failed")
     # These two historical errors remain meaningful to callers of
-    # ``await_outcome`` even though their originating read now lived in a child.
+    # ``report_pool_outcome`` even though their originating read now lived in a child.
     if kind in {"PoolContractError", "_TerminalSummaryConflict"}:
         raise pool.PoolContractError(message)
     if kind == pool.StaleAbsenceError.__name__:
