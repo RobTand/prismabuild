@@ -797,6 +797,8 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
     _legal_destination(transition, target)
     tombstone, mine = queue._entomb_claim(key, expect=plan.original)
     if not mine or tombstone is None:
+        if cancelled:
+            return destination
         return (queue.records.attempt_path(record, plan.attempt)
                 if transition is Transition.FINISH else None)
     queue.records.lease_path(key).unlink(missing_ok=True)
@@ -809,7 +811,10 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim) -> Path | None:
     elif transition is Transition.EXPIRE:
         keep_tier = (plan.adopted.get("output_retry_stopped") is True
                      and queue.pin_holds_tier_tokens(record, key))
-    queue._release_reservation(key, host=plan.holder, keep_tier=keep_tier)
+    if transition in {Transition.FINISH, Transition.EXPIRE}:
+        queue._release_reservation(key, host=plan.holder, keep_tier=keep_tier)
+    else:
+        queue._release_reservation(key, host=plan.holder)
     if cancelled:
         if isinstance(plan.decision.get("gang_backfill_preemption"), Mapping):
             from . import _gang
