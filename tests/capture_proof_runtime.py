@@ -170,7 +170,7 @@ def runtime_capture(origin):
         for name in ('/lib', '/lib64', '/usr/lib64'):
             path = Path(name)
             if (path.is_symlink() or (name == '/usr/lib64' and path.is_dir())) and not any(path.is_relative_to(root['path']) for root in roots):
-                roots.append(dict(origin=origin, path=name, entries=inventory(path)))
+                roots.append(dict(origin=origin, path=name, entries=inventory(path, budget=budget)))
     result = dict(observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode())

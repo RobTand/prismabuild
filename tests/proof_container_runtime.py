@@ -180,7 +180,13 @@ def inventory(path, *, budget=None):
             entry = dict(kind='directory', mode=mode)
             directories.append((current, before))
             with os.scandir(current) as children:
-                pending.extend(Path(child.path) for child in children)
+                for child in children:
+                    if budget is not None:
+                        if time.monotonic() > budget['deadline']:
+                            raise TimeoutError('capture enumeration exceeded its finite deadline')
+                        if budget['members'] + len(pending) >= CAPTURE_BOUNDS['members']:
+                            raise ValueError('capture geometry exceeds its sealed limits during directory enumeration')
+                    pending.append(Path(child.path))
         elif stat.S_ISREG(before.st_mode):
             hasher = hashlib.sha256()
             with current.open('rb') as handle:
