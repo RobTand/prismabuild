@@ -219,7 +219,7 @@ def test_a_nonconstant_marker_argument_is_refused(tmp_path, monkeypatch, capsys)
 def test_an_invalid_config_refuses_by_name(tmp_path, monkeypatch, capsys):
     checkout = _checkout(tmp_path, marked=0, plain=1)
     _stub_queue(tmp_path, monkeypatch)
-    (checkout / "tests" / "prismabuild.pbtest_capabilities.json").write_text(json.dumps({
+    (checkout / "tests" / "pbtest_capabilities.json").write_text(json.dumps({
         "schema": "prismabuild.pbtest_capabilities.v0", "capabilities": {}}),
         encoding="utf-8")
     monkeypatch.setattr(
@@ -359,7 +359,7 @@ def test_an_unused_config_leaves_the_dispatch_byte_identical(
     assert pbtest.main() == 0
     bare = [list(command) for command in calls]
     # The same population, with a config that defines an unused capability.
-    config = plain_checkout / "tests" / "prismabuild.pbtest_capabilities.json"
+    config = plain_checkout / "tests" / "pbtest_capabilities.json"
     config.write_text(json.dumps({
         "schema": "prismabuild.pbtest_capabilities.v1",
         "capabilities": {"unused": {"tags": ["x86"],
