@@ -117,6 +117,9 @@ def c21_current_seams(sources, changed):
                         and symbol.is_global() and symbol.get_name() not in bound):
                     raise ValueError(f"unbound migrated owner {symbol.get_name()} in {path}")
         for node in ast.walk(ast.parse(source, filename=path)):
+            if (path != "tools/maintenance/residency_owner.py"
+                    and isinstance(node, ast.Constant) and node.value == "_SHARED_MOVERS"):
+                raise ValueError(f"retired tier cache seam at {path}:{node.lineno}")
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr in {"setattr", "delattr", "object"}
                     and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
