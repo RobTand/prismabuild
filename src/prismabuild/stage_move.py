@@ -1795,13 +1795,7 @@ class _StagedPublisher:
                       ) -> list[dict[str, object]]:
         """Each owner's state, in sorted order; the caller holds its locks."""
 
-        try:
-            from prismabuild.stage_release import _unended_owner
-        except ImportError as exc:
-            return [{"consumer_action_key": consumer,
-                     "mover_action_key": mover, "state": "uncertain",
-                     "why": f"the ending proof is unavailable: {exc}"}
-                    for consumer, mover in sorted(pairs)]
+        from prismabuild.stage_release import _unended_owner
         rows = []
         for consumer, mover in sorted(pairs):
             state, why = self._owner_state(consumer, mover, _unended_owner)
@@ -2177,10 +2171,7 @@ class _StagedPublisher:
         seen at once.  Unlocked across the census (see ``__init__``).
         """
 
-        try:
-            from prismabuild.stage_release import _claimed_paths
-        except ImportError as exc:
-            return None, f"claim authority unavailable: {exc}"
+        from prismabuild.stage_release import _claimed_paths
         try:
             paths, tainted = _claimed_paths(
                 self.queue, str(self.tier_id), self.cas_root,
@@ -4083,7 +4074,7 @@ def _shared_consumers(args) -> list[str] | None:
     try:
         from prismabuild.stage_release import shared_interest
         interest = shared_interest(queue, str(args.action_key))
-    except (ImportError, OSError, ValueError, pool.PoolContractError):
+    except (OSError, ValueError, pool.PoolContractError):
         return []
     return list(interest["interested"])
 
@@ -5066,7 +5057,7 @@ def retire_conflicted_window(queue: pool.PoolQueue, consumer: str,
         try:
             from prismabuild.stage_release import shared_interest
             sharers = shared_interest(queue, mover)
-        except (ImportError, OSError, ValueError, pb.PrismaBuildError):
+        except (OSError, ValueError, pb.PrismaBuildError):
             return False
         marked = [retire_conflicted_window(queue, sharer, mover, conflict,
                                            refusal=refusal)

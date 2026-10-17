@@ -126,7 +126,7 @@ from prismabuild import window_credit  # noqa: E402
 
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild.stage_move import (  # noqa: E402
-    RANGE_SUFFIX, _is_action_key, paths_named_once,
+    RANGE_SUFFIX, paths_named_once,
     pre_range_stage_relative, stage_relative,
 )
 
@@ -920,10 +920,7 @@ def _produced_hold_verified(item: Mapping, request: Mapping) -> bool:
     ref = item.get("produced_output")
     if not isinstance(ref, Mapping):
         return False
-    try:
-        from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1
-    except ImportError:
-        return False
+    from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1
     if ref.get("schema") != PRODUCED_OUTPUT_REF_SCHEMA_V1:
         return False
     params = request.get("params")

@@ -50,6 +50,37 @@ def migrate_imports(text: str) -> str:
     return text
 
 
+
+def movement_body(text: str) -> str:
+    """Remove exactly the obsolete dependency-unavailable paths."""
+    text = migrate_imports(text)
+    old = """        try:
+            from prismabuild.stage_release import _unended_owner
+        except ImportError as exc:
+            return [{"consumer_action_key": consumer,
+                     "mover_action_key": mover, "state": "uncertain",
+                     "why": f"the ending proof is unavailable: {exc}"}
+                    for consumer, mover in sorted(pairs)]
+"""
+    text = text.replace(old, '        from prismabuild.stage_release import _unended_owner\n')
+    old = """        try:
+            from prismabuild.stage_release import _claimed_paths
+        except ImportError as exc:
+            return None, f"claim authority unavailable: {exc}"
+"""
+    text = text.replace(old, '        from prismabuild.stage_release import _claimed_paths\n')
+    old = """    try:
+        from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1
+    except ImportError:
+        return False
+"""
+    text = text.replace(old, '    from prismabuild.produced_output import PRODUCED_OUTPUT_REF_SCHEMA_V1\n')
+    return text.replace('(ImportError, OSError, ValueError, pool.PoolContractError)',
+                        '(OSError, ValueError, pool.PoolContractError)').replace(
+                            '(ImportError, OSError, ValueError, pb.PrismaBuildError)',
+                            '(OSError, ValueError, pb.PrismaBuildError)')
+
+
 def produced_output(text: str) -> str:
     start = text.index("        stage_release = None\n        if in_process:\n")
     end = text.index("        if not in_process and tier_record is None:", start)
@@ -88,7 +119,10 @@ def migrate(root: Path) -> list[str]:
         text = text.replace(BOOTSTRAP, '')
         if text.startswith('#!/usr/bin/env python3\n'):
             text = text.split('\n', 1)[1]
-        target.write_text(migrate_imports(text))
+        text = movement_body(text)
+        if old.endswith('stage_release.py'):
+            text = text.replace('RANGE_SUFFIX, _is_action_key, paths_named_once,', 'RANGE_SUFFIX, paths_named_once,')
+        target.write_text(text)
         changed.append(new)
         if old.endswith("stage_rounding.py"):
             (root / old).unlink()
@@ -111,6 +145,9 @@ def migrate(root: Path) -> list[str]:
             start = after.index('def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(')
             end = after.index('\ndef test_', start + 1)
             case = after[start:end]
+            doc_start = case.index('    """')
+            doc_end = case.index('    """', doc_start + 7) + 7
+            case = case[:doc_start] + '    """The remote tier announcement selects an action without fleet imports.\n\n    The original native ID and assertions remain. Its former import-failure\n    setup now uses the explicit remote-host ownership boundary.\n    """' + case[doc_end:]
             case = case.replace('here = socket.gethostname()', 'here = ELSEWHERE')
             case = case.replace('world = restage._World(tmp_path, window_gib=1, gib=4)',
                                 'world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)')
