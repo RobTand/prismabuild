@@ -7994,13 +7994,14 @@ def freeze_resident(set_id: str, checkout: str | Path, *, store: FleetStore):
         progress=None, profile=None, store=store)
 
 
-def _resident_publication(action, template, tier, *, store: FleetStore):
+def _resident_publication(action, template, tier, *, request_path, store: FleetStore):
     request = SubmissionRequest(command=("true",), cwd=str(store.runtime_root),
         detach=True, retry_safe=True, max_attempts=3)
     sealed = {**template, "params": action["params"]}
     report = action_client.ClientReport()
     result = publish(action, {"template": sealed, "cwd": Path(request.cwd),
-        "portable_checkout": True, "movement": MovementPublication(tier)},
+        "portable_checkout": True, "movement": MovementPublication(tier),
+        "request_path": request_path},
         args=request, store=store, report=report, placement_announced=True)
     if callable(result):
         raise RuntimeError("detached resident publication returned a waiter")
@@ -8024,12 +8025,13 @@ def dispatch_resident(template, resident, set_id, tiers, *, policy_path,
             for operation in ("copy", "evict"):
                 action = local_resident.movement_action(template, resident, set_id, tier,
                     policy_path=policy_path, operation=operation)
-                template["cas"].publish_action_request(action)
-                actions[operation] = action
+                request_path = template["cas"].publish_action_request(action)
+                actions[operation] = (action, request_path)
                 pair[operation] = local_resident.movement_row(action, template["cas"], tier)
             resident.update_movements(set_id, host, pair)
             if resident.read_copy(set_id, host)["state"] != "resident":
-                _resident_publication(actions["copy"], template, tier, store=store)
+                _resident_publication(actions["copy"][0], template, tier,
+                    request_path=actions["copy"][1], store=store)
             rows[host] = pair
     return rows
 
@@ -8042,8 +8044,8 @@ def adopt_resident(template, resident, set_id, tier, *, source, policy_path,
     with action_wait.client_readers(), write_window(request, store=store):
         action = local_resident.movement_action(template, resident, set_id, tier,
             policy_path=policy_path, operation="adopt", source=source)
-        template["cas"].publish_action_request(action)
+        request_path = template["cas"].publish_action_request(action)
         row = local_resident.movement_row(action, template["cas"], tier)
         resident.update_movements(set_id, tier["host"], {"adopt": row})
-        _resident_publication(action, template, tier, store=store)
+        _resident_publication(action, template, tier, request_path=request_path, store=store)
         return row
