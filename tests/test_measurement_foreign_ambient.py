@@ -42,6 +42,9 @@ from prismabuild import adaptive_cpu, pool  # noqa: E402
 T0 = 2_000_000.0
 
 
+from fleet_world import FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -61,9 +64,7 @@ def generation_actions(monkeypatch):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(queue, clock, key, resources):

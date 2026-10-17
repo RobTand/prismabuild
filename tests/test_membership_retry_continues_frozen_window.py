@@ -46,6 +46,9 @@ GIB = 1 << 30
 SPAN = 2 * GIB
 
 
+from fleet_world import FleetWorld
+
+
 def _hexkey(seed: str) -> str:
     return (seed.encode().hex() * 64)[:64]
 
@@ -59,9 +62,7 @@ EGRESS1 = _hexkey("r12egress1")
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _sealed_shape(monkeypatch) -> None:
