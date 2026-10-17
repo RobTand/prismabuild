@@ -132,3 +132,33 @@ def test_an_egress_withdraws_the_fragment_then_its_date_then_its_retiring_mark(
                                stage_root=str(stage), residency_root=root)
     assert result["complete"] is True, result
     assert order == ["fragment", "material", "retiring"]
+
+
+@pytest.mark.parametrize("active_owner", ["donor", "successor"])
+def test_adoption_keeps_a_range_with_a_live_mover_key(tmp_path, active_owner):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.records.ensure_layout()
+    queue.tier(ranges.TIER).mint({"stage_gib": ranges.STAGE_GIB})
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    staged_path.register_stage_root(queue, tier_id=ranges.TIER, stage_root=stage)
+    donor, successor = "d" * 64, "e" * 64
+    paths = ranges._stage_range(queue, mover=donor, consumer=ranges.FIRST, stage=stage)
+    identities = [reader_lease.stat_identity(str(path)) for path in paths]
+    active = donor if active_owner == "donor" else successor
+    queue.publish(action_key=active, cas_root=tmp_path / "cas", checkout_root=tmp_path,
+                  worker_script=tmp_path / "worker.py", resources={"cpu": 1, "mem_gb": 1})
+    root = queue.records.residency_fragment_root()
+
+    result = staged_path.adopt(
+        queue, old_key=donor, new_key=successor, consumer_action_key=ranges.SECOND,
+        tier_id=ranges.TIER, phase="phase-0", range_start_bytes=0,
+        range_end_bytes=ranges.PHASE_GIB * ranges.GIB, residency_root=root)
+
+    assert result["adopted"] is False, result
+    assert queue.records.item(pool.record_store.READY, active).value["action_key"] == active
+    assert identities == [reader_lease.stat_identity(str(path)) for path in paths]
+    assert queue.tier(ranges.TIER).holdings(donor) == {"stage_gib": ranges.PHASE_GIB}
+    assert queue.tier(ranges.TIER).holdings(successor) == {}
+    assert residency_map.fragment_path(root, ranges.FIRST, donor).is_file()
+    assert not residency_map.fragment_path(root, ranges.SECOND, successor).exists()
