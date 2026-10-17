@@ -47,6 +47,14 @@ def test_every_owned_residency_refusal_releases_the_cpu_veto(state):
     assert _recorded_release(verdict, reason)
 
 
+@pytest.mark.parametrize("status", candidate_policy.RESIDENCY_LEAD_UNFINISHED)
+def test_a_nonterminal_unpinned_lead_verdict_uses_the_owner_reason(status):
+    verdict = {"state": "lead_unpinned", "pending": [{"lead": LEAD, "status": status}]}
+    reason = candidate_policy.residency_denial(verdict)
+    assert reason == "residency_lead_unpinned"
+    assert _recorded_release(verdict, reason)
+
+
 @pytest.mark.parametrize("statuses,reason", [
     (["absent"], "residency_lead_not_resident"),
     (["ready"], "residency_lead_not_resident"),
