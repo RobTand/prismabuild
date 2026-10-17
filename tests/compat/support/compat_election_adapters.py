@@ -47,7 +47,7 @@ def operate(request, store, load):
     else:
         fixture = runpy.run_path(str(Path(__file__).with_name("compat_queue_adapters.py")))["operate"]
         fixture({"case": "q-output-funding/consumed", "op": "write"}, store, load)
-        funding = queue.read_output_funding(M, "stage:compat")
+        funding = queue.funding.read_output(M, "stage:compat")
         ref = {key: funding[key] for key in queue._OUTPUT_BATCH_IDENTITY_FIELDS}
         ref["schema"] = pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
         binding = {"variant": "output", "generation": G, "kinds": {"stage_gib": 1}, "tokens": funding["tokens"]}

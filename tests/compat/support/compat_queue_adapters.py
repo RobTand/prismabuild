@@ -21,10 +21,10 @@ def operate(request, store, load):
     if family in ("q-funding", "q-output-funding"):
         output = family == "q-output-funding"
         path = queue.funding_output_path(M, "stage:compat") if output else queue.funding_path(M, "stage:compat")
-        reader = queue.read_output_funding if output else queue.read_funding
-        writer = queue.write_output_funding if output else queue.write_funding
+        reader = queue.funding.read_output if output else queue.funding.read_window
+        writer = queue.funding.write_output if output else queue.funding.write_window
         if write:
-            value = {"schema": pool.TIER_FUNDING_OUTPUT_SCHEMA_V1 if output else pool.TIER_FUNDING_SCHEMA_V1,
+            value = {"schema": load("prismabuild.funding").TIER_FUNDING_OUTPUT_SCHEMA_V1 if output else load("prismabuild.funding").TIER_FUNDING_SCHEMA_V1,
                      "tier_id": "stage:compat", "kind": "stage_gib", "mover_action_key": M,
                      "range_start_bytes": 0, "range_end_bytes": 8, "tokens": ["stage_gib-000000"],
                      "generation": G, "state": "reserved", "unix": 100.0, "published_unix": 50.0}
@@ -38,15 +38,15 @@ def operate(request, store, load):
                 uuid.uuid4 = lambda: uuid.UUID(G)
                 if variant == "reserve-fence":
                     queue.mint_tier_capacity("stage:compat", {"stage_gib": 1})
-                    assert queue.reserve_fence("stage:compat", C, value, 1)
+                    assert queue.funding.reserve_window("stage:compat", C, value, 1)
                 else:
                     group = load("prismabuild.prelaunch_group")
                     arguments = dict(tier_id="stage:compat", consumer=C, digest=D, mover=M,
                                      start=0, end=8, kind="stage_gib", published=50.0, tokens=value["tokens"])
                     if variant == "prelaunch-birth":
-                        assert group._birth_record(queue, **arguments) == G
+                        assert queue.funding._chunk_birth_record(**arguments) == G
                     else:
-                        writer(group._fresh_binding(**arguments))
+                        writer(queue.funding._chunk_fresh_binding(**arguments))
             else:
                 writer(value)
             steps = {"reserved": [], "transferring": ["transferring"],

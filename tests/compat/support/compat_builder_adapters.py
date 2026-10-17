@@ -79,7 +79,7 @@ def output_funding(request, store, load):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(request["raw"]))
         request["_consumer_boundary"]()
-        value = queue.read_output_funding(mover, tier)
+        value = queue.funding.read_output(mover, tier)
         assert value and value["state"] == ("reserved" if variant == "stage-intent" else "transferring")
         return value
     uuid.uuid4 = lambda: uuid.UUID(nonce)
@@ -96,11 +96,11 @@ def output_funding(request, store, load):
     args = dict(tier_id=tier, owner_key=owner, mover_key=mover, instance=instance,
                 template=template, batch_id="batch", descriptors=[descriptor])
     if variant == "stage-intent":
-        result = queue.stage_output_intent(**args)
+        result = queue.funding.stage_output(**args)
     else:
         ref = queue.build_produced_output_batch_ref(instance=instance, template=template,
             batch_id="batch", descriptors=[descriptor], tier_id=tier)
-        staged = queue.stage_output_intent(**args)
+        staged = queue.funding.stage_output(**args)
         assert staged["ok"], staged
         queue.publish(action_key=mover, cas_root=store / "cas", checkout_root="/compat/checkout",
             worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, "stage_gib@" + tier: 1},
@@ -109,7 +109,7 @@ def output_funding(request, store, load):
         # A legacy publisher could leave a genuine absent intent. Keep the
         # current publication guard, then construct that private recovery state.
         path.unlink()
-        result = queue.fund_output_batch(**args)
+        result = queue.funding.fund_output(**args)
     assert result["ok"], result
     return {"raw": base64.b64encode(path.read_bytes()).decode(),
             "fixture_facts": ["private supplied owner claim; actual eight-byte prewrite and tier token transfer",
