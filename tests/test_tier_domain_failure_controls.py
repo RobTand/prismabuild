@@ -165,3 +165,33 @@ def test_a_partial_native_take_keeps_the_preexisting_named_tokens(tmp_path, monk
     assert queue.tier(TIER).take_advance(GRANT, 2, 'ram_gib') == ('tier-short', 'tier pool refused the take')
     assert ledger.holder_state(GRANT) == before
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 1}
+
+
+def test_a_partial_host_topup_keeps_its_preexisting_named_half(tmp_path, monkeypatch):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    seeded(queue, 1)
+    tier = queue.tier(TIER)
+    tier.mint({"ram_gib": 3})
+    pending = tier.begin_take(GRANT, {"ram_gib": 2})
+    assert pending is not None and tier.commit_take(GRANT, pending) == 2
+    host = queue.ledger(HOST)
+    mirror = "ram-host:" + GRANT
+    before = pool.held_names_visible(host, mirror)
+    actual = os.rename
+    attempts = []
+
+    def interrupted(source, target, *args, **kwargs):
+        source, target = Path(source), Path(target)
+        if source.parent.name.startswith("claiming.") and target.parent == host.held_dir / mirror:
+            attempts.append(source.name)
+            if len(attempts) == 2:
+                raise OSError("one native host topup rename failed")
+        return actual(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", interrupted)
+    outcome = tier.reconcile_mirror(())
+    assert len(attempts) == 2
+    assert outcome["converged"] is False
+    assert any(event["reason"] == "ram-host-hold-missing" for event in outcome["events"])
+    assert pool.held_names_visible(host, mirror) == before
+    assert tier.holdings(GRANT) == {"ram_gib": 3}
