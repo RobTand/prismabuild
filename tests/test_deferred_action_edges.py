@@ -769,7 +769,7 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     assert second != first and second.parent == first.parent
     assert (first / "RUNTIME_VERSION.json").is_file()
     # The loop restarted on the new generation, as the supervisor does.
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", second)
+    patch_store(monkeypatch, client=pbrun, runtime_root=second)
     patch_store(monkeypatch, client=pbrun, wrapper_dir=second / "tools")
     instance = _start(queue, template, producer)
     _commit(queue, template, instance, "b1", b"across a publish")

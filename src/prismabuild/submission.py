@@ -7214,8 +7214,8 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
     cwd = prepared["cwd"]
     portable_checkout = prepared["portable_checkout"]
     producer = prepared.get("producer")
-    tags = list(producer.tags) if producer is not None else action["params"]["placement"]["required_tags"]
-    demand = dict(producer.resources) if producer is not None else action["params"]["demand"]
+    tags = list(producer.tags) if producer is not None else template["params"]["placement"]["required_tags"]
+    demand = dict(producer.resources) if producer is not None else template["params"]["demand"]
     cas = template["cas"]
     key = str(action["action_key"])
     if args.as_sealed_by is not None and key != args.as_sealed_by:
@@ -7532,7 +7532,14 @@ def request_from_mapping(row: Mapping[str, object], **overrides) -> SubmissionRe
         raise SubmissionRefused(f"unknown submission fields: {', '.join(sorted(unknown))}", returncode=2)
     from typing import get_type_hints
     types = get_type_hints(SubmissionRequest)
-    for name, value in values.items():
+    for name, value in list(values.items()):
+        if value is not None and name in {"gpu_memory_gb", "timeout_s", "wait_s"}:
+            if isinstance(value, bool):
+                raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2)
+            try:
+                value = values[name] = float(value)
+            except (ValueError, TypeError):
+                raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2) from None
         if not _request_value_matches(value, types[name]):
             raise SubmissionRefused(f"submission field {name!r} has the wrong type", returncode=2)
     return SubmissionRequest(**values)

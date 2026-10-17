@@ -161,7 +161,6 @@ def add_transport_argument(parser: argparse.ArgumentParser) -> None:
 #: written there: the submission succeeds and the node cannot materialize the
 #: tree.  Keying on the store root makes the second call do the ingest the
 #: caller asked for.
-_SNAPSHOT_CACHE: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
 
 def seal_checkout_snapshot(

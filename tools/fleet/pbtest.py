@@ -1822,7 +1822,7 @@ def main() -> int:
                 if plan["selection"] is not None else [])
         request = SubmissionRequest(cwd=str(checkout), transport=args.transport,
             tag=(*tags, *plan["capability_tags"]),
-            anywhere=not tags and not pool.is_box_local_path(RUNTIME_ROOT),
+            anywhere=not tags and not plan["capability_tags"] and not pool.is_box_local_path(RUNTIME_ROOT),
             demand=",".join(f"{kind}={value}" for kind, value in shard_resources.items()
                             if kind not in {"cpu", "gpu"}),
             cpus=shard_resources["cpu"], gpu=args.gpu, gpu_memory_gb=args.gpu_memory_gb,

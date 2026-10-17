@@ -473,7 +473,7 @@ def test_one_tree_is_bundled_once_however_many_shards_it_dispatches(
 
     cas = _cas(tmp_path)
     checkout = _producer_checkout(tmp_path)
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    __import__("prismabuild.submission", fromlist=["submission"])._SNAPSHOT_CACHE.clear()
 
     inputs = set()
     for shard in (1, 2, 3):

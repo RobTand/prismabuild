@@ -99,7 +99,7 @@ class ScratchFleet:
         self.clock = [time.time()]
         monkeypatch.setattr(time, "time", lambda: self.clock[0])
         patch_store(monkeypatch, client=pbrun, root=root)
-        monkeypatch.setattr(pbrun, "RUNTIME_ROOT", SHARED_RUNTIME)
+        patch_store(monkeypatch, client=pbrun, runtime_root=SHARED_RUNTIME)
         patch_store(monkeypatch, client=pbrun, wrapper_dir=SHARED_RUNTIME / "tools")
         monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root / "box-state")
         monkeypatch.setenv("PRISMABUILD_BOX_STATE_ROOT", str(root / "box-state"))
