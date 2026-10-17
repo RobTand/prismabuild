@@ -4,11 +4,14 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
-import hashlib
 import json
+import sys
 from pathlib import Path
 
 from compose_compat_tier import Replacement, syntax_records, transformed
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/compat/support"))
+from rebind_source_reviews import review_source_hash
 
 
 ENTRY_MOVES = {
@@ -99,10 +102,6 @@ RULES = (
 )
 
 
-def digest(raw):
-    return hashlib.sha256(raw).hexdigest()
-
-
 def definitions(raw):
     result = {}
 
@@ -145,8 +144,8 @@ def main():
         elif not present:
             raise ValueError(('catalogue occurrence disappeared', old))
         occurrences.append(dict(before=old, current=current, occurrences=prior or present,
-            source=str(source.relative_to(root)), source_sha256=digest(raw), line=targets[0].lineno,
-            target_ast_sha256=digest(ast.dump(targets[0], include_attributes=False).encode())))
+            source=str(source.relative_to(root)), source_sha256=review_source_hash(raw), line=targets[0].lineno,
+            target_ast_sha256=review_source_hash(ast.dump(targets[0], include_attributes=False).encode())))
     normalized = ast.parse(after)
     reverse = {new: old for old, new in ENTRY_MOVES.items()}
     for node in ast.walk(normalized):
@@ -163,8 +162,8 @@ def main():
         updated = transformed(text, rules)
         if syntax_records(text, rules) != syntax_records(updated):
             raise ValueError(('original definitions/assertions/raises/decorators changed', filename))
-        files.append(dict(path=str(path.relative_to(root)), before_sha256=digest(text.encode()),
-            after_sha256=digest(updated.encode()), occurrences=[dict(before=r.before, after=r.after, count=r.count) for r in rules],
+        files.append(dict(path=str(path.relative_to(root)), before_sha256=review_source_hash(text.encode()),
+            after_sha256=review_source_hash(updated.encode()), occurrences=[dict(before=r.before, after=r.after, count=r.count) for r in rules],
             definitions_assertions_raises_decorators_equal_after_exact_binding=True))
         replacements[path] = updated
     report = dict(catalogue_occurrences=occurrences, files=files, apply=args.apply)
