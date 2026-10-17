@@ -4925,6 +4925,10 @@ class ResourceLedger:
             return True
 
     @_guarded_mutation(blocking=True)
+    def sweep_finish_tombstones(self, *, grace_s: float = LEASE_TIMEOUT_S) -> list[str]:
+        """Recover interrupted conclusions without taking successor ownership."""
+        return lifecycle.conclude(self, lifecycle.FinishRecovery(grace_s))
+
     def sweep_stale_acquisitions(
         self, *, grace_s: float = LEASE_TIMEOUT_S
     ) -> list[str]:
@@ -22770,7 +22774,7 @@ class PoolQueue:
                     requeued.append(key)
         self.sweep_widowed_leases(timeout_s=timeout_s)
         self.sweep_stale_acquisitions()
-        self.sweep_finish_tombstones()
+        lifecycle.sweep_finish_tombstones(self, )
         self.sweep_ready_transitions()
         self.quarantine_orphans()
         return requeued
@@ -22801,227 +22805,6 @@ class PoolQueue:
                 except OSError:
                     continue
 
-    def sweep_finish_tombstones(
-        self, *, grace_s: float = LEASE_TIMEOUT_S
-    ) -> list[str]:
-        """Recover a claim whose finisher died with it moved out of the way.
-
-        ``finish`` and ``reap_stale`` move a claim to a tombstone, publish the
-        item's next home, then delete the tombstone.  A process killed inside
-        that window leaves a record that no consumer addresses: the key is in
-        neither ``ready`` nor ``claimed``, so nothing claims it, nothing reaps
-        it, and its waiter never sees an outcome.  This is the only thing that
-        looks.
-
-        Three dispositions, and which one applies is decided by what else the
-        key has, never by what the tombstone says about itself:
-
-        *   A record in ``ready`` or ``claimed``, **of any generation**, means
-            the key has moved on.  Re-injecting these bytes could only start a
-            fight with a live record, so the tombstone is filed as evidence and
-            removed.  Any generation, not just this one: a crash in this window
-            leaves the key addressable nowhere, so a submitter re-publishes it,
-            and restoring the old generation over that would have the reaper
-            requeue it straight over the new one.
-        *   A terminal record of the *same* generation means the publish landed
-            and the tombstone is redundant cleanup.  Filed and removed.
-        *   Otherwise the publish did not land: link the record back to
-            ``claimed/<key>.json`` and let the ordinary reaper conclude it.
-            Its lease is already gone, so the missing-lease path applies one
-            grace later, and it charges the same attempt number the finisher
-            archived -- ``archive_attempt`` is first-writer-wins, so the
-            finisher's real outcome is what the record adopts, not this
-            reaper's lease observation.
-
-        A record whose attempt links no longer verify is filed rather than
-        restored.  Restoring it would hand ``reap_stale`` a record that raises
-        from ``archive_attempt``, and that exception stops reaping on every box
-        for as long as the record exists.  Verification therefore has to cover
-        every way a link can fail to resolve, not only the ones the queue
-        itself judges: a missing or tampered immutable outcome raises out of
-        ``core``, not out of the pool's contract error, and an escape here
-        causes the exact stall this paragraph is about -- ``reap_stale`` calls
-        this sweep unguarded, and ``serve_once`` calls ``reap_stale`` before it
-        claims.  Being *unable to look* is a third answer and takes neither
-        disposition: the tombstone is left for the next sweep, because filing
-        it would hide it in ``withdrawn/superseded/`` on the strength of a
-        stale directory handle.
-
-        The grace is the lease timeout: nothing is blocked behind this except
-        the action's own visibility, and a sweep that fires while a finisher is
-        mid-publish would put a claim beside a ready record of the same
-        generation.
-
-        Exact-scope late finishes use a separate suffix. They are already
-        awaiting cleanup, never restored as claims, and retried immediately
-        on their owning host under the same key lock.
-
-        A killed requeue publisher can also leave its hidden staging sibling.
-        Aged regular siblings are removed only after their exact tombstone is
-        gone. This cleanup does not add keys to the recovered-claim result.
-        """
-
-        swept: list[str] = []
-        claimed = self.records.dir(CLAIMED)
-        if not self.records.state_directory_present(CLAIMED):
-            return swept
-        self._sweep_orphan_requeue_staging(claimed, grace_s=grace_s)
-        now = _now()
-        for tombstone in self.records.finishing_paths():
-            parts = tombstone.name.split(".", 2)
-            key = parts[0]
-            if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
-                continue
-            with self.action_transition_lock(key, blocking=False) as acquired:
-                if not acquired:
-                    continue
-                if tombstone.name.endswith(LATE_FINISH_SUFFIX):
-                    # This record never owns the action's current claim or
-                    # tokens. Retry only its saved scope, even beside a live
-                    # successor, without the ordinary tombstone dispositions.
-                    try:
-                        record = record_store.read_document(tombstone)
-                        if record is None or record.get("action_key") != key:
-                            raise PoolContractError("invalid late-finish recovery record")
-                        if record.get("claimed_host") != socket.gethostname():
-                            continue
-                        result = lifecycle._retry_late_finish(self, tombstone, record)
-                    except Exception as exc:                         # noqa: BLE001
-                        print(f"pool: late finish {key} retained: {type(exc).__name__}: {exc}",
-                              file=sys.stderr)
-                        continue
-                    if result != tombstone:
-                        swept.append(key)
-                    continue
-                when: float | None = None
-                if len(parts) >= 2:
-                    try:
-                        when = int(parts[1]) / 1_000_000.0
-                    except ValueError:
-                        when = None
-                if when is None:
-                    try:
-                        when = tombstone.stat().st_mtime
-                    except OSError:
-                        continue
-                if now - when <= grace_s:
-                    continue
-                successor = None
-                try:
-                    record = record_store.read_document(tombstone)
-                    live = any(
-                        bool(record_store.value_or_raise(self.records.item_presence(state, key)))
-                        for state in (READY, CLAIMED)
-                    )
-                    covered = (
-                        self.terminal_outcome_covers(record, action_key=key) is not None
-                        or self.withdrawal_covers(record, action_key=key) is not None
-                    )
-                    if record is not None and type(record.get("published_unix")) in (int, float):
-                        generation = record["published_unix"]
-                        decision = self.publication_ending(key, generation=generation)
-                        covered = covered or decision is not None
-                        if (not covered and not self.records.listed_item_present(CLAIMED, key)
-                                and self.records.listed_item_present(READY, key)):
-                            archived = self.archived_generation_outcomes(key, generation=generation)
-                            if archived:
-                                covered = True
-                            else:
-                                candidate = self.records.ready_publication(key)
-                                candidate_generation = self._successor_generation(record, candidate)
-                                live = True
-                                if candidate_generation > generation:
-                                    successor = candidate
-                except (OSError, pb.PrismaBuildError):
-                    continue
-                restorable = record is not None and not live and not covered
-                if restorable and "attempt_history" in record:
-                    try:
-                        self.attempt_outcomes(record)
-                    except (PoolContractError, FileNotFoundError, pb.CASTamperError):
-                        # ``attempt_outcomes`` decides most of this by reading the
-                        # record and raises ``PoolContractError``, but the link it
-                        # checks last is a *file*: ``open_regular_nofollow``
-                        # raises a bare ``FileNotFoundError`` when the immutable
-                        # outcome is absent and ``CASTamperError`` when the entry
-                        # is not a readonly regular file, and neither derives from
-                        # ``PoolContractError``.  Both are positive evidence that
-                        # the link does not verify, which is this branch's whole
-                        # question, so both file the record rather than restore it.
-                        restorable = False
-                    except pb.CASUnavailableError:
-                        # "Could not look" is not evidence, and it must not be
-                        # answered either way.  Restoring risks the reaping stall
-                        # this guard exists to prevent; filing moves the record
-                        # into ``withdrawn/superseded/``, which every reader is
-                        # documented to ignore, so a stale handle would lose the
-                        # action permanently.  Leave the tombstone for the next
-                        # sweep -- the only disposition that keeps the evidence.
-                        continue
-                if restorable:
-                    try:
-                        os.link(tombstone, self.records.item_path(CLAIMED, key))
-                    except OSError:
-                        pass
-                    else:
-                        tombstone.unlink(missing_ok=True)
-                        swept.append(key)
-                        continue
-                # A cancellation can be durable before its finisher returns
-                # tokens. If that finisher dies after removing the lease,
-                # this tombstone is the only remaining cleanup authority.
-                # A queued successor has not acquired anything yet: retain its
-                # READY bytes while completing the predecessor's cleanup.
-                # A claimed successor, however, owns the key now; none of its
-                # resources or lease belongs to this old tombstone.
-                if not self.records.listed_item_present(CLAIMED, key):
-                    try:
-                        holders = self.claim_reservation_hosts(key)
-                        if len(holders) > 1 or (record is None and holders):
-                            continue
-                        if record is not None:
-                            holder = record.get("claimed_host")
-                            if holders:
-                                if holder and holder != holders[0]:
-                                    continue
-                                record["claimed_host"] = holders[0]
-                            cleanup = self.cleanup_action_containers(
-                                record, reason="interrupted finish cleanup", scratch_owner_path=tombstone)
-                            if not cleanup["complete"]:
-                                continue
-                        if holders:
-                            # The ending is already filed -- that is what made
-                            # this tombstone unrestorable -- so if it pinned a
-                            # staged range, its tier tokens are not this
-                            # cleanup's to return.  Releasing them would leave
-                            # the files on the stage with nothing holding them.
-                            self._release_reservation(
-                                key, host=holders[0],
-                                keep_tier=self._filed_pin_holds(key))
-                            if self.claim_reservation_hosts(key):
-                                continue  # a partial return still needs this owner
-                        lease = record_store.read_document(self.records.lease_path(key))
-                        if (record is not None and lease is not None
-                                and lease.get("owner") == record.get("claimed_by")):
-                            self.records.lease_path(key).unlink(missing_ok=True)
-                    except (OSError, PoolContractError, pb.CASUnavailableError):
-                        continue
-                if successor is not None:
-                    try:
-                        self._persist_publication_supersession(record, successor=successor)
-                    except (OSError, pb.PrismaBuildError):
-                        continue
-                self.records.file_superseded(
-                    record, key=key, kind="finish-tombstone", status="dropped",
-                    dropped_unix=_now(), dropped_host=socket.gethostname(),
-                    reason="a finisher was interrupted between moving its claim "
-                           "aside and publishing the item's next home; the key "
-                           "already has a live or terminal record, so these bytes "
-                           "are evidence rather than work", when=_now(),
-                )
-                tombstone.unlink(missing_ok=True)
-                swept.append(key)
-        return swept
 
     def sweep_stale_acquisitions(
         self, *, grace_s: float = LEASE_TIMEOUT_S
