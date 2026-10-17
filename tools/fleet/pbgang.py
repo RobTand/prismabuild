@@ -284,6 +284,7 @@ def member_command(args, manifest: dict, member: dict, *, group: str, index: int
     request = member_request(args, manifest, member, group=group, index=index)
     from prismabuild.submission_types import ROW_NAMES
     aliases = {name: field for field, name in ROW_NAMES.items()}
+    aliases.update(progress_phases="progress_policy", progress_cycle="progress_policy")
     explicit = {aliases.get(name, name) for name in member}
     order = ("cwd", "detach", "tag", "gang_group", "gang_size", "gang_index", "priority",
              "timeout_s", "priority_reason", "demand", "cpus", "env",

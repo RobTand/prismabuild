@@ -7645,7 +7645,8 @@ def submit_request(request: SubmissionRequest, *, store: FleetStore,
 def submit_action(action: Mapping[str, object], *, template: Mapping[str, object],
                   request: SubmissionRequest, store: FleetStore, staged_plan=None,
                   placement_announced: bool = False, display: DisplaySink = discard_display,
-                  report=None, producer: ProducerPublication | None = None, request_path=None):
+                  report: action_client.ClientReport | None = None, producer: ProducerPublication | None = None,
+                  request_path=None) -> action_client.ClientReport | SubmissionRefused:
     """Publish an already sealed child through the same gates and ownership tail."""
     report = report if report is not None else action_client.ClientReport()
     prepared = {"template": template, "cwd": Path(request.cwd),
@@ -7938,7 +7939,8 @@ def _prepare_producer(action, *, cas, request_path, producer: ProducerPublicatio
 def submit_producer(action, *, cas, request_path, producer: ProducerPublication,
                     request: SubmissionRequest, store: FleetStore,
                     checkout_snapshot_max_bytes=None, display: DisplaySink = discard_display,
-                    report=None):
+                    report: action_client.ClientReport | None = None
+                    ) -> action_client.ClientReport | SubmissionRefused:
     report = report if report is not None else action_client.ClientReport()
     with action_wait.client_readers():
         try:
