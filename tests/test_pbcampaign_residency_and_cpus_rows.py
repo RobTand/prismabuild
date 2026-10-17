@@ -11,6 +11,7 @@ and bounds, and omitted fields pass nothing, as every row field does.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 from pbtest_shard_output import finish_submission
 
@@ -28,6 +29,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
@@ -132,8 +134,8 @@ def _staged_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQ
     the default, a submission seals a ram leg onto the plan.
     """
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
@@ -144,7 +146,7 @@ def _staged_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQ
             "tier_id": tier_id, "host": "sparky", "tier": kind,
             "mountpoint": str(tmp_path / kind),
             "mover_python": sys.executable,
-            "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
+            "mover_tools_root": str(Path(submission.__file__).resolve().parent),
         })
     return queue
 

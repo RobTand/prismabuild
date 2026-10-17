@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 from prismabuild import pool  # noqa: E402
 import pbmcp  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +105,7 @@ def test_the_successor_is_found_where_only_the_immutable_attempt_kept_it(
 
     found = pbmcp._requeued_as(queue.root, key, second_stop)
     assert found == generations[2], "the G2->G3 handoff was not recovered"
-    assert found == pbrun.action_wait._read_preemption_successor(queue, key, second_stop, generations[1])
+    assert found == submit_core.action_wait._read_preemption_successor(queue, key, second_stop, generations[1])
 
 
 def test_the_unlocked_reader_agrees_with_the_locked_one_at_every_stop(
@@ -114,7 +115,7 @@ def test_the_unlocked_reader_agrees_with_the_locked_one_at_every_stop(
     for stop in stops:
         generation = stop["published_unix"]
         assert (pbmcp._requeued_as(queue.root, key, stop)
-                == pbrun.action_wait._read_preemption_successor(queue, key, stop, generation))
+                == submit_core.action_wait._read_preemption_successor(queue, key, stop, generation))
 
 
 def test_an_ordinary_ending_names_no_successor(tmp_path: Path) -> None:
