@@ -142,7 +142,10 @@ class TierLedger:
         return self._ledger.transfer_tokens(source, target, names)
 
     def release_unspent(self, holder: str, *, authority: Unspent,
-                        keep: Container[str] | None = None) -> int:
+                        keep: Container[str] | None = None,
+                        counts: Mapping[str, int] | None = None) -> int | dict[str, int]:
+        if counts is not None:
+            return self._ledger.release_count(holder, counts)
         if keep is not None:
             return self._ledger.release_except(holder, keep)
         return self._ledger.release(holder)
@@ -202,6 +205,15 @@ class TierLedger:
         except (OSError, PoolContractError, ValueError):
             return 0
 
+    def _rollback_host_take(self, grant: str, gib: int) -> int:
+        try:
+            returned = self._host_ledgers(self._ram_host()).release_count(
+                storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant),
+                {"mem_gb": int(gib)})
+            return int(returned.get("mem_gb", 0))
+        except (OSError, PoolContractError, ValueError):
+            return 0
+
     def _ram_host(self) -> str:
         return str(self.tier_id).split(':', 1)[1]
 
@@ -220,11 +232,11 @@ class TierLedger:
             taken = bool(self._ledger.acquire(str(grant), {str(kind): int(gib)}))
         except (OSError, PoolContractError, ValueError) as exc:
             if ram:
-                self._release_host(grant)
+                self._rollback_host_take(grant, gib)
             return ('unknown', f'tier ledger unreadable: {exc!r}')
         if not taken:
             if ram:
-                self._release_host(grant)
+                self._rollback_host_take(grant, gib)
             return ('tier-short', 'tier pool refused the take')
         return ('taken', '')
 
