@@ -28,6 +28,7 @@ Everything runs against the fake scheduler in ``test_slurm_lane``: no
 controller is contacted, and no test writes outside ``tmp_path``.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 import os

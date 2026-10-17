@@ -19,6 +19,7 @@ makes -- that an action executed under SLURM is the same execution the pull
 queue would have performed -- and only an end-to-end run can support it.
 """
 from __future__ import annotations
+from prismabuild import submission
 from submission_support import refusal_value
 from submission_support import patch_store
 

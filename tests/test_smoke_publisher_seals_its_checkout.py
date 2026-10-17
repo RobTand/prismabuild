@@ -58,7 +58,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
         return real(action, **kwargs)
 
     monkeypatch.setattr(seal_and_publish.fleet_submit, "submit", confined)
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
     assert seal_and_publish.main(["--transport", transport]) == 0
     return json.loads(capsys.readouterr().out)
 
