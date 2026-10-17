@@ -54,7 +54,8 @@ def adoption_completion_files(tmp_path):
 
 @pytest.mark.parametrize('boundary', ['fragment-unlinked', 'withdrawn'])
 @pytest.mark.parametrize('successor_state', ['valid', 'unknown-fragment', 'unknown-material', 'live',
-    'unknown-receipt', 'different-receipt'])
+    'unknown-receipt', 'different-receipt', 'float-receipt',
+    'boolean-receipt', 'wrong-schema-receipt', 'empty-receipt'])
 def test_an_interrupted_withdrawal_finishes_from_a_fresh_owner(
         adoption_completion_files, monkeypatch, boundary, successor_state):
     queue, root, path, payload, manifest, mark, args = adoption_completion_files
@@ -95,6 +96,14 @@ def test_an_interrupted_withdrawal_finishes_from_a_fresh_owner(
     elif successor_state == 'different-receipt':
         receipt = queue.move_record(SUCCESSOR, fresh=True)
         queue.record_move(SUCCESSOR, {**receipt, 'adopted_from_consumer': 'f' * 64})
+    elif successor_state in ('float-receipt', 'boolean-receipt'):
+        receipt = queue.move_record(SUCCESSOR, fresh=True)
+        queue.record_move(SUCCESSOR, {**receipt,
+            'range_start_bytes': 0.0 if successor_state == 'float-receipt' else False})
+    elif successor_state == 'wrong-schema-receipt':
+        queue.records.move_path(SUCCESSOR).write_text('{"schema":"unknown"}\n')
+    elif successor_state == 'empty-receipt':
+        queue.records.move_path(SUCCESSOR).write_bytes(b'')
     donor_material = reader_lease.material_path(root, FIRST, DONOR)
     before_material = donor_material.read_bytes() if donor_material.exists() else None
     before_mark = mark.read_bytes() if mark.exists() else None
