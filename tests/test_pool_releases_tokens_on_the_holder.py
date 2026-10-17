@@ -28,6 +28,7 @@ are one box.
 Issue #261.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -58,14 +59,6 @@ class _ClaimantDied(RuntimeError):
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
-
-
-def _publish(q: pool.PoolQueue) -> None:
-    q.publish(
-        action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources=DEMAND,
-        max_attempts=1, retry_safe=True,
-    )
 
 
 def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
@@ -126,7 +119,15 @@ def test_the_holders_tokens_come_back_to_the_holder(
 ) -> None:
     """The release names the box that committed the tokens."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
 
     assert _reap_here(queue) == [KEY]
@@ -148,7 +149,15 @@ def test_the_reaper_gains_no_capacity_it_never_had(
     minting the reaper the capacity the issue believed it had gained.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     before = queue.ledger().capacity()
 
@@ -180,7 +189,15 @@ def test_the_ledger_closes_the_case_the_marker_could_not(
     ``resolve_claim_holder`` read it first.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
 
@@ -201,7 +218,15 @@ def test_with_no_evidence_at_all_no_holder_is_invented(
     answer must stay "nobody said", never the box that happens to be asking.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
     assert queue.ledger(HELD_BY).release(KEY) == 1
@@ -217,7 +242,15 @@ def test_a_claim_already_filed_elsewhere_still_credits_its_holder(
 ) -> None:
     """The terminal-claim branch releases against the same resolved holder."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     filed = _same_generation_record(queue)
     filed["status"] = "executed"
@@ -235,7 +268,15 @@ def test_a_withdrawn_claim_still_credits_its_holder(
 ) -> None:
     """The withdrawal branch releases against the same resolved holder."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     marker = _same_generation_record(queue)
     marker["withdrawn_unix"] = pool._now()
@@ -259,7 +300,15 @@ def test_the_record_and_the_ledger_name_the_same_box(
     that being expressible.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
 
     _reap_here(queue)

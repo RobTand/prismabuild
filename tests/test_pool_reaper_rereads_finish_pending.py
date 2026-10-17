@@ -18,6 +18,7 @@ heartbeating, so an expired lease is that state's normal condition.  The lease
 check between the two reads does not close it.  Issue #215.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -37,13 +38,6 @@ KEY = "b" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
-
-
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources={"cpu": 1}, **kw,
-    )
 
 
 def _finish_pending_lands_during(q: pool.PoolQueue, *, host: str) -> dict:
@@ -82,7 +76,15 @@ def test_a_finish_that_lands_inside_the_window_is_not_reaped(
 ) -> None:
     """A foreign reaper leaves a pending finish alone, whenever it arrives."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
 
@@ -103,7 +105,15 @@ def test_the_owner_host_still_concludes_its_own_pending_finish(
 ) -> None:
     """The guard's live path is unchanged: the owner completes the finish."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
 
     landed = _finish_pending_lands_during(queue, host=socket.gethostname())
@@ -121,7 +131,15 @@ def test_the_owner_host_still_concludes_its_own_pending_finish(
 def test_an_ordinary_stale_claim_is_still_reaped(queue: pool.PoolQueue) -> None:
     """Nothing else changes: a claim with no pending finish still concludes."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
 
     assert queue.reap_stale(timeout_s=-1) == [KEY]

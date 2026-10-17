@@ -1,5 +1,6 @@
 """An older claim's retry cannot replace a newer publication of the same key."""
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 from prismabuild import claim_identity
 
@@ -28,16 +29,16 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 @pytest.fixture()
 def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     now = [1_800_000_000.0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     return now
 
 
 def _publish(queue: pool.PoolQueue, *, priority: int = 0) -> None:
-    queue.publish(
-        action_key=KEY,
-        cas_root=queue.root / "cas",
-        checkout_root=queue.root / "checkout",
-        worker_script=queue.root / "worker.py",
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'checkout',
+        worker_script=queue.root / 'worker.py',
         resources=DEMAND,
         max_attempts=2,
         retry_safe=True,

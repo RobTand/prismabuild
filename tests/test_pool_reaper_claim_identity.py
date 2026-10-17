@@ -14,6 +14,7 @@ The claim's identity decides. Two live claims of one key are the shape #61 and
 reaper's.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -32,13 +33,6 @@ KEY_A = "a" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
-
-
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY_A, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources={"cpu": 1}, **kw,
-    )
 
 
 def _reap_while_the_claim_turns_over(q: pool.PoolQueue, first: dict) -> dict:
@@ -66,7 +60,15 @@ def test_the_reaper_leaves_a_retry_that_claimed_under_it(
 ) -> None:
     """The retry keeps its claim, its lease and its reservation."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
@@ -94,7 +96,15 @@ def test_the_reaper_still_requeues_the_claim_it_did_judge(
 ) -> None:
     """The ordinary path is unchanged: nothing turns over, so the claim moves."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
 
     assert queue.reap_stale(timeout_s=-1) == [KEY_A]
@@ -118,7 +128,15 @@ def test_a_rewritten_claim_is_still_the_claim_the_reaper_judged(
     reaper concluding a claim nobody else holds.
     """
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
