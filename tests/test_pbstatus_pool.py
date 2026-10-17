@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import pool
 from prismabuild import census as fleet_census
 import pbstatus
+import upgrade_client
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
