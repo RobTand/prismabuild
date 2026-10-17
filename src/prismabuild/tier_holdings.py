@@ -155,6 +155,44 @@ class TierLedger:
     def free_supply(self) -> dict[str, int]:
         return self._ledger.available()
 
+    @staticmethod
+    def _return_taken(ledger: ResourceLedger, holder: str, names: Sequence[str]) -> None:
+        try:
+            ledger.free_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        for name in names:
+            try:
+                os.rename(ledger.held_dir / holder / name, ledger.free_dir / name)
+            except OSError:
+                continue
+        ledger._drop_empty_holder(ledger.held_dir / holder)
+
+    def _take_from(self, ledger: ResourceLedger, holder: str,
+                   demand: Mapping[str, int]) -> bool:
+        with ledger._mutation_locked(blocking=ledger._mutation_guard is None) as acquired:
+            if not acquired:
+                return False
+            handle = ledger.begin_acquire(holder, demand)
+            if handle is None:
+                return False
+            wanted = sum(int(count) for count in demand.values() if int(count) > 0)
+            names: list[str] = []
+            try:
+                moved = ledger.commit_acquire(holder, handle, moved_tokens=names)
+            except BaseException:
+                try:
+                    ledger.abandon_acquire(handle)
+                except (OSError, PoolContractError, ValueError):
+                    pass
+                self._return_taken(ledger, holder, names)
+                raise
+            if moved < wanted:
+                ledger.abandon_acquire(handle)
+                self._return_taken(ledger, holder, names)
+                return False
+            return True
+
     def take(self, holder: str, demand: Mapping[str, int]) -> bool:
         gib = (int(demand.get(storage_tiers.RAM_CAPACITY_KIND, 0))
                if storage_tiers.tier_kind_of(self.tier_id) == "ram" else 0)
@@ -167,7 +205,7 @@ class TierLedger:
                     "reason": "ram_host_" + state, "detail": detail}
                 return False
         try:
-            taken = self._ledger.acquire(holder, demand)
+            taken = self._take_from(self._ledger, holder, demand)
         except BaseException:
             if gib > 0:
                 self._rollback_host_take(holder, gib)
@@ -269,7 +307,9 @@ class TierLedger:
 
     def _hold_host(self, grant: str, gib: int) -> tuple[str, str]:
         try:
-            taken = bool(self._host_ledgers(self._ram_host()).acquire(storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant), {'mem_gb': int(gib)}))
+            taken = bool(self._take_from(
+                self._host_ledgers(self._ram_host()),
+                storage_tiers.RAM_HOST_MEMORY_PREFIX + str(grant), {"mem_gb": int(gib)}))
         except (OSError, PoolContractError, ValueError) as exc:
             return ('unknown', f'host mem ledger unreadable: {exc!r}')
         if taken:
@@ -321,7 +361,7 @@ class TierLedger:
             if host_state == 'short':
                 return ('host-short', host_detail)
         try:
-            taken = bool(self._ledger.acquire(str(grant), {str(kind): int(gib)}))
+            taken = bool(self._take_from(self._ledger, str(grant), {str(kind): int(gib)}))
         except (OSError, PoolContractError, ValueError) as exc:
             if ram:
                 self._rollback_host_take(grant, gib)
@@ -382,7 +422,7 @@ class TierLedger:
                 continue
             if current < target:
                 try:
-                    taken = host_ledger.acquire(mirror, {'mem_gb': target - current})
+                    taken = self._take_from(host_ledger, mirror, {"mem_gb": target - current})
                 except (OSError, PoolContractError, ValueError) as exc:
                     taken = False
                     detail = repr(exc)

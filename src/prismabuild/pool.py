@@ -4569,7 +4569,8 @@ class ResourceLedger:
         return handle
 
     @_guarded_mutation(blocking=True)
-    def commit_acquire(self, action_key: str, handle: str) -> int:
+    def commit_acquire(self, action_key: str, handle: str, *,
+                       moved_tokens: list[str] | None = None) -> int:
         """Move a claimant's private tokens under its action.  Count moved.
 
         Called by the winner of the ready-to-claimed rename, and by nobody
@@ -4621,6 +4622,8 @@ class ResourceLedger:
             elif token.name == gpu_admission.METADATA:
                 moved += int((record_store.read_document(landing) or {}).get("borrowed_gpu", 0))
             else:
+                if moved_tokens is not None:
+                    moved_tokens.append(token.name)
                 moved += 1
         try:
             source.rmdir()

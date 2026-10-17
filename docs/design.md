@@ -7069,6 +7069,13 @@ second; count handover mirrors the actual moved count, and named handover
 mirrors only the RAM occupancy names it actually moved. Host handover failures
 retain their named diagnostics and reconcile by holder name.
 
+The tier owner composes private begin and commit under the existing mutation
+exclusion. `ResourceLedger.commit_acquire` can collect the names it actually
+moved in an optional `moved_tokens` list, without another directory scan.
+An incomplete tier-domain take abandons its private remainder, then returns
+only those moved names. Previously held names remain charged. The generic
+ledger's default callers and integer commit result are unchanged.
+
 `release_unspent` requires an `Unspent` authority from the consumer's existing
 proof. Funding and batch decisions remain with their owners. `settle_egress`
 destroys duplicate charges before returning counts backed by physical egress.
