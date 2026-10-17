@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import runpy
 
 
@@ -35,10 +36,10 @@ def manifest(core, store, load, variant):
     origin = variant in ("origin-builder", "merged-builder", "placed-builder")
     po, pool, _, queue, template, instance, descriptor, path = helper("compat_batch_adapters.py")["committed"](
         store, load, "origin" if origin else "staged")
-    batch = core.json.loads(path.read_bytes())
+    batch = json.loads(path.read_bytes())
     if variant == "stage-builder":
         return po.build_stage_manifest(batch, str(store / "outputs"))
-    refs = [po.origin_batch_ref(batch)]
+    refs = [po.origin_batch_ref(instance, batch_id="batch", manifest_digest=po.output_manifest_sha256([descriptor]))]
     if variant == "origin-builder":
         return po.origin_batch_manifest(queue.root, refs)
     if variant == "merged-builder":
