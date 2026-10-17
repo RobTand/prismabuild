@@ -69,11 +69,11 @@ from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 
 import deferred_release  # noqa: E402
-import stage_rounding  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import stage_rounding  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 import manifest_promotion  # noqa: E402
 import prelaunch_tier  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 #: One definition, in the pool: ``stage_move.py`` writes these through
 #: ``record_move`` and this loop reads them for the fill measurement.
 MOVER_RECEIPTS = pool.record_store.MOVERS

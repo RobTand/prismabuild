@@ -37,8 +37,8 @@ from prismabuild.stage_marks import (  # noqa: E402
 )
 from prismabuild import core as pb, pool, resident_sets  # noqa: E402
 
-import stage_release  # noqa: E402
-from stage_move import RANGE_SUFFIX, stage_relative  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild.stage_move import RANGE_SUFFIX, stage_relative  # noqa: E402
 
 #: The event each reclaim receipt publishes.
 RECLAIM_EVENT = "stage-source-mark-reclaimed"
