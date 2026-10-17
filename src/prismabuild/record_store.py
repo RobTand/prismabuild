@@ -777,8 +777,11 @@ class RecordStore:
         return (self.root / TIER_FUNDING / TIER_FUNDING_RETIRED
                 / f"{mover_action_key}.{tier_id}.output-funding.json")
 
+    def tier_directory(self) -> Path:
+        return self.root / TIERS
+
     def tier_record_path(self, tier_id: str) -> Path:
-        return self.root / TIERS / f"{self.check_tier_id(tier_id)}.json"
+        return self.tier_directory() / f"{self.check_tier_id(tier_id)}.json"
 
     def tier_commitment_path(self, tier_id: str) -> Path:
         return self.root / TIER_COMMITMENTS / f"{self.check_tier_id(tier_id)}.json"
@@ -1696,15 +1699,7 @@ class RecordStore:
         return sorted(found)
 
     def inspection_keys(self, state: str) -> list[str]:
-        directory = self.dir(state)
-        try:
-            with os.scandir(directory) as entries:
-                return sorted(entry.name[:-5] for entry in entries
-                              if entry.name.endswith(".json") and entry.is_file())
-        except OSError as error:
-            if isinstance(error, (FileNotFoundError, NotADirectoryError)):
-                return []
-            raise
+        return _inspection_json_keys_at(self.dir(state))
 
     def inspection_prefix(self, prefix: str) -> list[str]:
         """Every action key under this prefix, across live and terminal states.
@@ -1810,6 +1805,18 @@ class RecordStore:
 
     def inspection_slot(self, state: str, key: str) -> JsonRecord | None:
         return inspection_document(self.item_path(state, key))
+
+    def inspection_tier_records(self) -> Iterator[RecordObservation]:
+        directory = self.tier_directory()
+        for key in _inspection_json_keys_at(directory):
+            path = directory / f"{key}.json"
+            try:
+                record = read_document(path)
+            except Exception as exc:
+                result = Unknown("record-unreadable", path, exc)
+            else:
+                result = Absent() if record is None else Present(record)
+            yield RecordObservation(QueueAddress(path, TIERS, None), result)
 
     def inspection_live_records(self, key: str) -> dict[str, JsonRecord]:
         records: dict[str, JsonRecord] = {}
@@ -2379,3 +2386,14 @@ class ClaimedNames:
         return f"{key}.json" in self.names or _claimed_name_blocks(self.finishes, key)
 
 
+
+
+def _inspection_json_keys_at(directory: Path) -> list[str]:
+    try:
+        with os.scandir(directory) as entries:
+            return sorted(entry.name[:-5] for entry in entries
+                          if entry.name.endswith(".json") and entry.is_file())
+    except OSError as error:
+        if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+            return []
+        raise

@@ -1114,12 +1114,12 @@ def _tier_rows(queue_root: Path) -> dict:
     """
 
     records = pool.record_store.RecordStore(queue_root)
-    keys = records.inspection_keys(pool.record_store.TIERS)
     tiers: list[dict] = []
     invalid: list[dict] = []
-    for stem in keys:
+    for observed in records.inspection_tier_records():
+        stem = observed.address.path.stem
         try:
-            record = pool.record_store.value_or_raise(records.item(pool.record_store.TIERS, stem))
+            record = pool.record_store.value_or_raise(observed.result)
         except (ValueError, pool.PoolContractError) as exc:
             invalid.append({"tier_id": stem, "reason": str(exc)})
             continue
