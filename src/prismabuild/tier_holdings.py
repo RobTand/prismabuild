@@ -424,6 +424,38 @@ class TierLedger:
             self._trim_host_to_occupancy(str(holder))
         return released
 
+    def _sync_host_mirror(self, ledger: ResourceLedger, holder: str,
+                          target: int) -> tuple[bool, dict[str, object] | None]:
+        mirror = storage_tiers.RAM_HOST_MEMORY_PREFIX + holder
+        try:
+            current = int(ledger.holder_tokens(mirror).get('mem_gb', 0))
+        except (OSError, PoolContractError, ValueError):
+            return False, None
+        if current == target:
+            return True, None
+        if current < target:
+            try:
+                taken = self._take_from(ledger, mirror, {"mem_gb": target - current})
+            except (OSError, PoolContractError, ValueError) as exc:
+                taken = False
+                detail = repr(exc)
+            else:
+                detail = str(ledger.last_token_shortage or '')
+            if not taken:
+                return False, {'reason': 'ram-host-hold-missing', 'holder': mirror,
+                               'gib': target, 'detail': detail}
+            return True, None
+        try:
+            released_counts = ledger.release_count(mirror, {'mem_gb': current - target})
+        except (OSError, PoolContractError, ValueError) as exc:
+            return False, {'reason': 'ram-host-hold-missing', 'holder': mirror,
+                           'gib': target, 'detail': f'trim failed: {exc!r}'}
+        released = int(released_counts.get('mem_gb', 0))
+        if released:
+            return True, {'reason': 'ram-host-hold-trimmed', 'holder': mirror,
+                          'released_gib': released}
+        return True, None
+
     def reconcile_mirror(self, expected_holders: Iterable[str], *, release_orphans: bool=True) -> dict[str, object]:
         if storage_tiers.tier_kind_of(str(self.tier_id)) != 'ram':
             return {'events': [], 'converged': True}
@@ -446,35 +478,10 @@ class TierLedger:
                 converged = False
                 continue
             target = int(tokens.get(storage_tiers.RAM_CAPACITY_KIND, 0))
-            mirror = prefix + holder
-            try:
-                current = int(host_ledger.holder_tokens(mirror).get('mem_gb', 0))
-            except (OSError, PoolContractError, ValueError):
-                converged = False
-                continue
-            if current == target:
-                continue
-            if current < target:
-                try:
-                    taken = self._take_from(host_ledger, mirror, {"mem_gb": target - current})
-                except (OSError, PoolContractError, ValueError) as exc:
-                    taken = False
-                    detail = repr(exc)
-                else:
-                    detail = str(host_ledger.last_token_shortage or '')
-                if not taken:
-                    converged = False
-                    events.append({'reason': 'ram-host-hold-missing', 'holder': mirror, 'gib': target, 'detail': detail})
-                continue
-            try:
-                released_counts = host_ledger.release_count(mirror, {'mem_gb': current - target})
-            except (OSError, PoolContractError, ValueError) as exc:
-                converged = False
-                events.append({'reason': 'ram-host-hold-missing', 'holder': mirror, 'gib': target, 'detail': f'trim failed: {exc!r}'})
-            else:
-                released = int(released_counts.get('mem_gb', 0))
-                if released:
-                    events.append({'reason': 'ram-host-hold-trimmed', 'holder': mirror, 'released_gib': released})
+            synced, event = self._sync_host_mirror(host_ledger, holder, target)
+            converged = converged and synced
+            if event is not None:
+                events.append(event)
         if not release_orphans:
             return {'events': events, 'converged': converged}
         for holder in holders:
