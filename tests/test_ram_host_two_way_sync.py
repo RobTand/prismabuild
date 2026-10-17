@@ -186,15 +186,16 @@ def test_a_failed_topup_keeps_the_half_it_already_holds(
     assert host.acquire(mirror, {"mem_gb": 60}) is True
 
     real_acquire = pool.ResourceLedger.acquire
+    real_begin = pool.ResourceLedger.begin_acquire
 
     def racing_acquire(self, action_key, demand, **kwargs):
         if action_key == mirror:
             # A row admits between the sync's steps and takes almost
             # everything the buggy release just freed.
             assert real_acquire(self, competitor, {"mem_gb": 190}) is True
-        return real_acquire(self, action_key, demand, **kwargs)
+        return real_begin(self, action_key, demand, **kwargs)
 
-    monkeypatch.setattr(pool.ResourceLedger, "acquire", racing_acquire)
+    monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", racing_acquire)
     verdict = queue.tier(RAM_TIER).reconcile_mirror(())
     monkeypatch.undo()
 
@@ -224,6 +225,7 @@ def test_the_mirror_never_drops_below_what_it_already_holds(
 
     observations: list[int] = []
     real_acquire = pool.ResourceLedger.acquire
+    real_begin = pool.ResourceLedger.begin_acquire
 
     def observing_acquire(self, action_key, demand, **kwargs):
         if action_key == mirror:
@@ -232,9 +234,9 @@ def test_the_mirror_never_drops_below_what_it_already_holds(
             assert real_acquire(self, competitor, {"mem_gb": 150}) is True
             observations.append(
                 int(self.holder_tokens(mirror).get("mem_gb", 0)))
-        return real_acquire(self, action_key, demand, **kwargs)
+        return real_begin(self, action_key, demand, **kwargs)
 
-    monkeypatch.setattr(pool.ResourceLedger, "acquire", observing_acquire)
+    monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", observing_acquire)
     verdict = queue.tier(RAM_TIER).reconcile_mirror(())
     monkeypatch.undo()
 

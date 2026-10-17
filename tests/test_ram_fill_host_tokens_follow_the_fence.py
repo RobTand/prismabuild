@@ -164,7 +164,7 @@ def test_the_take_is_tristate_and_names_the_unknown_case(
     # class -- exactly the census fault the take has to survive.
     def _boom(self, holder: str, demand: dict) -> bool:
         raise OSError("boom: host census unreadable")
-    monkeypatch.setattr(pool.ResourceLedger, "acquire", _boom)
+    monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", _boom)
     state, detail = queue.tier('ram:' + str(HOST))._hold_host('f' * 64, 8)
     assert state == "unknown"
     assert "boom" in detail

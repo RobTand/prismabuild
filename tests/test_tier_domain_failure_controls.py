@@ -35,7 +35,7 @@ def test_short_advance_rolls_back_only_its_own_host_take(tmp_path):
 def test_unknown_advance_retains_the_preexisting_host_half(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     seeded(queue, 1)
-    original = pool.ResourceLedger.acquire
+    original = pool.ResourceLedger.begin_acquire
     fault = OSError("tier take interrupted")
 
     def interrupted(ledger, key, demand):
@@ -43,7 +43,7 @@ def test_unknown_advance_retains_the_preexisting_host_half(tmp_path, monkeypatch
             raise fault
         return original(ledger, key, demand)
 
-    monkeypatch.setattr(pool.ResourceLedger, "acquire", interrupted)
+    monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", interrupted)
     result = queue.tier(TIER).take_advance(GRANT, 1, 'ram_gib')
 
     assert result == ("unknown", f"tier ledger unreadable: {fault!r}")
@@ -97,7 +97,7 @@ def test_a_ram_take_charges_the_host_before_tier_occupancy(tmp_path, monkeypatch
     queue.records.ensure_layout()
     queue.ledger(HOST).ensure_capacity({"mem_gb": 2})
     queue.tier(TIER).mint({'ram_gib': 2})
-    original = pool.ResourceLedger.acquire
+    original = pool.ResourceLedger.begin_acquire
     observed = []
 
     def observe(ledger, holder, demand):
@@ -105,7 +105,7 @@ def test_a_ram_take_charges_the_host_before_tier_occupancy(tmp_path, monkeypatch
             observed.append(queue.ledger(HOST).holder_tokens("ram-host:" + holder))
         return original(ledger, holder, demand)
 
-    monkeypatch.setattr(pool.ResourceLedger, "acquire", observe)
+    monkeypatch.setattr(pool.ResourceLedger, "begin_acquire", observe)
     assert queue.tier(TIER).take(GRANT, {'ram_gib': 2})
     assert observed == [{"mem_gb": 2}]
     assert queue.ledger(HOST).holder_tokens("ram-host:" + GRANT) == {"mem_gb": 2}
