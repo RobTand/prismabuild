@@ -193,7 +193,8 @@ def test_failure_consumes_only_notes_past_the_existing_write_preparation_point(
     queue._drain_accounting.stage(KEY, drain.MeasurementNotes("host", GEN, {"epoch_unix": 20.}))
     write = pool.immutable_files.write_json_atomic
     if phase == "write":
-        def fail_write(*args):
+        def fail_write(target, *args):
+            assert target == queue.records.passes_path(KEY)
             raise OSError("sidecar unavailable")
         monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_write)
     with pytest.raises((OverflowError, OSError)):

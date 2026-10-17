@@ -209,7 +209,8 @@ def test_a_crashed_dead_input_transition_is_recovered_by_the_sweep(
     world.fail_the_producer()
     item = json.loads(world.q.records.item_path(pool.record_store.READY, world.mover).read_text())
 
-    def crash(*args, **kwargs):
+    def crash(target, *args, **kwargs):
+        assert target == world.q.records.item_path(pool.record_store.FAILED, world.mover)
         raise OSError("simulated write fault before the ending was filed")
 
     monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', crash)

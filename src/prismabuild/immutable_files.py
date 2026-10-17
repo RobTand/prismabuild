@@ -814,7 +814,25 @@ def write_json_atomic(
     trailing_newline: bool = False, text: str = "canonical",
     tmp: str = "pid_uuid", fsync: bool = True,
 ) -> None:
-    """Publish JSON with the caller's byte, temporary-name and fsync profile."""
+    """Publish JSON by rename with the caller's existing record profile.
+
+    The shared owner preserves the profiles consolidated in #1330.
+    ``make_parent=False`` avoids a mkdir on every cycle for callers that
+    retry only after FileNotFoundError (#960).
+
+    Canonical records have no LF. ``canonical_lf`` and ``trailing_newline``
+    retain the lane's one-LF bytes; ``sorted_lf`` retains holder and reader
+    proof bytes. Those bytes address immutable evidence and must not drift.
+
+    Shared directories need pid_uuid names because different hosts reuse
+    PIDs. They open exclusively. The local pid profile truncates a stale
+    temporary left after SIGKILL so PID reuse cannot wedge later writes
+    (#1331). Best-effort local sidecars can retain fsync=False. A failed
+    rename removes the temporary before propagating the original error.
+
+    Standalone upgrade and broker writers keep their distinct temporary,
+    chmod, no-follow and directory-fsync contracts outside this owner.
+    """
     if text not in ('canonical', 'canonical_lf', 'sorted_lf'):
         raise MaterializationContractError(
             f"atomic record text must be canonical, canonical_lf or "
@@ -836,7 +854,11 @@ def write_json_atomic(
 def write_bytes_atomic(
     path: Path, data: bytes, *, make_parent: bool = True,
 ) -> None:
-    """Publish exact bytes with the existing exclusive temporary and rename policy."""
+    """Publish exact bytes with the existing exclusive temporary policy.
+
+    Unlike JSON records, a failed final rename retains its temporary. The
+    separate cleanup profile preserves that original byte-writer contract.
+    """
     replacement = prepare_atomic_replacement(
         path, make_parent=make_parent, cleanup_rename=False)
     replacement.write(data)

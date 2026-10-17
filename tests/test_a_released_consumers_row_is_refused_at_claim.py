@@ -324,7 +324,8 @@ def test_a_crash_while_filing_the_refusal_is_recovered_and_filed(
         tmp_path, monkeypatch, capsys)
     resume()
 
-    def crash(*_args, **_kwargs):
+    def crash(target, *_args, **_kwargs):
+        assert target == queue.records.item_path(pool.record_store.FAILED, key)
         raise OSError("worker died filing the ending")
 
     with monkeypatch.context() as patch:
