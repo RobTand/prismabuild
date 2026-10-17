@@ -130,7 +130,11 @@ def test_remote_egress_uses_retained_host_pinned_action(tmp_path, monkeypatch):
     result = local_resident.request_eviction(store, record["set_id"], "test-host", spec,
                                            caller_host="elsewhere", now=201)
     assert result["state"] == "queued"
-    assert pool.PoolQueue(store.queue_root).records.item_path(pool.record_store.READY, "e" * 64).exists()
+    assert pool.PoolQueue(store.queue_root).records.item_path(
+        pool.record_store.READY,
+        "e" * 64,
+    ).exists(
+    )
 
 
 def test_busy_mover_is_not_deleted(tmp_path):

@@ -86,15 +86,23 @@ def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypat
     movements = store.set_path(set_id).parent / "movements" / "test-host.json"
     before = movements.read_bytes()
     requests = set(template["cas"].root.rglob("*.json"))
-    ready = {path: path.read_bytes() for path in (queue.root / pool.record_store.READY).glob("*.json")}
+    ready = {path: path.read_bytes(
+    ) for path in (queue.root / pool.record_store.READY).glob(
+        "*.json",
+    )}
     if expiry == "released":
         store.release(set_id, by="test", now=120)
         now = 121
     else:
         now = 200 if expiry == "hard_max" else 150
     if expiry != "until":
-        (queue.root / pool.record_store.READY / ("f" * 64 + ".json")).write_text(json.dumps({"resident_set": set_id}))
-        ready = {path: path.read_bytes() for path in (queue.root / pool.record_store.READY).glob("*.json")}
+        (queue.root / pool.record_store.READY / ("f" * 64 + ".json")).write_text(
+            json.dumps({"resident_set": set_id}),
+        )
+        ready = {path: path.read_bytes(
+        ) for path in (queue.root / pool.record_store.READY).glob(
+            "*.json",
+        )}
     monkeypatch.setattr(local_resident.time, "time", lambda: now)
     assert not local_resident.lease_active(store, set_id)
     if entrypoint == "command":
@@ -107,7 +115,10 @@ def test_dispatch_refuses_inactive_lease_without_publication(tmp_path, monkeypat
     assert movements.read_bytes() == before
     assert store.read_movements(set_id, "test-host") == first["test-host"]
     assert set(template["cas"].root.rglob("*.json")) == requests
-    assert {path: path.read_bytes() for path in (queue.root / pool.record_store.READY).glob("*.json")} == ready
+    assert {path: path.read_bytes(
+    ) for path in (queue.root / pool.record_store.READY).glob(
+        "*.json",
+    )} == ready
 
 @pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED])
 @pytest.mark.parametrize("resident_host", [False, True])
@@ -127,8 +138,10 @@ def test_dispatch_honors_live_reference_before_hard_max(tmp_path, monkeypatch, c
     assert pbresident.main(["--pool-root", str(queue.root), "dispatch", set_id,
                            "--checkout", str(tmp_path), "--policy", "/policy.json"]) == 0
     pair = json.loads(capsys.readouterr().out)["movements"]["test-host"]
-    assert queue.records.item_path(pool.record_store.READY, pair["copy"]["action_key"]).exists() is not resident_host
-    assert not queue.records.item_path(pool.record_store.READY, pair["evict"]["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, pair["copy"]["action_key"]).exists(
+    ) is not resident_host
+    assert not queue.records.item_path(pool.record_store.READY, pair["evict"]["action_key"]).exists(
+    )
     assert store.read_movements(set_id, "test-host") == pair
     assert store.set_path(set_id).read_bytes() == body
     assert store.read_lease_log(set_id) == lease_log
@@ -141,7 +154,9 @@ def test_resident_dispatch_publishes_descriptors_without_another_copy(tmp_path, 
     local_resident.copy(store, record["set_id"], "test-host", spec, now=120)
     before = store.copy_path(record["set_id"], "test-host").read_bytes()
     pbresident.submit_copies(store, record["set_id"], policy_path="/policy.json", checkout=str(tmp_path))
-    assert not list(queue.root.joinpath(pool.record_store.READY).glob("*.json")), "resident dispatch must not queue another copy"
+    assert not list(
+        queue.root.joinpath(pool.record_store.READY).glob("*.json"),
+    ), "resident dispatch must not queue another copy"
     assert store.copy_path(record["set_id"], "test-host").read_bytes() == before
     assert set(store.read_movements(record["set_id"], "test-host")) == {"copy", "evict"}
 
@@ -154,10 +169,14 @@ def test_dispatch_command_is_idempotent_for_an_active_copy(tmp_path, monkeypatch
     assert pbresident.main(options) == 0
     first = json.loads(capsys.readouterr().out)
     key = first["movements"]["test-host"]["copy"]["action_key"]
-    generation = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())["published_unix"]
+    generation = json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(),
+    )["published_unix"]
     assert pbresident.main(options) == 0
     assert json.loads(capsys.readouterr().out)["movements"] == first["movements"]
-    assert json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())["published_unix"] == generation
+    assert json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(),
+    )["published_unix"] == generation
 
 
 @pytest.mark.parametrize("beyond_ceiling", [False, True])

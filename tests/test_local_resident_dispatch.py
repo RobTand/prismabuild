@@ -61,5 +61,9 @@ def test_published_pairs_queue_only_copy_and_retain_egress_for_owner(tmp_path, m
     queue = pool.PoolQueue(store.queue_root)
     copy = rows["test-host"]["copy"]
     assert queue.records.item_path(pool.record_store.READY, copy["action_key"]).exists()
-    assert not queue.records.item_path(pool.record_store.READY, rows["test-host"]["evict"]["action_key"]).exists()
+    assert not queue.records.item_path(
+        pool.record_store.READY,
+        rows["test-host"]["evict"]["action_key"],
+    ).exists(
+    )
     assert store.read_movements(record["set_id"], "test-host") == rows["test-host"]

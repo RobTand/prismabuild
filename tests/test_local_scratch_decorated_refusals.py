@@ -65,7 +65,9 @@ def test_actual_fairness_starved_gpu_refusal_ends_measured_yield(tmp_path, monke
         assert fleet.queue.passes(fleet.key) == count
         assert not fleet.queue.ledger(FAST).held_keys()
         assert fleet.queue.ledger(FAST).available() == CAPACITY
-        assert _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))["attempts"] == 0
+        assert _record(
+            fleet.queue.records.item_path(pool.record_store.READY, fleet.key),
+        )["attempts"] == 0
     retained = observations[-1]
     assert retained["reason"] == "adaptive_gpu_refused_starved", observations
     assert retained["evidence"]["withhold"]["eligible"] is True
