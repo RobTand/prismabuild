@@ -215,7 +215,7 @@ raise SystemExit(wl.main())
         assert control["scope_id"] in membership
 
         assert submit_core.withdraw_main(
-            queue, [key[:12]], reason="ten merges stale", by=f"rob@{host}", store=pbrun.configured_store(), display=pbrun.render) == 0
+            queue, [key[:12]], reason="ten merges stale", by=f"rob@{host}", store=pbrun.configured_store(), display=submit_core.render_submission) == 0
 
         output, _ = worker.communicate(timeout=60.0)
         assert worker.returncode == 0, output

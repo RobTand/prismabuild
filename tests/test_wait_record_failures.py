@@ -103,7 +103,7 @@ def test_withdraw_write_failure_reports_whether_cancel_was_sent(tmp_path, monkey
     def refuse(*args, **kwargs):
         raise PermissionError(13, 'Permission denied', str(q.root / 'withdrawn' / '.record.tmp'))
     monkeypatch.setattr(pbrun, '_file_slurm_withdrawal' if stage == 'before' else '_stamp_scancel_accepted', refuse)
-    assert submit_core.withdraw_slurm_main([key], queue_root=q.root, store=pbrun.configured_store(), display=pbrun.render) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
+    assert submit_core.withdraw_slurm_main([key], queue_root=q.root, store=pbrun.configured_store(), display=submit_core.render_submission) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert bool(cancelled) == (stage == 'after')
     assert ('no cancellation was sent' if stage == 'before' else 'scancel accepted') in err
