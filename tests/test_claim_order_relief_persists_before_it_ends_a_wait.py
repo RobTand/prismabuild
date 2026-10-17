@@ -43,6 +43,7 @@ from test_claimed_consumers_drain_a_tier_in_admission_order import (  # noqa: E4
     _fixture, _key, _manifest, _mover)
 from test_a_staged_wait_is_not_no_progress import (  # noqa: E402
     _judge, _verdict_fixture)
+from prismabuild import staged_path
 
 
 def _order(queue: pool.PoolQueue) -> dict[str, object]:
@@ -203,7 +204,7 @@ def test_a_stalled_short_relief_ends_only_the_lowest_ranked_consumer(
 
 def _refuse(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        tier_loop.stage_release, "stage_root_refusal",
+        staged_path, 'stage_root_refusal',
         lambda _queue, _root: "stage_root_marker_unreadable: [Errno 5] EIO")
 
 

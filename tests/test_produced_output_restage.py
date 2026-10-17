@@ -47,6 +47,7 @@ from prismabuild import stage_release  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from prismabuild import tier_holdings
 from prismabuild import staged_path
+from prismabuild import output_vocabulary
 
 try:
     from prismabuild import reader_lease as rlc
@@ -327,7 +328,7 @@ class _World:
         return self.commitments()["batches"][batch_id]
 
     def batch_record_path(self, batch_id: str) -> Path:
-        return (Path(self.q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
+        return (Path(self.q.root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                 / po.instance_namespace(self.inst) / f"{batch_id}.json")
 
     def pin(self, mover: str, manifest: str, total: int, *,

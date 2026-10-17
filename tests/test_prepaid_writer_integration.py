@@ -60,6 +60,7 @@ from prismabuild import stage_release  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from prismabuild import tier_holdings
 from prismabuild import staged_path
+from prismabuild import output_vocabulary
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -715,7 +716,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         mover = str(res["mover_key"])
         # The null digest survives every transition as JSON null.
         rec = pool.record_store.read_document(
-            Path(q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
+            Path(q.root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
             / po.instance_namespace(inst) / f"{batch_id}.json")
         assert rec["entries"][0]["sha256"] is None
         assert res["manifest_digest"] == po.output_manifest_sha256(descs)
