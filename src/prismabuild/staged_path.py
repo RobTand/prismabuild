@@ -7538,21 +7538,24 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
        token between two directories under ``held/``, so the tier's occupancy
        is the same number throughout and a crash part-way splits the
        attribution without changing the sum.
-    4. **Only then does the old name stop accounting for the bytes.**  Dropping
-       the old fragment before the transfer would leave an egress able to
-       release tokens for bytes that are still there; dropping it after means
-       the worst an interrupted adoption leaves is a range named twice.
-    5. **The receipt the pin and the gate read.**  An adopted mover never runs,
-       so it files no terminal record; ``adopted_from`` plus the ledger is what
-       ``residency_verdict`` reads instead.
+    4. **The receipt the pin and the gate read.** An adopted mover never runs,
+       so it files no terminal record. The complete receipt binds its pair and
+       reservation to this donor before any donor document is withdrawn.
+    5. **Only then does the old name stop accounting for the bytes.** Dropping
+       the old fragment before the transfer could release tokens for resident
+       bytes. After the receipt, either withdrawal boundary can be resumed
+       from the exact successor pair, receipt and reservation.
 
     Both mover transition locks are non-blocking. A live or unknown mover
     retains its authority. The donor pair is read again under ownership;
     an unknown or different successor pair is retained there as well.
     The existing stage lock still orders publication against egress.
-    After process interruption following the full handover, both unchanged pairs and a
-    successor charge covering the whole range let a retry finish withdrawal
-    and file the receipt. It moves no token a second time.
+    After process interruption following the full handover, both unchanged
+    pairs and a successor charge covering the whole range let a retry file the
+    receipt and finish withdrawal. Once withdrawal starts, its receipt must
+    already exist. A retry verifies its exact binding and the successor pair
+    under ownership before finishing cleanup. It preserves the receipt bytes
+    and moves no token a second time.
     Declining costs a copy; proceeding against an egress mid-delete would cost
     the consumer its bytes.
     """
@@ -7589,15 +7592,40 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                         if isinstance(receipt, Mapping) else "")
         if len(old_consumer) != 64:
             return {**outcome, "reason": "unattributed_range"}
+        completed_receipt = None
+        if recovering:
+            try:
+                completed_receipt = queue.move_record(new_key, fresh=True)
+            except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                return {**outcome, "reason": "successor_receipt_uncertain", "error": repr(exc)}
+        source_withdrawn = False
         source_path = residency_map.fragment_path(
             residency_root, old_consumer, old_key)
         try:
             with open(source_path) as stream:
                 source = residency_map.validate_fragment(json.load(stream))
         except FileNotFoundError as exc:
-            if recovering:
+            if not recovering:
+                return {**outcome, "reason": "range_not_named", "error": repr(exc)}
+            # The completed receipt binds this successor to this exact donor.
+            # Without it, an unrelated pair and reservation cannot authenticate
+            # a donor whose fragment has already gone.
+            if (not isinstance(completed_receipt, Mapping)
+                    or completed_receipt.get(pool.MOVE_ADOPTED_FROM_FIELD) != old_key
+                    or completed_receipt.get("adopted_from_consumer") != old_consumer):
                 return {**outcome, "reason": "no_longer_resident"}
-            return {**outcome, "reason": "range_not_named", "error": repr(exc)}
+            try:
+                source = residency_map.reissue(residency_map.validate_fragment(json.loads(
+                    pb.immutable_files.read_stable_file(residency_map.fragment_path(
+                        residency_root, consumer_action_key, new_key),
+                        where="completed adoption successor fragment"))),
+                    consumer_action_key=old_consumer, mover_action_key=old_key)
+            except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                return {**outcome, "reason": "successor_ownership_uncertain", "error": repr(exc)}
+            if any(source.get(field) != receipt.get(field)
+                   for field in ("tier_id", "stage_root", "manifest_sha256")):
+                return {**outcome, "reason": "successor_already_named"}
+            source_withdrawn = True
         except (OSError, ValueError) as exc:
             # A fragment that is absent or unreadable cannot say which files
             # this range is, and a range nobody can name is not one to take
@@ -7606,8 +7634,15 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
         # Same bytes, same generation: the successor dates its vouching with
         # the publish it took over, never a new one (a new generation is for
         # new bytes).
-        old_material = reader_lease.read_material(
-            residency_root, old_consumer, old_key)
+        if source_withdrawn:
+            old_material = _read_material_nofollow(
+                residency_root, consumer_action_key, new_key)
+            if isinstance(old_material, dict):
+                old_material = {**old_material, "consumer_action_key": old_consumer,
+                                "mover_action_key": old_key}
+        else:
+            old_material = reader_lease.read_material(
+                residency_root, old_consumer, old_key)
         if isinstance(old_material, Exception):
             return {**outcome, "reason": "range_not_named",
                     "error": repr(old_material)}
@@ -7656,13 +7691,23 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 # has been published yet: the successor's fragment and
                 # material land only under this lock.
                 return {**outcome, "reason": "ownership_busy"}
-            try:
-                current_source = residency_map.validate_fragment(json.loads(
-                    pb.immutable_files.read_stable_file(
-                        source_path, where="adoption donor fragment")))
-            except (OSError, ValueError, pb.PrismaBuildError) as exc:
-                return {**outcome, "reason": "donor_documents_changed", "error": repr(exc)}
+            if source_withdrawn:
+                if not pb.immutable_files.confirmed_metadata_absence(source_path):
+                    return {**outcome, "reason": "donor_documents_changed"}
+                current_source = source
+            else:
+                try:
+                    current_source = residency_map.validate_fragment(json.loads(
+                        pb.immutable_files.read_stable_file(
+                            source_path, where="adoption donor fragment")))
+                except (OSError, ValueError, pb.PrismaBuildError) as exc:
+                    return {**outcome, "reason": "donor_documents_changed", "error": repr(exc)}
             current_material = _read_material_nofollow(residency_root, old_consumer, old_key)
+            if source_withdrawn and current_material is None:
+                if not pb.immutable_files.confirmed_metadata_absence(reader_lease.material_path(
+                        residency_root, old_consumer, old_key)):
+                    return {**outcome, "reason": "donor_documents_changed"}
+                current_material = old_material
             if current_source != source or current_material != old_material:
                 return {**outcome, "reason": "donor_documents_changed"}
             if isinstance(old_material, dict):
@@ -7806,37 +7851,33 @@ def adopt(queue: pool.PoolQueue, *, old_key: str, new_key: str,
                 # resident, so the next cycle asks again and finishes the move.
                 return {**outcome, "reason": "partial_transfer",
                         "tokens_moved": moved, "tokens_expected": expected}
+            entries = dict(source["entries"])
+            start, end = int(range_start_bytes), int(range_end_bytes)
+            adoption_receipt = {
+                "consumer_action_key": consumer_action_key, "tier_id": tier_id,
+                "stage_root": str(source["stage_root"]),
+                "manifest_sha256": str(source["manifest_sha256"]),
+                "range_start_bytes": start, "range_end_bytes": end,
+                "range_bytes": end - start, "bytes_staged": end - start,
+                "bytes_copied": 0, "entries_declared": len(entries),
+                "entries_staged": len(entries), "complete": True,
+                pool.MOVE_ADOPTED_FROM_FIELD: old_key,
+                "adopted_from_consumer": old_consumer, "phase": phase,
+            }
+            if completed_receipt is not None:
+                if (completed_receipt.get("schema") != pool.POOL_MOVE_SCHEMA_V1
+                        or completed_receipt.get("action_key") != new_key
+                        or completed_receipt.get("refusal")
+                        or any(completed_receipt.get(field) != value
+                               for field, value in adoption_receipt.items())):
+                    return {**outcome, "reason": "successor_receipt_changed"}
+            else:
+                # Publish the existing complete receipt before removing the
+                # donor. A fresh owner can finish either withdrawal boundary
+                # from this binding, the successor pair and the real charge.
+                queue.record_move(new_key, {**adoption_receipt,
+                    "host": socket.gethostname(), "unix": time.time()})
             withdraw_vouch(queue, residency_root, old_consumer, old_key)
-        entries = dict(source["entries"])                # type: ignore[arg-type]
-        # The successor's own phase boundaries, which the descriptor match
-        # already proved equal to the range this copy made resident.  Taken
-        # from the plan rather than re-parsed out of the old receipt, so the
-        # range the new receipt declares is the one its pin is checked against.
-        start, end = int(range_start_bytes), int(range_end_bytes)
-        queue.record_move(new_key, {
-            "consumer_action_key": consumer_action_key,
-            "tier_id": tier_id,
-            "stage_root": str(source["stage_root"]),
-            "manifest_sha256": str(source["manifest_sha256"]),
-            "range_start_bytes": start,
-            "range_end_bytes": end,
-            "range_bytes": end - start,
-            # The bytes are staged; they were staged by somebody else.  Both
-            # halves are said, because ``residency_pin_holds`` reads the first
-            # and an operator pricing the next window reads the second -- and
-            # a receipt with no ``seconds`` prices nothing, which is what an
-            # adoption should contribute to a bandwidth measurement.
-            "bytes_staged": end - start,
-            "bytes_copied": 0,
-            "entries_declared": len(entries),
-            "entries_staged": len(entries),
-            "complete": True,
-            pool.MOVE_ADOPTED_FROM_FIELD: old_key,
-            "adopted_from_consumer": old_consumer,
-            "phase": phase,
-            "host": socket.gethostname(),
-            "unix": time.time(),
-        })
         return {**outcome, "event": "range-adopted", "adopted": True,
                 "tokens_moved": moved, "entries": len(entries),
                 "bytes_staged": end - start}
