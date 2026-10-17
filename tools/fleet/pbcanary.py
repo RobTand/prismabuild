@@ -72,8 +72,6 @@ from pathlib import Path
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 
 HERE = Path(__file__).resolve()

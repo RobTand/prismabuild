@@ -50,8 +50,6 @@ from prismabuild import core as pb
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import movement_actions
 from prismabuild import pool
@@ -395,7 +393,7 @@ def promote_ready_manifest_rows(
             # dead-consumer pass cannot reap a plan between its filing and
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
-            store = replace(configured_store(), queue_root=Path(queue.root), cas_root=Path(row_cas))
+            store = replace(store_for(__file__), queue_root=Path(queue.root), cas_root=Path(row_cas))
             with submission.write_window(args, store=store):
                 with queue._transition_locked(key):
                     staged = submission.residency_stage_rows(

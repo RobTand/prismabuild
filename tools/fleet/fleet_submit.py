@@ -59,8 +59,6 @@ from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused, FleetStore, ProducerPublication
 from prismabuild import submission, action_client
 
-def configured_store():
-    return store_for(__file__, root=SH)
 
 
 TRANSPORTS = ("pool", "slurm")
@@ -132,7 +130,7 @@ def default_transport() -> str:
     """
 
     try:
-        return submission.default_transport(store=configured_store())
+        return submission.default_transport(store=store_for(__file__, root=SH))
     except SubmissionRefused as exc:
         raise SystemExit(exc.reason or exc.returncode) from None
 
@@ -253,7 +251,7 @@ def submit(
             anything is queued.
     """
 
-    current = configured_store()
+    current = store_for(__file__, root=SH)
     store = FleetStore(current.root, current.runtime_root, current.roster_path,
                        queue_root=Path(queue_root) if queue_root is not None else current.queue_root, cas_root=Path(cas.root), d38_config_path=current.d38_config_path)
     request = SubmissionRequest(transport=transport, detach=True, priority=priority,

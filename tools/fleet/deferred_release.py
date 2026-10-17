@@ -52,8 +52,6 @@ from prismabuild import submission
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import submission
 
@@ -103,7 +101,7 @@ def _report_once(memo_key: str, event: dict[str, object]
 def published_runtime_root() -> Path:
     """The generation the ``repo`` link names now."""
 
-    return (configured_store().root / "repo").resolve(strict=True)
+    return (store_for(__file__).root / "repo").resolve(strict=True)
 
 
 def decide(queue, record: Mapping[str, object]) -> dict[str, object]:
@@ -168,7 +166,7 @@ def release_tick(queue, *, deadline: float | None = None,
         return events
     try:
         published_root = published_runtime_root()
-        loop_root = configured_store().runtime_root.resolve(strict=True)
+        loop_root = store_for(__file__).runtime_root.resolve(strict=True)
     except OSError as exc:
         event = _report_once("", {"event": REFUSED_EVENT,
                                   "reason": f"published-runtime-unreadable: {exc}"})
@@ -226,7 +224,7 @@ def release_tick(queue, *, deadline: float | None = None,
             # they travel inside this release's event instead.
             with contextlib.redirect_stderr(notices):
                 event = submission.release_deferred(
-                    queue, pending_id, record, producers=producers, store=configured_store(), display=render_submission)
+                    queue, pending_id, record, producers=producers, store=store_for(__file__), display=render_submission)
         except action_edges.RuntimeGenerationUnavailable as exc:
             # Never sealed into another generation instead: held, and the
             # remedy is a resubmission, which freezes under today's.

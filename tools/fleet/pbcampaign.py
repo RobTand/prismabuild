@@ -251,8 +251,6 @@ from prismabuild import submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused, FleetStore
 from submission_frontend import store_for, render_submission
 
-def configured_store():
-    return store_for(__file__)
 
 import pbwait  # noqa: E402
 
@@ -784,7 +782,7 @@ def submit_row(row, *, transport: str = "") -> dict:
     try:
         request = submission.request_from_mapping(row, detach=True,
             transport=transport or fleet_submit.default_transport())
-        result = submission.submit(request, store=configured_store(),
+        result = submission.submit(request, store=store_for(__file__),
             display=lambda event: render_submission(event) if event.channel == "stderr" else None,
             report=report)
         if isinstance(result, SubmissionRefused):
@@ -878,8 +876,8 @@ def run_windowed(rows, *, transport: str, max_inflight: int,
     within the same budget instead of stopping the window.
     """
 
-    queue = pool.PoolQueue(configured_store().root / "pb-queue")
-    cas = pb.PrismaBuildCAS(configured_store().root / "cas")
+    queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     submissions, pending, observed = [], {}, {}
     cached = set()
     deadline = None
@@ -1080,7 +1078,7 @@ def _stored_document(path: Path) -> object | None:
 
 def child_record(child, *, args: SubmissionRequest, queue, cas, staged_plan=None,
                  template=None) -> dict:
-    store = configured_store()
+    store = store_for(__file__)
     store = FleetStore(store.root, store.runtime_root, store.roster_path,
                        queue_root=queue.root, cas_root=cas.root, d38_config_path=store.d38_config_path)
     template = template if template is not None else {**child, "cas": cas,
@@ -1130,7 +1128,7 @@ def frozen_child_data_plans(request, plan, children, *, template, args, queue, c
                 staged = submission.residency_stage_rows(
                     child_template, consumer_action_key=child["action_key"],
                     tier=tier, args=stage_args, queue=queue, cas=cas,
-                    movement_receipts=movement_receipts, store=configured_store())
+                    movement_receipts=movement_receipts, store=store_for(__file__))
                 child_plan = staged["plan"]
             rows.append({"action_key": child["action_key"], "plan": child_plan})
         proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
@@ -1197,7 +1195,7 @@ def decompose(
     flags += pbrun_argv(request["common"])
     try:
         args = submission.request_from_mapping(request["common"], detach=True, transport=transport, priority=priority)
-        with submission.preparation(args, store=configured_store(), display=render_submission) as prepared:
+        with submission.preparation(args, store=store_for(__file__), display=render_submission) as prepared:
             template = prepared["template"]
             cas = template["cas"]
             if "task_data_manifest" in request:
@@ -1237,7 +1235,7 @@ def decompose(
                 ))
                 digests.append(str(batch_input["sha256"]))
 
-            queue = pool.PoolQueue(configured_store().root / "pb-queue")
+            queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
             data_plans = (frozen_child_data_plans(
                 request, plan, children, template=template, args=args, queue=queue, cas=cas)
                 if "task_data_manifest" in request else [None] * len(children))
@@ -1423,8 +1421,8 @@ def main(argv=None) -> int:
         for one in submitted
         if isinstance(one.get("published_unix"), (int, float))
     }
-    queue = pool.PoolQueue(configured_store().root / "pb-queue")
-    cas = pb.PrismaBuildCAS(configured_store().root / "cas")
+    queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     waited = pbwait.wait_for_keys(
         queue, keys, cas=cas, wait_s=args.wait_s, generations=generations)
     table = rows_for(submissions, waited)

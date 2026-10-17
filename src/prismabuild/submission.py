@@ -6584,7 +6584,7 @@ _DEFERRED_PUBLICATION_ARGS = (
 )
 
 
-def check_supersession(q, old: str, *, new: str, new_kind: str) -> None:
+def validate_supersession_request(q, old: str, *, new: str, new_kind: str) -> None:
     """Refuse now what :func:`file_supersession_or_exit` would refuse, writing nothing (#1585).
 
     For a submission that still has fallible work to do before its row can
@@ -7432,7 +7432,7 @@ def publish(action, prepared, *, args: SubmissionRequest, store: FleetStore,
         # nothing written; the record itself goes in right before the row.
         supersede = None
         if args.supersedes is not None:
-            check_supersession(q, args.supersedes, new=key,
+            validate_supersession_request(q, args.supersedes, new=key,
                                        new_kind=action_edges.PRODUCER_KEY)
 
             def supersede() -> None:
