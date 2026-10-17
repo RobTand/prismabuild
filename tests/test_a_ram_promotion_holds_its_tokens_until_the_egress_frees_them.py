@@ -208,6 +208,7 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     # The claim files its tokens; the pin keeps them past finish, read off
     # the receipt exactly the way a stage mover's is.
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     queue.tier(RAM_TIER).mint({'ram_gib': 8})
     assert queue.tier(RAM_TIER).take(MOVER, {'ram_gib': 1})
     record = {"action_key": MOVER, "status": "executed", "residency": {

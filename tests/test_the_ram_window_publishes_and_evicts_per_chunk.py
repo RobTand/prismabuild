@@ -241,6 +241,7 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
     queue.tier(RAM_TIER).mint({'ram_gib': 8})
     assert queue.tier(RAM_TIER).take(_key(0, 0), {'ram_gib': 1})
     # The booking above is the room; these are the records the finished

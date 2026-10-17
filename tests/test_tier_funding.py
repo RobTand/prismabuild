@@ -98,6 +98,7 @@ def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueu
     queue.records.ensure_layout()
     queue.tier(TIER).mint({'stage_gib': stage_gib})
     if ram_gib:
+        queue.ledger("dl380g10").ensure_capacity({"mem_gb": 8})
         queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
     return queue
 
