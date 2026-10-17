@@ -30,7 +30,7 @@ import test_a_divergent_staged_copy_never_loops_its_mover as loop  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import adaptive_cpu, pool, residency_plan  # noqa: E402
 import pbstatus  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 
 def _successor_row(world) -> dict:

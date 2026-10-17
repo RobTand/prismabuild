@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import (  # noqa: E402
     pool, progress as pb_progress, residency_map, residency_plan, storage_tiers)
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 import tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _mover, _plan, _publish_consumer)
@@ -259,7 +259,7 @@ def _two_phase_reader(queue: pool.PoolQueue, stage: Path, digest: str,
 
 def _move_args(queue: pool.PoolQueue, stage: Path, manifest: Path, digest: str,
                *, key: str, start: int, end: int, readers: int = 1):
-    import stage_move
+    from prismabuild import stage_move
 
     return stage_move.build_parser().parse_args([
         "--pool-root", str(queue.root), "--action-key", key,
@@ -297,7 +297,7 @@ def _clear_channel(monkeypatch) -> None:
 
 def test_the_pacer_never_holds_the_copy_a_consumer_waits_on(
         tmp_path: Path, monkeypatch) -> None:
-    import stage_move
+    from prismabuild import stage_move
 
     _clear_channel(monkeypatch)
     monkeypatch.setattr(prewarm_loop, "pacer_from_args", _hurting)
@@ -443,7 +443,7 @@ def test_a_claimed_copy_is_priced_from_its_own_live_rate(
         tmp_path: Path, monkeypatch) -> None:
     """A mover with no progress channel still reports what it has copied."""
 
-    import stage_move
+    from prismabuild import stage_move
 
     _clear_channel(monkeypatch)
     queue, stage = _fixture_queue(tmp_path, 8)

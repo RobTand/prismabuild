@@ -19,7 +19,7 @@ from prismabuild import contracts, pool  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 

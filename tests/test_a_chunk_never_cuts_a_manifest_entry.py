@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 import tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
@@ -343,8 +343,8 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
     On main, stage chunk 0 refuses ``residency_overran_reservation``.
     """
 
-    import ram_promote
-    import stage_move
+    from prismabuild import ram_promote
+    from prismabuild import stage_move
 
     monkeypatch.setattr(storage_tiers, "GIB", SMALL_UNIT)
     phase_sizes = _straddling_sizes(SMALL_UNIT, SMALL_ODD_BYTES)

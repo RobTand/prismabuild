@@ -36,7 +36,7 @@ sys.path.insert(0, str(HERE.parents[0] / "src"))
 sys.path.insert(0, str(HERE.parents[0] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
-import ram_promote  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
 
 STAGE_ROOT = Path("/stage/prewarm")
 RAM_ROOT = Path("/ram/prewarm")
