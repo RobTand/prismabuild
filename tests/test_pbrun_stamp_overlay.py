@@ -54,7 +54,7 @@ def test_overlay_materializes_the_declared_stamp_and_closure(tmp_path, subdirect
 ])
 def test_stamp_requires_both_name_and_payload(tmp_path, stamp_name, stamp_payload):
     checkout = _checkout(tmp_path)
-    with pytest.raises(SystemExit, match="stamp name and payload.*together"):
+    with pytest.raises(submit_core.SubmissionRefused, match="stamp name and payload.*together"):
         submit_core.snapshot_checkout(
             checkout, stamp_name=stamp_name, stamp_payload=stamp_payload,
             cas=pb.PrismaBuildCAS(tmp_path / "cas"))
@@ -81,7 +81,7 @@ def test_concurrent_overlays_need_no_shared_stamp_path(tmp_path):
 
 def test_overlay_cannot_escape_the_checkout(tmp_path):
     checkout = _checkout(tmp_path)
-    with pytest.raises(SystemExit, match="stamp name"):
+    with pytest.raises(submit_core.SubmissionRefused, match="stamp name"):
         submit_core.snapshot_checkout(
             checkout, stamp_name="../outside", stamp_payload="{}",
             cas=pb.PrismaBuildCAS(tmp_path / "cas"))
@@ -89,7 +89,7 @@ def test_overlay_cannot_escape_the_checkout(tmp_path):
 
 def test_overlay_is_included_in_the_pre_hash_size_bound(tmp_path):
     checkout = _checkout(tmp_path)
-    with pytest.raises(SystemExit, match="working tree plus closure stamp"):
+    with pytest.raises(submit_core.SubmissionRefused, match="working tree plus closure stamp"):
         submit_core.snapshot_checkout(
             checkout, stamp_name=f"{submit_core.STAMP_PREFIX}{'c' * 16}.json",
             stamp_payload="x" * 32, max_bytes=32,
@@ -99,7 +99,7 @@ def test_overlay_is_included_in_the_pre_hash_size_bound(tmp_path):
 def test_overlay_still_refuses_git_content_transforms(tmp_path):
     checkout = _checkout(tmp_path)
     (checkout / ".gitattributes").write_text(".pbrun-closure.* text\n")
-    with pytest.raises(SystemExit, match="content transform"):
+    with pytest.raises(submit_core.SubmissionRefused, match="content transform"):
         submit_core.snapshot_checkout(
             checkout, stamp_name=f"{submit_core.STAMP_PREFIX}{'d' * 16}.json",
             stamp_payload="{}", cas=pb.PrismaBuildCAS(tmp_path / "cas"))
@@ -112,7 +112,8 @@ def test_full_concurrent_submissions_leave_no_transient_stamp_names(tmp_path):
     code = r"""
 import socket, sys
 from pathlib import Path
-import pbrun, d38_gate
+import pbrun
+from prismabuild import d38_gate
 from prismabuild import submission as submit_core
 d38_gate.ENFORCE = False  # this test is about stamp names, not D38
 socket.gethostname = lambda: 'sparky'

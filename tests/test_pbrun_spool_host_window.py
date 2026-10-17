@@ -108,7 +108,7 @@ def test_a_typed_spool_demand_is_refused(tmp_path, monkeypatch, env):
 def test_the_typed_demand_vocabulary_stays_closed():
     assert submit_core._FLEET_DEMAND_KINDS == frozenset(
         {"cpu", "gpu", "mem_gb", "disk_metadata"})
-    with pytest.raises(SystemExit, match="derived"):
+    with pytest.raises(submit_core.SubmissionRefused, match="derived"):
         submit_core.validate_fleet_demand({KIND: 4})
 
 

@@ -74,7 +74,7 @@ def test_a_packet_without_a_usable_argv0_is_refused_before_anything_is_sealed(
     packet = _packet()
     change(packet)
     path = _write(tmp_path, packet)
-    with pytest.raises(SystemExit, match="argv0"):
+    with pytest.raises(submit_core.SubmissionRefused, match="argv0"):
         submit_core.load_target_evidence(str(path), host_class="gb10")
 
 

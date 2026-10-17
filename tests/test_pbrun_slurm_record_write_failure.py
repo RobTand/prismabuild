@@ -23,6 +23,7 @@ and say which command files the ending. The exit code is 74, which is neither
 not a withdrawal.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import os
 from pathlib import Path
@@ -213,7 +214,7 @@ def test_a_refusal_before_sbatch_still_says_to_fix_the_tag(
     action = _runnable_action(tmp_path, cas)
     request = cas.publish_action_request(action)
 
-    with pytest.raises(SystemExit) as caught:
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
         submit_core.slurm_outcome(
             action, cas=cas, request_path=request, tags=["x86"],
             demand={"cpu": 1, "mem_gb": 4}, exclusive=False,

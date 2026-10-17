@@ -8,6 +8,7 @@ against its own live facts before it runs, so a wrong packet fails closed.  The
 option adds no seal and no identity field.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import copy
 import json
@@ -145,13 +146,13 @@ def _refusal(tmp_path, packet=None, *, raw: bytes | None = None,
         path.write_bytes(raw)
     elif packet is not None:
         path.write_text(json.dumps(packet))
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(submit_core.SubmissionRefused) as exc:
         submit_core.load_target_evidence(str(path), host_class=host_class)
     return str(exc.value)
 
 
 def test_a_missing_file_is_refused(tmp_path):
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(submit_core.SubmissionRefused) as exc:
         submit_core.load_target_evidence(str(tmp_path / "absent.json"), host_class="gb10")
     assert "cannot read --target-evidence" in str(exc.value)
 
@@ -345,7 +346,7 @@ def test_pbgang_refuses_the_option_when_no_member_can_use_it(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         pbgang.main(["--manifest", str(manifest), "--cwd", str(tmp_path),
                      "--target-evidence", str(packet)])
-    assert exc.value.code == 2
+    assert refusal_value(exc.value) == 2
     assert "needs a member that declares measurement and host_class" in (
         capsys.readouterr().err)
 
@@ -358,5 +359,5 @@ def test_pbgang_refuses_a_relative_packet_path(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         pbgang.main(["--manifest", str(manifest), "--cwd", str(tmp_path),
                      "--target-evidence", "packet.json"])
-    assert exc.value.code == 2
+    assert refusal_value(exc.value) == 2
     assert "absolute" in capsys.readouterr().err

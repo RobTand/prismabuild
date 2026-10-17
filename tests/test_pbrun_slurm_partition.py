@@ -6,6 +6,7 @@ an agent submits: GPU work, untagged CPU work, CPU work pinned to a box, and
 CPU work asserted portable with ``--anywhere``.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 from pathlib import Path
 import sys
@@ -91,7 +92,7 @@ def test_an_exclusive_action_asking_for_more_than_one_device_is_refused(
     harmless while every box has one device and silently wrong the day a
     two-GPU box joins, so it is refused where the caller can still read it."""
 
-    with pytest.raises(SystemExit) as refused:
+    with pytest.raises(submit_core.SubmissionRefused) as refused:
         submit_core.slurm_outcome(
             {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=[], demand={"gpu": 2, "mem_gb": 16}, exclusive=True,
