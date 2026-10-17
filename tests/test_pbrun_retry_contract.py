@@ -1,6 +1,7 @@
 """pbrun retries require a contract distinct from numeric determinism."""
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -57,7 +58,7 @@ def _submit(
     *options: str,
 ) -> int:
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(
         sys,

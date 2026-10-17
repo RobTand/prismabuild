@@ -33,6 +33,7 @@ supersedes the fresh plan.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 import contextlib
 import hashlib
@@ -51,6 +52,7 @@ from prismabuild import (  # noqa: E402
     pool, reader_lease, residency_map, residency_plan, storage_tiers,
 )
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import stage_release  # noqa: E402
 import tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
@@ -90,7 +92,7 @@ def _announce_tier(queue: pool.PoolQueue, *, fill: int | None = None,
         "mountpoint": str(mountpoint if mountpoint is not None
                           else queue.root / "stage"),
         "mover_python": sys.executable,
-        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
+        "mover_tools_root": str(Path(submission.__file__).resolve().parent),
     }
     if fill is not None:
         record["tokens"] = {storage_tiers.FILL_KIND: fill}
@@ -116,8 +118,8 @@ def _prepare(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, objec
     )
     _announce_tier(queue, mountpoint=tmp_path / "stage")
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01",
@@ -456,7 +458,7 @@ def _announce_ram_tier(queue: pool.PoolQueue, mountpoint: Path) -> None:
         "tier_id": RAM_TIER, "host": "sparky", "tier": "ram",
         "mountpoint": str(mountpoint),
         "mover_python": sys.executable,
-        "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
+        "mover_tools_root": str(Path(submission.__file__).resolve().parent),
     })
 
 
