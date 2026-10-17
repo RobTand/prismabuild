@@ -16187,6 +16187,10 @@ the legacy tolerant token-count query is insufficient evidence of absence.
 Plan state coverage is independent of C21's phase-residency facts. The receipt
 cap bounds a selected observation; its existing window-completeness flag still
 states whether that selection covered the whole requested time window.
+Selected denial-read errors and unreadable filed receipts retain partial
+coverage. An unreadable fragment population yields null fragment presence.
+Optional offer-sample errors make the section partial while the legacy queue
+population count keeps its own, narrower completeness meaning.
 
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.

@@ -538,7 +538,9 @@ def offers(queue_root: str | Path, *, reader=None,
                      "unreadable": unreadable, "sampled_unix": now},
                     inputs={"workers": str(queue.root / pool.record_store.WORKERS),
                             "admission_hosts": tuple(admission), "sampled_unix": now},
-                    errors=unreadable)
+                    errors=[*unreadable, *(f"pool admission {host} {kind}: {value}"
+                        for host, samples in admission.items() for kind, value in samples.items()
+                        if isinstance(value, Exception))])
 
 
 def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
@@ -715,7 +717,8 @@ def action_rows(queue_root: str | Path, *, reader=None) -> Section[dict]:
                     "ready": tuple(ready), "claimed": tuple(claimed),
                     "sidecars": tuple(f"{state}/{key}" for state, key in sidecars),
                     "prewarms": tuple(prewarms), "denials": "latest per generation",
-                    "sampled_unix": now}, errors=unreadable)
+                    "sampled_unix": now}, errors=[*unreadable, *(error for error in observed.errors
+                        if error not in unreadable)])
 
 
 def _starvation_accepted_phase(lease: Mapping[str, object] | None) -> str | None:
@@ -868,6 +871,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
             accepted = _starvation_accepted_phase(lease)
     # Fragments are per consumer, one file per mover; an invalid one is
     # skipped by the reader, exactly as the consumer's own compose sees it.
+    fragments_known = True
     try:
         fragments = residency_map.read_fragments(
             queue.records.residency_fragment_root(), key)
@@ -875,6 +879,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
         notes.append(f"starvation plan {prefix} fragments: {exc}")
         unreadable.append(f"starvation plan {prefix} fragments: {exc}")
         fragments = []
+        fragments_known = False
     fragment_movers = {str(fragment.get("mover_action_key")): str(fragment.get("tier_id"))
                        for fragment in fragments
                        if isinstance(fragment.get("mover_action_key"), str)}
@@ -939,15 +944,15 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
     for index, phase in enumerate(plan["phases"]):
         stage: dict | None = None
         stage_chunks: list[dict] | None = None
-        stage_fragment = False
+        stage_fragment = False if fragments_known else None
         if "mover_row" in phase:
             mover_key = str(phase["mover_row"]["action_key"])
             stage = {"mover_action_key_prefix": mover_key[:12],
                      "published": observed_publication(mover_key, staged),
                      "staged": _resident(mover_key),
                      "reserved": staged.get(mover_key),
-                     "fragment": mover_key in fragment_movers}
-            stage_fragment = mover_key in fragment_movers
+                     "fragment": mover_key in fragment_movers if fragments_known else None}
+            stage_fragment = mover_key in fragment_movers if fragments_known else None
         elif isinstance(phase.get("stage_chunks"), list):
             # A chunked phase reports per chunk, beside the phase's own
             # ``stage`` staying ``None``: the census shape for whole-phase
@@ -957,7 +962,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
             assert isinstance(phase["stage_chunks"], list)
             for chunk in phase["stage_chunks"]:
                 chunk_key = str(chunk["mover_row"]["action_key"])  # type: ignore[index]
-                chunk_fragment = chunk_key in fragment_movers
+                chunk_fragment = chunk_key in fragment_movers if fragments_known else None
                 stage_fragment = stage_fragment or chunk_fragment
                 stage_chunks.append({
                     "chunk_index": chunk.get("chunk_index"),  # type: ignore[union-attr]
@@ -977,7 +982,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                    "reserved": ram_staged.get(ram_key),
                    # The question the ram tier exists to answer: which phases
                    # have promotion fragments and which have none.
-                   "fragment": ram_key in fragment_movers,
+                   "fragment": ram_key in fragment_movers if fragments_known else None,
                    "fragment_tier_id": fragment_movers.get(ram_key)}
         elif isinstance(phase.get("ram_chunks"), list):
             # A chunked phase reports per chunk, beside the phase's own
@@ -994,7 +999,7 @@ def _starvation_plan_entry(queue: pool.PoolQueue, key: str, raw: object,
                     "published": observed_publication(chunk_key, ram_staged),
                     "staged": _resident(chunk_key, ram=True),
                     "reserved": ram_staged.get(chunk_key),
-                    "fragment": chunk_key in fragment_movers,
+                    "fragment": chunk_key in fragment_movers if fragments_known else None,
                     "fragment_tier_id": fragment_movers.get(chunk_key)})
         phases.append({"name": str(phase["name"]),
                        "start_bytes": phase["start_bytes"],
@@ -3277,10 +3282,12 @@ def _denial_counts(queue_root, *, now, window_seconds, reader=None):
     queue, ok = pool.PoolQueue(queue_root), True
     census_reader = reader
     try:
-        denials, _denial_notes = _pool_claim_denials(queue, reader=census_reader)
-    except Exception:
+        denials, notes = _pool_claim_denials(queue, reader=census_reader)
+        ok = not notes
+    except Exception as exc:
         denials = []
         ok = False
+        notes = [str(exc)]
     counts: dict[tuple[str, str], int] = defaultdict(int)
     for denial in denials:
         if not isinstance(denial, dict):
@@ -3297,4 +3304,4 @@ def _denial_counts(queue_root, *, now, window_seconds, reader=None):
             counts[(host, reason)] += 1
     return _section(counts, inputs={"queue_root": str(queue_root), "now": now,
                     "window_seconds": window_seconds, "future": "invalid age",
-                    "zero_seconds": "only age zero"}, complete=ok)
+                    "zero_seconds": "only age zero"}, errors=notes, complete=ok)

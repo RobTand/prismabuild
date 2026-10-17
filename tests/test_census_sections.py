@@ -166,6 +166,57 @@ def test_unknown_holder_stays_unknown_in_plan_reservation_and_publication(tmp_pa
     assert census.starvation(fleet.queue_root)["complete"] is False
 
 
+def test_unreadable_denial_snapshot_keeps_metric_coverage_partial(tmp_path):
+    for name in ("workers", "ready", "claimed", "tiers"):
+        (tmp_path / name).mkdir()
+    directory = tmp_path / pool.RESERVATIONS / "fixture-box" / "adaptive"
+    directory.mkdir(parents=True)
+    (directory / pool.CLAIM_DENIALS).write_text("{")
+    section = census.denials(tmp_path, profile="metrics", now=time.time(), window_seconds=20)
+    assert section.completeness == "partial"
+    assert section.errors
+    assert pbmetrics._starvation_metrics(pbmetrics.Metrics(), tmp_path, now=time.time(),
+                                         window_seconds=20) is False
+
+
+def test_unreadable_filed_receipt_cannot_prove_no_receipts(tmp_path):
+    fleet = fixture.build_starved(tmp_path)
+    receipt = fleet.queue_root / pool.record_store.MOVERS / (fixture._hexkey("mover0") + ".json")
+    receipt.write_text("{")
+    answer = pbmcp.Session(queue_root=fleet.queue_root, cas_root=fleet.cas_root,
+                           repo_link=fleet.repo_link, deadline_s=10).call("pb_movers")
+    stage = next(row for row in answer["tiers"] if row["tier_id"] == fixture.STAGE_TIER)
+    assert answer["complete"] is False
+    assert any(row["section"] == "movers-filed" for row in answer["unavailable"])
+    assert stage["receipts_filed"] is None
+    assert stage["filed_receipts"] == []
+
+
+def test_unreadable_fragment_population_never_becomes_absent(tmp_path):
+    fleet = fixture.build_starved(tmp_path)
+    directory = fleet.queue.records.residency_fragment_root() / fixture.CONSUMER_KEY
+    directory.rename(tmp_path / "saved-fragments")
+    directory.symlink_to(directory.name, target_is_directory=True)
+    section = census.plans(fleet.queue_root, view="starvation")
+    row = next(row for row in section.value["residency_plans"]
+               if row["consumer_action_key_prefix"] == fixture.CONSUMER_KEY[:12])
+    assert section.completeness == "partial"
+    assert row["phases"][0]["stage"]["fragment"] is None
+    assert row["phases"][0]["stage_fragment"] is None
+
+
+def test_offer_sample_errors_keep_metadata_partial_and_population_counts_known(tmp_path):
+    fleet = fixture.build(tmp_path)
+    sample = fleet.queue_root / pool.RESERVATIONS / "fixture-box" / "adaptive" / "cpu-sample.json"
+    sample.parent.mkdir(parents=True, exist_ok=True)
+    sample.write_text("{")
+    assert census.offers(fleet.queue_root).completeness == "partial"
+    rows = census.action_rows(fleet.queue_root)
+    assert rows.completeness == "partial"
+    assert rows.errors
+    assert rows.value["queue"]["complete"] is True
+
+
 def test_blocked_origin_commands_keep_the_original_json_spelling():
     ref = {"unicode": "é", "nested": {"z": float("nan"), "a": 1}}
     expected = json.dumps(ref, sort_keys=True, separators=(",", ":"))

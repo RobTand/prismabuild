@@ -1450,7 +1450,12 @@ class Session:
                                      "error": "; ".join(live["errors"])})
         live = live["value"] if isinstance(live, Mapping) else None
         filed = call.read("movers-filed",
-                          lambda: fleet_census.movers(self.queue_root, view="filed").value)
+                          lambda: asdict(fleet_census.movers(self.queue_root, view="filed")))
+        filed = filed["value"] if isinstance(filed, Mapping) else None
+        filed_complete = isinstance(filed, Mapping) and not filed["unreadable"]
+        if isinstance(filed, Mapping) and not filed_complete:
+            call.unavailable.append({"section": "movers-filed", "type": "PartialCensus",
+                                     "error": f"{filed['unreadable']} unreadable selected receipt(s)"})
         tiers = found.get("tiers")
         if isinstance(tiers, list) and wanted is not None:
             tiers = [row for row in tiers
@@ -1458,7 +1463,8 @@ class Session:
                      and row.get("tier_id") == wanted]
         rows = None
         if isinstance(tiers, list):
-            rows = [self._one_tier_movers(tier, live, filed, live_complete=live_complete)
+            rows = [self._one_tier_movers(tier, live, filed, live_complete=live_complete,
+                                          filed_complete=filed_complete)
                     for tier in tiers]
         return {
             "queue_root": str(self.queue_root),
@@ -1469,7 +1475,8 @@ class Session:
 
     @staticmethod
     def _one_tier_movers(tier: Mapping[str, object], live: object,
-                         filed: object, *, live_complete: bool = True) -> dict:
+                         filed: object, *, live_complete: bool = True,
+                         filed_complete: bool = True) -> dict:
         ident = tier.get("tier_id")
         ready = claimed = None
         depth = None
@@ -1486,7 +1493,7 @@ class Session:
             receipts = [row for row in (filed.get("receipts") or [])
                         if isinstance(row, Mapping)
                         and row.get("tier_id") == ident]
-            receipts_filed = len(receipts)
+            receipts_filed = len(receipts) if filed_complete else None
             truncated = filed.get("truncated")
         return {
             "tier_id": ident,
