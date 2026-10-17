@@ -1,4 +1,6 @@
 """Versioned lifetime intent is separate from legacy naming-only evidence."""
+
+from prismabuild import scratch_lifetime
 import copy
 import json
 
@@ -24,7 +26,7 @@ def variables(tmp_path):
 def select(variables, entries):
     variables = {**variables, local_scratch.DECLARATIONS_ENV:
                  json.dumps({"schema": SCHEMA, "entries": entries})}
-    return local_scratch._scratch_lifetime_selections(variables)
+    return scratch_lifetime.selections(variables)
 
 
 def test_sealed_versioned_intent_keeps_temporary_and_persistent_entries_distinct(variables):
@@ -40,7 +42,7 @@ def test_sealed_versioned_intent_keeps_temporary_and_persistent_entries_distinct
 def test_legacy_naming_does_not_acquire_cleanup_lifetime(variables, legacy):
     if legacy is not None:
         variables[local_scratch.DECLARATIONS_ENV] = legacy
-    assert local_scratch._scratch_lifetime_selections(variables) == []
+    assert scratch_lifetime.selections(variables) == []
 
 
 def test_selection_is_nondestructive_and_sdk_advertises_versioned_capability(variables, tmp_path):
@@ -77,7 +79,7 @@ def test_request_cannot_inject_authority_or_ambiguous_lifetime(variables, entry)
 def test_malformed_or_unknown_version_refuses(variables, raw):
     variables[local_scratch.DECLARATIONS_ENV] = raw
     with pytest.raises(local_scratch.LocalScratchError):
-        local_scratch._scratch_lifetime_selections(variables)
+        scratch_lifetime.selections(variables)
 
 
 @pytest.mark.parametrize("entries", [[TEMP, TEMP], [TEMP, {**TEMP, "lifetime": "persistent"}]])
@@ -103,7 +105,7 @@ def test_selection_bounds_and_unknown_fields_refuse(variables):
         select(variables, [{**TEMP, "name": f"tmp-{i}"} for i in range(65)])
     variables[local_scratch.DECLARATIONS_ENV] = " " * (16 * 1024) + "[]"
     with pytest.raises(local_scratch.LocalScratchError):
-        local_scratch._scratch_lifetime_selections(variables)
+        scratch_lifetime.selections(variables)
 
 
 def test_existing_naming_recorder_refuses_required_intent_until_owner_integration(variables):

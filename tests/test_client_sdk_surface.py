@@ -21,6 +21,8 @@ the "Client SDK" section of ``docs/design.md`` in the same change.
 """
 from __future__ import annotations
 
+from prismabuild import scratch_lifetime
+
 import ast
 import inspect
 import json
@@ -170,11 +172,11 @@ REEXPORTS = {
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1,
     "record_ephemeral_scratch_declarations": local_scratch.record_ephemeral_scratch_declarations,
     "SCRATCH_LIFETIME_TAG": contracts.SCRATCH_LIFETIME_TAG,
-    "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
-    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
-    "SCRATCH_LIFETIME_FIELD": local_scratch.SCRATCH_LIFETIME_FIELD,
+    "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": scratch_lifetime.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
+    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": scratch_lifetime.SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
+    "SCRATCH_LIFETIME_FIELD": scratch_lifetime.SCRATCH_LIFETIME_FIELD,
     "SCRATCH_LIFETIME_DECLARATIONS_ENV": local_scratch.DECLARATIONS_ENV,
-    "build_scratch_lifetime_selection": local_scratch.build_scratch_lifetime_selection,
+    "build_scratch_lifetime_selection": scratch_lifetime.build_scratch_lifetime_selection,
     "READER_LEASE_TAG": reader_lease.READER_LEASE_TAG,
     "injected_context": reader_lease.injected_context,
     "acquire_for": reader_lease.acquire_for,

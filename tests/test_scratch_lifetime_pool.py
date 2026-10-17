@@ -1,4 +1,7 @@
 """Existing pool finalization owns scratch cleanup and the capacity barrier."""
+
+from prismabuild import scratch_lifetime
+from prismabuild.record_store import RecordStore
 import copy
 import json
 import time
@@ -85,13 +88,13 @@ def test_finish_deletes_only_ephemeral_and_archives_before_capacity_release(
 def test_failed_cleanup_retains_charge_and_recovers_without_reexecuting(
         lifetime, monkeypatch, fault):
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
-    original = scratch._clean_scratch_directory
+    original = scratch_lifetime._clean_scratch_directory
     write = pool._write_json_atomic
     if fault == "partial":
         def partial(declaration, identity):
             (leaf(item) / "temp").unlink()
             raise OSError("fixture interrupted deletion")
-        monkeypatch.setattr(scratch, "_clean_scratch_directory", partial)
+        monkeypatch.setattr(scratch_lifetime, "_clean_scratch_directory", partial)
     elif fault == "identity":
         old = leaf(item)
         old.rename(old.with_name("retained"))
@@ -115,7 +118,7 @@ def test_failed_cleanup_retains_charge_and_recovers_without_reexecuting(
     if fault == "identity":
         assert (leaf(item) / "foreign").read_bytes() == b"replacement"
         return  # Explicitly ambiguous ownership needs repair, never adoption.
-    monkeypatch.setattr(scratch, "_clean_scratch_directory", original)
+    monkeypatch.setattr(scratch_lifetime, "_clean_scratch_directory", original)
     monkeypatch.setattr(pool, "_write_json_atomic", write)
     monkeypatch.setattr(resource_scope.ResourceScope, "export_stopped_verdict", lambda s: {
         "ok": True, "scope_id": s.unit, "stopped": True, "empty": True,
@@ -148,7 +151,7 @@ def test_successor_snapshot_refuses_registration_write(lifetime, monkeypatch):
     stale["published_unix"] += 1
     before = queue.item_path(pool.CLAIMED, item["action_key"]).read_bytes()
     with pytest.raises((scratch.LocalScratchError, pool.PoolContractError)):
-        queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=stale,
+        scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=stale,
                                        env={})
     assert queue.item_path(pool.CLAIMED, item["action_key"]).read_bytes() == before
 
@@ -170,13 +173,13 @@ def test_killed_launcher_existing_reaper_cleans_and_requeues(lifetime, monkeypat
 
 def test_unrecorded_created_leaf_after_registration_crash_is_not_adopted(lifetime, monkeypatch):
     queue, item, variables, calls = lifetime
-    create = scratch._create_scratch_directory
+    create = scratch_lifetime._create_scratch_directory
 
     def crash(declaration, parent_identity):
         create(declaration, parent_identity)
         raise OSError("fixture creation before identity commit")
 
-    monkeypatch.setattr(scratch, "_create_scratch_directory", crash)
+    monkeypatch.setattr(scratch_lifetime, "_create_scratch_directory", crash)
     process(monkeypatch)
     with pytest.raises(OSError, match="fixture creation before identity commit"):
         queue.execute(item, containment=True)
@@ -291,7 +294,7 @@ def test_registration_mirror_failure_prevents_launch_and_can_replay(
     assert not launched and queue.ledger().held()
     monkeypatch.setattr(pool, "_write_json_atomic", write)
     scope = item["resource_scope"]
-    evidence = queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=item, env={
+    evidence = scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={
         "PRISMABUILD_ACTION_KEY": item["action_key"], "PRISMABUILD_ACTION_NONCE": scope["nonce"],
         "PRISMABUILD_ACTION_SCOPE": scope["scope_id"]})
     assert evidence["registration_complete"] is True and leaf(item).is_dir()
@@ -300,7 +303,7 @@ def test_registration_mirror_failure_prevents_launch_and_can_replay(
 
 def test_crash_before_leaf_creation_can_settle_without_deletion_authority(lifetime, monkeypatch):
     queue, item, variables, calls = lifetime
-    monkeypatch.setattr(scratch, "_create_scratch_directory", lambda *args:
+    monkeypatch.setattr(scratch_lifetime, "_create_scratch_directory", lambda *args:
                         (_ for _ in ()).throw(OSError("fixture before leaf creation")))
     process(monkeypatch)
     with pytest.raises(OSError, match="fixture before leaf creation"):
@@ -334,7 +337,7 @@ def test_replay_rechecks_private_namespace_permissions_before_launch(lifetime, m
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     leaf(item).chmod(0o777)
     with pytest.raises(scratch.LocalScratchError, match="permissions"):
-        queue._record_scratch_lifetimes(item["action_key"], claim_snapshot=item, env={})
+        scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={})
     assert (leaf(item) / "temp").read_bytes() == b"temporary" and queue.ledger().held()
 
 
@@ -353,7 +356,7 @@ def test_withdrawn_tombstone_releases_only_its_durably_cleaned_owner(lifetime, m
     tombstones = list(queue.dir(pool.CLAIMED).glob(f"{key}.*{pool.TOMBSTONE_SUFFIX}"))
     assert len(tombstones) == 1 and queue.ledger().held()
     assert not leaf(item).exists() and not queue.item_path(pool.CLAIMED, key).exists()
-    monkeypatch.setattr(scratch, "_clean_scratch_directory", lambda *a:
+    monkeypatch.setattr(scratch_lifetime, "_clean_scratch_directory", lambda *a:
                         pytest.fail("durably consumed scratch must not be revisited"))
     assert queue.sweep_finish_tombstones(grace_s=-1) == [key]
     assert not tombstones[0].exists() and queue.ledger().held() == {}
@@ -406,7 +409,7 @@ def test_widowed_scratch_lease_retains_charge_until_exact_cleanup_recovers(lifet
     queue.item_path(pool.CLAIMED, key).unlink()
     held = queue.ledger().held()
     with monkeypatch.context() as fault:
-        fault.setattr(scratch, "_clean_scratch_directory", lambda *a:
+        fault.setattr(scratch_lifetime, "_clean_scratch_directory", lambda *a:
                       (_ for _ in ()).throw(OSError("fixture orphan cleanup interruption")))
         assert queue.sweep_widowed_leases(timeout_s=-1) == []
     assert queue.ledger().held() == held and queue.lease_path(key).exists()
