@@ -19071,6 +19071,9 @@ unsupported tokens or NODEFLIB refuse capture. The supported candidate format
 is native ELF64 Linux with ordinary ABI headers and world-readable files.
 GNU ABI kernel requirements must fit the actual diagnostic kernel release.
 ELF audit/filter/configuration loading and system-wide preloads refuse capture.
+Later outer, inner and reader kernels must be at least that captured kernel
+version. This conservative eligibility fence uses actual observations and
+does not direct fleet placement.
 Observed process mappings supply separate evidence for providers actually used
 during qualification.
 

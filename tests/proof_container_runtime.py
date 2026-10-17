@@ -308,15 +308,25 @@ def loader_cache_entries(raw):
     return entries
 
 
+def kernel_version(release):
+    match = re.match(r'^([0-9]+)\.([0-9]+)(?:\.([0-9]+))?', release)
+    if match is None:
+        raise ValueError('runtime kernel release is unsupported')
+    return tuple(int(value or 0) for value in match.groups())
+
+
 def loader_kernel(raw):
     releases = [json.loads(line.removeprefix('uname.release='))
                 for line in raw.splitlines() if line.startswith('uname.release=')]
     if len(releases) != 1 or not isinstance(releases[0], str):
         raise ValueError('loader diagnostics lack the actual kernel release')
-    match = re.match(r'^([0-9]+)\.([0-9]+)(?:\.([0-9]+))?', releases[0])
-    if match is None:
-        raise ValueError('loader kernel release is unsupported')
-    return releases[0], tuple(int(value or 0) for value in match.groups())
+    return releases[0], kernel_version(releases[0])
+
+
+def require_profile_kernel(profile, observation):
+    _, sealed = loader_kernel(profile.closure['loader']['diagnostics']['raw'])
+    if kernel_version(observation['kernel']['release']) < sealed:
+        raise ValueError('actual runtime kernel predates the sealed loader eligibility check')
 
 
 def resolve_runtime_path(entries, path):
@@ -565,6 +575,7 @@ def observe_reader(profile):
     payload = json.loads(result.stdout, object_pairs_hook=_unique)
     observation = payload['observation']
     require_identity(observation, expected)
+    require_profile_kernel(profile, observation)
     credentials = observation['credentials']
     if any(credentials[key] != expected[name] for key, name in [('uid','uid'), ('euid','uid'), ('gid','gid'), ('egid','gid')]) or credentials['groups']:
         raise ValueError('installed reader did not use its real unprivileged credentials')
@@ -587,6 +598,7 @@ def observe_container_roles(profile, expected_affinity):
     closure = verify_closure(profile)
     inner = observe_runtime()
     require_identity(inner, profile.primary)
+    require_profile_kernel(profile, inner)
     if any(inner['credentials'][name] != 0 for name in ('uid', 'euid', 'gid', 'egid')):
         raise ValueError('real container UID/GID0 required')
     if inner['affinity'] != expected_affinity or inner['native_threads'] != {name: '1' for name in THREADS}:

@@ -89,12 +89,13 @@ def container_command(root, required, tests, affinity):
 def run_profile(root, required, tests, affinity, path, collect_only):
     from proof_container_runtime import (
         ATTESTATION_SCHEMA, canonical, digest, load_profile, observe_runtime,
-        require_identity, source_digests, verify_closure,
+        require_identity, require_profile_kernel, source_digests, verify_closure,
     )
 
     runtime = load_profile(path, root)
     outer = observe_runtime()
     require_identity(outer, runtime.primary)
+    require_profile_kernel(runtime, outer)
     if outer['affinity'] != affinity or outer['native_threads'] != {
             name: '1' for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')}:
         raise ValueError('outer runtime changed PB affinity or native thread bounds')
