@@ -51,7 +51,7 @@ from record_store_trust import ObservedTrust
 from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 #: The campaign's range size, the shape the issue prices (#1028).
 NAMES = 2048

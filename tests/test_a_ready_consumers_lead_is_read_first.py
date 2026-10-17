@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import adaptive_cpu, pool, residency_plan  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 from test_a_blocked_copy_goes_first_on_its_tier import (  # noqa: E402
     FILL_KIND, KNEE, SEALED_FILL_MB_S, WORKER, _clear_channel, _declare_wait,
     _file_curve, _hurting, _window)
@@ -152,7 +152,7 @@ def test_a_ready_consumers_lead_is_listed_and_claimed_before_other_copies(
 
 def _move_args(queue: pool.PoolQueue, stage: Path, manifest: Path, digest: str,
                *, key: str, consumer: str, start: int, end: int):
-    import stage_move
+    from prismabuild import stage_move
 
     return stage_move.build_parser().parse_args([
         "--pool-root", str(queue.root), "--action-key", key,
@@ -175,7 +175,7 @@ def test_the_pacer_never_holds_a_ready_consumers_lead_run_again(
     the reader plan lists it.
     """
 
-    import stage_move
+    from prismabuild import stage_move
 
     _clear_channel(monkeypatch)
     monkeypatch.setattr(prewarm_loop, "pacer_from_args", _hurting)
