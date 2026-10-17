@@ -276,50 +276,27 @@ def gang_prelaunch_refusal(queue, keys: list[str]) -> str | None:
 
 
 
-def member_command(args, manifest: dict, member: dict, *, group: str, index: int) -> list[str]:
-    size = len(manifest["members"])
-    command = [sys.executable, str(HERE / "pbrun.py"),
-               "--cwd", str(member.get("cwd") or args.cwd), "--detach"]
-    for tag in member.get("tags") or [member["tag"]]:
-        command += ["--tag", tag]
-    command += ["--gang-group", group, "--gang-size", str(size), "--gang-index", str(index),
-                "--priority", str(member.get("priority", manifest.get("priority", 0)))]
-    timeout = member.get("timeout_s", manifest.get("timeout_s"))
-    if timeout is not None:
-        command += ["--timeout-s", str(timeout)]
+def member_request(args, manifest: dict, member: dict, *, group: str, index: int):
+    from prismabuild import submission
+    row = {name: value for name, value in member.items() if name not in {"tag", "argv"}}
+    row["command"] = tuple(map(str, member["argv"]))
+    row["cwd"] = str(member.get("cwd") or args.cwd)
+    row["tags"] = member.get("tags") or [member["tag"]]
+    row["priority"] = member.get("priority", manifest.get("priority", 0))
+    row["timeout_s"] = member.get("timeout_s", manifest.get("timeout_s"))
     if "priority_reason" not in member and manifest.get("priority_reason") is not None:
-        command += ["--priority-reason", str(manifest["priority_reason"])]
-    demand = member.get("demand")
-    if isinstance(demand, dict):
-        demand = ",".join(f"{key}={value}" for key, value in demand.items())
-    if demand:
-        command += ["--demand", str(demand)]
-    if member.get("cpus") is not None:
-        command += ["--cpus", str(member["cpus"])]
-    env = member.get("env", [])
-    entries = [f"{key}={value}" for key, value in env.items()] if isinstance(env, dict) else env
-    for entry in entries:
-        command += ["--env", str(entry)]
-    for name, (flag, kind) in FLAG_FIELDS.items():
-        if name not in member:
-            continue
-        value = member[name]
-        if kind == "switch":
-            if value:
-                command.append(flag)
-        elif kind == "repeat":
-            for entry in value:
-                command += [flag, str(entry)]
-        else:
-            command += [flag, str(value)]
-    # A class-scoped GPU measurement seals its class facts from a vetted
-    # packet when the submitting box has no accelerator (#1598).  Only a
-    # member that declares both a measurement and a host class can use it, so
-    # only those members carry the flag; ``pbrun`` judges the packet.
+        row["priority_reason"] = manifest["priority_reason"]
     evidence = getattr(args, "target_evidence", None)
     if evidence is not None and member.get("measurement") and member.get("host_class"):
-        command += ["--target-evidence", str(evidence)]
-    return [*command, "--", *map(str, member["argv"])]
+        row["target_evidence"] = str(evidence)
+    return submission.request_from_mapping(row, detach=True, gang_group=group,
+        gang_size=len(manifest["members"]), gang_index=index)
+
+
+def member_command(args, manifest: dict, member: dict, *, group: str, index: int) -> list[str]:
+    from dataclasses import asdict
+    request = member_request(args, manifest, member, group=group, index=index)
+    return [sys.executable, str(HERE / "pbrun.py"), "--request-json", json.dumps(asdict(request))]
 
 
 def withdraw(keys: list[str], reason: str) -> None:

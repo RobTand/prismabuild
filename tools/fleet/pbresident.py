@@ -11,6 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core, resident_sets
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+def configured_store():
+    return store_for(__file__)
+
 
 
 def timestamp(value):
@@ -21,16 +27,17 @@ def timestamp(value):
 
 
 def movement_template(set_id, checkout):
-    import pbrun
-    return pbrun.freeze_action_template(
+    from prismabuild import submission
+    from prismabuild import submission
+    return submission.freeze(
         command=["pbresident", "publish", set_id], cwd=Path(checkout).resolve(),
         logical_cwd=str(Path(checkout).resolve()), demand={"cpu": 1, "mem_gb": 1},
         placement={"required_tags": []}, variables={"PATH": "/usr/bin:/bin"},
         determinism="stochastic", retry_policy={"max_attempts": 3, "retry_safe": True},
         host_class=None, measurement=False, transport="pool", pool_measurement_class=False,
-        data_manifest_path=None, checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
+        data_manifest_path=None, checkout_snapshot_max_bytes=submission.CHECKOUT_SNAPSHOT_MAX_BYTES,
         snapshot_refs=(), exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
-        progress=None, profile=None)
+        progress=None, profile=None, store=configured_store())
 
 
 def submit_copies(store, set_id, *, policy_path, checkout):
