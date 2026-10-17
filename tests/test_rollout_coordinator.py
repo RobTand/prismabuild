@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 
 import pytest
+from generation_fixture import generation_receipt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,9 +26,7 @@ def test_rolling_activation_cannot_bypass_unresolved_epoch(tmp_path, monkeypatch
     old, new = store / "old", store / "new"
     for generation in (old, new):
         generation.mkdir(parents=True)
-        (generation / "RUNTIME_VERSION.json").write_text(json.dumps({
-            "schema": "prismaquant.prismabuild.runtime_version.v1",
-            "generation": generation.name, "commit": "a" * 40, "files": {}}))
+        (generation / "RUNTIME_VERSION.json").write_text(json.dumps(generation_receipt(generation.name, "a" * 40, {})))
     mirror = fleet / "repo"
     mirror.symlink_to(old)
     epoch = fleet / "rollout/epochs" / ("a" * 32)
@@ -56,10 +55,7 @@ def fleet(tmp_path, monkeypatch):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             path.chmod(0o444)
-        (directory / "RUNTIME_VERSION.json").write_text(json.dumps({
-            "schema": "prismaquant.prismabuild.runtime_version.v1",
-            "generation": generation, "commit": ("a" if generation == "old" else "b") * 40,
-            "files": {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}}))
+        (directory / "RUNTIME_VERSION.json").write_text(json.dumps(generation_receipt(generation, ("a" if generation == "old" else "b") * 40, {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()})))
         (directory / "RUNTIME_VERSION.json").chmod(0o444)
         for path in sorted(directory.rglob("*"), reverse=True):
             if path.is_dir():

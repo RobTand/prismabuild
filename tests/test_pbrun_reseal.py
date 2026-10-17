@@ -16,6 +16,7 @@ from prismabuild import submission as submit_core
 import pbcampaign
 from prismabuild import core as pb, pool
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line
+from generation_fixture import generation_receipt
 
 
 def _generation(root, name):
@@ -26,11 +27,7 @@ def _generation(root, name):
     shim.write_text("#!/bin/sh\nexit 125\n")
     shim.chmod(0o555)
     receipt = generation / "RUNTIME_VERSION.json"
-    receipt.write_text(json.dumps({
-        "schema": "prismaquant.prismabuild.runtime_version.v1",
-        "generation": name, "commit": "a" * 40,
-        "files": {"tools/docker": hashlib.sha256(shim.read_bytes()).hexdigest()},
-    }))
+    receipt.write_text(json.dumps(generation_receipt(name, "a" * 40, {"tools/docker": hashlib.sha256(shim.read_bytes()).hexdigest()})))
     receipt.chmod(0o444)
     return tools
 
