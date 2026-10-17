@@ -14,7 +14,7 @@ def test_mint_timeout_identity_survives_handoff_and_driver(tmp_path, monkeypatch
     action = _publisher_action(tmp_path)
     ready = tmp_path / "ready-marker"
     argv = _stub(tmp_path, f'''
-def main(*, publication_canary_intent, authorize_canary):
+def main(argv=None, *, publication_canary_intent, authorize_canary):
     authorize_canary(json.loads({json.dumps(action)!r}))
     Path({str(ready)!r}).write_text("READY")
     return 0

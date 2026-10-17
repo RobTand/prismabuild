@@ -1514,7 +1514,7 @@ def _slurm_main_kwargs(
     monkeypatch.setattr(submit_core.pool, "PoolQueue", refuse)
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
-    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd, **_context: tmp_path)
     payload = tmp_path / "bundle.bin"
     payload.write_bytes(b"not really a bundle\n")
     entry, _ = pb.PrismaBuildCAS(tmp_path / "fleet" / "cas").ingest_input(

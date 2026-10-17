@@ -246,7 +246,7 @@ def test_every_masked_value_is_re_derived_from_the_body(
     identify = submit_core._git_identity
     monkeypatch.setattr(
         submit_core, "_git_identity",
-        lambda cwd: seen.setdefault("identity", identify(cwd)),
+        lambda cwd, **_context: seen.setdefault('identity', identify(cwd)),
     )
     body = _seal(tmp_path, monkeypatch, row)
     work = tmp_path / "work"
