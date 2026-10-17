@@ -18265,3 +18265,79 @@ parent, after bounded observation, and checks receipts before scheduler state.
 This ownership change does not change queue records or the reserved-exit clamp.
 The dedicated typed client channel and replacement of pbtest's runpy recovery
 remain a separate, required C06 unit.
+
+
+### Capability evidence and live qualification (C03)
+
+`capability_eligibility` owns host presence, declaration pairing, availability
+observations, offer projection and availability denials. `contracts.CONTRACTS`
+continues to own code support tags and publication/worker enablement. A support
+tag states that the worker implements a check. It cannot prove a local path,
+interpreter, dependency byte string or image is present.
+
+`DeclaredCapabilities.parse` validates direct publication declarations before
+action publication and retains the existing normalized wire values.
+`validate_tags` checks their code tag pairing. The leaf format owners remain
+`normalize_interpreter`, `local_dependencies.normalize`,
+`dependency_digest.validate_requirements` and `container_images.normalize_refs`.
+Submission clients use these same format rules. No new wire field or sealed
+action parameter is introduced.
+
+Only `None` supplies the default empty local-path or query mapping; false-valued
+non-mappings are rejected before publication changes action state. Worker
+observation ignores non-list file queries without repairing their queued
+declaration. The live predicate still denies that declaration, including a
+false-valued malformed image field that would otherwise resemble no requirement.
+
+| Capability | Observation and advertisement | Unknown and denial rule |
+|---|---|---|
+| Placement tags and GPU presence | `HostPresence` parses observations and emits the existing worker tags and `has_gpu`; `placement_matches` asks the same question for offers and claims | Every required tag must be present. Either `needs_gpu` or positive GPU demand requires a GPU host. An omitted or malformed GPU flag is unknown; only explicit false proves a CPU-only peer. Invalid resource demand remains the later demand owner's refusal. |
+| Named interpreter | `observe_interpreters`, `InterpreterAnswers`, and pass-scoped `LiveInterpreters` | An omitted answer is unknown; a named executable must be positively present. Submission refuses unanimous absence and permits discovery of an unknown path. Live refusal names `malformed_interpreter` or `interpreter_not_present`. |
+| Local dependency path or executable | `observe_dependencies`, `DependencyAnswers`, and `LiveDependencies.local_answers` | Unknown and absent both fail the declared kind requirement. Declaration or source availability never supplies host evidence. Live refusals retain `local_dependencies_unavailable` and `local_dependency_not_present`. |
+| Digest-pinned file | Worker presence observations and per-pass live presence/digest caches | Offers prove path presence only. `DigestEvidence.UNOBSERVED` never claims byte verification. The live adapter supplies a current digest or unreadability; one predicate owns missing, unreadable and mismatch denials. First-use submission discovery and unanimous absence retain their existing rules. |
+| Declared image and optional class gate | `ImageAnswers`, shared inventory and `LiveImages` | Unknown inventory differs from an empty inventory. A supplied malformed, stale or negative offer class report cannot authorize placement. Live policy evaluation remains authoritative, with existing unknown, absent and class refusal diagnostics. |
+
+`CapabilityRequirements` parses queue declarations into typed family values or
+stage-specific malformed refusals. Parsing reads no host state. The common
+`_check_capabilities` predicate checks interpreter, local paths, file presence,
+file bytes and images in that order for both `OfferCapabilities.check` and
+`LiveCapabilities.check`. Later malformed input never outranks an earlier live
+refusal. Foreign file order remains the order of digest diagnostics. Offer
+queries reject malformed declarations at ingress, so the census still counts
+corrupt rows as unreadable rather than unplaceable. Malformed presence lists
+are unknown even when they also contain a requested string. Advisory
+queries omit the queried declaration and its declaration tag from the local
+otherwise-eligible query, then explicitly require the advertised support tag
+through `HostPresence`. The concrete predicate has no adapter-mode bypass for
+declaration pairing. An interpreter support tag without a named path is refused as
+`interpreter_requirement_missing`; untagged native work requires no interpreter.
+
+Submission diagnostics retain full sealed file declarations, including SHA
+values, even though offers only answer path presence. The unknown-path branch
+removes both the file declaration and its support tag from its local discovery
+query. `PoolQueue.image_placement_census` similarly projects three host cohorts:
+otherwise eligible, image-capable and reporting the concrete requirement. It
+uses the common matcher and `HostPresence`, and its image, capacity and refusal
+callers supply their existing resource scope. No observed offers remains unknown.
+Export-room sizing asks only placement tags and declared memory totals through
+`HostPresence`; it does not invent an action containing unpaired capability tags.
+
+Live adapters retain existing observation timing and cache lifetimes. Initial
+qualification remains under candidate T, before withdrawal and resource work.
+Image class checks before rename and after rename still evaluate the actual
+inventory and clock. Offers never replace those checks. Busy GPU row room uses
+the same image predicate, so malformed image declarations cannot withhold room.
+
+The ready-GPU CPU preference first checks placement, splits host/storage demand,
+normalizes the reservation and tests total room. Only then does it capture the
+first actual local offer's typed interpreter/dependency/class answers and the
+current image observation. It asks the common predicate directly, without
+fabricating an offer record or rewriting the candidate resources. It retains
+lazy offers and denial reads, reservation sizing, priority and refusal rules.
+It deliberately does not probe live dependencies before candidate T.
+
+Declared resource capacity, observed headroom, GPU telemetry, free tokens,
+contention, reservation normalization, gang/canary authority and scratch trust
+remain with their current owners. Unknown advertised capacity is still distinct
+from zero. These answer fit, authority and admission questions beyond host
+capability. No C01 reservation, census, lock or commit owner changes.
