@@ -25,7 +25,7 @@ def _stub(tmp_path, body):
 def test_handoff_authorizes_exact_payload_in_parent_before_publication(tmp_path):
     published = tmp_path / "published"
     argv = _stub(tmp_path, f'''
-def main(*, publication_canary_intent, authorize_canary):
+def main(argv=None, *, publication_canary_intent, authorize_canary):
     action = {{"params": {{"publication_canary": publication_canary_intent}}, "pid": os.getpid()}}
     authorize_canary(action)
     Path({str(published)!r}).write_text("published")
@@ -48,7 +48,7 @@ def main(*, publication_canary_intent, authorize_canary):
 def test_refused_authorization_cannot_reach_publication(tmp_path):
     published = tmp_path / "published"
     argv = _stub(tmp_path, f'''
-def main(*, publication_canary_intent, authorize_canary):
+def main(argv=None, *, publication_canary_intent, authorize_canary):
     authorize_canary({{"untrusted": True}})
     Path({str(published)!r}).write_text("must not publish")
     return 0
@@ -62,7 +62,7 @@ def main(*, publication_canary_intent, authorize_canary):
 
 def test_preparation_refusal_preserves_pbrun_diagnostic(tmp_path):
     argv = _stub(tmp_path, '''
-def main(**kwargs):
+def main(argv=None, **kwargs):
     print("pbrun: unsupported worker capability", file=__import__("sys").stderr)
     return 2
 ''')
@@ -74,7 +74,7 @@ def main(**kwargs):
 
 def test_handoff_has_a_hard_submission_deadline(tmp_path):
     argv = _stub(tmp_path, '''
-def main(**kwargs):
+def main(argv=None, **kwargs):
     __import__("time").sleep(20)
 ''')
     with pytest.raises(subprocess.TimeoutExpired):
@@ -82,7 +82,7 @@ def main(**kwargs):
 
 
 def test_handoff_rejects_success_without_authorization(tmp_path):
-    argv = _stub(tmp_path, "def main(**kwargs): return 0\n")
+    argv = _stub(tmp_path, "def main(argv=None, **kwargs): return 0\n")
     with pytest.raises(ValueError, match="without authorization"):
         handoff.submit(argv, intent={}, authorize=lambda _: None, timeout_s=5)
 

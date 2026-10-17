@@ -346,7 +346,7 @@ def test_pbgang_refuses_the_option_when_no_member_can_use_it(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         pbgang.main(["--manifest", str(manifest), "--cwd", str(tmp_path),
                      "--target-evidence", str(packet)])
-    assert refusal_value(exc.value) == 2
+    assert exc.value.code == 2
     assert "needs a member that declares measurement and host_class" in (
         capsys.readouterr().err)
 
@@ -359,5 +359,5 @@ def test_pbgang_refuses_a_relative_packet_path(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         pbgang.main(["--manifest", str(manifest), "--cwd", str(tmp_path),
                      "--target-evidence", "packet.json"])
-    assert refusal_value(exc.value) == 2
+    assert exc.value.code == 2
     assert "absolute" in capsys.readouterr().err

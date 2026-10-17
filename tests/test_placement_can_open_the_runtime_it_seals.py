@@ -201,7 +201,8 @@ def test_pbrun_refuses_the_submission_and_not_only_the_predicate(
     (work / "tests").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(work)], check=True)
 
-    with patch_store(mock.patch, root=tmp_path / "fleet"), \
+    with mock.patch.object(pbrun, "configured_store", return_value=submit_core.FleetStore(
+            tmp_path / "fleet", WORKTREE, pbrun.configured_store().roster_path)), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", WORKTREE), \
          mock.patch.object(submit_core.socket, "gethostname", return_value="sparky"), \
          mock.patch.object(

@@ -65,7 +65,7 @@ def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
         timeout_ceiling_s=300,
     )
     with monkeypatch.context() as scoped:
-        scoped.setattr(pbrun, 'SH', root)
+        patch_store(scoped, client=pbrun, root=root)
         patch_store(scoped, client=pbrun, runtime_root=PUBLISHED)
         scoped.setattr(sys, 'argv', [*command[1:2], '--detach', *command[2:]])
         assert pbrun.main() == 0
