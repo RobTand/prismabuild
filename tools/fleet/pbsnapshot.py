@@ -49,8 +49,6 @@ from prismabuild import submission
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import submission
 from prismabuild import core as pb  # noqa: E402
@@ -65,7 +63,7 @@ SNAPSHOT_SCHEMAS = {
     b"v2": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
 }
 #: Where ``pbrun`` publishes sealed action requests.
-DEFAULT_CAS_ROOT = configured_store().root / "cas"
+DEFAULT_CAS_ROOT = store_for(__file__).root / "cas"
 _STAMP_NAME = re.compile(
     re.escape(pb.PBRUN_STAMP_PREFIX)
     + "[0-9a-f]{%d}" % pb.PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH

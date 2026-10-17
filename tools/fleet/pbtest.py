@@ -61,8 +61,6 @@ from prismabuild import action_client, client_channel, client_recovery  # noqa: 
 from submission_frontend import store_for, render_submission, request_arguments
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import action_wait  # noqa: E402
 from prismabuild import contracts
@@ -137,8 +135,8 @@ def start_shard(index: int, command: list[str], *, result: dict,
         inherited = environment.get('PYTHONPATH')
         environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
             os.pathsep + inherited if inherited else '')
-    return client_channel.ClientProcess.launch(command, queue_root=configured_store().root / 'pb-queue',
-        cas_root=configured_store().root / 'cas', env=environment, expected_identity=expected_identity,
+    return client_channel.ClientProcess.launch(command, queue_root=store_for(__file__).root / 'pb-queue',
+        cas_root=store_for(__file__).root / 'cas', env=environment, expected_identity=expected_identity,
         on_identity=submitted)
 
 
@@ -268,7 +266,7 @@ def fleet_queue():
     alike, so the two questions cannot drift onto different roots.
     """
 
-    return pool.PoolQueue(configured_store().root / "pb-queue")
+    return pool.PoolQueue(store_for(__file__).root / "pb-queue")
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
@@ -354,7 +352,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
     if not action_key:
         return None
-    path = core.PrismaBuildCAS(configured_store().root / "cas").receipt_path(action_key)
+    path = core.PrismaBuildCAS(store_for(__file__).root / "cas").receipt_path(action_key)
     try:
         return str(path) if path.is_file() else None
     except OSError:

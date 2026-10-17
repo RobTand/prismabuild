@@ -90,8 +90,6 @@ from prismabuild import submission
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__, root=SH)
 
 from prismabuild import submission
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402

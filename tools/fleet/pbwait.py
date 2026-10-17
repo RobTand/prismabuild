@@ -46,8 +46,6 @@ from prismabuild import action_client  # noqa: E402
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import action_wait, endings  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
@@ -790,8 +788,8 @@ def main(argv=None) -> int:
     elif args.generation is not None or args.attempt is not None:
         ap.error("--generation and --attempt require --reconcile-pool")
 
-    queue = pool.PoolQueue(configured_store().root / "pb-queue")
-    cas = pb.PrismaBuildCAS(configured_store().root / "cas")
+    queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     keys = [resolve_key(queue, name) for name in args.keys]
     if args.reconcile_pool:
         from prismabuild.pool_reconcile import reconcile

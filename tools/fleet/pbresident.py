@@ -14,8 +14,6 @@ from prismabuild import core, resident_sets, submission
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 
 
@@ -27,7 +25,7 @@ def timestamp(value):
 
 
 def movement_template(set_id, checkout):
-    return submission.freeze_resident(set_id, checkout, store=configured_store())
+    return submission.freeze_resident(set_id, checkout, store=store_for(__file__))
 
 
 def submit_copies(store, set_id, *, policy_path, checkout):
@@ -41,7 +39,7 @@ def submit_copies(store, set_id, *, policy_path, checkout):
         if host not in by_host:
             raise ValueError(f"local tier has not announced its movement tools on {host}")
     request = SubmissionRequest(cwd=str(checkout), detach=True)
-    fleet = configured_store()
+    fleet = store_for(__file__)
     from dataclasses import replace
     fleet = replace(fleet, queue_root=store.queue_root)
     with submission.write_window(request, store=fleet):
@@ -58,7 +56,7 @@ def submit_adoption(store, set_id, *, host, source, policy_path, checkout):
         raise ValueError("adoption host must be declared and announce its local tier")
     request = SubmissionRequest(cwd=str(checkout), detach=True)
     from dataclasses import replace
-    fleet = replace(configured_store(), queue_root=store.queue_root)
+    fleet = replace(store_for(__file__), queue_root=store.queue_root)
     with submission.write_window(request, store=fleet):
         template = movement_template(set_id, checkout)
         return submission.adopt_resident(template, store, set_id, tiers[host],

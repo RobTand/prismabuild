@@ -30,8 +30,6 @@ from prismabuild import action_client  # noqa: E402
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import pool
 from prismabuild.resource_scope import ResourceScope, scope_pids
