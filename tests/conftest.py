@@ -417,7 +417,7 @@ LIVE_DEFAULTS = (
     ("pbstatus", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("fleet_membership", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pool_reset", "SH", "fleet"),
-    ("fleet_submit", "SH", "fleet"),
+    ("prismabuild.fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
     ("worker_loop", "PUBLICATION_LOCK_ROOT", "offer-publication"),
     # Role singleton locks are host-local and per-uid (#709): left pointed at
@@ -512,7 +512,7 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         load(loader, module)
         stem = Path(getattr(module, "__file__", "") or "").stem
         if hasattr(module, "configured_store"):
-            from submission_frontend import store_for
+            from prismabuild.submission_frontend import store_for
             configured = store_for(module.__file__, root=root / "fleet")
             setattr(module, "configured_store", lambda: configured)
         for module_name, attr, sub in LIVE_DEFAULTS:
@@ -1128,7 +1128,7 @@ def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_c
         pbrun.fleet_roster.Roster.beside(pbrun.__file__),
         runtime_version=root / "repo" / "RUNTIME_VERSION.json", d38_config_path=d38_config)
     monkeypatch.setattr(pbrun, "configured_store", lambda: store)
-    import submission_frontend
+    from prismabuild import submission_frontend
     def fixture_store(entrypoint, *, root=store.root):
         if Path(root) == Path("/mnt/shared/prismabuild-fleet"):
             root = store.root

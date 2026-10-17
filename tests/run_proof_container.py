@@ -79,7 +79,7 @@ bootstrap = (
     "owner=runpy.run_path('/source/tools/fleet/pbtest_outcomes.py'); "
     "raise SystemExit(owner['main'](sys.argv[1:], collection_spec=" + repr(
         {'files': tests, 'roots': [[path, 'file'] for path in tests]}) + ", "
-    "collection_source=open('/source/tools/fleet/pbtest_collection.py').read()))"
+    "collection_source=open('/source/src/prismabuild/pbtest_collection.py').read()))"
 )
 command.extend([image, "-B", "-c", bootstrap, "-q", "-rA",
                 "-o", "addopts=", "-p", "no:cacheprovider",

@@ -48,7 +48,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import (  # noqa: E402
     pool, progress as pb_progress, residency_map, residency_plan, storage_tiers)
 from prismabuild import prewarm_loop  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _mover, _plan, _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
