@@ -143,10 +143,6 @@ def c13_canonical_tree(tree,manifest, *, fixture_modules=False):
 
 def c13_occurrences(source,manifest,path):
     tree=ast.parse(source)
-    if path=='tests/test_a_batch_record_has_a_public_reader.py':
-        for n in ast.walk(tree):
-            if isinstance(n,ast.Assert) and ast.unparse(n.test)=='name in vars(owner)':
-                n.test=ast.parse('name in po.__all__',mode='eval').body
     tree=c13_canonical_tree(tree,manifest,fixture_modules=path.startswith('tests/compat/support/compat_'))
     assertions=[];decorators=[]
     for n in ast.walk(tree):
