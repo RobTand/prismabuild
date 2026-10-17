@@ -200,9 +200,8 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 def _charged(queue: pool.PoolQueue, mover: str = MOVER_A) -> None:
     """The stage tokens a mover holds for its landed bytes."""
 
-    queue.mint_tier_capacity(STAGE_TIER, {storage_tiers.STAGE_CAPACITY_KIND: 8})
-    assert queue.tier_ledger(STAGE_TIER).acquire(
-        mover, {storage_tiers.STAGE_CAPACITY_KIND: 1}) is True
+    queue.tier(STAGE_TIER).mint({storage_tiers.STAGE_CAPACITY_KIND: 8})
+    assert queue.tier(STAGE_TIER).take(mover, {storage_tiers.STAGE_CAPACITY_KIND: 1}) is True
 
 
 def _world(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path, str, Path]:
@@ -317,8 +316,7 @@ def test_an_egress_during_a_live_promotion_keeps_the_sources_charge(
     receipt = _evict(queue, stage)
 
     assert staged.exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}, (
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {storage_tiers.STAGE_CAPACITY_KIND: 1}, (
             "tokens came back free for bytes that never left the stage")
     assert receipt["tokens_released"] == 0
     assert receipt["tokens_decharged"] == 0
@@ -466,13 +464,13 @@ def test_the_retry_after_the_handoff_deletes_and_releases_exactly_once(
     assert not staged.exists()
     assert not _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
     assert not _material_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {}
 
     again = _evict(queue, stage)      # no fragment left: a no-op, not a free
     assert again["complete"] is True
     assert again["entries_deleted"] == 0
     assert again["tokens_released"] == 0
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {}
 
 
 def test_the_retry_after_the_handoff_retains_for_a_real_co_owner(
@@ -497,7 +495,7 @@ def test_the_retry_after_the_handoff_retains_for_a_real_co_owner(
     assert MOVER_B[:12] in retry["shared_with"][0]
     assert staged.exists()
     assert not _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {}
 
     last = _evict(queue, stage, mover=MOVER_B, consumer=CONSUMER_B)
     assert last["complete"] is True
@@ -544,8 +542,7 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     assert reader_lease.retiring_for(leases, MOVER_A) == ([], [])
     assert staged.exists()
     assert _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {storage_tiers.STAGE_CAPACITY_KIND: 1}
 
     row.unlink()
     after = _evict(queue, stage)
@@ -557,5 +554,4 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     assert tainted == [] and len(marks) == 1
     assert after["live_pins"] == [str(proof["pin_id"])]
     assert staged.exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {storage_tiers.STAGE_CAPACITY_KIND: 1}

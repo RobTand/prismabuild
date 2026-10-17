@@ -93,13 +93,13 @@ def legacy_only(tmp_path: Path):
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.records.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 2})
+    queue.tier(TIER).mint({KIND: 2})
     stage = tmp_path / "stage"
     stage.mkdir()
     _register(queue, stage)
     legacy = _staged(stage, "legacy.bin")
     _legacy_fragment(queue, stage, legacy)
-    assert queue.tier_ledger(TIER).acquire(LEGACY_MOVER, {KIND: 1}) is True
+    assert queue.tier(TIER).take(LEGACY_MOVER, {KIND: 1}) is True
     return SimpleNamespace(queue=queue, stage=stage, legacy_path=legacy)
 
 
@@ -146,8 +146,8 @@ def world(tmp_path: Path):
     (leases / "not-a-fragment.json").write_text("{}\n")
     # Both movers are resident: their tier tokens are what makes their
     # fragments attribution in the sweep's ``wanted`` set.
-    assert queue.tier_ledger(TIER).acquire(LEGACY_MOVER, {KIND: 1}) is True
-    assert queue.tier_ledger(TIER).acquire(PRODUCED_MOVER, {KIND: 1}) is True
+    assert queue.tier(TIER).take(LEGACY_MOVER, {KIND: 1}) is True
+    assert queue.tier(TIER).take(PRODUCED_MOVER, {KIND: 1}) is True
     return SimpleNamespace(
         queue=queue, stage=stage, origin=origin, out_base=out_base,
         legacy_path=legacy, produced_path=produced_path, namespace=namespace,
@@ -161,8 +161,8 @@ def world(tmp_path: Path):
 def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
     """The real cycle boundary: no raise, nothing deleted, nothing unknown."""
 
-    legacy_held = world.queue.tier_ledger(TIER).holder_tokens(LEGACY_MOVER)
-    produced_held = world.queue.tier_ledger(TIER).holder_tokens(PRODUCED_MOVER)
+    legacy_held = world.queue.tier(TIER).holdings(LEGACY_MOVER)
+    produced_held = world.queue.tier(TIER).holdings(PRODUCED_MOVER)
     assert legacy_held and produced_held
 
     events = _sweep(world.queue, world.stage)
@@ -179,10 +179,8 @@ def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
         PRODUCED_MOVER: stage_release.HOLDER_UNRESOLVED_EVENT}, events
     assert world.legacy_path.exists()
     assert world.produced_path.exists()
-    assert world.queue.tier_ledger(TIER).holder_tokens(
-        LEGACY_MOVER) == legacy_held
-    assert world.queue.tier_ledger(TIER).holder_tokens(
-        PRODUCED_MOVER) == produced_held
+    assert world.queue.tier(TIER).holdings(LEGACY_MOVER) == legacy_held
+    assert world.queue.tier(TIER).holdings(PRODUCED_MOVER) == produced_held
 
 
 def test_both_fragment_layouts_are_attributed(world) -> None:

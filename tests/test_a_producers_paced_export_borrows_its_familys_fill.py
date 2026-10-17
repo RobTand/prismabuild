@@ -32,6 +32,7 @@ import test_prepaid_writer_integration as fx
 import test_produced_spool_paced_export as paced
 from prismabuild import adaptive_cpu, core, pool, produced_output as po
 from prismabuild import produced_spool as ps, residency_plan, storage_tiers
+from prismabuild import tier_holdings
 
 FILL = storage_tiers.FILL_KIND
 FILL_DEMAND = paced.FILL_DEMAND
@@ -89,8 +90,8 @@ def _paced_producer(tmp_path: Path, monkeypatch):
 
 
 def _hold_fill(queue: pool.PoolQueue, key: str, count: int = OFFER) -> None:
-    assert queue.tier_ledger(fx.TIER).acquire(key, {FILL: count})
-    assert queue.tier_ledger(fx.TIER).available().get(FILL, 0) == 0
+    assert queue.tier(fx.TIER).take(key, {FILL: count})
+    assert queue.tier(fx.TIER).free_supply().get(FILL, 0) == 0
 
 
 def _paced_export(spool) -> str:
@@ -124,9 +125,9 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
     assert borrow["funded_by"] == [MOVER] and borrow["lent"] == {MOVER: OFFER}
     assert borrow["owner"] == owner and borrow["plan_children"] == 2
     # The borrow takes no token: the mover still holds every one.
-    ledger = queue.tier_ledger(fx.TIER)
-    assert ledger.holder_tokens(MOVER).get(FILL) == OFFER
-    assert not ledger.holder_tokens(export_key)
+    ledger = queue.tier(fx.TIER)
+    assert ledger.holdings(MOVER).get(FILL) == OFFER
+    assert not ledger.holdings(export_key)
     # And the export still runs on its producer's host allowance (#998).
     al._assert_on_allowance(spool, export_key)
 
@@ -137,7 +138,7 @@ def test_the_export_borrows_its_own_movers_fill(tmp_path, monkeypatch) -> None:
 
     # The mover lands and releases before the export ends: the terminal
     # record names it and the overcommit it left.
-    ledger.release(MOVER)
+    ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)
     queue.finish(export_key, status="executed", claim_snapshot=claim)
     done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, export_key))
     ended = done["tier_fill_borrowed"][fx.TIER]
@@ -162,7 +163,7 @@ def test_a_strangers_fill_is_never_borrowed(tmp_path, monkeypatch) -> None:
     shortage = denial["evidence"]["tier_shortage"]
     assert shortage["family_fill"] == "not_enough_family_fill"
     assert shortage["dependent_of"] == spool.owner
-    assert queue.tier_ledger(fx.TIER).holder_tokens(STRANGER).get(FILL) == OFFER
+    assert queue.tier(fx.TIER).holdings(STRANGER).get(FILL) == OFFER
 
 
 def test_the_export_takes_what_is_free_and_borrows_the_rest(
@@ -172,8 +173,8 @@ def test_the_export_takes_what_is_free_and_borrows_the_rest(
 
     spool, _cas = _paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
-    ledger = queue.tier_ledger(fx.TIER)
-    assert ledger.acquire(EGRESS, {FILL: 5})
+    ledger = queue.tier(fx.TIER)
+    assert ledger.take(EGRESS, {FILL: 5})
     export_key = _paced_export(spool)
     cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
@@ -182,7 +183,7 @@ def test_the_export_takes_what_is_free_and_borrows_the_rest(
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["taken_free"] == 2 and borrow["borrowed"] == OFFER - 2
     assert borrow["lent"] == {EGRESS: 5}
-    assert ledger.holder_tokens(export_key).get(FILL) == 2
+    assert ledger.holdings(export_key).get(FILL) == 2
 
 
 def test_the_slot_count_is_derived_from_measured_rates(tmp_path) -> None:
