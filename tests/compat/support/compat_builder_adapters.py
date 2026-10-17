@@ -92,11 +92,17 @@ def output_funding(request, store, load):
     else:
         ref = queue.build_produced_output_batch_ref(instance=instance, template=template,
             batch_id="batch", descriptors=[descriptor], tier_id=tier)
+        staged = queue.stage_output_intent(**args)
+        assert staged["ok"], staged
         queue.publish(action_key=mover, cas_root=store / "cas", checkout_root="/compat/checkout",
             worker_script="/compat/worker.py", resources={"cpu": 1, "mem_gb": 1, "stage_gib@" + tier: 1},
             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier, "manifest_sha256": po.output_manifest_sha256([descriptor]),
                        "manifest_bytes": 8, "range_start_bytes": 0, "range_end_bytes": 8}, produced_output_batch=ref)
+        # A legacy publisher could leave a genuine absent intent. Keep the
+        # current publication guard, then construct that private recovery state.
+        path.unlink()
         result = queue.fund_output_batch(**args)
     assert result["ok"], result
     return {"raw": base64.b64encode(path.read_bytes()).decode(),
-            "fixture_facts": ["private supplied owner claim; actual eight-byte prewrite and tier token transfer"]}
+            "fixture_facts": ["private supplied owner claim; actual eight-byte prewrite and tier token transfer",
+                              "direct-fund case has an explicitly removed private intent after guarded publication, representing a legacy absent-intent row"]}
