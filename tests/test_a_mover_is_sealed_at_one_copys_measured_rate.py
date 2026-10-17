@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import action_edges, pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
     CONSUMER, PHASE_BYTES, READERS, TIER, _Cas, _manifest, _template)
 

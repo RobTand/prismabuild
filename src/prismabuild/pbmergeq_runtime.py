@@ -9,10 +9,7 @@ import string
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runtime_paths import generation_root  # noqa: E402
 
-sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core  # noqa: E402
 
 

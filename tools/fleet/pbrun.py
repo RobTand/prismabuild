@@ -10,10 +10,13 @@ import os
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from submission_frontend import render_submission
+from prismabuild.submission_frontend import render_submission
 from prismabuild import action_edges, submission, action_client, client_channel, core as pb, pool, fleet_roster
 from prismabuild.submission_types import FleetStore, SubmissionRequest, SubmissionRefused, ArgumentRefused
 from prismabuild.submission import TRANSPORTS, RESIDENCY_MODES, RESIDENCY_RAM_MODES, RESIDENCY_SHARE_MODES, DEFAULT_MAX_ATTEMPTS, CHECKOUT_SNAPSHOT_MAX_BYTES

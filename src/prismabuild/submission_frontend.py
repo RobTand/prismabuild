@@ -1,7 +1,7 @@
 """CLI display and configured-root adapters for package submissions."""
 from pathlib import Path
 import sys
-from runtime_paths import generation_root
+from prismabuild.runtime_paths import generation_root
 from prismabuild import fleet_roster
 from prismabuild.submission_types import Display, FleetStore, SubmissionRequest
 

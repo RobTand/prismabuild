@@ -41,7 +41,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, storage_tiers  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 CONSUMER = "c" * 64

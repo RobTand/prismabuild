@@ -22,9 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     _stage_range, _tier_record)
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402

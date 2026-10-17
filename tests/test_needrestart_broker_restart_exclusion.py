@@ -218,7 +218,8 @@ def test_the_qualifier_bootstraps_its_generation_in_every_published_layout(tmp_p
     directory = generation / layout
     directory.mkdir(parents=True)
     for name in (QUALIFIER.name, "runtime_paths.py"):
-        shutil.copy2(FLEET / name, directory / name)
+        shutil.copy2(ROOT / "src/prismabuild/runtime_paths.py"
+                     if name == "runtime_paths.py" else FLEET / name, directory / name)
     config = tmp_path / "needrestart-main.conf"
     config.write_text(FIXTURE, encoding="utf-8")
     environment = dict(os.environ)

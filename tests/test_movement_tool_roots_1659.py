@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, produced_spool, resource_scope, runtime_publication, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 
@@ -43,7 +43,7 @@ def test_a_box_without_the_copy_announces_its_own_directory(
         own = retained_generation(retained.parent, "d" * 12 + "-1791400000-" + "e" * 12,
                                   commit="d" * 40) / "tools" / "fleet"
     else:
-        own = Path(tier_loop.__file__).resolve().parent
+        own = tier_loop.ENTRYPOINT.parent
     monkeypatch.setattr(tier_loop, "MOVER_TOOLS_ROOT", str(own))
     assert tier_loop.announced_tools_root() == str(own)
 

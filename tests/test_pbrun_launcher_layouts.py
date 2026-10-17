@@ -34,7 +34,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 import pool_reset  # noqa: E402
 import require_pool  # noqa: E402
-import runtime_paths  # noqa: E402
+from prismabuild import runtime_paths  # noqa: E402
 
 from test_pool_reset_refusal import ACK, fleet  # noqa: E402,F401
 

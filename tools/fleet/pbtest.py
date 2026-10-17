@@ -51,14 +51,17 @@ import uuid
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import (  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import (  # noqa: E402
     fleet_tool, generation_root, tool_candidates,
 )
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
-from submission_frontend import store_for, render_submission, request_arguments
+from prismabuild.submission_frontend import store_for, render_submission, request_arguments
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 
 
@@ -70,7 +73,7 @@ from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
 #: drift apart.
-import pbtest_capabilities  # noqa: E402
+from prismabuild import pbtest_capabilities  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
 from prismabuild import submission
@@ -195,7 +198,7 @@ def run_shard(index: int, command: list[str], first, *, wait_s: float,
 #: flag twenty shards never see.  ``fleet_submit`` is published beside this
 #: file and holds the one reader of the default, so a shard's transport is the
 #: fleet's transport rather than a second opinion about it.
-from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
+from prismabuild.fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 #: The per-test bound's name and the ceiling the worker loops enforce, read
 #: from the modules that own them rather than restated here: a bound derived
 #: from a number this file copied would drift the moment either moved.
@@ -932,7 +935,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     sources = {SHARD_DIGEST_MODULE:
                    Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
                "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
-               "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
+               "pbtest_collection": (RUNTIME_ROOT / "src/prismabuild/pbtest_collection.py").read_text()}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
         # Carry its standalone source into any target project/interpreter.
@@ -1528,7 +1531,7 @@ def main() -> int:
     # declarations loads nothing and runs exactly as before.
     capabilities_path = (
         checkout / args.capabilities if args.capabilities is not None
-        else checkout / "tests" / "pbtest_capabilities.json")
+        else checkout / "tests" / "prismabuild.pbtest_capabilities.json")
     if args.capabilities is not None and not capabilities_path.is_file():
         sys.stderr.write(
             f"pbtest: --capabilities {args.capabilities!r} is not a file "

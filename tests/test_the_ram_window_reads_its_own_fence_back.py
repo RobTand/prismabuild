@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import storage_tiers, window_credit  # noqa: E402
 import residency_publication  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_the_nonfinal_window_fences_its_advance import (  # noqa: E402
     CONSUMER, GIB, RAM_TIER, SPAN, TIER, _assert_one_live_advance, _movers,
     _plan, _publish_consumer, _published, _queue, _ram_tiers)

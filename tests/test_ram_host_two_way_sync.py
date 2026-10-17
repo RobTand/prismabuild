@@ -21,7 +21,7 @@ import prismabuild.pool as pool  # noqa: E402
 import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 HOST = "dl380g10"
 RAM_TIER = storage_tiers.tier_id("ram", HOST)

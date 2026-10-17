@@ -65,7 +65,7 @@
   "hashlib:tools/fleet/bench_stage_egress.py::_key",
   "hashlib:tools/fleet/bench_tier_cycle.py::_key",
   "hashlib:tools/fleet/bench_tier_cycle_r13.py::build_write_only_scopes",
-  "hashlib:tools/fleet/deferred_release.py::_report_once",
+  "hashlib:src/prismabuild/deferred_release.py::_report_once",
   "hashlib:tools/fleet/fleet_membership.py::worker_evidence",
   "hashlib:tools/fleet/pb_gc.py::transition_lock_name",
   "hashlib:tools/fleet/pbcanary.py::_run_fanout_leg",
@@ -126,7 +126,7 @@
   "sorted-json:tools/fleet/bench_failed_mover_reclaim.py::main",
   "sorted-json:tools/fleet/bench_tier_cold_start.py::main",
   "sorted-json:tools/fleet/bench_tier_cycle_r13.py::main",
-  "sorted-json:tools/fleet/deferred_release.py::_report_once",
+  "sorted-json:src/prismabuild/deferred_release.py::_report_once",
   "sorted-json:tools/fleet/fleet_membership.py::main",
   "sorted-json:tools/fleet/mount_latency.py::append_record",
   "sorted-json:tools/fleet/mount_latency.py::main",
@@ -159,8 +159,8 @@
   "sorted-json:tools/fleet/runtime_process_census.py::main",
   "sorted-json:tools/fleet/shape_gate.py::main",
   "sorted-json:tools/fleet/shape_gate.py::table_bytes",
-  "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.fill_supply",
-  "sorted-json:tools/fleet/tier_loop.py::ReceiptCache.mover_cap",
+  "sorted-json:src/prismabuild/tier_cycle.py::ReceiptCache.fill_supply",
+  "sorted-json:src/prismabuild/tier_cycle.py::ReceiptCache.mover_cap",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.attest",
   "sorted-json:tools/fleet/upgrade_client.py::Upgrader.report",
   "sorted-json:tools/fleet/upgrade_client.py::canonical_json"
@@ -308,7 +308,7 @@
   ],
   "_emit": [
    "tools/fleet/mount_latency.py",
-   "tools/fleet/tier_loop.py"
+   "src/prismabuild/tier_cycle.py"
   ],
   "_execution_checkout": [
    "src/prismabuild/materialize.py",
@@ -345,7 +345,7 @@
   ],
   "_landing_horizon": [
    "src/prismabuild/residency_map.py",
-   "tools/fleet/tier_loop.py"
+   "src/prismabuild/tier_cycle.py"
   ],
   "_matches": [
    "src/prismabuild/produced_spool.py",
@@ -367,7 +367,7 @@
   ],
   "_parser": [
    "src/prismabuild/prewarm_loop.py",
-   "tools/fleet/tier_loop.py"
+   "src/prismabuild/tier_cycle.py"
   ],
   "_path": [
    "src/prismabuild/action_edges.py",
@@ -407,7 +407,7 @@
   "_serve": [
    "src/prismabuild/prewarm_loop.py",
    "tools/fleet/pbmetrics.py",
-   "tools/fleet/tier_loop.py"
+   "src/prismabuild/tier_cycle.py"
   ],
   "_sha256": [
    "src/prismabuild/core.py",
@@ -415,7 +415,7 @@
   ],
   "_start": [
    "tools/fleet/bench_tier_cold_start.py",
-   "tools/fleet/tier_loop.py"
+   "src/prismabuild/tier_cycle.py"
   ],
   "_text": [
    "src/prismabuild/core.py",
@@ -468,7 +468,7 @@
   ],
   "cycle": [
    "src/prismabuild/prewarm_loop.py",
-   "tools/fleet/tier_loop.py"
+   "src/prismabuild/tier_cycle.py"
   ],
   "digest": [
    "tools/fleet/qualify_claim_recovery.py",
@@ -530,7 +530,7 @@
   ],
   "submit": [
    "src/prismabuild/slurm_lane.py",
-   "tools/fleet/fleet_submit.py",
+   "src/prismabuild/fleet_submit.py",
    "tools/fleet/pbcampaign.py",
    "tools/fleet/pbcanary_submission.py"
   ],

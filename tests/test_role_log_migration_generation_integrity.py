@@ -103,10 +103,13 @@ def test_real_publication_manifest_resolves_both_tool_layouts_and_dependencies(m
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     published = publish_runtime._publication_manifest()
     for name in ("role_log_identity.py", "migrate_role_logs.py"):
-        assert name in publish_runtime.FLEET_SCRIPTS
-        source = ROOT / "tools/fleet" / name
+        assert (f"src/prismabuild/{name}" in published
+                if name == "role_log_identity.py" else name in publish_runtime.FLEET_SCRIPTS)
+        source = ROOT / ("src/prismabuild" if name == "role_log_identity.py"
+                         else "tools/fleet") / name
         expected = hashlib.sha256(source.read_bytes()).hexdigest()
-        for member in (f"tools/{name}", f"tools/fleet/{name}"):
+        for member in ((f"src/prismabuild/{name}",) if name == "role_log_identity.py"
+                       else (f"tools/{name}", f"tools/fleet/{name}")):
             assert published[member] == expected
             assert publish_runtime._source_for(member) == source
     assert published["src/prismabuild/core.py"] == hashlib.sha256(
@@ -118,15 +121,16 @@ def test_real_publication_manifest_resolves_both_tool_layouts_and_dependencies(m
         roster_source.read_bytes()).hexdigest()
     assert "tools/fleet_roster.py" not in published
     assert "tools/fleet/fleet_roster.py" not in published
-    for name in ("role_log_identity", "supervise", "publish_runtime"):
+    for name in ("prismabuild.role_log_identity", "supervise", "publish_runtime"):
         assert name in imports
-        assert f"tools/{name}.py" in published
+        assert ("src/" + name.replace(".", "/") + ".py"
+                if name.startswith("prismabuild.") else f"tools/{name}.py") in published
     affected = ("tools/migrate_role_logs.py imports ", "tools/supervise.py imports ")
     assert not [message for message in publish_runtime._unshipped_imports(published)
                 if message.startswith(affected)]
     incomplete = dict(published)
-    del incomplete["tools/role_log_identity.py"]
+    del incomplete["src/prismabuild/role_log_identity.py"]
     problems = publish_runtime._unshipped_imports(incomplete)
     for consumer in ("migrate_role_logs.py", "supervise.py"):
-        assert any(message.startswith(f"tools/{consumer} imports role_log_identity,")
+        assert any(message.startswith(f"tools/{consumer} imports prismabuild.role_log_identity,")
                    for message in problems)

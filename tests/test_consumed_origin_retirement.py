@@ -46,7 +46,7 @@ from prismabuild import pool, produced_output as po, storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     KIND, TIER, _descriptor, _prewrite, _queue, _template,

@@ -586,7 +586,10 @@ class ResourceScope:
             for dependency in _PROXY_DEPENDENCIES:
                 self._sealed_member(
                     root,
-                    (directory.relative_to(root) / dependency).as_posix(),
+                    ("src/prismabuild/runtime_paths.py"
+                     if dependency == "runtime_paths.py"
+                     and "src/prismabuild/runtime_paths.py" in files
+                     else (directory.relative_to(root) / dependency).as_posix()),
                     receipt)
             return proxy
         raise OSError(f"generation {root.name} carries no proven proxy with "

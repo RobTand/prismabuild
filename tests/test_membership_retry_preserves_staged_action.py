@@ -36,7 +36,7 @@ from prismabuild import (  # noqa: E402
     residency_plan,
     storage_tiers,
 )
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"

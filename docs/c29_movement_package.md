@@ -1,9 +1,10 @@
 # Packaged movement ownership
 
-C29's movement slice moves code from fleet scripts into `src/prismabuild`.
-The source base is exact C05 `82f28e4ce36c3de222cc7818a5fb1c8837bb4f7d`.
-It discharges the movement part of c29.r02-r04, subject to recorded execution
-qualification. It does not claim completion of the entire C29 card.
+C29's initial movement slice moved code from fleet scripts into
+`src/prismabuild`, from C05 `82f28e4ce36c3de222cc7818a5fb1c8837bb4f7d`.
+The remaining completion below moves the tier owner and ten libraries from
+`fe416690b87aba99ad30c7df4f95ac8da47055d5`. Execution qualification is recorded
+separately from this source ownership contract.
 
 ## Callers and boundaries
 
@@ -58,11 +59,11 @@ three package/tool import forks, and needs no compatibility module. Five
 package modules retain their existing domain divisions rather than merging
 pacing, copying, retention and accounting into one module.
 
-Moving the complete tier loop would also pull manifest promotion into this
-change. That module imports `pbrun`, which C14 owns on another branch. Tier
-census, status/metrics/MCP census and the remaining fleet libraries are broader
-C29/C27 work. `stage_reclaim` remains an operator entry command using the new
-owners; its restore launch path and operator behavior stay byte-for-byte.
+The initial movement slice deferred the tier loop and submission libraries
+until C14 supplied package submission ownership. The required completion from
+`fe416690b87aba99ad30c7df4f95ac8da47055d5` moves the tier implementation into
+`prismabuild.tier_cycle` and ten remaining libraries into package owners.
+`stage_reclaim` keeps its operator entry and restore launch behavior.
 
 ## Source migration and review
 
@@ -89,3 +90,48 @@ must remain historical; current locators must follow the new package owner.
 Execution evidence, frozen cohorts and limits live under
 `/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/movement-package-completion`.
 Existing C31 physical/hardware provenance is not transferred to this source.
+
+## Remaining script libraries and tier entry
+
+The package now owns `submission_frontend`, `pbtest_collection`,
+`pbtest_capabilities`, `runtime_paths`, `role_log_identity`, `deferred_release`,
+`manifest_promotion`, `fleet_submit`, `pbmergeq_runtime`, and `prelaunch_tier`.
+Their former tool sources and `FLEET_SCRIPTS` rows are removed. Current test
+imports, patch targets, embedded programs, and collection-source reads name
+the package graph. The two optional package-import fallbacks in
+`admission_shared_io` and `fleet_membership` are removed.
+Membership also removes the missing-reader module census, its unused fallback
+constants and its two private helpers. The required reader owner's enumeration
+and existing unreadable-census refusal remain the production path.
+
+`tools/fleet/tier_loop.py` remains the physical tier-role entry. It passes its
+resolved entry path to `tier_cycle.main`. That binding retains the original
+tool directory, RAM policy search, mover paths, singleton stem, argv, exits,
+and park role. Direct package callers use the checkout's tier entry by default.
+The existing funding, staged-path, tier-holdings and submission owners stay
+below the relocated implementation. A narrower extraction would leave the
+remaining functions dependent on script globals or require a callback layer.
+
+The packaged `fleet_submit` defaults to `tools/fleet/slurm_job.py` under its
+generation. Its sole physical producer, `seal_and_publish`, explicitly passes
+the sibling of its own script: the short published caller retains
+`tools/slurm_job.py`, and the nested caller retains `tools/fleet/slurm_job.py`.
+Both entries carry identical bytes. The two-layout qualification drives real
+copied producers into the existing fake scheduler and checks the exact job
+script address and recorded script digest.
+
+The stdlib-only `runtime_paths` has an existing retained proxy transport.
+`publish_runtime.STANDALONE_PACKAGE_SOURCES` maps its two original published
+leaf paths to `src/prismabuild/runtime_paths.py`; all three carry identical
+bytes. This is one source owner with the existing transport names.
+`resource_scope` proves the package owner when the captured receipt lists it,
+and the original sibling leaf for retained receipts without the package path.
+The installed updater's member sets, C15 receipt pair, copy order, protocols,
+custody and prepared bridge do not change.
+
+`refactor/c29_complete.py` replays this completion. Its verifier retains every
+definition occurrence and decorator, compares whole normalized source and
+function bodies, checks native names and assertions, and exports the exact
+current owner and shipping map for C31. The duplication inventory only moves
+existing approved owner paths. C31's current drivers and historical artifacts
+remain byte-exact for their owner to reconcile.

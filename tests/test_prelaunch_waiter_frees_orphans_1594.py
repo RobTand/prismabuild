@@ -246,7 +246,7 @@ def test_the_pressure_census_receives_the_declared_keys(
     (a claimed reader, landed chunks, a landing rate) returned no candidate at
     all, so no behavioural P2 regression exists here yet.
     """
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()

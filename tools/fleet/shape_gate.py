@@ -74,12 +74,15 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import box_capacity  # noqa: E402
-from submission_frontend import store_for, render_submission
+from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
 from prismabuild import submission
 
@@ -546,7 +549,7 @@ class ShapeGate:
                  host_profile: Mapping[str, object] = HOST_PROFILE,
                  require_chunk_edge: bool = True,
                  seed: int = 965) -> None:
-        import tier_loop
+        from prismabuild import tier_cycle as tier_loop
 
         if storage_tiers.GIB * int(shape["scale"]) != 1 << 30:     # type: ignore[arg-type]
             raise ShapeGateFailure(

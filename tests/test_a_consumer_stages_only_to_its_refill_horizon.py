@@ -52,7 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, reader_lease, residency_map, residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     DIGEST, GIB, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _row, _stage_range,
     _tier_record, assert_ledger_matches_the_stage)

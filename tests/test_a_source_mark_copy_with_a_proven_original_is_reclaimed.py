@@ -26,7 +26,7 @@ from prismabuild import data_manifest as manifest_codec
 from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
   # noqa: E402
 

@@ -82,7 +82,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve(strict=True).parent
 sys.path.insert(0, str(HERE))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
@@ -101,7 +104,7 @@ MEMBER_FIELDS = {"tag", "tags", "cwd", "argv", "demand", "env", "timeout_s", "pr
 #: stays the only judge of each value; this table forwards, it never reinterprets.
 #: The gang flags, ``--tag``, ``--priority``, ``--detach`` and ``--cwd`` are
 #: deliberately not here: the driver owns them.
-from submission_frontend import request_arguments, store_for
+from prismabuild.submission_frontend import request_arguments, store_for
 from prismabuild.submission_types import request_options
 FLAG_FIELDS = {option.name: (option.flag, option.kind) for option in request_options(gang=True)
                if option.name not in MEMBER_FIELDS and option.kind != "special"}

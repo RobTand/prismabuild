@@ -15,7 +15,7 @@ from test_output_window_obligation import owner
 import test_a_hold_by_an_unknown_attempt_is_named as holds
 import test_incomplete_ram_promotions_release_their_tokens as incomplete
 import test_the_tier_loop_drops_a_prior_epoch_and_holds as epochs
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from test_one_publisher_parses_unchanged_publication_metadata_once import (
     forest, _sweep as publication_sweep, CONSUMER as PUBLICATION_CONSUMER,
     MOVER as PUBLICATION_MOVER,

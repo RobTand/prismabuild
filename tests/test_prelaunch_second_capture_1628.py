@@ -21,7 +21,7 @@ import pytest  # noqa: E402
 
 from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group as pg  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
 from test_prelaunch_tier_module_1594 import _declared_plan, _publish_leg, TIER  # noqa: E402
 from test_prelaunch_tier_publish_1594 import (  # noqa: E402

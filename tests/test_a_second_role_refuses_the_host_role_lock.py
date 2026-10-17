@@ -437,7 +437,7 @@ def test_a_once_tier_cycle_also_refuses_a_held_lock(
 ) -> None:
     """The tier minter's one-shot form can mint and announce; same lock."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     lock_root = tmp_path / "role-locks"
     monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", lock_root)

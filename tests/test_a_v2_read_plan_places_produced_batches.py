@@ -44,7 +44,7 @@ from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
 from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
-import deferred_release as dr  # noqa: E402
+from prismabuild import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from prismabuild import prewarm_loop  # noqa: E402

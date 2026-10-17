@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     GIB, MANIFEST, TIER, _hexkey, _queue)
 from test_prelaunch_tier_module_1594 import (  # noqa: E402

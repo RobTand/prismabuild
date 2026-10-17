@@ -44,11 +44,15 @@ import subprocess
 import sys
 import time
 import uuid
-from runtime_paths import generation_root
+from pathlib import Path
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from pbmergeq_runtime import (
+from prismabuild.pbmergeq_runtime import (
     RuntimeSelectionError,
     baseline_identity,
     select_runtime,

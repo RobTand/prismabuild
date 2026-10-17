@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import (  # noqa: E402
     pool, progress as pb_progress, residency_map, residency_plan,
     storage_tiers, window_credit)
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     MOVER_SECONDS, READER as SMALL_READER,
     READER_MANIFEST as SMALL_READER_MANIFEST, _cycle, _fixture_queue, _land,

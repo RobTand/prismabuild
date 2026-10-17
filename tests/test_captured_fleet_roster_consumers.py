@@ -122,12 +122,13 @@ def test_recorder_prefers_flat_and_membership_prefers_nested(tmp_path, monkeypat
 def export(root, flat):
     package = root / "src/prismabuild"
     package.mkdir(parents=True)
-    for name in ("__init__.py", "progress.py", "digest_primitives.py", "fleet_roster.py"):
+    for name in ("__init__.py", "progress.py", "digest_primitives.py", "fleet_roster.py", "runtime_paths.py"):
         shutil.copyfile(ROOT / "src/prismabuild" / name, package / name)
     tools = root / ("tools" if flat else "tools/fleet")
     tools.mkdir(parents=True)
     for name in ("require_pool.py", "runtime_paths.py"):
-        shutil.copyfile(ROOT / "tools/fleet" / name, tools / name)
+        shutil.copyfile(ROOT / "src/prismabuild/runtime_paths.py"
+                        if name == "runtime_paths.py" else ROOT / "tools/fleet" / name, tools / name)
     return tools
 
 

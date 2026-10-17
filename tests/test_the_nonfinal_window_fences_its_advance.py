@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 import residency_publication  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402

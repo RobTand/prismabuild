@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import prewarm_loop  # noqa: E402
 from prismabuild import stage_move  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"

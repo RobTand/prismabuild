@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, produced_output as po, window_credit  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import test_a_resident_range_is_adopted_rather_than_recopied as adopted  # noqa: E402
 import test_produced_output_lifecycle_r2 as produced  # noqa: E402

@@ -51,7 +51,7 @@ from prismabuild import kept_reads
 from prismabuild import movement_actions, pool, storage_tiers  # noqa: E402
 import pb_gc  # noqa: E402
 from record_store_trust import ObservedTrust
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 #: The queue-root kind this requirement adds, spelled as the other kinds are.
 MOVEMENT_RECEIPT = "movement receipt"

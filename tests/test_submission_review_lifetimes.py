@@ -24,7 +24,7 @@ def test_deferred_release_uses_its_private_queue_for_gates_and_publication(tmp_p
     instance = deferred._start(queue, template, producer)
     deferred._commit(queue, template, instance, "b1", b"private release")
     queue.finish(producer, status="executed")
-    fleet = deferred.dr.store_for(deferred.dr.__file__)
+    fleet = deferred.dr.store_for(deferred.dr.ENTRYPOINT)
     default_queue = tmp_path / "default-queue-trap"
     monkeypatch.setattr(deferred.dr, "store_for", lambda *args: replace(fleet, queue_root=default_queue))
     seen = []
@@ -56,7 +56,7 @@ def test_deferred_release_preserves_the_records_declared_cas(tmp_path, monkeypat
     deferred._commit(queue, template, instance, "b1", b"declared CAS release")
     queue.finish(producer, status="executed")
     record = action_edges.read_deferred(queue.root, registered["pending_id"])
-    fleet = deferred.dr.store_for(deferred.dr.__file__)
+    fleet = deferred.dr.store_for(deferred.dr.ENTRYPOINT)
     trap = tmp_path / "default-cas-trap"
     monkeypatch.setattr(deferred.dr, "store_for", lambda *args: replace(fleet, cas_root=trap))
     released, = deferred._released(deferred.dr.release_tick(queue))

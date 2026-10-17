@@ -375,7 +375,7 @@ def test_stop_context_precedes_each_roles_startup_queue_boundary(
 @pytest.mark.parametrize("role", WORK_UNIT_ROLES)
 def test_generation_change_after_one_cycle_prevents_a_second_unit(
         boundary, monkeypatch, role):
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     cycles = CONTEXT.Value("i", 0, lock=False)
     completed = boundary.root / "completed-unit"

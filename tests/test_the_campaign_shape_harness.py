@@ -41,7 +41,7 @@ from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 import shape_gate  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 GIB = 1 << 30
 #: 4 KiB stands in for a GiB, so every mover copies real bytes quickly.

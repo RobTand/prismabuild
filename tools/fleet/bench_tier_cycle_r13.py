@@ -416,7 +416,7 @@ def run_cycles(args) -> int:
     stage = work / "stage"
     entries = Path(setup["writer_dir"])
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     counter = Counter()
     events: list[dict] = []

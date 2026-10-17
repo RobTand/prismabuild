@@ -14,7 +14,7 @@ import pbrun
 from prismabuild import submission as submit_core
 import pbwait
 from test_slurm_lane import fleet, _runnable_action
-import fleet_submit
+from prismabuild import fleet_submit
 
 
 @pytest.mark.parametrize('waiter', ['pbrun', 'pbwait'])

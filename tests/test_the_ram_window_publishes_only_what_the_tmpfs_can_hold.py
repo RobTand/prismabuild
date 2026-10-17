@@ -21,7 +21,7 @@ from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
 
 import residency_publication  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64

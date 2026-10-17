@@ -44,13 +44,15 @@ import hashlib
 import io
 import json
 from pathlib import Path
+
+ENTRYPOINT = (Path(__file__).resolve(strict=True).parents[2]
+              / "tools" / "fleet" / "tier_loop.py")
 import sys
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 from prismabuild import output_contract as oc
 from prismabuild import submission
-from submission_frontend import store_for, render_submission
+from prismabuild.submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRefused
 
 from prismabuild import action_edges  # noqa: E402
@@ -98,7 +100,7 @@ def _report_once(memo_key: str, event: dict[str, object]
 def published_runtime_root() -> Path:
     """The generation the ``repo`` link names now."""
 
-    return (store_for(__file__).root / "repo").resolve(strict=True)
+    return (store_for(ENTRYPOINT).root / "repo").resolve(strict=True)
 
 
 def decide(queue, record: Mapping[str, object]) -> dict[str, object]:
@@ -163,7 +165,7 @@ def release_tick(queue, *, deadline: float | None = None,
         return events
     try:
         published_root = published_runtime_root()
-        store = store_for(__file__)
+        store = store_for(ENTRYPOINT)
         loop_root = store.runtime_root.resolve(strict=True)
     except OSError as exc:
         event = _report_once("", {"event": REFUSED_EVENT,

@@ -29,7 +29,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, submission as submit_core  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import seal_and_publish  # noqa: E402
 
 from test_slurm_lane import (  # noqa: E402
@@ -281,7 +281,7 @@ def test_the_job_entry_is_a_sibling_of_this_module(tmp_path: Path) -> None:
     assert fleet_submit.JOB_ENTRY.is_file()
     assert fleet_submit.JOB_ENTRY.name == "slurm_job.py"
     assert fleet_submit.JOB_ENTRY.parent == Path(
-        fleet_submit.__file__).resolve().parent
+        fleet_submit.ENTRYPOINT).resolve().parent
 
 
 # --------------------------------------------------------------------------

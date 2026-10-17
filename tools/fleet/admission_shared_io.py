@@ -34,13 +34,8 @@ def git_head():
     src = str(Path(__file__).resolve().parents[2] / 'src')
     if src not in sys.path:
         sys.path.insert(0, src)
-    try:
-        # Lazy and guarded: the repo copy this tool just put on the path.
-        from prismabuild import core
-    except ImportError:
-        completed = subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True)
-    else:
-        completed = core._git_run(os.getcwd(), 'rev-parse', 'HEAD')
+    from prismabuild import core
+    completed = core._git_run(os.getcwd(), 'rev-parse', 'HEAD')
     return completed.stdout.strip()
 
 

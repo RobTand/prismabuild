@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 CONSUMER = "c" * 64
@@ -277,7 +277,7 @@ def test_a_planner_rows_receipt_reads_landed_on_the_real_verdict(fleet) -> None:
     sealed consumer is admitted on -- asked with the block the filing implies.
     """
 
-    import manifest_promotion
+    from prismabuild import manifest_promotion
 
     queue, mover = fleet.queue, _lead(fleet)
     path = queue.records.item_path(pool.record_store.READY, CONSUMER)

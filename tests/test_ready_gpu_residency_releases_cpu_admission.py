@@ -23,7 +23,7 @@ from test_pbrun_detach import _checkout
 
 import pbrun
 import stage_move
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from submission_support import patch_store
 from prismabuild import staged_path
 

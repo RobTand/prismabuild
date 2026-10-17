@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     _hexkey, _queue, MANIFEST)
 from test_prelaunch_tier_module_1594 import _declared_plan, TIER  # noqa: E402
@@ -158,7 +158,7 @@ def test_a_sole_consumer_withdrawn_before_publication_returns_its_group(
     cleanup never ran for a tier whose only consumer was withdrawn between
     its reservation and its first publication.
     """
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     from test_prelaunch_tier_module_1594 import TIERS, _consumer
     queue = _queue(tmp_path, stage_gib=300)
     tiers = {TIER: _stage(queue, TIER)}
