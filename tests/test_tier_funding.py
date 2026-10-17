@@ -35,6 +35,8 @@ funding protocol is defined here.
 """
 from __future__ import annotations
 
+from prismabuild import funding
+
 import json
 import multiprocessing
 import os
@@ -152,13 +154,13 @@ def _fields(queue: pool.PoolQueue, plan: dict[str, object], mover: str,
 def _reserve_and_transfer(queue: pool.PoolQueue, plan: dict[str, object],
                           mover: str, row: dict[str, object], *,
                           kind: str, gib: int, grant: str) -> str:
-    assert queue.reserve_fence(TIER, grant, _fields(
-        queue, plan, mover, row, kind=kind), gib) is True
-    record = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, _fields(
+        queue, plan, mover, row, kind=kind), gib).bound is True
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "reserved"
     generation = str(record["generation"])
-    assert queue.transfer_fence(TIER, grant, mover) == gib
-    assert queue.advance_funding_state(
+    assert queue.funding._transfer_window(TIER, grant, mover) == gib
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=generation) is True
     return generation
@@ -185,39 +187,39 @@ def test_funding_state_machine_and_cas(tmp_path: Path) -> None:
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-fsm")
     fields = _fields(queue, plan, mover, row, kind="stage_gib")
 
-    assert queue.reserve_fence(TIER, grant, fields, 2) is True
-    first = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is True
+    first = queue.funding.read_window(mover, TIER)
     assert first is not None and first["state"] == "reserved"
     gen = str(first["generation"])
 
     # Illegal jumps refuse; wrong generations refuse.
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="consumed",
         generation=gen) is False
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation="0" * 32) is False
     # Unconditional overwrite refuses even with a valid record body.
     tampered = dict(first, state="transferring")
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(tampered)
+        queue.funding.write_window(tampered)
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(tampered, expect_generation="1" * 32)
+        queue.funding.write_window(tampered, expect_generation="1" * 32)
 
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=gen) is True
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="transferring", advance_to="consumed",
         generation=gen) is True
     # Terminal: never advances, never authorizes again.
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="transferring", advance_to="released",
         generation=gen) is False
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="consumed", advance_to="released",
         generation=gen) is False
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
 
 
 def test_funded_cover_exact_binding(tmp_path: Path) -> None:
@@ -230,20 +232,20 @@ def test_funded_cover_exact_binding(tmp_path: Path) -> None:
     generation = _reserve_and_transfer(
         queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
 
-    covered, live = queue.funded_cover(TIER, row, "stage_gib", 2)
+    covered, live = queue.funding.cover_window(TIER, row, "stage_gib", 2).credit
     assert (covered, live) == (2, generation)
 
     # Republished content-hash key never inherits older credit.
     republished = dict(row, published_unix=float(row["published_unix"]) + 1.0)
-    assert queue.funded_cover(TIER, republished, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, republished, "stage_gib", 2).credit == (0, None)
     # Wrong kind / tier / need.
-    assert queue.funded_cover(TIER, row, "ram_gib", 2) == (0, None)
-    assert queue.funded_cover("other-tier", row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "ram_gib", 2).credit == (0, None)
+    assert queue.funding.cover_window("other-tier", row, "stage_gib", 2).credit == (0, None)
     # Range mismatch (row edited out from under the binding).
     shifted = dict(row, residency=dict(
         row["residency"], range_end_bytes=int(  # type: ignore[union-attr]
             row["residency"]["range_end_bytes"]) + 1))  # type: ignore[index]
-    assert queue.funded_cover(TIER, shifted, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, shifted, "stage_gib", 2).credit == (0, None)
     # Replaced plan under a new digest never inherits credit.  (Written
     # directly: ``freeze`` is first-writer by contract, so a test simulates
     # the replacement the retirement machinery would file.)
@@ -254,22 +256,22 @@ def test_funded_cover_exact_binding(tmp_path: Path) -> None:
     plan_path.chmod(0o644)
     plan_path.write_text(json.dumps(plan2), encoding="utf-8")
     try:
-        assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+        assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     finally:
         plan_path.write_bytes(original)
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, generation)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (2, generation)
     # Torn record authorizes nothing and is not absence (R4): the fence
     # defers beside it -- never replaced, never freed -- and fencing
     # recovers only through true absence.
     queue.records.funding_path(mover, TIER).write_text("{torn", encoding="utf-8")
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
-    assert queue.reserve_fence(TIER, grant, _fields(
-        queue, plan, mover, row, kind="stage_gib"), 2) is False
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
+    assert queue.funding.reserve_window(TIER, grant, _fields(
+        queue, plan, mover, row, kind="stage_gib"), 2).bound is False
     assert queue.records.funding_path(mover, TIER).read_text(encoding="utf-8") == "{torn"
     queue.records.funding_path(mover, TIER).unlink()
-    assert queue.reserve_fence(TIER, grant, _fields(
-        queue, plan, mover, row, kind="stage_gib"), 2) is True
-    repaired = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, _fields(
+        queue, plan, mover, row, kind="stage_gib"), 2).bound is True
+    repaired = queue.funding.read_window(mover, TIER)
     assert repaired is not None and repaired["state"] == "reserved"
     assert str(repaired["generation"]) != generation
 
@@ -290,7 +292,7 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
              "range_start_bytes": 0, "range_end_bytes": 2 * GIB,
              "kind": "stage_gib", "published_unix": 1.0}
     grant_dum = window_credit.grant_key(consumer, TIER, "mover_row", "dummy")
-    assert queue.reserve_fence(TIER, grant_dum, dummy, 2) is True
+    assert queue.funding.reserve_window(TIER, grant_dum, dummy, 2).bound is True
     assert ledger.free_supply().get('stage_gib') == 3
     big = _hexkey("exact-stealer")
     _stealer_row(queue, big, 4)
@@ -317,14 +319,14 @@ def test_reserve_transfer_claim_finish_no_double_hold(tmp_path: Path) -> None:
     # No new money: the fence covered the whole demand.
     assert ledger.free_supply().get('stage_gib') == free_before
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
 
     queue.finish(mover, status="executed")
     assert ledger.free_supply().get('stage_gib') == 5
     # Consumed credit is never reused.
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     got = queue.claim(tags=["dl380g10"], owner="w-steal-again")
     assert got is not None and got["action_key"] == big
     queue.finish(big, status="executed")
@@ -350,7 +352,7 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
     # intact for the retry, never freed into a stealer window.
     assert queue.claim(tags=["dl380g10"], owner="w-retry-1") is None
     assert queue.records.item_path(pool.record_store.READY, mover).exists()
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
     stage_ledger = queue.tier(TIER)
@@ -360,7 +362,7 @@ def test_denied_claim_preserves_entitlement_for_retry(tmp_path: Path) -> None:
     got = queue.claim(tags=["dl380g10"], owner="w-retry-2")
     assert got is not None and got["action_key"] == mover
     # Same generation, spent exactly once: still exactly 2, not 4.
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
     assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
@@ -377,7 +379,7 @@ def test_physical_tokens_never_count_as_credit(tmp_path: Path) -> None:
     ledger = queue.tier(TIER)
     # A previous attempt's leftovers, held with no funding record at all.
     assert ledger.take(mover, {'stage_gib': 2}) is True
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     got = queue.claim(tags=["dl380g10"], owner="w-phys")
     assert got is not None and got["action_key"] == mover
     # Full charge on top of occupancy: 2 old + 2 new, never 2 total.
@@ -400,19 +402,19 @@ def test_malformed_funding_is_inert_and_retained_until_absent(
     row = _publish_mover(queue, plan, mover)
     path = queue.records.funding_path(mover, TIER)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema": pool.TIER_FUNDING_SCHEMA_V1,
+    path.write_text(json.dumps({"schema": funding.TIER_FUNDING_SCHEMA_V1,
                                 "tier_id": TIER, "extra": True}),
                     encoding="utf-8")
-    assert queue.read_funding(mover, TIER) is None
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.read_window(mover, TIER) is None
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-mal")
     fields = _fields(queue, plan, mover, row, kind="stage_gib")
-    assert queue.reserve_fence(TIER, grant, fields, 2) is False
+    assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is False
     assert json.loads(path.read_text(encoding="utf-8"))["extra"] is True
-    assert queue.read_funding(mover, TIER) is None  # still unproved, retained
+    assert queue.funding.read_window(mover, TIER) is None  # still unproved, retained
     path.unlink()
-    assert queue.reserve_fence(TIER, grant, fields, 2) is True
-    record = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is True
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "reserved"
 
 
@@ -429,7 +431,7 @@ def test_consumed_funding_refences_after_finish(tmp_path: Path) -> None:
     assert got is not None and got["action_key"] == mover
     queue.finish(mover, status="executed")
     # Same mover republished (new publication): old credit is inert ...
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     # ... and a fresh fence mints a fresh generation instead of wedging.
     queue.publish(action_key=mover, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
@@ -437,9 +439,9 @@ def test_consumed_funding_refences_after_finish(tmp_path: Path) -> None:
                   resources={"cpu": 1, "mem_gb": 1, STAGE_KIND: 2}, residency=row["residency"])
     row2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row2, dict)
-    assert queue.reserve_fence(TIER, grant, _fields(
-        queue, plan, mover, row2, kind="stage_gib"), 2) is True
-    second = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, _fields(
+        queue, plan, mover, row2, kind="stage_gib"), 2).bound is True
+    second = queue.funding.read_window(mover, TIER)
     assert second is not None and second["state"] == "reserved"
     assert str(second["generation"]) != first_gen
 
@@ -465,8 +467,8 @@ def test_funding_writers_serialize_on_mover_lock(tmp_path: Path) -> None:
     row = _publish_mover(queue, plan, mover)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-lock")
     fields = _fields(queue, plan, mover, row, kind="stage_gib")
-    assert queue.reserve_fence(TIER, grant, fields, 2) is True
-    record = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is True
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "reserved"
     generation = str(record["generation"])
 
@@ -477,12 +479,12 @@ def test_funding_writers_serialize_on_mover_lock(tmp_path: Path) -> None:
     try:
         assert ready.wait(30), "lock-holder child never acquired"
         # Racing the holder: both generation effects refuse loudly.
-        assert queue.reserve_fence(TIER, grant, fields, 2) is False
-        assert queue.advance_funding_state(
+        assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is False
+        assert queue.funding.advance_window(
             mover, TIER, expect="reserved", advance_to="transferring",
             generation=generation) is False
         # And the binding is untouched -- no rotation under the claim.
-        current = queue.read_funding(mover, TIER)
+        current = queue.funding.read_window(mover, TIER)
         assert current is not None and current["state"] == "reserved"
         assert str(current["generation"]) == generation
     finally:
@@ -490,8 +492,8 @@ def test_funding_writers_serialize_on_mover_lock(tmp_path: Path) -> None:
         child.join(30)
     assert not child.is_alive()
     # Holder gone: the same effects proceed.
-    assert queue.reserve_fence(TIER, grant, fields, 2) is True
-    assert queue.advance_funding_state(
+    assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is True
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=generation) is True
 
@@ -517,7 +519,7 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
     # Landed: the mover still holds its 2 GiB under DONE, record consumed.
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
     assert ledger.free_supply().get('stage_gib') == 2
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
 
@@ -525,18 +527,18 @@ def test_consumed_physical_bytes_are_not_credit(tmp_path: Path) -> None:
     # the idempotent reserve moves nothing, and a consumed fence never
     # re-covers -- not even held in full under the same publication, which
     # is physical occupancy by then, never unspent credit.
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="consumed", advance_to="released",
         generation=generation) is False
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="transferring", advance_to="consumed",
         generation=generation) is False
     free_before = ledger.free_supply().get('stage_gib')
-    assert queue.reserve_fence(TIER, grant, _fields(
-        queue, plan, mover, row, kind="stage_gib"), 2) is True
+    assert queue.funding.reserve_window(TIER, grant, _fields(
+        queue, plan, mover, row, kind="stage_gib"), 2).bound is True
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
     assert ledger.free_supply().get('stage_gib') == free_before
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     # Only the owner path may return landed bytes; until it does the
     # ledger still charges them to the mover that staged them.
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
@@ -569,7 +571,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
     assert isinstance(row2, dict)
     assert row2["published_unix"] == row["published_unix"]
     assert row2["resources"] == row["resources"]
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
@@ -582,7 +584,7 @@ def test_claim_record_write_failure_unwinds_exact(tmp_path: Path, monkeypatch) -
     assert got["tier_funding"][TIER]["generation"] == generation
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
     assert ledger.free_supply().get('stage_gib') == 2
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     queue.finish(mover, status="executed")
     assert ledger.free_supply().get('stage_gib') == 4
@@ -614,7 +616,7 @@ def test_lease_write_failure_returns_remainder_keeps_fence(
     row2 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row2, dict)
     assert row2["published_unix"] == row["published_unix"]
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert str(record["generation"]) == generation
     assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
@@ -660,7 +662,7 @@ def test_mark_failure_unwinds_without_execution(
     generation = _reserve_and_transfer(
         queue, plan, mover, row, kind="stage_gib", gib=2, grant=grant)
 
-    real_mark = pool.PoolQueue._advance_funding_state_locked
+    real_mark = funding.FundingLedger.advance_locked
     failures = {"count": 0}
 
     def fail_mark_once(self, mover_key, tier_id, **kwargs):
@@ -669,7 +671,7 @@ def test_mark_failure_unwinds_without_execution(
             return False
         return real_mark(self, mover_key, tier_id, **kwargs)
 
-    monkeypatch.setattr(pool.PoolQueue, "_advance_funding_state_locked",
+    monkeypatch.setattr(funding.FundingLedger, "advance_locked",
                         fail_mark_once)
     for attempt in ("w-mark-1", "w-mark-2"):
         assert queue.claim(tags=["dl380g10"], owner=attempt) is None
@@ -677,7 +679,7 @@ def test_mark_failure_unwinds_without_execution(
         # generation, the ram remainder went home -- never freed, never
         # regrown.
         assert queue.records.item_path(pool.record_store.READY, mover).exists()
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring"
         assert str(record["generation"]) == generation
         assert int(stage_ledger.holdings(mover).get('stage_gib', 0)) == 2
@@ -688,7 +690,7 @@ def test_mark_failure_unwinds_without_execution(
 
     # Injection exhausted: the retry fuses the same generation shut and runs
     # with holdings byte-exact beside a once-taken remainder.
-    monkeypatch.setattr(pool.PoolQueue, "_advance_funding_state_locked",
+    monkeypatch.setattr(funding.FundingLedger, "advance_locked",
                         real_mark)
     got = queue.claim(tags=["dl380g10"], owner="w-mark-retry")
     assert got is not None and got["action_key"] == mover
@@ -697,7 +699,7 @@ def test_mark_failure_unwinds_without_execution(
     assert int(ram_ledger.holdings(mover).get('ram_gib', 0)) == 2
     assert stage_ledger.free_supply().get('stage_gib') == 2
     assert ram_ledger.free_supply().get('ram_gib') == 2
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
     queue.finish(mover, status="executed")
@@ -725,18 +727,18 @@ def test_consumed_never_covers_even_when_fully_held(tmp_path: Path) -> None:
 
     got = queue.claim(tags=["dl380g10"], owner="w-part")
     assert got is not None and got["action_key"] == mover
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     bound = [str(name) for name in record["tokens"]]
     assert len(bound) == 2
     # Fully held under the same publication: still no cover.
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     # One bound token gone: nothing.
     assert ledger.release_unspent(mover, keep=bound[1:], authority=tier_holdings.Unspent.NEVER_STARTED) == 1
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     # All gone: still nothing.
     assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (0, None)
     queue.finish(mover, status="executed")
 
 
@@ -804,15 +806,15 @@ def test_real_copy_lifecycle_stays_charged_until_egress(tmp_path: Path) -> None:
     # Landed and pinned: charged to the mover, record consumed.
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
     assert ledger.free_supply().get('stage_gib') == 2
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="consumed", advance_to="released",
         generation=generation) is False
     # The pin is physical, not credit: the old row re-covers nothing even
     # with the full set held, and a newcomer cannot spend landed capacity.
-    assert queue.funded_cover(TIER, row, "stage_gib", 1) == (0, None)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 1).credit == (0, None)
     stealer = _hexkey("real-stealer")
     _stealer_row(queue, stealer, 3)
     assert queue.claim(tags=["dl380g10"], owner="w-real-steal") is None
@@ -848,66 +850,66 @@ def test_funding_write_enforces_binding_and_table(tmp_path: Path) -> None:
     row = _publish_mover(queue, plan, mover)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-wrt")
     fields = _fields(queue, plan, mover, row, kind="stage_gib")
-    assert queue.reserve_fence(TIER, grant, fields, 2) is True
-    record = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 2).bound is True
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "reserved"
     gen = str(record["generation"])
 
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=gen) is True
-    live = queue.read_funding(mover, TIER)
+    live = queue.funding.read_window(mover, TIER)
     assert live is not None
 
     # Backward step under the same generation refuses.
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(dict(live, state="reserved"),
+        queue.funding.write_window(dict(live, state="reserved"),
                             expect_generation=gen)
     # Binding edits under the same generation refuse.
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(
+        queue.funding.write_window(
             dict(live, range_end_bytes=int(live["range_end_bytes"]) + 1),
             expect_generation=gen)
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(
+        queue.funding.write_window(
             dict(live, consumer_action_key=_hexkey("wrt-intruder")),
             expect_generation=gen)
-    assert queue.read_funding(mover, TIER)["state"] == "transferring"
+    assert queue.funding.read_window(mover, TIER)["state"] == "transferring"
 
     # Table-legal advance still works; then consumed->transferring refuses.
-    assert queue.advance_funding_state(
+    assert queue.funding.advance_window(
         mover, TIER, expect="transferring", advance_to="consumed",
         generation=gen) is True
-    spent = queue.read_funding(mover, TIER)
+    spent = queue.funding.read_window(mover, TIER)
     assert spent is not None and spent["state"] == "consumed"
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(dict(spent, state="transferring"),
+        queue.funding.write_window(dict(spent, state="transferring"),
                             expect_generation=gen)
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(dict(spent, state="released"),
+        queue.funding.write_window(dict(spent, state="released"),
                             expect_generation=gen)
 
     # Fresh-generation rotation without the reserve path refuses, with or
     # without naming the filed generation.
     fresh = dict(spent, generation=uuid.uuid4().hex, state="reserved")
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(fresh, expect_generation=gen)
+        queue.funding.write_window(fresh, expect_generation=gen)
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(fresh)
-    assert queue.read_funding(mover, TIER)["state"] == "consumed"
+        queue.funding.write_window(fresh)
+    assert queue.funding.read_window(mover, TIER)["state"] == "consumed"
 
     # Skipping steps refuses on a live reserved record.
     mover2, consumer2 = _hexkey("wrt-mover2"), _hexkey("wrt-consumer2")
     plan2 = _plan(queue, consumer2, mover2, tag="wrt2")
     row2 = _publish_mover(queue, plan2, mover2)
     grant2 = window_credit.grant_key(consumer2, TIER, "mover_row", "ph-wrt2")
-    assert queue.reserve_fence(
+    assert queue.funding.reserve_window(
         TIER, grant2, _fields(queue, plan2, mover2, row2, kind="stage_gib"),
-        2) is True
-    rec2 = queue.read_funding(mover2, TIER)
+        2).bound is True
+    rec2 = queue.funding.read_window(mover2, TIER)
     assert rec2 is not None and rec2["state"] == "reserved"
     with pytest.raises(pool.PoolContractError):
-        queue.write_funding(dict(rec2, state="consumed"),
+        queue.funding.write_window(dict(rec2, state="consumed"),
                             expect_generation=str(rec2["generation"]))
 
     # Legitimate rotation still works: republish, then the reserve path
@@ -919,9 +921,9 @@ def test_funding_write_enforces_binding_and_table(tmp_path: Path) -> None:
     row3 = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row3, dict)
     assert float(row3["published_unix"]) != float(row["published_unix"])
-    assert queue.reserve_fence(
+    assert queue.funding.reserve_window(
         TIER, grant, _fields(queue, plan, mover, row3, kind="stage_gib"),
-        2) is True
-    rotated = queue.read_funding(mover, TIER)
+        2).bound is True
+    rotated = queue.funding.read_window(mover, TIER)
     assert rotated is not None and rotated["state"] == "reserved"
     assert str(rotated["generation"]) != gen

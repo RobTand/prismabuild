@@ -42,6 +42,7 @@ own queued row; the free assertion below measures that reservation.
 """
 from __future__ import annotations
 
+
 from pathlib import Path
 import sys
 
@@ -175,7 +176,7 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
     # 2 GiB, so free is capacity minus that advance (#832).
     plans = {CONSUMER_A: plan_a, CONSUMER_B: plan_b}
     advance = str(plans[winner]["phases"][1]["mover_row"]["action_key"])  # type: ignore[index]
-    record = queue.read_funding(advance, TIER)
+    record = queue.funding.read_window(advance, TIER)
     assert record is not None, [e for e in events
                                 if e.get("event") == "mover-published"]
     assert record.get("state") in ("reserved", "transferring"), record

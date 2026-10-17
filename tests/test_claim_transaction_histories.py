@@ -1,4 +1,5 @@
 """Claim-frame uncertainty and persisted recovery use different authority."""
+
 import multiprocessing
 import os
 
@@ -104,7 +105,7 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
         assert persisted["published_unix"] == row["published_unix"]
         assert persisted["tier_funding"][TIER]["generation"] == generation
         assert queue.records.lease_path(mover).exists() is lease_written
-        assert queue.read_funding(mover, TIER)["state"] == "transferring"
+        assert queue.funding.read_window(mover, TIER)["state"] == "transferring"
         assert stage.holdings(mover) == {'stage_gib': 2}
         assert ram.holdings(mover) == {'ram_gib': 2}
         assert queue.ledger().holder_tokens(mover) == {"cpu": 1, "mem_gb": 1}
@@ -132,6 +133,6 @@ def test_process_death_before_consumed_mark_recovers_from_persisted_claim(
     assert stage.free_supply()['stage_gib'] == 4
     assert ram.free_supply()['ram_gib'] == 4
     assert queue.ledger().holder_tokens(mover) == {}
-    assert queue.read_funding(mover, TIER)["state"] == "transferring"
-    assert queue.funded_cover(TIER, restored, "stage_gib", 2) == (0, None)
+    assert queue.funding.read_window(mover, TIER)["state"] == "transferring"
+    assert queue.funding.cover_window(TIER, restored, "stage_gib", 2).credit == (0, None)
     assert queue.records.attempt_path(persisted, 1).exists() is lease_written

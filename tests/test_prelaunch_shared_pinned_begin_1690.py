@@ -14,6 +14,7 @@ chunks must carry the consumer to a composed resident map.
 """
 from __future__ import annotations
 
+
 import json
 import sys
 from pathlib import Path
@@ -251,7 +252,7 @@ def _claim_chunk(queue, gib: int) -> str:
     assert got is not None, "a staged chunk must claim"
     mover = str(got["action_key"])
     assert ledger.free_supply().get('stage_gib') == free_before
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     return mover
 
@@ -347,12 +348,12 @@ def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
     # The republished chunks fund their claims from the group fence:
     # each covers its whole demand with no second stage charge.
     for mover in movers[2:]:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring"
         assert record["consumer_action_key"] == second
         row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
         assert isinstance(row, dict)
-        covered, _generation = queue.funded_cover(TIER, row, "stage_gib", 40 if mover != movers[3] else 1)
+        covered, _generation = queue.funding.cover_window(TIER, row, "stage_gib", 40 if mover != movers[3] else 1).credit
         assert covered == (40 if mover != movers[3] else 1), (mover[-8:], covered)
     # Execute both unpinned chunks through their fences; each claim pays
     # no second stage charge and consumes its fence on landing.
@@ -590,7 +591,7 @@ def test_shared_recovery_preserves_request_amount_and_admits(
     assert len(names) == 127
     for mover, gib in zip(movers[2:], (40, 1)):
         row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
-        assert queue.funded_cover(TIER, row, "stage_gib", gib)[0] == gib
+        assert queue.funding.cover_window(TIER, row, "stage_gib", gib).credit[0] == gib
     stage_root = Path(tiers[TIER]["mountpoint"])
     for _ in range(2):
         mover = _claim_chunk(queue, 0)

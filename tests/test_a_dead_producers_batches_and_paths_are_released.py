@@ -23,6 +23,8 @@ registered to a queue under ``tmp_path``.  Nothing reads or writes a real
 stage, origin or queue.
 """
 from __future__ import annotations
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -257,7 +259,7 @@ class _Producer:
         assert receipt.get("complete") is True, receipt
         assert self.fleet.ledger.holdings(mover) == {}
         assert not staged.exists()
-        funding = q.read_output_funding(mover, TIER)
+        funding = q.funding.read_output(mover, TIER)
         assert funding is not None and funding["state"] == "consumed"
         entry = self.entry(batch_id)
         assert entry.get("retired") is False

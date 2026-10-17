@@ -36,6 +36,7 @@ The refused link is simulated by making ``os.link`` of a private retiring
 name raise ``EPERM`` when the name is free, as the kernel does.
 """
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 

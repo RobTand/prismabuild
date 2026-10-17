@@ -1,5 +1,8 @@
 """Produced-batch records, histories, reservations and path authority."""
 from __future__ import annotations
+
+from prismabuild.legacy_funding import LegacyFunding
+
 from collections.abc import Collection, Mapping, Sequence
 import contextlib
 import errno
@@ -680,7 +683,7 @@ class LedgerReads:
     def census(self, owner: str) -> tuple[list[dict], bool]:
         if owner not in self._census:
             try:
-                self._census[owner] = self.queue.output_census_for_owner(owner)
+                self._census[owner] = self.queue.funding.output_census(owner)
             except Exception:
                 self._census[owner] = ([], True)
         return self._census[owner]
@@ -960,9 +963,6 @@ def prewrites_dir(queue_root: str | Path,
     return scope_dir(queue_root, instance) / "prewrites"
 
 
-def _funding_dir(queue_root: str | Path,
-                 instance: Mapping[str, object]) -> Path:
-    return scope_dir(queue_root, instance) / "funding"
 
 
 def read_prewrite(path: Path) -> dict[str, object] | None:
@@ -2077,7 +2077,7 @@ def funding_verdict(queue, mover_key: str,
     filed, so the ordinary claim path applies; ``("unknown", reason)``
     anything unreadable, unparsable, or disagreeing with itself.
 
-    Read through `PoolQueue.output_funding_file_state`, never
+    Read through `PoolQueue.funding.output_evidence`, never
     `read_output_funding`, because this is a census path and that method
     cannot tell absent from corrupt -- its own docstring forbids it here.
     One question, asked identically wherever a batch's claimability is
@@ -2087,7 +2087,7 @@ def funding_verdict(queue, mover_key: str,
     if not mover_key or not tier:
         return ("unknown", "no mover or tier on the batch entry")
     try:
-        record, file_state = queue.output_funding_file_state(mover_key, tier)
+        record, file_state = queue.funding.output_evidence(mover_key, tier)
     except Exception as exc:
         return ("unknown", repr(exc))
     if file_state == "corrupt":
@@ -2161,49 +2161,10 @@ def mover_receipt_complete(queue, mover_key: str) -> bool | None:
     return receipt_complete(mover_receipt(queue, mover_key))
 
 
-def _delete_funding(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise oc.ProducedOutputError(
-            f"funding intent unreleasable: {exc}") from None
 
 
-def _write_funding(path: Path, record: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".funding.")
-    try:
-        with os.fdopen(handle, "w") as stream:
-            json.dump(dict(record), stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
 
 
-def _read_funding(path: Path) -> dict[str, object] | None:
-    """One batch's durable funding intent, None when no attempt was made.
-
-    Raises ProducedOutputError on corrupt/unreadable (unknown state, never
-    an unfunded batch).
-    """
-
-    try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError) as exc:
-        raise oc.ProducedOutputError(
-            f"funding intent unreadable: {exc}") from None
-    if not isinstance(raw, Mapping):
-        raise oc.ProducedOutputError("funding intent is corrupt")
-    return dict(raw)
 
 
 def output_fragment_root(residency_root: str | Path) -> Path:
@@ -3251,7 +3212,7 @@ class BatchLedger:
             # (release_output_funding proves mover nonexecution); abort refuses
             # while one exists. An unreadable census retains the same way.
             try:
-                intents, census_unknown = queue.output_census_for_owner(
+                intents, census_unknown = queue.funding.output_census(
                     str(checked_instance["owner_action_key"]))
             except Exception as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
@@ -3950,7 +3911,7 @@ class BatchLedger:
         # record is deliberately NOT consumed at commit: it stays
         # `transferring` until the mover's claim marks it `consumed`, and
         # release refuses it while the filed commit stands.
-        _delete_funding(funding_path)
+        LegacyFunding(funding_path).delete()
         (prewrites_dir(queue.root, checked_instance)
          / f"{batch_id}.prewrite.json").unlink(missing_ok=True)
 

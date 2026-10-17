@@ -72,7 +72,7 @@ capacity. Physical tokens are held ONLY by batch movers, exact per range,
 acquired under the batch holder and TRANSFERRED whole to mover ownership
 with no free interval (existing `TierLedger.handover`). No standing
 ledger pool is held beside movers. The funded-claim primitive family
-(`reserve_fence` / `ResourceLedger.transfer_tokens` / `funded_cover`) is
+(`FundingLedger.reserve_window` / `ResourceLedger.transfer_tokens` / `FundingLedger.cover_window`) is
 delivered by the prepaid-output lane, so `admit_funded_window` reports the
 delivered `prepaid-per-batch` binding (declaration-only: the owner action's
 own tier demand, reserved once at its claim; per-batch funding is the
@@ -106,6 +106,10 @@ and returns the exact SDK dependency instead of a stub.
 """
 
 from __future__ import annotations
+
+from prismabuild.legacy_funding import LegacyFunding
+
+from prismabuild import funding
 
 from . import output_contract as oc
 from . import batch_ledger as bl
@@ -590,7 +594,7 @@ def refill_window(queue, instance: Mapping[str, object],
     # claimed-but-unretired (consumed) batches, right up to the retirement
     # that releases them. Fail-retain on any unprovable record.
     outstanding, census_unknown = (
-        queue._output_outstanding_window_tokens(owner, tier, kind))
+        queue.funding._output_outstanding_window_tokens(owner, tier, kind))
     if census_unknown:
         return {"ok": False, "refusal": "unknown-retain: funding-census"}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
@@ -635,7 +639,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
     Per live owner this is ``window - held - outstanding``, floored at zero,
     with the same terms `refill_window` bounds itself by: ``held`` is the
     owner's own holdings and ``outstanding`` is what its batches still hold
-    elsewhere (`PoolQueue._output_outstanding_window_tokens`). Both are held
+    elsewhere (`PoolQueue.funding._output_outstanding_window_tokens`). Both are held
     tokens a gate already counts, so the result never counts a token twice.
     A queued owner's window is still in its ready demand and a finished or
     superseded owner owes nothing, so only an owner whose live CLAIMED row
@@ -723,7 +727,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
             unknown.append({"owner": owner, "error": f"holdings unreadable: {exc}"})
             continue
         outstanding, census_unknown = (
-            queue._output_outstanding_window_tokens(owner, tier, kind))
+            queue.funding._output_outstanding_window_tokens(owner, tier, kind))
         if census_unknown:
             outstanding = 0
             bounded.append(owner)
@@ -774,8 +778,8 @@ def admit_funded_window(queue, instance: Mapping[str, object],
     Fully validates the window request (bound instance + template match,
     permitted tiers, positive-integer needs, need within window demand and
     within minted tier capacity). With the funded-claim primitive family
-    delivered (the prepaid-output lane: ``reserve_fence`` /
-    ``transfer_tokens`` / ``funded_cover`` on ``PoolQueue``), this is the
+    delivered (the prepaid-output lane: ``FundingLedger.reserve_window``,
+    ``ResourceLedger.transfer_tokens`` and ``FundingLedger.cover_window``), this is the
     supported window binding: the producer action reserves its window ONCE
     as its own tier demand (``owner_demand_terms`` at submit), and every
     batch funds from those holdings by exact transfer -- never a second
@@ -816,8 +820,11 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         if need > capacity:
             return {"ok": False, "refusal": "never-fits-tier-capacity",
                     "tier_id": tier}
-    delivered = [name for name in ("reserve_fence", "funded_cover")
-                 if callable(getattr(pool_mod.PoolQueue, name, None))]
+    from .funding import FundingLedger
+
+    delivered = [label for label, method in (
+        ("reserve_fence", FundingLedger.reserve_window),
+        ("funded_cover", FundingLedger.cover_window)) if callable(method)]
     if callable(getattr(pool_mod.ResourceLedger, "transfer_tokens", None)):
         delivered.append("transfer_tokens")
     if len(delivered) == 3:
@@ -826,8 +833,8 @@ def admit_funded_window(queue, instance: Mapping[str, object],
         # the producer must declare -- the owner action's own tier demand
         # (reserved once at its claim). It does NOT verify that any owner
         # physically holds window tokens right now; the authority is the
-        # per-batch funding itself (stage_output_intent ->
-        # publish_prepaid_batch/fund_output_batch -> commit_batch), which
+        # per-batch funding itself (FundingLedger.stage_output ->
+        # publish_prepaid_batch/FundingLedger.fund_output -> commit_batch), which
         # moves exact names owner->mover and never re-acquires from free.
         return {"ok": True, "mode": "prepaid-per-batch",
                 "declaration_only": True,
@@ -954,98 +961,18 @@ def commit_batch(queue, instance: Mapping[str, object],
         # exact transfer from the producer's already-reserved window
         # (stage_output_intent -> publish -> fund_output_batch); commit
         # reconciles that record and files the batch with NO second
-        # acquisition from free. The legacy per-batch intent below remains
-        # only as in-flight recovery for batches that already filed it in
-        # the acquire-from-free era. Unknown pool funding state never
-        # downgrades to the legacy path (that would double-fund).
-        funding_path = (bl._funding_dir(queue.root, checked_instance)
-                        / f"{batch_id}.funding.json")
-        ledger = queue.tier(tier)
-        try:
-            _frec, _fstate = queue.output_funding_file_state(mover, tier)
-        except Exception as exc:
-            return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-        if _fstate == "corrupt":
-            return {"ok": False,
-                    "refusal": "unknown-retain: pool funding unreadable"}
-        prepaid = _frec
-        if prepaid is not None:
-            if (str(prepaid.get("batch_id")) != batch_id
-                    or str(prepaid.get("manifest_digest")) != manifest_digest
-                    or str(prepaid.get("tier_id")) != tier
-                    or str(prepaid.get("owner_action_key")) != str(
-                        checked_instance["owner_action_key"])
-                    or str(prepaid.get("template_sha256")) != oc.template_sha256(
-                        checked_template)
-                    or int(prepaid.get("range_start_bytes")) != 0
-                    or int(prepaid.get("range_end_bytes")) != batch_total):
-                return {"ok": False, "refusal": "batch-id-in-use"}
-            if str(prepaid.get("state")) == "reserved":
-                # Publish-before-fund crash prefix or an unwound drive:
-                # finish the transfer through the same recovery API a
-                # restart would use, never a second reservation.
-                driven = queue.drive_output_funding(mover, tier)
-                if not driven.get("ok"):
-                    return {"ok": False,
-                            "refusal": f"prepaid-drive: "
-                                       f"{driven.get('refusal')}",
-                            "drive": driven}
-            live_funding = queue.read_output_funding(mover, tier)
-            if (live_funding is None
-                    or str(live_funding.get("state")) != "transferring"):
-                return {"ok": False, "refusal": "prepaid-funding-terminal",
-                        "state": (str(live_funding.get("state"))
-                                  if live_funding is not None
-                                  else "unknown")}
-            mover_now = ledger.holdings(mover).get(kind, 0)
-            if mover_now < batch_gib:
-                # Split tokens stay split; drive retries resume. Unknown
-                # loss retains, never re-funds.
-                return {"ok": False, "refusal": "transfer-short",
-                        "moved": mover_now, "expected": batch_gib}
-        else:
-            # Legacy in-flight recovery only: the per-batch intent names
-            # tokens acquired from free under the batch namespace.
-            try:
-                funding = bl._read_funding(funding_path)
-            except oc.ProducedOutputError as exc:
-                return {"ok": False, "refusal": f"unknown-retain: {exc}"}
-            if funding is not None and (
-                    funding.get("mover_key") != mover
-                    or funding.get("tier") != tier
-                    or int(funding.get("batch_gib", -1)) != batch_gib
-                    or funding.get("manifest_digest") != manifest_digest):
-                return {"ok": False, "refusal": "batch-id-in-use"}
-            mover_now = ledger.holdings(mover).get(kind, 0)
-            holder_now = ledger.holdings(batch_ns).get(kind, 0)
-            if funding is None and (holder_now > 0 or mover_now > 0):
-                # Tokens without intent: unknown provenance (no record names
-                # this funding). Never top up blindly around them.
-                return {"ok": False, "refusal": "unknown-retain: unfunded holdings"}
-            if holder_now == 0 and mover_now < batch_gib:
-                if funding is not None:
-                    # A previous attempt moved some tokens and crashed before
-                    # filing the batch; the remainder is gone to unknown hands.
-                    return {"ok": False, "refusal": "unknown-retain: funded tokens lost"}
-                if not ledger.take(batch_ns, {kind: batch_gib}):
-                    return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()}
-                # Intent names allocated tokens only: nothing is recorded
-                # before the ledger holds it, so a crash before this line
-                # retries clean and a crash after it resumes from the record.
-                bl._write_funding(funding_path, {
-                    "batch_id": batch_id, "tier": tier,
-                    "mover_key": mover, "batch_gib": batch_gib,
-                    "manifest_digest": manifest_digest})
-                holder_now = batch_gib
-            if holder_now > 0:
-                queue.tier(tier).handover(batch_ns, mover)
-                mover_now = ledger.holdings(mover).get(kind, 0)
-            if mover_now < batch_gib:
-                # Split tokens stay split (sum intact, nothing released);
-                # retry resumes from live holdings + intent. Unknown loss
-                # retains, never re-funds.
-                return {"ok": False, "refusal": "transfer-short",
-                        "moved": mover_now, "expected": batch_gib}
+        # acquisition from free. The SDK6 direct path also preserves first
+        # acquisition under the batch holder; an existing per-batch intent
+        # repairs allocated tokens without a second take. Unknown pool
+        # funding never downgrades to that path (that would double-fund).
+        funding = queue.funding.commit_stage(
+            checked_instance, checked_template, batch_id=batch_id,
+            manifest_digest=manifest_digest, batch_ns=batch_ns,
+            tier=tier, mover=mover, kind=kind,
+            batch_total=batch_total, batch_gib=batch_gib)
+        if funding.refusal is not None:
+            return funding.refusal
+        funding_path, prepaid = funding.path, funding.prepaid
         refused = batches.publish_stage(
             queue, checked_template, checked_instance, sealed,
             batch_id=batch_id, batch_ns=batch_ns,
@@ -1561,7 +1488,7 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
             committed["step"] = "commit"
             return committed
         committed["mover_key"] = mover
-        record = queue.read_output_funding(mover, tier)
+        record = queue.funding.read_output(mover, tier)
         committed["generation"] = (str(record.get("generation"))
                                    if record is not None else "")
         committed["tokens"] = ([str(name) for name in record.get("tokens") or []]
@@ -1589,7 +1516,7 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
     total = int(sealed_mover["total"])
     host = str(sealed_mover["host"])
     mover_retry_policy = dict(sealed_mover["retry_policy"])
-    staged = queue.stage_output_intent(
+    staged = queue.funding.stage_output(
         tier_id=tier, owner_key=owner, mover_key=mover,
         instance=checked_instance, template=checked_template,
         batch_id=batch_id, descriptors=descriptors)
@@ -1603,7 +1530,7 @@ def publish_prepaid_batch(queue, instance: Mapping[str, object],
         retry_policy=mover_retry_policy)
     if not published.get("ok"):
         return published
-    funded = queue.fund_output_batch(
+    funded = queue.funding.fund_output(
         tier_id=tier, owner_key=owner, mover_key=mover,
         instance=checked_instance, template=checked_template,
         batch_id=batch_id, descriptors=descriptors)
@@ -1707,14 +1634,14 @@ def _reconcile_materialization_funding(queue, *, mover: str, tier: str,
     retains -- the drive retries resume it; nothing here re-funds.
     """
 
-    record = queue.read_output_funding(mover, tier)
+    record = queue.funding.read_output(mover, tier)
     if record is None or str(record.get("state")) != "transferring":
-        driven = queue.drive_output_funding(mover, tier)
+        driven = queue.funding.drive_output(mover, tier)
         if not driven.get("ok"):
             return {"ok": False, "step": "reconcile",
                     "refusal": f"prepaid-drive: {driven.get('refusal')}",
                     "drive": driven}
-        record = queue.read_output_funding(mover, tier)
+        record = queue.funding.read_output(mover, tier)
     if record is None or str(record.get("state")) != "transferring":
         return {"ok": False, "step": "reconcile",
                 "refusal": "prepaid-funding-terminal",
@@ -1994,7 +1921,7 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
                    or os.environ.get(_ACTION_KEY_ENV_NAME()) or ""))
     if not launch.get("ok"):
         return launch
-    staged = queue.stage_output_intent(
+    staged = queue.funding.stage_output(
         tier_id=tier, owner_key=owner, mover_key=mover,
         instance=checked_instance, template=checked_template,
         batch_id=batch_id, descriptors=sealed)
@@ -2008,7 +1935,7 @@ def _ensure_batch_materialized(queue, instance: Mapping[str, object],
         retry_policy=mover_retry_policy, fill=fill)
     if not published.get("ok"):
         return published
-    funded = queue.fund_output_batch(
+    funded = queue.funding.fund_output(
         tier_id=tier, owner_key=owner, mover_key=mover,
         instance=checked_instance, template=checked_template,
         batch_id=batch_id, descriptors=sealed)
@@ -4948,7 +4875,7 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
     if held:
         return {"event": report.quiet()}
     try:
-        record, file_state = queue.output_funding_file_state(mover, tier)
+        record, file_state = queue.funding.output_evidence(mover, tier)
     except Exception as exc:
         return {"event": report.refused(f"unknown-retain: funding: {exc}",
                                         mover_key=mover)}
@@ -5591,7 +5518,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         # names files by suffix without stat-gating: a stat failure must
         # surface at the intent read, never silently drop an intent.
         try:
-            with os.scandir(bl._funding_dir(queue.root, checked)) as iterator:
+            with os.scandir(LegacyFunding.directory(bl.scope_dir(queue.root, checked))) as iterator:
                 intent_names = sorted(entry.name for entry in iterator
                                       if entry.name.endswith(".funding.json"))
         except FileNotFoundError:
@@ -5603,8 +5530,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             if batch_id in batches:
                 continue
             try:
-                funding = bl._read_funding(
-                    bl._funding_dir(queue.root, checked) / name)
+                funding = LegacyFunding(LegacyFunding.directory(bl.scope_dir(queue.root, checked)) / name).read()
             except oc.ProducedOutputError as exc:
                 return {"ok": False, "refusal": f"unknown-retain: {exc}"}
             if funding is None:
@@ -5886,7 +5812,7 @@ def recover_batches(queue, instance: Mapping[str, object],
     events: list[dict[str, object]] = []
     try:
         funding_names = sorted(
-            p.name for p in bl._funding_dir(queue.root, checked_instance).iterdir()
+            p.name for p in LegacyFunding.directory(bl.scope_dir(queue.root, checked_instance)).iterdir()
             if p.is_file() and p.name.endswith(".funding.json"))
     except OSError:
         funding_names = []

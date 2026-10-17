@@ -32,6 +32,7 @@ pinned by ``test_advance_needs_names_its_fence_target.py``.
 """
 from __future__ import annotations
 
+
 import json
 from pathlib import Path
 import socket
@@ -172,7 +173,7 @@ def _assert_one_live_advance(queue: pool.PoolQueue, tier_id: str, kind: str,
     keeps a second copy of the same room.
     """
 
-    record = queue.read_funding(mover, tier_id)
+    record = queue.funding.read_window(mover, tier_id)
     assert isinstance(record, dict), f"no advance fence bound to {mover[:12]}"
     assert record.get("state") in ("reserved", "transferring"), record
     assert str(record.get("consumer_action_key")) == consumer, record
@@ -229,7 +230,7 @@ def test_a_nonfinal_stage_window_fences_its_advance_before_its_cycle_ends(
              if str(item.get("action_key")) == m1]
     got = queue.claim(tags=["dl380g10"], owner="w-832", ready=ready)
     assert got is not None and got["action_key"] == m1
-    assert (queue.read_funding(m1, TIER) or {}).get("state") == "consumed"
+    assert (queue.funding.read_window(m1, TIER) or {}).get("state") == "consumed"
     assert int(ledger.holdings(m1).get('stage_gib', 0)) == 1
     assert ledger.free_supply().get('stage_gib') == before
 
@@ -453,7 +454,7 @@ def test_a_partial_blind_grant_permits_nothing(tmp_path: Path) -> None:
     assert gated and gated[0]["reason"] == "joint-fit-stall", events
     assert int(ledger.holdings(grant).get('stage_gib', 0)) == 1
     assert int(ledger.holdings(m1).get('stage_gib', 0)) == 0
-    assert queue.read_funding(m1, TIER) is None
+    assert queue.funding.read_window(m1, TIER) is None
     assert [key for key in (m0, m1, m2, m3)
             if queue.records.item_path(pool.record_store.READY, key).exists()] == []
 
@@ -474,7 +475,7 @@ def test_a_final_window_still_needs_no_advance_fence(tmp_path: Path) -> None:
     assert [entry for entry in events
             if entry.get("event") == "window-gated"] == [], events
 
-    assert queue.read_funding(m1, TIER) is None
+    assert queue.funding.read_window(m1, TIER) is None
     assert int(ledger.holdings(m1).get('stage_gib', 0)) == 0
     assert ledger.held_grants() == []
     assert ledger.free_supply().get('stage_gib') == 2

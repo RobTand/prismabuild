@@ -86,7 +86,6 @@
   "hashlib:tools/fleet/pbrun.py::build_stamp_closure",
   "hashlib:tools/fleet/pbrun.py::require_deployed_read_plan_storage",
   "hashlib:tools/fleet/pbrun.py::result_and_stamp_names",
-  "hashlib:tools/fleet/pbrun.py::verify_retained_wrapper",
   "hashlib:tools/fleet/pbsnapshot.py::verified_stamp",
   "hashlib:tools/fleet/publish_runtime.py::_agent_definitions",
   "hashlib:tools/fleet/publish_runtime.py::_coordinator_sha256",

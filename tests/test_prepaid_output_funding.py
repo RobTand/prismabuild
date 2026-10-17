@@ -15,6 +15,8 @@ Proves (R2):
 * owner-finish race serialized; finish-before-claim via terminal + filed commit.
 """
 from __future__ import annotations
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -165,14 +167,14 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
 
-    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    funded = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
                                  descriptors=descs)
@@ -190,7 +192,7 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
     # cover left open; these tests now prove it closed, not open.
     assert q.claim(owner="w-mover-early") is None
     assert q.records.item_path(pool.record_store.READY, mover).exists()
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
 
     # Commit (filed batch, no second reservation), then claim consumes once.
@@ -210,14 +212,14 @@ def test_fund_claim_no_double_charge(tmp_path: Path, broker) -> None:
         # mover is the only READY row).
         got = q.claim(owner="w-mover-2")
     assert got is not None and got["action_key"] == mover, got
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     assert str(rec["generation"]) == gen
     assert ledger.holdings(mover).get(KIND, 0) == 1
     # Consumed never re-covers.
     row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict)
-    assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
+    assert q.funding.output_funded_cover(TIER, row, KIND, 1).credit == (0, None)
     _moved_nothing(q, mover)
     q.finish(mover, status="executed")
     # Owner retains its other token until it finishes.
@@ -244,7 +246,7 @@ def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -273,22 +275,22 @@ def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
             q.records.funding_output_path(mover, TIER).unlink()
             token_names = [f"{KIND}-9999"]
 
-        before = q.read_output_funding(mover, TIER)
+        before = q.funding.read_output(mover, TIER)
         assert ledger.holdings(owner) == {KIND: 2}
         assert ledger.holdings(mover).get(KIND, 0) == 0
         assert ledger.free_supply() == {KIND: 2}
         assert ledger.mint_supply() == {KIND: 4}
-        out = q.fund_output_batch(
+        out = q.funding.fund_output(
             tier_id=TIER, owner_key=owner, mover_key=candidate_mover,
             instance=inst, template=candidate_template, batch_id="b1",
             descriptors=descs, token_names=token_names)
         assert out.get("ok") is False, out
         assert out.get("refusal") == refusal, out
-        assert q.read_output_funding(mover, TIER) == before
+        assert q.funding.read_output(mover, TIER) == before
         if defect == "token_names":
             assert before is None
         if defect == "publication":
-            assert q.read_output_funding(candidate_mover, TIER) is None
+            assert q.funding.read_output(candidate_mover, TIER) is None
             assert ledger.holdings(candidate_mover).get(KIND, 0) == 0
         assert ledger.holdings(owner) == {KIND: 2}
         assert ledger.holdings(mover).get(KIND, 0) == 0
@@ -301,12 +303,12 @@ def test_reject_stale_bindings(tmp_path: Path, broker, defect, refusal) -> None:
 
     # Each defect has its own real successful control with the bound owner,
     # template and published mover. Lost intent is rebuilt by normal funding.
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
     assert funded["moved"] == 1, funded
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     assert rec["generation"] == funded["generation"]
     assert ledger.holdings(owner) == {KIND: 1}
@@ -361,13 +363,13 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker)
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
-    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    funded = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
                                  descriptors=descs)
@@ -385,7 +387,7 @@ def test_finish_before_mover_claim_recovers_via_terminal(tmp_path: Path, broker)
     got = q.claim(owner="w-mover-fb")
     # Owner DONE, mover READY -> next claim is mover (if tags match).
     assert got is not None and got["action_key"] == mover, got
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     q.finish(mover, status="executed")
 
@@ -406,7 +408,7 @@ def test_owner_finish_race_serialized(
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -414,7 +416,7 @@ def test_owner_finish_race_serialized(
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
     ledger = q.tier(TIER)
     total_cap = ledger.mint_supply().get(KIND)
-    intent = q.read_output_funding(mover, TIER)
+    intent = q.funding.read_output(mover, TIER)
     assert intent is not None and intent["state"] == "reserved"
 
     fund_parked, finish_parked = threading.Event(), threading.Event()
@@ -472,7 +474,7 @@ def test_owner_finish_race_serialized(
 
     def do_fund():
         try:
-            results["fund"] = q.fund_output_batch(
+            results["fund"] = q.funding.fund_output(
                 tier_id=TIER, owner_key=owner, mover_key=mover,
                 instance=inst, template=template, batch_id="b1",
                 descriptors=descs)
@@ -529,7 +531,7 @@ def test_owner_finish_race_serialized(
     assert avail + held_owner + held_mover == cap, (avail, held_owner,
                                                    held_mover, cap)
     assert held_mover in (0, 1), (held_mover, results)
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["tokens"] == intent["tokens"]
     if direction == "fund-first":
         assert owner_acquisitions == [True]
@@ -543,7 +545,7 @@ def test_owner_finish_race_serialized(
         assert transfers == []
         assert rec == intent
         assert (held_owner, held_mover, avail, cap) == (1, 0, 3, 4)
-        after_finish = q.fund_output_batch(
+        after_finish = q.funding.fund_output(
             tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
             template=template, batch_id="b1", descriptors=descs)
         assert after_finish == {"ok": False, "refusal": "owner-not-running"}
@@ -561,13 +563,13 @@ def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, batch_ref=ref)
-    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    funded = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
                                  descriptors=descs)
@@ -575,8 +577,8 @@ def test_release_needs_nonexecution_proof(tmp_path: Path, broker) -> None:
     gen = str(funded["generation"])
     # Mover not yet claimed: release proves nonexecution (no CLAIMED, no
     # pinned DONE) and succeeds.
-    assert q.release_output_funding(mover, TIER, generation=gen) is True
-    rec = q.read_output_funding(mover, TIER)
+    assert q.funding.release_output(mover, TIER, generation=gen).released is True
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "released"
     # Retired credit never falls through to fresh acquisition (R3): the mover
     # stays READY (required-terminal) instead of paying again from free.
@@ -600,7 +602,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -622,13 +624,13 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
         return real_write(path, *a, **k)
 
     monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', fail_intent)
-    out = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    out = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                               mover_key=mover, instance=inst,
                               template=template, batch_id="b1",
                               descriptors=descs)
     assert "intent-write" in observed_faults, "funding never reached the intent-write fault"
     assert out.get("ok") is False, out
-    assert q.read_output_funding(mover, TIER) is None
+    assert q.funding.read_output(mover, TIER) is None
     assert ledger.holdings(owner).get(KIND, 0) == 2
     assert ledger.holdings(mover).get(KIND, 0) == 0
     monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', real_write)
@@ -659,7 +661,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     # rename once -> transfer-short, split (0+0? Actually 1 token still under
     # owner, 0 under mover), sum intact.
     monkeypatch.setattr(os, "rename", fail_second_rename)
-    out = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    out = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                               mover_key=mover, instance=inst,
                               template=template, batch_id="b1",
                               descriptors=descs)
@@ -676,7 +678,7 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
 
     # Normal re-drive via drive_output_funding (no private helper-only claim:
     # this is the published recovery entrypoint, then normal claim/finish).
-    driven = q.drive_output_funding(mover, TIER)
+    driven = q.funding.drive_output(mover, TIER)
     assert driven.get("ok") is True, driven
     assert ledger.holdings(owner).get(KIND, 0) == 1
     assert ledger.holdings(mover).get(KIND, 0) == 1
@@ -703,14 +705,14 @@ def test_fault_intent_transfer_claim_recover_via_finish_reaper(
     assert q.claim(owner="w-flt-1") is None
     assert "claim-record" in observed_faults, "claim never reached the claim-record fault"
     assert q.records.item_path(pool.record_store.READY, mover).exists()
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     assert ledger.holdings(mover).get(KIND, 0) == 1
     monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', real_claim_write)
 
     got = q.claim(owner="w-flt-2")
     assert got is not None and got["action_key"] == mover, got
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     # Normal finish resolves credit exactly once (mover releases unpinned
     # copy tokens; owner still holds its 1 until it finishes).
@@ -748,7 +750,7 @@ def test_unfunded_ready_mover_gets_no_free_credit(tmp_path: Path, broker) -> Non
     # writer contract instead: claim would acquire free (hole) unless the
     # writer stages first. Assert the safe order instead: stage, then claim
     # still refuses until drive+commit.
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -774,14 +776,14 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     # Claim-safe order: stage intent BEFORE publication (no mover row yet).
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True and staged.get("staged") is True, staged
     assert ledger.holdings(owner).get(KIND, 0) == 2
     assert ledger.holdings(mover).get(KIND, 0) == 0
     # Publish mover (crash immediately after READY publication, before drive).
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -794,7 +796,7 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     assert q.records.item_path(pool.record_store.READY, mover).exists()
     # Recovery: drive rotates 0.0 -> real publication, transfers, advances;
     # commit files the batch; claim consumes once via normal path.
-    driven = q.drive_output_funding(mover, TIER)
+    driven = q.funding.drive_output(mover, TIER)
     assert driven.get("ok") is True, driven
     assert ledger.holdings(owner).get(KIND, 0) == 1
     assert ledger.holdings(mover).get(KIND, 0) == 1
@@ -803,7 +805,7 @@ def test_crash_after_ready_recovers_via_drive_commit_claim(
     assert committed.get("ok") is True, committed
     got = q.claim(owner="w-cr")
     assert got is not None and got["action_key"] == mover, got
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     q.finish(mover, status="executed")
     q.finish(owner, status="executed")
@@ -822,13 +824,13 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> Non
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -850,10 +852,10 @@ def test_corrupt_intent_finish_retains_via_reaper(tmp_path: Path, broker) -> Non
     # re-drive is impossible (intent lost) => unknown-retain stands, but sum
     # preserved and nothing double-charged. Repair by re-funding is refused
     # (mover holds 1 unfunded token now: physical occupancy, never credit).
-    assert q.output_funded_cover(
+    assert q.funding.output_funded_cover(
         TIER, pool.record_store.value_or_raise(
             q.records.item(pool.record_store.READY, mover),
-        ) or {}, KIND, 1) == (0, None)
+        ) or {}, KIND, 1).credit == (0, None)
     # Cleanup: release mover + owner holdings via normal paths preserves sum.
     assert ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
     assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED) == held_before
@@ -872,13 +874,13 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -891,12 +893,12 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     # FAILED terminal + move receipt with staged bytes + lease.
     q.claim(owner="w-nrel")
     # Mover CLAIMED exists => release refuses.
-    assert q.release_output_funding(mover, TIER, generation=gen) is False
+    assert q.funding.release_output(mover, TIER, generation=gen).released is False
     q.finish(mover, status="failed")
     # FAILED terminal exists (even though finish released its unfunded
     # remainder/tokens) => release still refuses (uncertain physical lifetime,
     # attempt history proves execution started).
-    assert q.release_output_funding(mover, TIER, generation=gen) is False
+    assert q.funding.release_output(mover, TIER, generation=gen).released is False
     # True not-started cancellation on a fresh mover/batch releases once:
     # prewrite b2, stage (READY never claimed, no receipt/lease/terminal).
     mover2 = _hexkey("nrel-mover2")
@@ -904,19 +906,19 @@ def test_release_refuses_failed_receipt_lease(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b2", TIER, descs2)
     manifest2 = oc.output_manifest_sha256(descs2)
     total2 = sum(int(d["bytes"]) for d in descs2)
-    staged2 = q.stage_output_intent(
+    staged2 = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover2, instance=inst,
         template=template, batch_id="b2", descriptors=descs2)
     assert staged2.get("ok") is True, staged2
     ref2 = _ref(inst, template, "b2", descs2)
     _publish_mover(q, mover2, manifest2, total2, gib=1, batch_ref=ref2)
-    staged2 = q.stage_output_intent(
+    staged2 = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover2, instance=inst,
         template=template, batch_id="b2", descriptors=descs2)
     assert staged2.get("ok") is True, staged2
-    assert q.release_output_funding(
-        mover2, TIER, generation=str(staged2["generation"])) is True
-    rec2 = q.read_output_funding(mover2, TIER)
+    assert q.funding.release_output(
+        mover2, TIER, generation=str(staged2["generation"])).released is True
+    rec2 = q.funding.read_output(mover2, TIER)
     assert rec2 is not None and rec2["state"] == "released"
 
 
@@ -933,13 +935,13 @@ def test_required_absent_intent_gets_no_free_credit(tmp_path: Path, broker) -> N
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -986,13 +988,13 @@ def test_consumed_record_gets_no_free_credit(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -1026,19 +1028,19 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None
     total = sum(int(d["bytes"]) for d in descs)
     # Stage with an explicit stale nonzero publication (simulates a previously
     # published reserved credit for another publication of the same key).
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs,
         mover_published=1234567.0)
     assert staged.get("ok") is True, staged
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
     cap = ledger.mint_supply().get(KIND)
-    out = q.drive_output_funding(mover, TIER)
+    out = q.funding.drive_output(mover, TIER)
     assert out.get("ok") is False, out
     assert out.get("refusal") == "mover-publication-mismatch", out
     # Nothing moved on refusal; sum preserved; cover authorizes nothing.
@@ -1046,7 +1048,7 @@ def test_drive_refuses_stale_nonzero_publication(tmp_path: Path, broker) -> None
     assert ledger.free_supply().get(KIND, 0) + ledger.holdings(owner).get(KIND, 0) == cap
     row = pool.record_store.value_or_raise(q.records.item(pool.record_store.READY, mover))
     assert isinstance(row, dict)
-    assert q.output_funded_cover(TIER, row, KIND, 1) == (0, None)
+    assert q.funding.output_funded_cover(TIER, row, KIND, 1).credit == (0, None)
 
 
 def test_unreadable_census_finish_retains(tmp_path: Path, broker) -> None:
@@ -1072,7 +1074,7 @@ def test_unreadable_census_finish_retains(tmp_path: Path, broker) -> None:
         _os.chmod(funding_dir, 0o755)
     # Readable again with no intents: census proven empty, ordinary release
     # frees the unspent grant (no strand); sum preserved throughout.
-    intents, unknown = q.output_census_for_owner(owner)
+    intents, unknown = q.funding.output_census(owner)
     assert unknown is False and intents == []
     assert ledger.release_unspent(owner, authority=tier_holdings.Unspent.NEVER_STARTED) == 2
     assert ledger.free_supply().get(KIND, 0) == cap
@@ -1101,7 +1103,7 @@ def test_output_mover_publication_checks_the_staged_binding(tmp_path: Path, brok
     with pytest.raises(pool.PoolContractError):
         q.publish(**publication, residency=residency)
     assert not q.records.item_path(pool.record_store.READY, mover).exists()
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -1121,11 +1123,11 @@ def test_output_funding_write_keeps_binding_and_transition_contract(tmp_path: Pa
     owner = inst["owner_action_key"]
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged["ok"] is True
-    record = q.read_output_funding(mover, TIER)
+    record = q.funding.read_output(mover, TIER)
     path = q.records.funding_output_path(mover, TIER)
     original = path.read_bytes()
     generation = record["generation"]
@@ -1136,15 +1138,15 @@ def test_output_funding_write_keeps_binding_and_transition_contract(tmp_path: Pa
                     dict(record, owner_nonce=other_nonce),
                     dict(record, generation=other_generation)):
         with pytest.raises(pool.PoolContractError):
-            q.write_output_funding(changed, expect_generation=generation)
+            q.funding.write_output(changed, expect_generation=generation)
         assert path.read_bytes() == original
     for state in ("transferring", "consumed"):
         record = dict(record, state=state)
-        q.write_output_funding(record, expect_generation=generation)
-        assert q.read_output_funding(mover, TIER)["state"] == state
+        q.funding.write_output(record, expect_generation=generation)
+        assert q.funding.read_output(mover, TIER)["state"] == state
     spent = path.read_bytes()
     with pytest.raises(pool.PoolContractError):
-        q.write_output_funding(dict(record, state="released"), expect_generation=generation)
+        q.funding.write_output(dict(record, state="released"), expect_generation=generation)
     assert path.read_bytes() == spent
     assert q.tier(TIER).free_supply() == available
 
@@ -1202,7 +1204,7 @@ def test_sealed_request_derives_projection_without_kwarg(tmp_path: Path, broker)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "derive")
     mover = action["action_key"]
     # Publication precondition: stage the intent first (claim-safe order).
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -1285,7 +1287,7 @@ def test_sealed_crash_prefix_defers_without_mutable_files(tmp_path: Path, broker
     # commitments scan is consulted.
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "crash")
     mover = action["action_key"]
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -1335,9 +1337,9 @@ def test_claim_missing_projection_with_funding_file_refuses(tmp_path: Path, brok
     # its sealed requirement): claim must refuse, never fresh-acquire.
     ledger.take(owner, {KIND: 1})
     import uuid as _uuid, time as _time
-    rec = {'schema': pool.TIER_FUNDING_OUTPUT_SCHEMA_V1, 'tier_id': TIER, 'kind': KIND, 'mover_action_key': mover, 'tokens': sorted((p.name for p in (ledger.paths.held / owner).iterdir() if p.name.startswith(KIND + '-'))), 'generation': _uuid.uuid4().hex, 'state': 'reserved', 'unix': _time.time(), 'published_unix': 1.0, 'owner_action_key': owner, 'owner_nonce': '0' * 32, 'owner_scope_id': 's', 'owner_published_unix': 1.0, 'template_id': 't', 'template_sha256': 'a' * 64, 'batch_id': 'b1', 'manifest_digest': manifest, 'range_start_bytes': 0, 'range_end_bytes': total}
+    rec = {'schema': funding.TIER_FUNDING_OUTPUT_SCHEMA_V1, 'tier_id': TIER, 'kind': KIND, 'mover_action_key': mover, 'tokens': sorted((p.name for p in (ledger.paths.held / owner).iterdir() if p.name.startswith(KIND + '-'))), 'generation': _uuid.uuid4().hex, 'state': 'reserved', 'unix': _time.time(), 'published_unix': 1.0, 'owner_action_key': owner, 'owner_nonce': '0' * 32, 'owner_scope_id': 's', 'owner_published_unix': 1.0, 'template_id': 't', 'template_sha256': 'a' * 64, 'batch_id': 'b1', 'manifest_digest': manifest, 'range_start_bytes': 0, 'range_end_bytes': total}
     with q.mover_transition_lock(mover, blocking=True):
-        q._write_funding_record_locked(rec, expect_generation=None, binding="output")
+        q.funding._write_locked(rec, expect_generation=None, binding="output")
     free_before = ledger.free_supply().get(KIND)
     assert q.claim(owner="w-mp") is None
     assert q.records.item_path(pool.record_store.READY, mover).exists()
@@ -1357,13 +1359,13 @@ def test_claim_corrupt_projection_refuses(tmp_path: Path, broker) -> None:
     _prewrite(q, inst, template, "b1", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     ref = _ref(inst, template, "b1", descs)
     _publish_mover(q, mover, manifest, total, gib=1, batch_ref=ref)
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -1432,7 +1434,7 @@ def test_publish_mismatched_intent_refuses(tmp_path: Path, broker) -> None:
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
     ref = _ref(inst, template, "b1", descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b2", descriptors=descs2)
     assert staged.get("ok") is True, staged
@@ -1507,7 +1509,7 @@ def test_ready_reread_failure_defers_at_claim_seam(
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, "reread")
     mover = action["action_key"]
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -1604,7 +1606,7 @@ def _real_cas_chain(tmp_path: Path, tag: str, broker, *, squatter_seed: str = "r
     ref = _ref(inst, template, "b1", descs)
     cas, action, checkout = _sealed_cas_with_ref(tmp_path, ref, tag)
     mover = action["action_key"]
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -1614,7 +1616,7 @@ def _real_cas_chain(tmp_path: Path, tag: str, broker, *, squatter_seed: str = "r
               residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total})
-    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    funded = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
                                  descriptors=descs)
@@ -1660,7 +1662,7 @@ def test_real_cas_sealed_flow_claims_via_prepaid_cover(tmp_path: Path, broker) -
     assert ledger.holdings(mover).get(KIND, 0) == 1
     assert ledger.free_supply().get(KIND, 0) == free0
     assert ledger.holdings(chain['owner']).get(KIND, 0) == 1
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
     assert q.records.item_path(pool.record_store.CLAIMED, mover).exists()
 
@@ -1702,11 +1704,11 @@ def test_filed_request_without_ref_invented_projection_never_covers(
     # Invent the mutable projection the immutable request never declared.
     row["produced_output_batch"] = dict(ref)
     pool.immutable_files.write_json_atomic(ready_path, row)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
-    funded = q.fund_output_batch(tier_id=TIER, owner_key=owner,
+    funded = q.funding.fund_output(tier_id=TIER, owner_key=owner,
                                  mover_key=mover, instance=inst,
                                  template=template, batch_id="b1",
                                  descriptors=descs)
@@ -1720,7 +1722,7 @@ def test_filed_request_without_ref_invented_projection_never_covers(
     assert claimed is None, "invented projection must never cover a claim"
     assert ready_path.exists()
     assert ledger.free_supply().get(KIND, 0) == free0
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
 
 
@@ -1744,7 +1746,7 @@ def test_filed_request_corrupt_after_funding_never_claims(
     assert q.claim(owner="w-cr7-mover") is None
     assert q.records.item_path(pool.record_store.READY, mover).exists()
     assert ledger.free_supply().get(KIND, 0) == free0
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
 
 
@@ -1789,7 +1791,7 @@ def test_real_cas_projection_loss_with_funding_defers(tmp_path: Path, broker) ->
     assert q.claim(owner="w-pl7-mover") is None
     assert ready_path.exists()
     assert ledger.free_supply().get(KIND, 0) == free0
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
 
 
@@ -1827,7 +1829,7 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
 
     descs = _descriptors(tmp_path, template, inst)
     _prewrite(q, inst, template, "b1", TIER, descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
@@ -1835,7 +1837,7 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
     # The owner concludes with the intent outstanding.  Its selective
     # release keeps precisely the names the intent still owns.
     q.finish(owner, status="executed", claim_snapshot=claimed)
-    keep, unknown = q.output_keep_names_for_owner(owner, TIER)
+    keep, unknown = q.funding.output_keep_names_for_owner(owner, TIER)
     assert unknown is False and keep, (keep, unknown)
     retained = ledger.holdings(owner).get(KIND, 0)
     assert retained == len(keep), (retained, keep)
@@ -1869,5 +1871,5 @@ def test_a_dropped_owner_claim_does_not_free_an_outstanding_intents_names(
     # `stage_gib-0000`.
     assert selective == [owner], selective
     assert blanket == [], blanket
-    assert q.output_keep_names_for_owner(owner, TIER) == (keep, False)
+    assert q.funding.output_keep_names_for_owner(owner, TIER) == (keep, False)
     assert ledger.holdings(owner).get(KIND, 0) == retained

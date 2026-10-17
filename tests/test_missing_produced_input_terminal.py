@@ -3,6 +3,8 @@
 All queue/CAS/origin paths are private tmp_path fixtures. No stage mover is
 executed and no real mountpoint is read or removed.
 """
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 import json
@@ -113,7 +115,7 @@ def test_the_ended_mover_releases_its_funding_and_the_batch_retires(tmp_path):
     _warm(world, tmp_path)
     assert world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
-    funding = world.q.read_output_funding(world.mover, TIER)
+    funding = world.q.funding.read_output(world.mover, TIER)
     assert funding is not None and funding["state"] == "released", funding
     receipts = world.sweep(IDLE)
     retired = _about(receipts, world.mover)
@@ -121,7 +123,7 @@ def test_the_ended_mover_releases_its_funding_and_the_batch_retires(tmp_path):
     assert _tier_census(world.ledger) == {
         "capacity": 4, "free": 4, "holders": {}}
     assert world.batch_entry().get("retired") is True
-    assert world.q.retire_terminal_output_funding()["retired"] == 1
+    assert world.q.funding.retire_output()["retired"] == 1
 
 
 def test_an_unreadable_origin_is_unknown_not_missing(tmp_path):
@@ -400,8 +402,8 @@ def test_a_transient_funding_read_fault_retries_instead_of_stranding(
     world.fail_the_producer()
     faults = {"left": 1}
 
-    real_state = world.q.output_funding_file_state
-    real_read = world.q.read_output_funding
+    real_state = world.q.funding.output_evidence
+    real_read = world.q.funding.read_output
 
     def faulty_state(*args, **kwargs):
         if faults["left"]:
@@ -415,8 +417,8 @@ def test_a_transient_funding_read_fault_retries_instead_of_stranding(
             return None
         return real_read(*args, **kwargs)
 
-    monkeypatch.setattr(world.q, "output_funding_file_state", faulty_state)
-    monkeypatch.setattr(world.q, "read_output_funding", faulty_read)
+    monkeypatch.setattr(world.q.funding, "output_evidence", faulty_state)
+    monkeypatch.setattr(world.q.funding, "read_output", faulty_read)
     _warm(world, tmp_path)
     assert world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
         "a transient funding read fault filed a permanent ending")
@@ -425,5 +427,5 @@ def test_a_transient_funding_read_fault_retries_instead_of_stranding(
     monkeypatch.undo()
     _warm(world, tmp_path)
     assert world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
-    funding = world.q.read_output_funding(world.mover, TIER)
+    funding = world.q.funding.read_output(world.mover, TIER)
     assert funding is not None and funding["state"] == "released", funding

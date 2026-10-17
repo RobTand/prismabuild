@@ -27,6 +27,7 @@ next to a legacy flat consumer, and drive the actual
 ``tier_loop.sweep_orphans`` boundary rather than a helper.
 """
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 

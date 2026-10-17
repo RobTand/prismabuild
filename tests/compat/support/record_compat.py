@@ -41,6 +41,28 @@ def pre_c13_drivers():
     return Path(_PRIOR_DRIVERS.name) / "tests/compat/support"
 
 
+def owner_profile(root):
+    if (root / "src/prismabuild/funding.py").is_file():
+        return "funding-v1"
+    if (root / "src/prismabuild/batch_ledger.py").is_file():
+        return "batch-v1"
+    return "produced-v1"
+
+
+_C12_DRIVERS = None
+
+
+def pre_c12_drivers():
+    global _C12_DRIVERS
+    if _C12_DRIVERS is None:
+        import atexit
+        _C12_DRIVERS = tempfile.TemporaryDirectory(prefix="compat-pre-c12-")
+        atexit.register(_C12_DRIVERS.cleanup)
+        with tarfile.open(ROOT / "tests/compat/drivers-before-c12.tar.gz") as archive:
+            archive.extractall(_C12_DRIVERS.name, filter="data")
+    return Path(_C12_DRIVERS.name) / "tests/compat/support"
+
+
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -118,8 +140,9 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
         request["raw"] = base64.b64encode(raw).decode()
-    prior_owner = manifest and not (root / "src/prismabuild/batch_ledger.py").is_file()
-    driver = pre_c13_drivers() if prior_owner and adapter_path is None else HERE
+    profile = owner_profile(root)
+    driver = (pre_c13_drivers() if profile == "produced-v1" else
+              pre_c12_drivers() if profile == "batch-v1" else HERE) if manifest and adapter_path is None else HERE
     adapter_path = driver / "compat_adapters.py" if adapter_path is None else adapter_path
     command = [sys.executable, "-I", "-S", str(driver / "compat_isolate.py"),
                "--root", str(root), "--adapters", str(adapter_path),

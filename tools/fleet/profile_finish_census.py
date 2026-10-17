@@ -91,7 +91,7 @@ def profiled(label, repeat, fn):
     stats = pstats.Stats(profile, stream=buffer).sort_stats("cumulative")
     stats.print_stats(12)
     calls = {}
-    watched = ("_read_json", "output_census_for_owner", "validate_output_funding",
+    watched = ("_read_json", "output_census", "validate_output",
                "output_keep_names_for_owner", "_release_reservation", "scandir", "io.open")
     for (_filename, _line, name), row in stats.stats.items():
         for token in watched:
@@ -116,7 +116,7 @@ def prune_dry_run(live: pool.PoolQueue, funding: Path) -> dict:
         counts["records"] += 1
         stem = entry[: -len(SUFFIX)]
         mover, _, tier = stem.partition(".")
-        record, state = live.output_funding_file_state(mover, tier)
+        record, state = live.funding.output_evidence(mover, tier)
         if state != "ok":
             counts["unreadable"] += 1
             continue
@@ -174,7 +174,7 @@ def main(argv=None) -> int:
         nobody = "0" * 63 + "1"
         holder = "0" * 63 + "2"
         report["scenarios"].append(profiled(
-            "census-nonowner", args.repeat, lambda: view.output_census_for_owner(nobody)))
+            "census-nonowner", args.repeat, lambda: view.funding.output_census(nobody)))
         report["scenarios"].append(profiled(
             "release-nonholder", args.repeat,
             lambda: view._release_reservation(nobody, host=None)))
@@ -195,14 +195,14 @@ def main(argv=None) -> int:
                     shutil.copy2(funding / name, copy.root / pool.record_store.TIER_FUNDING / name)
             report["scenarios"].append(profiled(
                 "local-copy-all-records", args.repeat,
-                lambda: copy.output_census_for_owner(nobody)))
+                lambda: copy.funding.output_census(nobody)))
             aside = copy.root / "aside"
             aside.mkdir()
             for name in dry["terminal_names"]:
                 os.rename(copy.root / pool.record_store.TIER_FUNDING / name, aside / name)
             report["scenarios"].append(profiled(
                 "local-copy-live-records-only", args.repeat,
-                lambda: copy.output_census_for_owner(nobody)))
+                lambda: copy.funding.output_census(nobody)))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     if args.out:

@@ -11,6 +11,8 @@ them answers as before.
 """
 from __future__ import annotations
 
+from prismabuild import funding
+
 import builtins
 import errno
 import io
@@ -42,7 +44,7 @@ def _queue(tmp_path: Path) -> pool.PoolQueue:
 
 def _record(*, owner=OWNER, mover=MOVER, tier=STAGE, state="consumed",
             kind="stage_gib", tokens=None) -> dict:
-    return {"schema": pool.TIER_FUNDING_OUTPUT_SCHEMA_V1, "tier_id": tier,
+    return {"schema": funding.TIER_FUNDING_OUTPUT_SCHEMA_V1, "tier_id": tier,
             "kind": kind, "mover_action_key": mover,
             "tokens": list(tokens or [f"{kind}-0"]), "generation": "e" * 32,
             "state": state, "unix": 1.0, "published_unix": 1.0,
@@ -102,12 +104,12 @@ def test_a_holder_reads_one_census_and_keeps_only_its_promised_names(tmp_path, m
     for index in range(10):
         _file(queue, _record(owner=OTHER, mover=f"{index:064x}"))
     calls: list[str] = []
-    original = queue.output_census_for_owner
+    original = queue.funding.output_census
 
     def counted(owner_key):
         calls.append(owner_key)
         return original(owner_key)
-    monkeypatch.setattr(queue, "output_census_for_owner", counted)
+    monkeypatch.setattr(queue.funding, "output_census", counted)
     queue._release_reservation(OWNER, host=None)
     assert calls == [OWNER]
     assert _held(queue, STAGE, OWNER) == [promised]
@@ -136,19 +138,19 @@ def _terminal_world(tmp_path):
 def test_a_terminal_record_leaves_the_census_and_reads_as_before(tmp_path, monkeypatch):
     queue, record, path = _terminal_world(tmp_path)
     assert queue._output_funding_unretired(MOVER)
-    counts = queue.retire_terminal_output_funding()
+    counts = queue.funding.retire_output()
     assert counts["retired"] == 1 and counts["scanned"] == 1
     assert not path.exists()
     assert queue.records.funding_output_retired_path(MOVER, STAGE).exists()
-    assert queue.output_funding_file_state(MOVER, STAGE) == (record, "ok")
-    assert queue.read_output_funding(MOVER, STAGE) == record
+    assert queue.funding.output_evidence(MOVER, STAGE) == (record, "ok")
+    assert queue.funding.read_output(MOVER, STAGE) == record
     assert queue._output_funding_unretired(MOVER)
     reads = _count_funding_reads(monkeypatch, queue)
-    assert queue.output_census_for_owner(OWNER) == ([], False)
+    assert queue.funding.output_census(OWNER) == ([], False)
     assert reads == []
     with pytest.raises(pool.PoolContractError, match="retired"):
-        queue.write_output_funding(_record(state="reserved", tokens=["stage_gib-1"]))
-    assert queue.retire_terminal_output_funding() == {
+        queue.funding.write_output(_record(state="reserved", tokens=["stage_gib-1"]))
+    assert queue.funding.retire_output() == {
         "scanned": 0, "retired": 0, "kept": 0, "busy": 0, "unreadable": 0}
 
 
@@ -172,7 +174,7 @@ def test_a_record_that_could_still_count_stays_in_the_census(tmp_path, fact):
         assert queue.tier(STAGE).take(MOVER, {'stage_gib': 1})
     elif fact == "corrupt":
         path.write_text("{not json")
-    counts = queue.retire_terminal_output_funding()
+    counts = queue.funding.retire_output()
     assert counts["retired"] == 0 and counts["kept"] == 1
     assert path.exists()
     assert not queue.records.funding_output_retired_path(MOVER, STAGE).exists()
@@ -181,19 +183,19 @@ def test_a_record_that_could_still_count_stays_in_the_census(tmp_path, fact):
 def _retired_written_record(tmp_path):
     queue = _queue(tmp_path)
     record = _record(state="reserved")
-    path = queue.write_output_funding(record)
+    path = queue.funding.write_output(record)
     record = dict(record, state="released")
-    queue.write_output_funding(record, expect_generation=record["generation"])
+    queue.funding.write_output(record, expect_generation=record["generation"])
     _row(queue, pool.record_store.DONE, MOVER)
-    assert queue.retire_terminal_output_funding()["retired"] == 1
+    assert queue.funding.retire_output()["retired"] == 1
     assert not path.exists()
     return queue, record, path
 
 
 def test_absent_live_funding_reads_the_retired_record(tmp_path):
     queue, record, _ = _retired_written_record(tmp_path)
-    assert queue.output_funding_file_state(MOVER, STAGE) == (record, "ok")
-    assert queue.read_output_funding(MOVER, STAGE) == record
+    assert queue.funding.output_evidence(MOVER, STAGE) == (record, "ok")
+    assert queue.funding.read_output(MOVER, STAGE) == record
     assert queue._output_funding_unretired(MOVER) is False
 
 
@@ -207,9 +209,9 @@ def test_absent_live_funding_reads_the_retired_record(tmp_path):
 def test_present_corrupt_live_funding_does_not_read_retired(tmp_path, damage):
     queue, _, path = _retired_written_record(tmp_path)
     path.write_bytes(damage)
-    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue.funding.output_evidence(MOVER, STAGE) == (None, "corrupt")
     assert queue._output_funding_unretired(MOVER) is True
-    assert queue.read_output_funding(MOVER, STAGE) is None
+    assert queue.funding.read_output(MOVER, STAGE) is None
 
 
 @pytest.mark.parametrize("read_errno", [errno.EACCES, errno.ESTALE, errno.ENOTDIR])
@@ -229,9 +231,9 @@ def test_unreadable_live_funding_does_not_read_retired(
 
     monkeypatch.setattr(builtins, "open", deny_live_open(builtins.open))
     monkeypatch.setattr(io, "open", deny_live_open(io.open))
-    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue.funding.output_evidence(MOVER, STAGE) == (None, "corrupt")
     assert queue._output_funding_unretired(MOVER) is True
-    assert queue.read_output_funding(MOVER, STAGE) is None
+    assert queue.funding.read_output(MOVER, STAGE) is None
     assert len(denied_reads) == 3
 
 
@@ -241,8 +243,8 @@ def test_output_funding_readers_preserve_their_json_encoding_policies(
     queue, record, _ = _retired_written_record(tmp_path)
     retired = queue.records.funding_output_retired_path(MOVER, STAGE)
     retired.write_bytes(retired.read_text().encode(encoding))
-    assert queue.read_output_funding(MOVER, STAGE) == record
-    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue.funding.read_output(MOVER, STAGE) == record
+    assert queue.funding.output_evidence(MOVER, STAGE) == (None, "corrupt")
     assert queue._output_funding_unretired(MOVER) is True
 
 
@@ -251,6 +253,6 @@ def test_output_funding_readers_preserve_their_byte_budgets(tmp_path):
     retired = queue.records.funding_output_retired_path(MOVER, STAGE)
     raw = retired.read_bytes()
     retired.write_bytes(raw + b" " * (1024 * 1024 + 1 - len(raw)))
-    assert queue.read_output_funding(MOVER, STAGE) == record
-    assert queue.output_funding_file_state(MOVER, STAGE) == (None, "corrupt")
+    assert queue.funding.read_output(MOVER, STAGE) == record
+    assert queue.funding.output_evidence(MOVER, STAGE) == (None, "corrupt")
     assert queue._output_funding_unretired(MOVER) is True

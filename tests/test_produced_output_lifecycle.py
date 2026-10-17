@@ -12,6 +12,8 @@ PASS here. SDK-connected tests skip on checkouts without the accepted
 package and prove the corrected path here.
 """
 from __future__ import annotations
+
+from prismabuild.legacy_funding import LegacyFunding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -172,9 +174,9 @@ def test_funding_intent_absent_mover_retains(tmp_path: Path) -> None:
     bound = _bind(queue, template)
     instance, claimed = bound["instance"], bound["claimed"]
     assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
-    funding_dir = bl._funding_dir(queue.root, instance)
+    funding_dir = LegacyFunding.directory(bl.scope_dir(queue.root, instance))
     funding_dir.mkdir(parents=True, exist_ok=True)
-    bl._write_funding(funding_dir / "ghost.funding.json", {
+    LegacyFunding(funding_dir / "ghost.funding.json").file({
         "batch_id": "ghost", "tier": STAGE_TIER,
         "mover_key": "a" * 64, "batch_gib": 1,
         "manifest_digest": "0" * 64})

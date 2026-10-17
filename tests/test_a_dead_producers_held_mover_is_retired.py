@@ -35,6 +35,8 @@ Everything runs on a synthetic stage under ``tmp_path`` registered to a queue
 under ``tmp_path``; nothing reads or writes a real stage.
 """
 from __future__ import annotations
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -130,7 +132,7 @@ class _World:
 
         claimed = _claim_mover(self.q, "w-mover")
         assert claimed["action_key"] == self.mover
-        funding = self.q.read_output_funding(self.mover, TIER)
+        funding = self.q.funding.read_output(self.mover, TIER)
         assert funding is not None and funding["state"] == "consumed"
         self.q.finish(self.mover, status="failed", detail={"returncode": 1})
         if self.q.records.item_path(pool.record_store.READY, self.mover).exists():
@@ -185,7 +187,7 @@ def test_a_withdrawn_mover_of_a_failed_producer_is_retired(tmp_path) -> None:
     assert world.batch_entry().get("retired") is True
 
     # The funding record no longer has a token pinning it.
-    assert world.q.retire_terminal_output_funding()["retired"] == 1
+    assert world.q.funding.retire_output()["retired"] == 1
     # A second pass has nothing left to do.
     assert not _about(world.sweep(IDLE), world.mover)
 

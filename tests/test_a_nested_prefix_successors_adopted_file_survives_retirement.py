@@ -28,6 +28,7 @@ goes on once the successor has either finished or been refused a lock that
 the retirement holds.  Before this change it finishes, and its file is gone.
 """
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 

@@ -6,6 +6,7 @@ imports. Plans here declare a resident prefix; every number asserted
 comes from the plan the test builds. The integrator runs them;
 nothing here runs anything itself.
 """
+
 from pathlib import Path
 import sys
 from typing import Mapping
@@ -357,7 +358,7 @@ def test_publish_declared_binds_only_rowed_legs(tmp_path) -> None:
     events = pt.publish_declared(queue, TIER, units[0], rows)
     assert [event["event"] for event in events] == ["prelaunch-chunk-published"]
     assert events[0]["mover"] == movers[0]
-    record = queue.read_funding(movers[0], TIER)
+    record = queue.funding.read_window(movers[0], TIER)
     assert record is not None and record["state"] == "transferring"
     assert ledger.holdings(units[0].holder).get('stage_gib', 0) == 2
     assert ledger.holdings(movers[1]).get('stage_gib', 0) == 0

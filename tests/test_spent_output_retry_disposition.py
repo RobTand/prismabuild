@@ -4,6 +4,8 @@ Private CPU queues, real sealed publisher, ledger, claim and copy process.
 The fixture uses synthetic producer scope authority and explicit unpaced copy,
 as disclosed by test_produced_output_restage; no fleet state is touched.
 """
+
+from prismabuild import funding
 from pathlib import Path
 
 import pytest
@@ -26,7 +28,7 @@ def _funded_claim(tmp_path):
     mover = str(out["mover_key"])
     claimed = _claim_mover(w.q, "copy-worker")
     assert claimed["action_key"] == mover
-    funding = w.q.read_output_funding(mover, TIER)
+    funding = w.q.funding.read_output(mover, TIER)
     assert funding["state"] == "consumed"
     return w, mover, claimed, funding, descs
 
@@ -62,12 +64,12 @@ def test_failed_copy_with_spent_credit_is_terminal(tmp_path, producer_terminal):
     ended = w.q.finish(mover, status="failed", detail=result, claim_snapshot=claimed)
     # On the regression, it is READY but admission can never claim it again.
     if ended.parent.name == pool.record_store.READY:
-        assert w.q.output_funded_cover(
+        assert w.q.funding.output_funded_cover(
             TIER,
             pool.record_store.read_document(ended),
             KIND,
             1,
-        ) == (0, None)
+        ).credit == (0, None)
         assert w.q.claim(owner="retry-worker") is None
     assert ended.parent.name == pool.record_store.FAILED
     assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
@@ -78,7 +80,7 @@ def test_failed_copy_with_spent_credit_is_terminal(tmp_path, producer_terminal):
     assert attempt["disposition"] == pool.record_store.FAILED
     assert attempt["status"] == "failed"
     assert attempt["detail"]["returncode"] == result["returncode"]
-    assert w.q.read_output_funding(mover, TIER) == funding
+    assert w.q.funding.read_output(mover, TIER) == funding
 
 
 @pytest.mark.parametrize("reap", [False, True])
@@ -101,7 +103,7 @@ def test_partial_copy_is_terminal_but_keeps_occupancy(tmp_path, reap):
     assert not w.q.records.item_path(pool.record_store.READY, mover).exists()
     assert w.ledger.holdings(mover) == held
     assert {p: p.read_bytes() for p in material} == material
-    assert w.q.read_output_funding(mover, TIER) == funding
+    assert w.q.funding.read_output(mover, TIER) == funding
     archived = w.q.attempt_outcomes(pool.record_store.read_document(ended))[0]
     assert archived["output_retry_stop"]["reason"] == "output_funding_consumed"
 
@@ -176,7 +178,7 @@ def test_late_failure_never_concludes_a_live_successor(tmp_path, state):
     assert w.q.records.lease_path(mover).read_bytes() == lease
     assert w.ledger.holdings(mover) == held
     assert not w.q.records.item_path(pool.record_store.FAILED, mover).exists()
-    assert w.q.read_output_funding(mover, TIER) == funding
+    assert w.q.funding.read_output(mover, TIER) == funding
 
 
 def test_archived_stop_remains_valid_after_funding_changes(tmp_path):
@@ -223,4 +225,4 @@ def test_consumed_claim_with_missing_lease_is_not_an_unstarted_retry(tmp_path, m
     assert w.q.attempt_ending(record)["disposition"] == pool.record_store.FAILED
     # No copy evidence is unknown occupancy, never proof that storage is free.
     assert w.ledger.holdings(mover) == held
-    assert w.q.read_output_funding(mover, TIER) == funding
+    assert w.q.funding.read_output(mover, TIER) == funding

@@ -89,6 +89,7 @@ or names another queue --- they say why in the receipt and keep the tokens.
 """
 
 from __future__ import annotations
+
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -1344,7 +1345,7 @@ def produced_holder(queue: pool.PoolQueue, tier_id: str,
         return {"class": "unknown", "why": why}
 
     try:
-        record, file_state = queue.output_funding_file_state(mover, tier_id)
+        record, file_state = queue.funding.output_evidence(mover, tier_id)
     except (OSError, ValueError, pool.PoolContractError) as exc:
         return unknown(f"its output funding is unreadable: {exc}")
     if file_state == "absent":

@@ -37,13 +37,15 @@ def context(store, load, variant):
     record.update(claimed_by="compat-owner", claimed_host="compat-host", claimed_unix=100.0,
                   resource_scope={"action_key": C, "nonce": G, "scope_id": scope})
     path.unlink()
-    queue.records.replace_record_at(queue.item_path(pool.CLAIMED, C), record)
+    queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, C), record)
     po.declare_template(queue.root, template)
     instance = po.bind_instance(queue, template, owner_action_key=C, claim_snapshot=record,
         env={"PRISMABUILD_ACTION_KEY": C, "PRISMABUILD_ACTION_NONCE": G, "PRISMABUILD_ACTION_SCOPE": scope})
     bl.declare_instance(queue.root, instance)
     assert bl.BatchLedger.admit(queue, instance, template)["ok"]
     return po, pool, core, queue, template, instance
+
+
 
 
 def committed(store, load, variant):
@@ -102,7 +104,7 @@ def operate(request, store, load):
     write = request["op"] == "write"
     if family == "out-ref":
         po, pool, core, queue, template, instance = context(store, load, variant)
-        path = queue.item_path(pool.CLAIMED, C)
+        path = queue.records.item_path(pool.CLAIMED, C)
         if write:
             raw = extract(path.read_bytes(), "produced_output")
         else:

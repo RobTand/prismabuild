@@ -1,4 +1,5 @@
 """Epoch cleanup must not turn a live advance promise into free capacity."""
+
 import pytest
 import test_the_nonfinal_window_fences_its_advance as base
 from storage_host_ledger import STORAGE_HOST
@@ -41,7 +42,7 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
     target = base._movers(plan, 'ram_mover_row')[1]
     assert ledger.holdings(grant) == {'ram_gib': 1}
     assert not queue.records.item_path(base.pool.record_store.READY, target).exists()
-    assert queue.read_funding(target, base.RAM_TIER) is None
+    assert queue.funding.read_window(target, base.RAM_TIER) is None
 
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert ledger.holdings(grant) == {'ram_gib': 1}, 'epoch sweep erased live blind advance'
@@ -52,7 +53,7 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
     assert queue.records.item_path(base.pool.record_store.READY, target).exists()
     assert ledger.holdings(grant) == {}
     assert ledger.holdings(target) == {'ram_gib': 1}
-    assert queue.read_funding(target, base.RAM_TIER)['state'] == 'transferring'
+    assert queue.funding.read_window(target, base.RAM_TIER)['state'] == 'transferring'
     base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert ledger.holdings(target) == {'ram_gib': 1}, 'epoch sweep erased bound advance'
     row = base.pool.record_store.value_or_raise(
@@ -61,7 +62,7 @@ def test_blind_advance_survives_epoch_sweep_binds_claims_and_retires(tmp_path):
     claim = queue.claim(ready=[row], tags=['dl380g10'], owner='ram-advance-proof',
                         capacity={'cpu': 4, 'mem_gb': 8})
     assert claim and claim['action_key'] == target
-    assert queue.read_funding(target, base.RAM_TIER)['state'] == 'consumed'
+    assert queue.funding.read_window(target, base.RAM_TIER)['state'] == 'consumed'
     assert ledger.holdings(target) == {'ram_gib': 1}
     queue.finish(target, status='failed', detail={'returncode': 1})
     assert ledger.holdings(target) == {}
@@ -160,7 +161,7 @@ def test_funding_rotation_during_discovery_is_not_permission_to_release(tmp_path
     land_source(queue, plan, 1)
     base.tier_loop.ram_residency_window(queue, tiers=base._ram_tiers(tmp_path))
     target = base._movers(plan, 'ram_mover_row')[1]
-    original = queue.read_funding_evidence
+    original = queue.funding.window_evidence
     calls = 0
     def rotates(mover, tier):
         nonlocal calls
@@ -170,7 +171,7 @@ def test_funding_rotation_during_discovery_is_not_permission_to_release(tmp_path
             if calls == 1:
                 record = dict(record, generation='0' * 32)
         return status, record, reason
-    monkeypatch.setattr(queue, 'read_funding_evidence', rotates)
+    monkeypatch.setattr(queue.funding, 'window_evidence', rotates)
     events = base.tier_loop.drop_prior_ram_epochs(queue, base._ram_tiers(tmp_path))
     assert queue.tier(base.RAM_TIER).holdings(target) == {'ram_gib': 1}
     assert any(e.get('reason') == 'funding rotated during qualification' for e in events)

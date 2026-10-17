@@ -12,6 +12,7 @@ cycle (nothing here touches a live queue or a real stage mount).
 """
 from __future__ import annotations
 
+
 from pathlib import Path
 import sys
 
@@ -173,7 +174,7 @@ def _funded_next(queue, stage, movers_below: int = 3) -> int:
         _cycle(queue, stage, gib=CAPACITY)                # publish s1, hand off
     nxt = next(item for item in queue.ready_items()
                if "stage_gib@" + TIER in " ".join(item.get("resources") or {}))
-    covered, _generation = queue.funded_cover(TIER, nxt, "stage_gib", 4)
+    covered, _generation = queue.funding.cover_window(TIER, nxt, "stage_gib", 4).credit
     assert covered == 4, "the fixture's queued row is not funded"
     return 4
 

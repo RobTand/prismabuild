@@ -6,6 +6,8 @@ tokens back in free through the existing rollback. Token files are
 not removed by any other path. A live consumer intent is untouched.
 """
 from __future__ import annotations
+
+from prismabuild import funding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -135,13 +137,13 @@ def _one_batch(q, tmp_path, template, inst, owner, mover, batch_id, name):
     _prewrite(q, inst, template, batch_id, TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id=batch_id, descriptors=descs)
     assert staged.get("ok") is True, staged
     _publish_mover(q, mover, manifest, total, gib=1,
                    batch_ref=_ref(inst, template, batch_id, descs))
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id=batch_id, descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -169,7 +171,7 @@ def _ref(inst, template, batch_id, descs):
 
 
 def _settle(q):
-    return tier_loop._settle_protected(q, {"protected": {}, "grants": {}})
+    return q.funding.settle_windows( funding.AdvanceProtection(protected={}, grants={}))
 
 
 def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> None:
@@ -197,7 +199,7 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
     before = _settle(q)
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    for e in before), before
-    assert q.read_output_funding(
+    assert q.funding.read_output(
         dead_mover, TIER)["state"] == "transferring"
 
     # The producer fails, the dead mover leaves READY before any claim,
@@ -212,7 +214,7 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
     assert not q.records.item_path(pool.record_store.FAILED, dead_mover).exists()
     assert q.records.item_path(pool.record_store.WITHDRAWN, dead_mover).exists()
     dead_path.unlink()
-    assert q.read_output_funding(
+    assert q.funding.read_output(
         dead_mover, TIER)["state"] == "transferring"
 
     events = _settle(q)
@@ -220,7 +222,7 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
                 if e.get("event") == "output-funding-reconcile-released"
                 and e.get("mover") == dead_mover]
     assert len(released) == 1, events
-    assert q.read_output_funding(
+    assert q.funding.read_output(
         dead_mover, TIER)["state"] == "released"
     freed = [e for e in events
              if e.get("event") == "output-funding-tokens-released"
@@ -234,7 +236,7 @@ def test_stranded_intent_rolls_back_after_producer_failure(tmp_path: Path) -> No
     assert ledger.free_supply().get(KIND, 0) == 4
 
     # The live consumer's intent on another producer is untouched.
-    live = q.read_output_funding(live_mover, TIER)
+    live = q.funding.read_output(live_mover, TIER)
     assert live is not None and live["state"] == "transferring"
     assert ledger.holdings(live_mover).get(KIND, 0) == 1
 
@@ -266,7 +268,7 @@ def test_republished_mover_keeps_its_reservation(tmp_path: Path) -> None:
     events = _settle(q)
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    and e.get("mover") == mover for e in events), events
-    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(mover, TIER)["state"] == "transferring"
     assert ledger.holdings(mover).get(KIND, 0) == 1
 
 
@@ -299,7 +301,7 @@ def test_claimed_mover_keeps_its_reservation(tmp_path: Path) -> None:
     events = _settle(q)
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    and e.get("mover") == mover for e in events), events
-    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(mover, TIER)["state"] == "transferring"
     assert ledger.holdings(mover).get(KIND, 0) == 1
 
 
@@ -321,7 +323,7 @@ def test_present_prewrite_path_keeps_its_charge(tmp_path: Path) -> None:
     events = _settle(q)
     assert not any(e.get("event") == "output-funding-reconcile-released"
                    and e.get("mover") == mover for e in events), events
-    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(mover, TIER)["state"] == "transferring"
     assert ledger.holdings(mover).get(KIND, 0) == 1
 
 
@@ -338,13 +340,13 @@ def test_partial_output_keeps_its_charge(tmp_path: Path) -> None:
     _prewrite(q, inst, template, "partial", TIER, descs)
     manifest = oc.output_manifest_sha256(descs)
     total = sum(int(d["bytes"]) for d in descs)
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="partial", descriptors=descs)
     assert staged.get("ok") is True, staged
     _publish_mover(q, mover, manifest, total, gib=1,
                    batch_ref=_ref(inst, template, "partial", descs))
-    funded = q.fund_output_batch(
+    funded = q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="partial", descriptors=descs)
     assert funded.get("ok") is True, funded
@@ -394,7 +396,7 @@ def _stranded_with_live_intent(tmp_path):
                "live", "live.bin")
     receipts = tier_loop.ReceiptCache()
     _cycle(q, tmp_path, receipts)
-    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(mover, TIER)["state"] == "transferring"
     q.finish(owner, status="failed", detail={"returncode": 1})
     assert q.withdraw(mover, by="test", reason="producer failed") is not None
     path.unlink()
@@ -407,7 +409,7 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
     """Each fault leaves a retryable state, also after a loop restart."""
     q, mover, live_mover, receipts, *_ = _stranded_with_live_intent(tmp_path)
     ledger = q.tier(TIER)
-    live_before = q.read_output_funding(live_mover, TIER)
+    live_before = q.funding.read_output(live_mover, TIER)
     observed_faults = []
     with monkeypatch.context() as patch:
         if fault == "token-release":
@@ -433,19 +435,19 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
             patch.setattr(pool.immutable_files, 'write_json_atomic', fail_funding_write)
         _cycle(q, tmp_path, receipts)
         assert fault in observed_faults, f"cycle never reached the {fault} fault"
-        assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+        assert q.funding.read_output(mover, TIER)["state"] == "transferring"
         assert ledger.holdings(mover).get(KIND, 0) == (1 if fault == 'token-release' else 0)
-        assert q.read_output_funding(live_mover, TIER) == live_before
+        assert q.funding.read_output(live_mover, TIER) == live_before
         assert ledger.holdings(live_mover).get(KIND, 0) == 1
 
     if restart:
         q = pool.PoolQueue(q.root)
         receipts = tier_loop.ReceiptCache()
     _cycle(q, tmp_path, receipts)
-    assert q.read_output_funding(mover, TIER)["state"] == "released"
+    assert q.funding.read_output(mover, TIER)["state"] == "released"
     assert ledger.holdings(mover).get(KIND, 0) == 0
     assert ledger.free_supply().get(KIND, 0) == 4
-    assert q.read_output_funding(live_mover, TIER) == live_before
+    assert q.funding.read_output(live_mover, TIER) == live_before
     assert ledger.holdings(live_mover).get(KIND, 0) == 1
     _cycle(q, tmp_path, receipts)
     assert ledger.free_supply().get(KIND, 0) == 4
@@ -454,22 +456,22 @@ def test_release_fault_recovers_on_next_cycle(tmp_path, monkeypatch, fault, rest
 def test_released_record_with_held_tokens_recovers_after_restart(tmp_path):
     """Repair the unsafe state that the previous release order created."""
     q, mover, live_mover, _, *_ = _stranded_with_live_intent(tmp_path)
-    assert q.release_output_funding(mover, TIER)
+    assert q.funding.release_output(mover, TIER).released
     ledger = q.tier(TIER)
     assert ledger.holdings(mover).get(KIND, 0) == 1
-    live_before = q.read_output_funding(live_mover, TIER)
+    live_before = q.funding.read_output(live_mover, TIER)
     q = pool.PoolQueue(q.root)
     _cycle(q, tmp_path, tier_loop.ReceiptCache())
-    assert q.read_output_funding(mover, TIER)["state"] == "released"
+    assert q.funding.read_output(mover, TIER)["state"] == "released"
     assert ledger.holdings(mover).get(KIND, 0) == 0
     assert ledger.free_supply().get(KIND, 0) == 4
-    assert q.read_output_funding(live_mover, TIER) == live_before
+    assert q.funding.read_output(live_mover, TIER) == live_before
 
 
 def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeypatch):
     """Keep the old release's proof until its tokens return to free."""
     q, mover, live_mover, receipts, inst, *_ = _stranded_with_live_intent(tmp_path)
-    assert q.release_output_funding(mover, TIER)
+    assert q.funding.release_output(mover, TIER).released
     prewrite = bl.prewrites_dir(q.root, inst) / "fault.prewrite.json"
     release = pool.ResourceLedger.release
 
@@ -486,7 +488,7 @@ def test_released_record_keeps_prewrite_during_release_failure(tmp_path, monkeyp
     q = pool.PoolQueue(q.root)
     _cycle(q, tmp_path, tier_loop.ReceiptCache())
     assert q.tier(TIER).holdings(mover).get(KIND, 0) == 0
-    assert q.read_output_funding(live_mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(live_mover, TIER)["state"] == "transferring"
 
 
 @pytest.mark.parametrize("state", ["transferring", "released"])
@@ -496,7 +498,7 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
     """A marker does not waive the proof of nonexecution or absent paths."""
     q, mover, live_mover, _, inst, _, descs = _stranded_with_live_intent(tmp_path)
     if state == "released":
-        assert q.release_output_funding(mover, TIER)
+        assert q.funding.release_output(mover, TIER).released
     if guard == "lease":
         pool.immutable_files.write_json_atomic(q.records.lease_path(mover), {"owner": "live-mover"})
     elif guard == "partial":
@@ -517,11 +519,11 @@ def test_release_rechecks_safety_for_both_states(tmp_path, monkeypatch, state, g
 
         monkeypatch.setattr(tier_loop.os, "lstat", unreadable)
     events = _settle(q)
-    assert q.read_output_funding(mover, TIER)["state"] == state
+    assert q.funding.read_output(mover, TIER)["state"] == state
     assert q.tier(TIER).holdings(mover).get(KIND, 0) == 1
     assert not any(e["event"] == "output-funding-tokens-released"
                    and e["mover"] == mover for e in events)
-    assert q.read_output_funding(live_mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(live_mover, TIER)["state"] == "transferring"
 
 
 @pytest.mark.parametrize("race", ["publish", "claim"])
@@ -552,7 +554,7 @@ def test_mover_race_before_lock_preserves_reservation(tmp_path, monkeypatch, rac
     monkeypatch.setattr(q, "action_transition_lock", race_before_lock)
     _settle(q)
     assert raced
-    assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+    assert q.funding.read_output(mover, TIER)["state"] == "transferring"
     assert q.tier(TIER).holdings(mover).get(KIND, 0) == 1
 
 
@@ -572,10 +574,10 @@ def test_partial_token_release_retries_without_settling_marker(tmp_path, monkeyp
     with monkeypatch.context() as patch:
         patch.setattr(pool.ResourceLedger, "release", short_release)
         _settle(q)
-        assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+        assert q.funding.read_output(mover, TIER)["state"] == "transferring"
         assert ledger.holdings(mover).get(KIND, 0) == 1
     _settle(pool.PoolQueue(q.root))
-    assert q.read_output_funding(mover, TIER)["state"] == "released"
+    assert q.funding.read_output(mover, TIER)["state"] == "released"
     assert ledger.holdings(mover).get(KIND, 0) == 0
 
 
@@ -593,7 +595,7 @@ def test_unknown_token_release_keeps_marker_open(tmp_path, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(pool.immutable_files, 'scan_required', unreadable_holder)
         _settle(q)
-        assert q.read_output_funding(mover, TIER)["state"] == "transferring"
+        assert q.funding.read_output(mover, TIER)["state"] == "transferring"
     assert ledger.holdings(mover).get(KIND, 0) == 0
     _settle(pool.PoolQueue(q.root))
-    assert q.read_output_funding(mover, TIER)["state"] == "released"
+    assert q.funding.read_output(mover, TIER)["state"] == "released"

@@ -98,7 +98,7 @@ def protocol_group(kind):
         return "decomposition"
     if owner in ("prismabuild.core", "prismabuild.client", "prismabuild.data_manifest"):
         return "core"
-    if owner == "prismabuild.pool":
+    if owner in ("prismabuild.pool", "prismabuild.funding"):
         return "queue"
     if owner in ("prismabuild.produced_output", "prismabuild.produced_spool",
                  "prismabuild.batch_ledger", "prismabuild.output_contract"):

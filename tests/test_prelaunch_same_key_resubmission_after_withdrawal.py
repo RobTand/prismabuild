@@ -13,6 +13,7 @@ Everything runs on a ``tmp_path`` queue through the real tier cycle.
 """
 from __future__ import annotations
 
+
 import json
 from pathlib import Path
 import sys
@@ -151,8 +152,8 @@ def _uncovered(queue, movers, gib_of) -> dict[str, tuple]:
     for mover in movers:
         if not queue.records.item_path(pool.record_store.READY, mover).exists():
             continue
-        covered = queue.funded_cover(TIER, _row(queue, mover), "stage_gib",
-                                     gib_of[mover])
+        covered = queue.funding.cover_window(TIER, _row(queue, mover), "stage_gib",
+                                     gib_of[mover]).credit
         if covered[0] != gib_of[mover]:
             out[mover[-8:]] = covered
     return out

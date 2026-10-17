@@ -22,6 +22,7 @@ are held throughout, by one key or the other, and at no point by neither.
 """
 from __future__ import annotations
 
+
 from contextlib import contextmanager
 import json
 from pathlib import Path
@@ -274,7 +275,7 @@ def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     # with a live funding record and no move receipt -- a landed mover
     # always has its receipt and stays compared.
     fenced = {key for key in held
-              if (record := queue.read_funding(key, TIER)) is not None
+              if (record := queue.funding.read_window(key, TIER)) is not None
               and record.get("state") in ("reserved", "transferring")
               and queue.move_record(key) is None}
     held = {key: gib for key, gib in held.items() if key not in fenced}
@@ -540,7 +541,7 @@ def test_an_orphan_is_evicted_when_a_window_cannot_be_placed_without_it(
     # Useful progress, not just reclamation: the admitted window publishes
     # its first mover and protects its next.
     assert queue.records.item_path(pool.record_store.READY, _hexkey("secondmover0")).exists()
-    record = queue.read_funding(_hexkey("secondmover1"), TIER)
+    record = queue.funding.read_window(_hexkey("secondmover1"), TIER)
     assert record is not None and record["state"] in (
         "reserved", "transferring"), record
 
@@ -632,7 +633,7 @@ def test_a_feasible_newcomers_relief_takes_the_orphan_never_the_live_reader(
     assert q.tier(TIER).holdings(_hexkey('stalemover0')) == {}
     assert not any(path.exists() for path in orphan_files)
     assert q.records.item_path(pool.record_store.READY, _hexkey("secondmover0")).exists()
-    record = q.read_funding(_hexkey("secondmover1"), TIER)
+    record = q.funding.read_window(_hexkey("secondmover1"), TIER)
     assert record is not None and record["state"] in (
         "reserved", "transferring"), record
     assert_ledger_matches_the_stage(q)

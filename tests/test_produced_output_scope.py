@@ -12,6 +12,9 @@ tests use truncate (no pages). No capability is announced. General-window
 admission returns the delivered prepaid-per-batch window declaration.
 """
 from __future__ import annotations
+
+
+from prismabuild.legacy_funding import LegacyFunding
 from prismabuild import batch_ledger as bl
 from prismabuild import output_contract as oc
 
@@ -935,7 +938,7 @@ def test_transfer_short_resumes_from_intent(tmp_path: Path) -> None:
     batch_ns = oc.batch_namespace(instance, "big", manifest)
     ledger = queue.tier(STAGE_TIER)
     assert ledger.take(batch_ns, {STAGE_BARE: 2}) is True
-    bl._write_funding(bl._funding_dir(queue.root, instance) / "big.funding.json", {
+    LegacyFunding(LegacyFunding.directory(bl.scope_dir(queue.root, instance)) / "big.funding.json").file({
         "batch_id": "big", "tier": STAGE_TIER, "mover_key": mover,
         "batch_gib": 2, "manifest_digest": manifest})
     held = ledger.paths.held
@@ -1161,7 +1164,7 @@ def test_funding_mover_live_retain(tmp_path: Path) -> None:
     ledger = queue.tier(STAGE_TIER)
     assert ledger.take(ns, {STAGE_BARE: 1}) is True
     mover = "a" * 64
-    bl._write_funding(bl._funding_dir(queue.root, instance) / "batch-w.funding.json", {
+    LegacyFunding(LegacyFunding.directory(bl.scope_dir(queue.root, instance)) / "batch-w.funding.json").file({
         "batch_id": "batch-w", "tier": STAGE_TIER, "mover_key": mover,
         "batch_gib": 1, "manifest_digest": "0" * 64})
     queue.publish(action_key=mover, cas_root="/cas", worker_script="/w.py",

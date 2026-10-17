@@ -6,6 +6,7 @@ The integrator runs them; nothing here runs anything itself.
 """
 from __future__ import annotations
 
+
 import hashlib
 import json
 import os
@@ -437,12 +438,12 @@ def test_split_to_movers_keeps_the_sum(tmp_path) -> None:
     unit, holder = _group(queue, plan, [first, second], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [first, second])
     row_a = _publish(queue, plan, first)
-    out_a = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, first),
+    out_a = queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, first),
                              float(row_a["published_unix"]))
     assert out_a.status == "published" and out_a.moved == 2
     free_mid = ledger.free_supply().get('stage_gib')
     row_b = _publish(queue, plan, second)
-    out_b = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, second),
+    out_b = queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, second),
                              float(row_b["published_unix"]))
     assert out_b.status == "published" and out_b.moved == 2
     assert ledger.free_supply().get('stage_gib') == free_mid == 4
@@ -461,10 +462,10 @@ def test_publish_repeats_idempotently(tmp_path) -> None:
     unit, holder = _group(queue, plan, [mover], demand=2)
     _drive_to_committed(queue, TIER, unit, holder, 2, [mover])
     row = _publish(queue, plan, mover)
-    first = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
+    first = queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, mover),
                              float(row["published_unix"]))
     assert first.status == "published"
-    second = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
+    second = queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, mover),
                               float(row["published_unix"]))
     assert second.status == "already"
     assert second.generation == first.generation
@@ -480,7 +481,7 @@ def test_publish_refuses_without_a_mover_row(tmp_path) -> None:
     _drive_to_committed(queue, TIER, unit, holder, 2, [mover])
     residency_plan.freeze(queue, plan)
     row = {"published_unix": 1.0}
-    outcome = pg.publish_chunk(queue, TIER, unit, holder, plan,
+    outcome = queue.funding.bind_chunk( TIER, unit, holder, plan,
                                _leg(plan, mover), float(row["published_unix"]))
     assert outcome.status == "refused"
     assert "prelaunch-mover-unpublished" in outcome.events
@@ -494,17 +495,17 @@ def test_republished_mover_rotates_to_a_fresh_generation(tmp_path) -> None:
     unit, holder = _group(queue, plan, [mover], demand=2)
     _drive_to_committed(queue, TIER, unit, holder, 2, [mover])
     row = _publish(queue, plan, mover)
-    first = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
+    first = queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, mover),
                              float(row["published_unix"]))
     assert first.status == "published"
     republished = dict(row, published_unix=float(row["published_unix"]) + 1.0)
     queue.records.item_path(pool.record_store.READY, mover).write_text(
         json.dumps(republished), encoding="utf-8")
-    second = pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
+    second = queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, mover),
                               float(republished["published_unix"]))
     assert second.status == "published"
     assert second.generation != first.generation
-    assert queue.funded_cover(TIER, republished, "stage_gib", 2)[1] == second.generation
+    assert queue.funding.cover_window(TIER, republished, "stage_gib", 2).credit[1] == second.generation
 
 
 def test_mover_claim_uses_funding_without_a_second_charge(tmp_path) -> None:
@@ -517,16 +518,16 @@ def test_mover_claim_uses_funding_without_a_second_charge(tmp_path) -> None:
     unit, holder = _group(queue, plan, [first, second], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [first, second])
     row = _publish(queue, plan, first)
-    published = pg.publish_chunk(queue, TIER, unit, holder, plan,
+    published = queue.funding.bind_chunk( TIER, unit, holder, plan,
                                  _leg(plan, first), float(row["published_unix"]))
     assert published.status == "published"
-    assert queue.funded_cover(TIER, row, "stage_gib", 2) == (2, published.generation)
+    assert queue.funding.cover_window(TIER, row, "stage_gib", 2).credit == (2, published.generation)
     free_before = ledger.free_supply().get('stage_gib')
     got = queue.claim(tags=["dl380g10"], owner="w-mover")
     assert got is not None and got["action_key"] == first
     assert ledger.free_supply().get('stage_gib') == free_before
     assert int(ledger.holdings(first).get('stage_gib', 0)) == 2
-    record = queue.read_funding(first, TIER)
+    record = queue.funding.read_window(first, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == published.generation
 
@@ -543,13 +544,13 @@ def test_release_at_terminal_with_an_unconsumed_chunk(tmp_path) -> None:
     unit, holder = _group(queue, plan, [mover], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [mover])
     row = _publish(queue, plan, mover)
-    published = pg.publish_chunk(queue, TIER, unit, holder, plan,
+    published = queue.funding.bind_chunk( TIER, unit, holder, plan,
                                  _leg(plan, mover), float(row["published_unix"]))
     assert published.status == "published"
     assert pg.release_unit(queue, TIER, unit, holder, [mover],
                            terminal=True) == ["prelaunch-group-released"]
     assert ledger.free_supply().get('stage_gib') == 8
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "released"
     released = json.loads((pg.group_dir(queue, unit, TIER) / "released.json").read_text())
     assert released["holder_released"] == 2
@@ -568,17 +569,17 @@ def test_release_at_terminal_keeps_a_copying_chunk(tmp_path) -> None:
     unit, holder = _group(queue, plan, [first, second], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [first, second])
     row_a = _publish(queue, plan, first)
-    assert pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, first),
+    assert queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, first),
                             float(row_a["published_unix"])).status == "published"
     got = queue.claim(tags=["dl380g10"], owner="w-copy")
     assert got is not None and got["action_key"] == first
     row_b = _publish(queue, plan, second)
-    assert pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, second),
+    assert queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, second),
                             float(row_b["published_unix"])).status == "published"
     assert pg.release_unit(queue, TIER, unit, holder, [first, second],
                            terminal=True) == ["prelaunch-group-released"]
     assert int(ledger.holdings(first).get('stage_gib', 0)) == 2
-    record = queue.read_funding(first, TIER)
+    record = queue.funding.read_window(first, TIER)
     assert record is not None and record["state"] == "consumed"
     assert int(ledger.holdings(second).get('stage_gib', 0)) == 0
     assert ledger.free_supply().get('stage_gib') == 6
@@ -593,12 +594,12 @@ def test_release_leaves_a_shared_mover_alone(tmp_path) -> None:
     unit, holder = _group(queue, plan, [mover], demand=4)
     _drive_to_committed(queue, TIER, unit, holder, 4, [mover])
     row = _publish(queue, plan, mover)
-    assert pg.publish_chunk(queue, TIER, unit, holder, plan, _leg(plan, mover),
+    assert queue.funding.bind_chunk( TIER, unit, holder, plan, _leg(plan, mover),
                             float(row["published_unix"])).status == "published"
     assert pg.release_unit(queue, TIER, unit, holder, [mover], terminal=True,
                            shared_owned={mover}) == ["prelaunch-group-released"]
     assert int(ledger.holdings(mover).get('stage_gib', 0)) == 2
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
     assert ledger.free_supply().get('stage_gib') == 6
 

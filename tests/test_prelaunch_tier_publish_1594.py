@@ -6,6 +6,7 @@ test_window_two_consumers_hold_and_wait.py. Each test drives
 tier_loop.residency_window through real transitions. The integrator runs
 them; nothing here runs anything itself.
 """
+
 from pathlib import Path
 import sys
 
@@ -85,7 +86,7 @@ def test_declared_window_reserves_then_publishes_and_binds(tmp_path) -> None:
              if event.get("event") == "prelaunch-chunk-published"]
     assert {event["mover"] for event in bound} == set(movers)
     for mover in movers:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring"
 
 

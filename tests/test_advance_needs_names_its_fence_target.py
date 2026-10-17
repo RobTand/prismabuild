@@ -203,12 +203,12 @@ def test_protection_holds_the_named_advance_before_it_permits(
         tier_of=lambda plan: plan.get("tier_id"),
         state_of=tier_loop._mover_state)
 
-    assert result["gated"] == {}
-    entry = result["permitted"][(CONSUMER, STAGE_TIER)]
+    assert result.gated == {}
+    entry = result.permitted[(CONSUMER, STAGE_TIER)]
     assert entry["advance"] == "blind-held"
-    grant = result["grants"][(CONSUMER, STAGE_TIER)]
+    grant = result.grants[(CONSUMER, STAGE_TIER)]
     assert grant == window_credit.grant_key(
         CONSUMER, STAGE_TIER, "mover_row", "phase-0001", None)
     assert queue.tier(STAGE_TIER).holdings(grant) == {'stage_gib': 2}
-    assert [key for key in result["grants"] if key[0] == CONSUMER] == [
+    assert [key for key in result.grants if key[0] == CONSUMER] == [
         (CONSUMER, STAGE_TIER)]
