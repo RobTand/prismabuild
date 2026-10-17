@@ -71,7 +71,7 @@ def offer_fill(queue: pool.PoolQueue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, FILL: mb_s}
-    pool.record_store._write_json(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
 
 
 def sealed(spool, batch) -> dict:
@@ -96,7 +96,7 @@ def file_prior_receipt(queue, owner, *, rate=60.0, unix=2000.0,
               "flushes": 3, "mb_per_s_file_side": rate}
     exports = Path(queue.root) / "exports"
     exports.mkdir(parents=True, exist_ok=True)
-    pool.record_store._write_json(exports / f"{key}.json", record)
+    pool.immutable_files.write_json_atomic(exports / f"{key}.json", record)
 
 
 def claim(spool):
