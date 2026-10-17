@@ -346,16 +346,14 @@ def test_a_pin_owner_never_moves(fleet) -> None:
     map_key = residency_map.residency_map_key(str(mount / NAMES[0]), 0)
     entry = {"stage_path": str(target), "bytes": SIZE, "offset": 0,
              "sha256": hashlib.sha256(good).hexdigest()}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,
-        "entries": {map_key: entry}})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover, tier_id=TIER,
-        stage_root=str(stage), manifest_sha256="e" * 64,
+        "entries": {map_key: entry}},
         generation=reader_lease.mint_generation(),
-        entries={map_key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
+        material_entries={map_key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
     pin = reader_lease.acquire(
         queue, consumer_action_key=consumer, attempt={"nonce": "n1", "scope_id": "s1"},
         tier_id=TIER, epoch="", span={"start_bytes": 0, "end_bytes": SIZE},

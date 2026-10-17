@@ -177,19 +177,17 @@ def _publish_donor_record(queue: pool.PoolQueue, *, mover: str, consumer: str,
     identity = reader_lease.stat_identity(str(destination))
     assert identity is not None
     root = queue.records.residency_fragment_root()
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": MANIFEST,
         "entries": {MAP_KEY: {
             "stage_path": str(destination), "bytes": SIZE, "offset": 0,
-            "sha256": DIGEST}}})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
+            "sha256": DIGEST}}},
         generation=reader_lease.mint_generation(),
-        entries={MAP_KEY: {"stage_path": str(destination), "bytes": SIZE,
+        material_entries={MAP_KEY: {"stage_path": str(destination), "bytes": SIZE,
                            "sha256": DIGEST, "file_id": identity}})
     assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
     start = ordinal * SIZE

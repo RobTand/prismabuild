@@ -67,15 +67,14 @@ def _republish(root: Path, stage: Path, generation: str,
         dated_entries[key] = {
             "stage_path": str(path), "bytes": 512,
             "sha256": digest, "file_id": identity}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": "a" * 64, "entries": staged_entries})
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
-        generation=generation, entries=dated_entries)
+        "manifest_sha256": "a" * 64, "entries": staged_entries},
+        generation=generation,
+        material_entries=dated_entries)
 
 
 def _stage_files(stage: Path) -> tuple[Path, Path]:
