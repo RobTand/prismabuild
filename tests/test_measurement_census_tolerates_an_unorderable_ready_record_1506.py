@@ -57,7 +57,9 @@ def test_a_ready_record_the_queue_cannot_order_does_not_blank_the_census(
     _publish(queue, GOOD)
     _rewrite(_publish(queue, POISON), priority=value)
     assert pool.PoolQueue._unorderable_queue_field(
-        json.loads(queue.records.item_path(pool.record_store.READY, POISON).read_text())) is not None
+        json.loads(
+            queue.records.item_path(pool.record_store.READY, POISON).read_text(),
+        )) is not None
 
     census = mr._capture(queue)
 

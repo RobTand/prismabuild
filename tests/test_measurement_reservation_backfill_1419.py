@@ -55,7 +55,9 @@ def _bounded_measurement_wait(fleet, *, with_other_host=False):
 
     measurement = publish("priority-zero-measurement", measurement=True,
                           priority=0, cpu=8, gpu=1, mem_gb=48)
-    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     assert adaptive_cpu.action_identity(item)[1] is True
     assert item["resources"] == {"cpu": 8, "gpu": 1, "mem_gb": 48}
@@ -217,7 +219,9 @@ def test_a_portable_measurement_does_not_shut_two_matching_hosts_to_backfill(fle
     other = other_holders[0]
     other_claim = queue.records.item_path(pool.record_store.CLAIMED, other).read_bytes()
     other_tokens = other_ledger.holder_tokens(other)
-    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     assert item["tags"] == []
     # Both hosts match the real measurement; this is NOT the old pinned-row
