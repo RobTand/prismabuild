@@ -1473,7 +1473,11 @@ def _barrier_generation(name):
             raise ValueError("no updater in generation")
         source = GenerationReceipt(receipt).source_declarations(
             agent_path, (root / agent_path).read_bytes())
-        if source.protocol("CLIENT_UPGRADE_ROLLOUT_PROTOCOL") != 1:
+        try:
+            rollout_protocol = source.protocol("CLIENT_UPGRADE_ROLLOUT_PROTOCOL")
+        except ValueError as exc:
+            raise ValueError("generation has no rollout-aware updater; a rolling bridge is required") from exc
+        if rollout_protocol != 1:
             raise ValueError("generation has no rollout-aware updater; a rolling bridge is required")
         return root, receipt
     except (OSError, ValueError, KeyError, TypeError) as exc:
