@@ -3036,6 +3036,8 @@ def _promotion_waits(queue, consumers, plan_files, *, reader, census_reader,
 
 def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced, *, reader, census_reader, now):
     ok = active["active_complete"]
+    states_complete = active["active_complete"] and plan_listing_error is None
+    legs_complete = {leg: plan_listing_error is None for leg in ("stage", "ram")}
     ready, claimed = active["ready"], active["claimed"]
     claimed_listed = active["claimed_listed"]
     plans: dict[tuple[str, str], int] = defaultdict(int)
@@ -3055,6 +3057,8 @@ def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced,
         if entry is None:
             invalid_plans += 1
             unreadable = True
+            states_complete = False
+            legs_complete = {leg: False for leg in legs_complete}
             continue
         census = _plan_census(reader, queue, path, entry, ready=ready,
                               claimed=claimed, claimed_listed=claimed_listed,
@@ -3064,15 +3068,19 @@ def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced,
         unreadable = unreadable or census.unreadable
         if not census.valid:
             invalid_plans += 1
+            states_complete = False
+            legs_complete = {leg: False for leg in legs_complete}
             continue
         if census.state is not None:
             plans[(census.tier_id, census.state)] += 1
         if census.legs is None:
             ok = False
+            legs_complete = {leg: False for leg in legs_complete}
             continue
         for leg, counted in census.legs:
             if counted is None:
                 ok = False
+                legs_complete[leg] = False
                 continue
             staged, phases, missing = counted
             staged_phases[(census.tier_id, leg)] += staged
@@ -3082,7 +3090,8 @@ def _promotion_plans(queue, plan_listing, plan_listing_error, active, announced,
         ok = False
     return _section({"plans": plans, "staged_phases": staged_phases,
                      "unstaged_phases": unstaged_phases, "unstaged_bytes": unstaged_bytes,
-                     "invalid_plans": invalid_plans, "receipts": receipts},
+                     "invalid_plans": invalid_plans, "receipts": receipts,
+                     "states_complete": states_complete, "legs_complete": legs_complete},
                     inputs={"queue_root": str(queue.root), "ready": tuple(sorted(ready)),
                             "claimed": tuple(sorted(claimed)), "sampled_unix": now,
                             "active_complete": active["active_complete"]}, complete=ok)
@@ -3127,7 +3136,7 @@ def _delivery(queue, receipts, *, reader, now, window_seconds):
                      "move_pool_read": move_pool_read, "move_rates": move_rates},
                     inputs={"queue_root": str(queue.root), "now": now,
                             "window_seconds": window_seconds},
-                    bound={"mover_receipts": _MOVE_RECEIPT_CAP}, complete=ok and move_complete)
+                    bound={"mover_receipts": _MOVE_RECEIPT_CAP}, complete=ok)
 
 
 def _qualified_counts(observed, population, *, complete):
@@ -3177,11 +3186,13 @@ def promotion(queue_root: Path, *, now: float, window_seconds: float,
         complete=wait_section.completeness == "complete")
     values["plans"] = _qualified_counts(plan_section.value["plans"],
         ((tier, state) for tier in known_tiers for state in ("claimed", "ready", "absent")),
-        complete=plan_section.completeness == "complete")
+        complete=plan_section.value["states_complete"])
     for field in ("staged_phases", "unstaged_phases", "unstaged_bytes"):
-        values[field] = _qualified_counts(plan_section.value[field],
-            ((tier, leg) for tier in known_tiers for leg in ("stage", "ram")),
-            complete=plan_section.completeness == "complete")
+        values[field] = {}
+        for leg in ("stage", "ram"):
+            observed = {key: count for key, count in plan_section.value[field].items() if key[1] == leg}
+            values[field].update(_qualified_counts(observed, ((tier, leg) for tier in known_tiers),
+                complete=plan_section.value["legs_complete"][leg]))
     for field in ("move_jobs", "measured_jobs"):
         values[field] = _qualified_counts(delivery_section.value[field], known_tiers,
             complete=delivery_section.completeness == "complete")

@@ -16184,6 +16184,9 @@ zero defaults only from complete sections; incomplete population counts are
 withheld. Raw observed counts remain available inside their independent section.
 Holder presence uses the ledger owner's strict `holder_state` observation;
 the legacy tolerant token-count query is insufficient evidence of absence.
+Plan state coverage is independent of C21's phase-residency facts. The receipt
+cap bounds a selected observation; its existing window-completeness flag still
+states whether that selection covered the whole requested time window.
 
 The denial profiles deliberately differ. Active rows select each host's latest
 denial for the exact publication generation, excluding future observations.

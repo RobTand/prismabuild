@@ -288,4 +288,5 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
                 if (event[0] in {"os.listdir", "os.scandir"} and len(relative) == 4
                         and relative[0] == "tier-reservations" and relative[2] == "held"):
                     event[0] = "strict-holder-listing"
+                    event[1] = str(Path(event[1]))
     assert readings[0]["schedules"] == readings[1]["schedules"]
