@@ -15,6 +15,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import contracts, pool  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 
@@ -31,7 +32,7 @@ def data_manifest(paths_and_sizes, *, prefix: str,
         for path, size in paths_and_sizes
     ]
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "tests"},
         "annotations": dict(annotations or {}),
         "mount_prefix": prefix,
@@ -121,9 +122,9 @@ class Fleet:
             manifest = data_manifest(files, prefix=str(self.mount),
                                      annotations=annotations)
             if read_plan is not None:
-                manifest["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+                manifest["schema"] = manifest_codec.DATA_MANIFEST_SCHEMA_V2
                 manifest["read_plan"] = read_plan
-            manifest = pb.validate_data_manifest(manifest)
+            manifest = manifest_codec.validate_data_manifest(manifest)
             blob = self.root / f"{key_seed}.manifest.json"
             blob.write_text(json.dumps(manifest))
             if content_encoding == "gzip":
@@ -134,7 +135,7 @@ class Fleet:
             else:
                 assert content_encoding == "identity"
             entry, _ = self.cas.ingest_input(
-                blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
             inputs.append(entry)
             params["data_manifest"] = {
                 "input": entry, "mount_prefix": manifest["mount_prefix"],
@@ -145,7 +146,7 @@ class Fleet:
                 params["data_manifest"]["content_encoding"] = "gzip"
             if read_plan is not None:
                 params["data_manifest"].update({
-                    "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+                    "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
                     "read_bytes": manifest["read_plan"]["read_bytes"],
                 })
         action = pb.seal_action({

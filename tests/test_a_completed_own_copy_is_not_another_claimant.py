@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 import stage_move  # noqa: E402
 import stage_release  # noqa: E402
 
@@ -77,7 +78,7 @@ def _manifest(tmp_path: Path, name: str, size: int = SIZE) -> Path:
     source = pool_dir / name
     source.write_bytes(payload)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "egress-own-copy-regression"},
         "mount_prefix": str(pool_dir),
         "entries": [{"path": str(source), "offset": 0, "bytes": size,
@@ -97,7 +98,7 @@ def _sealed_mover(queue: pool.PoolQueue, manifest_path: Path, consumer: str,
 
     cas = pb.PrismaBuildCAS(queue.root / "cas")
     manifest_input, _ = cas.ingest_input(
-        manifest_path, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        manifest_path, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     checkout = manifest_path.parent / "checkout"
     checkout.mkdir(parents=True, exist_ok=True)
     (checkout / "task_code.py").write_text("raise SystemExit(0)\n",

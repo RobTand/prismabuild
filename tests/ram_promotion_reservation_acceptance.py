@@ -35,6 +35,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[0] / "src"))
 sys.path.insert(0, str(HERE.parents[0] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
 import ram_promote  # noqa: E402
 
@@ -82,7 +83,7 @@ def cgroup_memory_peak_bytes() -> int | None:
 
 def manifest_bytes(relative: str) -> bytes:
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {},
         "annotations": {},
         "mount_prefix": "/mnt/shared",

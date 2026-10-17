@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, storage_tiers  # noqa: E402
 import prewarm_loop  # noqa: E402
 import tier_loop  # noqa: E402
@@ -95,7 +96,7 @@ def _manifest(phase_sizes: list[list[int]], *, mount: str = "/mnt/shared",
         table.append({"name": f"phase-{ordinal}", "bytes": sum(sizes),
                       "cumulative_bytes": running})
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {}, "annotations": {"phases": table},
         "mount_prefix": mount, "entries": entries,
         "entry_count": len(entries), "total_bytes": running,
