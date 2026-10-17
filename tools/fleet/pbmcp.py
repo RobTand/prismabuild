@@ -346,26 +346,8 @@ def _absent(error: OSError) -> bool:
     return isinstance(error, (FileNotFoundError, NotADirectoryError))
 
 
-def _read_record(path: Path) -> dict | None:
-    try:
-        return pool.read_queue_record(path)
-    except OSError as error:
-        if _absent(error):
-            return None
-        raise
-    except (ValueError, pool.PoolContractError):
-        return None
 
 
-def _keys_in(directory: Path) -> list[str]:
-    try:
-        with os.scandir(directory) as entries:
-            return sorted(entry.name[:-5] for entry in entries
-                          if entry.name.endswith(".json") and entry.is_file())
-    except OSError as error:
-        if _absent(error):
-            return []
-        raise
 
 
 def _valid_prefix(key_prefix: object) -> str:
@@ -386,46 +368,10 @@ def _valid_prefix(key_prefix: object) -> str:
 
 
 def _resolve_prefix(queue_root: Path, key_prefix: str) -> list[str]:
-    """Every action key under this prefix, across live and terminal states.
-
-    A prefix rather than a key because that is what an operator and an agent
-    both hold: ``pbstatus`` prints twelve characters and ``pbrun`` says
-    ``pb-<key12>``.  An ambiguous prefix is answered with its candidates
-    rather than with the first match: picking one would be a guess, and the
-    caller can disambiguate with two more characters.
-    """
-
     prefix = _valid_prefix(key_prefix)
-    found: set[str] = set()
-    for state in STATES:
-        found.update(key for key in _keys_in(Path(queue_root) / state)
-                     if key.startswith(prefix))
-    decisions = Path(queue_root) / pool.record_store.WITHDRAWN / "decisions"
-    try:
-        with os.scandir(decisions) as entries:
-            found.update(entry.name for entry in entries
-                         if entry.is_dir() and entry.name.startswith(prefix))
-    except OSError as error:
-        if not _absent(error):
-            raise
-    try:
-        with os.scandir(Path(queue_root) / pool.record_store.ATTEMPTS) as entries:
-            found.update(entry.name for entry in entries
-                         if entry.is_dir() and entry.name.startswith(prefix))
-    except OSError as error:
-        if not _absent(error):
-            raise
-    return sorted(found)
+    return pool.record_store.RecordStore(queue_root).inspection_prefix(prefix)
 
 
-def _records_for(queue_root: Path, key: str) -> dict[str, dict]:
-    queue = pool.PoolQueue(Path(queue_root).absolute())
-    records = {}
-    for state in STATES:
-        record = _read_record(queue.records.item_path(state, key))
-        if record is not None:
-            records[state] = record
-    return records
 
 
 def _ending_view(answer: Mapping[str, object]) -> dict:
@@ -473,11 +419,7 @@ def _queue_view(queue_root: Path, key: str) -> dict:
     """
 
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    records: dict[str, dict] = {}
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        record = _read_record(queue.records.item_path(state, key))
-        if record is not None:
-            records[state] = record
+    records = queue.records.inspection_live_records(key)
     # A capture that cannot read the terminal slots at all is left to raise:
     # ``call.read`` records the section as unavailable and the payload says
     # ``found: null``.  Swallowing it here would answer ``{}`` and let a dead
@@ -672,7 +614,7 @@ def _attempt_evidence(queue_root: Path, record: Mapping[str, object]) -> dict:
                              "unreadable": "outcome link is not its canonical path",
                              "link": link.get("outcome"), "canonical": relative})
             continue
-        value = _read_record(expected)
+        value = pool.record_store.inspection_document(expected)
         if value is None:
             outcomes.append({"attempt": number, "unreadable": "unreadable outcome",
                              "path": str(expected)})
@@ -804,7 +746,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
                 raise
             continue
         for path in attempts:
-            value = _read_record(Path(path))
+            value = pool.record_store.inspection_document(Path(path))
             if value is None:
                 continue
             context = value.get("preemption_context")
@@ -847,7 +789,7 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
     except pool.PoolContractError:
         pass
     candidates.extend(_archived_preemption_records(queue_root, key))
-    candidates.extend(_records_for(queue_root, key).values())
+    candidates.extend(pool.record_store.RecordStore(queue_root).inspection_records(key).values())
     successors = []
     for record in candidates:
         theirs = record.get("published_unix")
@@ -906,7 +848,7 @@ def _derived_claim(record: Mapping[str, object]) -> dict:
                           "digest in its own result at the end of the "
                           "attempt's stdout, which pb_log returns."}
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
-    action = _read_record(request)
+    action = pool.record_store.inspection_document(request)
     if action is None:
         return {"sha256": None, "request": str(request),
                 "reason": "the action manifest is not in the CAS"}
@@ -939,7 +881,7 @@ def _receipt_summary(record: Mapping[str, object]) -> dict:
         return {"present": None, "reason": "the record names no CAS root"}
     path = (Path(str(cas_root)) / "actions"
             / pb.CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1] / key[:2] / f"{key}.json")
-    receipt = _read_record(path)
+    receipt = pool.record_store.inspection_document(path)
     if receipt is None:
         return {"present": False, "path": str(path)}
     result = receipt.get("result")
@@ -992,8 +934,8 @@ def _mover_live_rows(queue_root: Path) -> list[dict]:
     now = time.time()
     rows: list[dict] = []
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        for key in _keys_in(Path(queue_root) / state):
-            record = _read_record(Path(queue_root) / state / f"{key}.json")
+        for key in pool.record_store.RecordStore(Path(queue_root)).inspection_keys(state):
+            record = pool.record_store.RecordStore(Path(queue_root)).inspection_slot(state, key)
             if record is None:
                 continue
             block = record.get("residency")
@@ -1057,7 +999,7 @@ def _filed_move_receipts(queue_root: Path, *,
     receipts: list[dict] = []
     unreadable = 0
     for _mtime, name in stamped[:max(0, int(limit))]:
-        record = _read_record(directory / name)
+        record = pool.record_store.inspection_document(directory / name)
         if (not isinstance(record, Mapping)
                 or record.get("schema") != pool.POOL_MOVE_SCHEMA_V1):
             unreadable += 1
@@ -1171,20 +1113,13 @@ def _tier_rows(queue_root: Path) -> dict:
     under the wrong name is exactly what the reader is trying to see.
     """
 
-    try:
-        with os.scandir(Path(queue_root) / pool.record_store.TIERS) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json") and entry.is_file())
-    except OSError as error:
-        if _absent(error):
-            return {"tiers": [], "invalid": []}
-        raise
+    records = pool.record_store.RecordStore(queue_root)
+    keys = records.inspection_keys(pool.record_store.TIERS)
     tiers: list[dict] = []
     invalid: list[dict] = []
-    for name in names:
-        stem = name[:-len(".json")]
+    for stem in keys:
         try:
-            record = pool.read_queue_record(Path(queue_root) / pool.record_store.TIERS / name)
+            record = pool.record_store.value_or_raise(records.item(pool.record_store.TIERS, stem))
         except (ValueError, pool.PoolContractError) as exc:
             invalid.append({"tier_id": stem, "reason": str(exc)})
             continue
@@ -1260,8 +1195,8 @@ def _cursor_census(queue_root: Path, *, now: float) -> dict:
         if not _absent(error):
             raise
         names = []
-    ready = set(_keys_in(root / pool.record_store.READY))
-    claimed = set(_keys_in(root / pool.record_store.CLAIMED))
+    ready = set(pool.record_store.RecordStore(root).inspection_keys(pool.record_store.READY))
+    claimed = set(pool.record_store.RecordStore(root).inspection_keys(pool.record_store.CLAIMED))
     rows: list[dict] = []
     for name in names:
         key = name[:-len(".json")]
@@ -2069,7 +2004,7 @@ class Session:
         }
         not_checked = ["worker attestation (needs the full action manifest; "
                        "core.PrismaBuildCAS.lookup is the verifier)"]
-        claim = call.read("claim", lambda: _read_record(path))
+        claim = call.read("claim", lambda: pool.record_store.inspection_document(path))
         checks["claim_present"] = claim is not None
         payload: dict[str, object] = {
             "sha256": digest, "cas_root": str(root), "claim_path": str(path),
@@ -2087,7 +2022,7 @@ class Session:
         receipt_path = (root / "actions" / pb.CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1]
                         / key[:2] / f"{key}.json")
         payload["receipt_path"] = str(receipt_path)
-        receipt = call.read("receipt", lambda: _read_record(receipt_path))
+        receipt = call.read("receipt", lambda: pool.record_store.inspection_document(receipt_path))
         checks["receipt_present"] = receipt is not None
         if receipt is not None:
             receipt_body = {name: receipt.get(name) for name in pb.CAS_RECEIPT_BODY_KEYS}
@@ -2194,7 +2129,7 @@ class Session:
 
         manifest = call.read(
             "manifest",
-            lambda: _read_record(self.repo_link / "RUNTIME_VERSION.json"))
+            lambda: pool.record_store.inspection_document(self.repo_link / "RUNTIME_VERSION.json"))
         census = call.read("pool", lambda: pbstatus.read_pool(self.queue_root))
         rollout = call.read("rollout",
                             lambda: pbstatus.read_rollout_summary(self.repo_link))
@@ -2282,7 +2217,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     if keys:
         for prefix in keys:
             for key in _resolve_prefix(root, prefix):
-                for state, record in _records_for(root, key).items():
+                for state, record in pool.record_store.RecordStore(root).inspection_records(key).items():
                     if state in states:
                         scanned += 1
                         rows.append(_row(state, record, now))
@@ -2290,9 +2225,9 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         if state not in states:
             continue
-        for key in _keys_in(root / state):
+        for key in pool.record_store.RecordStore(root).inspection_keys(state):
             scanned += 1
-            record = _read_record(root / state / f"{key}.json")
+            record = pool.record_store.RecordStore(root).inspection_slot(state, key)
             if record is not None:
                 rows.append(_row(state, record, now))
     terminal = [state for state in states
@@ -2305,7 +2240,7 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
             if path.parent.name not in terminal:
                 continue
             scanned += 1
-            record = _read_record(path)
+            record = pool.record_store.inspection_document(path)
             if record is not None:
                 rows.append(_row(path.parent.name, record, now))
     return {"rows": rows, "scanned": scanned, "truncated": truncated}

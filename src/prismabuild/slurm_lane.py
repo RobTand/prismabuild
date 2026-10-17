@@ -2355,26 +2355,6 @@ def _record_generation(record: Mapping[str, object] | None) -> float | None:
     return float(theirs)
 
 
-def _read_json_object(path: Path) -> dict[str, object] | None:
-    """The JSON object at ``path``, revalidated first, or ``None``.
-
-    Listing the parent before the read is the rule ``read_withdrawal_marker``
-    and ``pbrun.terminal_record`` already follow on these directories: they are
-    on NFS with default attribute caching, where a lookup of a name that did
-    not exist yet is negatively cached and keeps answering ENOENT after the
-    file has landed.
-    """
-
-    try:
-        if path.name not in os.listdir(path.parent):
-            return None
-    except OSError:
-        return None
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return record if isinstance(record, dict) else None
 
 
 def _same_generation(path: Path, published_unix: float) -> bool:
@@ -2390,10 +2370,7 @@ def _same_generation(path: Path, published_unix: float) -> bool:
     over a later run's.
     """
 
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
+    existing = record_store.RecordStore.wait_notice_at(path)
     theirs = _record_generation(existing if isinstance(existing, dict) else None)
     return theirs is not None and theirs == float(published_unix)
 
@@ -2499,18 +2476,9 @@ def _land_summary(
         # A delayed waiter may choose a different terminal state than the
         # newer run. Comparing only the target filename would let its old
         # failure land alongside that newer run's success (or withdrawal).
-        for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
-            sibling = path.parent.parent / state / path.name
-            try:
-                present = sibling.name in os.listdir(sibling.parent)
-            except FileNotFoundError:
-                present = False
-            if not present or sibling == path:
-                continue
-            existing = _read_json_object(sibling)
-            if existing is not None and _newer_ending_stands(
-                existing, published_unix
-            ):
+        records = record_store.RecordStore(path.parent.parent)
+        for existing in records.sibling_ending_records(path):
+            if _newer_ending_stands(existing, published_unix):
                 return False
         return _land_summary_locked(
             path, payload, published_unix=published_unix,
@@ -2571,7 +2539,7 @@ def _land_summary_locked(
 
     floor = float(published_unix)
     while True:
-        existing = _read_json_object(path)
+        existing = record_store.RecordStore.polled_object_at(path)
         if existing is None:
             if not record_store.RecordStore(path.parent.parent).file_lane_item_if_absent(
                 path,
@@ -2581,9 +2549,9 @@ def _land_summary_locked(
                 # against it rather than replacing it unseen. If the name
                 # contains unreadable JSON, repeating this loop cannot make
                 # progress. Preserve its bytes before filing the known ending.
-                if (path.name in os.listdir(path.parent)
-                        and _read_json_object(path) is None):
-                    archive = path.parent / "unreadable"
+                if (record_store.RecordStore.listed_slot(path)
+                        and record_store.RecordStore.polled_object_at(path) is None):
+                    archive = record_store.RecordStore.lane_unreadable_dir(path)
                     archive.mkdir(parents=True, exist_ok=True)
                     os.rename(path, archive / (
                         record_store.RecordStore.lane_unreadable_name(
@@ -2597,7 +2565,7 @@ def _land_summary_locked(
             ):
                 return False
             record_store.RecordStore(path.parent.parent).replace_lane_item_at(path, payload)
-        after = _read_json_object(path)
+        after = record_store.RecordStore.polled_object_at(path)
         standing = None if after is None else _record_generation(after)
         if standing is None or standing >= floor:
             # Ours, or a later run's, or one that names no generation -- and a
@@ -2664,7 +2632,7 @@ def publish_outcome(
         state = record_store.FAILED
     path = record_store.RecordStore(queue_root).lane_item_address(state, key)
     decision: dict[str, object] = {}
-    existing = _read_json_object(path)
+    existing = record_store.RecordStore.polled_object_at(path)
     if existing is not None:
         if _newer_ending_stands(existing, published_unix):
             # A later run of this key has already ended.  Its account stands:
@@ -2829,21 +2797,9 @@ def read_withdrawal_marker(
     """
 
     key = str(action_key)
-    directory = Path(queue_root) / record_store.WITHDRAWN
-    path = directory / f"{key}.json"
-    try:
-        if path.name not in os.listdir(directory):
-            return path, None
-    except OSError:
-        # No directory yet, or one this box cannot list.  Either way there is
-        # nothing to read, and inventing a decision would be worse than
-        # missing one.
-        return path, None
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return path, None
-    return path, record if isinstance(record, dict) else None
+    records = record_store.RecordStore(queue_root)
+    path = records.item_path(record_store.WITHDRAWN, key)
+    return path, records.polled_object_at(path)
 
 
 def publish_withdrawal(
@@ -2987,7 +2943,7 @@ def supersede_withdrawal(
         # Gone between the read and the claim: another submission of a later
         # generation retired it, and archiving it is that call's business.
         return None
-    claimed = _read_json_object(archive)
+    claimed = record_store.RecordStore.polled_object_at(archive)
     generation = _record_generation(claimed)
     if claimed is None or (generation is not None
                            and generation >= float(published_unix)):
@@ -3441,33 +3397,6 @@ NO_VERDICT = "no-verdict"      #: the controller knows no such job and there is 
 UNREACHABLE = "unreachable"    #: the controller could not be asked
 
 
-def _filed_index(queue_root: str | Path) -> dict[str, list[tuple[str, Path]]]:
-    """Every terminal record on disk, keyed by action key.
-
-    One ``listdir`` per state directory rather than one ``stat`` per key.  The
-    live lane root holds a directory per action this fleet has ever submitted,
-    and asking the shared mount about each of them separately is the slow path
-    a sweep would otherwise spend all its time in.
-
-    Read by ``listdir`` for the reason ``pbrun.terminal_record`` gives: a
-    ``stat`` of a path that did not exist yet is negatively cached on NFS, so
-    a record filed by another box can stay invisible for ``acdirmax``.
-    """
-
-    index: dict[str, list[tuple[str, Path]]] = {}
-    for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
-        directory = Path(queue_root) / state
-        try:
-            names = os.listdir(directory)
-        except OSError:
-            continue
-        for name in names:
-            if not name.endswith(".json"):
-                continue
-            index.setdefault(name[: -len(".json")], []).append(
-                (state, directory / name)
-            )
-    return index
 
 
 def _ending_on_disk(
@@ -3490,7 +3419,7 @@ def _ending_on_disk(
     floor = float(published_unix)
     superseded = False
     for state, path in filed:
-        record = _read_json_object(path)
+        record = record_store.RecordStore.polled_object_at(path)
         if record is None:
             # Filed and unreadable.  Not this sweeper's to replace: a rewrite
             # would destroy the evidence an operator needs to repair it.
@@ -3599,7 +3528,7 @@ def sweep(
     """
 
     wanted = recorded_keys(root) if keys is None else [str(key) for key in keys]
-    filed = _filed_index(queue_root)
+    filed = record_store.RecordStore(queue_root).filed_ending_index()
     rows: list[dict[str, object]] = []
     for key in wanted:
         submission = recorded_submission(key, root=root)
@@ -3697,8 +3626,7 @@ def _filed_ending(
 
     floor = float(published_unix)
     for state in (record_store.DONE, record_store.FAILED, record_store.WITHDRAWN):
-        record = _read_json_object(
-            Path(queue_root) / state / f"{action_key}.json")
+        record = record_store.RecordStore.polled_object_at(record_store.RecordStore(queue_root).item_path(state, action_key))
         if record is not None and _record_generation(record) == floor:
             if state == record_store.WITHDRAWN and "detail" not in record:
                 continue

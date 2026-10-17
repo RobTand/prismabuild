@@ -2776,9 +2776,9 @@ def detach_line(
             "published_unix": published_unix,
             "job_id": str(job_id) if job_id is not None else None,
             "submission": str(submission) if submission is not None else None,
-            "done": str(queue / pool.record_store.DONE / f"{key}.json"),
-            "failed": str(queue / pool.record_store.FAILED / f"{key}.json"),
-            "withdrawn": str(queue / pool.record_store.WITHDRAWN / f"{key}.json"),
+            "done": str(pool.record_store.RecordStore(queue).item_path(pool.record_store.DONE, key)),
+            "failed": str(pool.record_store.RecordStore(queue).item_path(pool.record_store.FAILED, key)),
+            "withdrawn": str(pool.record_store.RecordStore(queue).item_path(pool.record_store.WITHDRAWN, key)),
         },
         sort_keys=True,
     )
@@ -2795,14 +2795,7 @@ def published_generation(q, key: str, path) -> float | None:
     run the record belongs to.
     """
 
-    candidates = [Path(path)]
-    for state in (pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED):
-        candidates.append(q.records.item_path(state, key))
-    for candidate in candidates:
-        try:
-            value = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for value in q.records.published_records(key, Path(path)):
         stamped = value.get("published_unix") if isinstance(value, dict) else None
         if isinstance(stamped, (int, float)) and not isinstance(stamped, bool):
             return float(stamped)
@@ -2840,29 +2833,19 @@ def terminal_record(
     ``None``; waiters opt in so corruption is not reported as a timeout.
     """
 
-    try:
-        # Poll by readdir, not by stat.  The queue lives on NFS, where a stat
-        # of a path that did not exist yet is negatively cached: the outcome
-        # landed and a bare ``exists()`` kept answering False.  Listing the
-        # directory revalidates it.
-        if path.name not in os.listdir(path.parent):
-            return None
-    except OSError:
-        return None
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        # A concurrent requeue can remove an ending after readdir.
-        return None
-    except (OSError, ValueError) as exc:
+    observation = pool.record_store.RecordStore.wait_terminal_at(path)
+    if isinstance(observation, pool.record_store.Unknown):
         if report_unreadable:
-            reason = (str(exc.strerror or type(exc).__name__).lower()
-                      if isinstance(exc, OSError) else "not valid JSON")
-            raise UnreadableTerminal(path, reason) from exc
+            reason = observation.reason
+            if isinstance(observation.error, OSError):
+                exc = observation.error
+                reason = str(exc.strerror or type(exc).__name__).lower()
+            if observation.error is not None:
+                raise UnreadableTerminal(path, reason) from observation.error
+            raise UnreadableTerminal(path, reason)
         return None
-    if not isinstance(record, dict):
-        if report_unreadable:
-            raise UnreadableTerminal(path, "not a JSON object")
+    record = pool.record_store.value_or_raise(observation)
+    if record is None:
         return None
     if generation is None:
         return record
@@ -2905,15 +2888,7 @@ def _preemption_requeue(q, key: str, ending, generation) -> float | None:
     with q._transition_locked(key):
         records = [record for _, record in q.records.withdrawal_decisions(key)]
         records.extend(record for _, record in q.archived_preemption_outcomes(key))
-        for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED,
-                      pool.record_store.WITHDRAWN):
-            try:
-                record = json.loads(
-                    q.records.item_path(state, key).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(record, dict):
-                records.append(record)
+        records.extend(q.records.successor_records(key))
         successors = []
         for record in records:
             theirs = record.get("published_unix")
@@ -2956,8 +2931,7 @@ def outcome_poll(
             return float(value)
         return float("-inf")
 
-    watched = [q.records.item_path(state, key)
-               for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)]
+    watched = q.records.wait_ending_addresses(key)
     found = []
     broken = []
     publication_errors = []
@@ -3628,12 +3602,7 @@ def outstanding_submission(q, key: str, *, lane_root=None):
         generation = lane.get("published_unix")
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("slurm", float(generation), lane))
-    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
-        try:
-            item = json.loads(
-                q.records.item_path(state, key).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for item in q.records.live_submission_records(key):
         generation = item.get("published_unix") if isinstance(item, dict) else None
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("pool", float(generation), item))
@@ -3645,23 +3614,7 @@ def outstanding_submission(q, key: str, *, lane_root=None):
     # existed and a caller reading ``done/`` found nothing (the 6d88c0b15b18
     # canary's leg 3).  The pool's own claim gate treats both suffixes as a
     # live claim (``already_claimed``); agree with it.
-    suffixes = (pool.record_store.TOMBSTONE_SUFFIX, pool.record_store.LATE_FINISH_SUFFIX)
-    try:
-        names = os.listdir(q.records.dir(pool.record_store.CLAIMED))
-    except OSError:
-        names = []
-    for name in names:
-        if not (name.startswith(f"{key}.") and name.endswith(suffixes)):
-            continue
-        try:
-            item = json.loads(
-                (q.records.dir(pool.record_store.CLAIMED) / name).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # Gone because the finish just filed its ending, or not a record:
-            # either way the terminal read that follows answers.
-            continue
-        if not isinstance(item, dict) or item.get("action_key") != key:
-            continue
+    for item in q.records.finishing_submission_records(key):
         generation = item.get("published_unix")
         if isinstance(generation, (int, float)) and not isinstance(generation, bool):
             candidates.append(("pool", float(generation), item))
@@ -3797,8 +3750,7 @@ def _attachment_value(q, key: str, *, lane_root=None):
             attempt=int(submission.get("attempt") or 1))
         job_id = str(submission.get("job_id") or "")
     else:
-        ready = q.records.item_path(pool.record_store.READY, key)
-        record = ready if ready.exists() else q.records.item_path(pool.record_store.CLAIMED, key)
+        record = q.records.attachment_item_address(key)
         job_id = ""
     return {"transport": transport, "generation": generation,
             "job_id": job_id, "submission": str(record)}
@@ -5224,7 +5176,7 @@ def _file_slurm_withdrawal(
     name that did not exist yet is negatively cached, so ``exists()`` keeps
     answering False after the ending has landed.  On a stale answer this verb
     filed a withdrawal over a run already in ``done/`` and reported work that
-    succeeded as cancelled.  ``slurm_lane._read_json_object`` is the general
+    succeeded as cancelled.  ``RecordStore.polled_object_at`` is the general
     form of that revalidation; ``read_withdrawal_marker`` itself is pinned to
     ``withdrawn/`` and this loop reads all three terminal directories.
     """
@@ -5232,8 +5184,8 @@ def _file_slurm_withdrawal(
     key = str(submission["action_key"])
     published_unix = _submission_generation(submission)
     for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
-        filed = queue_root / state / f"{key}.json"
-        filed_record = slurm_lane._read_json_object(filed)
+        filed = pool.record_store.RecordStore(queue_root).item_path(state, key)
+        filed_record = pool.record_store.RecordStore.polled_object_at(filed)
         if filed_record is None:
             continue
         theirs = slurm_lane._record_generation(filed_record)
@@ -5347,11 +5299,9 @@ def _stamp_scancel_accepted(queue_root: Path, submission) -> None:
     """
 
     key = str(submission["action_key"])
-    filed = queue_root / pool.record_store.WITHDRAWN / f"{key}.json"
-    try:
-        record = json.loads(filed.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
+    records = pool.record_store.RecordStore(queue_root)
+    filed = records.item_path(pool.record_store.WITHDRAWN, key)
+    record = records.wait_notice_at(filed)
     if not isinstance(record, dict):
         return
     if not slurm_lane._same_generation(filed, _submission_generation(submission)):
@@ -9353,12 +9303,8 @@ def submit_and_publish(args, *, publication_canary_intent=None,
     # content hash, so re-submitting one is how anybody asks for the same work
     # again -- and a submission that silently revived somebody's cancellation
     # would be as bad as the blacklist it replaced.
-    superseding = None
-    try:
-        superseding = json.loads(
-            q.records.item_path("withdrawn", key).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        superseding = None
+    superseding = q.records.wait_notice_at(
+        q.records.item_path(pool.record_store.WITHDRAWN, key))
 
     # A consumer of consumed produced-output batches is filed against them
     # before its row exists, so their retirement cannot run ahead of it.  A
@@ -9422,8 +9368,7 @@ def submit_and_publish(args, *, publication_canary_intent=None,
                 status="attached",
                 queue_root=q.root,
                 published_unix=generation,
-                submission=ready if ready.exists() else q.records.item_path(
-                    pool.record_store.CLAIMED, key),
+                submission=q.records.attachment_item_address(key),
             ), flush=True)
             return 0
         print(detach_line(
