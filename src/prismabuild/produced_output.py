@@ -66,19 +66,19 @@ realistic broker control through the existing `ResourceScope` verification
 (`_adopt_created_scope` over a canned broker response); production accepts
 only broker-issued controls.
 
-CREDIT vs TOKENS: the admission record is binding metadata, not capacity.
-The producer's action reserves its tier window at claim. Per-batch funding
-transfers exact names from that window to the mover, with no free interval.
-The mover's claim consumes the funding record. `commit_batch` reconciles
-previously allocated funding; it never acquires from free. A positive-byte
-first commit with neither prepaid funding nor an existing legacy intent
-refuses with `prepaid-funding-required`. Direct SDK6 callers must fund first
-or use `publish_prepaid_batch`. Zero-token commits retain their contract.
-Existing legacy intents still recover allocated tokens under the batch
-holder or mover, and publication retains their exact cleanup order. Older
-or rollback writers may still create them; no drain or writer exclusion is
-implied. `admit_funded_window` reports the delivered `prepaid-per-batch`
-declaration. No second ledger subtracts unrelated holders' tokens.
+CREDIT vs TOKENS (liveness R2 direction, binding here): the admission
+record (`admit_instance`) is binding metadata, NOT funding and NOT
+capacity. Physical tokens are held ONLY by batch movers, exact per range,
+acquired under the batch holder and TRANSFERRED whole to mover ownership
+with no free interval (existing `TierLedger.handover`). No standing
+ledger pool is held beside movers. The funded-claim primitive family
+(`FundingLedger.reserve_window` / `ResourceLedger.transfer_tokens` / `FundingLedger.cover_window`) is
+delivered by the prepaid-output lane, so `admit_funded_window` reports the
+delivered `prepaid-per-batch` binding (declaration-only: the owner action's
+own tier demand, reserved once at its claim; per-batch funding is the
+authority). The `funding-primitive-pending` refusal remains only for a
+pool missing one of those primitives. No second ledger here, never
+subtracts unrelated holders' tokens.
 
 MATERIALIZATION (bounded-window restage): a committed BATCH is immutable and
 carries ONE durable origin charge; the stage copy under it is a window the
@@ -973,10 +973,10 @@ def commit_batch(queue, instance: Mapping[str, object],
         # exact transfer from the producer's already-reserved window
         # (stage_output_intent -> publish -> fund_output_batch); commit
         # reconciles that record and files the batch with NO second
-        # acquisition from free. The legacy per-batch intent below remains
-        # only as in-flight recovery for batches that already filed it in
-        # the acquire-from-free era. Unknown pool funding state never
-        # downgrades to the legacy path (that would double-fund).
+        # acquisition from free. The SDK6 direct path also preserves first
+        # acquisition under the batch holder; an existing per-batch intent
+        # repairs allocated tokens without a second take. Unknown pool
+        # funding never downgrades to that path (that would double-fund).
         funding = queue.funding.commit_stage(
             checked_instance, checked_template, batch_id=batch_id,
             manifest_digest=manifest_digest, batch_ns=batch_ns,
