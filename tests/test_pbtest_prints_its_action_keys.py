@@ -28,7 +28,10 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ShardProcess, shard_output_for
+from pbtest_shard_output import (
+    ShardProcess, shard_output_for, emit_client_events, execution_reply, ClientReply, submission_command,
+)
+from prismabuild import action_client as client, action_wait, client_channel, client_recovery
 from test_offer_refusal_retry import _announce_x86, _submit
 from test_pbcampaign import fleet_paths  # noqa: F401
 
@@ -66,14 +69,18 @@ def test_pbrun_names_the_full_key_it_queued(
     assert f"pbrun: queued {key} tags=" in err, err
     generation = json.loads(record.read_text())["published_unix"]
     assert f"published_unix={generation}" in err
-    command = pbtest.recovery_command(err.splitlines(), key, float("inf"))
-    assert command is not None and command[-2] == str(generation)
+    identity = client.PoolClientIdentity(key, generation, queue.root, pbrun.SH / 'cas',
+        record, client.ClientArrival.SUBMITTED)
+    events = client_channel.ClientEventResult(identity,
+        client.ClientEnding(client.ClientUnavailable(key, generation, action_wait.WaitEnd.FINAL_EMPTY)), None)
+    command = client_recovery.command(events, deadline=float('inf'))
+    assert command is not None and command[command.index('--published-unix') + 1] == str(generation)
 
 
 # --- pbtest -----------------------------------------------------------------
 
 def _key(command) -> str:
-    return hashlib.sha256(json.dumps(list(command)).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(submission_command(command)).encode()).hexdigest()
 
 
 class _Queued(ShardProcess):
@@ -116,7 +123,10 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shard_class, *, shards
     def _popen(command, **_kwargs):
         shard = shard_class(command)
         launched.append(shard)
-        return shard
+        reply = (execution_reply(shard.output, shard.returncode, key=shard.key)
+                 if isinstance(shard, _Queued) else
+                 ClientReply('', client.ClientRefused(shard.returncode)))
+        return emit_client_events(shard, _kwargs, reply)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
     report = tmp_path / "shards.json"
