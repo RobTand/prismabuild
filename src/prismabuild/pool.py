@@ -20272,8 +20272,19 @@ class PoolQueue:
             return False
         if reason == "gang_member_elected_elsewhere":
             return True
-        if reason in {"residency_lead_not_resident", "residency_lead_terminal"}:
-            return True
+        residency = evidence.get("residency")
+        if (isinstance(residency, Mapping)
+                and residency.get("state") in candidate_policy.RESIDENCY_REFUSAL_STATES):
+            pending = residency.get("pending")
+            if (residency["state"] not in ("lead_not_resident", "lead_unpinned")
+                    or (isinstance(pending, list) and pending
+                        and all(isinstance(entry, Mapping)
+                                and _is_hex64(entry.get("lead"))
+                                and isinstance(entry.get("status"), str)
+                                and entry["status"]
+                                for entry in pending))):
+                if reason == candidate_policy.residency_denial(residency):
+                    return True
         for name in ("withhold", "starved"):
             verdict = evidence.get(name)
             if (isinstance(verdict, Mapping)
