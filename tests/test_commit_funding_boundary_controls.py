@@ -1,4 +1,4 @@
-"""The narrow mint refusal preserves zero credit and earlier diagnostics."""
+"""SDK6 acquisition preserves zero credit and earlier diagnostics."""
 import json
 
 import pytest

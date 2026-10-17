@@ -46,29 +46,6 @@ def context(store, load, variant):
     return po, pool, core, queue, template, instance
 
 
-def prepaid_stage(queue, pool, oc, template, instance, descriptor):
-    """Construct real current funding before the catalogued batch writer."""
-    manifest = oc.output_manifest_sha256([descriptor])
-    total = int(descriptor['bytes'])
-    ledger = queue.tier(TIER)
-    assert ledger.take(C, {'stage_gib': 1})
-    staged = queue.funding.stage_output(
-        tier_id=TIER, owner_key=C, mover_key=M, instance=instance,
-        template=template, batch_id='batch', descriptors=[descriptor])
-    assert staged['ok'], staged
-    reference = queue.build_produced_output_batch_ref(
-        instance=instance, template=template, batch_id='batch',
-        descriptors=[descriptor], tier_id=TIER)
-    queue.publish(action_key=M, cas_root='/compat/cas', checkout_root='/compat/checkout',
-        worker_script='/compat/worker.py', resources={'cpu': 1, 'mem_gb': 1, 'stage_gib@' + TIER: 1},
-        residency={'schema': pool.RESIDENCY_SCHEMA_V1, 'tier_id': TIER,
-                   'manifest_sha256': manifest, 'manifest_bytes': total,
-                   'range_start_bytes': 0, 'range_end_bytes': total},
-        produced_output_batch=reference)
-    funded = queue.funding.fund_output(
-        tier_id=TIER, owner_key=C, mover_key=M, instance=instance,
-        template=template, batch_id='batch', descriptors=[descriptor])
-    assert funded['ok'], funded
 
 
 def committed(store, load, variant):
@@ -85,8 +62,6 @@ def committed(store, load, variant):
     descriptor = oc.validate_descriptor({"schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": cls, "artifact_class": cls,
         "path": str(path), "bytes": 8, "sha256": None if variant == "null" else hashlib.sha256(b"contents").hexdigest(),
         "producer_generation": G, "owner_action_key": C, "owner_attempt": dict(instance["owner_attempt"])}, template, instance)
-    if not template.get('write_only') and variant != 'readback-origin':
-        prepaid_stage(queue, pool, oc, template, instance, descriptor)
     physical_identity = bl._portable_identity_of
     # These are writer input facts. Restore the real function before any
     # retained consumer runs; no physical file identity is claimed here.

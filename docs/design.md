@@ -10148,7 +10148,7 @@ census over the live records only.
 
 `produced_output.publish_prepaid_batch` is the one production call per
 finished batch: sealed reference -> real CAS request for the stage mover
-(params carry the reference) -> `stage_output_intent` -> `publish` ->
+(params carry the reference) -> `FundingLedger.stage_output` -> `publish` ->
 `FundingLedger.fund_output` (exact transfer of the owner's existing window) ->
 `commit_batch`. `commit_batch` reconciles the pool record (drives a
 `reserved` remainder through `FundingLedger.drive_output`, requires
