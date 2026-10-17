@@ -44,7 +44,11 @@ def baseline_at_submission_owners(value):
 
 
 def quoted_owner(token, quoted):
-    """Retarget a documented function and its quoted definition spelling."""
+    """Retarget a historical quotation to its exact current source owner."""
+    current = json.loads(REGISTRY.read_text())["quoted_moves"].get(token)
+    if current is not None:
+        path, _ = current["owner"].split("::", 1)
+        return path, current["lines"].get(quoted, quoted)
     module, _, symbol = token.partition(".")
     old = f"tools/fleet/{module}.py::{symbol}"
     moved = relocated_locator(old)

@@ -163,5 +163,13 @@
     "tools/fleet/pbrun.py::withdraw_routed": "src/prismabuild/submission.py::withdraw_routed",
     "tools/fleet/pbrun.py::withdraw_slurm_main": "src/prismabuild/submission.py::withdraw_slurm_main",
     "tools/fleet/pbrun.py::write_deterministic_bundle": "src/prismabuild/submission.py::write_deterministic_bundle"
+  },
+  "quoted_moves": {
+    "pbrun.publication_row": {
+      "owner": "src/prismabuild/queue_publication.py::RowPublication.row",
+      "lines": {
+        "        \"checkout_snapshot\": params[\"checkout_snapshot\"],": "            \"checkout_snapshot\": params[\"checkout_snapshot\"],"
+      }
+    }
   }
 }
