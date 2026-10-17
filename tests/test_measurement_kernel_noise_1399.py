@@ -148,7 +148,7 @@ def kernel_rig(fleet, tmp_path, monkeypatch):
         duration = INTERVAL
         if load.get("recorded"):
             previous = adaptive_cpu.read_json(controller.base / "cpu-sample.json")
-            duration -= clock[0] - previous["sampled_unix"]
+            duration -= clock.now - previous["sampled_unix"]
             assert duration > 0
         tick(duration)
         proc.advance(**load)

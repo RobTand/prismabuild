@@ -28,10 +28,11 @@ import pbwait  # noqa: E402
 KEY = "a" * 64
 
 
+from fleet_world import FleetWorld
+
+
 def _queue(tmp_path: Path):
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, queue_name='queue').queue
 
 
 def _outcome(*, generation: float = 1.0) -> dict:

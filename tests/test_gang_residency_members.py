@@ -66,7 +66,7 @@ def _consumer_block(leads: list[str]) -> dict[str, object]:
 
 def _publish_lead(queue, clock, lead: str, stage: Path, *, gib: int = 2) -> None:
     """Publish one movement node the way a frozen plan's mover row is."""
-    clock[0] += 0.001
+    clock.now += 0.001
     queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
@@ -488,10 +488,10 @@ def test_a_member_whose_leads_all_ended_terminally_tears_the_gang_down(
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
     assert _gang.teardown(queue, group) is None, "one reading must not tear the gang down"
     assert _gang.terminal_mark_path(queue, group, first).exists()
-    clock[0] += _gang.TERMINAL_CONFIRM_S - 1
+    clock.now += _gang.TERMINAL_CONFIRM_S - 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None, "the window has not passed"
-    clock[0] += 2
+    clock.now += 2
     assert gclaim("sparklina") is None
     torn = _gang.teardown(queue, group)
     assert torn is not None and "residency_lead_terminal" in str(torn.get("reason")), torn
@@ -564,7 +564,7 @@ def test_a_lead_that_reads_live_again_clears_the_mark_and_the_gang_survives(
 
     # It ends again long after: a terminal reading that is new, not confirmed.
     queue.records.item_path(pool.record_store.CLAIMED, lead).unlink()
-    clock[0] += 10 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 10 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
     assert _gang.teardown(queue, group) is None
@@ -579,10 +579,10 @@ def test_a_changed_ending_restarts_the_wait(gang_fleet, monkeypatch, tmp_path):
     record = dict(pool.record_store.read_document(path))
     record["published_unix"] = float(record["published_unix"]) + 7
     pool.immutable_files.write_json_atomic(path, record)
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None, "the old mark must not confirm a new ending"
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -591,7 +591,7 @@ def test_a_fresh_read_that_disagrees_blocks_the_teardown(gang_fleet, monkeypatch
     """The confirming read is its own read: it must still be terminal."""
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "fresh-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     real = queue.residency_verdict
     calls = []
 
@@ -629,7 +629,7 @@ def test_a_confirming_read_in_any_other_verdict_state_blocks_the_teardown(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "state-" + state)
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     real = queue.residency_verdict
     confirming = []
 
@@ -666,7 +666,7 @@ def test_a_shape_refusal_at_the_confirming_read_blocks_the_teardown(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "shape-" + refusal["state"])
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     real = queue.residency_verdict
     confirming = []
 
@@ -699,8 +699,8 @@ def test_a_requeue_that_wins_before_the_proof_blocks_the_teardown(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "boundary-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
-    clock[0] += 0.001
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 0.001
     queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
@@ -725,7 +725,7 @@ def test_a_busy_lead_lock_blocks_the_teardown_and_restarts_the_wait(
 
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "busy-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     entered = threading.Event()
     release = threading.Event()
     outcome = {}
@@ -746,10 +746,10 @@ def test_a_busy_lead_lock_blocks_the_teardown_and_restarts_the_wait(
         release.set()
         holder.join(timeout=30)
     assert _gang.teardown(queue, group) is None
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None, "the busy pass must restart the wait"
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -765,7 +765,7 @@ def test_a_failed_confirming_read_restarts_the_window(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "read-error-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     real = queue.residency_verdict
     calls = []
 
@@ -780,11 +780,11 @@ def test_a_failed_confirming_read_restarts_the_window(
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
     monkeypatch.setattr(queue, "residency_verdict", real)
-    clock[0] += 1
+    clock.now += 1
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
     assert _gang.teardown(queue, group) is None, "recovery must start a new window"
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -799,7 +799,7 @@ def test_a_failed_first_verdict_read_restarts_the_window(
     """
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "first-read-error-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     real = queue.residency_verdict
 
     def verdict(item, **kwargs):
@@ -812,11 +812,11 @@ def test_a_failed_first_verdict_read_restarts_the_window(
     assert denial(first, "sparklina")["reason"] == "residency_lead_record_unreadable"
     assert _gang.teardown(queue, group) is None
     monkeypatch.setattr(queue, "residency_verdict", real)
-    clock[0] += 1
+    clock.now += 1
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
     assert _gang.teardown(queue, group) is None, "recovery must start a new window"
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -845,11 +845,11 @@ def test_a_live_reading_whose_mark_survives_restarts_the_window(
     monkeypatch.setattr(_gang, "clear_terminal", real_clear)
     assert denial(first, "sparklina")["reason"] == "residency_lead_not_resident"
     queue.records.item_path(pool.record_store.CLAIMED, lead).unlink()
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
     assert _gang.teardown(queue, group) is None, "the stuck mark must restart the wait"
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -863,7 +863,7 @@ def test_cached_live_misses_do_not_confirm_an_aged_terminal_mark(
 
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "cached-live-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
@@ -936,7 +936,7 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
     """Recovery cannot use an aged mark after both reset operations fail."""
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "reset-failure-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     mark_path = _gang.terminal_mark_path(queue, group, first)
     old_mark = mark_path.read_bytes()
     real_verdict = queue.residency_verdict
@@ -978,13 +978,13 @@ def test_failed_unlink_and_replacement_require_a_new_confirmation_window(
         recovered = pool.PoolQueue(queue.root)
         monkeypatch.setattr(queue, "_gang_terminal_confirmed",
                             recovered._gang_terminal_confirmed)
-    clock[0] += 1
+    clock.now += 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None, "recovery must start a new window"
-    clock[0] += _gang.TERMINAL_CONFIRM_S - 1
+    clock.now += _gang.TERMINAL_CONFIRM_S - 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
-    clock[0] += 1
+    clock.now += 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
     queue.sweep_gangs()
@@ -999,14 +999,14 @@ def test_a_future_terminal_timestamp_restarts_confirmation(
         gang_fleet, monkeypatch, tmp_path, "future-mark-gang")
     path = _gang.terminal_mark_path(queue, group, first)
     mark = json.loads(path.read_text())
-    mark["first_seen_unix"] = clock[0] + 10 * _gang.TERMINAL_CONFIRM_S
+    mark["first_seen_unix"] = clock.now + 10 * _gang.TERMINAL_CONFIRM_S
     pool.immutable_files.write_json_atomic(path, mark)
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
-    clock[0] += _gang.TERMINAL_CONFIRM_S - 1
+    clock.now += _gang.TERMINAL_CONFIRM_S - 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
-    clock[0] += 1
+    clock.now += 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -1023,7 +1023,7 @@ def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
 
     queue, clock, gclaim, denial, group, first, second, lead = _fail_lead_and_mark(
         gang_fleet, monkeypatch, tmp_path, "locked-refresh-gang")
-    clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+    clock.now += 2 * _gang.TERMINAL_CONFIRM_S
     real_lock = queue.action_transition_lock
     real_listdir = os.listdir
     real_open = os.open
@@ -1059,10 +1059,10 @@ def test_a_failed_refresh_under_the_lead_lock_restarts_confirmation(
         assert gclaim("sparklina") is None
         assert _gang.teardown(queue, group) is None
         assert not _gang.terminal_mark_path(queue, group, first).exists()
-    clock[0] += 1
+    clock.now += 1
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is None
-    clock[0] += _gang.TERMINAL_CONFIRM_S
+    clock.now += _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     assert _gang.teardown(queue, group) is not None
 
@@ -1092,7 +1092,7 @@ def test_fresh_pin_proof_preserves_a_resident_gang(
         stale.setattr(queue, "_lead_is_pinned", cached_pin)
         assert gclaim("sparklina") is None
         assert denial(first, "sparklina")["reason"] == "residency_lead_terminal"
-        clock[0] += 2 * _gang.TERMINAL_CONFIRM_S
+        clock.now += 2 * _gang.TERMINAL_CONFIRM_S
         real_listdir = os.listdir
         target = (queue.tier(TIER).paths.held if fault_directory == 'holder' else queue.records.move_path(lead).parent if fault_directory == 'receipt' else None)
 

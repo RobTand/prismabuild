@@ -44,6 +44,9 @@ OLDER, NEWER = "e" * 64, "f" * 64
 KIND = f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{TIER}"
 
 
+from fleet_world import FleetWorld
+
+
 def _landed(key: str, consumer: str, mb_s: float, *, unix: float,
             manifest: str = MANIFEST, **extra) -> dict[str, object]:
     """One complete copy that landed at ``mb_s``: 10 s over ``mb_s * 10`` MB."""
@@ -280,9 +283,7 @@ def _fills(staged: dict[str, object]) -> set[int]:
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 @pytest.mark.parametrize("offer", [428, 214])

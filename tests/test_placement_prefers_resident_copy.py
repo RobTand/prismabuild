@@ -347,12 +347,12 @@ def resident_gang(fleet, tmp_path, monkeypatch):
     store = rs.ResidentSets(queue.root)
     record = store.publish(manifest=manifest, canonical_root=str(root),
                            hosts=list(GHOSTS),
-                           lease={"until": clock[0] + 3600, "hard_max": clock[0] + 7200},
-                           created_by="test", now=clock[0])
+                           lease={"until": clock.now + 3600, "hard_max": clock.now + 7200},
+                           created_by="test", now=clock.now)
     set_id = record["set_id"]
     store.write_copy(set_id, "sparky", {"state": "resident", "local_root": "/tmp/x",
                                         "verification": [], "bytes": 7,
-                                        "completed_unix": clock[0]})
+                                        "completed_unix": clock.now})
 
     def gclaim(host, *, advance=0.01):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
@@ -370,7 +370,7 @@ def resident_gang(fleet, tmp_path, monkeypatch):
         checkout = tmp_path / "checkout"
         rows = []
         for index in range(2):
-            clock[0] += 0.001
+            clock.now += 0.001
             gang = {"group": group, "size": 2, "index": index}
             action = pb.seal_action({
                 "schema": pb.ACTION_SCHEMA_V2,
@@ -472,14 +472,14 @@ def test_gang_deadline_is_publication_based_and_expires_exactly(resident_gang, m
     assert pool.RESIDENT_COPY_PREFER_S == 30.0
     deadline = published + pool.RESIDENT_COPY_PREFER_S
     for now in (published + 1, published + 10, deadline - 0.001, deadline - 0.001):
-        clock[0] = now
+        clock.now = now
         assert gclaim("sparklina", advance=0) is None
         evidence = denial(first, "sparklina")
         assert evidence["reason"] == "deferred_for_resident_copy"
         assert evidence["evidence"]["wait_remaining_s"] == pytest.approx(deadline - now)
         assert _gang.elections(queue, group, 2) == {}
         assert not list(_gang.state_dir(queue, group).glob("ready-*.json"))
-    clock[0] = deadline
+    clock.now = deadline
     assert gclaim("sparklina", advance=0) is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"

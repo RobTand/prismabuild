@@ -9,13 +9,12 @@ from output_producer_fixture import Broker, Outputs
 from prismabuild import pool
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture
 def queue(tmp_path):
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 @pytest.fixture

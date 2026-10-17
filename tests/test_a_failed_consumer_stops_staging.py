@@ -48,6 +48,9 @@ FIRST = "1" * 64
 SECOND = "2" * 64
 
 
+from fleet_world import FleetWorld
+
+
 def _hexkey(seed: str) -> str:
     return (seed.encode().hex() * 64)[:64]
 
@@ -118,9 +121,7 @@ def _claim(queue: pool.PoolQueue, key: str) -> None:
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 def test_queued_and_claimed_movers_of_a_failed_consumer_are_withdrawn(

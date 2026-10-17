@@ -22,6 +22,9 @@ DEADLINE_S = 32
 SCHEMA = "prismabuild.publication_canary_slot.v1"
 
 
+from fleet_world import FleetWorld
+
+
 def _slot_path(q: pool.PoolQueue, generation: str, host: str) -> Path:
     identity = hashlib.sha256(f"{generation}\0{host}".encode()).hexdigest()
     return q.root / "publication-canaries" / "v1" / f"{identity}.json"
@@ -79,9 +82,7 @@ def _publish(q, action, cas, checkout, **kw):
 
 @pytest.fixture
 def q(tmp_path):
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 def test_an_ordinary_action_cannot_claim_a_slot_by_sealing_its_own_label(q, tmp_path):

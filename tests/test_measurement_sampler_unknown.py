@@ -14,13 +14,13 @@ from prismabuild import adaptive_cpu, pool
 
 
 def _silence(clock, readings, kind):
-    observed = clock[0]
+    observed = clock.now
 
     def sample():
         if kind == "missing":
             return {}
         return {
-            "sampled_unix": observed if kind == "stale" else clock[0] + (
+            "sampled_unix": observed if kind == "stale" else clock.now + (
                 1 if kind == "future" else 0),
             "cpu_count": 20, "interval_s": 1.0,
             "psi_some": None if kind == "partial" else 0.0,
@@ -28,7 +28,7 @@ def _silence(clock, readings, kind):
             "foreign_per_cpu_busy": dict(readings["foreign"]),
         }
 
-    clock[0] += adaptive_cpu.MAX_SAMPLE_AGE_S + 1
+    clock.now += adaptive_cpu.MAX_SAMPLE_AGE_S + 1
     return sample
 
 
@@ -61,7 +61,7 @@ def _assert_unknown(queue, measurement, denial, clock):
         queue.records.item(pool.record_store.READY, measurement),
     )
     assert queue._carried_withhold(queue._host_denial_records(), item,
-                                 host="sparklina", now=clock[0]) is None
+                                 host="sparklina", now=clock.now) is None
 
 
 def _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock, *, q=None):
@@ -114,7 +114,7 @@ def test_transient_carry_cannot_extend_a_measurement_cpu_observation(fleet, repe
     )
     assert isinstance(item, dict)
     records = queue._host_denial_records()
-    carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
+    carried = queue._carried_withhold(records, item, host="sparklina", now=clock.now)
     assert carried is not None
     tick(adaptive_cpu.MAX_SAMPLE_AGE_S + 1)
     if repeated:
@@ -125,10 +125,10 @@ def test_transient_carry_cannot_extend_a_measurement_cpu_observation(fleet, repe
         assert isinstance(previous, dict)
         # A transient/busy pass may be new, but its CPU observation is not.
         records = {generation: dict(previous, reason="transition_busy",
-                                   denied_unix=clock[0],
+                                   denied_unix=clock.now,
                                    evidence={"withhold_carried": carried})}
         assert "transition_busy" in pool.WITHHOLD_CARRYING_REASONS
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
@@ -159,7 +159,7 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
     # Before the typed refusal, partial telemetry could protect an exclusive
     # measurement drain even while its timestamp was inside the five seconds.
     if bad == "carried_unknown":
-        unproven = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
+        unproven = queue._carried_withhold(records, item, host="sparklina", now=clock.now)
         assert unproven is not None
         unproven.pop("measurement_cpu_sample_fresh")
         records = {generation: dict(previous, reason="transition_busy",
@@ -171,7 +171,7 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
         else:
             invalid = dict(decision, sample=dict(observed, sampled_unix=10 ** 1000))
         records = {generation: dict(previous, evidence=dict(evidence, decision=invalid))}
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert set(queue.ledger().held_keys()) == {holder}
 
@@ -188,7 +188,7 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
     fresh_claim = claim
     claim = partial(claim, cpu_sampler=_silence( clock, readings, "stale"))
     if recover_after_expiry:
-        tick(original - clock[0] + 1)
+        tick(original - clock.now + 1)
     backfill = publish("backfill", timeout_s=8000)
     restarted = pool.PoolQueue(queue.root)
     _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock, q=restarted)

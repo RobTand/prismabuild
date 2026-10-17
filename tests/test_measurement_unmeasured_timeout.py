@@ -38,7 +38,7 @@ def _unmeasured(fleet, *, gpu=1, holder_gpu=None):
     assert drain_policy.foreign_clear(decision) is False
     first = denial(measurement)["evidence"]["withhold"]
     assert first["withhold"] is True
-    return holder, measurement, first, clock[0]
+    return holder, measurement, first, clock.now
 
 
 def _backfill(fleet, measurement, backfill, *, q=None):
@@ -84,7 +84,7 @@ def test_a_proven_holder_drain_is_independent_and_unknown_recovery_cannot_renew(
     waiting = denial(measurement)["evidence"]
     assert waiting["decision"]["reason"] == "measurement_holder"
     assert waiting["withhold"]["withhold"] is True
-    assert waiting["withhold"]["drain_until_unix"] > clock[0]
+    assert waiting["withhold"]["drain_until_unix"] > clock.now
     readings["busy_cpus"] = 2.0
     backfill = publish("backfill")
     _backfill(fleet, measurement, backfill, q=pool.PoolQueue(queue.root))
@@ -106,7 +106,7 @@ def test_fresh_cpu_carry_cannot_outlive_the_unknown_cutoff(fleet, repeated):
     )
     assert isinstance(item, dict)
     records = queue._host_denial_records()
-    carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
+    carried = queue._carried_withhold(records, item, host="sparklina", now=clock.now)
     assert carried is not None
     assert carried["measurement_unmeasured"] is True
     if repeated:
@@ -118,8 +118,8 @@ def test_fresh_cpu_carry_cannot_outlive_the_unknown_cutoff(fleet, repeated):
         records = {generation: dict(previous, reason="transition_busy",
                                    evidence={"withhold_carried": carried})}
     tick(3)
-    assert clock[0] - carried["measurement_cpu_sampled_unix"] < adaptive_cpu.MAX_SAMPLE_AGE_S
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
+    assert clock.now - carried["measurement_cpu_sampled_unix"] < adaptive_cpu.MAX_SAMPLE_AGE_S
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
     assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 

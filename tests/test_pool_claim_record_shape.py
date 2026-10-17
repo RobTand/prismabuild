@@ -24,23 +24,15 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 KEY_A = "a" * 64
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def test_the_claim_does_not_carry_the_aging_counter(
@@ -48,7 +40,7 @@ def test_the_claim_does_not_carry_the_aging_counter(
 ) -> None:
     """``passes`` belongs to the sidecar the same claim deletes."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.record_pass(KEY_A)
     queue.record_pass(KEY_A)
     assert queue.passes(KEY_A) == 2
@@ -72,7 +64,7 @@ def test_the_outcome_does_not_carry_the_aging_counter(
 ) -> None:
     """The claim is what every terminal record is built from."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.record_pass(KEY_A)
     claimed = queue.claim()
     assert claimed is not None

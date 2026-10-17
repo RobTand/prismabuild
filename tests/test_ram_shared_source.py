@@ -47,14 +47,15 @@ RAM_MOVER = "e" * 64
 SIZE = 16 * 1024
 
 
+from fleet_world import FleetWorld
+
+
 def _payload() -> bytes:
     return bytes([i % 251 + 1 for i in range(SIZE)])
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 def _manifest(tmp_path: Path, *, name: str = "manifest.json",

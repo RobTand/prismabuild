@@ -32,6 +32,9 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 ENV = {**os.environ, "PYTHONPATH": str(SRC)}
 
 
+from fleet_world import FleetWorld
+
+
 def _key(tag: str) -> str:
     return hashlib.sha256(tag.encode()).hexdigest()
 
@@ -201,9 +204,7 @@ def test_retire_finishes_a_retirement_cut_off_before_its_unlink(tmp_path, monkey
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 def _file(queue: pool.PoolQueue, state: str, key: str, *, age_s: float) -> None:

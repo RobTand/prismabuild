@@ -29,15 +29,18 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 T0 = 2_000_000.0
 
 
+from fleet_world import Clock, FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
 
 @pytest.fixture()
 def clock(monkeypatch):
-    now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
-    monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
+    now = Clock(now=T0)
+    monkeypatch.setattr(pool, "_now", lambda: now.now)
+    monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now.now)
     return now
 
 
@@ -48,13 +51,11 @@ def generation_actions(monkeypatch):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(queue, clock, key, resources):
-    clock[0] += 0.001
+    clock.now += 0.001
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources=resources)
     return key
@@ -73,7 +74,7 @@ def _claim(q, capacity, *, tiers, cpu_sampler):
 
 def _sample(clock, *, per_cpu, psi=0.034):
     return {
-        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
+        "sampled_unix": clock.now, "cpu_count": 20, "interval_s": 1.,
         "psi_some": psi, "busy_cpus": sum(per_cpu.values()),
         "per_cpu_busy": dict(per_cpu),
         "foreign_per_cpu_busy": dict(per_cpu),
@@ -149,7 +150,7 @@ def test_thin_foreign_spread_below_the_per_cpu_line_admits(
     seeder = _publish(queue, clock, _key("seeder"), {"cpu": 1, "mem_gb": 1})
     assert claim() == seeder
     queue.finish(seeder, status="executed")
-    clock[0] += 1.0
+    clock.now += 1.0
     state["level"] = 0.04
     _publish(queue, clock, measurement, {"cpu": 4, "mem_gb": 40})
     for _ in range(pool.STARVATION_FLOOR - 1):
@@ -196,5 +197,5 @@ def test_holder_only_busy_with_foreign_below_the_verdict_keeps_the_withhold(
     assert denial["evidence"]["withhold"]["why"] == "draining_for_measurement"
     queue.finish(holder, status="executed")
     state["busy"] = False
-    clock[0] += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
+    clock.now += adaptive_cpu.MAX_INTERVAL_S + adaptive_cpu.MAX_SAMPLE_AGE_S + 1
     assert claim(cpu_sampler=cpu_sampler) == measurement

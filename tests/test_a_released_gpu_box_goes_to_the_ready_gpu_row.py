@@ -60,6 +60,9 @@ BAND = -10
 PROGRESS_CAPABILITIES = (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG)
 
 
+from fleet_world import FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -87,9 +90,7 @@ def idle_host(clock, monkeypatch):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _sealed(tmp_path: Path, name: str, *, progress: bool = False,

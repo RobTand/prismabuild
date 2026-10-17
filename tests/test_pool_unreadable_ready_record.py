@@ -36,23 +36,15 @@ KEY_INVALID = "c" * 64
 KEY_EMPTY = "d" * 64
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def _foreign_writes_a_broken_record(q: pool.PoolQueue) -> None:
@@ -65,13 +57,13 @@ def _foreign_writes_a_broken_record(q: pool.PoolQueue) -> None:
 
 
 def test_ready_items_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_GOOD)
+    ActionRows(queue).publish(KEY_GOOD)
     _foreign_writes_a_broken_record(queue)
     assert [r["action_key"] for r in queue.ready_items()] == [KEY_GOOD]
 
 
 def test_claim_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_GOOD)
+    ActionRows(queue).publish(KEY_GOOD)
     _foreign_writes_a_broken_record(queue)
     assert queue.claim() is None
     assert queue.records.item_path(pool.record_store.READY, KEY_GOOD).exists()
@@ -82,7 +74,7 @@ def test_claim_serves_the_healthy_items(queue: pool.PoolQueue) -> None:
 
 
 def test_reap_stale_still_runs(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_GOOD)
+    ActionRows(queue).publish(KEY_GOOD)
     _foreign_writes_a_broken_record(queue)
     assert queue.reap_stale(timeout_s=-1.0) == []
 
@@ -90,7 +82,7 @@ def test_reap_stale_still_runs(queue: pool.PoolQueue) -> None:
 def test_quarantine_orphans_files_the_unreadable_records(
     queue: pool.PoolQueue,
 ) -> None:
-    _publish(queue, KEY_GOOD)
+    ActionRows(queue).publish(KEY_GOOD)
     _foreign_writes_a_broken_record(queue)
     assert queue.quarantine_orphans() == [KEY_TRUNCATED, KEY_INVALID]
     # The healthy item is untouched and still claimable.
@@ -164,7 +156,7 @@ def test_a_filed_outcome_is_never_replaced_by_the_quarantine(
 
 
 def test_invalid_utf8_does_not_stop_consumers(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_GOOD)
+    ActionRows(queue).publish(KEY_GOOD)
     queue.records.item_path(pool.record_store.READY, KEY_INVALID).write_bytes(b'\xff\xfe\xfa')
     assert [item["action_key"] for item in queue.ready_items()] == [KEY_GOOD]
     assert queue.quarantine_orphans() == [KEY_INVALID]
@@ -178,7 +170,7 @@ def test_repair_between_scan_and_quarantine_survives(
     real_file = lifecycle._file_unreadable
 
     def repair_then_file(owned_queue, path: Path, *, reason: str) -> str | None:
-        _publish(queue, path.stem)
+        ActionRows(queue).publish(path.stem)
         return real_file(owned_queue, path, reason=reason)
 
     monkeypatch.setattr(lifecycle, "_file_unreadable", repair_then_file)
@@ -196,7 +188,7 @@ def test_publication_during_quarantine_is_not_unlinked(
     real_file = queue.records.file_superseded
 
     def publish_then_file(*args: object, **kwargs: object) -> object:
-        _publish(queue, KEY_INVALID)
+        ActionRows(queue).publish(KEY_INVALID)
         return real_file(*args, **kwargs)
 
     monkeypatch.setattr(queue.records, "file_superseded", publish_then_file)

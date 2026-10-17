@@ -33,13 +33,12 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 KEY = "b" * 64
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    value = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    value.records.ensure_layout()
-    return value
+    return FleetWorld(tmp_path, queue_name='queue', admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def _run(queue: pool.PoolQueue, status: str) -> tuple[Path, dict]:

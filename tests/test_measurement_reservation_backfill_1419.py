@@ -77,7 +77,7 @@ def _bounded_measurement_wait(fleet, *, with_other_host=False):
     assert sample["cpu_pressure_some"] == 0
     assert evidence["withhold"]["why"] == "draining_for_measurement"
     assert evidence["withhold"]["drain_until_unix"] == pytest.approx(declared_end)
-    assert declared_end > clock[0] + pool.WITHHOLD_CEILING_S
+    assert declared_end > clock.now + pool.WITHHOLD_CEILING_S
     _assert_holder_unchanged(queue, incumbent, snapshot)
     return incumbent, measurement, declared_end, snapshot
 
@@ -130,9 +130,9 @@ def test_expiry_cannot_give_a_continuous_lower_priority_stream_the_original_drai
 
     # Warm genuine sharing proof just before the point so a RED cannot be
     # masked by a discontinuous sampler or an unauthorized GPU probe.
-    tick(original_end - clock[0] - 7)
+    tick(original_end - clock.now - 7)
     _observe_real_sharing_permission(fleet, lower[0])
-    tick(original_end - clock[0] + 0.1)
+    tick(original_end - clock.now + 0.1)
     refills = []
     remaining = incumbent
     measurement_claimed = False
@@ -155,7 +155,7 @@ def test_expiry_cannot_give_a_continuous_lower_priority_stream_the_original_drai
             assert result in lower
             waiting = denial(measurement)["evidence"]
             assert waiting["decision"]["reason"] == "measurement_holder", waiting
-            refills.append((result, clock[0]))
+            refills.append((result, clock.now))
             assert queue.records.item_path(pool.record_store.READY, measurement).exists()
             assert queue.ledger().holds_gpu(result)
         # The declared-end incumbent, then each replacement, finishes through
@@ -186,7 +186,7 @@ def test_backfill_without_a_finite_pre_point_finish_stays_ready(fleet, bound_kin
     # Payload-only timeout, including five seconds, does not cover resource
     # preparation, checkpoint I/O or cleanup. Do not invent a finite proof.
     timeout = {"unknown": None, "short_payload": 5,
-               "late": original_end - clock[0] + 1, "long": 4200}[bound_kind]
+               "late": original_end - clock.now + 1, "long": 4200}[bound_kind]
     candidate = publish(f"unsafe-{bound_kind}-backfill", priority=-10, timeout_s=timeout)
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, candidate))
     assert isinstance(item, dict)
@@ -198,7 +198,7 @@ def test_backfill_without_a_finite_pre_point_finish_stays_ready(fleet, bound_kin
     assert queue.ledger().held_keys() == [incumbent]
     _assert_holder_unchanged(queue, incumbent, snapshot)
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
-    tick(original_end - clock[0] + 0.1)
+    tick(original_end - clock.now + 0.1)
     _observe_real_sharing_permission(fleet, candidate)
     assert claim() is None, f"expiry let {bound_kind} backfill steal the drain point"
     _assert_holder_unchanged(queue, incumbent, snapshot)
@@ -236,7 +236,7 @@ def test_a_portable_measurement_does_not_shut_two_matching_hosts_to_backfill(fle
     assert queue.records.item_path(pool.record_store.CLAIMED, other).read_bytes() == other_claim
     _assert_holder_unchanged(queue, incumbent, snapshot)
     assert queue.records.item_path(pool.record_store.READY, measurement).exists()
-    tick(original_end - clock[0])
+    tick(original_end - clock.now)
     queue.finish(incumbent, status="executed")
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim("sparklina") == measurement, denial(measurement)

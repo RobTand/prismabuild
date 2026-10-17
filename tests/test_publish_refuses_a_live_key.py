@@ -49,21 +49,15 @@ from test_pbrun_detach import _checkout, _queue, _run_pbrun  # noqa: E402,F401
 KEY = uuid.uuid4().hex + uuid.uuid4().hex
 
 
+from fleet_world import ActionRows, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def _row(q: pool.PoolQueue, state: str, key: str) -> dict:
@@ -84,13 +78,13 @@ def test_an_ordinary_publication_still_replaces_a_live_key(
     publisher declares one.
     """
 
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     first = _row(queue, pool.record_store.READY, KEY)["published_unix"]
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert _row(queue, pool.record_store.READY, KEY)["published_unix"] != first
 
     assert queue.claim(capacity={"cpu": 4}) is not None
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
@@ -103,13 +97,12 @@ def test_a_declared_publisher_is_refused_while_the_key_is_claimed(
 ) -> None:
     """The stale caller is refused, and the live claim is left exactly as it was."""
 
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert queue.claim(capacity={"cpu": 4}) is not None
     before = _row(queue, pool.record_store.CLAIMED, KEY)
 
     with pytest.raises(pool.PoolContractError) as refusal:
-        _publish(queue, KEY, resources={"cpu": 1}, recompute=True,
-                 refuse_if_live=True)
+        ActionRows(queue).publish(KEY, resources={'cpu': 1}, recompute=True, refuse_if_live=True)
 
     # The behavioural claim first: nothing was queued behind the running run.
     assert not queue.records.item_path(pool.record_store.READY, KEY).exists()
@@ -134,7 +127,7 @@ def test_a_stale_mover_republication_does_not_queue_a_second_run(
     have given.
     """
 
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert queue.claim(capacity={"cpu": 4}) is not None
     claimed = _row(queue, pool.record_store.CLAIMED, KEY)
 
@@ -159,12 +152,11 @@ def test_the_key_is_publishable_again_once_the_claim_has_concluded(
 ) -> None:
     """The refusal is about liveness, not about the key."""
 
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert queue.claim(capacity={"cpu": 4}) is not None
     queue.finish(KEY, status="executed")
 
-    _publish(queue, KEY, resources={"cpu": 1}, recompute=True,
-             refuse_if_live=True)
+    ActionRows(queue).publish(KEY, resources={'cpu': 1}, recompute=True, refuse_if_live=True)
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
@@ -173,12 +165,12 @@ def test_a_live_cancellation_is_still_superseded_by_a_resubmission(
 ) -> None:
     """A marker means the submission is the replacement it asked for."""
 
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     assert queue.claim(capacity={"cpu": 4}) is not None
     queue.withdraw(KEY, signal_child=False)
     assert queue.live_withdrawal(KEY) is not None
 
-    _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True)
+    ActionRows(queue).publish(KEY, resources={'cpu': 1}, refuse_if_live=True)
     assert queue.records.item_path(pool.record_store.READY, KEY).exists()
     assert queue.live_withdrawal(KEY) is None
 
@@ -198,13 +190,12 @@ def test_a_handoff_that_names_its_claim_is_not_judged_as_a_duplicate(
     ``test_fleet_membership_busy_resign``.
     """
 
-    _publish(queue, KEY, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY, resources={'cpu': 1})
     claimed = queue.claim(capacity={"cpu": 4})
     assert claimed is not None
 
     with pytest.raises(pool.PoolContractError) as refusal:
-        _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True,
-                 preempted_claim=dict(claimed))
+        ActionRows(queue).publish(KEY, resources={'cpu': 1}, refuse_if_live=True, preempted_claim=dict(claimed))
 
     assert not isinstance(refusal.value, pool.ActionAlreadyLiveError)
     assert "preemption handoff changed before requeue" in str(refusal.value)
@@ -219,11 +210,11 @@ def test_a_duplicate_submission_keeps_the_first_generation(
 ) -> None:
     """The row the first waiter is pinned to survives, so its ending reaches it."""
 
-    _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True)
+    ActionRows(queue).publish(KEY, resources={'cpu': 1}, refuse_if_live=True)
     first = _row(queue, pool.record_store.READY, KEY)["published_unix"]
 
     with pytest.raises(pool.PoolContractError) as refusal:
-        _publish(queue, KEY, resources={"cpu": 1}, refuse_if_live=True)
+        ActionRows(queue).publish(KEY, resources={'cpu': 1}, refuse_if_live=True)
 
     assert _row(queue, pool.record_store.READY, KEY)["published_unix"] == first
     assert isinstance(refusal.value, pool.ActionAlreadyLiveError)

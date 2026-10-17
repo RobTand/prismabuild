@@ -66,7 +66,7 @@ def _measurement_decision(fleet, *, busy, attribution="clear", with_holder=False
         observed = decision["sample"]
         assert isinstance(observed, dict)
         baseline = controller.idle(observed, list(queue.ledger().held_dir.iterdir()))
-    assert observed["sampled_unix"] == clock[0]
+    assert observed["sampled_unix"] == clock.now
     assert isinstance(observed["busy_cpus"], (int, float))
     assert observed["busy_cpus"] + 8 < 20
     assert baseline["basis"] == ("measured" if baseline_samples else "unmeasured")
@@ -114,7 +114,7 @@ def test_clear_cpu_attribution_preserves_same_reference_psi_gate(
         fleet, monkeypatch, measured, psi, admitted):
     cpu_sampler = lambda: dict(fleet_cpu_sample(fleet[1], fleet[2]), psi_some=psi)
     clock = fleet[1]
-    history = [{"sampled_unix": clock[0] - age,
+    history = [{"sampled_unix": clock.now - age,
                 "busy_cpus": 0.5, "psi_some": 0.04} for age in (30, 20, 10)]
     queue, measurement, _, metadata, decision = _measurement_decision(
         fleet, busy=2.3, baseline_samples=history if measured else (), cpu_sampler=cpu_sampler)

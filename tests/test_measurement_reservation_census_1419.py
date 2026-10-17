@@ -144,7 +144,7 @@ def test_elected_identity_or_evidence_loss_never_authorizes_refill(fleet, fault,
     chosen = _chosen(queue, measurement)
     assert chosen["opportunity_unix"] == opportunity
     lower = publish("unknown-after-election")
-    tick(opportunity - clock[0] + 1)
+    tick(opportunity - clock.now + 1)
     _observe_real_sharing_permission(fleet, lower)
     cpu_sampler = lambda: fleet_cpu_sample(clock, readings)
     if fault == "missing":

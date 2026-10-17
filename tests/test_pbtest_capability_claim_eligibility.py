@@ -30,10 +30,11 @@ TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 4, "mem_gb": 16}
 
 
+from fleet_world import FleetWorld
+
+
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, queue_name='queue').queue
 
 
 def _dependency(tmp_path: Path, payload: bytes = b"required bytes") -> dict:

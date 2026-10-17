@@ -26,23 +26,15 @@ KEY = uuid.uuid4().hex + uuid.uuid4().hex
 TIER = "prismabuild-stage:dl380g10"
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 2, "mem_gb": 4},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 2, 'mem_gb': 4}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def test_a_reaped_terminal_claim_notes_its_fill_borrow_end(
@@ -59,7 +51,7 @@ def test_a_reaped_terminal_claim_notes_its_fill_borrow_end(
     silently.
     """
 
-    _publish(queue, KEY, max_attempts=1)
+    ActionRows(queue).publish(KEY, max_attempts=1)
     assert queue.claim() is not None
     path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     record = json.loads(path.read_bytes())

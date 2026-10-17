@@ -26,10 +26,11 @@ PQ_PYTHON = "/home/rob/venvs/pq-pb461728e4-tessera-43da1c39/bin/python"
 TF516_PYTHON = "/home/rob/venvs/pq-pb461728e4-tessera-43da1c39-tf516/bin/python"
 
 
+from fleet_world import FleetWorld
+
+
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.records.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, queue_name='queue').queue
 
 
 def _announce(queue, host, *, interpreters=None, tags=("gb10",),

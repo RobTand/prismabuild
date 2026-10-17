@@ -28,13 +28,12 @@ LEGACY_KEY = "d" * 64
 HUGE = ("chatter line %06d\n" * 500_000) % tuple(range(500_000)) + "FINAL-MARKER\n"
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    made = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    made.records.ensure_layout()
-    return made
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def test_a_huge_stdout_stays_readable_in_the_ending(queue):
