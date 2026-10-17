@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 
 
@@ -85,8 +86,67 @@ def container_command(root, required, tests, affinity):
     return command
 
 
+def run_profile(root, required, tests, affinity, path, collect_only):
+    from proof_container_runtime import (
+        ATTESTATION_SCHEMA, canonical, load_profile, observe_runtime,
+        require_identity, source_digests, verify_closure,
+    )
+
+    runtime = load_profile(path, root)
+    outer = observe_runtime()
+    require_identity(outer, runtime.primary)
+    outer_closure = verify_closure(runtime, ('host',))
+    inspected = json.loads(subprocess.check_output([
+        'docker', 'image', 'inspect', runtime.image, '--format',
+        '{"id":{{json .Id}},"architecture":{{json .Architecture}}}'], text=True))
+    expected_architecture = {62: 'amd64', 183: 'arm64'}[runtime.primary['elf_machine']]
+    if inspected != {'id': runtime.image, 'architecture': expected_architecture}:
+        raise ValueError('actual local image differs from the runtime profile')
+    image = dict(expected=runtime.image, actual=inspected['id'], architecture=inspected['architecture'])
+    output = Path(tempfile.mkdtemp(prefix='pb-root-runtime-', dir=os.environ['TMPDIR']))
+    attestation = output / 'attestation.json'
+    mode = 'collection' if collect_only else 'execution'
+    arguments = (str(Path('/source') / runtime.path.relative_to(root)), tests, mode,
+                 outer, outer_closure, image, affinity, '/qualification-output/attestation.json', str(attestation))
+    bootstrap = (
+        "import runpy; "
+        "owner=runpy.run_path('/source/tests/proof_container_runtime.py'); "
+        "raise SystemExit(owner['run'](*" + repr(arguments) + '))'
+    )
+    command = container_command(root, required, tests, affinity)
+    image_index = command.index(required['image'])
+    command = command[:image_index]
+    command[command.index('--entrypoint') + 1] = runtime.primary['executable']['path']
+    for captured in runtime.closure['roots']:
+        if captured['origin'] == 'host':
+            target = captured['path']
+            command.extend(['--mount', f'type=bind,src={target},dst={target},readonly'])
+    command.extend(['--mount', f'type=bind,src={output},dst=/qualification-output',
+                    runtime.image, '-B', '-c', bootstrap])
+    result = subprocess.run(command, check=False)
+    try:
+        record = json.loads(attestation.read_bytes())
+        if record['profile_sha256'] != runtime.sha256 or record['mode'] != mode:
+            raise ValueError('inner attestation differs from the selected profile or mode')
+        if record['exitstatus'] != result.returncode:
+            raise ValueError('inner status differs from actual Docker termination')
+        record['closure']['outer'] = verify_closure(runtime, ('host',))
+    except (OSError, ValueError, KeyError) as exc:
+        record = dict(schema=ATTESTATION_SCHEMA, mode=mode, complete=False,
+            profile_sha256=runtime.sha256, image=image, outer=outer, inner=None, installed_reader=None,
+            closure=dict(sha256=runtime.closure['sha256'], outer=outer_closure, inner=None,
+                         mapped_native_providers={}), source_sha256=source_digests(root, tests, runtime),
+            exitstatus=result.returncode or 1, error=f'{type(exc).__name__}: {exc}',
+            attestation_path=str(attestation))
+    attestation.write_bytes(canonical(record) + b'\n')
+    print('prismabuild-root-runtime: ' + canonical(record).decode(), flush=True)
+    return record['exitstatus'] if record['complete'] else record['exitstatus'] or 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--runtime-profile', type=Path)
+    parser.add_argument('--collect-only', action='store_true')
     parser.add_argument("tests", nargs="*")
     args = parser.parse_args(argv)
     root = Path.cwd().resolve()
@@ -96,6 +156,11 @@ def main(argv=None):
     if len(tests) != len(set(tests)) or any(path not in required["files"] for path in tests):
         raise ValueError("root container accepts only the declared root proof files, once each")
     manifest = verify_inputs(root, profile)
+    if args.runtime_profile is not None:
+        return run_profile(root, required, tests, sorted(os.sched_getaffinity(0)),
+                           args.runtime_profile, args.collect_only)
+    if args.collect_only:
+        raise ValueError('collection mode requires an explicit runtime profile')
     image = required["image"]
     actual_image = subprocess.check_output([
         "docker", "image", "inspect", image, "--format", "{{.Id}}"], text=True).strip()
