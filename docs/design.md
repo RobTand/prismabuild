@@ -17427,7 +17427,7 @@ this is not evidence of a deployed runtime generation or PQ workload acceptance.
 The approved SDK6 adds the capability tag and the selection builder.
 Other exports, signatures and legacy arrays remain unchanged.
 
-`scratch_lifetime.register` uses the existing transition lock and
+`scratch_lifetime.register_attempt` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
 the claim and existing lease before filesystem mutation or payload launch.
 Each ephemeral path retains the existing host/key/publication-generation/nonce

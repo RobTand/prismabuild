@@ -151,7 +151,7 @@ def test_successor_snapshot_refuses_registration_write(lifetime, monkeypatch):
     stale["published_unix"] += 1
     before = queue.item_path(pool.CLAIMED, item["action_key"]).read_bytes()
     with pytest.raises((scratch.LocalScratchError, pool.PoolContractError)):
-        scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=stale,
+        scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=stale,
                                        env={})
     assert queue.item_path(pool.CLAIMED, item["action_key"]).read_bytes() == before
 
@@ -294,7 +294,7 @@ def test_registration_mirror_failure_prevents_launch_and_can_replay(
     assert not launched and queue.ledger().held()
     monkeypatch.setattr(pool, "_write_json_atomic", write)
     scope = item["resource_scope"]
-    evidence = scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={
+    evidence = scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={
         "PRISMABUILD_ACTION_KEY": item["action_key"], "PRISMABUILD_ACTION_NONCE": scope["nonce"],
         "PRISMABUILD_ACTION_SCOPE": scope["scope_id"]})
     assert evidence["registration_complete"] is True and leaf(item).is_dir()
@@ -337,7 +337,7 @@ def test_replay_rechecks_private_namespace_permissions_before_launch(lifetime, m
     queue, item, variables, outcome = launch(lifetime, monkeypatch)
     leaf(item).chmod(0o777)
     with pytest.raises(scratch.LocalScratchError, match="permissions"):
-        scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={})
+        scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={})
     assert (leaf(item) / "temp").read_bytes() == b"temporary" and queue.ledger().held()
 
 

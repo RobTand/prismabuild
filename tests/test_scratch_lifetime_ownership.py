@@ -79,7 +79,7 @@ def test_registration_keeps_intent_parent_leaf_and_mirror_order(lifetime, monkey
         monkeypatch.setattr(scratch_lifetime, name, step)
     lease_before = pool._read_json(queue.lease_path(item["action_key"]))
     scope = item["resource_scope"]
-    scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"],
+    scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"],
         claim_snapshot=item, env={pb.ACTION_KEY_ENV: item["action_key"],
                                  pb.ACTION_NONCE_ENV: scope["nonce"],
                                  pb.ACTION_SCOPE_ENV: scope["scope_id"]})
@@ -102,7 +102,7 @@ def test_persistent_only_owner_does_not_read_containment_or_directories(runtime,
     queue._start_resource_scope(item)
     monkeypatch.setattr(queue, "_scope_from_record", lambda *a: pytest.fail("needless containment read"))
     monkeypatch.setattr(scratch_lifetime, "_prepare_scratch_directory", lambda *a: pytest.fail("persistent directory read"))
-    scratch_lifetime.register(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={})
+    scratch_lifetime.register_attempt(RecordStore(queue.root), queue, item["action_key"], claim_snapshot=item, env={})
     assert scratch_lifetime.finalize(RecordStore(queue.root), queue, item["action_key"], item,
                                      export=None) == {"complete": True, "used": True}
     assert not Path(variables["CACHE_ROOT"]).exists()

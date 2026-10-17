@@ -26,7 +26,7 @@ SCRATCH_AUDIT_MOVED = {
         "_remove_scratch_contents", "_clean_scratch_directory")},
 }
 SCRATCH_AUDIT_METHODS = {
-    "_record_scratch_lifetimes": "register", "_scratch_lifetime_owner": "durable_owner",
+    "_record_scratch_lifetimes": "register_attempt", "_scratch_lifetime_owner": "durable_owner",
     "_persist_scratch_lifetime": "_persist", "_finalize_scratch_lifetimes": "finalize",
 }
 
@@ -38,10 +38,10 @@ class ScratchOwnershipNormalizer(ast.NodeTransformer):
 
     def visit_Attribute(self, node):
         if (isinstance(node.value, ast.Name)
-                and node.value.id in {"local_scratch", "_local_scratch", "scratch", "scratch_lifetime", "naming"}):
+                and node.value.id in {"local_scratch", "_local_scratch", "scratch", "scratch_lifetime", "scratch_declarations"}):
             if node.attr in SCRATCH_AUDIT_MOVED or node.attr in SCRATCH_AUDIT_MOVED.values() or node.attr.startswith("SCRATCH_LIFETIME_"):
                 return ast.Name(SCRATCH_AUDIT_MOVED.get(node.attr, node.attr), ast.Load())
-            if node.value.id == "naming":
+            if node.value.id == "scratch_declarations":
                 return ast.Name(node.attr, ast.Load())
         return self.generic_visit(node)
 
@@ -87,6 +87,10 @@ def main():
     after = scratch_audit_functions(scratch_audit_source(profile))
     moved = scratch_audit_functions(scratch_audit_source(owner))
     failures = []
+    for name, function in moved.items():
+        if any(isinstance(node, ast.Name) and node.id == "scratch_declarations"
+               and isinstance(node.ctx, ast.Store) for node in ast.walk(function)):
+            failures.append(f"shadowed-module-alias:{name}")
     for old, new in SCRATCH_AUDIT_MOVED.items():
         if old in after or scratch_audit_dump(before[old]) != scratch_audit_dump(moved[new]):
             failures.append(f"moved-body:{old}")

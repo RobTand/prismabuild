@@ -19090,8 +19090,8 @@ class PoolQueue:
         """Existing cleanup owner: containment, then durable scratch cleanup."""
         if scratch_owner_path is not None and scratch_lifetime.SCRATCH_LIFETIME_FIELD in record:
             try:
-                _, owner = scratch_lifetime.durable_owner(record_store.RecordStore(self.root),
-                    record, scope_only=scope_only, owner_path=scratch_owner_path)
+                _, owner = scratch_lifetime.durable_owner(
+                    record_store.RecordStore(self.root), record, scope_only=scope_only, owner_path=scratch_owner_path)
                 if owner is None:
                     raise local_scratch.LocalScratchError("scratch recovery owner disappeared")
                 # A widowed lease carries the complete envelope inside its
@@ -19111,8 +19111,8 @@ class PoolQueue:
                 # The legacy lost-claim finisher passes an empty record. It
                 # cannot carry registered scratch and keeps its old outcome.
                 return result
-            scratch = scratch_lifetime.finalize(record_store.RecordStore(self.root), self,
-                str(record["action_key"]), record, scope_only=scope_only,
+            scratch = scratch_lifetime.finalize(
+                record_store.RecordStore(self.root), self, str(record["action_key"]), record, scope_only=scope_only,
                 export=(result.get("resource_scope") or {}).get("export"),
                 owner_path=scratch_owner_path)
             if not scratch["used"]:
@@ -27493,8 +27493,8 @@ class PoolQueue:
         scope = self._start_resource_scope(item) if containment else None
         if lifetimes:
             assert scope is not None
-            item[scratch_lifetime.SCRATCH_LIFETIME_FIELD] = scratch_lifetime.register(record_store.RecordStore(self.root), self,
-                key, claim_snapshot=item, env={
+            item[scratch_lifetime.SCRATCH_LIFETIME_FIELD] = scratch_lifetime.register_attempt(
+                record_store.RecordStore(self.root), self, key, claim_snapshot=item, env={
                     pb.ACTION_KEY_ENV: key, pb.ACTION_NONCE_ENV: scope.nonce,
                     pb.ACTION_SCOPE_ENV: scope.unit})
         if selected:
