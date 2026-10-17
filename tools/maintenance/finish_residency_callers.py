@@ -52,7 +52,8 @@ def complete_residency_callers(checkout: Path) -> list[str]:
             after = before
             for start, end in sorted(edits, reverse=True):
                 after = after[:start] + "submit_core.SubmissionRequest" + after[end:]
-            if path == "tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py":
+            if path in ("tests/test_a_stage_mover_declares_the_cpu_and_retries_it_owns.py",
+                        "tests/test_an_egress_declares_the_cpu_it_owns.py"):
                 loop = "    for name, value in overrides.items():\n        setattr(args, name, value)"
                 assert after.count(loop) == 1 and "from dataclasses import" not in after
                 after = after.replace("import types\n", "import types\nfrom dataclasses import replace\n")

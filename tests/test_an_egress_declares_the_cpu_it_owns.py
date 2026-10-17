@@ -34,6 +34,7 @@ from pathlib import Path
 import sys
 import time
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -155,8 +156,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, ram=False, **overrides):
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
-    for name, value in overrides.items():
-        setattr(args, name, value)
+    args = replace(args, **overrides)
     cas = _Cas(manifest_path)
     staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     staged["cas"] = cas
