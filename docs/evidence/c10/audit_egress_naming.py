@@ -2,6 +2,7 @@
 import argparse
 import ast
 import copy
+import difflib
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--before", default="2ce0865ec169af44009da1bbc71d90af6dc886c7")
     parser.add_argument("--head", default="HEAD")
+    parser.add_argument("--composition-source", help="Read-only C07 pin for the moved reclaim owner")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -87,6 +89,38 @@ def main():
                   head=git("rev-parse", args.head), tree=git("rev-parse", args.head + "^{tree}"),
                   callers=proofs, no_options_leaf_body_equal=True,
                   aggregate_body_equal=True, existing_guards_defaults_decorators_errors_order_equal=True)
+    if args.composition_source:
+        path = "src/prismabuild/lifecycle.py"
+        source = git("show", args.composition_source + ":" + path) + "\n"
+        original = method(args.composition_source, path, "_reclaim_terminal")
+        calls = [n for n in ast.walk(original) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == "release_tier_reservations"]
+        assert len(calls) == 1 and ast.unparse(calls[0]) == "queue.release_tier_reservations(key)"
+        lines = source.splitlines(keepends=True)
+        line = calls[0].lineno - 1
+        lines[line] = lines[line].replace("queue.release_tier_reservations(key)",
+                                          "tier_holdings.egress_all(queue, key)")
+        imported = next(i for i, row in enumerate(lines) if row.startswith("from . import claim_identity,"))
+        lines[imported] = lines[imported].rstrip("\n") + ", tier_holdings\n"
+        proposed = "".join(lines)
+        changed = next(n for n in ast.walk(ast.parse(proposed))
+                       if isinstance(n, ast.FunctionDef) and n.name == "_reclaim_terminal")
+        restored = copy.deepcopy(changed)
+        restored_calls = [n for n in ast.walk(restored) if isinstance(n, ast.Call)
+                          and isinstance(n.func, ast.Attribute) and n.func.attr == "egress_all"]
+        assert len(restored_calls) == 1
+        call = restored_calls[0]
+        call.func = ast.Attribute(call.args.pop(0), "release_tier_reservations", ast.Load())
+        assert dump(restored) == dump(original)
+        patch = "".join(difflib.unified_diff(source.splitlines(keepends=True),
+                       proposed.splitlines(keepends=True), fromfile="a/" + path, tofile="b/" + path))
+        patch_path = args.output.with_suffix(".composition.patch")
+        patch_path.write_text(patch)
+        report["composition_seam"] = dict(pin=git("rev-parse", args.composition_source),
+            path=path, owner="_reclaim_terminal", blob=git("rev-parse", args.composition_source + ":" + path),
+            old_ast_sha256=digest(dump(original)), proposed_ast_sha256=digest(dump(changed)),
+            restored_entire_method_ast_equal=True, exact_calls_changed=1,
+            patch=str(patch_path), patch_sha256=digest(patch), branch_imported_or_mutated=False)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
 
