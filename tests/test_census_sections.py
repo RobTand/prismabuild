@@ -338,16 +338,23 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
                                    "8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7", "src", "tools/fleet"])
     with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
         archive.extractall(original, filter="data")
+    strict_reference = tmp_path / "strict-reference"
+    strict_reference.mkdir()
+    raw = subprocess.check_output(["git", "-C", str(repository), "archive",
+                                   "082f75ea50b2601c8681fe070a5a342e1b042702", "src", "tools/fleet"])
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        archive.extractall(strict_reference, filter="data")
     fleet = fixture.build_starved(tmp_path / "store")
     now = str(time.time())
     environment = {**os.environ, "PYTHONPATH": ""}
     readings = []
-    for source in (original, repository):
+    for source in (original, repository, strict_reference):
         run = subprocess.run([sys.executable, "-c", _OBSERVE, str(source), str(fleet.queue_root), now],
                              env=environment, capture_output=True, text=True, timeout=60)
         assert run.returncode == 0, run.stderr
         readings.append(json.loads(run.stdout))
     assert readings[0]["values"] == readings[1]["values"]
+    assert readings[2]["values"] == readings[1]["values"]
     for reading in readings:
         for events in reading["schedules"].values():
             for event in events:
@@ -356,4 +363,4 @@ def test_original_fact_values_and_observable_capture_order_match(tmp_path):
                         and relative[0] == "tier-reservations" and relative[2] == "held"):
                     event[0] = "strict-holder-listing"
                     event[1] = str(Path(event[1]))
-    assert readings[0]["schedules"] == readings[1]["schedules"]
+    assert readings[2]["schedules"] == readings[1]["schedules"]
