@@ -12,7 +12,7 @@ def _rewrite(queue, key, **changes):
     path = queue.records.item_path(pool.record_store.READY, key)
     row = pool.read_queue_record(path)
     row.update(changes)
-    pool.record_store._write_json(path, row)
+    pool.immutable_files.write_json_atomic(path, row)
     return path.read_bytes()
 
 
