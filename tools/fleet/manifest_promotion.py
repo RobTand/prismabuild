@@ -390,7 +390,7 @@ def promote_ready_manifest_rows(
             # dead-consumer pass cannot reap a plan between its filing and
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
-            with queue._transition_locked(key):
+            with queue.action_transition_lock(key):
                 staged = pbrun.residency_stage_rows(
                     template, consumer_action_key=key,
                     tier=dict(stage_tier), args=args,

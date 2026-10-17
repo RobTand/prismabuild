@@ -20,7 +20,7 @@ def other_actor_takes_key(queue, key, on_acquired=None):
     result = []
 
     def contender():
-        with queue._transition_locked(key, blocking=False) as acquired:
+        with queue.action_transition_lock(key, blocking=False) as acquired:
             result.append(acquired)
             if acquired and on_acquired is not None:
                 on_acquired()
