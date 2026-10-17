@@ -34,7 +34,7 @@ class _Queue:
 
 
 def _file(queue: _Queue, state: str, key: str, payload: dict) -> None:
-    queue.records.item_path(state, key).write_text(json.dumps(payload), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path(state, key), payload)
 
 
 OUTCOME = {
