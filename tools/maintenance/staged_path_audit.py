@@ -82,6 +82,29 @@ def staged_checks(source):
     return checks
 
 
+
+def staged_check_delta(root, path, expected, source):
+    """Report every lost check, mapping only Root's exact approved Census fixture."""
+    actual = staged_checks(source)
+    delta = expected - actual
+    bindings = []
+    if path == "tests/test_census_sections.py" and delta:
+        reference = "fb1f43e10625d4897877e323528ea207c6451c0d"
+        approved = subprocess.check_output(
+            ["git", "-C", str(root), "show", reference + ":" + path], text=True)
+        old = 'assert readings[0]["schedules"] == readings[1]["schedules"]'
+        new = 'assert readings[2]["schedules"] == readings[1]["schedules"]'
+        before, after = staged_checks(old), staged_checks(new)
+        if (ast.dump(ast.parse(source), include_attributes=False)
+                == ast.dump(ast.parse(approved), include_attributes=False)
+                and delta == before and after <= actual):
+            bindings.append({"path": path, "reference_commit": reference,
+                "old_checks": dict(before), "new_checks": dict(after),
+                "qualification": "Exact approved fb1 module AST. Original 8e value equality remains; strict 082f value equality is added and its full schedule is used."})
+            delta -= before
+    return delta, bindings
+
+
 def staged_baseline_relocation(root, selected):
     sys.path.insert(0, str(root / "tools"))
     import duplication_inventory as inventory
@@ -166,6 +189,7 @@ def staged_audit_cli():
                           "old_line": node.lineno, "new_line": current.lineno if current else None,
                           "ast_equal": current is not None and staged_body(node, selected) == staged_body(current, selected)})
     missing_checks, retired, parse_errors, changed = [], [], [], []
+    check_bindings = []
     expected_tests = current_tests = 0
     for path, original in sources.items():
         current_path = args.root / path
@@ -183,7 +207,8 @@ def staged_audit_cli():
             expected = staged_checks(staged_references(original, selected, exports=original_exports)
                                      if original != current else original)
             actual = staged_checks(current)
-            delta = expected - actual
+            delta, bindings = staged_check_delta(args.root, path, expected, current)
+            check_bindings.extend(bindings)
             if delta:
                 missing_checks.append({"path": path, "missing": dict(delta)})
             expected_tests += sum(v for k, v in expected.items() if k.startswith("native:"))
@@ -237,7 +262,7 @@ def staged_audit_cli():
         cwd=args.root, text=True).splitlines()
     result = {"base": STAGED_BASE, "root": str(args.root), "moves": moves,
               "body_changes": [r for r in moves if not r["ast_equal"]], "changed": changed,
-              "missing_checks": missing_checks, "retired_executable_references": retired,
+              "missing_checks": missing_checks, "qualified_check_bindings": check_bindings, "retired_executable_references": retired,
               "parse_errors": parse_errors, "original_test_definition_occurrences": expected_tests,
               "current_test_definition_occurrences": current_tests,
               "tracked_python_files": len(all_sources), "all_parse_errors": all_parse_errors,

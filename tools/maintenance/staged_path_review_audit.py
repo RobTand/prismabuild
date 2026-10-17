@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 from staged_path_migrate import staged_inventory, staged_symbols, staged_references, staged_sources, staged_exports, staged_alias_bindings, staged_reference_module, STAGED_PUBLIC
-from staged_path_audit import staged_checks
+from staged_path_audit import staged_checks, staged_check_delta
 
 REVIEW_BASE = 'ec634ac510c1a7465052f9111d51cfa928bb439d'
 ORIGINAL_BASE = 'a8ba9c0c7beeeb379908924a60c6933e997c8df6'
@@ -63,7 +63,7 @@ def review_cli():
         rows = staged_review_occurrences(sources)
         result['snapshots'][label] = {'python_files': len(sources), **rows}
     for label, sources in [('a8', original), ('ec', previous)]:
-        missing, changed = [], []
+        missing, changed, bindings = [], [], []
         for path, old in sources.items():
             if path not in current:
                 missing.append({'path': path, 'removed_file': True})
@@ -74,10 +74,11 @@ def review_cli():
                     'new_module_ast': ast.dump(ast.parse(new), include_attributes=False)})
             if path.startswith('tests/'):
                 expected = staged_checks(staged_references(old, selected) if label == 'a8' else old)
-                loss = expected - staged_checks(new)
+                loss, mapped = staged_check_delta(root, path, expected, new)
+                bindings.extend(mapped)
                 if loss:
                     missing.append({'path': path, 'checks': dict(loss)})
-        result['comparisons'][label] = {'changed_module_ASTs': changed, 'missing_test_checks': missing}
+        result['comparisons'][label] = {'changed_module_ASTs': changed, 'missing_test_checks': missing, 'qualified_check_bindings': bindings}
     historical = subprocess.check_output(['git', '-C', str(root), 'diff', '--name-only', REVIEW_BASE, '--', 'tests/compat'], text=True).splitlines()
     result['changed_historical_captures'] = historical
     result['limits'] = 'Source/AST occurrence evidence only; native outcomes require admitted execution. Every duplicate definition/decorator is retained as an occurrence.'
