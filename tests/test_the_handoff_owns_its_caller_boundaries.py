@@ -85,7 +85,7 @@ def _stage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, o
 
     prepared = submission._prepare(tmp_path, monkeypatch)
     args = pbrun.parse_args()
-    built = submit_core.prepare(args, store=pbrun.configured_store(), display=pbrun.render_submission)
+    built = submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)
     template = built["template"]
     return {
         "queue": prepared["queue"], "template": template,

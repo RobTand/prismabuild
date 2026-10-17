@@ -451,21 +451,21 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
 
     entries = json.loads(json.dumps(manifest["entries"]))
     entries[0]["sha256"] = "0" * 64
-    with pytest.raises(SystemExit, match="entries is not what"):
+    with pytest.raises(submit_core.SubmissionRefused, match="entries is not what"):
         check(tampered(entries=entries), transport="pool", queue_root=queue.root)
-    with pytest.raises(SystemExit, match="mount_prefix is not what"):
+    with pytest.raises(submit_core.SubmissionRefused, match="mount_prefix is not what"):
         check(tampered(mount_prefix=str(tmp_path)), transport="pool",
               queue_root=queue.root)
     annotations = dict(manifest["annotations"])
     annotations[po.ORIGIN_BATCHES_ANNOTATION] = [dict(ref, manifest_digest="1" * 64)]
-    with pytest.raises(SystemExit, match="origin-batch-mismatch"):
+    with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-mismatch"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
     annotations[po.ORIGIN_BATCHES_ANNOTATION] = [ref, ref]
-    with pytest.raises(SystemExit, match="names a batch twice"):
+    with pytest.raises(submit_core.SubmissionRefused, match="names a batch twice"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         check(manifest, transport="slurm", queue_root=queue.root)
 
     # Through the real submission: freeze reads the declared batches.
