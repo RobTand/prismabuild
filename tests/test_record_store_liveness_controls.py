@@ -203,3 +203,22 @@ def test_unreadable_publication_metadata_is_not_reused_when_coarse_ctime_repeats
         assert rows[0][1] == 'unknown', 'an unreadable file still authorized the real publication proof'
     finally:
         fragment.chmod(before.st_mode)
+
+
+@pytest.mark.parametrize('error', [errno.EACCES, errno.EIO, errno.ESTALE])
+def test_claim_owner_census_never_certifies_idle_from_unknown_claim_metadata(tmp_path, monkeypatch, error):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    queue.records.ensure_layout()
+    key = _hexkey('uncertain-claim-owner')
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
+    path.write_text('{}')
+    seen = _unreadable_stat(monkeypatch, path, error)
+    refused = None
+    pids = None
+    try:
+        pids = queue.claim_holder_pids(host='private-c05-host')
+    except (OSError, pool.PoolContractError) as exc:
+        refused = exc
+    assert seen, 'the native claim metadata query was not reached'
+    assert pids is None, 'an extant claim with unknown ownership was reported as idle'
+    assert refused is not None
