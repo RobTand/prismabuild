@@ -1,4 +1,6 @@
 """The real main emits facts matching its process exit and unchanged stdout."""
+from prismabuild import submission as submit_core
+import pbrun
 import json
 import os
 from pathlib import Path

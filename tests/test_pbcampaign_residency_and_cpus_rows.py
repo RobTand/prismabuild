@@ -146,7 +146,7 @@ def _staged_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQ
             "tier_id": tier_id, "host": "sparky", "tier": kind,
             "mountpoint": str(tmp_path / kind),
             "mover_python": sys.executable,
-            "mover_tools_root": str(Path(submission.__file__).resolve().parent),
+            "mover_tools_root": str(Path(pbrun.__file__).resolve().parent),
         })
     return queue
 

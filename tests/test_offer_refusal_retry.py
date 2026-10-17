@@ -15,6 +15,7 @@ that stays unreadable, and a reader that survives cleanup.
 """
 
 from __future__ import annotations
+from submission_support import refusal_value
 
 import errno
 import os
@@ -145,10 +146,10 @@ def test_a_reaped_offer_timeout_is_its_own_refusal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(queue, "_offer_records", blocked_read)
     monkeypatch.setattr(submit_core, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
-    with pytest.raises(SystemExit, match="worker-offer discovery timed out") as caught:
+    with pytest.raises(submit_core.SubmissionRefused, match="worker-offer discovery timed out") as caught:
         submit_core.bounded_offer_snapshot(queue)
     assert type(caught.value).__name__ == "OfferDiscoveryTimedOut"
-    assert isinstance(caught.value.code, str)          # plain pbrun still exits 1
+    assert isinstance(refusal_value(caught.value), str)          # plain pbrun still exits 1
 
 
 def test_a_retained_offer_reader_is_not_retryable(tmp_path, monkeypatch):
@@ -168,7 +169,7 @@ def test_a_retained_offer_reader_is_not_retryable(tmp_path, monkeypatch):
     monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
     monkeypatch.setattr(submit_core, "SUBMISSION_OFFER_READ_TIMEOUT_S", 0.2)
     try:
-        with pytest.raises(SystemExit, match="retained reader") as caught:
+        with pytest.raises(submit_core.SubmissionRefused, match="retained reader") as caught:
             submit_core.bounded_offer_snapshot(queue)
         assert type(caught.value) is SystemExit
     finally:

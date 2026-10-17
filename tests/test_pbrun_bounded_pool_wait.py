@@ -5,6 +5,7 @@ listing succeeds, then opening the named record blocks.  These tests exercise
 the actual forked reader boundary; they never point at a fleet queue.
 """
 from __future__ import annotations
+import pbrun
 
 import fcntl
 import json

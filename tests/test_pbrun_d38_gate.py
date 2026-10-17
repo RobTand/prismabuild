@@ -833,11 +833,11 @@ def test_the_shipped_gate_is_off_and_no_caller_input_can_turn_it_on() -> None:
     shipped = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
-         "from prismabuild import d38_gate; print(d38_gate.enforcement_enabled())"],
+         "import pbrun; from prismabuild import d38_gate; print(d38_gate.enforcement_enabled(store=pbrun.configured_store()))"],
         cwd=REPOSITORY, capture_output=True, text=True)
     assert shipped.returncode == 0, shipped.stderr
     assert shipped.stdout.strip() == "False", shipped.stderr
-    source = (REPOSITORY / "tools" / "fleet" / "d38_gate.py").read_text(
+    source = (REPOSITORY / "src" / "prismabuild" / "d38_gate.py").read_text(
         encoding="utf-8")
     assert "os.environ" not in source and "getenv" not in source
     parsed = pbrun.parse_args(["--cwd", ".", "--", "/bin/true"])
@@ -1077,6 +1077,6 @@ def test_the_shipped_registry_is_empty() -> None:
     shipped = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path[:0] = ['src', 'tools/fleet'];"
-         "from prismabuild import d38_gate; print(len(d38_gate.INVOCATIONS))"],
+         "import pbrun; from prismabuild import d38_gate; print(len(d38_gate.INVOCATIONS))"],
         cwd=REPOSITORY, capture_output=True, text=True)
     assert shipped.stdout.strip() == "0", shipped.stderr

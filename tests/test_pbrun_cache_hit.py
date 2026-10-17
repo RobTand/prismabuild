@@ -101,7 +101,7 @@ def test_unreceipted_work_still_reaches_the_scheduler(
         raise submit_core.slurm_lane.SlurmLaneError("stop here")
 
     monkeypatch.setattr(submit_core.slurm_lane, "run", record)
-    with pytest.raises(SystemExit):
+    with pytest.raises(submit_core.SubmissionRefused):
         submit_core.slurm_outcome(
             {"action_key": KEY}, cas=_Receipted(None, tmp_path / 'cas'), request_path="r.json",
             tags=[], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
