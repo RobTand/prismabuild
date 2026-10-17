@@ -44,10 +44,13 @@ def c13_canonical_tree(tree,manifest):
         if new in top_names:aliases[new]='prismabuild.output_contract.'+new
     for old,new in manifest['renames'].items():
         if new in top_names:aliases[new]='prismabuild.batch_ledger.'+new
+    scopes=[]
     def resolve(node):
         name=c13_dotted(node)
         if not name:return None
         first,_,tail=name.partition('.')
+        if any(first in scope for scope in scopes):
+            return 'local:'+name
         return aliases.get(first,first)+('.'+tail if tail else '')
     reverse={}
     for n in manifest['leaf']:
@@ -65,6 +68,28 @@ def c13_canonical_tree(tree,manifest):
         if name in owner_funcs:return OLD+name
         return name
     class Normalize(ast.NodeTransformer):
+        def visit_FunctionDef(self,node):
+            bound={a.arg for a in [*node.args.posonlyargs,*node.args.args,*node.args.kwonlyargs]}
+            if node.args.vararg:bound.add(node.args.vararg.arg)
+            if node.args.kwarg:bound.add(node.args.kwarg.arg)
+            global_names=set()
+            class Bindings(ast.NodeVisitor):
+                def visit_Name(self,item):
+                    if isinstance(item.ctx,(ast.Store,ast.Del)):bound.add(item.id)
+                def visit_Global(self,item):global_names.update(item.names)
+                def visit_FunctionDef(self,item):bound.add(item.name)
+                visit_AsyncFunctionDef=visit_FunctionDef
+                def visit_ClassDef(self,item):bound.add(item.name)
+                def visit_ExceptHandler(self,item):
+                    if item.name:bound.add(item.name)
+                    self.generic_visit(item)
+            visitor=Bindings()
+            for item in node.body:visitor.visit(item)
+            scopes.append(bound-global_names)
+            result=self.generic_visit(node)
+            scopes.pop()
+            return result
+        visit_AsyncFunctionDef=visit_FunctionDef
         def visit_Attribute(self,node):
             if isinstance(node.value,ast.Call) and resolve(node.value.func)=='prismabuild.batch_ledger.BatchFacets' and node.attr in facets:
                 return ast.Call(func=ast.Name(id=OLD+facets[node.attr]),args=[self.visit(x) for x in node.value.args],keywords=[])

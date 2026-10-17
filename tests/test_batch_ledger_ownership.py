@@ -7,11 +7,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 import pytest
 
-from prismabuild import batch_ledger as bl, output_contract as oc
+from prismabuild import batch_ledger as bl, output_contract as oc, digest_primitives
 from test_consumed_origin_retirement import _commit
 from test_write_only_produced_output import _queue, _template
 
@@ -126,3 +127,18 @@ def test_legacy_missing_paths_use_the_real_immutable_batch(tmp_path):
     assert bl.BatchFacets(record['batches']['b1']).kind == 'origin'
     assert bl.BatchFacets(record['batches']['b1']).stage_retired is True
     assert bl.BatchFacets(record['batches']['b1']).origin_reclaimed is False
+
+
+def test_the_admitted_interpreter_reports_its_actual_identity(capsys):
+    executable = Path(sys.executable).resolve()
+    payload = executable.read_bytes()
+    identity = {"version": sys.version, "version_info": list(sys.version_info[:3]),
+                "executable": sys.executable, "resolved": str(executable),
+                "bytes": len(payload), "sha256": digest_primitives.raw_sha256(payload),
+                "host": __import__("socket").gethostname(),
+                "cpus": sorted(os.sched_getaffinity(0)),
+                "tmpdir": tempfile.gettempdir()}
+    with capsys.disabled():
+        print("c13-interpreter: " + json.dumps(identity), flush=True)
+    assert tuple(identity["version_info"][:2]) in ((3, 12), (3, 14))
+    assert identity["tmpdir"] == "/home/rob/pbt17"

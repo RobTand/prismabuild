@@ -3857,7 +3857,7 @@ class BatchLedger:
         try:
             immutable_files.publish_exact(
                 batch_path,
-                core._compact_ascii_lf_bytes(BatchLedger.record)[:-1].decode("ascii").encode() + b"\n",
+                core._compact_ascii_lf_bytes(batch_record)[:-1].decode("ascii").encode() + b"\n",
                 where="produced-output batch", conflict_error=record_store.PoolContractError)
         except record_store.PoolContractError as exc:
             return {"ok": False, "refusal": f"batch-conflict: {exc}"}

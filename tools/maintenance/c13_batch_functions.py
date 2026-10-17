@@ -67,9 +67,9 @@ def c13_body(fn):
     body=[x for x in body if not isinstance(x,(ast.Import,ast.ImportFrom))]
     # Bound receiver replacements are exact addressing substitutions, without I/O.
     body=[x for x in body if not (isinstance(x,ast.Assign) and len(x.targets)==1
-          and isinstance(x.targets[0],ast.Name) and x.targets[0].id in ('path','entry')
+          and isinstance(x.targets[0],ast.Name) and x.targets[0].id.removeprefix('local:') in ('path','entry')
           and isinstance(x.value,ast.Attribute) and isinstance(x.value.value,ast.Name)
-          and x.value.value.id=='self' and x.value.attr in ('path','entry'))]
+          and x.value.value.id.removeprefix('local:')=='self' and x.value.attr in ('path','entry'))]
     body=[x for x in body if not (isinstance(x,ast.Assign) and any(
           isinstance(t,ast.Attribute) and t.attr=='lease_timeout_s' for t in x.targets))]
     return ast.dump(ast.Module(body=body,type_ignores=[]),include_attributes=False)
@@ -98,8 +98,25 @@ def main():
         current=files[target].get(new)
         status='normalized-body-equal' if current and c13_body(fn)==c13_body(current) else 'explicit-seam-required'
         rows.append(dict(original=name,current=target+'.'+new,status=status,old_line=fn.lineno,new_line=current and current.lineno))
-    result=dict(base=BASE,functions=rows,equal=sum(x['status']=='normalized-body-equal' for x in rows))
+    def tail_at(body, name):
+        for index,node in enumerate(body):
+            if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='local:'+name for t in node.targets):
+                return body[index:]
+            if isinstance(node,ast.With):
+                found=tail_at(node.body,name)
+                if found:return found
+        return None
+    blocks={}
+    original_stage=tail_at(old['commit_batch'].body,'batch_record')
+    stage=files['batch_ledger']['BatchLedger.publish_stage']
+    expected=ast.FunctionDef(name='stage',args=stage.args,body=original_stage,decorator_list=[])
+    blocks['immutable_stage_publication']=c13_body(expected)==c13_body(stage)
+    repins=next(n for n in ast.walk(old['_file_origin_repins']) if isinstance(n,ast.For) and isinstance(n.target,ast.Tuple) and isinstance(n.target.elts[0],ast.Name) and n.target.elts[0].id=='local:key')
+    current=files['batch_ledger']['BatchLedger.repin_scope']
+    expected=ast.FunctionDef(name='repins',args=current.args,body=repins.body,decorator_list=[])
+    blocks['one_scope_origin_repins']=c13_body(expected)==c13_body(current)
+    result=dict(base=BASE,functions=rows,blocks=blocks,equal=sum(x['status']=='normalized-body-equal' for x in rows))
     Path(sys.argv[1]).write_text(json.dumps(result,indent=2)+'\n')
-    print(json.dumps({'original':len(rows),'equal':result['equal'],'seams':[r['original'] for r in rows if r['status']!='normalized-body-equal']}))
+    print(json.dumps({'original':len(rows),'equal':result['equal'],'blocks':blocks,'seams':[r['original'] for r in rows if r['status']!='normalized-body-equal']}))
 
 if __name__=='__main__':main()
