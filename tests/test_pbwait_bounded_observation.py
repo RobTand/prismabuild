@@ -31,10 +31,6 @@ KEY = "a" * 64
 from fleet_world import FleetWorld
 
 
-def _queue(tmp_path: Path):
-    return FleetWorld(tmp_path, queue_name='queue').queue
-
-
 def _outcome(*, generation: float = 1.0) -> dict:
     return {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
@@ -61,7 +57,7 @@ def test_fifo_submission_observation_is_bounded_with_a_causal_marker(
     retries a reaped timeout (#558, ``test_pbwait_observation_retry.py``).
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     fifo = queue.records.item_path(pool.record_store.READY, KEY)
     marker = tmp_path / "entered-outstanding-submission-read"
     os.mkfifo(fifo)
@@ -109,8 +105,11 @@ print(row["note"])
 def test_immutable_summary_verification_is_bounded_per_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    queue.records.item_path(pool.record_store.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.DONE, KEY),
+        _outcome(),
+    )
     real_read = submit_core.action_wait.read_observation
 
     def short_verification(section, read, *, budget_s, **kwargs):
@@ -137,10 +136,10 @@ def test_immutable_summary_verification_is_bounded_per_key(
 def test_terminal_record_outranks_and_skips_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    queue.records.item_path(pool.record_store.DONE, KEY).write_text(
-        json.dumps(_outcome()),
-        encoding="utf-8",
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.DONE, KEY),
+        _outcome(),
     )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: pytest.fail(
@@ -157,7 +156,7 @@ def test_terminal_record_outranks_and_skips_cas_lookup(
 def test_unreadable_terminal_record_outranks_a_blocked_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     path = queue.records.item_path(pool.record_store.FAILED, KEY)
     path.write_text("{", encoding="utf-8")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
@@ -171,7 +170,7 @@ def test_unreadable_terminal_record_outranks_a_blocked_cas_lookup(
 def test_preemption_successor_is_observed_after_the_original_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     path = queue.records.item_path(pool.record_store.DONE, KEY)
     outcome = _outcome(generation=2.0)
     path.write_text(json.dumps(outcome), encoding="utf-8")
@@ -192,7 +191,7 @@ def test_preemption_successor_is_observed_after_the_original_deadline(
 def test_bare_key_follows_an_immediate_preemption_successor_after_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     path = queue.records.item_path(pool.record_store.DONE, KEY)
     outcome = _outcome(generation=2.0)
     path.write_text(json.dumps(outcome), encoding="utf-8")
@@ -213,7 +212,7 @@ def test_bare_key_follows_an_immediate_preemption_successor_after_deadline(
 def test_preemption_handoff_skips_cas_until_the_successor_is_observed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "outstanding", lambda *_args, **_kwargs:
                         ("pool", 1.0, {"published_unix": 1.0}))
@@ -246,14 +245,11 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     covered by ``test_fifo_submission_observation_is_bounded_with_a_causal_marker``.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     blocked = "a" * 64
     healthy = "b" * 64
     good = {**_outcome(), "action_key": healthy}
-    queue.records.item_path(pool.record_store.DONE, healthy).write_text(
-        json.dumps(good),
-        encoding="utf-8",
-    )
+    queue.records.replace_record_at(queue.records.item_path(pool.record_store.DONE, healthy), good)
     healthy_returned = threading.Event()
     released_by_healthy_row = []
 
@@ -298,7 +294,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
 def test_reader_setup_failure_never_retries_reads_in_the_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     def setup_failed(*_args, **_kwargs):
@@ -318,10 +314,10 @@ def test_reader_setup_failure_never_retries_reads_in_the_parent(
 def test_retained_observation_reader_stops_before_render_or_another_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    queue.records.item_path(pool.record_store.DONE, KEY).write_text(
-        json.dumps(_outcome()),
-        encoding="utf-8",
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.DONE, KEY),
+        _outcome(),
     )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     retained = []

@@ -5,6 +5,7 @@ but the copy is a preference, never admission: a fit host without one
 still claims, and a row without a set keeps the prior order exactly.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 import secrets
@@ -81,17 +82,16 @@ def _announce(queue, host):
                    capacity={"cpu": 4, "mem_gb": 16})
 
 
-def _publish(queue, key, **kwargs):
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", resources={"cpu": 1, "mem_gb": 1},
-                  tags=["x86"], **kwargs)
-
-
 def test_offer_sort_puts_the_resident_host_first(tmp_path):
     queue, store, set_id = _resident_world(tmp_path)
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "a" * 64, resident_set=set_id)
+    ActionRows(queue).publish(
+        'a' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        tags=['x86'],
+        resident_set=set_id,
+    )
     item = json.loads(queue.records.item_path(pool.record_store.READY, "a" * 64).read_text())
     assert queue.placeable_hosts(item) == ["zhost", "ahost"]
 
@@ -101,7 +101,7 @@ def test_a_row_without_a_set_keeps_the_prior_order(tmp_path, monkeypatch, set_va
     queue, store, set_id = _resident_world(tmp_path)
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "b" * 64)
+    ActionRows(queue).publish('b' * 64, resources={'cpu': 1, 'mem_gb': 1}, tags=['x86'])
     item = json.loads(queue.records.item_path(pool.record_store.READY, "b" * 64).read_text())
     if set_value is not None:
         item["resident_set"] = set_value
@@ -140,7 +140,12 @@ def test_a_row_with_a_set_but_no_copy_keeps_order_and_still_claims(tmp_path):
 def _assert_fallback(queue, set_id, monkeypatch):
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "f" * 64, resident_set=set_id)
+    ActionRows(queue).publish(
+        'f' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        tags=['x86'],
+        resident_set=set_id,
+    )
     item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, "f" * 64))
     assert queue.resident_copy_hosts(set_id) == set()
     assert queue.placeable_hosts(item) == list(HOSTS)
@@ -446,7 +451,12 @@ def test_resident_hold_ignores_a_future_publish_stamp(tmp_path, published):
     queue, store, set_id = _resident_world(tmp_path, lease_now=100)
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "e" * 64, resident_set=set_id)
+    ActionRows(queue).publish(
+        'e' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        tags=['x86'],
+        resident_set=set_id,
+    )
     item = json.loads(queue.records.item_path(pool.record_store.READY, "e" * 64).read_text())
     record = {"group": "f" * 32, "size": 2}
     entry = {"index": 0, "action_key": "e" * 64}
