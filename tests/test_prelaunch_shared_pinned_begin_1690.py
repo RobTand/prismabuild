@@ -32,7 +32,7 @@ from prismabuild import residency_map  # noqa: E402
 from prismabuild import residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     _hexkey, _queue)
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
@@ -301,7 +301,7 @@ def _finish_claimed(queue, stage_root: Path, mover: str, consumer: str,
 def test_shared_pinned_movers_begin_with_the_deficit(tmp_path) -> None:
     """The group acquires only the true deficit and then stages."""
     queue, tiers, second, _plan, _movers = _state_1690(tmp_path)
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     units = pt.declared_units(queue, {TIER: {"tier": "stage"}},
                               [_consumer(second)])
     assert len(units) == 1
@@ -390,7 +390,7 @@ def test_window_blocked_and_begin_need_come_from_one_computation(
         tmp_path) -> None:
     """The stall's blocked amount equals the begin's requested amount."""
     queue, tiers, second, plan, _movers = _state_1690(tmp_path)
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     units = pt.declared_units(queue, {TIER: {"tier": "stage"}},
                               [_consumer(second)])
     unit = units[0]
@@ -422,7 +422,7 @@ def test_a_declined_begin_reports_its_need_and_reason(tmp_path) -> None:
     plan = _declared_plan(queue, second, SPECS, tag="starved1690")
     from test_prelaunch_tier_publish_1594 import _live
     _live(queue, plan, second, SPECS)
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     units = pt.declared_units(queue, {TIER: {"tier": "stage"}},
                               [_consumer(second)])
     unit = units[0]
@@ -463,7 +463,7 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
     plan = _declared_plan(queue, second, SPECS, tag="locked1690")
     from test_prelaunch_tier_publish_1594 import _live
     _live(queue, plan, second, SPECS)
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     units = pt.declared_units(queue, {TIER: {"tier": "stage"}},
                               [_consumer(second)])
     unit = units[0]
@@ -505,7 +505,7 @@ def test_a_busy_ledger_lock_reports_contention_not_a_shortage(
 
 def _prepared_shared_recovery(tmp_path):
     """Lose an unstaged chunk's row and tokens after the shared group commits."""
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     queue, tiers, consumer, plan, movers = _state_1690(tmp_path)
     ledger = queue.tier(TIER)
     unit = pt.declared_units(queue, tiers, [_consumer(consumer)])[0]

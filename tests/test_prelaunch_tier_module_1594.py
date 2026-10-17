@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 from prismabuild import prelaunch_group as pg  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     GIB, MANIFEST, STAGE_KIND, TIER, _chunks, _drive_to_committed, _hexkey,
     _plan, _queue, _row)
