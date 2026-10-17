@@ -320,7 +320,7 @@ def test_an_entry_larger_than_the_window_refuses_at_seal(tmp_path) -> None:
     sizes = [[10 * GIB, (WINDOW_UNITS + 1) * GIB, 10 * GIB], [5 * GIB]]
     published: dict[str, dict] = {}
 
-    with pytest.raises(SystemExit, match="residency_entry_exceeds_window"):
+    with pytest.raises(submit_core.SubmissionRefused, match="residency_entry_exceeds_window"):
         _seal(tmp_path, _manifest(sizes), published=published)
 
     assert published == {}

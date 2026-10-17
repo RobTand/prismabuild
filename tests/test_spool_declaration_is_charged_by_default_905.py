@@ -97,7 +97,7 @@ def test_an_explicit_opt_in_seals_the_same_effective_contract(tmp_path, monkeypa
 
 def test_an_explicit_zero_beside_a_declared_bound_is_refused_by_name(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(work, fleet, monkeypatch,
                *_env(f"{SWITCH}=0", f"{MAX}={5 * GIB}"))
 
@@ -105,13 +105,13 @@ def test_an_explicit_zero_beside_a_declared_bound_is_refused_by_name(tmp_path, m
 @pytest.mark.parametrize("maximum", ["0", "", "-1", "1.5", "x", " 8"])
 def test_a_malformed_or_zero_bound_is_refused_by_name(tmp_path, monkeypatch, maximum):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(work, fleet, monkeypatch, *_env(f"{MAX}={maximum}"))
 
 
 def test_a_declared_switch_that_is_not_zero_or_one_is_refused(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match="must be 0 or 1"):
+    with pytest.raises(submit_core.SubmissionRefused, match="must be 0 or 1"):
         _build(work, fleet, monkeypatch, *_env(f"{SWITCH}=yes", f"{MAX}=256"))
 
 
@@ -134,7 +134,7 @@ def test_the_window_and_declared_scratch_add_in_one_kind(tmp_path, monkeypatch):
 
 def test_slurm_refuses_a_declared_bound(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         _build(work, fleet, monkeypatch, *_env(f"{MAX}={5 * GIB}"),
                transport="slurm")
 

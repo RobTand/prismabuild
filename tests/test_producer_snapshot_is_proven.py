@@ -18,6 +18,7 @@ at all, was accepted.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 from pathlib import Path
 import subprocess

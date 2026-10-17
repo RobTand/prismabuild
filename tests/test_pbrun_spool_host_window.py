@@ -70,7 +70,7 @@ def test_a_declared_bound_derives_spool_gb_at_submission(
 
 
 def test_a_declared_bound_with_an_explicit_zero_is_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(tmp_path, monkeypatch,
                "--env", f"{SWITCH}=0", "--env", f"{MAX}=256")
 
@@ -90,18 +90,18 @@ def test_a_submission_without_a_spool_bound_seals_no_spool_demand(tmp_path, monk
 
 
 def test_an_opted_in_submission_without_a_byte_bound_is_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(tmp_path, monkeypatch, "--env", f"{SWITCH}=1")
 
 
 def test_an_invalid_switch_is_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="must be 0 or 1"):
+    with pytest.raises(submit_core.SubmissionRefused, match="must be 0 or 1"):
         _build(tmp_path, monkeypatch, "--env", f"{SWITCH}=yes", "--env", f"{MAX}=256")
 
 
 @pytest.mark.parametrize("env", [(), ("--env", f"{SWITCH}=1", "--env", f"{MAX}=256")])
 def test_a_typed_spool_demand_is_refused(tmp_path, monkeypatch, env):
-    with pytest.raises(SystemExit, match=KIND):
+    with pytest.raises(submit_core.SubmissionRefused, match=KIND):
         _build(tmp_path, monkeypatch, *env, "--demand", f"{KIND}=4")
 
 
@@ -113,13 +113,13 @@ def test_the_typed_demand_vocabulary_stays_closed():
 
 
 def test_slurm_refuses_the_opt_in(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="slurm|SLURM"):
+    with pytest.raises(submit_core.SubmissionRefused, match="slurm|SLURM"):
         _build(tmp_path, monkeypatch, "--env", f"{SWITCH}=1", "--env", f"{MAX}=256",
                transport="slurm")
 
 
 def test_slurm_refuses_a_declared_bound(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="slurm|SLURM"):
+    with pytest.raises(submit_core.SubmissionRefused, match="slurm|SLURM"):
         _build(tmp_path, monkeypatch, "--env", f"{MAX}=256", transport="slurm")
 
 
@@ -150,13 +150,13 @@ def _freeze(tmp_path, *, demand, variables, transport="pool"):
 def test_freeze_refuses_a_spool_demand_that_disagrees_with_the_environment(
         tmp_path, monkeypatch, demand, variables):
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
-    with pytest.raises(SystemExit, match=KIND):
+    with pytest.raises(submit_core.SubmissionRefused, match=KIND):
         _freeze(tmp_path, demand=demand, variables=variables)
 
 
 def test_freeze_refuses_the_opt_in_off_the_pool(tmp_path, monkeypatch):
     patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
-    with pytest.raises(SystemExit, match="slurm|SLURM|pool"):
+    with pytest.raises(submit_core.SubmissionRefused, match="slurm|SLURM|pool"):
         _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 1},
                 variables={SWITCH: "1", MAX: "256"}, transport="slurm")
 

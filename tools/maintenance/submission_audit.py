@@ -66,7 +66,7 @@ class Owner(ast.NodeTransformer):
         return node
 
 
-def canonical(node) -> str:
+def assertion_owner_form(node) -> str:
     return ast.dump(Owner().visit(ast.parse(ast.unparse(node))), include_attributes=False)
 
 
@@ -104,15 +104,15 @@ def inspect(root: Path) -> dict:
                         missing_definitions[relative] = dict(missing)
                     if len(conditions) < len(old_conditions):
                         missing_assertions[relative] = [len(old_conditions), len(conditions)]
-                    old = Counter(canonical(node) for node in old_conditions)
-                    new = Counter(canonical(node) for node in conditions)
+                    old = Counter(assertion_owner_form(node) for node in old_conditions)
+                    new = Counter(assertion_owner_form(node) for node in conditions)
                     removed = old - new
                     if removed:
                         changed[relative] = {
-                            "old": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(canonical(node).encode())}
-                                    for node in old_conditions if canonical(node) in removed],
-                            "new": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(canonical(node).encode())}
-                                    for node in conditions if canonical(node) in new - old]}
+                            "old": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(assertion_owner_form(node).encode())}
+                                    for node in old_conditions if assertion_owner_form(node) in removed],
+                            "new": [{"line": node.lineno, "assertion": ast.unparse(node), "normalized_sha256": sha(assertion_owner_form(node).encode())}
+                                    for node in conditions if assertion_owner_form(node) in new - old]}
             for node in ast.walk(tree):
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "pbrun" and node.attr not in CLI:
                     legacy.append([relative, node.lineno, node.attr])

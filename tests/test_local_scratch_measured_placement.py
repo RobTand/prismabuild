@@ -729,7 +729,7 @@ def _recorder_action(fleet, *, changed_source=False, extra_env=None):
 
 @pytest.mark.parametrize("hook", ["PATH", "BASH_ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH"])
 def test_recorder_freeze_rejects_forged_path_tee_startup_and_loader_hooks(fleet, hook):
-    with pytest.raises(SystemExit, match="scratch recorder"):
+    with pytest.raises(submit_core.SubmissionRefused, match="scratch recorder"):
         _recorder_action(fleet, extra_env={hook: str(fleet.root / "untrusted")})
     assert not list(Path(fleet.scratch).iterdir())
     assert not (fleet.work / ls.PROFILE_RESULT).exists()
