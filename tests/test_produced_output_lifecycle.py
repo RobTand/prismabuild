@@ -448,7 +448,7 @@ def test_connected_finish_releases_once_and_failure_never_ok_true(
                 def failing(holder, **kwargs):
                     raise OSError("simulated ledger failure")
 
-                ledger.release = failing  # type: ignore[method-assign]
+                ledger.release_unspent = failing  # type: ignore[method-assign]
             return ledger
 
         monkeypatch.setattr(queue, 'tier', boom)

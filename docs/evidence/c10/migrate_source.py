@@ -134,7 +134,14 @@ def caller_aliases(tree, seeds=None, external_returns=None, *, details=False):
         if isinstance(node, ast.Name):
             if node.id in {"self", "cls"} and owning_class(enclosing):
                 return {"@class": owning_class(enclosing)}
-            return values.get((enclosing, node.id), returns.get(node.id, False))
+            binding = enclosing
+            while True:
+                if (binding, node.id) in values:
+                    return values[binding, node.id]
+                if binding is tree:
+                    break
+                binding = scope(parents[binding])
+            return returns.get(node.id, False)
         if isinstance(node, ast.Call):
             callee = shape(node.func, enclosing)
             if isinstance(callee, dict) and callee.get("@factory"):
