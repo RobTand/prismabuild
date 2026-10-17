@@ -23,7 +23,7 @@ import pytest
 
 from prismabuild import census as fleet_census
 import pbstatus
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from prismabuild import pool, storage_tiers
 
 ROOT = Path(__file__).resolve().parents[1]

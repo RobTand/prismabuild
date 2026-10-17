@@ -43,9 +43,9 @@ from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from prismabuild import _gang, candidate_policy, core as pb, pool, residency_map, residency_plan
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import manifest_promotion  # noqa: E402
+from prismabuild import manifest_promotion  # noqa: E402
 from prismabuild import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import staged_path
 
 ROOT = Path(__file__).resolve().parents[1]
