@@ -109,7 +109,9 @@ def test_late_finish_stops_only_its_saved_scope_beside_live_successor(tmp_path, 
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(tmp_path, cancelled, request, capsys):
+def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(
+    tmp_path, cancelled, request, capsys, monkeypatch,
+):
     queue, item, decision = _history(tmp_path, cancelled)
     with ExitStack() as stack:
         old_scope, old_process, old_started = _owned_scope(queue, item, stack)
@@ -136,6 +138,28 @@ def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(tmp_path, 
                 "successor_members": resource_scope.scope_pids(scope.cgroup_path),
                 "affinity": started["affinity"],
             }), flush=True)
+        events = []
+        broker_request = resource_scope.ResourceScope._request
+        fixture_settled = False
+
+        def fixture_transaction(scope_value, operation, **extra):
+            nonlocal fixture_settled
+            if scope_value.nonce == old_scope.nonce and operation == "release" and not fixture_settled:
+                # Late lifecycle owns the exact nonce, not action-wide Docker
+                # absence. The disposable native fixture owns this transaction.
+                # Its real census and broker settlement get no lifecycle credit.
+                evidence = queue._container_settlement(str(item["container_owner"]), old_scope.unit)
+                reply = broker_request(scope_value, "settle", evidence=evidence)
+                events.append({"actor": "fixture", "operation": "settle",
+                               "scope_id": scope_value.unit, "evidence": evidence, "reply": reply})
+                fixture_settled = True
+            reply = broker_request(scope_value, operation, **extra)
+            if scope_value.nonce == old_scope.nonce:
+                events.append({"actor": "lifecycle", "operation": operation,
+                               "scope_id": scope_value.unit, "reply": reply})
+            return reply
+
+        monkeypatch.setattr(resource_scope.ResourceScope, "_request", fixture_transaction)
         deadline = time.monotonic() + 20
         while True:
             result = queue.finish(KEY, status="withdrawn" if cancelled else "executed",
@@ -154,6 +178,16 @@ def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(tmp_path, 
                 "claim_and_lease_unchanged": [path.read_bytes() for path in paths] == saved,
                 "members": resource_scope.scope_pids(scope.cgroup_path),
                 "reservations": queue.ledger().held(), "affinity": started["affinity"],
+            }), flush=True)
+        steps = [(event["actor"], event["operation"]) for event in events]
+        assert steps.index(("lifecycle", "stop")) < steps.index(("fixture", "settle")) < steps.index(("lifecycle", "release"))
+        assert ("lifecycle", "settle") not in steps
+        with capsys.disabled():
+            print("lifecycle-late-proof-owners: " + json.dumps({
+                "nodeid": request.node.nodeid, "old_scope_id": old_scope.unit,
+                "successor_scope_id": scope.unit, "events": events,
+                "lifecycle_settlement_credit": False, "fixture_settlement_credit": True,
+                "lifecycle_proof": "old kernel termination and unchanged live successor",
             }), flush=True)
         old_record = next(record for path, record in queue.records.superseded_records(KEY)
                           if path.name.endswith(".late-finish.json")
