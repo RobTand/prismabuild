@@ -123,7 +123,12 @@ def refresh(args):
         reason = ("Only actual updater/coordinator source identities changed" if intent else
                   "Only attested Core/digest source identities and dependent self-digests changed")
         provenance = dict(reason=reason + "; actual writer bytes independently reproduced and unchanged retained consumers accepted both directions.",
-                          sha256=sha(old_raw), records=len(before), credit="superseded current-source fixture; no supported historical-generation credit",
+                          sha256=sha(old_raw), records=len(rows(prior)), selected_cases=sorted(expected),
+                          credit="superseded current-source fixture; no supported historical-generation credit",
+                          previous_current_commit=subprocess.check_output(
+                              ["git", "-C", str(root), "log", "-1", "--format=%H", "--", str(prior.relative_to(root))],
+                              text=True).strip(),
+                          historical_sha256=sha(historical_path.read_bytes()),
                           capture_source_parent=producer, differences=changes)
         old_manifest = data / f"capture-{suffix}.json"
         if old_manifest.exists():
