@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 from prismabuild import prelaunch_group  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 TIER = "prismabuild-stage:testbox"
 KIND = "stage_gib"
