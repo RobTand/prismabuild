@@ -47,6 +47,7 @@ from typing import Any, NamedTuple
 
 from . import core as pb
 from . import immutable_files
+from .submission_types import common_fields, request_options
 from .core import ActionContractError, canonical_sha256
 # The two sealed variables that carry container ownership.  Named here so the
 # frozen half a parent is keyed on can refuse to contain them: ownership is a
@@ -155,7 +156,9 @@ _RESIDENCY_KEYS = frozenset({"key", "setup_seconds", "setup_evidence"})
 _POLICY_KEYS = frozenset(
     {"schema", "residencies", "max_setup_fraction", "max_estimated_wall_seconds"}
 )
-_REQUIREDfrom .submission_types import common_fields, request_options
+_REQUIRED_COMMON_KEYS = frozenset({
+    "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
+})
 _COMMON_KEYS = common_fields()
 
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})

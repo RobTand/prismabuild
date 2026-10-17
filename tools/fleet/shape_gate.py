@@ -751,27 +751,28 @@ class ShapeGate:
         and publishes the consumer's row.
         """
 
-        raw = gzip.compress(pb._canonical_file_bytes(manifest), mtime=0)
-        manifest_input, _ = self.cas.ingest_bytes(
-            raw, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
-        self.manifest_sha256 = str(manifest_input["sha256"])
-        summary = {"input": dict(manifest_input),
-                   "mount_prefix": manifest["mount_prefix"],
-                   "entry_count": manifest["entry_count"],
-                   "total_bytes": manifest["total_bytes"],
-                   "schema": pb.DATA_MANIFEST_SCHEMA_V2,
-                   "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
-                   "content_encoding": "gzip"}
-        template = {**self._template(), "cas": self.cas}
-        action = submission.seal(
-            template, command=["true"], extra_inputs=[manifest_input],
-            extra_params={"data_manifest": summary})
-        sealed = {**template,
-                  "params": {**template["params"], "data_manifest": summary},  # type: ignore[dict-item]
-                  "inputs": [*template["inputs"], manifest_input]}  # type: ignore[misc]
-        key = str(action["action_key"])
         args = SubmissionRequest(cwd=str(self.root), residency="stage", priority=-10,
                                  command=("true",), detach=True)
+        with submission.write_window(args, store=self.store):
+            raw = gzip.compress(pb._canonical_file_bytes(manifest), mtime=0)
+            manifest_input, _ = self.cas.ingest_bytes(
+                raw, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+            self.manifest_sha256 = str(manifest_input["sha256"])
+            summary = {"input": dict(manifest_input),
+                       "mount_prefix": manifest["mount_prefix"],
+                       "entry_count": manifest["entry_count"],
+                       "total_bytes": manifest["total_bytes"],
+                       "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+                       "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
+                       "content_encoding": "gzip"}
+            template = {**self._template(), "cas": self.cas}
+            action = submission.seal(
+                template, command=["true"], extra_inputs=[manifest_input],
+                extra_params={"data_manifest": summary})
+            sealed = {**template,
+                      "params": {**template["params"], "data_manifest": summary},  # type: ignore[dict-item]
+                      "inputs": [*template["inputs"], manifest_input]}  # type: ignore[misc]
+            key = str(action["action_key"])
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             result = submission.submit_action(action, template=sealed, request=args,
