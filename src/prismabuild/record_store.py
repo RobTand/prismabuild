@@ -2188,6 +2188,13 @@ class RecordStore:
         return sorted([*directory.glob(f"*{TOMBSTONE_SUFFIX}"),
                        *directory.glob(f"*{LATE_FINISH_SUFFIX}")])
 
+    @staticmethod
+    def finishing_mark_identity(path: Path) -> tuple[int, int]:
+        info = path.lstat()
+        if not statmod.S_ISREG(info.st_mode):
+            raise PoolContractError("finishing mark is not a regular file")
+        return info.st_dev, info.st_ino
+
     def listed_item_present(self, state: str, key: str) -> bool:
         return f"{key}.json" in os.listdir(self.dir(state))
 

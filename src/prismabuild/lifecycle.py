@@ -374,8 +374,9 @@ def _archive_earlier_terminal(
     read as both (#1117).  Only a readable record of a different
     generation (``published_unix``) is archived; a same-generation pair
     is not this method's to judge. Worker finish and expired-claim recovery
-    call this after owning the exact claim's tombstone, before writing the new terminal. Ordinary
-    ``finish`` does not hold the key's transition lock across this call.
+    call this after owning the exact claim's tombstone, before writing the new terminal.
+    The caller verifies that mark under the key's transition lock and retains
+    the lock through publication and historical retirement.
 
     The record is copied whole to ``withdrawn/superseded/``, a name no
     terminal-state lookup reads.  Returns its live path, which the caller
@@ -774,6 +775,16 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
             return destination
         return (queue.records.attempt_path(record, plan.attempt)
                 if transition is Transition.FINISH else None)
+    terminal_publication = (transition in {Transition.FINISH, Transition.EXPIRE}
+                            and disposition in {DONE, FAILED})
+    if terminal_publication:
+        try:
+            mark_identity = queue.records.finishing_mark_identity(tombstone)
+        except (OSError, PoolContractError) as exc:
+            print(f"pool finish {key} publication skipped: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return (queue.records.attempt_path(record, plan.attempt)
+                    if transition is Transition.FINISH else None)
     queue.records.lease_path(key).unlink(missing_ok=True)
     if transition is Transition.EXPIRE and disposition in {DONE, FAILED} and record.get("tier_fill_borrowed"):
         with suppress(Exception):
@@ -804,6 +815,18 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
                         _gang.note_backfill_preemption(queue, election, timing)
         tombstone.unlink(missing_ok=True)
         return destination
+    if terminal_publication:
+        with queue.action_transition_lock(key, blocking=True):
+            try:
+                owned = queue.records.finishing_mark_identity(tombstone) == mark_identity
+            except (OSError, PoolContractError) as exc:
+                print(f"pool finish {key} publication skipped: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                owned = False
+            if not owned:
+                return (queue.records.attempt_path(record, plan.attempt)
+                        if transition is Transition.FINISH else None)
+            return _publish_claim_destination(queue, plan, tombstone)
     return _publish_claim_destination(queue, plan, tombstone)
 
 

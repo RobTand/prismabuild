@@ -18189,9 +18189,10 @@ nonregular entries remain untouched; unknown file or owner observations retain
 the source. This unlink removes only the staging directory entry, preserving
 any READY hardlink, successor claim, lease, tokens and immutable history. It
 does not add a key to the tombstone sweep's recovered-claim result.
-Ordinary finish does not hold the key transition lock across outcome filing;
-its existing exact-claim and tombstone guards protect cleanup. No broader
-locking, identity schema, admission rule or retry budget changes here.
+At this phase ordinary finish did not hold the key transition lock across
+outcome filing. The resumed-finisher correction below adds an ownership check
+and a lock over only the publication tail. The historical qualification here
+does not cover that later correction.
 
 Generic superseded drops and intermediate `requeued` attempts do not supply an
 execution verdict. A validated newer READY publication can instead end G1 with
@@ -18843,10 +18844,27 @@ claim.
 Worker and reaper policies share exact claim retirement. They retain their
 conditional cleanup, first-writer attempt adoption, entomb comparison, lease
 removal, material-retention rules and publication failure behavior. Ordinary
-finish still takes no broad transition lock. Cancellation retains its existing
+finish takes no lock over execution, containment cleanup, immutable attempt
+publication or reservation return. Cancellation retains its existing
 lock through fresh claim and decision reads, proof filing and release. Reaping
 retains its original lock and both pending-finish checks, including the
 acted-from read. Late results control only their saved exact scope.
+
+For DONE or FAILED publication, conclusion captures the exact ordinary
+finishing mark's device and inode immediately after entomb. After returning
+the reservation, it takes the action transition lock and rechecks that same
+regular mark. An absent, replaced or unreadable mark grants no publication or
+historical unlink. A worker whose mark recovery already restored returns its
+existing immutable attempt address, as a lost entomb does. Unknown metadata
+retains recovery authority and is reported.
+
+The lock then covers prior-terminal archive, outcome replacement, prior-terminal
+unlink, mark removal and residency-plan retirement. Recovery cannot restore
+the mark or retire a terminal between those operations. This prevents an old
+finisher resumed after restoration and reaper adoption from replacing or
+unlinking a newer generation's terminal. READY requeue still uses its existing
+non-clobbering link protocol. No record schema, filename, host admission lock,
+scope cleanup rule or attempt identity changes.
 
 Interrupted cancellation recovery adopts an already archived, verified withdrawn
 worker attempt before releasing its owner. A decision alone does not invent an

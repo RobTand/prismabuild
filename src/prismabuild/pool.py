@@ -6979,8 +6979,8 @@ class PoolQueue:
             #
             # The key lock serializes this check with other publishers,
             # ``claim``, ``withdraw`` and the reapers. Ordinary ``finish``
-            # does not hold it across outcome publication: it owns an exact
-            # claim tombstone and its requeues link without replacing READY.
+            # holds it for the publication tail after rechecking its exact
+            # claim tombstone. Requeues link without replacing READY.
             # These reads describe the addressed READY/CLAIMED rows, not an
             # atomic snapshot of the entire finish transition.
             #
