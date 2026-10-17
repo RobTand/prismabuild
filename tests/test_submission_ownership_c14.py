@@ -32,7 +32,8 @@ def test_pool_wait_begins_after_growth_release(tmp_path, monkeypatch):
         finally:
             events.append("released")
 
-    def wait(queue, key, *, wait_s, generation, report):
+    def wait(pool_queue, key, *, wait_s, generation, report):
+        queue = pool_queue.records
         assert events == ["acquired", "released"]
         assert queue.item_path(pool.READY, key).exists()
         events.append("wait")
@@ -149,7 +150,7 @@ def test_staged_publication_reaches_the_same_gate_and_ownership_transaction(tmp_
 
     monkeypatch.setattr(submission.d38_gate, "judge_publication", observed)
     assert pbrun.main() == 0
-    rows = list(state["queue"].dir(pool.READY).glob("*.json"))
+    rows = list(state["queue"].records.dir(pool.READY).glob("*.json"))
     assert len(rows) == 1
     key = rows[0].stem
     assert seen == [key]
@@ -161,15 +162,16 @@ def test_staged_publication_reaches_the_same_gate_and_ownership_transaction(tmp_
 def test_deferred_release_enters_the_common_gate_before_publishing(tmp_path, monkeypatch, capsys):
     import test_deferred_action_edges as deferred
     from prismabuild import action_edges
-    queue, work = deferred._env(tmp_path, monkeypatch)
+    pool_queue, work = deferred._env(tmp_path, monkeypatch)
+    queue = pool_queue.records
     template = deferred._template(tmp_path / "canonical")
     producer = deferred._producer_key(tmp_path, template, "c14")
-    deferred._publish_producer(queue, template, producer)
+    deferred._publish_producer(pool_queue, template, producer)
     record = deferred._submit(work, monkeypatch, capsys,
         "--after", f"{producer}:{template['template_id']}")
-    instance = deferred._start(queue, template, producer)
-    deferred._commit(queue, template, instance, "b1", b"C14 handoff")
-    queue.finish(producer, status="executed")
+    instance = deferred._start(pool_queue, template, producer)
+    deferred._commit(pool_queue, template, instance, "b1", b"C14 handoff")
+    pool_queue.finish(producer, status="executed")
     seen = []
     judge = submission.d38_gate.judge_publication
 
@@ -180,7 +182,7 @@ def test_deferred_release_enters_the_common_gate_before_publishing(tmp_path, mon
         return judge(options, action, **kwargs)
 
     monkeypatch.setattr(submission.d38_gate, "judge_publication", observed)
-    events = deferred.dr.release_tick(queue)
+    events = deferred.dr.release_tick(pool_queue)
     released, = deferred._released(events)
     assert seen == [released["action_key"]]
     assert action_edges.read_published(queue.root, record["pending_id"])["action_key"] == seen[0]
