@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -100,8 +101,8 @@ def test_first_cause_and_later_stale_output_refusal_both_survive(
         assert stat.S_IMODE(stdout_path.stat().st_mode) == 0o444
         assert stat.S_IMODE(stderr_path.stat().st_mode) == 0o444
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 24
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 24
     shown = capsys.readouterr()
     assert "CAUSAL: corpus gives 4088" in shown.out
     assert "REFUSED: stale output exists" in shown.out
@@ -273,8 +274,8 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
     assert terminal["detail"]["returncode"] == 37
     assert terminal["detail"] == summary["detail"]
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 37
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 37
     shown = capsys.readouterr()
     assert "finisher's causal error" in shown.out
     assert "lease expired" not in shown.err
@@ -282,7 +283,7 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
     terminal["detail"]["returncode"] = 99
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     with pytest.raises(pool.PoolContractError, match="adopted immutable"):
-        pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)
+        submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)
 
 
 def test_adopted_attempt_requires_a_finite_finish_time(
@@ -333,8 +334,8 @@ def test_rollout_archives_the_next_attempt_without_inventing_old_history(
     assert terminal["attempt_history_missing_before"] == 1
     assert [one["attempt"] for one in queue.attempt_outcomes(terminal)] == [2]
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
-    assert pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 24
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 24
     shown = capsys.readouterr()
     assert "1 earlier attempt predates immutable history" in shown.err
     assert "attempt 2/2" in shown.err
@@ -358,6 +359,6 @@ def test_terminal_attempt_count_cannot_outlive_its_history_links(
     terminal["attempt_history"] = []
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
 
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     with pytest.raises(pool.PoolContractError, match="attempt count"):
-        pbrun.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)
+        submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)

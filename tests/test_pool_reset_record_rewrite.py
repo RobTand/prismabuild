@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pool_reset  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -127,7 +128,7 @@ def test_a_reset_record_is_still_readable(endings: dict) -> None:
     pool_reset._file_reset({"paths": [path]}, reason="operator reset")
 
     record = json.loads(path.read_text(encoding="utf-8"))
-    summary = pbrun.action_client.outcome_summary(endings["queue"], path, record)
+    summary = submit_core.action_client.outcome_summary(endings["queue"], path, record)
     assert summary["status"] == "reset"
     assert summary["action_key"] == KEY_POOL
 

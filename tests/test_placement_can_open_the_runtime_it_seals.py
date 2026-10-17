@@ -28,6 +28,7 @@ either alone leaves the other trap set:
 Issue #292.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import importlib.util
 from pathlib import Path
@@ -41,6 +42,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from pbtest_shard_output import ShardProcess  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -62,7 +64,7 @@ WORKTREE = Path("/home/rob/tmp/some-worktree")
 
 def test_a_worktree_runtime_refuses_a_placement_that_does_not_name_this_box():
     with pytest.raises(SystemExit) as refusal:
-        pbrun.require_reachable_runtime(
+        submit_core.require_reachable_runtime(
             ["x86"], hostname="sparky", runtime_root=WORKTREE)
     said = str(refusal.value)
     # The reader has to be able to act on it without reading pbrun, so the
@@ -77,7 +79,7 @@ def test_a_worktree_runtime_refuses_an_unpinned_placement():
     # ``--anywhere`` normalizes to no tags at all, which is the widest
     # placement there is and therefore the most certainly wrong one here.
     with pytest.raises(SystemExit) as refusal:
-        pbrun.require_reachable_runtime(
+        submit_core.require_reachable_runtime(
             [], hostname="sparky", runtime_root=WORKTREE)
     assert "any eligible worker" in str(refusal.value)
 
@@ -86,9 +88,9 @@ def test_a_worktree_runtime_admits_a_placement_that_names_this_box():
     # ``--tag x86 --here`` on an x86 box is a real request -- a class AND this
     # machine -- and the refusal must not be what answers it.  Whether any box
     # satisfies the conjunction is the queue's question, asked later.
-    assert pbrun.require_reachable_runtime(
+    assert submit_core.require_reachable_runtime(
         ["x86", "sparky"], hostname="sparky", runtime_root=WORKTREE) is None
-    assert pbrun.require_reachable_runtime(
+    assert submit_core.require_reachable_runtime(
         ["sparky"], hostname="sparky", runtime_root=WORKTREE) is None
 
 
@@ -96,7 +98,7 @@ def test_a_worktree_runtime_admits_a_placement_that_names_this_box():
 def test_a_published_runtime_admits_every_placement(tags):
     # Nothing here narrows what the queue may choose.  The check states a fact
     # about this runtime, and a published runtime constrains nothing.
-    assert pbrun.require_reachable_runtime(
+    assert submit_core.require_reachable_runtime(
         tags, hostname="sparky", runtime_root=PUBLISHED) is None
 
 
@@ -198,9 +200,9 @@ def test_pbrun_refuses_the_submission_and_not_only_the_predicate(
     (work / "tests").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(work)], check=True)
 
-    with mock.patch.object(pbrun, "SH", tmp_path / "fleet"), \
+    with patch_store(mock.patch, root=tmp_path / "fleet"), \
          mock.patch.object(pbrun, "RUNTIME_ROOT", WORKTREE), \
-         mock.patch.object(pbrun.socket, "gethostname", return_value="sparky"), \
+         mock.patch.object(submit_core.socket, "gethostname", return_value="sparky"), \
          mock.patch.object(
              sys, "argv",
              ["pbrun.py", "--cwd", str(work), "--tag", "x86",
