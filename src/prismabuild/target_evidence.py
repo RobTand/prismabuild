@@ -1,5 +1,6 @@
 """Typed platform evidence used by submission sealing."""
 from __future__ import annotations
+from pathlib import Path
 from . import core as pb, materialize
 from .movement_actions import SEALED_ARGV0
 

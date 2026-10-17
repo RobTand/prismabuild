@@ -318,7 +318,8 @@ def test_deployed_transport_default_is_used(tmp_path, monkeypatch, capsys):
     import fleet_submit
     monkeypatch.delenv('PRISMABUILD_TRANSPORT', raising=False)
     (tmp_path / 'RUNTIME_VERSION.json').write_text(json.dumps({'default_transport': 'slurm'}))
-    monkeypatch.setattr(fleet_submit, 'RUNTIME_ROOT', tmp_path)
+    from submission_support import patch_store
+    patch_store(monkeypatch, client=fleet_submit, runtime_version=tmp_path / 'RUNTIME_VERSION.json')
     monkeypatch.setattr(pbstatus, 'read_nodes', lambda **kw: ([], None))
     monkeypatch.setattr(pbstatus, 'read_jobs', lambda **kw: [])
     pbstatus.main(['--json', '--queue-root', str(tmp_path / 'queue')])

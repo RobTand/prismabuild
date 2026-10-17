@@ -211,7 +211,7 @@ def test_a_pinned_deferred_release_still_lands_so_its_key_is_refused(
     queue.finish(producer, status="executed")
 
     def died(q, action, template, *, key, **_kwargs):
-        raise SystemExit("the tier loop died between the declaration and the row")
+        raise submit_core.SubmissionRefused("the tier loop died between the declaration and the row")
 
     with monkeypatch.context() as patch:
         patch.setattr(submit_core, "publish_consumer_row", died)

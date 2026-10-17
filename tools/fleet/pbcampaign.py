@@ -1264,7 +1264,7 @@ def decompose(
         # the campaign that refused: there are no other rows to go on with.
         raise ManifestError(
             f"pbrun refused this request's common half: "
-            f"{exc.returncode if not isinstance(exc.returncode, int) else f'exit {exc.returncode}'}"
+            f"{exc.reason or f'exit {exc.returncode}'}"
             f"\n  pbrun {' '.join(flags)}"
         ) from None
     records = []

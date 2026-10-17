@@ -289,7 +289,7 @@ def test_a_plan_no_box_can_run_publishes_no_child(
     request = _request(work)
     request["common"]["demand"] = {"cpu": 99, "mem_gb": 4}
 
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(pbcampaign.ManifestError) as refusal:
         _decompose(request)
     assert "no recorded worker can run this action" in str(refusal.value)
 
