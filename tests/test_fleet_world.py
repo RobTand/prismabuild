@@ -81,7 +81,7 @@ def test_corruption_is_explicit_and_preserves_unknown_state(tmp_path):
     key = _key()
     path = world.corrupt(f"pb-queue/ready/{key}.json", b"not-json\n")
     assert path.read_bytes() == b"not-json\n"
-    assert isinstance(world.queue.records.ready(key), record_store.Unknown)
+    assert isinstance(world.queue.records.item(record_store.READY, key), record_store.Unknown)
     for outside in ("../outside", str(tmp_path.parent / "outside")):
         with pytest.raises(ValueError, match="private world path"):
             world.corrupt(outside, b"bad")
