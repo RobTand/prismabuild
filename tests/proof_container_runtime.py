@@ -6,11 +6,13 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import posixpath
+import re
 import runpy
 import stat
 import struct
 import subprocess
 import sys
+import time
 
 
 PROFILE_SCHEMA = 'prismabuild.proof_runtime_profile.v1'
@@ -18,6 +20,10 @@ CLOSURE_SCHEMA = 'prismabuild.proof_runtime_closure.v1'
 ATTESTATION_SCHEMA = 'prismabuild.root_test_runtime.v1'
 THREADS = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')
 BROAD_ROOTS = {'/', '/usr', '/usr/bin', '/usr/lib', '/home', '/home/rob', '/etc', '/var', '/mnt'}
+CAPTURE_BOUNDS = dict(runtime_seconds=120, members=20000, regular_bytes=4 * 1024**3,
+                      archive_members=20006, supplemental_bytes=64 * 1024**2,
+                      archive_bytes=2 * 1024**3, profile_bytes=16 * 1024**2, chunk_bytes=1024**2)
+CAPTURE_PHASES = ('host_inventory', 'image_inventory', 'mounted_runtime', 'closure_archive')
 
 
 def canonical(value):
@@ -107,10 +113,12 @@ def load_profile(path, source_root):
     for seed in closure['elf_roots']:
         _absolute(seed)
     audit = closure['native_audit']
-    if audit['schema'] != 'prismabuild.proof_native_closure_audit.v1' or any(type(audit[name]) is not int or audit[name] < 0 for name in ('elf_files', 'symlinks')):
+    if audit['schema'] != 'prismabuild.proof_native_closure_audit.v2' or any(type(audit[name]) is not int or audit[name] < 0 for name in ('elf_files', 'symlinks')):
         raise ValueError('runtime closure requires its retained native dependency audit')
     _sha(audit['edges_sha256'])
     _sha(audit['symlinks_sha256'])
+    for name in ('search_directories_sha256', 'default_directories_sha256', 'cache_sha256'):
+        _sha(audit[name])
     roots = closure['roots']
     if not isinstance(roots, list) or not roots:
         raise ValueError('runtime closure requires complete captured roots')
@@ -147,7 +155,7 @@ def load_profile(path, source_root):
     return RuntimeProfile(path, digest(raw), image, value['primary'], reader, closure)
 
 
-def inventory(path):
+def inventory(path, *, budget=None):
     path = Path(path)
     members = {}
     pending = [path]
@@ -156,6 +164,14 @@ def inventory(path):
     while pending:
         current = pending.pop()
         before = current.lstat()
+        if budget is not None:
+            budget['members'] += 1
+            budget['regular_bytes'] += before.st_size if stat.S_ISREG(before.st_mode) else 0
+            if (budget['members'] > CAPTURE_BOUNDS['members']
+                    or budget['regular_bytes'] > CAPTURE_BOUNDS['regular_bytes']):
+                raise ValueError(f'capture geometry exceeds its sealed limits: {budget}')
+            if time.monotonic() > budget['deadline']:
+                raise TimeoutError('capture inventory exceeded its finite deadline')
         mode = stat.S_IMODE(before.st_mode)
         relative = str(current.relative_to(path))
         if stat.S_ISLNK(before.st_mode):
@@ -169,6 +185,8 @@ def inventory(path):
             hasher = hashlib.sha256()
             with current.open('rb') as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                    if budget is not None and time.monotonic() > budget['deadline']:
+                        raise TimeoutError('capture file exceeded its finite deadline')
                     hasher.update(chunk)
             entry = dict(kind='file', mode=mode, bytes=before.st_size, sha256=hasher.hexdigest())
         else:
@@ -194,14 +212,17 @@ def elf_requirements(path):
         fields = struct.unpack('<16sHHIQQQIHHHHHH', header)
         if fields[1] not in (2, 3):
             return None
+        if (header[6] != 1 or header[7] not in (0, 3) or header[8] != 0
+                or fields[3] != 1 or fields[7] != 0 or fields[8] != 64):
+            raise ValueError('runtime ELF has an unsupported ABI or header')
         offset, size, count = fields[5], fields[9], fields[10]
         if size != 56 or count > 4096:
             raise ValueError('unsupported ELF program header table')
         handle.seek(offset)
         segments = [struct.unpack('<IIQQQQQQ', handle.read(size)) for _ in range(count)]
-        interpreters, dynamic = [], []
+        interpreters, dynamic, abi_kernels = [], [], []
         for segment in segments:
-            if segment[0] not in (2, 3):
+            if segment[0] not in (2, 3, 4):
                 continue
             if segment[5] > 16 * 1024 * 1024:
                 raise ValueError('ELF metadata exceeds the capture bound')
@@ -211,6 +232,24 @@ def elf_requirements(path):
                 raise ValueError('truncated ELF metadata')
             if segment[0] == 3:
                 interpreters.append(raw.rstrip(b'\0').decode())
+            elif segment[0] == 4:
+                cursor = 0
+                while cursor < len(raw):
+                    names, description, kind = struct.unpack_from('<III', raw, cursor)
+                    cursor += 12
+                    name = raw[cursor:cursor + names]
+                    cursor += (names + 3) & ~3
+                    value = raw[cursor:cursor + description]
+                    cursor += (description + 3) & ~3
+                    if cursor > len(raw) or len(value) != description:
+                        raise ValueError('truncated runtime ELF note')
+                    if name == b'GNU\0' and kind == 1:
+                        if len(value) != 16:
+                            raise ValueError('unsupported GNU ABI note')
+                        operating_system, *version = struct.unpack('<IIII', value)
+                        if operating_system != 0:
+                            raise ValueError('runtime dependency does not target Linux')
+                        abi_kernels.append(version)
             else:
                 if len(raw) % 16:
                     raise ValueError('invalid ELF dynamic table')
@@ -219,6 +258,9 @@ def elf_requirements(path):
                     if row[0] == 0:
                         break
                     dynamic.append(row)
+        if any(tag in (0x6ffffefa, 0x6ffffefb, 0x6ffffefc, 0x7ffffffd, 0x7fffffff)
+               for tag,value in dynamic):
+            raise ValueError('runtime ELF uses unsupported audit, filter or configuration loading')
         strings = {tag:value for tag,value in dynamic if tag in (5, 10)}
         values = {1:[], 15:[], 29:[]}
         if dynamic:
@@ -233,79 +275,179 @@ def elf_requirements(path):
                 if tag in values:
                     values[tag].append(table[value:table.index(b'\0', value)].decode())
         return dict(machine=fields[2], interpreters=interpreters,
-                    needed=values[1], rpath=values[15], runpath=values[29])
+                    needed=values[1], rpath=values[15], runpath=values[29],
+                    nodeflib=any(tag == 0x6ffffffb and value & 0x800 for tag,value in dynamic),
+                    abi_kernels=abi_kernels)
 
+
+def loader_default_directories(raw):
+    rows = {}
+    for line in raw.splitlines():
+        match = re.fullmatch(r'path\.system_dirs\[(0x[0-9a-f]+|[0-9]+)\]=(.*)', line)
+        if match:
+            index = int(match[1], 0)
+            if index in rows:
+                raise ValueError('loader diagnostics repeat a default directory')
+            rows[index] = str(_absolute(json.loads(match[2]).rstrip('/')))
+    if not rows or sorted(rows) != list(range(len(rows))):
+        raise ValueError('loader did not report a complete ordered default search path')
+    return [rows[index] for index in range(len(rows))]
+
+
+def loader_cache_entries(raw):
+    lines = raw.splitlines()
+    if not lines or not re.match(r'^[0-9]+ libs found in cache ', lines[0]):
+        raise ValueError('unsupported loader cache listing')
+    entries = []
+    for line in lines[1:]:
+        match = re.fullmatch(r'\s*(\S+)\s+\(([^)]+)\)\s+=>\s+(/.+)', line)
+        if match:
+            entries.append(dict(name=match[1], abi=match[2], path=str(_absolute(match[3]))))
+    if len(entries) != int(lines[0].split()[0]):
+        raise ValueError('loader cache listing is incomplete')
+    return entries
+
+
+def loader_kernel(raw):
+    releases = [json.loads(line.removeprefix('uname.release='))
+                for line in raw.splitlines() if line.startswith('uname.release=')]
+    if len(releases) != 1 or not isinstance(releases[0], str):
+        raise ValueError('loader diagnostics lack the actual kernel release')
+    match = re.match(r'^([0-9]+)\.([0-9]+)(?:\.([0-9]+))?', releases[0])
+    if match is None:
+        raise ValueError('loader kernel release is unsupported')
+    return releases[0], tuple(int(value or 0) for value in match.groups())
+
+
+def resolve_runtime_path(entries, path):
+    path = posixpath.normpath(path)
+    for _ in range(64):
+        parts = PurePosixPath(path).parts
+        for index in range(1, len(parts)):
+            prefix = str(PurePosixPath(*parts[:index + 1]))
+            entry = entries.get(prefix)
+            if entry is not None and entry['kind'] == 'symlink':
+                target = posixpath.join(posixpath.dirname(prefix), entry['target'])
+                path = posixpath.normpath(posixpath.join(target, *parts[index + 1:]))
+                break
+        else:
+            if path not in entries and not any(name.startswith(path + '/') for name in entries):
+                raise ValueError('runtime symlink or ELF path escapes the sealed closure: ' + path)
+            return path
+    raise ValueError('runtime closure has a symlink cycle')
 
 def audit_native_closure(closure, byte_path):
     entries = {str(Path(root['path']) / name):entry for root in closure['roots']
                for name,entry in root['entries'].items()}
 
+    resolved = {}
     def resolve(path):
-        path = posixpath.normpath(path)
-        for _ in range(64):
-            parts = PurePosixPath(path).parts
-            for index in range(1, len(parts)):
-                prefix = str(PurePosixPath(*parts[:index + 1]))
-                entry = entries.get(prefix)
-                if entry is not None and entry['kind'] == 'symlink':
-                    target = posixpath.join(posixpath.dirname(prefix), entry['target'])
-                    path = posixpath.normpath(posixpath.join(target, *parts[index + 1:]))
-                    break
-            else:
-                if path not in entries and not any(name.startswith(path + '/') for name in entries):
-                    raise ValueError('runtime symlink or ELF path escapes the sealed closure: ' + path)
-                return path
-        raise ValueError('runtime closure has a symlink cycle')
+        if path not in resolved:
+            resolved[path] = resolve_runtime_path(entries, path)
+        return resolved[path]
+    by_name = {}
+    for path,entry in entries.items():
+        if entry['kind'] in ('file', 'symlink'):
+            by_name.setdefault(Path(path).name, []).append(path)
 
     links = {path:resolve(path) for path,entry in entries.items() if entry['kind'] == 'symlink'}
     pending = [path for path,entry in entries.items() if entry['kind'] == 'file'
                and any(Path(path).is_relative_to(seed) for seed in closure['elf_roots'])]
-    edges = {}
+    loader = closure['loader']
+    if loader['schema'] != 'prismabuild.proof_loader_search.v1':
+        raise ValueError('unsupported runtime loader search contract')
+    defaults = loader_default_directories(loader['diagnostics']['raw'])
+    _, kernel = loader_kernel(loader['diagnostics']['raw'])
+    cache = loader_cache_entries(loader['cache']['raw_listing'])
+    cache_file = entries[loader['cache']['path']]
+    if any(cache_file[name] != loader['cache'][name] for name in ('bytes', 'sha256')):
+        raise ValueError('runtime cache differs from its sealed file')
+    for executable in (loader['cache']['tool'], loader['diagnostics']['executable']):
+        path = resolve(executable['path'])
+        if path != executable['resolved_path'] or any(entries[path][name] != executable[name] for name in ('bytes', 'sha256')):
+            raise ValueError('loader observation command differs from its sealed executable')
+    metadata_by_path = {}
     required = set()
-    while pending:
-        path = pending.pop()
-        if path in edges:
-            continue
-        metadata = elf_requirements(byte_path(path))
-        if metadata is None:
-            if path in required:
-                raise ValueError('runtime ELF dependency is not a loadable ELF: ' + path)
-            continue
-        if metadata['machine'] != closure['elf_machine']:
-            raise ValueError('runtime closure mixes native ELF architectures')
-        directories = []
-        for value in metadata['runpath'] or metadata['rpath']:
-            for directory in value.split(':'):
-                directory = directory.replace('${ORIGIN}', str(Path(path).parent)).replace('$ORIGIN', str(Path(path).parent))
-                if not directory.startswith('/') or '$' in directory:
-                    raise ValueError('runtime ELF uses an unsupported library search path')
-                directories.append(posixpath.normpath(directory))
-        multiarch = {62:'x86_64-linux-gnu',183:'aarch64-linux-gnu'}[metadata['machine']]
-        directories.extend(['/lib/' + multiarch, '/usr/lib/' + multiarch, '/lib64', '/usr/lib64', '/lib', '/usr/lib'])
-        targets = []
-        for needed in metadata['needed']:
-            if '$' in needed or ('/' in needed and not needed.startswith('/')):
-                raise ValueError('runtime ELF uses an unsupported dependency path')
-            candidates = [needed] if needed.startswith('/') else [posixpath.join(directory, needed) for directory in directories]
-            for candidate in candidates:
-                try:
-                    target = resolve(candidate)
-                except ValueError:
+
+    def directory_candidates(directory, needed):
+        spelling = directory
+        directory = resolve(directory)
+        if not any(Path(directory).is_relative_to(root['path']) and root['entries']['.']['kind'] == 'directory'
+                   for root in closure['roots']):
+            raise ValueError('loader search directory is not completely inventoried: ' + directory)
+        for prefix in (Path(directory), *Path(directory).parents):
+            entry = entries.get(str(prefix))
+            if entry is not None and entry['kind'] == 'directory' and not entry['mode'] & 0o001:
+                raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
+        found = {resolve(str(Path(spelling) / Path(path).relative_to(directory)))
+                 for path in by_name.get(needed, ()) if Path(path).is_relative_to(directory)}
+        direct = str(Path(directory) / needed)
+        return found, direct in entries and entries.get(resolve(direct), {}).get('kind') == 'file'
+
+    for _ in range(64):
+        for path in pending:
+            if path in metadata_by_path:
+                continue
+            metadata = elf_requirements(byte_path(path))
+            if metadata is None:
+                if path in required:
+                    raise ValueError('runtime dependency is not a loadable ELF: ' + path)
+                continue
+            if (metadata['machine'] != closure['elf_machine'] or metadata['nodeflib']
+                    or any(tuple(version) > kernel for version in metadata['abi_kernels'])
+                    or not entries[path]['mode'] & 0o004):
+                raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
+            metadata_by_path[path] = metadata
+        directories = set()
+        own_directories = {}
+        origins_before = len(resolved)
+        for path,metadata in metadata_by_path.items():
+            own_directories[path] = set()
+            for value in metadata['runpath'] + metadata['rpath']:
+                for directory in value.split(':'):
+                    origins = {str(Path(path).parent), *(str(Path(alias).parent) for alias,target in resolved.items() if target == path)}
+                    for origin in origins:
+                        expanded = directory.replace('${ORIGIN}', origin).replace('$ORIGIN', origin)
+                        if not expanded.startswith('/') or '$' in expanded:
+                            raise ValueError('runtime ELF uses an unsupported library search token')
+                        directories.add(posixpath.normpath(expanded))
+                        own_directories[path].add(posixpath.normpath(expanded))
+        edges = {}
+        for path,metadata in metadata_by_path.items():
+            targets = {resolve(interpreter) for interpreter in metadata['interpreters']}
+            for needed in metadata['needed']:
+                if '$' in needed or ('/' in needed and not needed.startswith('/')):
+                    raise ValueError('runtime ELF uses an unsupported dependency path')
+                if needed.startswith('/'):
+                    targets.add(resolve(needed))
                     continue
-                if entries.get(target, {}).get('kind') == 'file':
-                    targets.append(target)
-                    break
-            else:
-                raise ValueError('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
-        targets.extend(resolve(interpreter) for interpreter in metadata['interpreters'])
-        if any(entries.get(target, {}).get('kind') != 'file' for target in targets):
-            raise ValueError('runtime ELF provider is not a sealed regular file')
-        edges[path] = sorted(set(targets))
-        required.update(targets)
-        pending.extend(targets)
-    return dict(schema='prismabuild.proof_native_closure_audit.v1',
+                for directory in directories:
+                    targets.update(directory_candidates(directory, needed)[0])
+                cached = [row for row in cache if row['name'] == needed]
+                targets.update(resolve(row['path']) for row in cached)
+                own = own_directories[path]
+                if not own or not all(directory_candidates(directory, needed)[1] for directory in own):
+                    for directory in defaults:
+                        candidates, base = directory_candidates(directory, needed)
+                        targets.update(candidates)
+                        if base:
+                            break
+                    else:
+                        raise ValueError('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
+            if any(entries.get(target, {}).get('kind') != 'file' for target in targets):
+                raise ValueError('runtime ELF candidate is not a sealed regular file')
+            edges[path] = sorted(targets)
+        required = {target for targets in edges.values() for target in targets}
+        pending = sorted(required - metadata_by_path.keys())
+        if not pending and len(resolved) == origins_before:
+            break
+    else:
+        raise ValueError('loader candidate graph did not converge inside its finite bound')
+    return dict(schema='prismabuild.proof_native_closure_audit.v2',
                 elf_files=len(edges), edges_sha256=digest(canonical(edges)),
-                symlinks=len(links), symlinks_sha256=digest(canonical(links)))
+                symlinks=len(links), symlinks_sha256=digest(canonical(links)),
+                search_directories_sha256=digest(canonical(sorted(directories))),
+                default_directories_sha256=digest(canonical(defaults)), cache_sha256=cache_file['sha256'])
 
 
 def verify_closure(profile, origins=('host', 'image')):
@@ -322,20 +464,32 @@ def verify_closure(profile, origins=('host', 'image')):
 
 
 def observe_runtime():
+    preload = Path('/etc/ld.so.preload')
+    if preload.exists():
+        with preload.open('rb') as handle:
+            raw_preload = handle.read(65537)
+        if len(raw_preload) > 65536 or raw_preload.strip():
+            raise ValueError('runtime capture refuses system-wide loader preloads')
     running = Path('/proc/self/exe').read_bytes()
     if running[:6] != b'\x7fELF\x02\x01':
         raise ValueError('root runtime must use a native little-endian ELF64 executable')
     executable = Path(sys.executable)
     if executable.read_bytes() != running:
         raise ValueError('runtime executable path differs from the running image')
+    auxv = Path('/proc/self/auxv').read_bytes()
+    if len(auxv) % 16 or len(auxv) > 65536:
+        raise ValueError('runtime auxiliary vector is unsupported')
+    secure, = [value for key,value in struct.iter_unpack('<QQ', auxv) if key == 23]
     return dict(version=list(sys.version_info[:3]),
         executable=dict(path=sys.executable, resolved_path=str(executable.resolve()),
                         bytes=len(running), sha256=digest(running)),
         elf_machine=int.from_bytes(running[18:20], 'little'),
+        at_secure=secure,
         credentials=dict(uid=os.getuid(), euid=os.geteuid(), gid=os.getgid(), egid=os.getegid(), groups=os.getgroups()),
         affinity=sorted(os.sched_getaffinity(0)), native_threads={name: os.environ.get(name) for name in THREADS},
         environment={name:os.environ.get(name) for name in (
             'TMPDIR', 'PYTHONPATH', 'PYTHONDONTWRITEBYTECODE', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD')},
+        loader_environment={name:value for name,value in os.environ.items() if name.startswith('LD_') and value},
         python_flags={name:getattr(sys.flags, name) for name in (
             'no_site', 'isolated', 'dont_write_bytecode', 'ignore_environment')},
         kernel=platform.uname()._asdict(), prefix=sys.prefix, base_prefix=sys.base_prefix, sys_path=list(sys.path))
@@ -439,8 +593,12 @@ def observe_container_roles(profile, expected_affinity):
         raise ValueError('container changed PB affinity or native thread bounds')
     if inner['python_flags']['no_site'] != 1:
         raise ValueError('primary container must disable unsealed site startup')
+    if inner['loader_environment'] or inner['at_secure'] != 0:
+        raise ValueError('primary container has an unsupported loader override')
     mapped = mapped_native_providers(profile)
     reader, providers = observe_reader(profile)
+    if reader['loader_environment'] or reader['at_secure'] != 0:
+        raise ValueError('installed reader has an unsupported loader override')
     if reader['affinity'] != expected_affinity or reader['native_threads'] != {name: '1' for name in THREADS}:
         raise ValueError('installed reader changed PB affinity or native bounds')
     return dict(inner=inner, installed_reader=reader, closure=closure,

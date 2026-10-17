@@ -96,8 +96,12 @@ def capture_assigned_affinity(request, terminal, producer):
     if any(type(cpu) is not int or cpu < 0 for cpu in assigned) or len(assigned) != len(set(assigned)):
         raise ValueError('capture CPU allocation contains invalid or duplicate IDs')
     resources = terminal['resources']
-    if type(resources['cpu']) is not int or resources['cpu'] != 1 or len(assigned) != resources['cpu']:
+    if (resources != dict(cpu=1, mem_gb=2, gpu=0) or type(resources['cpu']) is not int
+            or type(resources['gpu']) is not int or type(resources['mem_gb']) not in (int, float)
+            or len(assigned) != resources['cpu']):
         raise ValueError('capture allocation does not match its one-CPU demand')
+    if terminal['priority'] != -10 or request['params']['execution_timeout_s'] != 120:
+        raise ValueError('capture lacks its exact priority or finite hard deadline')
     if request['params']['demand'] != resources or terminal['detail']['cpu_allocation'] != allocation:
         raise ValueError('capture demand or terminal CPU allocation differs')
     if terminal['finished_host'] != terminal['claimed_host'] or terminal['finished_host'] != producer['worker_id'] or producer['evidence']['hostname'] != producer['worker_id']:
@@ -212,6 +216,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
             raise ValueError('capture actual kernel and ELF architecture differ')
         if observed['environment']['TMPDIR'] != '/home/rob/pbt17':
             raise ValueError('capture runtime changed the declared private TMPDIR')
+        if observed['loader_environment'] or type(observed['at_secure']) is not int or observed['at_secure'] != 0:
+            raise ValueError('capture runtime has unsupported loader overrides or secure mode')
     if capture['inner']['python_flags']['no_site'] != 1 or capture['installed_reader']['python_flags']['isolated'] != 1:
         raise ValueError('capture primary or installed reader startup flags differ')
     for name in ('image_runtime', 'inner'):
@@ -244,6 +250,10 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     expected_members = {entry['sha256']:entry['bytes'] for entry in members.values()}
     attested = [producer['executable'], *(value for value in runtime.values()
         if isinstance(value, dict) and {'path','resolved_path','bytes','sha256'} <= value.keys())]
+    helper = capture['progress']['helper']
+    if helper['path'] != helper['resolved_path'] or Path(helper['resolved_path']) != Path(runtime['core']['resolved_path']).with_name('progress.py'):
+        raise ValueError('capture did not use the actual worker generation progress helper')
+    attested.append(helper)
     for expected in attested:
         if expected['sha256'] in expected_members and expected_members[expected['sha256']] != expected['bytes']:
             raise ValueError('capture has conflicting content sizes')
@@ -257,6 +267,36 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     archive = raw_root / 'closure-archive.tar.gz'
     executables = retain_capture_archive(archive, capture['closure_archive'], expected_members, byte_root)
     owner = runpy.run_path(str(expected_source / 'tests/proof_container_runtime.py'))
+    if owner['loader_kernel'](closure['loader']['diagnostics']['raw'])[0] != capture['outer']['kernel']['release']:
+        raise ValueError('retained loader diagnostics belong to a different actual kernel')
+    if capture['bounds'] != owner['CAPTURE_BOUNDS'] or capture['progress']['phases'] != list(owner['CAPTURE_PHASES']):
+        raise ValueError('capture geometry or ordered progress contract differs')
+    if request['params']['progress'] != dict(schema='prismabuild.action_progress_policy.v1',
+        phases=[dict(name=name, grace_s=120.0) for name in owner['CAPTURE_PHASES']]):
+        raise ValueError('capture did not seal its exact finite progress policy')
+    geometry = dict(members=sum(len(root['entries']) for root in closure['roots']),
+                    regular_bytes=sum(entry['bytes'] for entry in members.values()),
+                    profile_bytes=len(raw_profile), archive_bytes=capture['closure_archive']['bytes'])
+    if capture['geometry'] != geometry or any(geometry[name] > capture['bounds'][name] for name in geometry):
+        raise ValueError('actual captured geometry differs or exceeds its sealed refusal caps')
+    checkpoints = {}
+    for index,phase in enumerate(owner['CAPTURE_PHASES'], 1):
+        path = raw_root / 'checkpoints' / (phase + '.json')
+        value = decode_strict_json(read_capture_pin(path, capture['progress']['checkpoints'][phase]), where='capture checkpoint')
+        if value['phase'] != phase or type(value['units']) is not int or value['units'] != index:
+            raise ValueError('capture durable checkpoint order or cumulative units differ')
+        if phase == 'host_inventory' and value['value']['observation'] != capture['outer']:
+            raise ValueError('durable host inventory belongs to another runtime')
+        if phase == 'image_inventory' and value['value']['observation'] != capture['image_runtime']:
+            raise ValueError('durable image inventory belongs to another runtime')
+        if phase == 'mounted_runtime' and value['value'] != dict(profile_sha256=capture['profile_sha256'],
+            profile_json=capture['profile_json'], roles=dict(inner=capture['inner'], installed_reader=capture['installed_reader'],
+                closure=capture['closure_verification'], mapped_native_providers=capture['mapped_native_providers'])):
+            raise ValueError('durable mounted-runtime observation differs')
+        if phase == 'closure_archive' and value['value'] != dict(archive=dict(id='proof-runtime-closure', **capture['closure_archive']),
+            geometry={name:geometry[name] for name in ('members','regular_bytes')}):
+            raise ValueError('durable archive commitment differs')
+        checkpoints[phase] = capture_file_descriptor(path)
     observed_audit = owner['audit_native_closure'](closure,
         lambda path: byte_root / members[path]['sha256'])
     if observed_audit != closure['native_audit']:
@@ -283,7 +323,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         closure_sha256=closure['sha256'],
         capture=dict(action_key=key, source_pin=snapshot['parent'], snapshot_commit=snapshot['commit'],
                      raw={name:capture_file_descriptor(path) for name,path in paths.items()},
-                     helper_source_sha256=capture['source_sha256'], assigned_affinity=affinity), executables=executables,
+                     helper_source_sha256=capture['source_sha256'], assigned_affinity=affinity,
+                     progress=dict(helper=executables[helper['sha256']], checkpoints=checkpoints)), executables=executables,
         closure_archive=capture_file_descriptor(archive), closure_members=members, closure_byte_root=str(byte_root))
     target = output / 'capture-binding.json'
     target.write_bytes(compact_ascii_json_bytes(binding) + b'\n')

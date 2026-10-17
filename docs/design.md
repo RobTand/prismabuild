@@ -19061,9 +19061,18 @@ host mounts and required image paths. The primary starts with `-S` and the
 existing pinned qualification dependency path, excluding unsealed host venv
 site-packages. Capture seals the selected base stdlibs and native providers.
 Its retained-byte audit checks every declared symlink and traverses PT_INTERP
-and DT_NEEDED from all selected stdlib ELFs and interpreters. Unsupported or
-unresolved search paths refuse capture; observed process mappings supply
-separate evidence for the providers actually used during qualification.
+and DT_NEEDED from all selected stdlib ELFs and interpreters. The existing image
+cache, its read-only `ldconfig` listing and the captured host loader's actual
+diagnostics bind a conservative provider candidate graph. It includes declared
+RPATH/RUNPATH contexts, cache entries and variants below fully inventoried
+search directories. It never substitutes a found fallback for the real loader's
+choice. Unknown directories/candidates, loader overrides, secure mode and
+unsupported tokens or NODEFLIB refuse capture. The supported candidate format
+is native ELF64 Linux with ordinary ABI headers and world-readable files.
+GNU ABI kernel requirements must fit the actual diagnostic kernel release.
+ELF audit/filter/configuration loading and system-wide preloads refuse capture.
+Observed process mappings supply separate evidence for providers actually used
+during qualification.
 
 Capture runs through published PB with the exact interpreter and existing image
 as placement dependencies. It publishes an archive through the published CAS
@@ -19072,6 +19081,18 @@ receipt, logs, result and source bundle to every profile byte and archived
 member, including the actual PB producer/runtime files. No prewritten profile
 or successful older image runtime grants current standard-runtime credit.
 
+Initial capture requires one CPU, two GiB, native1, priority-10 and a sealed
+120-second hard deadline. These are cost limits, not timing measurements. Four
+ordered 120-second stall allowances use the actual environment-named published
+progress helper. Cumulative units1..4 follow verified CAS publication of host
+inventory, image inventory, mounted-runtime/profile observations and the closure
+archive. Reads, logs and entering a phase never advance units. Source caps
+refuse more than20,000 profile members,4GiB regular bytes,20,006 archived files,
+2GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
+JSON. File/archive I/O streams bounded chunks. A cap failure is retained actual
+evidence; changing limits needs a new reviewed immutable request after the old
+action terminates. The source caps do not promise that either candidate fits.
+
 The `prismabuild-root-runtime:` footer records actual outer, inner primary and
 credential-drop reader observations separately. It carries real IDs, full
 patch version, executable SHA256/ELF, affinity, native bounds, source digests,
@@ -19079,8 +19100,8 @@ mount checks and exit status. The raw root-owned inner attestation is preserved
 verbatim; the outer launcher writes its own distinct final envelope. Existing
 pytest runtime, completion and outcome footers remain unchanged.
 
-This is source support only. Real profile capture, bounded capture resources and
-progress policy, fresh collection/execution rosters, actual CAS chains and
+This is source support only. Real profile capture and measured geometry,
+fresh collection/execution rosters, actual CAS chains and
 physical scope release remain qualification gates. It changes no deployment,
 installed trust guard, live service or interpreter support claim.
 
