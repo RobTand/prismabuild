@@ -48,6 +48,8 @@ def fleet(tmp_path, monkeypatch):
              "tools/fleet/publish_runtime.py": (ROOT / "tools/fleet/publish_runtime.py").read_bytes(),
              "tools/fleet/fleet_boxes.json": json.dumps({"boxes": {
                  "one": {}, "former-two": {"_alias": "two"}}}).encode()}
+    for member in ("src/prismabuild/generation_receipt.py", "src/prismabuild/digest_primitives.py"):
+        files[member] = (ROOT / member).read_bytes()
     for generation in ("old", "new"):
         directory = store / generation
         for name, raw in files.items():

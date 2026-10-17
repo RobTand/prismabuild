@@ -1493,14 +1493,19 @@ def _require_reader_direction(target, *, rollout, receipt=None, files=None):
     try:
         roots = (target, MIRROR.resolve(strict=True) if MIRROR.exists() else None)
         observations = []
-        for root, captured in zip(roots, (receipt, None)):
+        for index, (root, captured) in enumerate(zip(roots, (receipt, None))):
             has_updater = root is not None and any((root / member).is_file() for member in
                 ("tools/fleet/upgrade_client.py", "tools/upgrade_client.py"))
+            if index == 0 and files is not None and "tools/upgrade_client.py" not in files:
+                has_updater = False
             observations.append(client_protocol(root, receipt=captured) if has_updater else None)
         if files is not None and observations[0] is not None:
             captured = observations[0]
-            if files.get(captured["updater_member"]) != captured["updater_sha256"]:
+            if files["tools/upgrade_client.py"] != captured["updater_sha256"]:
                 raise WindowError("candidate updater differs from the captured publication manifest")
+        for row in observations:
+            if row is not None:
+                require_client_transition(row, row)
         if any(row is None for row in observations):
             if any(row and set(row["present"]) & RECEIPT_MEMBERS for row in observations):
                 raise WindowError("receipt activation requires current installed updater proof; "
@@ -1874,7 +1879,8 @@ def _activate_existing_locked(
             f"{generation}: receipt is not readable (not a JSON object); this "
             "is not a generation to point the live runtime at."
         )
-    _require_reader_direction(generation, receipt=GenerationReceipt(receipt), rollout=rollout)
+    if rollout == "rolling" or not dry_run:
+        _require_reader_direction(generation, receipt=GenerationReceipt(receipt), rollout=rollout)
     if rollout == "barrier":
         # A rollback publishes no manifest, so the value to prove the fleet
         # against is the one already recorded in the generation being restored.
@@ -2279,7 +2285,7 @@ def _run_publication(args) -> int:
     # which of its members are programs refuses here, not halfway
     # through a tree it then has to clean up.
     index_modes = _git_index_modes()
-    if not args.stage_only:
+    if not args.stage_only and (args.rollout == "rolling" or not args.dry_run):
         _require_reader_direction(CHECKOUT, rollout=args.rollout, files=published)
     if args.rollout == "barrier" and not args.stage_only:
         member = _agent_definitions().MEMBERS["upgrade_client.py"]

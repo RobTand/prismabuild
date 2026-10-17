@@ -141,14 +141,13 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    # Content test: publishes the real tree to inspect the generation's docs;
-    # the real canary driver cannot verify a sandboxed mirror, so it skips.
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--no-canary",
+    # Content inspection prepares a real sealed generation; installing its
+    # importing updater requires separately proven installed readers.
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--stage-only", "--rollout", "rolling",
                                         "--rollout-reason", "fixture publication",
                                         "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
-    generation = mirror.resolve()
+    generation = next((mirror.parent / "runtime-generations").iterdir())
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
     skill = generation / "skills/prismabuild/SKILL.md"
     text = skill.read_text()
@@ -192,14 +191,12 @@ def test_published_torch_helper_can_be_copied_without_a_source_checkout(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    # Content test: publishes the real tree to inspect the generation's docs;
-    # the real canary driver cannot verify a sandboxed mirror, so it skips.
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--no-canary",
+    # Content inspection prepares the same shipped helper without activation.
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--stage-only", "--rollout", "rolling",
                                         "--rollout-reason", "fixture publication",
                                         "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
-    generation = mirror.resolve()
+    generation = next((mirror.parent / "runtime-generations").iterdir())
     helper = generation / "tools/profile_torch.py"
     assert helper.is_file(), "published torch guide names an absent helper"
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
