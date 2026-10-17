@@ -1996,9 +1996,9 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     assert _tier_census(ledger) == occupied
 
     blanket: list[str] = []
-    released = tier_holdings.release_unspent_all
+    released = tier_holdings.egress_all
     monkeypatch.setattr(
-        tier_holdings, "release_unspent_all",
+        tier_holdings, "egress_all",
         lambda self, key, **kwargs: (blanket.append(str(key)), released(self, key, **kwargs))[1])
 
     refusals: list[dict] = []

@@ -282,6 +282,13 @@ class TierLedger:
             self._trim_host_to_occupancy(holder)
         return released
 
+    def egress(self, holder: str) -> int:
+        """Return a whole holder after the consumer proves physical egress."""
+        released = self._ledger.release(holder)
+        if storage_tiers.tier_kind_of(self.tier_id) == "ram":
+            self._trim_host_to_occupancy(holder)
+        return released
+
     def release_rates(self, holder: str) -> int:
         return self._ledger.release_kinds(holder, RATE_KINDS)
 
@@ -402,6 +409,12 @@ class TierLedger:
         return outcome
 
     def release_unspent_best_effort(self, holder: str, *, authority: Unspent) -> int:
+        return self._release_best_effort(holder)
+
+    def egress_best_effort(self, holder: str) -> int:
+        return self._release_best_effort(holder)
+
+    def _release_best_effort(self, holder: str) -> int:
         try:
             released = int(self._ledger.release(str(holder)))
         except (OSError, PoolContractError, ValueError):
@@ -621,6 +634,16 @@ def release_unspent_all(queue, holder: str, *, authority: Unspent) -> int:
     for tier_id in ids(queue.records):
         try:
             released += queue.tier(tier_id).release_unspent(holder, authority=authority)
+        except (OSError, PoolContractError):
+            continue
+    return released
+
+
+def egress_all(queue, holder: str) -> int:
+    released = 0
+    for tier_id in ids(queue.records):
+        try:
+            released += queue.tier(tier_id).egress(holder)
         except (OSError, PoolContractError):
             continue
     return released

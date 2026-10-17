@@ -2351,7 +2351,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
         # No fragment at all: nothing is known shared, so every token comes
         # back exactly as before -- holding them would cost the tier its
         # capacity for good.
-        released = tier_holdings.release_unspent_all(queue, mover_action_key, authority=tier_holdings.Unspent.NEVER_STARTED)
+        released = tier_holdings.egress_all(queue, mover_action_key)
     else:
         # Freed share: whole GiB actually leaving the stage now (deleted
         # here).  Floor, not ceil: a 1-token holder with 0.5 GiB deleted
@@ -2404,7 +2404,7 @@ def _evict_owned(queue: pool.PoolQueue, mover_action_key: str, *,
             if other_tier == tier_id:
                 continue
             try:
-                released += queue.tier(other_tier).release_unspent_best_effort(mover_action_key, authority=tier_holdings.Unspent.NEVER_STARTED)
+                released += queue.tier(other_tier).egress_best_effort(mover_action_key)
             except (OSError, pool.PoolContractError):
                 continue
     if not errors and not deferred and not declined:
