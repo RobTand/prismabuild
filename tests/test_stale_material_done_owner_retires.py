@@ -36,8 +36,8 @@ from prismabuild import stage_marks  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 SIZE = base.SIZE
 NAMES = base.NAMES

@@ -36,7 +36,7 @@ import test_a_restarted_promotion_adopts_its_own_copies as ram  # noqa: E402
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_plan  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 
 def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
