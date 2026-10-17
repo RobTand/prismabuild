@@ -156,7 +156,25 @@ class TierLedger:
         return self._ledger.available()
 
     def take(self, holder: str, demand: Mapping[str, int]) -> bool:
-        return self._ledger.acquire(holder, demand)
+        gib = (int(demand.get(storage_tiers.RAM_CAPACITY_KIND, 0))
+               if storage_tiers.tier_kind_of(self.tier_id) == "ram" else 0)
+        if gib > 0:
+            state, detail = self._hold_host(holder, gib)
+            if state != "taken":
+                self._ledger.last_token_shortage = {
+                    "resource": "mem_gb", "requested": gib,
+                    "available": None if state == "unknown" else 0,
+                    "reason": "ram_host_" + state, "detail": detail}
+                return False
+        try:
+            taken = self._ledger.acquire(holder, demand)
+        except BaseException:
+            if gib > 0:
+                self._rollback_host_take(holder, gib)
+            raise
+        if not taken and gib > 0:
+            self._rollback_host_take(holder, gib)
+        return taken
 
     def begin_take(self, holder: str, demand: Mapping[str, int]):
         return self._ledger.begin_acquire(holder, demand)
@@ -176,17 +194,38 @@ class TierLedger:
     def reap_pending_takes(self, *, grace_s: float):
         return self._ledger.sweep_stale_acquisitions(grace_s=grace_s)
 
-    def handover_named(self, source: str, target: str, names: Sequence[str]) -> int:
-        return self._ledger.transfer_tokens(source, target, names)
+    def handover_named(self, source: str, target: str, names: Sequence[str], *,
+                       faults: list | None = None) -> int:
+        ram = storage_tiers.tier_kind_of(self.tier_id) == "ram"
+        before = self.holder_state(source) if ram else set()
+        moved = self._ledger.transfer_tokens(source, target, names)
+        if ram:
+            try:
+                after = self.holder_state(source)
+                occupancy = sum(name.rsplit("-", 1)[0] == storage_tiers.RAM_CAPACITY_KIND
+                                for name in before - after)
+                self._host_ledgers(self._ram_host()).transfer_count(
+                    storage_tiers.RAM_HOST_MEMORY_PREFIX + source,
+                    storage_tiers.RAM_HOST_MEMORY_PREFIX + target, occupancy)
+            except (OSError, PoolContractError, ValueError) as exc:
+                if faults is not None:
+                    faults.append({"reason": "ram_host_transfer_failed",
+                                   "tier_id": self.tier_id, "from": source,
+                                   "to": target, "error": repr(exc)})
+        return moved
 
     def release_unspent(self, holder: str, *, authority: Unspent,
                         keep: Container[str] | None = None,
                         counts: Mapping[str, int] | None = None) -> int | dict[str, int]:
         if counts is not None:
-            return self._ledger.release_count(holder, counts)
-        if keep is not None:
-            return self._ledger.release_except(holder, keep)
-        return self._ledger.release(holder)
+            released = self._ledger.release_count(holder, counts)
+        elif keep is not None:
+            released = self._ledger.release_except(holder, keep)
+        else:
+            released = self._ledger.release(holder)
+        if storage_tiers.tier_kind_of(self.tier_id) == "ram":
+            self._trim_host_to_occupancy(holder)
+        return released
 
     def release_rates(self, holder: str) -> int:
         return self._ledger.release_kinds(holder, RATE_KINDS)
@@ -299,7 +338,7 @@ class TierLedger:
         except (OSError, ValueError):
             outcome = {'released': 0}
         if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
-            self._release_host(str(holder))
+            self._trim_host_to_occupancy(str(holder))
         return outcome
 
     def release_unspent_best_effort(self, holder: str, *, authority: Unspent) -> int:
@@ -308,7 +347,7 @@ class TierLedger:
         except (OSError, PoolContractError, ValueError):
             released = 0
         if storage_tiers.tier_kind_of(str(self.tier_id)) == 'ram':
-            self._release_host(str(holder))
+            self._trim_host_to_occupancy(str(holder))
         return released
 
     def reconcile_mirror(self, expected_holders: Iterable[str], *, release_orphans: bool=True) -> dict[str, object]:
