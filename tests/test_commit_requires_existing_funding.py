@@ -20,7 +20,7 @@ def _world(tmp_path, size=8):
         queue, instance, template, batch_id='batch', tier=STAGE_TIER,
         class_bytes={'payload': size, 'checkpoint': 0, 'temp': 0},
         paths=[str(path)])['ok']
-    origin.mkdir(parents=True)
+    origin.mkdir(parents=True, exist_ok=True)
     with path.open('wb') as stream:
         stream.truncate(size)
     descriptor = oc.validate_descriptor({
@@ -71,7 +71,7 @@ def test_existing_positive_legacy_intent_recovers_without_acquire(tmp_path, monk
     if moved:
         assert ledger.handover_count(namespace, 'a' * 64, moved) == moved
     # This is an already allocated old-writer intent, not permission to mint.
-    funding.parent.mkdir(parents=True)
+    funding.parent.mkdir(parents=True, exist_ok=True)
     funding.write_text(json.dumps({
         'batch_id': 'batch', 'tier': STAGE_TIER, 'mover_key': 'a' * 64,
         'batch_gib': 2, 'manifest_digest': manifest}, sort_keys=True) + '\n')
@@ -96,7 +96,7 @@ def test_existing_positive_legacy_intent_recovers_without_acquire(tmp_path, monk
 def test_unreadable_legacy_intent_retains_without_minting(tmp_path):
     world = _world(tmp_path)
     queue, _, _, _, _, namespace, funding = world
-    funding.parent.mkdir(parents=True)
+    funding.parent.mkdir(parents=True, exist_ok=True)
     funding.write_text('{')
     ledger = queue.tier(STAGE_TIER)
     free = ledger.free_supply()
