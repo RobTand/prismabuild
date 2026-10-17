@@ -85,7 +85,7 @@ def _progress_worker(queue: pool.PoolQueue, monkeypatch) -> list[str]:
                    progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1])
     consulted: list[str] = []
     monkeypatch.setattr(submit_core, "require_deployed_read_plan_storage",
-                        lambda: consulted.append("v2"))
+                        lambda **_context: consulted.append('v2'))
     return consulted
 
 

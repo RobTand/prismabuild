@@ -87,9 +87,9 @@ spec = importlib.util.spec_from_file_location('c26_driver_pbtest', source)
 subject = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(subject)
 from dataclasses import replace
-configured = replace(subject.configured_store(), root=pathlib.Path(scratch),
+configured = replace(subject.store_for(subject.__file__), root=pathlib.Path(scratch),
     queue_root=pathlib.Path(scratch) / "pb-queue", cas_root=pathlib.Path(scratch) / "cas")
-subject.configured_store = lambda: configured
+subject.store_for = lambda *args, **kwargs: configured
 real = subprocess.Popen
 
 def payload(command, **kwargs):

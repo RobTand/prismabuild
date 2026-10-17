@@ -149,7 +149,7 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, ram=False, **overrides):
         monkey_target = overrides.pop("monkeypatch", None)
         if monkey_target is not None:
             monkey_target.setattr(submit_core, "resolve_ram_tier",
-                                  lambda queue_, stage_tier: _ram_tier(tmp_path))
+                                  lambda queue_, stage_tier, **_context: _ram_tier(tmp_path))
     args = types.SimpleNamespace(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,

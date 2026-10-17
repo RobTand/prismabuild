@@ -620,8 +620,8 @@ def test_a_submission_without_declared_batches_files_nothing(
     prepared: list[dict] = []
     original = submit_core.prepare
 
-    def spy(args):
-        result = original(args)
+    def spy(args, **context):
+        result = original(args, **context)
         prepared.append(result)
         return result
 

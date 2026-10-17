@@ -88,7 +88,7 @@ def _old_submitter(monkeypatch, *argv: str):
 
     with monkeypatch.context() as patch:
         patch.setattr(submit_core, "submission_window",
-                      lambda q, key, refs: contextlib.nullcontext(True))
+                      lambda q, key, refs, **_context: contextlib.nullcontext(True))
         patch.setattr(submit_core, "publish_or_refuse", pause("publish_or_refuse"))
         patch.setattr(submit_core, "publish_or_attach", pause("publish_or_attach"))
         assert "paused before its row" in _refused(monkeypatch, *argv)
