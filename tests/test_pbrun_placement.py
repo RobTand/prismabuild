@@ -300,7 +300,7 @@ def test_the_result_and_stamp_names_move_with_the_commit(tmp_path, monkeypatch):
     def identity(_cwd, _seen=seen):
         return {"commit": _seen.pop(0)}
 
-    monkeypatch.setattr(submit_core, '_git_identity', identity)
+    monkeypatch.setattr(movement_actions, 'checkout_identity', identity)
     names = []
     for commit in ("aaaa", "bbbb", "aaaa"):
         seen.append(commit)

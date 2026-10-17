@@ -11,6 +11,7 @@ from collections import Counter
 import json
 from pathlib import Path
 import subprocess
+import symtable
 
 C21_BASE = "a8ba9c0c7beeeb379908924a60c6933e997c8df6"
 C21_OWNERS = (
@@ -94,6 +95,37 @@ def c21_sources(root, pin):
             for path in paths if path.endswith(".py")}
 
 
+def c21_current_seams(sources, changed):
+    retired = {"_git_identity", "residency_stage_rows", "publication_row",
+               "_residency_supersession_names", "residency_supersession_keys",
+               "_prelaunch_stage_legs", "_shared_movers"}
+    owners = {"residency_plan", "movement_actions", "submit_core"}
+    checked = 0
+    for path in changed:
+        if not path.endswith(".py") or path not in sources:
+            continue
+        source = sources[path]
+        module = symtable.symtable(source, path, "exec")
+        bound = {symbol.get_name() for symbol in module.get_symbols()
+                 if symbol.is_imported() or symbol.is_assigned() or symbol.is_namespace()}
+        scopes = [module]
+        while scopes:
+            scope = scopes.pop()
+            scopes.extend(scope.get_children())
+            for symbol in scope.get_symbols():
+                if (symbol.get_name() in owners and symbol.is_referenced()
+                        and symbol.is_global() and symbol.get_name() not in bound):
+                    raise ValueError(f"unbound migrated owner {symbol.get_name()} in {path}")
+        for node in ast.walk(ast.parse(source, filename=path)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"setattr", "delattr", "object"}
+                    and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value in retired):
+                raise ValueError(f"retired patch seam at {path}:{node.lineno}")
+        checked += 1
+    return checked
+
+
 def c21_audit(root, out, base):
     out.mkdir(parents=True, exist_ok=True)
     original = c21_sources(root, base)
@@ -106,6 +138,7 @@ def c21_audit(root, out, base):
             current[path] = (root / path).read_text()
     changed = sorted(path for path in original.keys() | current.keys()
                      if original.get(path) != current.get(path))
+    checked_seams = c21_current_seams(current, changed)
     before, after = {}, {}
     total_old = total_new = 0
     for label, sources, output in (("before", original, before), ("after", current, after)):
@@ -165,6 +198,7 @@ def c21_audit(root, out, base):
         changed=changed, original_assertions=total_old, current_assertions=total_new,
         original_python_files=len(original), current_python_files=len(current),
         paired_changed_assertions=len(locators), exact_assertions=sum(x["exact_ast"] for x in locators),
+        migrated_seam_files_checked=checked_seams,
         explicit_owner_bindings=[x for x in locators if not x["exact_ast"]], moves=C21_MOVES,
         scope="Source audit only; no runtime or architecture-test pass credit")
     (out / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")

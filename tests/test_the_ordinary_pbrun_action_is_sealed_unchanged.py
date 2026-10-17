@@ -247,7 +247,7 @@ def test_every_masked_value_is_re_derived_from_the_body(
     seen: dict[str, object] = {}
     identify = movement_actions.checkout_identity
     monkeypatch.setattr(
-        submit_core, "_git_identity",
+        movement_actions, "checkout_identity",
         lambda cwd, **_context: seen.setdefault('identity', identify(cwd)),
     )
     body = _seal(tmp_path, monkeypatch, row)
