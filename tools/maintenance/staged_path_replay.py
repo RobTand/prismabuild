@@ -223,7 +223,10 @@ def staged_replay_cli():
             args.output.write_text(json.dumps(result, indent=2) + "\n")
             args.output.with_suffix(".python-executable").write_bytes(executable_bytes)
         print(json.dumps({"wire_and_effects_equal": True, "wire_documents_per_arm": len(old["wire_documents"]),
-                          "facts": old["facts"]}))
+                          "facts": old["facts"], "runtime": result["runtime"],
+                          "report": ({"path": str(args.output), "bytes": args.output.stat().st_size,
+                                      "sha256": digest_primitives.raw_sha256(args.output.read_bytes())}
+                                     if args.output else None)}))
 
 
 if __name__ == "__main__":
