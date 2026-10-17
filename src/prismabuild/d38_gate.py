@@ -538,3 +538,115 @@ def authorize(args, action: Mapping[str, object], *, cas,
     if not isinstance(namespace, str) or not _NAMESPACE.match(namespace):
         raise Refusal("the job declares no --d38-namespace descriptor, so no "
                       "receipt can bind its namespace")
+    if receipt:
+        return verify_receipt(
+            cas, receipt, job=job, images=images, namespace=namespace,
+            target_command=params["command"], at=at)  # type: ignore[index]
+    if exception:
+        return verify_exception(exception, job=job, images=images,
+                                namespace=namespace, at=at)
+    raise Refusal("no preflight receipt was supplied")
+
+
+def evaluate(args, action: Mapping[str, object], *, cas,
+             at: datetime.datetime) -> dict:
+    """Return authorized evidence or a failed check, independently of policy."""
+
+    try:
+        evidence = authorize(args, action, cas=cas, at=at)
+    except Refusal as exc:
+        return {"result": "failed", "reason": str(exc)}
+    return {"result": "authorized", **evidence}
+
+
+def judge_publication(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
+           transport: str, store: FleetStore, display: DisplaySink = discard_display,
+           demand: Mapping[str, object] | None = None, required_tags: Sequence[str] | None = None) -> tuple[str, str | None] | None:
+    """Evaluate GPU evidence and audit it under the reviewed enforcement policy.
+
+    Return ``(reason, namespace)`` only when enforcement refuses publication.
+    The caller owns cache and attachment handling and must never publish on
+    a refusal.
+    """
+
+    params = action["params"]
+    demand = (params.get("demand") or {}) if demand is None else demand
+    tags = ((params.get("placement") or {}).get("required_tags") or []) if required_tags is None else required_tags
+    if not requires_receipt(demand, tags,
+                            host_class=getattr(args, "host_class", None)):
+        return None
+    enforce = enforcement_enabled(store=store)
+    job = str(action["action_key"])
+    images = target_images(action)
+    namespace = params.get(NAMESPACE_PARAM)  # type: ignore[union-attr]
+    at = utc_now()
+    check = evaluate(args, action, cas=cas, at=at)
+    checked_namespace = namespace if isinstance(namespace, str) else None
+    if enforce and check["result"] == "failed":
+        return (check["reason"], checked_namespace)
+    event = {
+        "schema": AUDIT_SCHEMA, "job_identity_hash": job,
+        "image_digest": images, "namespace": namespace,
+        "submitter": f"{_user()}@{socket.gethostname()}",
+        "time": at.isoformat(), "transport": transport,
+        "mode": "enforce" if enforce else "record_only", **check}
+    try:
+        write_audit(queue_root, event)
+    except OSError as exc:
+        reason = f"the audit event cannot be written: {exc}"
+        if enforce:
+            return (reason, checked_namespace)
+        emit_display(display, f"pbrun: D38 record_only: {reason}; publication permitted",
+              channel="stderr", flush=True)
+    if check.get("authorization") == "exception":
+        emit_display(display, f"pbrun: D38 exception {check['decision_id']} authorizes job "
+              f"{job}", channel="stderr", flush=True)
+    return None
+
+
+def refusal_exit(verdict: tuple[str, str | None], action: Mapping[str, object]
+            , *, display: DisplaySink = discard_display) -> SubmissionRefused:
+    """The exit-2 refusal for a publication verdict."""
+
+    reason, namespace = verdict
+    return _exit_refused(reason, job=str(action["action_key"]),
+                   images=target_images(action), namespace=namespace, display=display)
+
+
+def require(args, action: Mapping[str, object], *, cas, queue_root: str | Path,
+            transport: str, store: FleetStore, display: DisplaySink = discard_display) -> None:
+    """Apply the reviewed D38 policy to a new publication."""
+
+    verdict = judge_publication(args, action, cas=cas, queue_root=queue_root,
+                     transport=transport, store=store, display=display)
+    if verdict is not None:
+        raise refusal_exit(verdict, action, display=display)
+
+
+def refuse_deferred(args, params: Mapping[str, object], *, store: FleetStore, display: DisplaySink = discard_display) -> None:
+    """Enforced GPU intent cannot register before a sealed identity exists.
+
+    Record-only registration defers evaluation and auditing to release.
+    """
+    demand = params.get("demand") or {}
+    tags = (params.get("placement") or {}).get("required_tags") or []  # type: ignore[union-attr]
+    if not requires_receipt(demand, tags,  # type: ignore[arg-type]
+                            host_class=getattr(args, "host_class", None)):
+        return
+    if not enforcement_enabled(store=store):
+        return
+    images = list(container_images.normalize_refs(
+        params.get("container_images") or []))
+    namespace = params.get(NAMESPACE_PARAM)
+    raise _exit_refused(
+        "a deferred --after submission has no job identity until its producer "
+        "ends, so no receipt or grant can bind it; submit it after the "
+        "producer succeeds", job="none (deferred)", images=images,
+        namespace=namespace if isinstance(namespace, str) else None, display=display)
+
+
+def _user() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:                                           # noqa: BLE001
+        return "unknown"
