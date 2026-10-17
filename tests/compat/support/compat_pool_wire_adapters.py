@@ -149,7 +149,8 @@ def operate(request, store, load):
         result = queue.attempt_outcomes(record)
         assert len(result) == 1 and result[0]["stdout"] == "compat \u03bb\n", "attempt did not verify its actual log bytes"
     elif family == "q-outcome":
-        result = load("pbrun").terminal_record(path, 100.0, report_unreadable=True)
+        reader = runpy.run_path(str(Path(__file__).with_name("compat_terminal_adapters.py")))["terminal_reader"](load)
+        result = reader(path, 100.0, report_unreadable=True)
         assert result and result["action_key"] == key and result["status"] == ("withdrawn" if variant == "preempted" else variant)
     elif family == "q-tier-commitment":
         result = queue.tier_commitment(TIER)

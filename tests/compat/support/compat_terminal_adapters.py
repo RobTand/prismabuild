@@ -9,6 +9,13 @@ import runpy
 import time
 
 
+def terminal_reader(load):
+    frontend = load("pbrun")
+    if hasattr(frontend, "terminal_record"):
+        return frontend.terminal_record
+    return load("prismabuild.action_wait").terminal_record
+
+
 def operate(request, store, load):
     variant = request["case"].split("/", 1)[1]
     pool = load("prismabuild.pool")
@@ -22,7 +29,7 @@ def operate(request, store, load):
     if request["op"] == "read":
         path.write_bytes(base64.b64decode(request["raw"]))
         request["_consumer_boundary"]()
-        result = load("pbrun").terminal_record(path, 101.0 if variant == "origin-release-writer" else 100.0, report_unreadable=True)
+        result = terminal_reader(load)(path, 101.0 if variant == "origin-release-writer" else 100.0, report_unreadable=True)
         assert result and result["status"] == status and result["action_key"] == key
         return result
     uuid.uuid4 = lambda: uuid.UUID("7" * 32)
