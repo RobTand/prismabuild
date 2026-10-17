@@ -179,7 +179,9 @@ def _gang_pair(gang_fleet, tmp_path, name, *, declare_manifest: bool,
             tag=name)
         keys.append(key)
         leads.append(lead)
-    rows = [pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)) for key in keys]
+    rows = [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) for key in keys]
     _gang.publish_group(queue, group, rows)
     return queue, clock, publish, finish, gclaim, denial, group, keys, leads
 
@@ -372,7 +374,9 @@ def test_unreadable_sibling_evidence_defers(
                   {key: [leads[index]] for index, key in enumerate(keys)})
 
     first, second = keys
-    sibling_row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, second))
+    sibling_row = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, second),
+    )
     _delete_manifest_blob(sibling_row, second)
 
     assert gclaim("sparklina") is None

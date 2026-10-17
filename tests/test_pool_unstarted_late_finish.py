@@ -33,7 +33,12 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     if successor_state == pool.record_store.CLAIMED:
         successor = queue.claim(owner='successor', capacity={'cpu': 1})
         assert successor is not None
-        paths = (queue.records.item_path(pool.record_store.CLAIMED, key), queue.records.lease_path(key))
+        paths = (queue.records.item_path(
+            pool.record_store.CLAIMED,
+            key,
+        ), queue.records.lease_path(
+            key,
+        ))
     else:
         successor = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
         paths = (queue.records.item_path(pool.record_store.READY, key),)
@@ -54,7 +59,8 @@ def test_released_claim_cannot_supply_the_successors_outcome(
     assert not queue.records.attempt_path(first, 1).exists()
     assert not queue.records.item_path(pool.record_store.DONE, key).exists()
     assert not queue.records.item_path(pool.record_store.FAILED, key).exists()
-    assert queue.ledger().held() == ({'cpu': 1} if successor_state == pool.record_store.CLAIMED else {})
+    assert queue.ledger().held(
+    ) == ({'cpu': 1} if successor_state == pool.record_store.CLAIMED else {})
     if successor_state == pool.record_store.READY:
         successor = queue.claim(owner='successor', capacity={'cpu': 1})
         assert successor is not None

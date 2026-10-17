@@ -235,7 +235,10 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     q.finish(bg, status=status, detail={'returncode': 9 if status == 'failed' else 0,
                                       'stdout': 'unrelated later run'},
              claim_snapshot=unrelated)
-    terminal = q.records.item_path(pool.record_store.FAILED if status == 'failed' else pool.record_store.DONE, bg)
+    terminal = q.records.item_path(
+        pool.record_store.FAILED if status == 'failed' else pool.record_store.DONE,
+        bg,
+    )
     assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
     landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=original_generation)
     assert landed is not None

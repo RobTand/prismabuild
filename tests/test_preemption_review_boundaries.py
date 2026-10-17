@@ -48,7 +48,9 @@ def test_preemption_does_not_reset_already_spent_retry_attempts(tmp_path):
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
     assert q.claim(capacity={'gpu': 1}) is None
     path = q.records.item_path(pool.record_store.READY, bg)
-    retained = json.loads((path if path.exists() else q.records.item_path(pool.record_store.CLAIMED, bg)).read_text())
+    retained = json.loads(
+        (path if path.exists() else q.records.item_path(pool.record_store.CLAIMED, bg)).read_text(),
+    )
     assert retained['attempts'] >= holder['attempts'], 'preemption refunded a prior failed attempt'
     assert retained['attempt_history'] == holder['attempt_history']
     assert q.attempt_outcomes(retained)[0]['status'] == 'failed'
@@ -63,7 +65,8 @@ def test_operator_withdrawal_winning_selection_race_is_not_reversed(tmp_path, mo
         return withdraw(key, **kw)
     monkeypatch.setattr(q, 'withdraw', operator_wins)
     assert q.claim(capacity={'gpu': 1}) is None
-    assert not q.records.item_path(pool.record_store.READY, bg).exists(), 'scheduler revived operator-cancelled work'
+    assert not q.records.item_path(pool.record_store.READY, bg).exists(
+    ), 'scheduler revived operator-cancelled work'
     assert q.records.item_path(pool.record_store.WITHDRAWN, bg).exists()
 
 
@@ -77,7 +80,8 @@ def test_holder_finishing_before_withdraw_is_not_published_again(tmp_path, monke
     monkeypatch.setattr(q, 'withdraw', finish_wins)
     q.claim(capacity={'gpu': 1})
     assert q.records.item_path(pool.record_store.DONE, bg).exists()
-    assert not q.records.item_path(pool.record_store.READY, bg).exists(), 'scheduler republished completed work'
+    assert not q.records.item_path(pool.record_store.READY, bg).exists(
+    ), 'scheduler republished completed work'
 
 
 def test_new_foreground_generation_winning_selection_race_is_not_preempted(tmp_path, monkeypatch):

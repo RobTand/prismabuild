@@ -55,7 +55,9 @@ def test_scope_start_keeps_creation_with_its_claim(scoped, monkeypatch):
         with ThreadPoolExecutor(max_workers=1) as executor:
             assert executor.submit(queue.reap_stale, timeout_s=-1).result(timeout=5) == []
         assert pool._same_claim(
-            pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, item["action_key"])),
+            pool.record_store.value_or_raise(
+                queue.records.item(pool.record_store.CLAIMED, item["action_key"]),
+            ),
             item,
         )
         return original(scope)
