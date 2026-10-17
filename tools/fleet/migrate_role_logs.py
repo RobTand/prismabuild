@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
 import publish_runtime  # noqa: E402
-import role_log_identity  # noqa: E402
+from prismabuild import role_log_identity  # noqa: E402
 import supervise  # noqa: E402
 
 sys.path.insert(0, str(supervise.RUNTIME_ROOT / "src"))

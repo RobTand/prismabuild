@@ -50,7 +50,10 @@ from typing import Any, Callable
 
 TOOL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_DIR))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 REPO_ROOT = generation_root(__file__)
 #: Layout root holding RUNTIME_VERSION.json: the published generation in
@@ -244,15 +247,8 @@ _READER_RESIDENCY_SUBDIR_FALLBACK = "residency"
 
 
 def _reader_lease():
-    """The reader-lease module when its lane has merged, else None.
-
-    No vendoring, no parallel reimplementation: enumeration, validation,
-    and release run through the owning module whenever it is importable.
-    """
-    try:
-        from prismabuild import reader_lease as module  # noqa: E402
-    except ImportError:
-        return None
+    """Load the required reader-lease owner at the original call boundary."""
+    from prismabuild import reader_lease as module
     return module
 
 
