@@ -139,6 +139,7 @@ import uuid
 
 from . import scratch_lifetime, record_store
 from . import endings
+from . import lifecycle
 from . import contracts
 from . import capability_eligibility
 from . import candidate_policy
@@ -23151,7 +23152,7 @@ class PoolQueue:
                             raise PoolContractError("invalid late-finish recovery record")
                         if record.get("claimed_host") != socket.gethostname():
                             continue
-                        result = self._retry_late_finish(tombstone, record)
+                        result = lifecycle._retry_late_finish(self, tombstone, record)
                     except Exception as exc:                         # noqa: BLE001
                         print(f"pool: late finish {key} retained: {type(exc).__name__}: {exc}",
                               file=sys.stderr)
@@ -24271,166 +24272,8 @@ class PoolQueue:
             validate_output_retry_stop=self._validate_output_retry_stop)
 
 
-    def _finish_late(
-        self,
-        action_key: str,
-        *,
-        status: str,
-        detail: Mapping[str, object] | None,
-        snapshot: Mapping[str, object],
-        live: Mapping[str, object],
-    ) -> Path:
-        if snapshot.get("resource_scope") is None and snapshot.get("resource_scope_intent") is None:
-            return self._archive_late_finish(
-                action_key, status=status, detail=detail, snapshot=snapshot, live=live)
-        record = {**dict(snapshot), "action_key": action_key}
-        path = self.records.late_finish_path(record)
-        saved = record_store.read_document(path)
-        if saved is None:
-            record["finish_pending"] = {"status": status, "detail": dict(detail or {})}
-            record["late_finish"] = {field: live.get(field) for field in claim_identity.CLAIM_IDENTITY_FIELDS}
-            # Persist authority and the completed payload's result before any
-            # broker operation. A crash can then be retried by the same sweep
-            # that already recovers interrupted finish tombstones.
-            self.records.replace_record_at(path, record)
-        else:
-            record = saved
-        return self._retry_late_finish(path, record)
 
-    def _retry_late_finish(self, path: Path, record: dict[str, object]) -> Path:
-        pending = record.get("finish_pending")
-        live = record.get("late_finish")
-        if (path != self.records.late_finish_path(record)
-                or not isinstance(pending, dict) or not isinstance(pending.get("status"), str)
-                or not isinstance(pending.get("detail"), dict) or not isinstance(live, dict)
-                or (record.get("resource_scope") is None
-                    and record.get("resource_scope_intent") is None)):
-            raise PoolContractError("invalid late-finish recovery authority or result")
-        status, detail = pending["status"], dict(pending["detail"])
-        cleanup = self.cleanup_action_containers(
-            record, reason=str(detail.get("termination_reason") or status), scope_only=True)
-        if not cleanup["complete"]:
-            self._note_cleanup_attempt(record, record, cleanup)
-            self.records.replace_record_at(path, record)
-            return path
-        scope_cleanup = cleanup.get("resource_scope") or {}
-        detail["resource_scope_cleanup"] = scope_cleanup
-        telemetry = scope_cleanup.get("telemetry") or {}
-        resource_failure = self._resource_failure(telemetry)
-        if resource_failure:
-            status = "failed"
-            detail.update(status="failed", returncode=137,
-                          termination_reason=resource_failure, resource_telemetry=telemetry,
-                          termination_evidence=telemetry.get("termination_evidence"))
-        # Keep completed cleanup durable until both the immutable attempt and
-        # the recovery evidence are filed. Neither can overwrite a successor.
-        self.records.replace_record_at(path, record)
-        result = self._archive_late_finish(
-            str(record["action_key"]), status=status, detail=detail, snapshot=record, live=live)
-        evidence = dict(record)
-        evidence.pop("finish_pending", None)
-        evidence.pop("container_cleanup_pending", None)
-        self.records.file_superseded(
-            evidence, key=str(record["action_key"]), kind="late-finish",
-            status=status, detail=detail, finished_unix=_now(),
-            finished_host=socket.gethostname(
-            ), outcome=str(
-                result.relative_to(self.root),
-            ), when=_now(
-            ))
-        path.unlink(missing_ok=True)
-        return result
 
-    def _archive_late_finish(
-        self,
-        action_key: str,
-        *,
-        status: str,
-        detail: Mapping[str, object] | None,
-        snapshot: Mapping[str, object],
-        live: Mapping[str, object],
-    ) -> Path:
-        """File the result of an attempt that a newer one has already replaced.
-
-        ``finish`` used to read whichever record occupied
-        ``claimed/<key>.json`` and prefer it over ``claim_snapshot`` without
-        comparing identity.  When a lease expired while its launcher was still
-        alive, the reaper requeued the action and a second worker claimed the
-        retry, the first worker's ``finish`` then advanced *that* record's
-        attempt counter, archived its own result under the second worker's
-        identity, filed the generation terminal, released the second worker's
-        tokens and removed its claim.  A ``done`` record and an immutable
-        attempt both described a result the named attempt never produced, and
-        the running retry lost its reservation.
-
-        A worker may conclude only the attempt it executed.  The live claim,
-        its lease and its reservation are left exactly as they are, and this
-        attempt's result goes where it belongs: its own numbered attempt under
-        its own generation, first-writer-wins like every other immutable
-        outcome, so a reaper that already filed a lease loss for this attempt
-        keeps that record and this one does not overwrite it.
-
-        An unstarted release has not charged that number. If the replacement
-        is still at the same number, retain this report as superseded evidence
-        instead; the numbered slot belongs to the replacement's execution.
-
-        The caller cleans up any exact broker scope before this archive.
-        Action-wide Docker ownership cannot distinguish attempts and is never
-        used by this path. A legacy attempt without scope authority can only
-        archive its result here.
-        """
-
-        attempt = int(snapshot.get("attempts", 0)) + 1
-        if (self.records.attempt_generation({**snapshot, "action_key": action_key})
-                == self.records.attempt_generation({**live, "action_key": action_key})
-                and int(live.get("attempts", 0)) < attempt):
-            # An unstarted release keeps the publication and attempt count.
-            # First-writer-wins is unsafe here: filing the predecessor in that
-            # slot makes the successor adopt an outcome it never produced.
-            # Keep the report attributable without charging an execution or
-            # creating a terminal that a waiter could mistake for completion.
-            return self.records.file_superseded(
-                snapshot, key=action_key, kind="uncharged-late-finish",
-                status=status, detail=dict(detail or {}),
-                finished_unix=_now(), finished_host=socket.gethostname(),
-                reason="replaced claim has no charged attempt; its execution "
-                       "slot belongs to the same-generation successor", when=_now(),
-            )
-        archived = dict(snapshot)
-        archived["action_key"] = action_key
-        archived["finished_unix"] = _now()
-        archived["finished_host"] = socket.gethostname()
-        succeeded = status in {"executed", "cache_hit"}
-        limit = int(snapshot.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
-        # The same rule ``attempt_ending`` applies, so this outcome can
-        # never be the one that makes a reader refuse the record. A withdrawn
-        # status requires the withdrawn disposition: a cancelled attempt is
-        # not a failure and must not descend the retry ladder.
-        disposition = (
-            WITHDRAWN if status == WITHDRAWN else
-            DONE if succeeded else FAILED if attempt >= limit else "requeued"
-        )
-        self.archive_attempt(
-            archived,
-            attempt=attempt,
-            status=status,
-            disposition=disposition,
-            detail={
-                **dict(detail or {}),
-                "late_finisher": {
-                    "reason": "this claim was requeued and re-claimed while "
-                              "this worker was still running it, so its "
-                              "result is filed under its own attempt and the "
-                              "live claim, lease and reservation were left "
-                              "untouched",
-                    "live_claimed_by": live.get("claimed_by"),
-                    "live_claimed_unix": live.get("claimed_unix"),
-                    "live_attempts": live.get("attempts"),
-                    "live_published_unix": live.get("published_unix"),
-                },
-            },
-        )
-        return self.records.attempt_path(archived, attempt)
 
     def _gang_reservation_priority(self, item: Mapping[str, object], *,
                                    authority: bool) -> int | None:
@@ -24729,7 +24572,7 @@ class PoolQueue:
                 # only unstarted releases. The late archive distinguishes their
                 # numbered history from an uncharged slot; the missing-claim
                 # terminal path would end work still waiting in READY (#234).
-                return self._finish_late(
+                return lifecycle._finish_late(self, 
                     action_key, status=status, detail=detail,
                     snapshot=claim_snapshot, live=ready,
                 )
@@ -24737,7 +24580,7 @@ class PoolQueue:
                 and not claim_identity.same_claim(record, claim_snapshot)):
             # Whatever is at ``claimed/<key>.json`` now is not the claim this
             # worker executed, so none of the code below may touch it.
-            return self._finish_late(
+            return lifecycle._finish_late(self, 
                 action_key, status=status, detail=detail,
                 snapshot=claim_snapshot, live=record,
             )
@@ -24749,7 +24592,7 @@ class PoolQueue:
             if pending_late is not None:
                 # Its successor may have finished since the first refusal.
                 # The saved exact-scope transition still owns this retry.
-                return self._retry_late_finish(late_path, pending_late)
+                return lifecycle._retry_late_finish(self, late_path, pending_late)
         if record is not None:
             # Host-level token ownership cannot distinguish successive attempts
             # on one box. A stale claim read can agree with this caller while
@@ -25076,7 +24919,7 @@ class PoolQueue:
         # generation's record in the other terminal state is archived first,
         # named on the new record, and leaves its state directory only after
         # the new record is filed, so the key is never without an ending.
-        retired = (self._archive_earlier_terminal(record, str(disposition))
+        retired = (lifecycle._archive_earlier_terminal(self, record, str(disposition))
                    if disposition in {DONE, FAILED} else None)
         if retired is not None:
             record["supersedes_terminal"] = retired[1]
@@ -25122,58 +24965,6 @@ class PoolQueue:
         except Exception:                                     # noqa: BLE001
             return False
 
-    def _archive_earlier_terminal(
-        self, record: Mapping[str, object], disposition: str,
-    ) -> tuple[Path, dict[str, object]] | None:
-        """Archive the other terminal record an earlier generation left.
-
-        A key is content-addressed, so resubmitting a concluded key publishes
-        a new generation of it.  When that generation ends in the *other*
-        terminal state -- a failed key republished and executed, or the
-        reverse -- the earlier record stayed beside the new one and the key
-        read as both (#1117).  Only a readable record of a different
-        generation (``published_unix``) is archived; a same-generation pair
-        is not this method's to judge. Called by ``finish`` after it owns the
-        exact claim's tombstone, before the new terminal is written. Ordinary
-        ``finish`` does not hold the key's transition lock across this call.
-
-        The record is copied whole to ``withdrawn/superseded/``, a name no
-        terminal-state lookup reads.  Returns its live path, which the caller
-        unlinks once the new terminal is filed, and the summary the new
-        terminal carries as ``supersedes_terminal``.  An archive that cannot
-        be written, or a record that cannot be read, returns ``None`` and
-        leaves the record in place: the ambiguity is then the pre-#1117
-        state, never a lost record and never a failed conclusion.
-        """
-
-        key = str(record["action_key"])
-        other = FAILED if disposition == DONE else DONE
-        path = self.records.item_path(other, key)
-        try:
-            prior = record_store.read_document(path)
-        except (OSError, PoolContractError):
-            # Unreadable is not this conclusion's to repair, and raising here
-            # would strand the claim this call has already entombed.
-            return None
-        if prior is None or prior.get("published_unix") == record.get(
-                "published_unix"):
-            return None
-        try:
-            archived = self.records.file_superseded(
-                prior, key=key, kind=f"{other}-terminal",
-                superseded_unix=_now(), superseded_host=socket.gethostname(),
-                superseded_by_published_unix=record.get("published_unix"),
-                superseded_by_state=disposition, when=_now())
-        except OSError:
-            return None
-        summary: dict[str, object] = {"state": other}
-        for field in ("status", "published_unix", "published_by",
-                      "finished_unix", "finished_host", "attempts",
-                      "attempt_history"):
-            if field in prior:
-                summary[field] = prior[field]
-        summary["superseded_path"] = str(archived)
-        return path, summary
 
     @_serialized_key
     def reclaim_terminal_reservation(self, action_key: str, *,
