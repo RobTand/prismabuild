@@ -155,14 +155,17 @@ abort_prewrite = bl.BatchLedger.abort
 validate_descriptor = oc.validate_descriptor
 output_manifest_sha256 = oc.output_manifest_sha256
 batch_namespace = oc.batch_namespace
-output_fragment_root = _bl.output_fragment_root
+output_fragment_root = bl.output_fragment_root
 publish_prepaid_batch = _produced_output.publish_prepaid_batch
 commit_batch = _produced_output.commit_batch
 commit_origin_batch = bl.BatchLedger.commit_origin
 retire_batch = _produced_output.retire_batch
 reclaim_origin = bl.BatchLedger.reclaim
 recover_batches = _produced_output.recover_batches
-due_mover_rows = _produced_output.due_mover_rows
+def due_mover_rows(queue, instance, template):
+    """Prepare due batch movers using the queue residency contract."""
+    return bl.BatchLedger.due_mover_rows(
+        queue, instance, template, residency_schema=_pool.RESIDENCY_SCHEMA_V1)
 materialization_state = bl.BatchLedger.materialization
 ensure_batch_materialized = _produced_output.ensure_batch_materialized
 safe_release_instance = _produced_output.safe_release_instance
