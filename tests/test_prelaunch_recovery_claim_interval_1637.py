@@ -29,11 +29,11 @@ KIND = "stage_gib"
 
 
 def _tokens(queue, key: str) -> int:
-    return int(queue.tier_ledger(TIER).holder_tokens(key).get(KIND, 0))
+    return int(queue.tier(TIER).holdings(key).get(KIND, 0))
 
 
 def _free(queue) -> int:
-    return int(queue.tier_ledger(TIER).available().get(KIND, 0))
+    return int(queue.tier(TIER).free_supply().get(KIND, 0))
 
 
 def _recovering(tmp_path: Path):
@@ -48,7 +48,7 @@ def _recovering(tmp_path: Path):
     published = pg.publish_chunk(queue, TIER, unit, holder, plan,
                                  _leg(plan, first), float(row["published_unix"]))
     assert published.status == "published"
-    queue.tier_ledger(TIER).release(first)       # the fence leaves, the record stays
+    queue.tier(TIER).release_unspent(first, authority=tier_holdings.Unspent.NEVER_STARTED)       # the fence leaves, the record stays
     for _ in range(8):
         outcome = pg.reconcile(queue, TIER, unit, holder, 4, [first, second],
                                writer_is_me=True)
@@ -184,6 +184,7 @@ def _break_unreadable(path: Path) -> object:
 
 
 import pytest  # noqa: E402
+from prismabuild import tier_holdings
 
 
 @pytest.mark.parametrize("breaker", [_break_garbage, _break_unreadable],

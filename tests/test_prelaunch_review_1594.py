@@ -171,19 +171,19 @@ def test_a_sole_consumer_withdrawn_before_publication_returns_its_group(
         found, _authority = pt.reserve_pass(queue, TIER, units,
                                             admitted=lambda found: True)
         events.extend(found)
-        ledger = queue.tier_ledger(TIER)
-        if ledger.holder_tokens(unit.holder).get("stage_gib", 0) > 0:
+        ledger = queue.tier(TIER)
+        if ledger.holdings(unit.holder).get('stage_gib', 0) > 0:
             break
-    assert ledger.holder_tokens(unit.holder).get("stage_gib", 0) > 0, events
+    assert ledger.holdings(unit.holder).get('stage_gib', 0) > 0, events
     queue.withdraw(consumer, reason="test: withdrawn before publication",
                    by="test")
     seen: list[dict] = []
     for _ in range(3):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(unit.holder).get("stage_gib", 0) == 0, [
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(unit.holder).get('stage_gib', 0) == 0, [
         (event.get("event"), event.get("reason")) for event in seen]
-    assert ledger.available().get("stage_gib") == 300
+    assert ledger.free_supply().get('stage_gib') == 300
 
 
 def test_prefix_cuts_follow_phase_names_when_a_declared_phase_is_empty() -> None:
@@ -243,12 +243,12 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
         if calls:
             break
     assert calls, "the window never reached the funding update"
-    ledger = queue.tier_ledger(TIER)
-    assert len(pool.held_names_visible(ledger, mover)) == 8
+    ledger = queue.tier(TIER)
+    assert len(ledger.holder_state(mover)) == 8
     assert queue.read_funding(mover, TIER)["state"] == "reserved"
     monkeypatch.setattr(pg, "_advance_record", real)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
     record = queue.read_funding(mover, TIER)
     assert record is not None and record["state"] == "transferring"
-    assert len(pool.held_names_visible(queue.tier_ledger(TIER), mover)) == 8
+    assert len(queue.tier(TIER).holder_state(mover)) == 8

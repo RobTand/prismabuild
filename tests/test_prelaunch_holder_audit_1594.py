@@ -44,7 +44,7 @@ def _fleet(tmp_path: Path) -> tuple[pool.PoolQueue, Path]:
     stage.mkdir()
     assert stage_release.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
-    queue.mint_tier_capacity(TIER, {KIND: CAPACITY_GIB})
+    queue.tier(TIER).mint({KIND: CAPACITY_GIB})
     stage_release.reset_holder_reports()
     return queue, stage
 
@@ -55,7 +55,7 @@ def _holder() -> str:
 
 
 def _acquire(queue: pool.PoolQueue, holder: str, gib: int) -> None:
-    assert queue.tier_ledger(TIER).acquire(holder, {KIND: gib})
+    assert queue.tier(TIER).take(holder, {KIND: gib})
 
 
 def _names(receipts: list[dict[str, object]]) -> list[str]:
@@ -91,7 +91,7 @@ def test_sweep_keeps_a_prelaunch_holder_quiet_without_pressure(
     _acquire(queue, holder, HOLDER_GIB)
     receipts = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
     assert receipts == [], receipts
-    assert queue.tier_ledger(TIER).holder_tokens(holder) == {KIND: HOLDER_GIB}
+    assert queue.tier(TIER).holdings(holder) == {KIND: HOLDER_GIB}
 
 
 def test_sweep_keeps_a_prelaunch_holder_quiet_under_pressure(
@@ -109,7 +109,7 @@ def test_sweep_keeps_a_prelaunch_holder_quiet_under_pressure(
                 if entry.get("event")
                 in ("stage-receiptless-holder-retained",
                     "stage-holder-unresolved")], receipts
-    assert queue.tier_ledger(TIER).holder_tokens(holder) == {KIND: HOLDER_GIB}
+    assert queue.tier(TIER).holdings(holder) == {KIND: HOLDER_GIB}
 
 
 def test_sweep_still_evicts_a_real_orphan_mover(tmp_path: Path) -> None:
@@ -129,6 +129,6 @@ def test_sweep_still_evicts_a_real_orphan_mover(tmp_path: Path) -> None:
               if entry.get("action_key") == mover]
     assert orphan, f"the orphan mover was not evicted: {receipts}"
     assert all(entry.get("reason") == "orphan-sweep" for entry in orphan)
-    assert mover not in queue.tier_ledger(TIER).held_keys()
+    assert mover not in queue.tier(TIER).holders()
     assert holder not in _names(receipts), receipts
-    assert queue.tier_ledger(TIER).holder_tokens(holder) == {KIND: HOLDER_GIB}
+    assert queue.tier(TIER).holdings(holder) == {KIND: HOLDER_GIB}
