@@ -7083,6 +7083,8 @@ mirror a second time. Both collectors use the existing per-token walk.
 proof. Funding and batch decisions remain with their owners. Whole physical
 egress uses `egress`; `settle_egress`
 destroys duplicate charges before returning counts backed by physical egress.
+Operator-confirmed clears and retired produced-output leftovers use egress
+after their existing pin, retirement and containment checks.
 A failed or partial return retains the RAM mirror for its still-held
 occupancy. An unreadable remainder releases no host memory. Idle-rate
 reclamation enumerates `RATE_KINDS`; new and unknown kinds stay held.
