@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from prismabuild import pool, reader_lease, record_store, resource_scope
-from test_lifecycle_recovery_crashes import KEY, _publication
+from test_lifecycle_recovery_crashes import KEY, _history, _interrupt_after, _publication
 from test_lifecycle_real_scope import _closed, _owned_scope
 
 
@@ -158,3 +158,29 @@ def test_claim_recovery_starts_with_documented_interpreter_and_no_pythonpath():
                             cwd=root, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert "--late-status" in result.stdout and "--real-scope" in result.stdout
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("missing-archive", "superseded archive unavailable"),
+    ("wrong-conclusion", "superseded archive does not match"),
+])
+def test_historical_retirement_reports_why_it_retains_authority(tmp_path, capsys, fault, reason):
+    queue, item, _ = _history(tmp_path, False)
+    _interrupt_after(queue, item, tmp_path, "publication", False)
+    terminal = record_store.read_document(queue.records.item_path(record_store.DONE, KEY))
+    path = Path(terminal["supersedes_terminal"]["superseded_path"])
+    if fault == "missing-archive":
+        path.unlink()
+    else:
+        value = record_store.read_document(path)
+        value["superseded_by_published_unix"] = -1
+        queue.records.replace_record_at(path, value)
+    tombstones = list(queue.records.finishing_paths())
+    prior = queue.records.item_path(record_store.FAILED, KEY)
+    saved = prior.read_bytes()
+    for _ in range(2):
+        assert queue.sweep_finish_tombstones(grace_s=-1) == []
+        assert prior.read_bytes() == saved
+        assert list(queue.records.finishing_paths()) == tombstones
+        diagnostic = capsys.readouterr().err
+        assert KEY in diagnostic and reason in diagnostic

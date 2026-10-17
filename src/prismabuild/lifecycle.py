@@ -843,6 +843,42 @@ def _commit_claim(queue, plan: ClaimCommit | CancelledClaim | CancellationReleas
     return destination
 
 
+def _recover_cancelled_claim(queue, policy: ExpiredClaim, container_cleanup) -> None:
+    from . import pool
+
+    key, record, read_claim = policy.action_key, policy.record, policy.original
+    holder = policy.holder
+    # Only an already filed worker result grants adoption. A cancellation
+    # alone cannot invent an execution or take a late worker's archive slot.
+    try:
+        prior = int(record.get("attempts", 0))
+        present = record_store.value_or_raise(queue.records.attempt_presence(record, prior + 1))
+        if present:
+            recovered = dict(record)
+            if prior and "attempt_history" not in recovered and "attempt_history_missing_before" not in recovered:
+                recovered["attempt_history_missing_before"] = prior
+            recovered["attempts"] = prior + 1
+            recovered["attempt_history"] = [*recovered.get("attempt_history", []), {
+                "attempt": prior + 1,
+                "outcome": str(queue.records.attempt_path(record, prior + 1).relative_to(queue.root))}]
+            adopted = queue.attempt_ending(recovered)
+            if adopted["status"] != WITHDRAWN:
+                raise PoolContractError("cancelled recovery conflicts with an archived attempt")
+            _complete_cancellation(queue, key, record, read_claim, holder,
+                                   container_cleanup, adopted["detail"])
+            return None
+    except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError) as exc:
+        print(f"pool cancelled recovery {key} retained: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+    if ("scratch_declaration_record" in record
+            or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
+        queue.records.file_superseded(record, key=key,
+                                      kind="scratch-declarations-after-withdrawal", when=pool._now())
+    _commit_claim(queue, CancellationRelease(
+        key, record, read_claim, holder, queue.records.item_path(WITHDRAWN, key)))
+    return None
+
+
 def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
     from . import pool
 
@@ -886,35 +922,7 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         queue.records.lease_path(key).unlink(missing_ok=True)
         return None
     if queue.withdrawal_covers(record, action_key=key) is not None:
-        # Only an already filed worker result grants adoption. A cancellation
-        # alone cannot invent an execution or take a late worker's archive slot.
-        try:
-            prior = int(record.get("attempts", 0))
-            present = record_store.value_or_raise(queue.records.attempt_presence(record, prior + 1))
-            if present:
-                recovered = dict(record)
-                if prior and "attempt_history" not in recovered and "attempt_history_missing_before" not in recovered:
-                    recovered["attempt_history_missing_before"] = prior
-                recovered["attempts"] = prior + 1
-                recovered["attempt_history"] = [*recovered.get("attempt_history", []), {
-                    "attempt": prior + 1,
-                    "outcome": str(queue.records.attempt_path(record, prior + 1).relative_to(queue.root))}]
-                adopted = queue.attempt_ending(recovered)
-                if adopted["status"] != WITHDRAWN:
-                    raise PoolContractError("cancelled recovery conflicts with an archived attempt")
-                _complete_cancellation(queue, key, record, read_claim, holder,
-                                       container_cleanup, adopted["detail"])
-                return None
-        except (OSError, PoolContractError, pb.CASUnavailableError, pb.CASTamperError) as exc:
-            print(f"pool cancelled recovery {key} retained: {type(exc).__name__}: {exc}", file=sys.stderr)
-            return None
-        if ("scratch_declaration_record" in record
-                or scratch_lifetime.SCRATCH_LIFETIME_FIELD in record):
-            queue.records.file_superseded(record, key=key,
-                                          kind="scratch-declarations-after-withdrawal", when=pool._now())
-        _commit_claim(queue, CancellationRelease(
-            key, record, read_claim, holder, queue.records.item_path(WITHDRAWN, key)))
-        return None
+        return _recover_cancelled_claim(queue, policy, container_cleanup)
     # The filename is the identity; a record that disagrees with it, or
     # has lost it, must not be written back to a queue directory where
     # every consumer addresses items by key.
