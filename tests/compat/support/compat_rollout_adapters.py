@@ -21,6 +21,7 @@ def config(store):
 
 def bootstrap(module, publisher, store):
     cfg = config(store)
+    source_root = publisher.CHECKOUT
     publisher.MIRROR = Path(cfg["runtime"])
     publisher.CHECKOUT = store / "source-loader-input"
     updater = Path(module.__file__).read_bytes()
@@ -37,7 +38,9 @@ def bootstrap(module, publisher, store):
         return module
     publisher._agent_definitions = selected_agent
     roster = json.dumps({"boxes": {HOST: {}}}).encode()
-    members = {"tools/upgrade_client.py": updater,
+    members = {**{module.OPTIONAL_MEMBERS[leaf]: (source_root / module.OPTIONAL_MEMBERS[leaf]).read_bytes()
+                  for leaf in sorted(module.RECEIPT_READER_MEMBERS)},
+               "tools/upgrade_client.py": updater,
                "tools/fleet/publish_runtime.py": Path(publisher.__file__).read_bytes(),
                "tools/fleet/fleet_boxes.json": roster}
     for name in ("compat-source", "compat-target"):
