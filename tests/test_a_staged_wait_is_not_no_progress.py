@@ -20,6 +20,7 @@ on, a mover that failed under a superseded plan, and a record with a foreign
 token.  Those are the same ``no_progress`` ending as before.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -68,7 +69,7 @@ class _Clock:
 def clock(monkeypatch):
     clock = _Clock()
     monkeypatch.setattr(pool, "time", clock)
-    monkeypatch.setattr(pool, "_now", clock.time)
+    FleetClock(source=clock.time).install(monkeypatch, scope="pool")
     monkeypatch.setattr(progress, "time", clock)
     monkeypatch.setattr(residency_plan, "time", clock)
     return clock
