@@ -1,6 +1,7 @@
 """Qualify conclusion recovery against disposable real broker scopes under PB."""
 from contextlib import ExitStack
 import json
+import time
 
 import pytest
 
@@ -45,8 +46,8 @@ def _closed(record, scope, process, queue, request, capsys):
 
 
 @pytest.mark.parametrize("cancelled,phase", [
-    (False, "attempt"), (False, "lease"), (False, "publication"),
-    (True, "attempt"), (True, "decision_proof"), (True, "reservation"),
+    (False, "cleanup"), (False, "attempt"), (False, "lease"), (False, "publication"),
+    (True, "cleanup"), (True, "attempt"), (True, "decision_proof"), (True, "reservation"),
 ])
 def test_durable_crash_retry_retains_real_stopped_scope_proof(tmp_path, cancelled, phase, request, capsys):
     queue, item, decision = _history(tmp_path, cancelled)
@@ -105,3 +106,64 @@ def test_late_finish_stops_only_its_saved_scope_beside_live_successor(tmp_path, 
         assert restarted.ledger().held() == {}
         old_process.communicate(timeout=10)
         assert old_process.returncode != 0 and not old_scope.cgroup_path.exists()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_late_finish_stops_a_live_predecessor_beside_a_live_successor(tmp_path, cancelled, request, capsys):
+    queue, item, decision = _history(tmp_path, cancelled)
+    with ExitStack() as stack:
+        old_scope, old_process, old_started = _owned_scope(queue, item, stack)
+        # Reproduce the retained legacy/operator handoff covered by the original
+        # late-scope tests: claim ownership moved, but the old exact scope lives.
+        queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
+        queue.records.lease_path(KEY).unlink()
+        queue.ledger().release(KEY)
+        _publication(queue, tmp_path)
+        successor = queue.claim(owner="successor", capacity={"cpu": 1})
+        assert successor is not None
+        scope, process, started = _owned_scope(queue, successor, stack)
+        assert old_scope.nonce != scope.nonce
+        assert old_process.poll() is None and process.poll() is None
+        assert {old_started["pid"], old_started["child_pid"]} <= set(resource_scope.scope_pids(old_scope.cgroup_path))
+        assert {started["pid"], started["child_pid"]} <= set(resource_scope.scope_pids(scope.cgroup_path))
+        paths = (queue.records.item_path(pool.record_store.CLAIMED, KEY), queue.records.lease_path(KEY))
+        saved = [path.read_bytes() for path in paths]
+        with capsys.disabled():
+            print("lifecycle-live-predecessor-proof: " + json.dumps({
+                "nodeid": request.node.nodeid, "old_scope_id": old_scope.unit,
+                "successor_scope_id": scope.unit, "both_alive": old_process.poll() is None and process.poll() is None,
+                "predecessor_members": resource_scope.scope_pids(old_scope.cgroup_path),
+                "successor_members": resource_scope.scope_pids(scope.cgroup_path),
+                "affinity": started["affinity"],
+            }), flush=True)
+        deadline = time.monotonic() + 20
+        while True:
+            result = queue.finish(KEY, status="withdrawn" if cancelled else "executed",
+                                  detail={"stdout": "late live payload"}, claim_snapshot=item)
+            if not result.name.endswith(pool.record_store.LATE_FINISH_SUFFIX):
+                break
+            assert time.monotonic() < deadline, "late exact scope never completed cleanup"
+            time.sleep(.05)
+        assert [path.read_bytes() for path in paths] == saved
+        assert process.poll() is None and queue.ledger().held() == {"cpu": 1}
+        assert {started["pid"], started["child_pid"]} <= set(resource_scope.scope_pids(scope.cgroup_path))
+        with capsys.disabled():
+            print("lifecycle-live-successor-proof: " + json.dumps({
+                "nodeid": request.node.nodeid, "old_scope_id": old_scope.unit,
+                "successor_scope_id": scope.unit, "successor_alive": process.poll() is None,
+                "claim_and_lease_unchanged": [path.read_bytes() for path in paths] == saved,
+                "members": resource_scope.scope_pids(scope.cgroup_path),
+                "reservations": queue.ledger().held(), "affinity": started["affinity"],
+            }), flush=True)
+        old_record = next(record for path, record in queue.records.superseded_records(KEY)
+                          if path.name.endswith(".late-finish.json")
+                          and record["resource_scope"]["nonce"] == old_scope.nonce)
+        attempt = queue.records.attempt_document(queue.records.attempt_path(item, 1))
+        assert attempt["detail"]["resource_scope_cleanup"] == old_record["resource_scope_cleanup"]
+        _closed(old_record, old_scope, old_process, queue, request, capsys)
+        if decision:
+            assert decision[0].read_bytes() == decision[1]
+        result = queue.finish(KEY, status="executed", detail={"stdout": "successor"}, claim_snapshot=successor)
+        assert result == queue.records.item_path(pool.record_store.DONE, KEY)
+        _closed(pool.record_store.read_document(result), scope, process, queue, request, capsys)
+        assert queue.ledger().held() == {}

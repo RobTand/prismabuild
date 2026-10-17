@@ -14,9 +14,9 @@ import pytest
 from prismabuild import pool
 
 
-REGULAR_PHASES = ("attempt", "entomb", "lease", "reservation", "prior_archive",
+REGULAR_PHASES = ("cleanup", "attempt", "entomb", "lease", "reservation", "prior_archive",
                   "publication", "prior_unlink", "tombstone")
-CANCEL_PHASES = ("attempt", "decision_proof", "entomb", "lease", "reservation", "tombstone")
+CANCEL_PHASES = ("cleanup", "attempt", "decision_proof", "entomb", "lease", "reservation", "tombstone")
 KEY = "c" * 64
 
 
@@ -53,12 +53,19 @@ def _interrupt_after(queue, item, root, phase, cancelled):
                 reached.write_text(phase)
                 os._exit(91)
 
+            cleanup = queue.cleanup_action_containers
             archive = queue.archive_attempt
             entomb = queue._entomb_claim
             release = queue._release_reservation
             replace = pool.record_store.RecordStore.replace_record_at
             supersede = pool.record_store.RecordStore.file_superseded
             unlink = Path.unlink
+
+            def cleaned(*args, **kwargs):
+                result = cleanup(*args, **kwargs)
+                if phase == "cleanup" and result["complete"]:
+                    stop()
+                return result
 
             def archived(*args, **kwargs):
                 result = archive(*args, **kwargs)
@@ -99,6 +106,7 @@ def _interrupt_after(queue, item, root, phase, cancelled):
                     stop()
                 return result
 
+            queue.cleanup_action_containers = cleaned
             queue.archive_attempt, queue._entomb_claim = archived, entombed
             queue._release_reservation = released
             pool.record_store.RecordStore.replace_record_at = replaced
