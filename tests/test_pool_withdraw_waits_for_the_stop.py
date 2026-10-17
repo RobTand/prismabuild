@@ -34,11 +34,12 @@ HOLDER = "holder-box"
 OPERATOR = "operator-box"
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, key: str) -> None:

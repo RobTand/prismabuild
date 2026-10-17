@@ -27,11 +27,12 @@ STAGE = f"stage_gib@{TIER}"
 FILL = f"fill_mb_s_pool_side@{TIER}"
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _range_block() -> dict[str, object]:
