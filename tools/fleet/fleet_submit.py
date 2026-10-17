@@ -254,122 +254,26 @@ def submit(
             anything is queued.
     """
 
-        raise SubmitRefused(f"unknown transport {transport!r}")
-    key = str(action["action_key"])
-    # The sealed action is the authority for a declared image requirement; the
-    # queue row is its scheduling projection.  Derive it here so a producer
-    # that submits a compiled action without restating placement cannot drop
-    # the requirement -- and refuse it outright on a transport with no worker
-    # inventory to check it against (#714 review).
-    image_refs: list[str] = []
-    sealed_params = action.get("params")
-    if isinstance(sealed_params, Mapping) and sealed_params.get("container_images"):
-        try:
-            image_refs = list(container_images.normalize_refs(
-                sealed_params["container_images"]))
-        except ValueError as exc:
-            raise SubmitRefused(f"{key[:12]}: container_images: {exc}") from None
-    dependency_fields = {}
-    if isinstance(sealed_params, Mapping):
-        for field in ("local_dependencies", "dependency_queries"):
-            if field in sealed_params:
-                try:
-                    dependency_fields[field] = local_dependencies.normalize(sealed_params[field])
-                except ValueError as exc:
-                    raise SubmitRefused(f"{key[:12]}: {exc}") from None
-    if dependency_fields.get("local_dependencies") and transport != "pool":
-        raise SubmitRefused(f"{key[:12]}: local_dependencies require the pool claim-time check")
-    if image_refs and transport != "pool":
-        raise SubmitRefused(
-            f"{key[:12]}: this action declares container image "
-            f"{', '.join(image_refs)}; the SLURM lane cannot verify a node's "
-            "local Docker inventory, so it cannot honour the requirement")
-    if queue_root is None:
-        # Read when this runs, not when the module loaded.  A default built
-        # from ``SH`` at definition time was bound to the live queue for good,
-        # so repointing ``SH``, which every test does through
-        # ``tests/conftest.py``, never reached it: a test that called this on
-        # the pool transport without a ``queue_root`` published into the
-        # fleet's queue, and a worker on another box claimed the item.
-        queue_root = SH / "pb-queue"
-
-    if transport == "pool":
-        queue = pool.PoolQueue(queue_root)
-        path = queue.publish(
-            action_key=key,
-            cas_root=str(cas.root),
-            checkout_root=checkout_root,
-            worker_script=str(worker_script),
-            tags=list(tags),
-            needs_gpu=needs_gpu,
-            priority=priority,
-            resources=dict(resources or {}),
-            max_attempts=max_attempts,
-            retry_safe=retry_safe,
-            container_images=image_refs or None,
-            **dependency_fields,
-        )
-        return Submission(transport="pool", where=path, action_key=key)
-
-    params = action.get("params")
-    snapshot = params.get("checkout_snapshot") if isinstance(params, Mapping) else None
-    if snapshot is not None:
-        if checkout_root is not None:
-            raise SubmitRefused(
-                f"{key[:12]}: checkout_root and the lane's sealed snapshot are "
-                "two answers to where this action runs; the lane reads the "
-                "snapshot."
-            )
-    elif checkout_root is not None:
-        # The producer named a tree, so seal it rather than refuse it.  The
-        # key moves, once, because the snapshot is part of what runs -- and
-        # the request is republished under the new key so the node can read
-        # the action it was actually sent.
-        action, _snapshot = seal_checkout_into_action(
-            action, cas=cas, checkout_root=checkout_root,
-            max_bytes=checkout_snapshot_max_bytes,
-        )
-        key = str(action["action_key"])
-        request_path = cas.publish_action_request(action)
-    else:
-        raise SubmitRefused(
-            f"{key[:12]}: the SLURM lane runs only snapshot-addressed actions. "
-            "slurm_job materializes params.checkout_snapshot on the node that "
-            "won the allocation and refuses an action that carries none, so a "
-            "checkout_root would be a submitter's path handed to a scheduler "
-            "free to place the job elsewhere. Seal the checkout as a snapshot "
-            "(pass checkout_root, or build one as pbrun does) before "
-            "submitting this action to SLURM."
-        )
-
-    lane_resources = slurm_lane.LaneResources.from_demand(dict(resources or {}))
-    job = slurm_lane.submit(
-        action,
-        cas=cas,
-        request_path=request_path,
-        placement=list(tags),
-        resources=lane_resources,
-        partition=slurm_lane.partition_for(lane_resources, list(tags)),
-        # The same hint the pool branch above records and sorts on, expressed
-        # as the one ordering lever an unprivileged submitter has under SLURM.
-        priority=priority,
-        timeout_s=timeout_s,
-        worker_script=worker_script,
-        job_entry=job_entry,
-        root=lane_root,
-        sbatch=sbatch,
-        retry_safe=retry_safe,
-        max_attempts=max_attempts,
-    )
-    # A submission is what retires a withdrawal -- the same rule
-    # ``PoolQueue.publish`` applies, and the lane's ``run`` with it.  Leaving a
-    # live marker in place would make the re-submitted action unrunnable and
-    # the only remedy a hand edit of the queue.  After ``sbatch`` accepted,
-    # not before: a refused submission has retired nothing.  Scoped to this
-    # submission's own generation: a withdrawal of the run being submitted is
-    # a decision about this work, not a stale marker to move aside.
-    slurm_lane.supersede_withdrawal(queue_root, key, job.published_unix)
-    return Submission(
-        transport="slurm", where=job.record_path, job_id=job.job_id,
-        action_key=key,
-    )
+    current = configured_store()
+    store = FleetStore(current.root, current.runtime_root, current.roster_path,
+                       queue_root=Path(queue_root) if queue_root is not None else current.queue_root, cas_root=Path(cas.root), d38_config_path=current.d38_config_path)
+    request = SubmissionRequest(transport=transport, detach=True, priority=priority,
+        timeout_s=timeout_s, max_attempts=max_attempts, retry_safe=bool(retry_safe),
+        cwd=str(checkout_root or Path.cwd()))
+    producer = ProducerPublication(worker_script=Path(worker_script), checkout_root=checkout_root,
+        tags=tuple(tags), needs_gpu=needs_gpu, resources=dict(resources or {}), retry_safe=retry_safe,
+        lane_root=lane_root, job_entry=Path(job_entry), sbatch=sbatch)
+    report = action_client.ClientReport()
+    result = submission.submit_producer(action, cas=cas, request=request,
+        store=store, producer=producer, request_path=request_path,
+        checkout_snapshot_max_bytes=checkout_snapshot_max_bytes, report=report)
+    if isinstance(result, SubmissionRefused):
+        raise SubmitRefused(result.reason) from None
+    identity = report.identity
+    if identity is None:
+        raise SubmitRefused(f"submission ended with {type(report.ending.verdict).__name__}")
+    where = (identity.submission if not isinstance(identity, action_client.CachedClientIdentity)
+             else cas.receipt_path(identity.action_key))
+    return Submission(transport=transport, where=where,
+        job_id=identity.job_id if isinstance(identity, action_client.SlurmClientIdentity) else None,
+        action_key=identity.action_key)

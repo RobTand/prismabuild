@@ -69,6 +69,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+def configured_store():
+    return store_for(__file__)
+
 
 HERE = Path(__file__).resolve()
 FLEET_DIR = HERE.parent
@@ -286,8 +292,9 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     # window, so a box busy past it still blocks on its retained
     # old-generation offer.  Read the same offers, or "not pending" lets the
     # leg submit into that refusal (#1278).
-    import pbrun
-    recorded = pbrun.RECORDED_OFFER_MAX_AGE_S
+    from prismabuild import submission
+    from prismabuild import submission
+    recorded = submission.RECORDED_OFFER_MAX_AGE_S
     if queue.placeable(full, max_age_s=recorded) is True:
         return False
     return queue.placeable(base, max_age_s=recorded) is True
@@ -614,11 +621,11 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
     """
     if type(generation) not in (int, float) or not math.isfinite(generation):
         return None
-    import pbrun
+    from prismabuild import submission
     from prismabuild import action_client, action_wait, endings
     from pbcanary_legs import leg3
     try:
-        q = pbrun.pool.PoolQueue(Path(paths["queue_root"]))
+        q = submission.pool.PoolQueue(Path(paths["queue_root"]))
         landed, observed_generation = action_client.bounded_outcome_observation(
             q, action_key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
         if (landed is None or isinstance(landed, endings.PublicationSupersession)

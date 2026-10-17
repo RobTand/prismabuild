@@ -41,12 +41,18 @@ claim, and a row with no plan runs exactly as it always has.
 """
 from __future__ import annotations
 
-import argparse
+from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import sys
 
 from prismabuild import core as pb
+from submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+def configured_store():
+    return store_for(__file__)
+
 from prismabuild import movement_actions
 from prismabuild import pool
 from prismabuild import residency_plan
@@ -56,7 +62,8 @@ from prismabuild import storage_tiers
 # inserted once and unconditionally (REVIEW-1252 item 8), and the import is
 # never conditional on a package context that a caller may or may not give.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pbrun  # noqa: E402
+from prismabuild import submission
+from prismabuild import submission
 
 
 #: The streaming rule: how many READY rows the planner seals per cycle.  One,
@@ -79,7 +86,7 @@ MANIFEST_ROWS_EXAMINED_PER_CYCLE = 64
 TIER_RECEIPT_DESTINATION = "ram-tier"
 
 
-def planner_args(**overrides: object) -> argparse.Namespace:
+def planner_args(**overrides: object) -> SubmissionRequest:
     """The submitter's own ``--residency`` defaults, spelled once.
 
     Everything ``pbrun.residency_stage_rows`` reads off ``args`` is here with
@@ -90,7 +97,7 @@ def planner_args(**overrides: object) -> argparse.Namespace:
     the consumer's submitter and will not guess how the row reads.
     """
 
-    args = argparse.Namespace(
+    args = SubmissionRequest(
         residency_ram="auto",
         residency_share="auto",
         residency_mover_max_attempts=3,
@@ -104,9 +111,7 @@ def planner_args(**overrides: object) -> argparse.Namespace:
         max_attempts=3,
         retry_safe=True,
     )
-    for name, value in overrides.items():
-        setattr(args, name, value)
-    return args
+    return replace(args, **overrides)
 
 
 def row_request(cas_root: Path, action_key: str) -> dict | None:
@@ -391,14 +396,14 @@ def promote_ready_manifest_rows(
             # its adoption.
             cas = pb.PrismaBuildCAS(row_cas)
             with queue._transition_locked(key):
-                staged = pbrun.residency_stage_rows(
+                staged = submission.residency_stage_rows(
                     template, consumer_action_key=key,
                     tier=dict(stage_tier), args=args,
-                    queue=queue, cas=cas)
+                    queue=queue, cas=cas, store=configured_store())
                 if not staged.get("reused_frozen_plan"):
                     residency_plan.seal_window(
                         queue, staged["plan"], renew=True)
-        except SystemExit as exc:
+        except SubmissionRefused as exc:
             # pbrun's refusal vocabulary: the sealing path says no with a
             # SystemExit, which ``except Exception`` does not see.  A sealing
             # refusal depends on tier, stage and queue state, not only on the

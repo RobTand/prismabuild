@@ -40,29 +40,6 @@ from prismabuild.movement_actions import SEALED_ARGV0  # noqa: E402
 #: ``/bin/bash`` differs (the sizes differ between an x86_64 submitter and an
 #: aarch64 worker), and the worker refuses a declared size that is not its own,
 #: so the submitter must not read this from its own file system (#1598).
-ARGV0_KEY = "argv0"
-
-#: A scratch recorder runs the worker's own interpreter as argv[0], and its
-#: sealed toolchain names that interpreter's digest, size and version.  The
-#: submitter cannot read those from its own file system for the same reason, so
-#: a packet collected with ``--recorder-python`` carries them (#1598).
-RECORDER_KEY = "recorder"
-
-
-class PacketError(ValueError):
-    """A packet that cannot seal the facts of an accelerator class."""
-
-
-def vet(evidence: dict) -> dict:
-    """The normalized packet, or a ``PacketError`` naming what is wrong.
-
-    This is the class-independent half of the vetting.  ``pbrun`` adds the
-    check that the packet agrees with the class it is used for.  The
-    worker's argv[0] identity rides in the same file but is not evidence: the
-    core normalizer refuses an extra field, so it is taken out here and read
-    by :func:`argv0_contract`.
-    """
-
     if isinstance(evidence, dict) and (ARGV0_KEY in evidence or RECORDER_KEY in evidence):
         evidence = {key: value for key, value in evidence.items()
                     if key not in (ARGV0_KEY, RECORDER_KEY)}
