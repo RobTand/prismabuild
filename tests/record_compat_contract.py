@@ -106,7 +106,7 @@ def protocol_group(kind):
     if owner in ("prismabuild.residency_map", "prismabuild.reader_lease", "prismabuild.storage_tiers",
                  "prismabuild.resident_sets", "prismabuild.local_resident", "prismabuild.residency_plan"):
         return "storage"
-    if owner in ("prismabuild.local_scratch", "prismabuild._bounded_reader", "prismabuild.resource_scope",
+    if owner in ("prismabuild.local_scratch", "prismabuild.scratch_lifetime", "prismabuild._bounded_reader", "prismabuild.resource_scope",
                  "prismabuild._measurement_reservation", "prismabuild.checkout_recovery"):
         return "ownership"
     if owner.startswith(("prismabuild.adaptive", "prismabuild.container_images")):

@@ -15,14 +15,37 @@ def module_paths(module):
 # Exact C13 catalogue relocation, used only for independent pre-C13 closures.
 C13_PRIOR_ENTRIES = {'prismabuild.batch_ledger:BatchLedger.capture': 'prismabuild.produced_output:_read_commitments', 'prismabuild.batch_ledger:declared_consumers': 'prismabuild.produced_output:_declared_consumers', 'prismabuild.batch_ledger:read_consumer_release': 'prismabuild.produced_output:_consumer_release', 'prismabuild.batch_ledger:BatchLedger.record': 'prismabuild.produced_output:batch_record', 'prismabuild.output_contract:validate_descriptor': 'prismabuild.produced_output:validate_descriptor', 'prismabuild.output_contract:checked_origin_ref': 'prismabuild.produced_output:_checked_origin_ref', 'prismabuild.output_contract:validate_template': 'prismabuild.produced_output:validate_template', 'prismabuild.output_contract:validate_instance': 'prismabuild.produced_output:validate_instance', 'prismabuild.batch_ledger:BatchLedger.file': 'prismabuild.produced_output:_write_commitments', 'prismabuild.batch_ledger:BatchLedger.commit_origin': 'prismabuild.produced_output:commit_origin_batch', 'prismabuild.output_contract:origin_batch_ref': 'prismabuild.produced_output:origin_batch_ref', 'prismabuild.batch_ledger:declare_instance': 'prismabuild.produced_output:declare_instance', 'prismabuild.batch_ledger:BatchLedger.due_mover_rows': 'prismabuild.produced_output:due_mover_rows'}
 
+# Fixed source relocations: a captured closure must contain the selected definition.
+CURRENT_PRIOR_ENTRIES = {'prismabuild.submission:snapshot_checkout': 'pbrun:build_git_checkout_snapshot', 'prismabuild.residency_plan:prepare_window': 'pbrun:residency_stage_rows', 'prismabuild.residency_plan:prepare_window.<locals>.seal_stage_mover': 'pbrun:residency_stage_rows.<locals>.seal_stage_mover', 'prismabuild.residency_plan:prepare_window.<locals>.seal_ram_chunk': 'pbrun:residency_stage_rows.<locals>.seal_ram_chunk', 'prismabuild.stage_move:_LandingReport.write': 'stage_move:_LandingReport.write', 'prismabuild.census:_transport': 'pbstatus:_transport', 'prismabuild.scratch_lifetime:selections': 'prismabuild.local_scratch:_scratch_lifetime_selections', 'prismabuild.scratch_lifetime:build_scratch_lifetime_selection': 'prismabuild.local_scratch:build_scratch_lifetime_selection', 'prismabuild.scratch_lifetime:validate_record': 'prismabuild.local_scratch:_scratch_lifetime_record', 'prismabuild.scratch_lifetime:register_attempt': 'prismabuild.pool:PoolQueue._record_scratch_lifetimes', 'prismabuild.d38_gate:load_plan': 'd38_gate:load_plan', 'prismabuild.d38_gate:_parse_receipt': 'd38_gate:_parse_receipt', 'prismabuild.submission:parse_progress_phases': 'pbrun:parse_progress_phases', 'prismabuild.submission:parse_awaited_batch': 'pbrun:parse_awaited_batch', 'prismabuild.lifecycle:_file_unreadable': 'prismabuild.pool:PoolQueue._file_unreadable', 'prismabuild.stage_move:move': 'stage_move:move', 'prismabuild.ram_promote:promote': 'ram_promote:promote', 'prismabuild.ram_promote:_refused': 'ram_promote:_refused', 'prismabuild.submission:seal': 'pbrun:seal_action_from_template', 'prismabuild.submission:build_stamp_closure': 'pbrun:build_stamp_closure', 'prismabuild.stage_release:_ledger_unreadable_receipt': 'stage_release:_ledger_unreadable_receipt', 'prismabuild.stage_release:_receiptless_refusal': 'stage_release:_receiptless_refusal', 'prismabuild.stage_release:_unresolved_reports': 'stage_release:_unresolved_reports', 'prismabuild.stage_release:_uncharged_owner_report': 'stage_release:_uncharged_owner_report', 'prismabuild.stage_release:sweep_dead_owner_fragments': 'stage_release:sweep_dead_owner_fragments', 'prismabuild.stage_release:_evict_uncharged_owner': 'stage_release:_evict_uncharged_owner', 'prismabuild.stage_release:_retire_produced_orphan': 'stage_release:_retire_produced_orphan', 'prismabuild.staged_path:stage_root_refusal': 'stage_release:stage_root_refusal', 'prismabuild.staged_path:register_stage_root': 'stage_release:register_stage_root', 'prismabuild.staged_path:_refused_receipt': 'stage_release:_refused_receipt', 'prismabuild.staged_path:prune_stale_mentions': 'stage_release:prune_stale_mentions', 'prismabuild.staged_path:recover_orphaned_range': 'stage_release:recover_orphaned_range', 'prismabuild.staged_path:reconcile': 'stage_release:reconcile', 'prismabuild.staged_path:_evict_shared_locked': 'stage_release:_evict_shared_locked', 'prismabuild.staged_path:_evict_owned': 'stage_release:_evict_owned', 'prismabuild.runtime_publication:_publication_receipt': 'prismabuild.runtime_publication:_receipt'}
+
+
+def _has_definition(root, reference):
+    module, name = reference.split(":")
+    path = next((root / item for item in module_paths(module) if (root / item).is_file()), None)
+    if path is None:
+        return False
+    names = set()
+
+    def visit(node, prefix=""):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            qualified = prefix + node.name
+            names.add(qualified)
+            prefix = qualified + ("." if isinstance(node, ast.ClassDef) else ".<locals>.")
+        for child in ast.iter_child_nodes(node):
+            visit(child, prefix)
+
+    visit(ast.parse(path.read_bytes()))
+    return name in names
+
+
 def generation_reference(root, reference):
-    if reference == "prismabuild.runtime_publication:_publication_receipt":
-        tree = ast.parse((root / "src/prismabuild/runtime_publication.py").read_bytes())
-        names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
-        if "_publication_receipt" not in names:
-            if "_receipt" not in names:
-                raise ValueError("generation has no known publication receipt owner")
-            return "prismabuild.runtime_publication:_receipt"
+    if reference in CURRENT_PRIOR_ENTRIES:
+        if _has_definition(root, reference):
+            return reference
+        prior = CURRENT_PRIOR_ENTRIES[reference]
+        if not _has_definition(root, prior):
+            raise ValueError(("generation has no exact current or retained source owner", reference, prior))
+        return prior
     if not (root / "src/prismabuild/funding.py").is_file():
         reference = C12_PRIOR_ENTRIES.get(reference, reference)
     if not (root / "src/prismabuild/batch_ledger.py").is_file():
