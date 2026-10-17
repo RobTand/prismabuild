@@ -21,7 +21,12 @@ def test_reaper_preserves_successor_when_claim_and_lease_disagree(
 
     publish(key)
     first = queue.claim(owner='original', capacity=resources)
-    claim_path, lease_path = queue.records.item_path(pool.record_store.CLAIMED, key), queue.records.lease_path(key)
+    claim_path, lease_path = queue.records.item_path(
+        pool.record_store.CLAIMED,
+        key,
+    ), queue.records.lease_path(
+        key,
+    )
     # Reconstruct a legacy handoff, then inject only the old claim observation.
     # The durable claim, lease and reservation on disk belong to the successor.
     claim_path.unlink()

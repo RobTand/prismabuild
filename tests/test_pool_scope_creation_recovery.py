@@ -28,7 +28,9 @@ def test_lost_create_reply_is_reconciled_from_durable_intent(scoped, monkeypatch
     monkeypatch.setattr(resource_scope.ResourceScope, '_request', broker)
     with pytest.raises(TimeoutError, match='reply was lost'):
         queue.execute(item, containment=True)
-    durable = json.loads(queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text())
+    durable = json.loads(
+        queue.records.item_path(pool.record_store.CLAIMED, item['action_key']).read_text(),
+    )
     assert durable['resource_scope_intent']['nonce'] == authority['nonce']
     lease = json.loads(queue.records.lease_path(item['action_key']).read_text())
     assert lease['resource_scope_intent'] == durable['resource_scope_intent']
@@ -46,7 +48,9 @@ def test_refused_recovery_protocol_requeues_without_creating_or_burning_attempt(
         raise resource_scope.ResourceUnavailable('installed broker lacks recovery protocol')
     monkeypatch.setattr(resource_scope.ResourceScope,'_request',legacy)
     assert queue.serve_once(containment=True) is None
-    ready=json.loads(queue.records.item_path(pool.record_store.READY,item['action_key']).read_text())
+    ready=json.loads(
+        queue.records.item_path(pool.record_store.READY,item['action_key']).read_text(),
+    )
     assert ready['attempts']==0
     assert 'resource_scope_intent' not in ready and 'resource_scope' not in ready
     assert queue.ledger().held()=={}

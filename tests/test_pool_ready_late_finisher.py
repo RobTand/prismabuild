@@ -41,8 +41,10 @@ def test_late_result_preserves_a_ready_charged_retry(tmp_path, late_status, repu
                                   'stdout': 'late original result'}, claim_snapshot=first)
 
     assert ready.read_bytes() == saved
-    assert not queue.records.item_path(pool.record_store.DONE, key).exists(), 'late caller ended the READY retry'
-    assert not queue.records.item_path(pool.record_store.FAILED, key).exists(), 'late caller failed the READY retry'
+    assert not queue.records.item_path(pool.record_store.DONE, key).exists(
+    ), 'late caller ended the READY retry'
+    assert not queue.records.item_path(pool.record_store.FAILED, key).exists(
+    ), 'late caller failed the READY retry'
     assert result == original_outcome
     assert original_outcome.read_bytes() == original_bytes
     assert pbrun.landed_outcome(queue, key, wait_s=0.01,

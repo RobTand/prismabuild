@@ -84,7 +84,9 @@ def test_the_reaper_leaves_a_retry_that_claimed_under_it(
     assert queue.ledger().held() == {"cpu": 1}
     # And the item was not put back in ready under a live claim.
     assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
-    assert list(queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}")) == []
+    assert list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    ) == []
 
 
 def test_the_reaper_still_requeues_the_claim_it_did_judge(
@@ -101,7 +103,9 @@ def test_the_reaper_still_requeues_the_claim_it_did_judge(
     assert not queue.records.lease_path(KEY_A).exists()
     assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.ledger().held() == {}
-    assert list(queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}")) == []
+    assert list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    ) == []
 
 
 def test_a_rewritten_claim_is_still_the_claim_the_reaper_judged(

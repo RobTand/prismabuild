@@ -265,7 +265,9 @@ def test_changed_ending_during_cas_verification_never_files_supplement(failure, 
     with pytest.raises(ValueError):
         recover(failure)
     assert not list(
-        (q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'),
+        (q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob(
+            '*.receipt-reconciliation.json',
+        ),
     )
 
 
@@ -282,7 +284,9 @@ def test_withdrawal_during_cas_verification_has_precedence(failure, monkeypatch)
     with pytest.raises(ValueError, match='withdrawn'):
         recover(failure)
     assert not list(
-        (q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob('*.receipt-reconciliation.json'),
+        (q.root / pool.record_store.ATTEMPTS / action['action_key']).rglob(
+            '*.receipt-reconciliation.json',
+        ),
     )
 
 

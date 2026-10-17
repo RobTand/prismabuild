@@ -106,7 +106,10 @@ def _recover_owner_while_staging_is_fresh(
     assert stage.exists(), "a fresh staging file was removed during owner recovery"
 
 
-@pytest.mark.parametrize("successor_state", (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE))
+@pytest.mark.parametrize(
+    "successor_state",
+    (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE),
+)
 def test_sigkill_staging_orphan_is_reaped_without_changing_successor(
     queue: pool.PoolQueue, clock: list[float], successor_state: str,
 ) -> None:
@@ -196,9 +199,13 @@ def test_staging_cleanup_ignores_unrelated_names_and_nonregular_entries(
         os.utime(path, (old, old))
     target = tmp_path / "symlink-target"
     target.write_bytes(b"retained target")
-    symbolic = queue.records.dir(pool.record_store.CLAIMED) / f".{KEY}.1.worker.example.17.0000000a.tombstone.tmp"
+    symbolic = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f".{KEY}.1.worker.example.17.0000000a.tombstone.tmp"
     symbolic.symlink_to(target)
-    directory = queue.records.dir(pool.record_store.CLAIMED) / f".{KEY}.1.worker.example.17.0000000b.tombstone.tmp"
+    directory = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f".{KEY}.1.worker.example.17.0000000b.tombstone.tmp"
     directory.mkdir()
     for path in (target, symbolic, directory):
         os.utime(path, (old, old), follow_symlinks=False)
