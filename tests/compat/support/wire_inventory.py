@@ -176,7 +176,7 @@ def audit(root, observations=None):
             else:
                 captured["historical"][item["generation"]].add(item["case"])
     wire_ids = {row["name"]: wire for wire, row in known.items()}
-    constants, imports = {}, {}
+    constants, imports, exports = {}, {}, {}
     for unit, tree in sources(root, observations):
         path = unit["path"]
         module = module_name(path)
@@ -205,6 +205,23 @@ def audit(root, observations=None):
                 for name in node.names:
                     aliases[name.asname or name.name] = name.name
         imports[path, unit["block"]] = (local, aliases)
+        exports.update({module + "." + name: origin for name, origin in aliases.items()})
+
+    def imported_constant(name):
+        visited = set()
+        while name not in visited:
+            if name in constants:
+                return constants[name]
+            visited.add(name)
+            prefix = name
+            while prefix:
+                if prefix in exports:
+                    name = exports[prefix] + name[len(prefix):]
+                    break
+                prefix = prefix.rsplit(".", 1)[0] if "." in prefix else ""
+            else:
+                return None
+        return None
     rows = defaultdict(lambda: {"occurrences": [], "schema_builders": [], "json_boundaries": [], "reader_checks": []})
     policies = []
     for source_file in observations["parsed_sources"]:
@@ -219,14 +236,14 @@ def audit(root, observations=None):
         def resolve(node, scope):
             imported = scope.get("__wire_imports__", aliases)
             if isinstance(node, ast.Name):
-                return scope.get(node.id, local.get(node.id, constants.get(imported.get(node.id))))
+                return scope.get(node.id, local.get(node.id, imported_constant(imported.get(node.id, node.id))))
             if isinstance(node, ast.Attribute):
                 head, tail = node, []
                 while isinstance(head, ast.Attribute):
                     tail.insert(0, head.attr)
                     head = head.value
                 if isinstance(head, ast.Name):
-                    return constants.get(imported.get(head.id, head.id) + "." + ".".join(tail))
+                    return imported_constant(imported.get(head.id, head.id) + "." + ".".join(tail))
             if isinstance(node, ast.Constant):
                 return node.value
             return None

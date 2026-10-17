@@ -64,3 +64,22 @@ def test_control_classification_cannot_hide_a_new_durable_reader(tmp_path):
     changed = audit(tmp_path)[0][0]
     assert changed["disposition"] == "classification_requires_review"
     assert changed["classification_changed"]["reader_checks"] == ["src/prismabuild/report.py:recover"]
+
+
+def test_inventory_follows_transitive_module_owners_without_importing_them(tmp_path):
+    package = tmp_path / "src/prismabuild"
+    package.mkdir(parents=True)
+    (package / "owner.py").write_text('SCHEMA = "example.transitive.v1"\nraise RuntimeError("never import source")\n')
+    (package / "facade.py").write_text('from . import owner as selected\nfrom .owner import SCHEMA as REEXPORTED\n')
+    (package / "cycle_a.py").write_text('from .cycle_b import SCHEMA\n')
+    (package / "cycle_b.py").write_text('from .cycle_a import SCHEMA\n')
+    (package / "caller.py").write_text('from . import facade, cycle_a\n'
+        'def read(row):\n    if row.get("schema") != facade.selected.SCHEMA: raise ValueError("identity")\n'
+        '    return row\n'
+        'def read_export(row):\n    if row.get("schema") != facade.REEXPORTED: raise ValueError("identity")\n'
+        '    return row\n'
+        'def unrelated(row):\n    return row.get("schema") == cycle_a.SCHEMA\n')
+    rows, _ = audit(tmp_path)
+    record = next(row for row in rows if row["wire_id"] == "example.transitive.v1")
+    assert [(row["path"], row["owner"]) for row in record["reader_checks"]] == [
+        ("src/prismabuild/caller.py", "read"), ("src/prismabuild/caller.py", "read_export")]
