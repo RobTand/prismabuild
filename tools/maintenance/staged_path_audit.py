@@ -13,7 +13,7 @@ import sys
 
 from staged_path_migrate import (
     STAGED_BASE, STAGED_MODULES, STAGED_OWNER, STAGED_PUBLIC, staged_references,
-    staged_sources, staged_symbols,
+    staged_sources, staged_symbols, staged_exports, staged_alias_bindings, staged_reference_module,
 )
 
 
@@ -143,6 +143,9 @@ def staged_audit_cli():
         args.output.write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result))
         return
+    original_exports = staged_exports(sources)
+    current_sources = {p: (args.root / p).read_text() for p in sources if (args.root / p).exists()}
+    current_exports = staged_exports(current_sources)
     new_tree = ast.parse((args.root / STAGED_OWNER).read_text())
     definitions = {n.name: n for n in new_tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
     moves = []
@@ -172,20 +175,18 @@ def staged_audit_cli():
         if original != current:
             changed.append(path)
         if path.startswith("tests/"):
-            expected = staged_checks(staged_references(original, selected) if original != current else original)
+            expected = staged_checks(staged_references(original, selected, exports=original_exports)
+                                     if original != current else original)
             actual = staged_checks(current)
             delta = expected - actual
             if delta:
                 missing_checks.append({"path": path, "missing": dict(delta)})
             expected_tests += sum(v for k, v in expected.items() if k.startswith("native:"))
             current_tests += sum(v for k, v in actual.items() if k.startswith("native:"))
-        aliases = {m: m for m in selected}
+        aliases = staged_alias_bindings(tree, selected, current_exports)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == "prismabuild":
-                aliases.update({a.asname or a.name: a.name for a in node.names if a.name in selected})
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                module = aliases.get(node.value.id)
+            if isinstance(node, ast.Attribute):
+                module = staged_reference_module(node.value, aliases, current_exports)
                 if module in selected and node.attr in selected[module]:
                     retired.append([path, node.lineno, ast.unparse(node)])
             if isinstance(node, ast.ImportFrom):

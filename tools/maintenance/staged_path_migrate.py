@@ -72,7 +72,67 @@ def staged_destination(module):
     return "output_vocabulary" if module == "produced_output" else "staged_path"
 
 
-def staged_references(source, selected, *, local=None):
+def staged_exports(sources):
+    """Resolve imported test-helper modules without loading any product code."""
+    exports = {Path(path).stem: {} for path in sources}
+    exports["prismabuild"] = {name: name for name in exports}
+    pending = []
+    for path, source in sources.items():
+        own = exports[Path(path).stem]
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.name.rsplit(".", 1)[-1]
+                    if name in exports:
+                        own[alias.asname or alias.name] = name
+            elif isinstance(node, ast.ImportFrom):
+                module = (node.module or "").rsplit(".", 1)[-1]
+                if module in exports:
+                    pending.append((own, module, node.names))
+    while True:
+        changed = False
+        for own, module, names in pending:
+            for alias in names:
+                target = exports[module].get(alias.name)
+                key = alias.asname or alias.name
+                if target and key not in own:
+                    own[key] = target
+                    changed = True
+                elif target and own.get(key) not in (None, "", target):
+                    own[key] = ""
+                    changed = True
+        if not changed:
+            return exports
+
+
+def staged_reference_module(node, aliases, exports):
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    if isinstance(node, ast.Attribute):
+        parent = staged_reference_module(node.value, aliases, exports)
+        return exports.get(parent, {}).get(node.attr)
+    return None
+
+
+def staged_alias_bindings(tree, selected, exports):
+    aliases = {name: name for name in selected}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module = alias.name.rsplit(".", 1)[-1]
+                if module in exports or module in selected:
+                    aliases[alias.asname or alias.name] = module
+                    if alias.asname is None and "." in alias.name:
+                        aliases[alias.name.split(".")[0]] = alias.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            module = (node.module or "").split(".")[-1]
+            if module in exports:
+                aliases.update({a.asname or a.name: exports[module][a.name]
+                                for a in node.names if a.name in exports[module]})
+    return aliases
+
+
+def staged_references(source, selected, *, local=None, exports=None):
     """Rewrite imports, calls, fault seams and embedded programs without reformatting."""
     tree = ast.parse(source)
     docstrings = {id(n.body[0].value) for n in ast.walk(tree)
@@ -86,7 +146,8 @@ def staged_references(source, selected, *, local=None):
         offsets.append(offsets[-1] + len(line))
     edits = []
     needs = set()
-    aliases = {m: m for m in selected}
+    exports = exports or {"prismabuild": {m: m for m in selected}}
+    aliases = staged_alias_bindings(tree, selected, exports)
     bare = {}
     dotted_patterns = {m: re.compile(rf"\b{m}\.({'|'.join(map(re.escape, sorted(names, key=len, reverse=True)))})\b")
                        for m, names in selected.items() if names}
@@ -98,8 +159,6 @@ def staged_references(source, selected, *, local=None):
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
-        if node.module == "prismabuild":
-            aliases.update({a.asname or a.name: a.name for a in node.names if a.name in selected})
         module = (node.module or "").split(".")[-1]
         if module not in selected:
             continue
@@ -122,8 +181,8 @@ def staged_references(source, selected, *, local=None):
         a = offsets[getattr(node, "lineno", 1) - 1] + getattr(node, "col_offset", 0)
         if any(lo <= a < hi for lo, hi in covered):
             continue
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            module = aliases.get(node.value.id)
+        if isinstance(node, ast.Attribute):
+            module = staged_reference_module(node.value, aliases, exports)
             if module in selected and node.attr in selected[module]:
                 destination = staged_destination(module)
                 needs.add(destination)
@@ -132,8 +191,8 @@ def staged_references(source, selected, *, local=None):
             edit(node, bare[node.id]); needs.add(bare[node.id].split(".")[0])
         elif isinstance(node, ast.Call) and len(node.args) >= 2:
             target, key = node.args[:2]
-            if isinstance(target, ast.Name) and isinstance(key, ast.Constant) and isinstance(key.value, str):
-                module = aliases.get(target.id)
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                module = staged_reference_module(target, aliases, exports)
                 if module in selected and key.value in selected[module]:
                     destination = staged_destination(module)
                     edit(target, destination); edit(key, repr(STAGED_PUBLIC.get(key.value, key.value)))
@@ -145,7 +204,7 @@ def staged_references(source, selected, *, local=None):
                     value = pattern.sub(lambda match: f"{staged_destination(module)}.{STAGED_PUBLIC.get(match[1], match[1])}", value)
             if "from prismabuild" in value and "\n" in value:
                 try:
-                    value = staged_references(value, selected)
+                    value = staged_references(value, selected, exports=exports)
                 except (SyntaxError, IndentationError):
                     pass
             if value != node.value:
@@ -303,6 +362,7 @@ def staged_cli():
         return
     sources = staged_sources(args.root, STAGED_BASE)
     selected = staged_symbols(sources)
+    exports = staged_exports(sources)
     members = staged_population(sources)
     result = {"base": STAGED_BASE, "root": str(args.root), "symbols": {k: sorted(v) for k, v in selected.items()},
               "population": members, "whole_test_files": [p for p in members if p.startswith("tests/test_")],
@@ -376,7 +436,7 @@ from prismabuild.stage_marks import STAGE_MOVER_XATTR, STAGE_SOURCE_XATTR, sourc
             if path.startswith("evidence/") or path.startswith("tests/compat/"):
                 continue
             local = next((m for m, p in STAGED_MODULES.items() if p == path), None)
-            new = staged_references(source, selected, local=local)
+            new = staged_references(source, selected, local=local, exports=exports)
             if new != (args.root / path).read_text():
                 (args.root / path).write_text(new)
                 changed.append(path)

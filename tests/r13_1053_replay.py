@@ -34,6 +34,7 @@ from pathlib import Path
 
 from prismabuild import pool
 import prismabuild.produced_output as po
+from prismabuild import output_vocabulary
 
 FIXTURE = (Path(__file__).resolve().parent / "fixtures"
            / "r13_1053_dead_instance.json.gz")
@@ -137,7 +138,7 @@ def install(queue: pool.PoolQueue, *, prefix: Path, stage: Path,
     commitments = bundle["commitments"]
     batches: dict[str, dict] = commitments["batches"]
     records: dict[str, dict] = bundle["batch_records"]
-    batch_root = (Path(queue.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
+    batch_root = (Path(queue.root) / "residency" / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                   / po.instance_namespace(instance))
     batch_root.mkdir(parents=True, exist_ok=True)
     for batch_id in sorted(batches):

@@ -56,6 +56,7 @@ import tier_loop  # noqa: E402
 
 import r13_1053_replay as r13  # noqa: E402
 from prismabuild import staged_path
+from prismabuild import output_vocabulary
 
 #: The bound both readers apply to the tier record's age.
 BOUND_S = pool.OFFER_TIMEOUT_S
@@ -140,7 +141,7 @@ class _Loop:
         return bench._tier_record(self.stage)
 
     def _charge(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        output_root = po.OUTPUT_FRAGMENTS_SUBDIR
+        output_root = output_vocabulary.OUTPUT_FRAGMENTS_SUBDIR
         real_evict = staged_path.evict
         real_prune = staged_path.prune_stale_mentions
 

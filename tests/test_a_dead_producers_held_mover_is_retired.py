@@ -57,6 +57,7 @@ from test_prepaid_writer_integration import (  # noqa: E402
     _descriptors, _prewrite, _producer_request, _queue, _template,
     _tier_census,
 )
+from prismabuild import output_vocabulary
 
 #: The events an operator reads, spelled out: they are what one greps for.
 RETIRED_EVENT = "stage-produced-orphan-retired"
@@ -277,7 +278,7 @@ def test_an_unresolvable_produced_holder_is_reported_once_and_kept(
     world.strand_the_mover()
     world.fail_the_producer()
     template_file = (world.q.root / pool.record_store.RESIDENCY
-                     / po.OUTPUT_TEMPLATES_SUBDIR
+                     / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
                      / f"{world.inst['template_id']}.json")
     template_file.chmod(0o644)
     template_file.unlink()

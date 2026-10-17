@@ -41,6 +41,7 @@ from test_a_dead_producers_batches_and_paths_are_released import (  # noqa: E402
 )
 from test_consumed_origin_retirement import _bind_owner, _commit  # noqa: E402
 import test_write_only_produced_output as wo  # noqa: E402
+from prismabuild import output_vocabulary
 
 
 @pytest.fixture(autouse=True)
@@ -292,7 +293,7 @@ def test_a_retirement_racing_a_successors_rename_keeps_its_file(
         [wo._descriptor(successor, overlapping, path, payload)], batch_id="b1")
     assert committed["ok"] is True, committed
     recorded = json.loads((Path(queue.root) / "residency"
-                           / po.OUTPUT_BATCHES_SUBDIR
+                           / output_vocabulary.OUTPUT_BATCHES_SUBDIR
                            / po.instance_namespace(successor)
                            / "b1.json").read_text())["origin_identity"]
     assert reader_lease.file_id_matches(recorded[str(path)], live), (
@@ -418,7 +419,7 @@ def test_a_file_that_names_no_prefix_does_not_stop_the_owner_lookup(
     """
 
     fleet = _Fleet(tmp_path)
-    templates = fleet.q.root / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    templates = fleet.q.root / "residency" / output_vocabulary.OUTPUT_TEMPLATES_SUBDIR
     (templates / "template-0.json").write_text(
         '{"schema": "prismaquant.prismabuild.produced_output_template.v1", '
         '"index": 0}\n')
