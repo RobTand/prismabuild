@@ -19089,10 +19089,10 @@ Initial capture requires one CPU, two GiB, native1, priority-10 and a sealed
 ordered 120-second stall allowances use the actual environment-named published
 progress helper. Cumulative units1..4 follow verified CAS publication of host
 inventory, image inventory, mounted-runtime/profile observations and the closure
-archive. Reads, logs and entering a phase never advance units. Source caps
-The retained auditor separately requires the terminal worker observation to
+archive. Reads, logs and entering a phase never advance units. The retained
+auditor separately requires the terminal worker observation to
 have accepted cumulative units4 in the final closure_archive phase.
-refuse more than20,000 profile members,4GiB regular bytes,20,006 archived files,
+Source caps refuse more than20,000 profile members,4GiB regular bytes,20,006 archived files,
 2GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. File/archive I/O streams bounded chunks. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old
