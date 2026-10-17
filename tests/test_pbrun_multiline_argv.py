@@ -1,6 +1,7 @@
 """A multiline shell payload is an ordinary submission (issue #21)."""
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -52,7 +53,7 @@ def _work_and_queue(tmp_path: Path) -> tuple[Path, pool.PoolQueue]:
 
 def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path) -> int:
     monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.action_wait, "POLL_S", 0.001)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     # ``--wait-s 0`` is one immediate observation with the standard bounded
     # reader budget.  A subsecond caller deadline races bounded-reader startup
@@ -92,7 +93,7 @@ def test_a_refused_contract_is_a_named_refusal_not_a_traceback(
     def refuse(_body):
         raise pb.ActionContractError("action.task.argv[2] is not acceptable")
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", refuse)
+    monkeypatch.setattr(submit_core.pb, "seal_action", refuse)
     with pytest.raises(SystemExit, match=r"^pbrun: refusing to seal the action: "):
         _submit(tmp_path, monkeypatch, work)
     assert list(queue.dir(pool.READY).glob("*.json")) == []

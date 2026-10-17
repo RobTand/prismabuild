@@ -7,6 +7,7 @@ axis exactly as ``--tag`` does, so the action key moves with it and the SLURM
 lane sends it as ``--constraint``.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 from pathlib import Path
 import subprocess
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 #: A runtime every box can open.  These tests submit from ``tmp_path``, which
@@ -66,13 +68,13 @@ def _sealed_body(argv, monkeypatch, tmp_path):
         captured.append(body)
         raise _Stop()
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    monkeypatch.setattr(submit_core.pb, "seal_action", _stop)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(pbrun, "RUNTIME_ROOT", PUBLISHED_RUNTIME)
-    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd: tmp_path)
     monkeypatch.setattr(
-        pbrun,
-        "build_git_checkout_snapshot",
+        submit_core,
+        'snapshot_checkout',
         lambda *_args, **_kwargs: {"input": {"id": "test"}},
     )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path), *argv])
@@ -108,7 +110,7 @@ def test_measurement_with_a_host_class_seals_the_scope_and_the_constraint(
     toolchain = body["environment"]["toolchain"]
     assert {"argv0.sha256", "argv0.bytes", "system", "machine", "libc"} <= set(toolchain)
     assert toolchain["argv0.sha256"] == pb.executable_toolchain_contract(
-        pbrun.SEALED_ARGV0
+        submit_core.SEALED_ARGV0
     )["argv0.sha256"]
     # And the core accepts what pbrun built.
     sealed = _seal_action(_sealable(body))
@@ -177,13 +179,13 @@ def test_the_slurm_lane_receives_the_class_as_placement(monkeypatch):
     def record(action, **kwargs):
         raise _Captured(kwargs)
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", record)
+    monkeypatch.setattr(submit_core.slurm_lane, "run", record)
     with pytest.raises(_Captured) as raised:
-        pbrun.slurm_outcome(
+        submit_core.slurm_outcome(
             {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=["gb10"], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=None, wait_s=60.0, retry_safe=False, max_attempts=1,
-        )
+        store=pbrun.configured_store(), display=pbrun.render)
     assert raised.value.kwargs["placement"] == ["gb10"]
     # Partition stays the resource axis: no GPU demand and a tag means the
     # default partition, where the constraint picks the node.
@@ -219,9 +221,9 @@ def test_pool_measurement_cannot_claim_anywhere_placement(monkeypatch, tmp_path)
 
 def test_pool_measurement_scope_passes_local_preflight_and_rejects_different_platform(tmp_path, monkeypatch):
     from test_core import _body
-    scope, toolchain = pbrun.host_class_scope(None, measurement=True, transport='pool')
+    scope, toolchain = submit_core.host_class_scope(None, measurement=True, transport='pool')
     body = _body(tmp_path, task_class='measurement',
-                 argv=[pbrun.SEALED_ARGV0, '--noprofile', '--norc', '-c', 'true'])
+                 argv=[submit_core.SEALED_ARGV0, '--noprofile', '--norc', '-c', 'true'])
     body['inputs'] = []
     body['execution_scope'] = scope
     body['environment']['toolchain'] = toolchain
