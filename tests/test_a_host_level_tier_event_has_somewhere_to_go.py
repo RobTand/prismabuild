@@ -8,6 +8,7 @@ stage's ARC ``primarycache`` refusal among them -- still had nowhere to go
 but that host's own stdout.
 """
 from __future__ import annotations
+import pbstatus
 
 import json
 from pathlib import Path

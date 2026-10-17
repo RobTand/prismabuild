@@ -1,4 +1,5 @@
 """CPU bookkeeping must not put a remote writer under host admission."""
+import pbstatus
 from pathlib import Path
 import subprocess
 import sys

@@ -17,6 +17,7 @@ denial cache, and timestamps (#983 pattern 4):
 The fixtures below are those three shapes at test size.
 """
 from __future__ import annotations
+import pbstatus
 
 import fcntl
 import os

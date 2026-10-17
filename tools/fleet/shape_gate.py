@@ -81,9 +81,8 @@ sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import box_capacity  # noqa: E402
 from submission_frontend import store_for, render_submission
 from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from prismabuild import submission
 
-def configured_store():
-    return store_for(__file__)
 
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
@@ -546,8 +545,6 @@ class ShapeGate:
                  host_profile: Mapping[str, object] = HOST_PROFILE,
                  require_chunk_edge: bool = True,
                  seed: int = 965) -> None:
-        from prismabuild import submission
-        from prismabuild import submission
         import tier_loop
 
         if storage_tiers.GIB * int(shape["scale"]) != 1 << 30:     # type: ignore[arg-type]

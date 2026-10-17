@@ -5,13 +5,17 @@ import pbrun
 
 
 def patch_store(monkeypatch, *, client=pbrun, **changes):
-    current = client.configured_store()
+    current = (client.configured_store() if hasattr(client, "configured_store")
+               else client.store_for(client.__file__))
     if 'root' in changes:
         root = Path(changes['root'])
         changes.setdefault('queue_root', root / 'pb-queue')
         changes.setdefault('cas_root', root / 'cas')
     updated = replace(current, **changes)
-    monkeypatch.setattr(client, 'configured_store', lambda: updated)
+    if hasattr(client, 'configured_store'):
+        monkeypatch.setattr(client, 'configured_store', lambda: updated)
+    else:
+        monkeypatch.setattr(client, 'store_for', lambda *args, **kwargs: updated)
     sync_frontends(monkeypatch, updated)
     return updated
 
@@ -24,6 +28,8 @@ def sync_frontends(monkeypatch, store):
             continue
         if hasattr(module, 'configured_store'):
             monkeypatch.setattr(module, 'configured_store', lambda: store)
+        if hasattr(module, 'store_for'):
+            monkeypatch.setattr(module, 'store_for', lambda *args, **kwargs: store)
 
 
 def refusal_value(refusal):
