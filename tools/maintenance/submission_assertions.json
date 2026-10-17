@@ -1,0 +1,122 @@
+{
+  "tests/test_default_transport_travels_with_the_generation.py": {
+    "new": [
+      "f9dd1bc4abd7c1d72379544eea0f560ef46873cd7fad99a6a831a13085daad01"
+    ],
+    "old": [
+      "a4fdfbbfc7e8d7fee4b7752509720c61e65d1edfb98e25881cbab7c15ad0a05d"
+    ],
+    "reason": "Campaign now calls the package directly; the captured typed transport must still equal the generation default slurm."
+  },
+  "tests/test_gang_teardown_1517.py": {
+    "new": [
+      "dced7c9d72edf0b92dad6e8cbe567ea442d2d14d1dd1ef3e092197c333a08721"
+    ],
+    "old": [
+      "464e68e4730ee0df6e167636831093613c4b4765cf8041a6353d36cc7f33d87c"
+    ],
+    "reason": "The same gang declaration and literal group size index expectation now receive the explicitly converted parser request."
+  },
+  "tests/test_offer_refusal_retry.py": {
+    "new": [
+      "15a23cdc06f90ad56bcb7a92729f5364b733c11a844a7ebab6e547c3843764ee",
+      "8043ce34df7ee39b1cbd5657e0cf2facd094c1412daad1cc2f5f4a53ba4506f3"
+    ],
+    "old": [
+      "e23fcb99120393b3316d8b55f5bb5af60dff22d44da876f24590410a374730fe",
+      "ef8f0fcbc6760999c6b62e97bc4794cd69ac37b54f9ee2e8591fa070edb3ad50"
+    ],
+    "reason": "Retry classification still distinguishes reaped discovery timeout from retained reader refusal; exact checked library exception replaces process SystemExit."
+  },
+  "tests/test_pbcampaign.py": {
+    "new": [
+      "688f9d09debbb18a672070134a789940e8157c3f7c32a5914a34d82fbce83a96",
+      "8fc27707b83452dabe64d48c721b09ef306342e5721af0c1c08173f82fab8658",
+      "951a9d71389c30c542e5fe617e7afab6d783ac393bcb8074dcb0d832e458f7f7"
+    ],
+    "old": [
+      "1a97fbdbd82bc5d8f43dcaeef7f1cf68f1bde9da7ac52a6f560e04db076db23e",
+      "3db40c6592da1a059ed231d3d7f6beb0cb52a2b93fae881cec9caad797f8cd09",
+      "f53029f34c5aa38704202824aa26786046e27cd90c33c0880a3471d873bd225b"
+    ],
+    "reason": "The actual captured package request must retain the exact host class, one attempt, measurement and retry safe declarations."
+  },
+  "tests/test_pbcampaign_residency_and_cpus_rows.py": {
+    "new": [
+      "1f7f079c4117b06d9a6cd38652534c01f855e20a8a5d4d7b4df5643afd687cf4"
+    ],
+    "old": [
+      "6b076fd75c0eac14bee93aed5b80c352a8e5e5728ef8a66a4d8c63356ced0ec6"
+    ],
+    "reason": "Full dispatch argument comparison becomes a literal typed request comparison, retaining every path, residency policy, CPU count and command."
+  },
+  "tests/test_pbrun_bounded_pool_wait.py": {
+    "new": [
+      "0eb705259efa1e0be3fe89f6555aa33aefb5f52691b47e3512118f48b191f58e",
+      "139f839d0da473ffc2e9d51e33c50cf60f0a8b82ee83d0dca48b10869998ccac",
+      "139f839d0da473ffc2e9d51e33c50cf60f0a8b82ee83d0dca48b10869998ccac",
+      "139f839d0da473ffc2e9d51e33c50cf60f0a8b82ee83d0dca48b10869998ccac",
+      "139f839d0da473ffc2e9d51e33c50cf60f0a8b82ee83d0dca48b10869998ccac",
+      "49cb311312112649880785da87804e228f72480bce668cf69080b5556ac23f7e",
+      "8cfe916cd18cfbad3e79c783988da61ba72ac737b5408728f9294ea5057e0626",
+      "8cfe916cd18cfbad3e79c783988da61ba72ac737b5408728f9294ea5057e0626",
+      "a0bce83f301b99f9e661239fa4efb7cb73098e76fa9282fa680d8d460656fe49"
+    ],
+    "old": [
+      "164f5e656b59c00f2ecd863fdc012878f59fd1c7d686a02b8d52518c26ac6015",
+      "164f5e656b59c00f2ecd863fdc012878f59fd1c7d686a02b8d52518c26ac6015",
+      "1d5c412fa6b4f225973d27045cfda9479bafc0d32e01d183a1ed93be7570b13b",
+      "1dc227741a949c13deab733ea67b26d02096c06513eaefb3a4a654739e222cad",
+      "1f7342a599086b15655f800af769efec2731503a9b949bf5a794599a61b3100a",
+      "829a3267c3c84a27b2f54f3361d9ddbd7804ecd22be9dd5ef286610a69e7f379",
+      "829a3267c3c84a27b2f54f3361d9ddbd7804ecd22be9dd5ef286610a69e7f379",
+      "829a3267c3c84a27b2f54f3361d9ddbd7804ecd22be9dd5ef286610a69e7f379",
+      "829a3267c3c84a27b2f54f3361d9ddbd7804ecd22be9dd5ef286610a69e7f379"
+    ],
+    "reason": "All nine return status and stdout comparisons call the unchanged protected action_client owner directly after removal of the CLI reexport."
+  },
+  "tests/test_pbrun_d38_setting_1649.py": {
+    "new": [
+      "4b9199512f229d5bbb63852606babe85ad4e7f569223c95da9a6d1dd75f504de",
+      "67d87b4b46b017525e024ed5567c3fa7db7aaba17e46751ca87bf2cba94674b9",
+      "70f7ce8f759a3daafc4c3f50dbd16c9931611723df943ee17980eb425077f399",
+      "70f7ce8f759a3daafc4c3f50dbd16c9931611723df943ee17980eb425077f399",
+      "79b6d47405061f094173357f080051d0ae17aebba0448db4ee4645bd190b965b"
+    ],
+    "old": [
+      "1a77b43d0f1af0bd7696f0b85b92ddc65cef7b173716168976abcd0944222352",
+      "4b00578d465f3bbc683375d2cd1901394c91d6ea8cde171f6aebe37443ee5ec6",
+      "4b00578d465f3bbc683375d2cd1901394c91d6ea8cde171f6aebe37443ee5ec6",
+      "8a357afaba5181590945a3594280dcdaff29d83ef15ea07fc1b08f3c7d34bc24",
+      "fca01c2fe856097a8774fcfdd8d24b45beafbf96107a070c16aa80647ddbc2e8"
+    ],
+    "reason": "The same five enforcement and publication verdict conditions now pass an explicit FleetStore instead of relying on CLI globals."
+  },
+  "tests/test_pbrun_target_evidence_argv0_1598.py": {
+    "new": [
+      "c7e77134e41cd2981a53af9dc0c686f3108301d3d5ddccf3e312e943d126edcd"
+    ],
+    "old": [
+      "1c7cf31dbcaac9cca82077c1af1b66a02f89bf876d43b559b3f3b12a1bf5633c"
+    ],
+    "reason": "The identical recorded interpreter version assertion calls the pure packet owner moved from the evidence CLI."
+  },
+  "tests/test_produced_output_admission.py": {
+    "new": [
+      "976d728b7b3ae5b34f4c55a6d2594a08fa0b566c0eb49f195e0a0c7a421b8536"
+    ],
+    "old": [
+      "f264c7290323e273fab0698a128098959117cc3dc494ebdc17989e3c5dcbebbf"
+    ],
+    "reason": "The same action key inequality uses the actual package sealing owner after removal of the dynamically loaded CLI alias."
+  },
+  "tests/test_progress_reporting_is_reachable_from_any_action.py": {
+    "new": [
+      "b9c59abefe6c2f001d8f689c83e22bdbaee5cb0d2e0dc5974af31d7972732d36"
+    ],
+    "old": [
+      "a2a6f381fb0cf77e857b5c437052085bcf4b9f41d13b1cc298ea686fe841b387"
+    ],
+    "reason": "The identical complete progress policy literal now compares against the package parser rather than the removed campaign CLI import."
+  }
+}

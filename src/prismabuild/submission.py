@@ -6903,7 +6903,7 @@ def _release_deferred(q, pending_id: str, record: Mapping[str, object], *,
     generation is recorded instead.  Last, the release records that
     generation, which is what waiters and chains read.
 
-    Returns the event to log.  Raises ``ActionEdgeError`` (or ``SystemExit``
+    Returns the event to log.  Raises ``ActionEdgeError`` (or ``SubmissionRefused``
     from pbrun's own refusals) when the consumer cannot be released yet.
     """
 

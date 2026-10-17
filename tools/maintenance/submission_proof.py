@@ -100,8 +100,14 @@ def action_proof(root, key, *, parent, snapshots):
             proof_blob(fact["resolved_path"], fact)
         result = receipt["result"]
         result_raw = proof_blob(cas_root / "blobs" / result["sha256"][:2] / result["sha256"], result)
-        if result_raw != streams["stdout"].encode():
-            raise ValueError(f"{key}: CAS result and complete stdout log differ")
+        stdout_raw = streams["stdout"].encode()
+        if not stdout_raw.startswith(result_raw):
+            raise ValueError(f"{key}: complete stdout does not begin with its CAS result")
+        publication = json.loads(stdout_raw[len(result_raw):])
+        if publication.get("status") != "published" or publication.get("receipt") != receipt:
+            raise ValueError(f"{key}: stdout publication trailer differs from the validated receipt")
+        if executable["path"] != action["task"]["argv"][0]:
+            raise ValueError(f"{key}: attested executable differs from the sealed entry point")
     outcome = pbtest_outcomes.parse(streams["stdout"])
     completion = pbtest_outcomes.completion(streams["stdout"])
     native = None
@@ -133,6 +139,8 @@ def main():
     parser.add_argument("--key", action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--allow-failed", action="store_true")
+    parser.add_argument("--expected-roster", type=Path)
+    parser.add_argument("--baseline-roster", type=Path)
     args = parser.parse_args()
     actions, snapshots = [], {}
     for key in args.key:
@@ -140,9 +148,22 @@ def main():
     nodes = [node for action in actions if action["native"] for node in action["native"]["collected"]]
     duplicate = sorted(node for node, count in Counter(nodes).items() if count > 1)
     failed = [action["key"] for action in actions if action["state"] != "done"]
+    rosters = {}
+    for name in ("expected", "baseline"):
+        path = getattr(args, name + "_roster")
+        if path is None:
+            continue
+        raw = path.read_bytes()
+        declared = json.loads(raw)
+        missing = sorted((Counter(declared) - Counter(nodes)).elements())
+        extra = sorted((Counter(nodes) - Counter(declared)).elements())
+        rosters[name] = {"sha256": pb.raw_sha256(raw), "count": len(declared),
+                         "missing": missing, "extra": extra}
+        if missing or (name == "expected" and extra):
+            raise ValueError(f"{name} native roster differs: {len(missing)} missing, {len(extra)} extra")
     result = {"parent": args.parent, "actions": actions, "snapshots": snapshots,
         "native_count": len(nodes), "whole_files": len({node.split("::")[0] for node in nodes}),
-        "duplicate_native_nodes": duplicate, "failed_actions": failed}
+        "duplicate_native_nodes": duplicate, "failed_actions": failed, "rosters": rosters}
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({key: result[key] for key in ("parent", "native_count", "whole_files",
         "duplicate_native_nodes", "failed_actions")}))

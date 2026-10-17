@@ -488,7 +488,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     # The origin rewritten after its commit, same length: the batch no longer
     # names the file that is there.
     path.write_bytes(b"X" * len(path.read_bytes()))
-    with pytest.raises(SystemExit, match="origin-batch-changed"):
+    with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-changed"):
         check(manifest, transport="pool", queue_root=queue.root)
 
 
