@@ -50,10 +50,6 @@ class _Recorder:
 
     def __call__(self, request, *, report, **kwargs):
         self.calls.append(request)
-        print(json.dumps({
-            "status": "submitted", "action_key": KEY, "transport": "slurm",
-            "published_unix": 100.0 + len(self.calls),
-        }))
         finish_submission(report, key=KEY, transport='slurm',
             generation=100.0 + len(self.calls))
         return report

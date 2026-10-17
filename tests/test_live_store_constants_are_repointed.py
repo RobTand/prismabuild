@@ -43,7 +43,7 @@ EXEMPT: dict[tuple[str, str], str] = {
         "classifier: compared to lines read from SYSTEMD_UNIT to recognize "
         "the managed service; never executed or opened as a path"
     ),
-    ("pbrun", "SHARED_ROOT"): (
+    ("prismabuild.submission", "SHARED_ROOT"): (
         "classifier: reached only by relative_to() in the placement rules and "
         "by the text of two operator messages, never opened"
     ),

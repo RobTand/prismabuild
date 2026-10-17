@@ -1,6 +1,7 @@
 """A multiline shell payload is an ordinary submission (issue #21)."""
 
 from __future__ import annotations
+from submission_support import patch_store
 from prismabuild import submission as submit_core
 
 import importlib.util
@@ -52,7 +53,7 @@ def _work_and_queue(tmp_path: Path) -> tuple[Path, pool.PoolQueue]:
 
 
 def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path) -> int:
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     # ``--wait-s 0`` is one immediate observation with the standard bounded

@@ -359,7 +359,7 @@ def test_effective_placement_is_normalized_into_action_identity(
         raise StopAfterSeal
 
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
@@ -418,7 +418,7 @@ def test_container_owner_tracks_every_pre_owner_semantic_distinction(
         raise StopAfterSeal
 
     monkeypatch.setattr(submit_core.pb, "seal_action", capture)
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(
         pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools"
@@ -1084,7 +1084,7 @@ def test_an_unknown_snapshot_ref_refuses_before_anything_is_sealed(
         pytest.fail("a refused --snapshot-ref reached the CAS")
 
     monkeypatch.setattr(pbrun, "build_git_checkout_snapshot", unreachable)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(
         sys, "argv",
         ["pbrun.py", "--cwd", str(checkout), "--snapshot-ref", "no-such-branch",
@@ -1106,7 +1106,7 @@ def test_a_malformed_snapshot_ref_refuses_by_name(
     """The name becomes a refspec on a worker; Git's own check owns it."""
 
     checkout = _git_checkout(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     monkeypatch.setattr(
         sys, "argv",
         ["pbrun.py", "--cwd", str(checkout), "--snapshot-ref", "bad name",
@@ -2176,7 +2176,7 @@ def class_submission(tmp_path, monkeypatch):
         "spark-old": {"_alias": "spark-b", "args": ["--class", "gb10"]},
     }}))
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", fleet / "repo" / "tools")
     sealed = []
@@ -2339,7 +2339,7 @@ def test_class_default_native_cli_smoke(tmp_path, monkeypatch):
         offer["local_dependencies"] = {bash: "executable"}
         offer_path.write_text(json.dumps(offer))
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster, raising=False)
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
     earlier = tmp_path / "earlier-path"
@@ -2982,7 +2982,7 @@ def relocated_input_submission(tmp_path, monkeypatch):
             ),
         )
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
 
@@ -3146,7 +3146,7 @@ def raw_copy_submission(tmp_path, monkeypatch):
             ),
         )
     monkeypatch.setattr(pbrun, "FLEET_ROSTER_PATH", roster)
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     patch_store(monkeypatch, client=pbrun, runtime_root=PUBLISHED_RUNTIME)
     monkeypatch.setattr(socket, "gethostname", lambda: "spark-a")
 

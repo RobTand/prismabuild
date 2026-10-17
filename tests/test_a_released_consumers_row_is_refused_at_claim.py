@@ -97,7 +97,7 @@ def _old_submitter(monkeypatch, *argv: str):
     assert isinstance(RecordStore(q.root).standing(key), Absent)
 
     def resume() -> None:
-        getattr(pbrun, name)(q, publication, **kwargs)
+        getattr(submit_core, name)(q, publication, **kwargs)
         assert q.item_path(pool.READY, key).exists()
 
     return key, resume
