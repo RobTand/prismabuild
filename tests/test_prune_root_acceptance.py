@@ -6,7 +6,7 @@ from test_stale_material_done_owner_retires import (
     fleet, stale_owner, NAMES, TIER, _sweep, _stage, NEW_PAYLOAD,
     residency_map, reader_lease,
 )
-import stage_release
+from prismabuild import stage_release
 import tier_loop
 from test_stale_material_done_owner_retires import base, SIZE, staged_name
 
