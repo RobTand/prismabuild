@@ -5291,17 +5291,16 @@ class _ClaimReservation:
         # The transferred fence never touches free; only this take's remainder returns.
         for tier_id in sorted(self.tier_demand):
             try:
-                ledger = self.queue.tier_ledger(tier_id)
+                ledger = self.queue.tier(tier_id)
             except (OSError, PoolContractError, ValueError):
                 continue
             entry = self.tier_funded.get(tier_id)
             names = (entry.get("tokens") if isinstance(entry, dict) else None)
             try:
                 if isinstance(names, list) and names:
-                    ledger.release_except(
-                        self.action_key, {str(name) for name in names})
+                    ledger.release_unspent(self.action_key, keep={str(name) for name in names}, authority=tier_holdings.Unspent.NEVER_STARTED)
                 else:
-                    ledger.release(self.action_key)
+                    ledger.release_unspent(self.action_key, authority=tier_holdings.Unspent.NEVER_STARTED)
             except (OSError, PoolContractError, ValueError):
                 continue
 
@@ -8342,7 +8341,7 @@ class PoolQueue:
             return self._prepared_move_entry(action_key, record,
                                              expected_version)
         try:
-            lock = self.tier_mint_lock(tier_id)
+            lock = self.tier(tier_id).mutation_lock()
         except (PoolContractError, OSError) as exc:
             return f"cannot derive its tier mint lock: {exc}"
         try:
@@ -8406,7 +8405,7 @@ class PoolQueue:
         """
 
         try:
-            held = held_names_visible(self.tier_ledger(tier_id), action_key)
+            held = self.tier(tier_id).holder_state(action_key)
         except (OSError, PoolContractError) as exc:
             return f"cannot read its tier ledger: {exc}"
         if held:
@@ -8595,7 +8594,7 @@ class PoolQueue:
         if not (isinstance(tier_id, str) and tier_id):
             return unlink_locked()
         try:
-            lock = self.tier_mint_lock(tier_id)
+            lock = self.tier(tier_id).mutation_lock()
         except (PoolContractError, OSError) as exc:
             return f"cannot derive its tier mint lock: {exc}"
         try:
@@ -8842,7 +8841,7 @@ class PoolQueue:
         path: Path | None = None
         if isinstance(tier_id, str) and tier_id:
             try:
-                lock = self.tier_mint_lock(tier_id)
+                lock = self.tier(tier_id).mutation_lock()
             except (PoolContractError, OSError):
                 lock = None
             if lock is not None:
@@ -10035,8 +10034,7 @@ class PoolQueue:
                         # apart.  Error-visible, so a holder this cannot list
                         # is unknown, never "holds nothing".
                         try:
-                            held = held_names_visible(self.tier_ledger(
-                                str(plan["tier_id"])), mover)  # type: ignore[index]
+                            held = self.tier(str(plan['tier_id'])).holder_state(mover)  # type: ignore[index]
                         except (OSError, ValueError, PoolContractError) as exc:
                             state, detail = "unknown", f"done; tier ledger unreadable: {exc!r}"
                         else:
@@ -12609,8 +12607,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in immutable_files.match_optional(
-                self.tier_ledger(tier_id).held_dir / key, "*-*")}
+            held_names = {path.name for path in immutable_files.match_optional(self.tier(tier_id).paths.held / key, '*-*')}
         except (OSError, PoolContractError, ValueError):
             return (0, None)
         if any(not isinstance(name, str)
@@ -12687,9 +12684,9 @@ class PoolQueue:
                               else None)
         if current is not None and current.get("state") == "consumed":
             try:
-                ledger = self.tier_ledger(tier_id)
+                ledger = self.tier(tier_id)
                 kind = str(fields["kind"])
-                mover_holds = int(ledger.holder_tokens(mover).get(kind, 0))
+                mover_holds = int(ledger.holdings(mover).get(kind, 0))
             except (OSError, PoolContractError, ValueError, KeyError, TypeError):
                 return False
             try:
@@ -12703,8 +12700,8 @@ class PoolQueue:
             # generation rather than wedge on a terminal record.
         if current is not None and current.get("state") == "transferring":
             try:
-                ledger = self.tier_ledger(str(tier_id))
-                ledger_names = held_names_visible(ledger, mover)
+                ledger = self.tier(str(tier_id))
+                ledger_names = ledger.holder_state(mover)
             except (OSError, PoolContractError, ValueError):
                 return False
             bound = current.get("tokens")
@@ -12758,8 +12755,7 @@ class PoolQueue:
                     # Mover holds exactly the bound set (no extras): move
                     # it to the grant without a free interval.
                     try:
-                        moved = int(self.transfer_tier_reservation(
-                            str(tier_id), mover, grant))
+                        moved = int(self.tier(str(tier_id)).handover(mover, grant))
                     except (OSError, PoolContractError, ValueError):
                         return False
                     # transfer moves the whole holder; keep is empty so the
@@ -12768,7 +12764,7 @@ class PoolQueue:
                     if moved != len(bound_set):
                         # Complete the remainder if split, else retain.
                         try:
-                            rest = held_names_visible(ledger, mover)
+                            rest = ledger.holder_state(mover)
                         except (OSError, PoolContractError, ValueError):
                             return False
                         if rest:
@@ -12825,8 +12821,7 @@ class PoolQueue:
                     maybe_stale = True
                 if maybe_stale:
                     try:
-                        grant_names = held_names_visible(
-                            self.tier_ledger(str(tier_id)), grant)
+                        grant_names = self.tier(str(tier_id)).holder_state(grant)
                     except (OSError, PoolContractError, ValueError):
                         return False
                     bound_set = {str(name) for name in bound}
@@ -12836,8 +12831,7 @@ class PoolQueue:
                         # extras: finish moving the remainder grant-ward,
                         # then close (both checked).
                         try:
-                            self.transfer_tier_reservation(
-                                str(tier_id), mover, grant)
+                            self.tier(str(tier_id)).handover(mover, grant)
                         except (OSError, PoolContractError, ValueError):
                             return False
                         # Verify exact post-transfer ownership before
@@ -12853,11 +12847,9 @@ class PoolQueue:
                         # transferring->released beside a leftover, never
                         # take a fresh deficit beside the split.
                         try:
-                            ledger_after = self.tier_ledger(str(tier_id))
-                            mover_left = held_names_visible(
-                                ledger_after, mover)
-                            grant_after = held_names_visible(
-                                ledger_after, grant)
+                            ledger_after = self.tier(str(tier_id))
+                            mover_left = ledger_after.holder_state(mover)
+                            grant_after = ledger_after.holder_state(grant)
                         except (OSError, PoolContractError, ValueError):
                             return False
                         if mover_left or not (bound_set <= grant_after):
@@ -12889,8 +12881,7 @@ class PoolQueue:
         if (current is not None and current.get("state") == "reserved"
                 and isinstance(current.get("tokens"), list)):
             try:
-                grant_names = held_names_visible(
-                    self.tier_ledger(str(tier_id)), grant)
+                grant_names = self.tier(str(tier_id)).holder_state(grant)
             except (OSError, PoolContractError, ValueError):
                 return False
             try:
@@ -12918,22 +12909,22 @@ class PoolQueue:
             # than keep a binding the claim path would refuse.
 
         try:
-            ledger = self.tier_ledger(tier_id)
+            ledger = self.tier(tier_id)
             kind = str(fields["kind"])
-            have = int(ledger.holder_tokens(grant).get(kind, 0))
+            have = int(ledger.holdings(grant).get(kind, 0))
         except (OSError, PoolContractError, ValueError, KeyError, TypeError):
             return False
         deficit = int(demand_gib) - have
         if deficit > 0:
             try:
-                if not ledger.acquire(grant, {kind: int(deficit)}):
+                if not ledger.take(grant, {kind: int(deficit)}):
                     # ``acquire`` is all-or-nothing: a ``False`` leaves
                     # nothing half-held, so there is nothing to unwind.
                     return False
             except (OSError, PoolContractError, ValueError):
                 return False
         try:
-            names = sorted(held_names_visible(ledger, grant))
+            names = sorted(ledger.holder_state(grant))
         except (OSError, PoolContractError, ValueError):
             return False
         generation = uuid.uuid4().hex
@@ -12997,8 +12988,7 @@ class PoolQueue:
                         record_store.value_or_raise(self.records.item_presence(CLAIMED, mover)),
                     )):
                 return 0
-            return int(self.transfer_tier_reservation(
-                tier_id, grant, mover, faults=faults))
+            return int(self.tier(tier_id).handover(grant, mover, faults=faults))
         except (OSError, PoolContractError, ValueError):
             return 0
 
@@ -13266,7 +13256,7 @@ class PoolQueue:
                 counts["kept"] += 1
                 continue
             try:
-                ledger = self.tier_ledger(tier_id)
+                ledger = self.tier(tier_id)
             except (OSError, PoolContractError, ValueError):
                 counts["kept"] += 1
                 continue
@@ -13311,7 +13301,7 @@ class PoolQueue:
                 return False
             if os.path.lexists(self.records.lease_path(mover)):
                 return False
-            with os.scandir(ledger.held_dir / mover) as entries:
+            with os.scandir(ledger.paths.held / mover) as entries:
                 if any(True for _ in entries):
                     return False
         except FileNotFoundError:
@@ -13779,10 +13769,8 @@ class PoolQueue:
                 or str(owner_live["scope"]) != str(binding.get("owner_scope_id"))):
             return {"ok": False, "refusal": "stale-superseded-owner"}
         try:
-            ledger = self.tier_ledger(tier)
-            held_names = sorted(path.name for path in immutable_files.match_optional(
-                ledger.held_dir / str(owner_key), "*-*")
-                if path.name.startswith(kind + "-"))
+            ledger = self.tier(tier)
+            held_names = sorted((path.name for path in immutable_files.match_optional(ledger.paths.held / str(owner_key), '*-*') if path.name.startswith(kind + '-')))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if self.read_output_funding(str(mover_key), tier) is not None:
@@ -13820,8 +13808,7 @@ class PoolQueue:
                         return {"ok": False, "refusal": "token-names-spoken"}
             else:
                 if len(unspoken_names) < batch_gib:
-                    return {"ok": False, "refusal": "tier-reservation-unavailable",
-                            "available": ledger.available()}
+                    return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()}
                 selected = unspoken_names[:batch_gib]
         with self._transition_locked(str(owner_key),
                                      blocking=False) as owner_acquired:
@@ -14041,13 +14028,11 @@ class PoolQueue:
                     binding.get("template_sha256"))):
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
-            ledger = self.tier_ledger(tier)
+            ledger = self.tier(tier)
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         try:
-            held_names = sorted(path.name for path in immutable_files.match_optional(
-                ledger.held_dir / str(owner_key), "*-*")
-                if path.name.startswith(kind + "-"))
+            held_names = sorted((path.name for path in immutable_files.match_optional(ledger.paths.held / str(owner_key), '*-*') if path.name.startswith(kind + '-')))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Same disjointness rule as stage_output_intent (R7 liveness): a
@@ -14086,9 +14071,7 @@ class PoolQueue:
                         return {"ok": False, "refusal": "token-names-spoken"}
             else:
                 if len(unspoken_names) < batch_gib:
-                    return {"ok": False,
-                            "refusal": "tier-reservation-unavailable",
-                            "available": ledger.available()}
+                    return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()}
                 selected = unspoken_names[:batch_gib]
         # Owner outer, mover inner (R1): serializes against owner finish.
         with self._transition_locked(str(owner_key),
@@ -14133,9 +14116,8 @@ class PoolQueue:
         if live_mover_published != float(mover_published):
             return {"ok": False, "refusal": "mover-publication-mismatch"}
         try:
-            ledger = self.tier_ledger(tier)
-            held_now = {path.name for path in immutable_files.match_optional(
-                ledger.held_dir / owner_key, "*-*")}
+            ledger = self.tier(tier)
+            held_now = {path.name for path in immutable_files.match_optional(ledger.paths.held / owner_key, '*-*')}
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Existing record for this mover: idempotent re-drive, never a
@@ -14238,7 +14220,7 @@ class PoolQueue:
             return {"ok": False, "refusal": "unknown-retain: funding-unreadable"}
         names = [str(n) for n in filed.get("tokens", [])]  # type: ignore[union-attr]
         try:
-            moved = int(ledger.transfer_tokens(owner_key, mover_key, names))
+            moved = int(ledger.handover_named(owner_key, mover_key, names))
         except (OSError, PoolContractError, ValueError) as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if moved < len(names):
@@ -14365,8 +14347,7 @@ class PoolQueue:
         if not isinstance(tokens, list) or not tokens:
             return (0, None)
         try:
-            held_names = {path.name for path in immutable_files.match_optional(
-                self.tier_ledger(str(tier_id)).held_dir / key, "*-*")}
+            held_names = {path.name for path in immutable_files.match_optional(self.tier(str(tier_id)).paths.held / key, '*-*')}
         except (OSError, PoolContractError, ValueError):
             return (0, None)
         if any(not isinstance(name, str)
@@ -14519,8 +14500,8 @@ class PoolQueue:
                 if not names:
                     return {"ok": False, "refusal": "unknown-retain: funding-tokens"}
                 try:
-                    ledger = self.tier_ledger(tier)
-                    moved = int(ledger.transfer_tokens(owner_key, mover, names))
+                    ledger = self.tier(tier)
+                    moved = int(ledger.handover_named(owner_key, mover, names))
                 except (OSError, PoolContractError, ValueError) as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
                 if moved < len(names):
@@ -14786,9 +14767,7 @@ class PoolQueue:
                 intents.append(record)
             elif state == "released":
                 try:
-                    if held_names_visible(
-                            self.tier_ledger(str(record["tier_id"])),
-                            str(record["mover_action_key"])):
+                    if self.tier(str(record['tier_id'])).holder_state(str(record['mover_action_key'])):
                         intents.append(record)
                 except (OSError, PoolContractError, ValueError):
                     unknown = True
@@ -14841,9 +14820,8 @@ class PoolQueue:
         """
 
         try:
-            ledger = self.tier_ledger(str(tier_id))
-            held_names = {path.name for path in immutable_files.match_optional(
-                ledger.held_dir / str(owner_key), "*-*")}
+            ledger = self.tier(str(tier_id))
+            held_names = {path.name for path in immutable_files.match_optional(ledger.paths.held / str(owner_key), '*-*')}
         except (OSError, PoolContractError, ValueError):
             return (0, True)
         spoken, unknown = self.output_census_for_owner(str(owner_key))
@@ -14899,8 +14877,7 @@ class PoolQueue:
                 if not isinstance(tokens, list):
                     return (outstanding, True)
                 try:
-                    mover_held = int(ledger.holder_tokens(
-                        str(record.get("mover_action_key"))).get(kind, 0))
+                    mover_held = int(ledger.holdings(str(record.get('mover_action_key'))).get(kind, 0))
                 except (OSError, PoolContractError, ValueError):
                     return (outstanding, True)
                 live = min(len(tokens), mover_held)
@@ -14929,7 +14906,7 @@ class PoolQueue:
         """
 
         try:
-            holder_dir = self.tier_ledger(str(tier_id)).held_dir / str(owner_key)
+            holder_dir = self.tier(str(tier_id)).paths.held / str(owner_key)
             try:
                 with os.scandir(holder_dir) as entries:
                     held = {entry.name for entry in entries}
@@ -15341,7 +15318,7 @@ class PoolQueue:
             # copy has stopped, so the pool-side bandwidth it reserved is being
             # drawn by nobody, and a finished mover holding it refuses the next
             # one against a supply that is idle (#636).
-            return released + self.release_tier_rate_reservations(action_key)
+            return released + tier_holdings.release_rates_all(self, action_key)
         # Prepaid-output protection (R1+R2): an owner finish/reaper must not
         # free an outstanding output intent's still-source-held tokens between
         # partial transfers, yet a cancelled producer must not strand its
@@ -15363,9 +15340,9 @@ class PoolQueue:
                     census.append(self.output_census_for_owner(str(action_key)))
                 return census[0]
 
-            for tier_id in self.tier_ids():
+            for tier_id in tier_holdings.ids(self.records):
                 try:
-                    ledger = self.tier_ledger(tier_id)
+                    ledger = self.tier(tier_id)
                 except (OSError, PoolContractError):
                     continue
                 try:
@@ -15378,10 +15355,9 @@ class PoolQueue:
                     if unknown:
                         continue
                     if keep:
-                        tier_released += ledger.release_except(
-                            str(action_key), keep)
+                        tier_released += ledger.release_unspent(str(action_key), keep=keep, authority=tier_holdings.Unspent.NEVER_STARTED)
                     else:
-                        tier_released += ledger.release(str(action_key))
+                        tier_released += ledger.release_unspent(str(action_key), authority=tier_holdings.Unspent.NEVER_STARTED)
                 except (OSError, PoolContractError, ValueError):
                     continue
             return released + tier_released
@@ -15497,8 +15473,8 @@ class PoolQueue:
             return None
         held: set[str] = set()
         try:
-            for holder in ledger.held_keys():
-                held |= held_names_visible(ledger, holder)
+            for holder in ledger.holders():
+                held |= ledger.holder_state(holder)
         except (OSError, PoolContractError, ValueError):
             return "unknown"
         return "pending" if {str(name) for name in tokens} <= held else None
@@ -15574,13 +15550,13 @@ class PoolQueue:
                 if isinstance(sealed, Mapping) else None,
                 immutable_ref)
         for tier_id, needs in sorted(tier_demand.items()):
-            ledger = self.tier_ledger(tier_id)
-            if not ledger.base.is_dir():
+            ledger = self.tier(tier_id)
+            if not ledger.paths.base.is_dir():
                 return {"tier_id": tier_id, "reason": "tier_unknown", "demand": dict(needs)}
             # A holder this census cannot read is counted as held and named
             # (#936): the total is a lower bound, and a refusal it causes is
             # attributed to the unreadable holder, never called never-fits.
-            total, unreadable = ledger.capacity_census()
+            total, unreadable = ledger.mint_census()
             if any(total.get(kind, 0) < need for kind, need in needs.items()):
                 if unreadable:
                     return {"tier_id": tier_id, "reason": "tier_census_unreadable",
@@ -15733,12 +15709,9 @@ class PoolQueue:
                     return {"tier_id": tier_id,
                             "reason": f"window_funding_{fence}",
                             "demand": dict(needs)}
-            handle = ledger.begin_acquire(action_key, remainder)
+            handle = ledger.begin_take(action_key, remainder)
             if handle is None:
-                shortage = {"tier_id": tier_id, "reason": "tier_reservation_unavailable",
-                            "token_shortage": ledger.last_token_shortage,
-                            "capacity_total": total, "available": ledger.available(),
-                            "demand": dict(needs)}
+                shortage = {'tier_id': tier_id, 'reason': 'tier_reservation_unavailable', 'token_shortage': ledger.shortage, 'capacity_total': total, 'available': ledger.free_supply(), 'demand': dict(needs)}
                 if unreadable:
                     # While a holder is unreadable every shrink retires this
                     # tier's free tokens, so the shortage is the holder's.
@@ -15843,13 +15816,13 @@ class PoolQueue:
                 return None
             need = int(needs[storage_tiers.FILL_KIND])
             try:
-                ledger = self.tier_ledger(tier_id)
-                free = int(ledger.available().get(storage_tiers.FILL_KIND, 0))
+                ledger = self.tier(tier_id)
+                free = int(ledger.free_supply().get(storage_tiers.FILL_KIND, 0))
                 lenders: dict[str, int] = {}
-                for holder in ledger.held_keys():
+                for holder in ledger.holders():
                     if holder == action_key:
                         continue
-                    count = ledger.holder_tokens(holder).get(storage_tiers.FILL_KIND, 0)
+                    count = ledger.holdings(holder).get(storage_tiers.FILL_KIND, 0)
                     if not count:
                         continue
                     if holder not in family:
@@ -15891,8 +15864,7 @@ class PoolQueue:
             taken = int(entry["taken_free"])  # type: ignore[call-overload]
             if not taken:
                 continue
-            handle = self.tier_ledger(tier_id).begin_acquire(
-                action_key, {storage_tiers.FILL_KIND: taken})
+            handle = self.tier(tier_id).begin_take(action_key, {storage_tiers.FILL_KIND: taken})
             if handle is None:
                 self._abandon_tier_acquire(handles)
                 handles.clear()
@@ -15994,7 +15966,7 @@ class PoolQueue:
                 continue
             released, unread, overcommit = [], [], 0
             try:
-                ledger = self.tier_ledger(str(tier_id))
+                ledger = self.tier(str(tier_id))
             except (OSError, PoolContractError, ValueError):
                 entry["lenders_unread"] = sorted(entry["lent"])
                 continue
@@ -16004,7 +15976,7 @@ class PoolQueue:
                 exclude=own_key if isinstance(own_key, str) else None)
             for lender, count in sorted(entry["lent"].items()):
                 try:
-                    held = ledger.holder_tokens(str(lender)).get(storage_tiers.FILL_KIND, 0)
+                    held = ledger.holdings(str(lender)).get(storage_tiers.FILL_KIND, 0)
                 except OSError:
                     unread.append(lender)
                     continue
@@ -16021,14 +15993,12 @@ class PoolQueue:
     def _abandon_tier_acquire(self, handles: Mapping[str, str]) -> int:
         """Return every claimant-private tier handle; a committed one owns nothing and is a no-op."""
 
-        return sum(self.tier_ledger(tier_id).abandon_acquire(handle)
-                   for tier_id, handle in sorted(handles.items()))
+        return sum((self.tier(tier_id).abandon_take(handle) for tier_id, handle in sorted(handles.items())))
 
     def _commit_tier_acquire(self, action_key: str, handles: Mapping[str, str]) -> int:
         """File every tier handle under the action key; returns the tokens that moved."""
 
-        return sum(self.tier_ledger(tier_id).commit_acquire(action_key, handle)
-                   for tier_id, handle in sorted(handles.items()))
+        return sum((self.tier(tier_id).commit_take(action_key, handle) for tier_id, handle in sorted(handles.items())))
 
     # -- residency (#583) -------------------------------------------------
 
@@ -17176,12 +17146,12 @@ class PoolQueue:
             # tier predates the pin and is read as it was before.
             return True
         if fresh:
-            ledger = self.tier_ledger(tier_id)
+            ledger = self.tier(tier_id)
             # A missing holder counts only after its parent lists it absent.
             # Unlike holder_tokens' tolerant glob, every listing error raises.
-            if lead not in os.listdir(ledger.held_dir):
+            if lead not in os.listdir(ledger.paths.held):
                 return False
-            if not any("-" in name for name in os.listdir(ledger.held_dir / lead)):
+            if not any(('-' in name for name in os.listdir(ledger.paths.held / lead))):
                 return False
             if record_store.value_or_raise(self.records.confirmed_item(CLAIMED, lead)) is not None:
                 return False
@@ -17189,7 +17159,7 @@ class PoolQueue:
             return (isinstance(receipt, Mapping) and receipt.get("complete") is True
                     and not receipt.get("refusal") and receipt.get("tier_id") == tier_id)
         try:
-            if not self.tier_ledger(tier_id).holder_tokens(lead):
+            if not self.tier(tier_id).holdings(lead):
                 return False
         except PoolContractError:
             return True
@@ -22671,9 +22641,9 @@ class PoolQueue:
         # Tier ledgers too: a claimant that died between taking a tier's
         # tokens and committing them left a private directory that no key
         # names, on a ledger no box's reaper walks.
-        for tier_id in self.tier_ids():
+        for tier_id in tier_holdings.ids(self.records):
             try:
-                names = self.tier_ledger(tier_id).sweep_stale_acquisitions(grace_s=grace_s)
+                names = self.tier(tier_id).reap_pending_takes(grace_s=grace_s)
             except (OSError, PoolContractError):
                 # Same containment as the release path: an unreadable tier
                 # costs this cycle that tier's sweep, never the rest of the
@@ -24620,8 +24590,7 @@ class PoolQueue:
             # No box holds it; a tier still may (a mover's stage tokens), and
             # an operator asking for a terminal key's reservation back means
             # those too.
-            return {"action_key": key, "released": self.release_tier_reservations(key),
-                    "hosts": []}
+            return {'action_key': key, 'released': tier_holdings.release_unspent_all(self, key, authority=tier_holdings.Unspent.NEVER_STARTED), 'hosts': []}
 
         released = self._release_reservation(key, host=hosts[0])
         return {"action_key": key, "released": released, "hosts": hosts}

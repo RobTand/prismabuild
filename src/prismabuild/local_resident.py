@@ -14,6 +14,7 @@ import uuid
 from . import posix_lock
 
 from . import core, local_tier, movement_actions, pool, reader_lease, resident_sets, residency_map
+from prismabuild import tier_holdings
 
 BLOCK_BYTES = 8 * 1024 * 1024
 
@@ -409,7 +410,7 @@ def evict_resident_copy(store, set_id, host, spec, *, now=None):
             shutil.rmtree(tree)
             resident_sets.fsync_directory(root)
         # Capacity is released only once ALL local bytes have been deleted.
-        pool.PoolQueue(store.queue_root).tier_ledger(local_tier.local_resident_tier_id(host)).release(set_id)
+        pool.PoolQueue(store.queue_root).tier(local_tier.local_resident_tier_id(host)).release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED)
         with local_tier.host_lock(root):
             store.write_copy(set_id, host, {**current, "state": "absent", "bytes": 0,
                 "verification": [], "completed_unix": None, "local_root": None})
@@ -485,7 +486,7 @@ def lease_pass(store, host, spec, *, now=None):
         try:
             state = row["copies"][host]["state"]
             _, final, partial, evicting = _paths(set_id, spec)
-            held = pool.held_names_visible(queue.tier_ledger(local_tier.local_resident_tier_id(host)), set_id)
+            held = queue.tier(local_tier.local_resident_tier_id(host)).holder_state(set_id)
             if (state == "absent" and not final.exists() and not partial.exists()
                     and not evicting.exists() and not held):
                 _clear_lease_failure(store, set_id, host)

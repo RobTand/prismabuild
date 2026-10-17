@@ -126,6 +126,7 @@ import sys
 import tempfile
 import time
 import uuid
+from prismabuild import tier_holdings
 
 TEMPLATE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_template.v1"
 INSTANCE_SCHEMA_V1 = "prismaquant.prismabuild.produced_output_instance.v1"
@@ -2341,30 +2342,28 @@ def refill_window(queue, instance: Mapping[str, object],
     if census_unknown:
         return {"ok": False, "refusal": "unknown-retain: funding-census"}
     with queue.stage_ownership_lock(str(checked_instance["output_prefix"])):
-        ledger = queue.tier_ledger(tier)
-        held = ledger.holder_tokens(owner).get(kind, 0)
+        ledger = queue.tier(tier)
+        held = ledger.holdings(owner).get(kind, 0)
         room = window - held - outstanding
         if room <= 0:
             return {"ok": True, "tier": tier, "acquired": 0, "held": held,
                     "outstanding": outstanding, "window_gib": window}
-        available = ledger.available().get(kind, 0)
+        available = ledger.free_supply().get(kind, 0)
         take = min(room, available)
-        if take <= 0 or not ledger.acquire(owner, {kind: take}):
+        if take <= 0 or not ledger.take(owner, {kind: take}):
             # Replenishment is advisory when existing credit remains usable.
             # In particular a contended mint guard can decline acquisition
             # even beside free capacity. Do not make exact prepaid funding
             # wait for that optional acquisition. Re-read after the attempt:
             # only current holdings, never the earlier snapshot, qualify.
-            held = ledger.holder_tokens(owner).get(kind, 0)
+            held = ledger.holdings(owner).get(kind, 0)
             if held >= minimum:
                 return {"ok": True, "tier": tier, "acquired": 0,
                         "held": held, "outstanding": outstanding,
                         "window_gib": window, "kind": kind,
                         "refill_deferred": "tier-reservation-unavailable"}
-            return {"ok": False, "refusal": "tier-reservation-unavailable",
-                    "available": ledger.available(), "window_gib": window,
-                    "held": held, "outstanding": outstanding}
-        held = ledger.holder_tokens(owner).get(kind, 0)
+            return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply(), 'window_gib': window, 'held': held, 'outstanding': outstanding}
+        held = ledger.holdings(owner).get(kind, 0)
     return {"ok": True, "tier": tier, "acquired": take, "held": held,
             "outstanding": outstanding, "window_gib": window,
             "kind": kind}
@@ -2467,7 +2466,7 @@ def unheld_window_gib(queue, tier_id: str) -> dict[str, object]:
         if window is None:
             continue
         try:
-            held = int(queue.tier_ledger(tier).holder_tokens(owner).get(kind, 0))
+            held = int(queue.tier(tier).holdings(owner).get(kind, 0))
         except (OSError, pool_mod.PoolContractError, ValueError) as exc:
             unknown.append({"owner": owner, "error": f"holdings unreadable: {exc}"})
             continue
@@ -3589,7 +3588,7 @@ def admit_funded_window(queue, instance: Mapping[str, object],
                     "tier_id": tier}
         kind = tiers_mod.capacity_kind_of(tier)
         try:
-            capacity = queue.tier_ledger(tier).capacity().get(kind, 0)
+            capacity = queue.tier(tier).mint_supply().get(kind, 0)
         except Exception as exc:
             return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         if need > capacity:
@@ -4048,7 +4047,7 @@ def commit_batch(queue, instance: Mapping[str, object],
         # downgrades to the legacy path (that would double-fund).
         funding_path = (_funding_dir(queue.root, checked_instance)
                         / f"{batch_id}.funding.json")
-        ledger = queue.tier_ledger(tier)
+        ledger = queue.tier(tier)
         try:
             _frec, _fstate = queue.output_funding_file_state(mover, tier)
         except Exception as exc:
@@ -4085,7 +4084,7 @@ def commit_batch(queue, instance: Mapping[str, object],
                         "state": (str(live_funding.get("state"))
                                   if live_funding is not None
                                   else "unknown")}
-            mover_now = ledger.holder_tokens(mover).get(kind, 0)
+            mover_now = ledger.holdings(mover).get(kind, 0)
             if mover_now < batch_gib:
                 # Split tokens stay split; drive retries resume. Unknown
                 # loss retains, never re-funds.
@@ -4104,8 +4103,8 @@ def commit_batch(queue, instance: Mapping[str, object],
                     or int(funding.get("batch_gib", -1)) != batch_gib
                     or funding.get("manifest_digest") != manifest_digest):
                 return {"ok": False, "refusal": "batch-id-in-use"}
-            mover_now = ledger.holder_tokens(mover).get(kind, 0)
-            holder_now = ledger.holder_tokens(batch_ns).get(kind, 0)
+            mover_now = ledger.holdings(mover).get(kind, 0)
+            holder_now = ledger.holdings(batch_ns).get(kind, 0)
             if funding is None and (holder_now > 0 or mover_now > 0):
                 # Tokens without intent: unknown provenance (no record names
                 # this funding). Never top up blindly around them.
@@ -4115,9 +4114,8 @@ def commit_batch(queue, instance: Mapping[str, object],
                     # A previous attempt moved some tokens and crashed before
                     # filing the batch; the remainder is gone to unknown hands.
                     return {"ok": False, "refusal": "unknown-retain: funded tokens lost"}
-                if not ledger.acquire(batch_ns, {kind: batch_gib}):
-                    return {"ok": False, "refusal": "tier-reservation-unavailable",
-                            "available": ledger.available()}
+                if not ledger.take(batch_ns, {kind: batch_gib}):
+                    return {'ok': False, 'refusal': 'tier-reservation-unavailable', 'available': ledger.free_supply()}
                 # Intent names allocated tokens only: nothing is recorded
                 # before the ledger holds it, so a crash before this line
                 # retries clean and a crash after it resumes from the record.
@@ -4127,8 +4125,8 @@ def commit_batch(queue, instance: Mapping[str, object],
                     "manifest_digest": manifest_digest})
                 holder_now = batch_gib
             if holder_now > 0:
-                queue.transfer_tier_reservation(tier, batch_ns, mover)
-                mover_now = ledger.holder_tokens(mover).get(kind, 0)
+                queue.tier(tier).handover(batch_ns, mover)
+                mover_now = ledger.holdings(mover).get(kind, 0)
             if mover_now < batch_gib:
                 # Split tokens stay split (sum intact, nothing released);
                 # retry resumes from live holdings + intent. Unknown loss
@@ -5390,7 +5388,7 @@ def _reconcile_materialization_funding(queue, *, mover: str, tier: str,
                 "refusal": "prepaid-funding-terminal",
                 "state": (str(record.get("state"))
                           if record is not None else "unknown")}
-    held = queue.tier_ledger(tier).holder_tokens(mover).get(kind, 0)
+    held = queue.tier(tier).holdings(mover).get(kind, 0)
     if held < gib:
         return {"ok": False, "step": "reconcile", "refusal": "transfer-short",
                 "moved": held, "expected": gib}
@@ -9483,7 +9481,7 @@ def _dead_staged_batch_ready(queue, instance: Mapping[str, object],
             f"unknown-retain: its mover {mover[:12]} is {mover_state}",
             mover_key=mover)}
     try:
-        held = queue.tier_ledger(tier).holder_tokens(mover)
+        held = queue.tier(tier).holdings(mover)
     except Exception as exc:
         return {"event": report.refused(f"unknown-retain: tier ledger: {exc}",
                                         mover_key=mover)}
@@ -10128,7 +10126,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
             for mover in movers:
                 if mover and tier:
                     try:
-                        if queue.tier_ledger(tier).holder_tokens(mover):
+                        if queue.tier(tier).holdings(mover):
                             return {"ok": False,
                                     "refusal": "active-movers-retain",
                                     "batch_id": batch_id}
@@ -10294,7 +10292,7 @@ def safe_release_instance(queue, instance: Mapping[str, object],
         for tier in checked_template["permitted_tiers"]:
             for holder in sorted(holders):
                 try:
-                    released += queue.tier_ledger(tier).release(holder)
+                    released += queue.tier(tier).release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
                 except Exception as exc:
                     return {"ok": False, "refusal": f"unknown-retain: {exc}"}
         # Holders are empty post-transfer by construction; leftovers

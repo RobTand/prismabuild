@@ -29,6 +29,7 @@ from . import storage_tiers
 from ._gang import _link_new
 from .digest_primitives import raw_sha256
 from .materialize import _write_json_atomic
+from prismabuild import tier_holdings
 
 __all__ = [
     "GROUP_DIR", "TURN_DIR", "HOLDER_PREFIX",
@@ -498,7 +499,7 @@ def _held_or_unknown(ledger: pool.ResourceLedger, key: str,
                      found: GroupCensus) -> set[str] | None:
     """One holder's token names, or None with the mover marked unknown."""
     try:
-        return set(pool.held_names_visible(ledger, key))
+        return set(ledger.holder_state(key))
     except (OSError, pool.PoolContractError, ValueError):
         found.funding_unknown.append(key)
         return None
@@ -521,14 +522,14 @@ def prospective_need_gib(queue: pool.PoolQueue, tier_id: str, unit: str,
     checked = _check_chunks(list(chunks))
     intent = {"chunks": checked}
     kind = storage_tiers.capacity_kind_of(tier_id)
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     found = GroupCensus(holder=str(holder), demand_gib=demand)
     try:
-        found.h = int(ledger.holder_tokens(str(holder)).get(kind, 0))
+        found.h = int(ledger.holdings(str(holder)).get(kind, 0))
     except (OSError, pool.PoolContractError, ValueError):
         return None
     try:
-        found.handles = ledger.acquisitions_of(str(holder))
+        found.handles = ledger.pending_takes(str(holder))
         found.p = sum(int(count) for _, _, _, _, count in found.handles)
     except (OSError, pool.PoolContractError, ValueError):
         return None
@@ -567,19 +568,19 @@ def census(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
     demand = _check_demand(demand_gib)
     movers = _check_movers(chunk_movers)
     kind = storage_tiers.capacity_kind_of(tier_id)
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     found = GroupCensus(holder=str(holder), demand_gib=demand)
     try:
-        found.h = int(ledger.holder_tokens(str(holder)).get(kind, 0))
+        found.h = int(ledger.holdings(str(holder)).get(kind, 0))
     except (OSError, pool.PoolContractError, ValueError) as exc:
         found.unknown.append(f"holder census unreadable: {exc!r}")
     try:
-        found.handles = ledger.acquisitions_of(str(holder))
+        found.handles = ledger.pending_takes(str(holder))
         found.p = sum(int(count) for _, _, _, _, count in found.handles)
     except (OSError, pool.PoolContractError, ValueError) as exc:
         found.unknown.append(f"handle census unreadable: {exc!r}")
     try:
-        found.unparsed = ledger.unparsed_acquisitions_of(str(holder))
+        found.unparsed = ledger.unparsed_takes(str(holder))
     except (OSError, pool.PoolContractError, ValueError) as exc:
         found.unknown.append(f"handle census unreadable: {exc!r}")
     directory = group_dir(queue, unit, tier_id)
@@ -725,7 +726,7 @@ def _settle_handles(ledger: pool.ResourceLedger, holder: str,
     for handle, _, host, pid, _ in found.handles:
         if _is_me(host, pid) or _is_dead(host, pid):
             try:
-                moved = ledger.commit_acquire(str(holder), handle)
+                moved = ledger.commit_take(str(holder), handle)
             except (OSError, pool.PoolContractError, ValueError):
                 return ReconcileOutcome(
                     "unknown", events + ["prelaunch-unknown-evidence"],
@@ -750,7 +751,7 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
     """
     deficit = demand - (found.h + found.m + found.s + found.r)
     try:
-        handle = ledger.begin_acquire(str(holder), {kind: deficit})
+        handle = ledger.begin_take(str(holder), {kind: deficit})
     except (OSError, pool.PoolContractError, ValueError):
         return ReconcileOutcome("unknown",
                                 events + ["prelaunch-unknown-evidence"],
@@ -768,7 +769,7 @@ def _top_up(ledger: pool.ResourceLedger, kind: str, holder: str,
 def _shortage_reason(ledger: pool.ResourceLedger) -> str:
     """The ledger's own words for why a begin declined, never a bare wait."""
     try:
-        shortage = ledger.last_token_shortage
+        shortage = ledger.shortage
     except (OSError, pool.PoolContractError, ValueError, AttributeError):
         return "ledger unreadable"
     if not isinstance(shortage, Mapping):
@@ -791,7 +792,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
     demand = _check_demand(demand_gib)
     movers = _check_movers(chunk_movers)
     kind = storage_tiers.capacity_kind_of(tier_id)
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     try:
         found = census(queue, tier_id, unit, holder, demand, movers)
     except (OSError, pool.PoolContractError, ValueError):
@@ -818,7 +819,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
-            ledger.release(str(holder))
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED)
         except (OSError, pool.PoolContractError, ValueError):
             events.append("prelaunch-unknown-evidence")
         events.append("prelaunch-group-short"
@@ -853,14 +854,14 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         if authority:
             return ReconcileOutcome(state, events, True, found)
         try:
-            ledger.release(str(holder))
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED)
         except (OSError, pool.PoolContractError, ValueError):
             events.append("prelaunch-unknown-evidence")
         events.append("prelaunch-group-overfull")
         return ReconcileOutcome("overfull", events, False, found)
     if found.h > 0:
         try:
-            ledger.release(str(holder))
+            ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED)
         except (OSError, pool.PoolContractError, ValueError):
             return ReconcileOutcome(
                 "unknown", events + ["prelaunch-unknown-evidence"],
@@ -894,7 +895,7 @@ def reconcile(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         return ReconcileOutcome(state, events + ["prelaunch-group-short"],
                                 False, found)
     try:
-        handle = ledger.begin_acquire(str(holder), {kind: need})
+        handle = ledger.begin_take(str(holder), {kind: need})
     except (OSError, pool.PoolContractError, ValueError):
         return ReconcileOutcome("unknown",
                                 events + ["prelaunch-unknown-evidence"],
@@ -1080,7 +1081,7 @@ def _rebind_retained(queue: pool.PoolQueue, ledger: pool.ResourceLedger,
                               None, 0)
     prior = set(tokens) & held
     try:
-        names = pool.held_names_visible(ledger, str(holder))
+        names = ledger.holder_state(str(holder))
     except (OSError, pool.PoolContractError, ValueError):
         return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                               None, 0)
@@ -1138,7 +1139,7 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"the chunk needs its live plan: {exc!r}")
     kind = storage_tiers.capacity_kind_of(tier_id)
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     if not (bool(
         pool.record_store.value_or_raise(
             queue.records.item_presence(pool.record_store.READY, mover),
@@ -1242,7 +1243,7 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             # the retry would find a held mover and refuse it for good.  With
             # the binding first, a retry finds a matching record and resumes.
             try:
-                names = pool.held_names_visible(ledger, str(holder))
+                names = ledger.holder_state(str(holder))
             except (OSError, pool.PoolContractError, ValueError):
                 return PublishOutcome("deferred",
                                       ["prelaunch-unknown-evidence"], None, 0)
@@ -1270,7 +1271,7 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
                                   None, 0)
         if generation is None:
             try:
-                names = pool.held_names_visible(ledger, str(holder))
+                names = ledger.holder_state(str(holder))
             except (OSError, pool.PoolContractError, ValueError):
                 return PublishOutcome("deferred",
                                       ["prelaunch-unknown-evidence"], None, 0)
@@ -1297,13 +1298,12 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
     need = gib - len(prior)
     if need > 0:
         try:
-            before = set(pool.held_names_visible(ledger, mover))
+            before = set(ledger.holder_state(mover))
         except (OSError, pool.PoolContractError, ValueError):
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   generation, 0)
         try:
-            moved = int(queue.transfer_tier_reservation_count(
-                tier_id, str(holder), mover, need))
+            moved = int(queue.tier(tier_id).handover_count(str(holder), mover, need))
         except (OSError, pool.PoolContractError, ValueError):
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   generation, 0)
@@ -1311,7 +1311,7 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             return PublishOutcome("short", ["prelaunch-funding-short"],
                                   generation, moved)
         try:
-            after = set(pool.held_names_visible(ledger, mover))
+            after = set(ledger.holder_state(mover))
         except (OSError, pool.PoolContractError, ValueError):
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   generation, 0)
@@ -1320,7 +1320,7 @@ def _publish_chunk(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
     else:
         moved = 0
         try:
-            current = set(pool.held_names_visible(ledger, mover))
+            current = set(ledger.holder_state(mover))
         except (OSError, pool.PoolContractError, ValueError):
             return PublishOutcome("deferred", ["prelaunch-unknown-evidence"],
                                   generation, 0)
@@ -1382,7 +1382,7 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         return []
     movers = _check_movers(chunk_movers)
     shared = {str(key) for key in shared_owned}
-    ledger = queue.tier_ledger(tier_id)
+    ledger = queue.tier(tier_id)
     events: list[str] = []
     directory = group_dir(queue, unit, tier_id)
     status, intent, _ = _read_receipt(directory / "intent.json")
@@ -1390,7 +1390,7 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
         events.append("prelaunch-unknown-evidence")
         intent = None
     try:
-        holder_freed = int(ledger.release(str(holder)))
+        holder_freed = int(ledger.release_unspent(str(holder), authority=tier_holdings.Unspent.NEVER_STARTED))
     except (OSError, pool.PoolContractError, ValueError):
         holder_freed = 0
         events.append("prelaunch-unknown-evidence")
@@ -1435,20 +1435,20 @@ def release_unit(queue: pool.PoolQueue, tier_id: str, unit: str, holder: str,
             continue
         if state == "ready":
             try:
-                held = set(pool.held_names_visible(ledger, mover))
+                held = set(ledger.holder_state(mover))
             except (OSError, pool.PoolContractError, ValueError):
                 events.append("prelaunch-unknown-evidence")
                 continue
             count = len(set(tokens) & held)
             try:
-                ledger.release(mover)
+                ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED)
             except (OSError, pool.PoolContractError, ValueError):
                 events.append("prelaunch-unknown-evidence")
                 continue
             chunks[mover] = count
         else:
             try:
-                held = set(pool.held_names_visible(ledger, mover))
+                held = set(ledger.holder_state(mover))
             except (OSError, pool.PoolContractError, ValueError):
                 held = set()
             chunks[mover] = len(set(tokens) & held)
