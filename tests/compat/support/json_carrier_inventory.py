@@ -40,7 +40,7 @@ def reference_path(root, reference):
             "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "constructors": builders}
 
 
-def census(root, inventory):
+def census(root, inventory, dispositions):
     kinds = list(catalogue(root).values())
     unversioned = [{"kind": kind["name"], "location": kind["location"], "variants": kind["variants"],
                     "reader": reference_path(root, kind["reader"]),
@@ -75,9 +75,22 @@ def census(root, inventory):
             for child in ast.iter_child_nodes(node):
                 visit(child, owner)
         visit(tree)
+    unassigned = {name: sites for name, sites in sorted(paths.items())
+                  if not any(site["catalogue_location_matches"] or site["schema_or_codec_owners"] for site in sites)}
+    reviewed = {}
+    for line in dispositions.read_text().splitlines() if dispositions.exists() else ():
+        row = json.loads(line)
+        assert row["name"] not in reviewed and row["reason"]
+        assert row["disposition"] in ("catalogued_indirect_carrier", "operator_control", "qualification_artifact", "external_format")
+        assert all(name in {kind["name"] for kind in kinds} for name in row.get("kinds", []))
+        for site in row["sources"]:
+            assert hashlib.sha256((root / site["path"]).read_bytes()).hexdigest() == site["source_sha256"], site
+        if row["name"] in unassigned:
+            assert row["sources"] == [{key: site[key] for key in ("path", "owner", "line", "source_sha256")}
+                                      for site in unassigned[row["name"]]], row["name"]
+            reviewed[row["name"]] = row
     return {"unversioned_kinds": unversioned, "named_json_carriers": dict(sorted(paths.items())),
-            "unassigned_named_carriers": {name: sites for name, sites in sorted(paths.items())
-                if not any(site["catalogue_location_matches"] or site["schema_or_codec_owners"] for site in sites)},
+            "carrier_dispositions": reviewed, "unassigned_named_carriers": {name: sites for name, sites in unassigned.items() if name not in reviewed},
             "note": "Filename matches are source discovery only, never runtime codec credit. Dynamic carriers remain in the complete serialization-site audit."}
 
 
@@ -86,13 +99,17 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--dispositions", type=Path)
+    parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
-    report = census(args.root, args.inventory)
+    report = census(args.root, args.inventory, args.dispositions or args.root / "tests/compat/carrier_dispositions.jsonl")
     with args.out.open("x") as stream:
         stream.write(json.dumps(report, sort_keys=True, indent=2) + "\n")
     args.out.chmod(0o444)
     print("unversioned kinds", len(report["unversioned_kinds"]), "named JSON carriers", len(report["named_json_carriers"]),
           "unassigned filenames", len(report["unassigned_named_carriers"]))
+    if args.require_complete and report["unassigned_named_carriers"]:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
