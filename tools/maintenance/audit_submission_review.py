@@ -52,11 +52,46 @@ def review_occurrences(tree):
     return result
 
 
+def review_consumer_closure(root, focus):
+    owners = {"prismabuild.submission", "prismabuild.submission_types",
+              "prismabuild.d38_gate", "pbrun", "pbresident", "deferred_release",
+              "fleet_submit", "pbcampaign", "submission_frontend", "pbcanary"}
+    imports, reasons = {}, {}
+    for path in sorted((root / "tests").glob("test_*.py")):
+        names = set()
+        for node in ast.walk(ast.parse(path.read_bytes())):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.add(node.module or "")
+                if node.module == "prismabuild":
+                    names.update("prismabuild." + alias.name for alias in node.names)
+        name = str(path.relative_to(root))
+        imports[name] = names
+        if names & owners:
+            reasons[name] = {"owner_imports": sorted(names & owners)}
+    for name in focus:
+        reasons.setdefault(name, {"required": "Root whole-file focus"})
+    for name in ("test_pbtest_capability_cohorts.py", "test_pbtest_capability_claim_eligibility.py",
+                 "test_fleet_tool_flags_have_help.py", "test_live_store_constants_are_repointed.py"):
+        reasons.setdefault("tests/" + name, {"required": "Capability and CLI import boundaries"})
+    while True:
+        before = set(reasons)
+        modules = {Path(name).stem for name in before}
+        for name, dependencies in imports.items():
+            if name not in reasons and dependencies & modules:
+                reasons[name] = {"test_helper_consumers": sorted(dependencies & modules)}
+        if set(reasons) == before:
+            return {"files": sorted(reasons), "reasons": reasons, "root_focus": focus}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--base", default="8e8572ee324b8508b9a7dd6a6dcb7d3548b663a7")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--focus-plan", type=Path)
+    parser.add_argument("--consumer-closure", type=Path)
     args = parser.parse_args()
     paths = review_git(args.root, "ls-files", "-z").decode().split("\0")
     base_paths = set(review_git(args.root, "ls-tree", "-r", "--name-only", args.base).decode().splitlines())
@@ -96,6 +131,11 @@ def main():
               "all_original_assertions": sum(row["all_assertions"] for row in preserved.values()),
               "inventory": inventory, "changed_paths": sorted(changed)}
     args.output.write_text(json.dumps(result, indent=2) + "\n")
+    if args.consumer_closure is not None:
+        focus = json.loads(args.focus_plan.read_bytes())["files"] if args.focus_plan else []
+        closure = review_consumer_closure(args.root, focus)
+        closure.update(base=args.base, head=result["head"], tree=result["tree"])
+        args.consumer_closure.write_text(json.dumps(closure, indent=2) + "\n")
     print(json.dumps({key: value for key, value in result.items()
                       if key not in {"preserved", "inventory", "changed_paths"}}))
 
