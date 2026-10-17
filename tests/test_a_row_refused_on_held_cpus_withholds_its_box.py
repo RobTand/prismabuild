@@ -43,6 +43,9 @@ CAPACITY = {"cpu": CPUS, "gpu": 1, "mem_gb": 120}
 SHARD_TIMEOUT_S = 1800
 
 
+from fleet_world import FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -77,9 +80,7 @@ def host(clock, monkeypatch):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:

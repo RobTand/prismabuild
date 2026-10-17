@@ -59,11 +59,12 @@ ORDERS = [
 ]
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    value = pool.PoolQueue(tmp_path / "queue")
-    value.records.ensure_layout()
-    return value
+    return FleetWorld(tmp_path, queue_name='queue').queue
 
 
 def _end(queue: pool.PoolQueue, status: str):

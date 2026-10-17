@@ -54,6 +54,9 @@ CPU_SHARD_SEALED_END_S = pbtest.shard_ceiling(
     ceilings={"sparky": 86400.0, "sparklina": 86400.0})
 
 
+from fleet_world import FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -75,9 +78,7 @@ def generation_actions(monkeypatch):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.records.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
