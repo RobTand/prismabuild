@@ -11,27 +11,34 @@ from pathlib import Path
 def adopt(capture, destination, suffix, exclude, primary_audit, fleet):
     report_path = capture / "qualification.json"
     report = json.loads(report_path.read_bytes())
-    assert report.get("independent_writer_reproduction_required") is True, "rerun the generator with independent byte reproduction"
+    if not (report.get('independent_writer_reproduction_required') is True):
+        raise ValueError('rerun the generator with independent byte reproduction')
     producers = []
     for action in json.loads(primary_audit.read_bytes()):
         if action["source_snapshot"]["commit"] != report["source_git"]["snapshot"]:
             continue
         request_path = fleet / "cas/requests" / action["action_key"][:2] / (action["action_key"] + ".json")
         raw = request_path.read_bytes()
-        assert hashlib.sha256(raw).hexdigest() == action["request_sha256"]
+        if not (hashlib.sha256(raw).hexdigest() == action['request_sha256']):
+            raise ValueError("capture integrity check failed: hashlib.sha256(raw).hexdigest() == action['request_sha256']")
         command = json.loads(raw)["params"].get("command", [])
         if "tests/compat/support/record_compat.py" not in command or "--generate" not in command:
             continue
         if Path(command[command.index("--generate") + 1]).resolve() != capture.resolve():
             continue
-        assert action["returncode"] == 0 and action["receipt_sha256"] and action["cleanup_complete"]
-        assert action["source_git"]["git_objects_verified"]
+        if not (action['returncode'] == 0 and action['receipt_sha256'] and action['cleanup_complete']):
+            raise ValueError("capture integrity check failed: action['returncode'] == 0 and action['receipt_sha256'] and action['cleanup_complete']")
+        if not (action['source_git']['git_objects_verified']):
+            raise ValueError("capture integrity check failed: action['source_git']['git_objects_verified']")
         producers.append({key: action[key] for key in ("action_key", "request_sha256", "receipt_sha256", "source_parent")})
-    assert len(producers) == 1, "one successful, fully verified producer must bind this capture output and source"
+    if not (len(producers) == 1):
+        raise ValueError('one successful, fully verified producer must bind this capture output and source')
     excluded = {case for case in report["selected_cases"] if case.split("/", 1)[0] in exclude}
     selected = set(report["selected_cases"]) - excluded
-    assert selected, "capture adoption must select actual cases"
-    assert not any(row["case"] in selected for row in report["failures"]), "selected cases retain a failed direction"
+    if not (selected):
+        raise ValueError('capture adoption must select actual cases')
+    if not (not any((row['case'] in selected for row in report['failures']))):
+        raise ValueError('selected cases retain a failed direction')
     rows_by_name = {}
     for name in ("goldens", "historical", "absent-participants"):
         path = capture / (name + ".jsonl")
@@ -39,16 +46,20 @@ def adopt(capture, destination, suffix, exclude, primary_audit, fleet):
         rows = [row for row in rows if row["case"] in selected]
         for row in rows:
             if "raw" in row:
-                assert hashlib.sha256(base64.b64decode(row["raw"], validate=True)).hexdigest() == row["sha256"]
+                if not (hashlib.sha256(base64.b64decode(row['raw'], validate=True)).hexdigest() == row['sha256']):
+                    raise ValueError("capture integrity check failed: hashlib.sha256(base64.b64decode(row['raw'], validate=True)).hexdigest() == row['sha256']")
         rows_by_name[name] = rows
-    assert {row["case"] for row in rows_by_name["goldens"]} == selected
+    if not ({row['case'] for row in rows_by_name['goldens']} == selected):
+        raise ValueError("capture integrity check failed: {row['case'] for row in rows_by_name['goldens']} == selected")
     generations = {row["generation"] for key in ("historical", "absent-participants") for row in rows_by_name[key]}
-    assert generations, "no historical observations captured"
+    if not (generations):
+        raise ValueError('no historical observations captured')
     for case in selected:
         for generation in generations:
             observations = sum(row["case"] == case and row["generation"] == generation
                                for key in ("historical", "absent-participants") for row in rows_by_name[key])
-            assert observations == 1, "each case requires exactly one codec or explicit absence observation per generation"
+            if not (observations == 1):
+                raise ValueError('each case requires exactly one codec or explicit absence observation per generation')
     provenance = {"capture_report_sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
                   "verified_producer": producers[0], "independent_writer_reproduction_required": True,
                   "source_git": report["source_git"], "started_at": report["started_at"], "finished_at": report["finished_at"],

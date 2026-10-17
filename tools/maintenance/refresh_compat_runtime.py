@@ -22,7 +22,8 @@ def rows(path):
 
 def differences(before, after, path=""):
     if isinstance(before, dict) and isinstance(after, dict):
-        assert before.keys() == after.keys(), ("wire member sets changed", path)
+        if not (before.keys() == after.keys()):
+            raise ValueError(('wire member sets changed', path))
         return [row for key in before
                 for row in differences(before[key], after[key], path + "/" + key)]
     return [] if before == after else [dict(path=path, before=before, after=after)]
@@ -33,15 +34,18 @@ def refresh(args):
     data = root / "tests/compat"
     capture = args.capture.resolve()
     report = json.loads((capture / "qualification.json").read_bytes())
-    assert report["passed"] and not report["failures"]
+    if not (report['passed'] and (not report['failures'])):
+        raise ValueError('capture did not pass qualification')
     parents = report["source_git"]["parents"]
-    assert len(parents) == 1
+    if not (len(parents) == 1):
+        raise ValueError('capture integrity check failed: len(parents) == 1')
     producer = parents[0]
     unchanged = ["src", "tools/prismabuild_worker.py", "tests/compat/support"]
     drift = subprocess.check_output(
         ["git", "-C", str(root), "diff", "--name-only", producer, "--", *unchanged],
         text=True).splitlines()
-    assert not drift, ("capture source differs from current production/driver", drift)
+    if not (not drift):
+        raise ValueError(('capture source differs from current production/driver', drift))
     prior = data / "goldens-receipt.jsonl"
     old_raw = prior.read_bytes()
     before = {row["case"]: row for row in rows(prior)}
@@ -49,8 +53,10 @@ def refresh(args):
     expected = {kind + "/" + variant for kind in
                 ("core-receipt", "core-attestation", "core-runtime")
                 for variant in ("in-process", "script")}
-    assert set(before) == set(current) == set(report["selected_cases"]) == expected
-    assert (capture / "historical.jsonl").read_bytes() == (data / "historical-receipt.jsonl").read_bytes(), "historical bytes changed"
+    if not (set(before) == set(current) == set(report['selected_cases']) == expected):
+        raise ValueError("capture integrity check failed: set(before) == set(current) == set(report['selected_cases']) == expected")
+    if not ((capture / 'historical.jsonl').read_bytes() == (data / 'historical-receipt.jsonl').read_bytes()):
+        raise ValueError('historical bytes changed')
     changes = {}
     identities = {}
     for name in ("core", "digest_primitives"):
@@ -59,7 +65,8 @@ def refresh(args):
     for case in sorted(expected):
         old = base64.b64decode(before[case]["raw"], validate=True)
         new = base64.b64decode(current[case]["raw"], validate=True)
-        assert sha(old) == before[case]["sha256"] and sha(new) == current[case]["sha256"]
+        if not (sha(old) == before[case]['sha256'] and sha(new) == current[case]['sha256']):
+            raise ValueError("capture integrity check failed: sha(old) == before[case]['sha256'] and sha(new) == current[case]['sha256']")
         changes[case] = differences(json.loads(old), json.loads(new))
         prefix = ("/producer/runtime" if case.startswith("core-receipt/") else
                   "/runtime" if case.startswith("core-attestation/") else "")
@@ -70,21 +77,27 @@ def refresh(args):
             allowed.add("/attestation_sha256")
         for name in identities:
             allowed |= {prefix + "/" + name + "/" + field for field in ("bytes", "sha256")}
-        assert {row["path"] for row in changes[case]} <= allowed
-        assert changes[case], "capture did not change this current-source golden"
+        if not ({row['path'] for row in changes[case]} <= allowed):
+            raise ValueError("capture integrity check failed: {row['path'] for row in changes[case]} <= allowed")
+        if not (changes[case]):
+            raise ValueError('capture did not change this current-source golden')
         body = json.loads(new)
         runtime = body["producer"]["runtime"] if case.startswith("core-receipt/") else body["runtime"] if case.startswith("core-attestation/") else body
         for name, identity in identities.items():
-            assert all(runtime[name][field] == value for field, value in identity.items())
+            if not (all((runtime[name][field] == value for field, value in identity.items()))):
+                raise ValueError('capture integrity check failed: all((runtime[name][field] == value for field, value in identity.items()))')
     archive = data / "history-controls" / ("superseded-runtime-" + sha(old_raw)[:16])
-    assert not archive.exists(), "old current bytes already archived; inspect partial adoption"
+    if not (not archive.exists()):
+        raise ValueError('old current bytes already archived; inspect partial adoption')
     with tempfile.TemporaryDirectory(prefix="adopt-runtime-") as tmp:
         staged = Path(tmp)
         subprocess.run([sys.executable, str(root / "tests/compat/support/adopt_compat_capture.py"),
                         "--capture", str(capture), "--destination", str(staged),
                         "--suffix", "receipt", "--primary-audit", str(args.primary_audit)], check=True)
-        assert (staged / "historical-receipt.jsonl").read_bytes() == (data / "historical-receipt.jsonl").read_bytes()
-        assert not (staged / "absent-participants-receipt.jsonl").exists()
+        if not ((staged / 'historical-receipt.jsonl').read_bytes() == (data / 'historical-receipt.jsonl').read_bytes()):
+            raise ValueError("capture integrity check failed: (staged / 'historical-receipt.jsonl').read_bytes() == (data / 'historical-receipt.jsonl').read_bytes()")
+        if not (not (staged / 'absent-participants-receipt.jsonl').exists()):
+            raise ValueError("capture integrity check failed: not (staged / 'absent-participants-receipt.jsonl').exists()")
         archive.mkdir(parents=True)
         (archive / prior.name).write_bytes(old_raw)
         provenance = dict(reason="Only attested Core/digest source identities and dependent self-digests changed; actual writer bytes independently reproduced and unchanged retained consumers accepted both directions.",

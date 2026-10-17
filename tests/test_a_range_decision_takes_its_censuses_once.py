@@ -541,6 +541,7 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
                 before = os.stat(target)
                 partial.write_bytes(b"half a copy")
                 after = os.stat(target)
+                # The logical fence is ahead of the kernel tick; step the real version too.
                 os.utime(target, ns=(after.st_atime_ns,
                                     max(after.st_mtime_ns, before.st_mtime_ns + 1)))
                 assert os.stat(target).st_mtime_ns != before.st_mtime_ns
