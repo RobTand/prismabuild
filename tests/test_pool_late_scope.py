@@ -157,8 +157,8 @@ def test_stale_scope_start_preserves_successor_claim_and_lease(
     if phase == "after_create":
         # Initially consistent reads; the later broker reply exposes a fresh
         # successor lease while the caller's claim observation remains old.
-        pool.record_store._write_json(claim_path, first)
-        pool.record_store._write_json(lease_path, {
+        pool.immutable_files.write_json_atomic(claim_path, first)
+        pool.immutable_files.write_json_atomic(lease_path, {
             "owner": first["claimed_by"], "host": first["claimed_host"],
             "claimed_unix": first["claimed_unix"],
             "published_unix": first["published_unix"],
