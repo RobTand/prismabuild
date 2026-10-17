@@ -762,21 +762,23 @@ class ShapeGate:
                    "schema": pb.DATA_MANIFEST_SCHEMA_V2,
                    "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
                    "content_encoding": "gzip"}
-        template = self._template()
+        template = {**self._template(), "cas": self.cas}
         action = submission.seal(
             template, command=["true"], extra_inputs=[manifest_input],
             extra_params={"data_manifest": summary})
         sealed = {**template,
                   "params": {**template["params"], "data_manifest": summary},  # type: ignore[dict-item]
                   "inputs": [*template["inputs"], manifest_input]}  # type: ignore[misc]
-        self.cas.publish_action_request(action)
         key = str(action["action_key"])
-        args = SubmissionRequest(residency="stage", priority=-10, command=("true",))
+        args = SubmissionRequest(cwd=str(self.root), residency="stage", priority=-10,
+                                 command=("true",), detach=True)
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            submission.publish_consumer_row(
-                self.queue, action, sealed, key=key, args=args, cas=self.cas,
-                store=self.store, display=render_submission)
+            result = submission.submit_action(action, template=sealed, request=args,
+                store=self.store, display=lambda event: render_submission(event)
+                    if event.channel == "stderr" else None)
+            if isinstance(result, SubmissionRefused):
+                raise result
         self.submit_log = stderr.getvalue()
         return key
 

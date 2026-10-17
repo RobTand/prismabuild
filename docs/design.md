@@ -18305,9 +18305,9 @@ authority. Persistent scoped readers retain their separate durable protocol.
 
 `action_client` owns synchronous outcome intake, immutable verification, expanded
 attempt output, human reporting and the existing client exit constants. Both
-waiters and inspection consumers call that package owner directly. `pbrun`
-retains submission, publication, transport and command orchestration. The
-package operation imports no CLI. `pbwait` keeps SLURM resume in its durable
+waiters and inspection consumers call that package owner directly. `submission`
+owns request preparation, sealing, publication and transport orchestration;
+`pbrun` parses arguments and renders display events. The package imports no CLI. `pbwait` keeps SLURM resume in its durable
 parent, after bounded observation, and checks receipts before scheduler state.
 This ownership change does not change queue records or the reserved-exit clamp.
 The private client channel and package recovery follow the bounded protocol
@@ -18389,3 +18389,43 @@ contention, reservation normalization, gang/canary authority and scratch trust
 remain with their current owners. Unknown advertised capacity is still distinct
 from zero. These answer fit, authority and admission questions beyond host
 capability. No C01 reservation, census, lock or commit owner changes.
+
+
+### Shared submission ownership (C14)
+
+`submission_types.SubmissionRequest` is the submission vocabulary. Campaign,
+gang and decomposition field sets derive from its options. JSON requests and
+campaign rows normalize numeric values to the same types as CLI parsing, so
+`gpu_memory_gb=32`, `32.0` and the accepted row string `"32"` seal identically.
+CLI private descriptors remain outside the request and sealed action.
+
+`submission` owns checkout snapshots, template freezing, action sealing,
+capability advice and the publication tail. Callers pass `FleetStore` with
+explicit queue, CAS, runtime, roster and D38 configuration paths. The package
+uses the qualified C03 predicates and C06 `ClientReport`, identities and
+verdicts. Checked refusals carry a client status and display text; interruptions
+outside that model propagate without inventing an ending.
+
+`publish` serves ordinary requests, direct decomposed children, deferred
+releases and compiled producers. Detached cache and live-attachment checks
+precede runnable publication. D38 precedes new work on both transports.
+Deferred release retains its gate-before-CAS order; ordinary submission retains
+its CAS-before-gate order. Supersession remains immediately before publication,
+after other refusals. Origin-consumer declarations and staged plan installation
+retain the consumer transition lock and existing cancellation renewal rules.
+Pre-frozen decomposed plans use that same transaction. Child queue rows retain
+the preparation's tested-repository annotation.
+
+`write_window` holds the filesystem growth allowance during preparation and
+publication. Pool and deferred waits run after release; SLURM retains its
+existing no-growth wait behavior. Batch preparation has its own package reader
+and write scope. Each client invocation owns its complete C06 reader history,
+with no history shared between wait threads. Display callbacks and store
+objects do not enter template records, action identity or queue schemas.
+
+`pbrun` accepts ordinary argv and a typed JSON request for process frontends.
+`pbtest` and `pbgang` use that request through the existing C06 channel.
+`pbcampaign` calls the package directly. Resident, manifest-promotion, shape,
+snapshot, wait, canary and producer adapters call their package owners without
+importing execution from the CLI. The rollout changes source only; it does not
+activate a runtime generation or D38 enforcement.

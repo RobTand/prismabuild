@@ -25,7 +25,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import pool, submission as submit_core  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
 import fleet_submit  # noqa: E402
@@ -473,7 +473,7 @@ def test_one_tree_is_bundled_once_however_many_shards_it_dispatches(
 
     cas = _cas(tmp_path)
     checkout = _producer_checkout(tmp_path)
-    __import__("prismabuild.submission", fromlist=["submission"])._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
 
     inputs = set()
     for shard in (1, 2, 3):
