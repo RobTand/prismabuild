@@ -19721,3 +19721,19 @@ after `_activate()` returns and before recording activation progress. A namespac
 sync failure leaves the pending operation for explicit reconciliation. The
 independent bootstrap lock's directory entry is read back against the locked FD
 before work proceeds.
+
+
+Installed-bootstrap qualification binds every verified CAS request's executed
+`task.argv` byte for byte to the standard captured-log recipe reconstructed by
+`action_result.bind_standard_capture_command` from the approved command, result
+path and sealed PATH. Neither metadata nor emitted attestation/outcome JSON alone
+establishes execution. The task must name `fleet/pbrun`, run at `.`, bind
+`params.cwd` and snapshot subdirectory to `.`, and carry that exact snapshot
+input in `action.inputs`. Native root commands remain fixed by their indexed
+profiles. `corpus_routes.<machine>.commands` in the independently sealed index
+approves the exact corpus command argv lists, including recorder source when
+used. A changed executable recipe, cwd/input route or unapproved corpus command
+refuses even with otherwise complete successful indexed outcomes. The master
+commits all attested source names, including native profiles and
+`qualification_dependencies.json`, to the final Git tree before freezing it;
+generated-only snapshot artifacts do not satisfy source identity.

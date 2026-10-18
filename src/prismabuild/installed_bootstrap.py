@@ -64,6 +64,26 @@ def _qualification_index(assessment, checkout):
     return index
 
 
+def _require_qualification_execution(action, snapshot, *, kind, machine, index):
+    """Bind approved metadata to Core's executed argv and materialized checkout."""
+    from .action_result import ActionResultError, bind_standard_capture_command
+    try:
+        bind_standard_capture_command(action)
+    except ActionResultError as exc:
+        raise WindowError('bootstrap qualification execution recipe differs: ' + str(exc)) from exc
+    if (action['task'].get('definition_id') != 'fleet/pbrun'
+            or action['task'].get('working_directory') != '.'
+            or action['params'].get('cwd') != '.' or snapshot['subdirectory'] != '.'
+            or snapshot['input'] not in action['inputs']):
+        raise WindowError('bootstrap qualification checkout/cwd/input route differs')
+    if kind == 'corpus':
+        command = action['params']['command']
+        approved = index.get('corpus_routes', {}).get(machine, {}).get('commands', [])
+        if (command not in approved or not Path(command[0]).is_absolute()
+                or action['params'].get('interpreter') != command[0]):
+            raise WindowError('corpus qualification command is outside the sealed approved routes')
+
+
 def _require_root_route(action, attestation, files, machine, index, checkout):
     route = index['root_routes'].get(machine)
     if route is None:
@@ -174,6 +194,7 @@ def verify_qualification(assessment, *, checkout, fleet_root):
         if kind == 'root' and not set(files) <= set(ROOT_FILES):
             raise WindowError('root and corpus qualification use separate populations')
         machine = receipt['producer']['evidence']['machine']
+        _require_qualification_execution(action, snapshot, kind=kind, machine=machine, index=index)
         runtime_key = ''
         if kind == 'root':
             _require_root_route(action, records[0], files, machine, index, checkout)

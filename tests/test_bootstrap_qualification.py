@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from prismabuild import core, pool, installed_bootstrap as owner
+from prismabuild import core, pool, movement_actions, installed_bootstrap as owner
 from prismabuild.compatibility_window import WindowError
 from prismabuild.digest_primitives import raw_sha256
 spec = importlib.util.spec_from_file_location('_qualification_outcomes',
@@ -33,7 +33,8 @@ def qualification(tmp_path, monkeypatch):
         routes[machine] = {'profile': profile_path, 'profile_sha256': raw_sha256(raw)}
     sources = {name: raw_sha256(raw) for name, raw in source_bytes.items()}
     index = {'schema': 'prismabuild.bootstrap_qualification_index.v1', 'target_commit': 'f' * 40,
-        'populations': populations, 'source_sha256': sources, 'root_routes': routes}
+        'populations': populations, 'source_sha256': sources, 'root_routes': routes,
+        'corpus_routes': {'x86_64': {'commands': [['/python', '-m', 'pytest', *files['corpus']]]}}}
     monkeypatch.setattr(owner, '_qualification_source', lambda checkout, commit, name: source_bytes[name])
     path = tmp_path / 'index.json'
     requests, receipts, logs = {}, {}, {}
@@ -42,9 +43,22 @@ def qualification(tmp_path, monkeypatch):
         primary = profile['primary']
         profile_path = routes[machine]['profile']
         profile_raw = source_bytes[profile_path]
-        commands = ['/python', 'tests/run_proof_container.py', '--runtime-profile', profile_path, *files[kind]]
-        requests[key] = {'params': {'command': commands, 'interpreter': '/python',
-            'checkout_snapshot': {'commit': 'snapshot', 'input': {}}}}
+        commands = (['/python', 'tests/run_proof_container.py', '--runtime-profile', profile_path, *files[kind]]
+                    if kind == 'root' else ['/python', '-m', 'pytest', *files[kind]])
+        snapshot_input = {'id': core.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID, 'sha256': 'c' * 64, 'bytes': 1}
+        code = tmp_path / 'closure.py'; code.write_text('# fixture closure\n')
+        requests[key] = core.seal_action({'schema': core.ACTION_SCHEMA_V2,
+            'task': {'definition_id': 'fleet/pbrun', 'definition_version': 'v1',
+                'task_class': 'generation', 'determinism': 'deterministic',
+                'artifact_family': 'generic', 'artifact_kind': 'generic',
+                'argv': movement_actions.standard_capture_argv(commands, 'result.txt', path_prefix='/usr/bin'),
+                'working_directory': '.', 'result_path': 'result.txt'},
+            'inputs': [snapshot_input], 'code_closure': core.build_code_closure(tmp_path, ['closure.py']),
+            'params': {'command': commands, 'interpreter': '/python', 'cwd': '.',
+                'checkout_snapshot': {'schema': core.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V1,
+                    'commit': 'e' * 40, 'input': snapshot_input, 'subdirectory': '.'}},
+            'environment': {'variables': {'PATH': '/usr/bin:/bin'}, 'toolchain': {}},
+            'execution_scope': {'portability': 'portable', 'platform_key': None, 'host_class': None}})
         receipts[key] = {'producer': {'evidence': {'machine': machine}}}
         nodes = populations[kind]['nodes']
         record = {'schema': pbtest_outcomes.SCHEMA, 'collected': nodes, 'deselected': [],
@@ -75,7 +89,6 @@ def qualification(tmp_path, monkeypatch):
     monkeypatch.setattr(importlib.util, 'spec_from_file_location', lambda name, path:
         SimpleNamespace(name=name, loader=Loader()) if name.startswith('_bootstrap_') else spec_from(name, path))
     monkeypatch.setattr(core, 'PrismaBuildCAS', CAS)
-    monkeypatch.setattr(core, 'validate_pbrun_checkout_snapshot', lambda v: v)
     monkeypatch.setattr(pool.record_store, 'read_document', lambda _: {'status': 'executed', 'detail': {'returncode': 0}})
     assessment = {'plan': {'target': {'commit': 'f' * 40}}, 'qualification_actions': list(requests)}
     def seal():
@@ -112,3 +125,24 @@ def test_complete_external_population_and_approved_route_pass(qualification, tmp
     assessment, _, _, _, _ = qualification
     result = owner.verify_qualification(assessment, checkout=Path(__file__).resolve().parents[1], fleet_root=tmp_path)
     assert list(result.action_keys) == ['arm', 'x86', 'corpus']
+
+
+@pytest.mark.parametrize('lane', ['arm', 'corpus'])
+@pytest.mark.parametrize('damage', ['argv', 'cwd', 'input', 'metadata-command'])
+def test_qualification_binds_executed_recipe_and_checkout(qualification, tmp_path, lane, damage):
+    assessment, _, requests, _, _ = qualification
+    action = requests[lane]
+    if damage == 'argv':
+        # Approved metadata, source pins and successful indexed outcomes survive.
+        action['task']['argv'] = ['/python', '-c', 'print("forged outcomes")']
+    elif damage == 'cwd':
+        action['task']['working_directory'] = 'other'
+    elif damage == 'input':
+        action['inputs'] = []
+    else:
+        action['params']['command'] = ['/python', '-c', 'print("forged outcomes")']
+        action['task']['argv'] = movement_actions.standard_capture_argv(
+            action['params']['command'], 'result.txt', path_prefix='/usr/bin')
+    requests[lane] = core.seal_action({k: v for k, v in action.items() if k != 'action_key'})
+    with pytest.raises(WindowError):
+        owner.verify_qualification(assessment, checkout=Path(__file__).resolve().parents[1], fleet_root=tmp_path)
