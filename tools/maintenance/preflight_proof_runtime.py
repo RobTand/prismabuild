@@ -112,7 +112,8 @@ def preflight_image(payload):
         refusal = dict(type=type(error).__name__, message=str(error), state=current[0])
         record(error,{})
         preflight_collect_loops(runtime,sources['proof_container_runtime'],
-            {'runtime_elf_search_directories'},record)
+            {'runtime_elf_search_directories', 'runtime_loader_edges'},record)
+        capture.runtime_loader_edges = runtime.runtime_loader_edges
         preflight_collect_loops(capture,sources['capture_proof_runtime'],
             {'discover_image_runtime_graph'},record)
         original_search = runtime.runtime_elf_search_directories
@@ -154,7 +155,7 @@ def preflight_image(payload):
                 native_audits[state] = original_audit(view,byte_path)
             except (ValueError,OSError,KeyError,RuntimeError) as error:
                 record(error,{})
-                preflight_collect_loops(runtime,sources['proof_container_runtime'],{'audit_native_closure'},record)
+                preflight_collect_loops(runtime,sources['proof_container_runtime'],{'audit_native_closure', 'runtime_loader_edges'},record)
                 try:
                     runtime.audit_native_closure(view,byte_path)
                 except (ValueError,OSError,KeyError,RuntimeError) as remaining:

@@ -1223,7 +1223,7 @@ def audit_native_closure(closure, byte_path):
             if (entry is not None and entry['kind'] == 'directory'
                     and 'mode' in entry and not entry['mode'] & 0o001):
                 raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
-        found = {resolve(str(Path(spelling) / Path(path).relative_to(directory)))
+        found = {sealed_candidate(str(Path(spelling) / Path(path).relative_to(directory)))
                  for path in runtime_directory_candidate_spellings(entries, directory, needed, direct=mode == 'direct')}
         direct = str(Path(directory) / needed)
         entry = entries.get(direct, closure['components'].get(direct, {}).get('entry'))

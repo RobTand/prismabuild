@@ -19154,24 +19154,44 @@ a serialized off-graph label grants no exemption.
 
 The existing image cache, its read-only `ldconfig` listing and the captured host
 loader's actual mounted diagnostics bind the conservative provider candidate
-graph. It includes both RPATH and RUNPATH contexts, all positive alias origins,
-matching cache entries, and variants below fully inventoried search directories,
-with the existing ordered default-directory rules. A RUNPATH or RPATH directory
-that is a proper ancestor of captured roots uses direct-child search evidence
-instead of a recursive inventory. Existing conservative global search contexts,
-including inherited RPATH candidates, remain in force. For each required
-needed-basename query, a present child becomes a required candidate with complete
-retained bytes; a missing child requires an actual no-follow ENOENT, equal
-parent stamps and the complete sorted immediate child-name listing. The listing
-spends the existing member budget. The auditor rederives the ancestor rule and
-replays those probes; mounted verification re-observes each search miss. These
-search misses do not exempt declared links under A1, and add no broad roots.
-An empty RUNPATH element remains an unsupported search token; cwd is not
-modeled. It never substitutes a found fallback for the real loader's choice. Unknown directories or candidates,
-required dangling candidates, loader overrides, secure mode, unsupported tokens,
-and NODEFLIB refuse capture. No tentative loader diagnostics are placed in the
-host checkpoint. If the authoritative mounted-loader audit needs uncaptured
-facts, capture refuses. The supported candidate format is native ELF64 Linux
+graph. After the host checkpoint and before image completion, the host PT_INTERP
+runs `--list-diagnostics` in the image with the selected host roots bound read-only,
+using the same entrypoint and finite timeout as the post-completion observation.
+Its raw output is an explicit completion input retained in the image checkpoint.
+The authoritative post-completion diagnostics must report exactly the same
+ordered system directories and actual kernel release; capture and retained audit
+both refuse a difference. No host-side tentative loader planning is introduced.
+
+Producer and auditor use one loader-order owner. For each ELF's actual path and
+each positive alias origin, a needed basename searches DT_RPATH, including the
+existing conservative inherited contexts, only without DT_RUNPATH; then the
+object's own DT_RUNPATH; matching cache rows in order; and mounted-loader default
+directories in order. Each origin variant must find a regular-file provider.
+Every candidate under every global RPATH/RUNPATH context and every matching cache
+row remains required when present, independently of the first hit. A missing or
+non-regular cache candidate refuses even if a later default would provide it.
+Default candidates are retained or witnessed through each variant's first hit.
+The installed reader starts with an explicit environment containing only PATH,
+TMPDIR and bounded native thread variables, excluding LD_LIBRARY_PATH and
+LD_PRELOAD; actual primary and reader observations refuse loader overrides.
+
+A RUNPATH, RPATH or default directory that is a proper ancestor of captured
+roots uses direct-child search evidence instead of a recursive inventory.
+This includes default `/lib` resolved through its positive alias to `/usr/lib`.
+Complete-mode directories retain complete inventories. Existing conservative
+global search contexts, including inherited RPATH candidates, remain in force.
+For each visited needed-basename query, a present child becomes a required
+candidate with complete retained bytes; a missing child requires an actual
+no-follow ENOENT, equal parent stamps and the complete sorted immediate child-name
+listing. The listing spends the existing member budget. The auditor rederives
+the ancestor rule and replays those probes; mounted verification re-observes each
+search miss. These search misses do not exempt declared links under A1, and add
+no broad roots. An empty RUNPATH element remains an unsupported search token;
+cwd is not modeled. Unknown directories or candidates, required dangling
+candidates, loader overrides, secure mode, unsupported tokens and NODEFLIB refuse
+capture. If completion cannot retain the facts required by the authoritative
+mounted-loader audit within the existing budgets and phase allowance, capture
+refuses. The supported candidate format is native ELF64 Linux
 with ordinary ABI headers and world-readable files. GNU ABI kernel requirements
 must fit the actual diagnostic kernel release. ELF audit, filter, and
 configuration loading and system-wide preloads refuse capture. Later outer,

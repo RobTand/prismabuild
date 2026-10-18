@@ -177,9 +177,10 @@ class RequiredGraphFilesystem:
         if origin == 'image':
             cache = next(root['entries']['.'] for root in roots if root['path'] == '/etc/ld.so.cache')
             tool = next(root['entries']['.'] for root in roots if root['path'] == '/sbin/ldconfig')
+            host_pt, = runtime.elf_requirements(self.physical('host', self.host_executable))['interpreters']
             result['pre_completion_diagnostics'] = dict(raw=self.diagnostic_raw,
-                command=[self.host_interpreter, '--list-diagnostics'],
-                executable=dict(path=self.host_interpreter, resolved_path=NATIVE + '/ld-fixture.so',
+                command=[host_pt, '--list-diagnostics'],
+                executable=dict(path=host_pt, resolved_path=NATIVE + '/ld-fixture.so',
                     **capture.file_descriptor(self.physical('host', NATIVE + '/ld-fixture.so'))))
             result['loader_cache'] = dict(path='/etc/ld.so.cache',
                 bytes=cache['bytes'], sha256=cache['sha256'], raw_listing=self.cache_listing,
@@ -1503,6 +1504,7 @@ def test_reader_alias_adds_image_interpreter_ancestor_search(tmp_path):
         needed=('libreader.so',), runpath=('$ORIGIN/../lib',), marker=b'image-reader-rpath'))
     tree.image_file('/usr/local/lib/libreader.so', graph_fixture_elf(marker=b'image-provider'))
     tree.image_paths.append('/usr/local/lib')
+    tree.cache_listing = '1 libs found in cache fixture:\n libreader.so (libc6,AArch64) => /usr/local/lib/libreader.so\n'
     closure = tree.complete()
     assert runtime.replay_runtime_path(runtime.runtime_namespace_state(
         closure,'after_installation'),'/usr/bin/python3').terminal == tree.image_executable
