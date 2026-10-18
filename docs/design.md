@@ -19095,10 +19095,21 @@ path, excluding unsealed host venv site-packages. The installed reader retains
 its production spelling, isolated startup, root custody, and real unprivileged
 credentials. Executable, venv, stdlib, site, cache/tool, and library-alias roots
 retain the strict every-link rule and existing Python startup semantics. This
-contract adds no Python startup model or customization restriction. Completion
-captures a present external startup-link target as a narrow exact image root
-with complete bytes; it cannot excuse a missing stdlib or venv alias as an
-unused native link.
+contract adds no Python startup model or customization restriction. Host root
+selection also inspects `sitecustomize.py` and `usercustomize.py` in the selected
+stdlib. A symlink whose strict host resolution is a root-owned regular file
+outside every already selected root adds exactly that terminal as a host file
+root. Missing host targets add nothing and retain the strict link rule. The
+closure records each `{link, target}` derivation and stable host component and
+custody observations. The auditor independently replays that selection against
+the host inventory and rejects any host root not justified by the stdlib,
+interpreter, venv, observed native-provider, or customization rules. Selection
+probes consume the existing member budget; retained target bytes consume the
+ordinary inventory budget. Host file roots shadow image copies, and missing
+image ancestors use the mount-plan rule above. Mounted inventory verification
+checks the bound file's complete bytes. Completion captures other present
+external startup-link targets as narrow exact image roots with complete bytes;
+it cannot excuse a missing stdlib or venv alias as an unused native link.
 
 Reader installation has separately sealed `before_installation` and
 `after_installation` namespace states. Only an exact image-owned absence witness
