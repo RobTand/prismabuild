@@ -1937,3 +1937,87 @@ def test_executed_reader_requires_one_diagnosed_loader(tmp_path, monkeypatch, in
             operation()
     else:
         operation()
+
+
+def graph_original_physical_seeds(roots, entries, components, elf_roots, aliases):
+    return {path: path for path, entry in entries.items() if entry['kind'] == 'file'
+            and any(Path(path).is_relative_to(root) for root in elf_roots)}
+
+
+@pytest.mark.parametrize('form', ['directory', 'file'])
+@pytest.mark.parametrize('provider_present', [True, False])
+@pytest.mark.parametrize('stage', ['completion', 'before_installation', 'after_installation'])
+def test_python_root_alias_extension_seals_dependencies(tmp_path, monkeypatch, form, provider_present, stage):
+    tree = RequiredGraphFilesystem(tmp_path)
+    target = '/opt/pkg/_foo.so' if form == 'directory' else '/opt/pkg/mod.so'
+    logical = '/h/stdlib/pkg/_foo.so' if form == 'directory' else '/h/stdlib/mod.so'
+    tree.host_link('/h/stdlib/pkg' if form == 'directory' else logical,
+                   '/opt/pkg' if form == 'directory' else target)
+    tree.image_file(target, graph_fixture_elf(needed=('libalias_unique.so',), runpath=('$ORIGIN/../private',)))
+    if form == 'directory':
+        tree.image_file('/opt/pkg/__init__.py', b'')
+        tree.host_file('/h/stdlib/private/unrelated.txt', b'listing')
+    else:
+        tree.image_file('/h/private/unrelated.txt', b'listing')
+    provider = '/opt/private/libalias_unique.so'
+    tree.image_file('/opt/private/unrelated.txt', b'listing')
+    if provider_present:
+        tree.image_file(provider, graph_fixture_elf(marker=b'unique provider'))
+    if stage != 'completion':
+        # Build the old incomplete packet, then let replay derive logical seeds
+        # itself and require the omitted provider/search evidence.
+        with monkeypatch.context() as patch:
+            patch.setattr(capture, 'runtime_elf_seed_spellings', graph_original_physical_seeds, raising=False)
+            closure = tree.complete()
+        with pytest.raises(ValueError, match='missing|escapes|sealed|unresolved|inventoried'):
+            runtime.audit_native_closure(runtime.runtime_namespace_state(closure, stage),
+                lambda path: tree.bytes_path(closure, path))
+        return
+    if not provider_present:
+        with pytest.raises(ValueError, match='unresolved runtime ELF dependency'):
+            tree.complete()
+        return
+    closure = tree.complete()
+    assert provider in runtime.runtime_namespace_entries(closure)
+    audit = tree.audit(closure)
+    logical_directory = '/h/stdlib/private' if form == 'directory' else '/h/private'
+    assert audit['native_audit']['search_directories_sha256'] == runtime.digest(
+        runtime.canonical(sorted([logical_directory, '/opt/private'])))
+
+
+def test_nested_python_directory_aliases_promote_external_elf(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_link('/h/stdlib/pkg', '/opt/pkg')
+    tree.image_link('/opt/pkg/sub', '/opt/deep')
+    tree.image_file('/opt/deep/_nested.so',
+        graph_fixture_elf(needed=('libnested_unique.so',), runpath=('/opt/private',)))
+    provider = '/opt/private/libnested_unique.so'
+    tree.image_file(provider, graph_fixture_elf())
+    closure = tree.complete()
+    assert provider in runtime.runtime_namespace_entries(closure)
+    tree.audit(closure)
+
+
+def test_python_alias_requires_complete_target_directory_inventory(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_link('/h/stdlib/pkg', '/opt/pkg')
+    tree.image_file('/opt/pkg/_foo.so', graph_fixture_elf())
+    tree.image_paths.append('/opt/pkg/_foo.so')
+    with pytest.raises(ValueError, match='Python-root alias directory is not completely inventoried'):
+        tree.complete()
+
+
+def test_python_directory_alias_cycle_is_refused(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_link('/h/stdlib/pkg', '/opt/pkg')
+    tree.image_link('/opt/pkg/back', '/h/stdlib')
+    with pytest.raises(ValueError, match='Python-root alias.*cycle'):
+        tree.complete()
+
+
+def test_unrelated_native_alias_does_not_become_python_seed(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_link(NATIVE + '/unrelated.so', '/opt/unrelated.so')
+    tree.image_file('/opt/unrelated.so',
+        graph_fixture_elf(needed=('not_a_python_dependency.so',), runpath=('/not_a_search_root',)))
+    tree.audit(tree.complete())
