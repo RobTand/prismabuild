@@ -230,3 +230,60 @@ def test_gate_native_runtime_identity_is_actual_elf():
     runtime = helper.bootstrap_runtime_identity()
     assert runtime['elf_machine'] == {'x86_64': 62, 'aarch64': 183}[os.uname().machine]
     print('bootstrap-gate-native-runtime: ' + json.dumps(runtime))
+
+
+def test_plan_selects_five_old_installed_members_despite_packaged_digest(bootstrap, tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from prismabuild.digest_primitives import raw_sha256
+    plan, _, qualification, designation = bootstrap
+    source, target = (Path(plan[name]['directory']) for name in ('source', 'target'))
+    source.chmod(0o755)
+    package = source / 'src/prismabuild'
+    package.chmod(0o755)
+    leaf = package / 'digest_primitives.py'
+    leaf.write_bytes((ROOT / 'src/prismabuild/digest_primitives.py').read_bytes())
+    leaf.chmod(0o444)
+    package.chmod(0o555)
+    receipt_path = source / 'RUNTIME_VERSION.json'
+    receipt = json.loads(receipt_path.read_bytes())
+    receipt['files']['src/prismabuild/digest_primitives.py'] = raw_sha256(leaf.read_bytes())
+    raw = json.dumps(receipt).encode()
+    receipt_path.chmod(0o644)
+    receipt_path.write_bytes(raw)
+    receipt_path.chmod(0o444)
+    source.chmod(0o555)
+    plan['source']['receipt_sha256'] = raw_sha256(raw)
+    plan['source']['content_sha256'] = canonical_sha256(receipt['files'])
+    monkeypatch.setattr(window, 'BOOTSTRAP_SOURCE', {key: value for key, value in plan['source'].items() if key != 'directory'})
+    selected = tmp_path / 'designation.json'
+    selected.write_text(json.dumps(designation))
+    inventory = tmp_path / 'inventory.json'
+    inventory.write_text(json.dumps({host: {'config': {}, 'boot_id': plan['boots'][host],
+        'enrollment_sha256': plan['enrollments'][host], 'lock_inode': plan['locks'][host],
+        'broker': plan['brokers'][host]} for host in plan['roster']}))
+    actions = tmp_path / 'actions.json'
+    actions.write_text('["qualification-key"]')
+    monkeypatch.setattr(collector, 'verify_qualification', lambda *a, **kw: SimpleNamespace(runtimes=qualification.runtimes))
+    out = tmp_path / 'operator-plan'
+    collector.write_plan(source=source, target=target, inventory=inventory, actions=actions,
+                         designation=selected, out=out, operation_id='source-selection')
+    generated = json.loads((out / 'plan.json').read_bytes())
+    assert set(generated['source_files']) == {'resource_broker.py', 'resource_payload.py', 'gpu_memory.py',
+                                             'gpu_capacity.py', 'upgrade_client.py'}
+    for row in bootstrap[1].rows.values():
+        row['plan_sha256'] = canonical_sha256(plan)
+    assert assess_case(bootstrap)['automatic_reachability'] is False
+
+
+def test_actual_a174_package_digest_does_not_enter_its_installed_selector():
+    import json
+    import sys
+    sys.path.insert(0, str(ROOT / 'tests/compat/support'))
+    from record_compat import retained
+    with retained() as generations:
+        name, old, _ = generations[0]
+        assert name == 'a17477b2b206-1791745175-65dffa700dfb'
+        receipt = json.loads((old / 'RUNTIME_VERSION.json').read_bytes())
+        assert 'src/prismabuild/digest_primitives.py' in receipt['files']
+        assert window.client_protocol(old)['present'] == ['gpu_capacity.py']

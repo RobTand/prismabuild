@@ -292,7 +292,8 @@ def write_plan(*, source, target, inventory, actions, designation, out, operatio
         raise WindowError('inventory differs from enrolled host roster')
     plan = {'schema': 'prismabuild.client_bootstrap.plan.v1', 'id': operation_id,
         'direction': 'forward', 'source': source_pin, 'target': target_pin, 'members': members,
-        'source_files': {name: before['files'][member] for name, member in members.items() if member in before['files']},
+        'source_files': {name: before['files'][members[name]]
+                         for name in (*BOOTSTRAP_SERVICE_MEMBERS, 'upgrade_client.py')},
         'target_files': {name: after['files'][member] for name, member in members.items()}, 'roster': hosts,
         'boots': {host: row['boot_id'] for host, row in facts.items()},
         'locks': {host: row['lock_inode'] for host, row in facts.items()},

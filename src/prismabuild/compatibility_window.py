@@ -240,9 +240,8 @@ def require_installed_bootstrap(source, target, observations, *, roster,
         raise WindowError("bootstrap requires exactly eight target members")
     for root, field in ((source, "source_files"), (target, "target_files")):
         captured = GenerationReceipt.capture((Path(root) / "RUNTIME_VERSION.json").read_bytes())
-        for name, relative in members.items():
-            expected = plan[field].get(name)
-            actual = captured.files.get(relative)
+        for name, expected in plan[field].items():
+            actual = captured.files.get(members[name])
             if expected != actual:
                 raise WindowError("bootstrap member map differs from sealed receipt: " + name)
     if (set(plan["source_files"]) != set((*BOOTSTRAP_SERVICE_MEMBERS, "upgrade_client.py"))

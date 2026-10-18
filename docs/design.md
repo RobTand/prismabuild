@@ -19634,3 +19634,9 @@ lock inode, unknown file, new interpreter or unresolved automatic epoch/journal
 cannot rebind it. The helper never starts the broker or releases its boot gate.
 Fresh draining offers remain members of the explicit bootstrap record window;
 that observation grants no admission. The default predeploy rules are unchanged.
+
+The a174 generation already ships a package digest module. Its standalone updater
+still selects only five installed members. Bootstrap source facts therefore name
+those five selected members, independently of package-file presence. The target's
+installed closure remains eight members, and both complete raw receipts remain
+pinned. An unselected package leaf is never relabeled as an installed dependency.
