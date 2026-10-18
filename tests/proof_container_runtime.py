@@ -1,5 +1,5 @@
 """Interpret a sealed root-test runtime profile inside its admitted container."""
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import base64
 import hashlib
 import io
@@ -145,6 +145,15 @@ class HostRuntimeAbsence:
     checkpoint_sha256: str
     operation: str = 'complete_host_directory_enumeration'
     authority: str = 'host'
+
+
+@dataclass(frozen=True)
+class MountRuntimeAbsence:
+    parent: str
+    name: str
+    names: tuple[str, ...]
+    authority: str = 'mount'
+    operation: str = 'mount_plan_children'
 
 
 @dataclass(frozen=True)
@@ -581,9 +590,37 @@ def runtime_namespace_entries(closure):
             for name, entry in root['entries'].items()}
 
 
+def runtime_mount_ancestor(closure, path, entry=None):
+    target = Path(path)
+    roots = [Path(root['path']) for root in closure['roots'] if root['origin'] == 'host']
+    if any(target.is_relative_to(root) for root in roots):
+        return None
+    children = sorted({root.relative_to(target).parts[0] for root in roots
+                       if root.is_relative_to(target)})
+    if not children:
+        return None
+    if entry is not None and entry['kind'] != 'directory':
+        raise ValueError('image mount-plan ancestor is not a directory: ' + path)
+    return children
+
+
+def runtime_mount_component(closure, path):
+    children = runtime_mount_ancestor(closure, path)
+    image_roots = [root for root in closure['roots'] if root['origin'] == 'image']
+    image_roots += closure.get('completion', {}).get('base_image_roots', [])
+    if children is None or any(Path(root['path']).is_relative_to(path) for root in image_roots):
+        raise ValueError('mount-created component conflicts with retained image or mount plan: ' + path)
+    return dict(origin='mount', entry=dict(kind='directory'), names=children)
+
+
 def runtime_path_authority(closure, path):
-    return 'host' if any(root['origin'] == 'host' and Path(path).is_relative_to(root['path'])
-                         for root in closure['roots']) else 'image'
+    if any(root['origin'] == 'host' and Path(path).is_relative_to(root['path']) for root in closure['roots']):
+        return 'host'
+    components = closure.get('components', {})
+    if any(components.get(candidate, {}).get('origin') == 'mount'
+           for candidate in (path, str(Path(path).parent))):
+        return 'mount'
+    return 'image'
 
 
 def runtime_absence_witness(closure, key):
@@ -594,6 +631,14 @@ def runtime_absence_witness(closure, key):
     name = witness['name']
     if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\0' in name:
         raise ValueError('runtime absence witness has an invalid child name')
+    if witness.get('authority') == 'mount':
+        expected = runtime_mount_component(closure, parent)
+        expected_witness = asdict(MountRuntimeAbsence(parent, name, tuple(expected['names'])))
+        if (closure['components'].get(parent) != expected or name in expected['names']
+                or canonical(witness) != canonical(expected_witness)
+                or runtime_path_authority(closure, str(Path(parent) / name)) != 'mount'):
+            raise ValueError('mount absence listing differs from its derived children')
+        return witness
     before, after, names = witness['before'], witness['after'], witness['names']
     if (not isinstance(before, (list, tuple)) or len(before) != 6
             or any(type(value) is not int for value in before)
@@ -636,6 +681,9 @@ def runtime_absence_witness(closure, key):
 
 def runtime_replay_lookup(closure):
     entries = runtime_namespace_entries(closure)
+    for path, component in closure['components'].items():
+        if component['origin'] == 'mount' and component != runtime_mount_component(closure, path):
+            raise ValueError('mount-created component listing differs from its derived children: ' + path)
     witnesses = {}
     for key in closure['directory_witnesses']:
         witness = runtime_absence_witness(closure, key)
@@ -646,12 +694,14 @@ def runtime_replay_lookup(closure):
     def lookup(component):
         entry = entries.get(component)
         if entry is not None:
+            runtime_mount_ancestor(closure, component, entry)
             return entry
         navigation = closure['components'].get(component)
         if navigation is not None:
             if (navigation['origin'] != runtime_path_authority(closure, component)
                     or navigation['entry']['kind'] != 'directory'):
                 raise ValueError('runtime navigation component has invalid authority or kind')
+            runtime_mount_ancestor(closure, component, navigation['entry'])
             if 'stamp' in navigation:
                 stamp = navigation['stamp']
                 if (len(stamp) != 6 or any(type(value) is not int for value in stamp)
@@ -818,7 +868,8 @@ def audit_native_closure(closure, byte_path):
             raise ValueError('loader search directory is not completely inventoried: ' + directory)
         for prefix in (Path(directory), *Path(directory).parents):
             entry = entries.get(str(prefix), closure['components'].get(str(prefix), {}).get('entry'))
-            if entry is not None and entry['kind'] == 'directory' and not entry['mode'] & 0o001:
+            if (entry is not None and entry['kind'] == 'directory'
+                    and 'mode' in entry and not entry['mode'] & 0o001):
                 raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
         found = {resolve(str(Path(spelling) / Path(path).relative_to(directory)))
                  for path in runtime_directory_candidate_spellings(entries, directory, needed)}
@@ -975,7 +1026,7 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
     witnessed = set()
     observed = {}
     for charge in charges:
-        if charge['kind'] not in ('inventory', 'component', 'absence', 'host_absence', 'recheck'):
+        if charge['kind'] not in ('inventory', 'component', 'absence', 'host_absence', 'mount_absence', 'recheck'):
             raise ValueError('runtime completion has an unsupported observation charge')
         _absolute(charge['path'])
         if charge['kind'] == 'inventory':
@@ -999,10 +1050,11 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
         else:
             witness = runtime_absence_witness(closure, charge['witness'])
             if (str(Path(witness['parent']) / witness['name']) != charge['path']
-                    or (charge['kind'] == 'host_absence') != (witness['authority'] == 'host')):
+                    or charge['kind'] != {'host': 'host_absence', 'image': 'absence',
+                                          'mount': 'mount_absence'}[witness['authority']]):
                 raise ValueError('runtime completion absence charge differs from its witness')
             witnessed.add(charge['witness'])
-            expected_members = 1 if witness['authority'] == 'host' else 1 + len(witness['names'])
+            expected_members = 1 + len(witness['names']) if witness['authority'] == 'image' else 1
             expected_bytes = 0
         if charge['members'] != expected_members or charge['regular_bytes'] != expected_bytes:
             raise ValueError('runtime completion charge counters differ from observed work')
@@ -1049,6 +1101,7 @@ def audit_runtime_closure(closure, byte_path, *, content_path=None):
 
 
 def verify_runtime_components(closure, *, image_root=Path('/'), origins=('host', 'image')):
+    origins = set(origins) | ({'mount'} if 'image' in origins else set())
     for spelling, component in closure['components'].items():
         if component['origin'] not in origins:
             continue
@@ -1061,6 +1114,14 @@ def verify_runtime_components(closure, *, image_root=Path('/'), origins=('host',
                 descriptor = child
             before = os.fstat(descriptor)
             actual = dict(kind='directory', mode=stat.S_IMODE(before.st_mode))
+            if component['origin'] == 'mount':
+                if component != runtime_mount_component(closure, spelling):
+                    raise ValueError('mount-created component differs from its derived children')
+                with os.scandir(descriptor) as children:
+                    names = sorted(child.name for child in children)
+                if names != component['names']:
+                    raise ValueError('mounted mount-created directory children differ: ' + spelling)
+                actual = dict(kind='directory')
             if actual != component['entry'] or runtime_stamp(before) != runtime_stamp(os.fstat(descriptor)):
                 raise ValueError('mounted runtime navigation component changed: ' + spelling)
         finally:
@@ -1069,6 +1130,7 @@ def verify_runtime_components(closure, *, image_root=Path('/'), origins=('host',
 
 def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 'image')):
     image_root = Path(image_root)
+    origins = set(origins) | ({'mount'} if 'image' in origins else set())
     verify_runtime_components(closure, image_root=image_root, origins=origins)
     entries = runtime_namespace_entries(closure)
     lookup = runtime_replay_lookup(closure)
@@ -1078,7 +1140,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
         location = image_root / path.lstrip('/')
         before = location.lstat()
         if (not stat.S_ISDIR(before.st_mode)
-                or stat.S_IMODE(before.st_mode) != component['entry']['mode']
+                or ('mode' in component['entry'] and stat.S_IMODE(before.st_mode) != component['entry']['mode'])
                 or runtime_stamp(before) != runtime_stamp(location.lstat())):
             raise ValueError('mounted runtime navigation component differs: ' + path)
     for key in closure['directory_witnesses']:
@@ -1097,7 +1159,8 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
             raise
         try:
             before = os.fstat(descriptor)
-            if stat.S_IMODE(before.st_mode) != stat.S_IMODE(witness['before'][2]):
+            if (witness['authority'] != 'mount'
+                    and stat.S_IMODE(before.st_mode) != stat.S_IMODE(witness['before'][2])):
                 raise ValueError('mounted runtime absence parent mode differs: ' + witness['parent'])
             try:
                 os.stat(witness['name'], dir_fd=descriptor, follow_symlinks=False)
@@ -1120,7 +1183,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
                 raise ValueError('mounted runtime absence directory changed: ' + witness['parent'])
         finally:
             os.close(descriptor)
-    if set(origins) != {'host', 'image'}:
+    if not {'host', 'image'} <= origins:
         return
     for spelling, record in closure['link_outcomes'].items():
         if record['status'] != 'witnessed_absent':
@@ -1148,7 +1211,8 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
             if runtime_stamp(location.lstat()) != before:
                 raise ValueError('mounted runtime lookup changed during verification: ' + path)
             retained = entries.get(path, closure['components'].get(path, {}).get('entry'))
-            if retained is None or any(actual[name] != retained.get(name) for name in actual):
+            compared = ('kind',) if closure['components'].get(path, {}).get('origin') == 'mount' else actual
+            if retained is None or any(actual[name] != retained.get(name) for name in compared):
                 raise ValueError('mounted runtime negative expansion differs: ' + path)
             return actual
         if runtime_outcome_record(walk_runtime_path(spelling, mounted_lookup)) != record:

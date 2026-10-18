@@ -25,10 +25,11 @@ from proof_container_runtime import (
     canonical, digest, elf_requirements,
     inventory, loader_cache_entries, loader_default_directories, loader_kernel, merge_runtime_roots, native_provider_paths, observe_runtime,
     resolve_runtime_path, BROAD_ROOTS, CompletedRuntimeNamespace, ImageRuntimeAbsence,
-    HostRuntimeAbsence, RuntimeLookupAbsent, RuntimeResolved, RuntimeWitnessedAbsent,
+    HostRuntimeAbsence, MountRuntimeAbsence, RuntimeLookupAbsent, RuntimeResolved, RuntimeWitnessedAbsent,
     audit_link_outcomes, audit_runtime_closure, read_runtime_elf, runtime_charge, runtime_completion_plan,
     runtime_outcome_record, runtime_stamp, walk_runtime_path, runtime_elf_search_directories,
     runtime_directory_candidate_spellings, runtime_elf_observation, runtime_capture_work,
+    runtime_mount_ancestor, runtime_mount_component,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -336,6 +337,28 @@ class ImageClosureObserver:
         self.image_roots.append(candidate)
         self.roots = merge_runtime_roots(self.host_roots, self.image_roots)
 
+    def retain_mount_component(self, logical):
+        before = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+        runtime_charge(self.budget, members=1)
+        component = runtime_mount_component(dict(roots=self.roots,
+            completion=dict(base_image_roots=self.image['roots'])), logical)
+        self.components[logical] = component
+        self.observed[logical] = component['entry']
+        self.record_work(before, 'component', logical, entry=component['entry'])
+        return component['entry']
+
+    def mount_absence(self, logical):
+        before = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+        runtime_charge(self.budget, members=1)
+        parent = str(Path(logical).parent)
+        witness = asdict(MountRuntimeAbsence(parent, Path(logical).name,
+            tuple(runtime_mount_component(dict(roots=self.roots), parent)['names'])))
+        key = digest(canonical(witness))
+        self.witnesses[key] = witness
+        self.negative[logical] = key
+        self.record_work(before, 'mount_absence', logical, witness=key)
+        raise RuntimeLookupAbsent(key)
+
     def lookup(self, logical):
         runtime_charge(self.budget)
         if logical in self.negative:
@@ -350,6 +373,12 @@ class ImageClosureObserver:
                     return self.host_absence(logical)
                 self.observed[logical] = entry
                 return entry
+        mount_children = runtime_mount_ancestor(dict(roots=self.roots), logical)
+        parent = self.components.get(str(Path(logical).parent))
+        if parent is not None and parent['origin'] == 'mount':
+            if mount_children is not None:
+                return self.retain_mount_component(logical)
+            return self.mount_absence(logical)
         existing = None
         for root in self.roots:
             if Path(logical).is_relative_to(root['path']):
@@ -372,6 +401,8 @@ class ImageClosureObserver:
                 except FileNotFoundError as exc:
                     if exc.errno != errno.ENOENT:
                         raise
+                    if mount_children is not None:
+                        return self.retain_mount_component(logical)
                     return self.image_absence(descriptor, logical)
                 stamp = runtime_stamp(info)
                 if stat.S_ISDIR(info.st_mode):
@@ -390,6 +421,7 @@ class ImageClosureObserver:
                 if (runtime_stamp(os.stat(name, dir_fd=descriptor, follow_symlinks=False)) != stamp
                         or runtime_stamp(os.fstat(descriptor)) != parent_before):
                     raise ValueError('image component changed during observation: ' + logical)
+        runtime_mount_ancestor(dict(roots=self.roots), logical, entry)
         if existing is not None and entry != existing:
             raise ValueError('covered image runtime member changed: ' + logical)
         if entry['kind'] == 'directory':

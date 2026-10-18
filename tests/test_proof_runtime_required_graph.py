@@ -830,6 +830,7 @@ def test_mount_created_ancestors_close_primary_alias(required_graph_tree):
         assert closure['components'][path] == dict(origin='mount', entry=dict(kind='directory'), names=names)
     retained = tree.retained_members(closure)
     assert tree.audit(closure, retained)
+    runtime.verify_runtime_negatives(closure, image_root=tree.host_root, origins=('host',))
     tree.mount_host_roots()
     runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
     tree.physical('image', '/h/venv').chmod(0o750)
@@ -902,7 +903,7 @@ def test_mount_created_directory_is_verified_after_mount(required_graph_tree, ch
         tree.image_file('/h/venv/unplanned', b'extra child is outside the mount plan')
     else:
         parent = tree.physical('image', '/h/venv')
-        parent.rename(parent.with_name('redirected-venv'))
-        parent.symlink_to('redirected-venv', target_is_directory=True)
+        parent.rename(tree.image_root / 'redirected-venv')
+        parent.symlink_to('../../redirected-venv', target_is_directory=True)
     with pytest.raises((OSError, ValueError), match='mount|directory|component'):
         runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
