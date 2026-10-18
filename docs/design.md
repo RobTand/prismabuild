@@ -19158,8 +19158,9 @@ graph. It includes both RPATH and RUNPATH contexts, all positive alias origins,
 matching cache entries, and variants below fully inventoried search directories,
 with the existing ordered default-directory rules. A RUNPATH or RPATH directory
 that is a proper ancestor of captured roots uses direct-child search evidence
-instead of a recursive inventory. For each needed basename of an ELF with that
-search context, a present child becomes a required candidate with complete
+instead of a recursive inventory. Existing conservative global search contexts,
+including inherited RPATH candidates, remain in force. For each required
+needed-basename query, a present child becomes a required candidate with complete
 retained bytes; a missing child requires an actual no-follow ENOENT, equal
 parent stamps and the complete sorted immediate child-name listing. The listing
 spends the existing member budget. The auditor rederives the ancestor rule and

@@ -1173,9 +1173,6 @@ def audit_native_closure(closure, byte_path):
                     targets.add(resolve(needed))
                     continue
                 for directory in directories:
-                    if (runtime_search_directory_mode(closure['roots'], resolve(directory)) == 'direct'
-                            and directory not in own_directories[path]):
-                        continue
                     targets.update(directory_candidates(directory, needed, allow_ancestor=True)[0])
                 cached = [row for row in cache if row['name'] == needed]
                 targets.update(resolve(row['path']) for row in cached)

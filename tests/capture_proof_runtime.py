@@ -572,12 +572,12 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
                 metadata = candidate_metadata(path)
                 if metadata is not None:
                     metadata_by_path[path] = metadata
-        directories, own_directories = runtime_elf_search_directories(metadata_by_path, aliases)
+        directories, _ = runtime_elf_search_directories(metadata_by_path, aliases)
         for spelling in sorted(directories):
             resolve_observation(spelling, required=True, search=True)
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}
-        for path, metadata in list(metadata_by_path.items()):
+        for metadata in list(metadata_by_path.values()):
             for interpreter in metadata['interpreters']:
                 retain_candidate(interpreter)
             for needed in metadata['needed']:
@@ -589,8 +589,6 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
                 for spelling in sorted(directories):
                     directory = aliases[spelling]
                     direct_search = runtime_search_directory_mode(observer.roots, directory) == 'direct'
-                    if direct_search and spelling not in own_directories[path]:
-                        continue
                     for candidate in runtime_directory_candidate_spellings(entries, directory, needed, direct=direct_search):
                         retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
                     direct = str(Path(directory) / needed)
