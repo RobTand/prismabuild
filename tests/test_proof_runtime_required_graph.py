@@ -1396,3 +1396,110 @@ def test_customization_semantic_replay_rejects_coherent_tampering(tmp_path, tamp
     tree.checkpoint_agreement(forged)
     with pytest.raises(ValueError, match='customization.*(selection|inventory)|customization roots'):
         tree.audit(forged, retained)
+
+
+def graph_ancestor_search_tree(tmp_path, *, present=False):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/ancestor-extension.so', graph_fixture_elf(
+        needed=('libancestor.so',), runpath=('/usr/lib',), marker=b'ancestor-seed'))
+    tree.host_file(NATIVE + '/libancestor.so', graph_fixture_elf(marker=b'fallback-provider'))
+    tree.image_file('/usr/lib/unrelated-search-child', b'not a recursive inventory')
+    if present:
+        tree.image_file('/usr/lib/libancestor.so', graph_fixture_elf(marker=b'direct-provider'))
+    return tree
+
+
+def test_runpath_ancestor_absent_child_has_search_witness(tmp_path):
+    tree = graph_ancestor_search_tree(tmp_path)
+    closure = tree.complete()
+    key, witness = next((key, value) for key,value in closure['directory_witnesses'].items()
+                        if value['parent'] == '/usr/lib' and value['name'] == 'libancestor.so')
+    assert witness['authority'] == 'image' and witness['operation'] == 'lstat_enoent'
+    assert witness['before'] == witness['after']
+    assert witness['names'] == sorted(child.name for child in tree.physical('image', '/usr/lib').iterdir())
+    assert '/usr/lib' not in {root['path'] for root in closure['roots']}
+    assert any(charge.get('witness') == key and charge['members'] == 1 + len(witness['names'])
+               for charge in closure['completion']['charges'])
+    assert tree.audit(closure, tree.retained_members(closure))
+    tree.mount_host_roots()
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+    tree.image_file('/usr/lib/libancestor.so', graph_fixture_elf(marker=b'appeared'))
+    with pytest.raises(ValueError, match='absent target appeared'):
+        runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+
+
+def test_runpath_ancestor_present_child_is_required_narrow_candidate(tmp_path):
+    tree = graph_ancestor_search_tree(tmp_path, present=True)
+    closure = tree.complete()
+    path = '/usr/lib/libancestor.so'
+    assert graph_outcome(closure, path)['terminal'] == path
+    assert tree.entry(closure, path) == runtime.inventory(tree.physical('image', path))['.']
+    root, = [root for root in closure['roots'] if root['path'] == path]
+    assert root['origin'] == 'image' and set(root['entries']) == {'.'}
+    assert '/usr/lib' not in {root['path'] for root in closure['roots']}
+    assert not any(value['parent'] == '/usr/lib' and value['name'] == 'libancestor.so'
+                   for value in closure['directory_witnesses'].values())
+    assert tree.audit(closure, tree.retained_members(closure))
+
+
+def test_runpath_ancestor_listing_mutation_refuses(tmp_path, monkeypatch):
+    tree = graph_ancestor_search_tree(tmp_path)
+    inputs = tree.inputs()
+    original = os.scandir
+    changed = []
+    @contextmanager
+    def changing_listing(path):
+        with original(path) as children:
+            yield children
+        if (isinstance(path, int)
+                and Path('/proc/self/fd/' + str(path)).resolve() == tree.physical('image', '/usr/lib')):
+            tree.image_file('/usr/lib/late-child', b'changed during enumeration')
+            changed.append(True)
+    monkeypatch.setattr(os, 'scandir', changing_listing)
+    with pytest.raises(ValueError, match='image absence parent changed during observation'):
+        tree.complete(inputs)
+    assert changed, 'the actual ancestor-directory listing was not observed'
+
+
+def test_runpath_ancestor_fabricated_listing_refuses_semantic_replay(tmp_path):
+    tree = graph_ancestor_search_tree(tmp_path)
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    forged = copy.deepcopy(closure)
+    old_key, witness = next((key, copy.deepcopy(value))
+        for key,value in forged['directory_witnesses'].items()
+        if value['parent'] == '/usr/lib' and value['name'] == 'libancestor.so')
+    witness['names'].remove(Path(NATIVE).name)
+    new_key = graph_replace_witness(forged, old_key, witness)
+    for charge in forged['completion']['charges']:
+        if charge.get('witness') == new_key:
+            charge['members'] -= 1
+            forged['consumed_budget']['members'] -= 1
+    graph_sync_namespace(tree, forged)
+    tree.checkpoint_agreement(forged)
+    with pytest.raises(ValueError, match='listing omits a retained child'):
+        tree.audit(forged, retained)
+
+
+def test_reachable_empty_runpath_still_refuses(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/empty-runpath-extension.so',
+                   graph_fixture_elf(runpath=('',), marker=b'empty-runpath-seed'))
+    with pytest.raises(ValueError, match='unsupported library search token'):
+        tree.complete()
+
+
+def test_reader_alias_adds_image_interpreter_ancestor_search(tmp_path):
+    tree = graph_reader_transition_fixture(RequiredGraphFilesystem(
+        tmp_path, host_executable='/usr/bin/python3.14'))
+    tree.image_file(tree.image_executable, graph_fixture_elf(interpreter=LOADER,
+        needed=('libreader.so',), runpath=('$ORIGIN/../lib',), marker=b'image-reader-rpath'))
+    tree.image_file('/usr/local/lib/libreader.so', graph_fixture_elf(marker=b'image-provider'))
+    tree.image_paths.append('/usr/local/lib')
+    closure = tree.complete()
+    assert runtime.replay_runtime_path(runtime.runtime_namespace_state(
+        closure,'after_installation'),'/usr/bin/python3').terminal == tree.image_executable
+    assert any(value['parent'] == '/usr/lib' and value['name'] == 'libreader.so'
+               for value in closure['directory_witnesses'].values())
+    assert not any(root['path'] == '/usr/lib' for root in closure['roots'])
