@@ -75,6 +75,7 @@ class RequiredGraphFilesystem:
                             '/etc/ld.so.cache', '/sbin/ldconfig']
         self.image_executable = HOST_EXECUTABLE
         self.cache_listing = '0 libs found in cache fixture:\n'
+        self.diagnostic_raw = 'path.system_dirs[0]=\"' + NATIVE + '/\"\nuname.release=\"6.8.0\"\n'
         self.host_interpreter = LOADER
         self.image_interpreter = LOADER
         self.host_file('/h/stdlib/plain.py', b'VALUE = 1\n')
@@ -176,6 +177,10 @@ class RequiredGraphFilesystem:
         if origin == 'image':
             cache = next(root['entries']['.'] for root in roots if root['path'] == '/etc/ld.so.cache')
             tool = next(root['entries']['.'] for root in roots if root['path'] == '/sbin/ldconfig')
+            result['pre_completion_diagnostics'] = dict(raw=self.diagnostic_raw,
+                command=[self.host_interpreter, '--list-diagnostics'],
+                executable=dict(path=self.host_interpreter, resolved_path=NATIVE + '/ld-fixture.so',
+                    **capture.file_descriptor(self.physical('host', NATIVE + '/ld-fixture.so'))))
             result['loader_cache'] = dict(path='/etc/ld.so.cache',
                 bytes=cache['bytes'], sha256=cache['sha256'], raw_listing=self.cache_listing,
                 tool=dict(path='/sbin/ldconfig', resolved_path='/sbin/ldconfig',
@@ -207,7 +212,7 @@ class RequiredGraphFilesystem:
         host_pt, = host['elf_index'][self.host_executable]['interpreters']
         closure['loader'] = dict(schema='prismabuild.proof_loader_search.v1',
             cache=image['loader_cache'], diagnostics=dict(
-                raw='path.system_dirs[0]="' + NATIVE + '/"\nuname.release="6.8.0"\n',
+                raw=getattr(self, 'post_diagnostic_raw', self.diagnostic_raw),
                 executable=dict(path=host_pt, resolved_path=NATIVE + '/ld-fixture.so',
                     bytes=loader_entry['bytes'], sha256=loader_entry['sha256'])))
         return closure
@@ -1518,3 +1523,82 @@ def test_ancestor_search_preserves_inherited_rpath_candidates(tmp_path):
         ' libparent.so (libc6,AArch64) => ' + NATIVE + '/libparent.so\n')
     with pytest.raises(ValueError, match='unsupported architecture'):
         tree.audit(tree.complete())
+
+
+def graph_default_search_tree(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.diagnostic_raw = ('path.system_dirs[0]="/usr/lib/"\n'
+        'path.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n')
+    tree.host_file('/h/stdlib/tkinter.so', graph_fixture_elf(needed=('libtk.so',)))
+    tree.host_file(NATIVE + '/libtk.so', graph_fixture_elf(needed=('libXft.so',)))
+    tree.host_file(NATIVE + '/libXft.so', graph_fixture_elf(marker=b'Xft-provider'))
+    return tree
+
+
+def test_loader_alias_origin_cache_hit_resolves(tmp_path):
+    tree = graph_reader_transition_fixture(RequiredGraphFilesystem(
+        tmp_path, host_executable='/usr/bin/python3.14'))
+    tree.image_file(tree.image_executable, graph_fixture_elf(interpreter=LOADER,
+        needed=('libpython.so',), runpath=('$ORIGIN/../lib',)))
+    tree.image_file('/usr/local/lib/libpython.so', graph_fixture_elf(marker=b'image-provider'))
+    tree.image_paths.append('/usr/local/lib')
+    tree.cache_listing = '1 libs found in cache fixture:\n libpython.so (libc6,AArch64) => /usr/local/lib/libpython.so\n'
+    closure = tree.complete()
+    assert tree.audit(closure, tree.retained_members(closure))
+    assert any(value['parent'] == '/usr/lib' and value['name'] == 'libpython.so'
+               for value in closure['directory_witnesses'].values())
+
+
+def test_loader_every_origin_requires_a_provider(tmp_path):
+    tree = graph_reader_transition_fixture(RequiredGraphFilesystem(
+        tmp_path, host_executable='/usr/bin/python3.14'))
+    tree.image_file(tree.image_executable, graph_fixture_elf(interpreter=LOADER,
+        needed=('libprivate.so',), runpath=('$ORIGIN/../lib',)))
+    tree.image_file('/usr/local/lib/libprivate.so', graph_fixture_elf())
+    tree.image_paths.append('/usr/local/lib')
+    with pytest.raises(ValueError, match='unresolved runtime ELF dependency'):
+        tree.complete()
+
+
+def test_loader_defaults_complete_transitive_tk_xft_candidates(tmp_path):
+    tree = graph_default_search_tree(tmp_path)
+    closure = tree.complete()
+    misses = {str(Path(value['parent']) / value['name'])
+              for value in closure['directory_witnesses'].values()}
+    assert {'/usr/lib/libtk.so', '/usr/lib/libXft.so'} <= misses
+    assert graph_outcome(closure, NATIVE + '/libtk.so')['terminal'] == NATIVE + '/libtk.so'
+    assert graph_outcome(closure, NATIVE + '/libXft.so')['terminal'] == NATIVE + '/libXft.so'
+    assert tree.audit(closure, tree.retained_members(closure))
+
+
+def test_loader_unwitnessed_visited_default_refuses_replay(tmp_path):
+    tree = graph_default_search_tree(tmp_path)
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    forged = copy.deepcopy(closure)
+    key = next(key for key,value in forged['directory_witnesses'].items()
+               if value['parent'] == '/usr/lib' and value['name'] == 'libXft.so')
+    del forged['directory_witnesses'][key]
+    with pytest.raises(ValueError, match='missing candidate absence evidence|absence witness'):
+        runtime.audit_native_closure(runtime.runtime_namespace_state(forged, 'before_installation'),
+            lambda path: retained[tree.entry(forged, path)['sha256']])
+
+
+@pytest.mark.parametrize('change', ['system_dirs', 'kernel'])
+def test_loader_pre_post_mounted_diagnostics_must_agree(tmp_path, change):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.post_diagnostic_raw = tree.diagnostic_raw.replace(
+        NATIVE + '/', '/usr/lib/' ) if change == 'system_dirs' else tree.diagnostic_raw.replace('6.8.0','6.8.1')
+    closure = tree.complete()
+    with pytest.raises(ValueError, match='pre-completion.*diagnostics|diagnostics.*changed'):
+        tree.audit(closure)
+
+
+def test_loader_missing_cache_row_refuses_despite_default_hit(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/cache-seed.so', graph_fixture_elf(needed=('libcached.so',)))
+    tree.host_file(NATIVE + '/libcached.so', graph_fixture_elf())
+    tree.cache_listing = '1 libs found in cache fixture:\n libcached.so (libc6,AArch64) => /usr/lib/libcached.so\n'
+    with pytest.raises(ValueError, match='required runtime alias is absent|cache candidate'):
+        tree.complete()
