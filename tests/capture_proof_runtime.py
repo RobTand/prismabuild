@@ -524,6 +524,7 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
         host_elf_roots=host['elf_roots'], image_elf_roots=image['elf_roots'],
         host_executable_binary=host['executable_binary'], image_executable_binary=image['executable_binary'],
         host_elf_index=host['elf_index'], image_elf_index=image['elf_index'],
+        image_loader_cache=image['loader_cache'],
         base_host_roots=host['roots'], base_image_roots=image['roots'],
         host_directory_observations=host['directory_observations'],
         image_directory_observations=image['directory_observations'],

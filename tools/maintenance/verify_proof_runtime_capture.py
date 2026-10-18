@@ -114,7 +114,7 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
     names = ('native_library_roots', 'components', 'directory_witnesses', 'link_outcomes',
              'plan', 'consumed_budget', 'completion')
     if set(namespace) != {'roots', *names} or any(namespace[name] != closure[name] for name in names):
-        raise ValueError('durable image completion differs from the profile namespace')
+        raise ValueError('durable runtime image completion differs from the profile namespace')
     def root_map(roots):
         result = {(root['origin'], root['path']): root for root in roots}
         if len(result) != len(roots):
@@ -144,6 +144,8 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
                               for entry in root['entries'].values() if entry['kind'] == 'file'))
         if checkpoint['inventory_budget'] != expected_budget:
             raise ValueError('durable runtime inventory budget differs from its complete roots: ' + origin)
+    if completion['image_loader_cache'] != image['loader_cache'] or closure['loader']['cache'] != image['loader_cache']:
+        raise ValueError('runtime image loader cache differs from its durable observation')
     if host['consumed_budget'] != host['inventory_budget']:
         raise ValueError('durable host consumed budget differs from its original inventory')
     aggregate = {name: host['inventory_budget'][name] + image['inventory_budget'][name]

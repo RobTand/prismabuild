@@ -440,18 +440,18 @@ def test_unknown_or_mutating_absence_observation_refuses(required_graph_tree, mo
             negative_checks.append(os.fspath(path))
         return real_stat(path, *args, **kwargs)
 
-    if failure in codes:
-        monkeypatch.setattr(os, 'stat', absence_lookup_fault)
-        monkeypatch.setattr(os, 'lstat', absence_lstat_fault)
-    elif failure == 'scandir':
-        monkeypatch.setattr(os, 'scandir', incomplete_absence_names)
-    else:
-        monkeypatch.setattr(os, 'stat', changing_absence_lookup)
-        monkeypatch.setattr(os, 'fstat', changed_absence_stamp)
-    with pytest.raises((OSError, ValueError), match='scoped|changed|stable'):
-        tree.complete(inputs)
-    assert seen, 'the real absence observation boundary was not reached'
-
+    with monkeypatch.context() as patch:
+        if failure in codes:
+            patch.setattr(os, 'stat', absence_lookup_fault)
+            patch.setattr(os, 'lstat', absence_lstat_fault)
+        elif failure == 'scandir':
+            patch.setattr(os, 'scandir', incomplete_absence_names)
+        else:
+            patch.setattr(os, 'stat', changing_absence_lookup)
+            patch.setattr(os, 'fstat', changed_absence_stamp)
+        with pytest.raises((OSError, ValueError), match='scoped|changed|stable'):
+            tree.complete(inputs)
+        assert seen, 'the real absence observation boundary was not reached'
 
 def test_host_mount_authority_wins_after_alias_expansion(required_graph_tree):
     """Judge D: an image alias lands on the host executable mount."""
@@ -682,3 +682,19 @@ def test_external_sitecustomize_arbitrary_source_is_sealed(required_graph_tree):
     tree.physical('image', target).unlink()
     with pytest.raises((ValueError, FileNotFoundError), match='absen|required|runtime|symlink'):
         tree.complete()
+
+
+def test_mounted_positive_navigation_component_change_refuses(required_graph_tree):
+    tree = required_graph_tree
+    tree.host_link('/h/stdlib/sitecustomize.py', '/etc/python3.12/sitecustomize.py')
+    tree.image_file('/etc/python3.12/sitecustomize.py', b'import sys\nsys.dont_write_bytecode = True\n')
+    closure = tree.complete()
+    tree.mount_host_roots()
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+    parent = tree.physical('image', '/etc/python3.12')
+    redirected = parent.with_name('redirected-python')
+    parent.rename(redirected)
+    parent.symlink_to(redirected.name, target_is_directory=True)
+    assert (parent / 'sitecustomize.py').read_bytes() == (redirected / 'sitecustomize.py').read_bytes()
+    with pytest.raises((OSError, ValueError), match='directory|component|navigation'):
+        runtime.verify_runtime_negatives(closure, image_root=tree.image_root)

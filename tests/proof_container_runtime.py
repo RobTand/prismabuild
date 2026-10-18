@@ -673,7 +673,8 @@ def runtime_completion_plan(host, image):
             if (metadata is not None and 'parse_refusal' not in metadata
                     and any(Path(path).is_relative_to(root) for root in captured['elf_roots'])):
                 pt_seeds.update((origin, path) for path in metadata['interpreters'])
-    required = {*primary_spellings, '/usr/bin/python3', image['observation']['executable']['path'],
+    cache_tool = image['loader_cache']['tool']
+    required = {cache_tool['path'], cache_tool['resolved_path'], *primary_spellings, '/usr/bin/python3', image['observation']['executable']['path'],
                 image['observation']['executable']['resolved_path'], *(path for origin, path in pt_seeds)}
     reader_target = image['observation']['executable']['resolved_path']
     actual_reader = host['observation'] if reader_target == primary['resolved_path'] else image['observation']
@@ -863,6 +864,10 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
                      elf_index=completion[origin + '_elf_index'],
                      executable_binary=completion[origin + '_executable_binary'])
         validate_runtime_roots(facts['roots'])
+        if origin == 'image':
+            facts['loader_cache'] = completion['image_loader_cache']
+            if closure['loader']['cache'] != facts['loader_cache']:
+                raise ValueError('runtime image cache differs from its captured loader observation')
         parsed = {}
         for root in facts['roots']:
             if root['origin'] != origin:
@@ -985,8 +990,28 @@ def audit_runtime_closure(closure, byte_path, *, content_path=None):
                 completion_sha256=digest(canonical(closure['completion'])))
 
 
+def verify_runtime_components(closure, *, image_root=Path('/'), origins=('host', 'image')):
+    for spelling, component in closure['components'].items():
+        if component['origin'] not in origins:
+            continue
+        descriptor = os.open(image_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name in PurePosixPath(spelling).parts[1:]:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            before = os.fstat(descriptor)
+            actual = dict(kind='directory', mode=stat.S_IMODE(before.st_mode))
+            if actual != component['entry'] or runtime_stamp(before) != runtime_stamp(os.fstat(descriptor)):
+                raise ValueError('mounted runtime navigation component changed: ' + spelling)
+        finally:
+            os.close(descriptor)
+
+
 def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 'image')):
     image_root = Path(image_root)
+    verify_runtime_components(closure, image_root=image_root, origins=origins)
     entries = runtime_namespace_entries(closure)
     lookup = runtime_replay_lookup(closure)
     for path, component in sorted(closure['components'].items(), key=lambda item: len(Path(item[0]).parts)):
