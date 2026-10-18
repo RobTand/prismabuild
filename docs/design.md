@@ -19110,8 +19110,12 @@ recomputes aliases, positive origins and native requirements. Other negatives
 below the modified parent use explicit name expectations derived from the
 original observation and this one insertion, never invented post-installation
 syscall stamps. The auditor rederives both state graphs and the transition.
-Mounted verification records fresh stable before and after observations,
-requires the precise one-name `/usr/bin` delta, checks the exact raw link and
+The pre-installation mounted name expectation combines the image listing with
+immediate child names required by the host mount plan, including newly created
+file bind destinations. These derived expectations keep the original image
+observation as their basis and claim no mounted syscall stamps. Mounted
+verification records fresh stable before and after observations, requires the
+precise one-name `/usr/bin` delta, checks the exact raw link and
 root custody, and re-observes each state's active negatives. An existing image
 reader causes no namespace mutation and retains the existing ARM behavior.
 
