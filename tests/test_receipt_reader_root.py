@@ -1,4 +1,5 @@
 """Actual installed root readers cross the dependency bridge in both directions."""
+import inspect
 import json
 import os
 from pathlib import Path
@@ -205,6 +206,15 @@ def test_both_dependency_sources_are_captured_before_either_executes(publication
     assert not (publication[2] / 'transaction.json').exists()
 
 
+def selected_installed_reader():
+    # Only the frozen runtime helper holds the selected profile; changing it would void the qualified captures.
+    for frame in inspect.stack():
+        if frame.filename == str(ROOT / 'tests/proof_container_runtime.py') and frame.function == 'run':
+            reader = frame.frame.f_locals['profile'].installed_reader
+            return reader['version'], reader['executable']['resolved_path'], reader['executable']['sha256']
+    raise AssertionError('no active proof_container_runtime.run frame selects an installed reader')
+
+
 def test_actual_installed_reader_drops_credentials_before_receipt_intake(publication):
     current_reader(publication)
     generation, install, _, config_path, _, _ = publication
@@ -224,7 +234,8 @@ def test_actual_installed_reader_drops_credentials_before_receipt_intake(publica
             "matches=pathlib.Path(sys.executable).read_bytes()==raw, "
             "binary=base64.b64encode(raw).decode(), affinity=sorted(os.sched_getaffinity(0)))))"], text=True)
         observed = json.loads(probe)
-        assert observed['version'][:2] == [3, 12] and observed['matches'] is True
+        identity = observed['version'], str(interpreter.resolve(strict=True)), observed['sha256']
+        assert identity == selected_installed_reader() and observed['matches'] is True
         assert observed['affinity'] == sorted(os.sched_getaffinity(0))
         print('c15-root-export-runtime: ' + probe.strip())
         program = runpy.run_path(str(install / 'upgrade_client.py'), run_name='installed_runtime_export')
