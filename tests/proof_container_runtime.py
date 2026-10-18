@@ -15,8 +15,8 @@ import sys
 import time
 
 
-PROFILE_SCHEMA = 'prismabuild.proof_runtime_profile.v1'
-CLOSURE_SCHEMA = 'prismabuild.proof_runtime_closure.v1'
+PROFILE_SCHEMA = 'prismabuild.proof_runtime_profile.v2'
+CLOSURE_SCHEMA = 'prismabuild.proof_runtime_closure.v2'
 ATTESTATION_SCHEMA = 'prismabuild.root_test_runtime.v1'
 THREADS = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')
 BROAD_ROOTS = {'/', '/usr', '/usr/bin', '/usr/lib', '/home', '/home/rob', '/etc', '/var', '/mnt'}
@@ -91,6 +91,65 @@ class RuntimeProfile:
     primary: dict
     installed_reader: dict
     closure: dict
+
+
+@dataclass(frozen=True)
+class RuntimeExpansion:
+    path: str
+    target: str
+    remaining: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RuntimeResolved:
+    spelling: str
+    terminal: str
+    chain: tuple[RuntimeExpansion, ...]
+
+
+@dataclass(frozen=True)
+class RuntimeWitnessedAbsent:
+    spelling: str
+    missing: str
+    remaining: tuple[str, ...]
+    chain: tuple[RuntimeExpansion, ...]
+    witness: str
+
+
+@dataclass(frozen=True)
+class ImageRuntimeAbsence:
+    parent: str
+    name: str
+    before: tuple[int, ...]
+    after: tuple[int, ...]
+    names: tuple[str, ...]
+    operation: str = 'lstat_at_nofollow'
+    errno: str = 'ENOENT'
+    authority: str = 'image'
+
+
+@dataclass(frozen=True)
+class HostRuntimeAbsence:
+    parent: str
+    name: str
+    before: tuple[int, ...]
+    after: tuple[int, ...]
+    names: tuple[str, ...]
+    checkpoint_sha256: str
+    operation: str = 'complete_host_directory_enumeration'
+    authority: str = 'host'
+
+
+@dataclass(frozen=True)
+class CompletedRuntimeNamespace:
+    roots: tuple[dict, ...]
+    native_library_roots: tuple[str, ...]
+    components: dict
+    directory_witnesses: dict
+    link_outcomes: dict
+    plan: dict
+    consumed_budget: dict
+    completion: dict
 
 
 def load_profile(path, source_root):

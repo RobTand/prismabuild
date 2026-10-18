@@ -17,7 +17,7 @@ from prismabuild.digest_primitives import (
 from prismabuild.immutable_files import file_identity_nofollow
 
 
-SCHEMA = 'prismabuild.proof_runtime_capture_binding.v1'
+SCHEMA = 'prismabuild.proof_runtime_capture_binding.v2'
 PREFIX = 'prismabuild-root-capture: '
 HELPERS = ('tests/capture_proof_runtime.py', 'tests/proof_container_runtime.py',
            'tests/run_proof_container.py', 'tests/proof_capture_capacity.py')
@@ -245,7 +245,7 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if len(lines) != 1:
         raise ValueError('capture must produce exactly one source-owned record')
     capture = decode_strict_json(lines[0].encode(), where='root capture record')
-    if capture['schema'] != 'prismabuild.proof_runtime_capture.v1' or capture['complete'] is not True:
+    if capture['schema'] != 'prismabuild.proof_runtime_capture.v2' or capture['complete'] is not True:
         raise ValueError('capture record is incomplete or unsupported')
     if set(capture['source_sha256']) != set(HELPERS):
         raise ValueError('capture helper source set differs')
@@ -259,10 +259,10 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if len(raw_profile) != capture['profile_bytes'] or raw_sha256(raw_profile) != capture['profile_sha256']:
         raise ValueError('capture profile bytes differ')
     profile = decode_strict_json(raw_profile, where='captured runtime profile')
-    if profile['schema'] != 'prismabuild.proof_runtime_profile.v1':
+    if profile['schema'] != 'prismabuild.proof_runtime_profile.v2':
         raise ValueError('unsupported captured profile')
     closure = profile['closure']
-    if closure['schema'] != 'prismabuild.proof_runtime_closure.v1':
+    if closure['schema'] != 'prismabuild.proof_runtime_closure.v2':
         raise ValueError('unsupported captured closure')
     if closure['sha256'] != raw_sha256(compact_ascii_json_bytes({k:v for k,v in closure.items() if k != 'sha256'})):
         raise ValueError('captured closure digest differs')
