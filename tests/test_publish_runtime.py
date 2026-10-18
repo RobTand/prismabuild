@@ -1219,3 +1219,99 @@ def test_bootstrap_intent_and_transcript_link_every_new_directory(tmp_path, monk
     result = recorder({'id': 'durable'}, SimpleNamespace(nonce='a' * 64, started_unix=1, rows={}), 'before')
     target = Path(result['path'])
     assert all(str(p) in observed for p in (path.parent, target.parent.parent, target.parent))
+
+
+@pytest.mark.parametrize('interrupt_assessment', [False, True])
+@pytest.mark.parametrize('pointer', ['source', 'target'])
+def test_pending_forward_can_reverse_after_reboot_with_original_owner(tmp_path, monkeypatch, pointer, interrupt_assessment):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, observations, _, designation = case
+    source, target = (Path(plan[name]['directory']) for name in ('source', 'target'))
+    mirror = tmp_path / 'repo'; mirror.symlink_to(source if pointer == 'source' else target)
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    forward_hash = canonical_sha256(plan)
+    prior = {'schema': 'prismabuild.pending_bootstrap.v1', 'id': plan['id'],
+        'direction': 'forward', 'source': plan['source'], 'target': plan['target'],
+        'forward_plan_sha256': forward_hash, 'state': 'awaiting-convergence',
+        'root_transcript': {'sha256': '9' * 64}}
+    pending = publish_runtime._bootstrap_pending_path()
+    publish_runtime._write_bootstrap_pending(pending, prior)
+    plan['direction'] = 'restore'
+    for host, row in observations.rows.items():
+        row['boot_id'] = 'new-' + host
+        row['broker_process'] = {'pid': 999, 'starttime': '99'}
+        row['boot_reconciliation'] = {'original_boot_id': plan['boots'][host],
+            'boot_id': row['boot_id'], 'broker_process': row['broker_process'],
+            'plan_sha256': forward_hash, 'approved_unix': row['observed_unix'] - .001}
+        row['plan_sha256'] = canonical_sha256(plan)
+        row['files']['upgrade_client.py'] = plan['source_files']['upgrade_client.py']
+        row['captured_sha256'] = row['executing_sha256'] = plan['source_files']['upgrade_client.py']
+    assessment = tmp_path / 'reverse.json'
+    assessment.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    attempts = []
+    def assess(*a, **kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        attempts.append(True)
+        if interrupt_assessment and len(attempts) == 1:
+            raise RuntimeError('fresh observation interrupted')
+        return assess_case(case), observations
+    def canary(**kw):
+        assert mirror.resolve() == source
+        decision = json.loads(pending.read_bytes())['direction_decision']
+        assert decision['previous_intent'] == prior
+        assert decision['plan_sha256'] == canonical_sha256(plan)
+        assert decision['from'] == 'forward' and decision['to'] == 'restore'
+        path = publish_runtime._canary_record_path(source.parent, source.name)
+        path.write_text(json.dumps({'generation': source.name, 'commit': plan['source']['commit'], 'canary_status': 'verified'}))
+        return 0
+    monkeypatch.setattr(installed_bootstrap, 'assess', assess)
+    monkeypatch.setattr(installed_bootstrap, 'require_convergence', lambda *a, **kw: observations)
+    monkeypatch.setattr(publish_runtime, '_run_rollout_canary', canary)
+    if interrupt_assessment:
+        with pytest.raises(RuntimeError, match='observation interrupted'):
+            publish_runtime._activate_installed_bootstrap(source.name, assessment)
+        selected = json.loads(pending.read_bytes())
+        assert selected['direction'] == 'restore' and selected['state'] == 'restore-selected'
+        forward = tmp_path / 'forward.json'
+        forward.write_text(json.dumps({**json.loads(assessment.read_bytes()), 'plan': {**plan, 'direction': 'forward'}}))
+        with pytest.raises(SystemExit, match='direction cannot change'):
+            publish_runtime._activate_installed_bootstrap(target.name, forward)
+        assert json.loads(pending.read_bytes()) == selected
+    assert publish_runtime._activate_installed_bootstrap(source.name, assessment) == 0
+    archive = pending.parent / ('bootstrap-' + plan['id'] + '-restore.accepted.json')
+    assert json.loads(archive.read_bytes())['direction_decision']['previous_intent'] == prior
+    assert not pending.exists()
+
+
+@pytest.mark.parametrize('foreign', ['id', 'source', 'target', 'forward_plan_sha256', 'accepted', 'direction', 'empty'])
+def test_reverse_refuses_foreign_or_unintended_pending_owner(tmp_path, monkeypatch, foreign):
+    from bootstrap_fixture import bootstrap_case
+    from prismabuild.digest_primitives import canonical_sha256
+    plan, _, _, designation = bootstrap_case(tmp_path, monkeypatch)
+    mirror = tmp_path / 'repo'; mirror.symlink_to(Path(plan['target']['directory']))
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    prior = {'schema': 'prismabuild.pending_bootstrap.v1', 'id': plan['id'],
+        'source': plan['source'], 'target': plan['target'], 'direction': 'forward',
+        'forward_plan_sha256': canonical_sha256(plan), 'state': 'reserved'}
+    if foreign == 'empty': prior = {}
+    elif foreign == 'accepted': prior['state'] = 'accepted'
+    elif foreign == 'direction': prior['direction'] = 'unrelated'
+    else: prior[foreign] = 'foreign'
+    pending = publish_runtime._bootstrap_pending_path()
+    publish_runtime._write_bootstrap_pending(pending, prior)
+    plan['direction'] = 'restore'
+    path = tmp_path / 'reverse.json'
+    path.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    with pytest.raises(SystemExit, match='owns publication|direction cannot change'):
+        publish_runtime._activate_installed_bootstrap(plan['source']['generation'], path)
+    assert json.loads(pending.read_bytes()) == prior
+    assert mirror.resolve() == Path(plan['target']['directory'])

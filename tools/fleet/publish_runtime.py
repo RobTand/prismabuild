@@ -1573,13 +1573,34 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
         if pending.is_symlink():
             raise SystemExit("unsafe pending bootstrap marker")
         prior = json.loads(pending.read_bytes()) if pending.exists() else None
-        if prior and any(prior.get(key) != value for key, value in intent.items()):
+        ownership = {key: value for key, value in intent.items() if key != "direction"}
+        if prior is not None and any(prior.get(key) != value for key, value in ownership.items()):
             raise SystemExit("another pending bootstrap owns publication")
+        select_restore = prior is not None and prior.get("direction") != direction
+        if select_restore:
+            if (prior.get("direction") != "forward" or direction != "restore"
+                    or prior.get("state") not in ("reserved", "activation-intent", "awaiting-convergence", "ordinary-canary")):
+                raise SystemExit("pending bootstrap direction cannot change through this activation")
+            intent["direction_decision"] = {
+                "from": "forward", "to": "restore", "selected_unix": time.time(),
+                "plan_sha256": canonical_sha256(plan), "previous_intent": prior}
+        elif prior is not None and "direction_decision" in prior:
+            decision = prior["direction_decision"]
+            if (direction != "restore" or decision.get("from") != "forward"
+                    or decision.get("to") != "restore" or decision.get("plan_sha256") != canonical_sha256(plan)
+                    or any(decision.get("previous_intent", {}).get(key) != value for key, value in ownership.items())
+                    or decision.get("previous_intent", {}).get("direction") != "forward"):
+                raise SystemExit("pending bootstrap reverse decision differs from original intent")
+            intent["direction_decision"] = decision
         live = MIRROR.resolve(strict=True)
         if live not in (source, target) or (prior is None and live != source):
             raise SystemExit("bootstrap source pointer differs from original a174 intent")
         if not dry_run and socket.gethostname().split('.')[0] not in ("sparky", "sparklina", "gx10-6b77"):
             raise SystemExit("bootstrap coordinator must run on sparky or sparklina for the GPU canary")
+        if select_restore and not dry_run:
+            # Select recovery before external reads. Every subsequent progress
+            # record retains the previous intent and the irreversible direction.
+            _write_bootstrap_pending(pending, {**intent, "state": "restore-selected"})
         # Receipt verification may read substantial evidence. Fresh challenges
         # follow it, while the same publication lock still excludes mutation.
         result, observations = installed_bootstrap.assess(

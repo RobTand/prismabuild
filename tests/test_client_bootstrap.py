@@ -307,8 +307,9 @@ def test_new_journal_ancestry_is_synced_before_first_file(tmp_path, monkeypatch)
     assert events.index(str(tmp_path)) < next(i for i, p in enumerate(events) if '.bootstrap-' in p)
 
 
+@pytest.mark.parametrize('conditional', [False, True])
 @pytest.mark.parametrize('phase', [None, 'accepted-forward', 'installed', 'restore:upgrade_client.py', 'unfencing'])
-def test_reconcile_new_boot_including_prejournal_and_accepted_forward(tmp_path, monkeypatch, phase):
+def test_reconcile_new_boot_including_prejournal_and_accepted_forward(tmp_path, monkeypatch, phase, conditional):
     from contextlib import contextmanager
     from types import SimpleNamespace
     from prismabuild.digest_primitives import raw_sha256
@@ -335,7 +336,7 @@ def test_reconcile_new_boot_including_prejournal_and_accepted_forward(tmp_path, 
     monkeypatch.setattr(helper, 'verify_services', lambda *a: None)
     monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'fresh')
     monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 2, 'starttime': '3'})
-    result = helper.reconcile_boot(plan)
+    result = helper.reconcile_boot(plan, if_needed=True) if conditional else helper.reconcile_boot(plan)
     assert result['boot_reconciliation']['boot_id'] == 'fresh'
     assert helper.read_journal(plan, path)['plan_sha256'] == helper.original_plan_hash(plan)
 
@@ -432,3 +433,24 @@ def test_retry_settles_links_left_by_interrupted_mkdir(tmp_path, monkeypatch):
     monkeypatch.setattr(os, 'fsync', syncing)
     helper._bootstrap_mkdir(path)
     assert {tmp_path, path.parent, path} <= set(observed)
+
+
+@pytest.mark.parametrize('boot', ['original', 'reconciled'])
+def test_conditional_boot_reconciliation_verifies_current_binding_without_rewriting(tmp_path, monkeypatch, boot):
+    plan = {'id': 'unchanged', 'boots': {'one': 'original'}}
+    events = []
+    monkeypatch.setattr(helper, 'STATE', tmp_path)
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda p: Path(p))
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: boot)
+    monkeypatch.setattr(helper, 'local_context', lambda *a, **kw: (events.append(('context', kw)) or ('one', tmp_path, {})))
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: events.append(('broker', kw)))
+    if boot == 'reconciled':
+        path = helper.journal_for(plan)
+        helper._bootstrap_save(path, {'plan_sha256': helper.original_plan_hash(plan), 'phase': 'installed',
+            'boot_reconciliation': {'boot_id': boot}})
+        before = path.read_bytes()
+    result = helper.reconcile_boot(plan, if_needed=True)
+    assert result['reconciled'] is False and result['boot_id'] == boot
+    assert ('context', {}) in events and ('broker', {}) in events
+    if boot == 'reconciled':
+        assert path.read_bytes() == before

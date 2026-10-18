@@ -580,12 +580,21 @@ def bootstrap_boot_id():
     return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
 
-def reconcile_boot(plan):
+def reconcile_boot(plan, *, if_needed=False):
     """Approve a reboot using fresh root facts; retain the immutable intent."""
     host, _, _ = local_context(plan, allow_boot_change=True)
-    if bootstrap_boot_id() == plan['boots'][host]:
-        raise ValueError('reconcile-boot requires a changed boot')
+    current = bootstrap_boot_id()
     path = journal_for(plan)
+    if if_needed:
+        recorded = read_journal(plan, path).get('boot_reconciliation', {}) if path.exists() else {}
+        if current == plan['boots'][host] or recorded.get('boot_id') == current:
+            # An explicit operator step may be repeated after copying a reverse
+            # plan. Validate the current binding; do not fabricate a reboot.
+            local_context(plan)
+            observe_broker_process(plan)
+            return {'reconciled': False, 'boot_id': current}
+    if current == plan['boots'][host]:
+        raise ValueError('reconcile-boot requires a changed boot')
     existed = path.exists()
     journal = read_journal(plan, path) if existed else {
         'plan_sha256': original_plan_hash(plan), 'phase': 'fencing',
@@ -744,7 +753,10 @@ def main():
     parser.add_argument('--id', required=True)
     parser.add_argument('--plan-sha256', required=True)
     parser.add_argument('--nonce')
+    parser.add_argument('--if-needed', action='store_true', help='reconcile-boot: verify an unchanged/already reconciled boot without rewriting')
     args = parser.parse_args()
+    if args.if_needed and args.operation != 'reconcile-boot':
+        parser.error('--if-needed requires reconcile-boot')
     if not sys.flags.isolated:
         parser.error('use the root-local tool with /usr/bin/python3 -I')
     base = _bootstrap_trusted(CONTROL / _bootstrap_identity(args.id))
@@ -773,7 +785,7 @@ def main():
         parser.error('host mutations require root')
     with bootstrap_operation_lock(plan, allow_boot_change=args.operation == 'reconcile-boot'):
         if args.operation == 'reconcile-boot':
-            result = reconcile_boot(plan)
+            result = reconcile_boot(plan, if_needed=args.if_needed)
         elif args.operation == 'prepare':
             result = prepare_bootstrap(plan)
         elif args.operation == 'restore':

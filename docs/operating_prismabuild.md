@@ -3344,7 +3344,7 @@ not prove current participation or simulate either quorum.
 
 For a barrier, first stage the committed generation through an admitted PB action:
 
-    tools/fleet/publish_runtime.py --stage-only
+    tools/fleet/publish_runtime.py --stage-only --shape-gate-action <passing-final-commit-shape-action>
 
 This performs the import probe and seals the candidate, prints its generation
 name, and leaves `repo` unchanged. Then run the authorized control-plane step
@@ -4957,6 +4957,57 @@ and dl380g10. The broker, supervisor and storage roles continue running. Do not
 use the old a174 publisher to bypass a pending-bootstrap refusal. Do not execute
 Python from NFS as root.
 
+Before starting, obtain the master's final native root, corpus, combined-suite
+and shape-gate receipts. The shape action must pass `tests/gate_campaign_shape.py`
+on the exact clean final commit. Stage that commit before reserving bootstrap,
+using the published PB client. Set `R` to that checkout, `SHAPE_ACTION` to the
+verified full shape key, and `PREDEPLOY_PY` to
+`/home/rob/venvs/pb-cpu/bin/python3.14`. This infrastructure interpreter was
+observed as native Python 3.14.4 on x86 in the worker gates. Reconfirm its full
+runtime identity, required imports and current eligible offer in the master's
+final qualification. A path on the coordinator is not an eligible-worker proof.
+Do not substitute the absent coordinator `python3.12` link or provision a venv
+while consumers use it.
+
+```bash
+set -euo pipefail
+R=/home/rob/wt/reviewed-release
+SHAPE_ACTION=REVIEWED_FULL_SHAPE_ACTION_KEY
+PREDEPLOY_PY=/home/rob/venvs/pb-cpu/bin/python3.14
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+    --cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
+    --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+    -- "$PREDEPLOY_PY" tools/fleet/publish_runtime.py --stage-only \
+    --rollout rolling --rollout-reason 'stage the qualified amended P candidate only' \
+    --shape-gate-action "$SHAPE_ACTION"
+```
+
+Retain that action's logs, terminal flags and verified CAS receipt. Set `G` below
+to the exact sealed generation it printed. Staging performs an admitted import
+probe and never activates. It needs no canary flag. Do not restage after a
+bootstrap reservation; ordinary staging/publication then refuses the pending
+intent. Staging's existing exemption from automatic reader-transition checking
+is limited to sealing bytes. Only the later explicit installed-bootstrap
+assessment authorizes this cutover.
+
+The coordinator needs authenticated noninteractive SSH, trusted host keys and
+existing `sudo -n` authority on all three enrolled hosts. The admitted predeploy
+worker needs the same SSH access for fresh root challenges; verify that execution
+route during final qualification. Do not forward new credentials or widen sudo
+rules during cutover. Root maintenance, inventory and external pointer control
+are the authorized bootstrap operations. Staging, runtime probes, predeploy,
+root tests and canary legs still require PB admission. There is no test-admission
+exception and no permission to stop brokers, serving roles or active work.
+
+Before activation, set and export `PBCANARY_GPU_IMAGE` to the master's qualified
+`repository@sha256:<64 hex>` campaign image. It must already be available on the
+GPU coordinator and eligible canary workers and provide CUDA-enabled torch and
+`python3`. Confirm the full driver and all four legs exist in `R`, the published
+pbrun/pbwait clients and CAS/queue are reachable, and the staged-read tier path
+can serve leg 3's reader leases. Record image identity and the final canary
+qualification action keys. Missing image, driver, open admission or staging
+coverage stops the operation; it is not a canary skip.
+
 Set these operator-selected paths to the reviewed release checkout, staged sealed
 generation, evidence directory and reviewed operation ID. `qualification-actions.json`
 is a JSON array of full successful PB keys covering all eight native record
@@ -4965,7 +5016,22 @@ The separately sealed `qualification-index.json` declares the exact required fil
 and node IDs, final source hashes, and approved native root profiles. Copy its
 reviewed bytes to `$E/qualification-index.json` and keep it read-only. The verifier
 compares CAS outcomes to that independent population, checks the fixed root runner
-and profile, and checks attested source hash values against final source. A supplied `passed` field is not accepted.
+and profile, and binds each approved command to the exact executed `task.argv`
+through the standard capture recipe. Its `corpus_routes` maps each corpus machine
+to an approved `commands` array of exact argv lists, sealed from the reviewed
+submission recipes before their results. Retain the complete command, including
+any pbtest recorder program. Cwd must be the snapshot root and the snapshot input
+must occur in the attested action. A supplied `passed` field is not accepted.
+
+Commit every native profile and every attested source-map key to the final Git
+tree before sealing that commit and collecting the independent index. This
+includes `qualification_dependencies.json`, generated by the preparation owner,
+and the complete profile paths. Generated-only snapshot files fail the final
+Git-blob comparison. Both native lanes must attest identical final Git bytes for
+shared source names. If their dependency manifests differ, stop for the master's
+artifact reconciliation before final qualification. The four frozen runtime
+helpers must not be edited to bypass this check. The independent collection index
+and these final artifacts are master prerequisites, not supplied worker evidence.
 
 ```bash
 set -euo pipefail
@@ -4974,6 +5040,8 @@ G=/mnt/shared/prismabuild-fleet/runtime-generations/REVIEWED_FINAL_GENERATION
 OLD=/mnt/shared/prismabuild-fleet/runtime-generations/a17477b2b206-1791745175-65dffa700dfb
 E=/mnt/shared/prismabuild-cutover/REVIEWED_OPERATION_ID
 ID=REVIEWED_OPERATION_ID
+PBCANARY_GPU_IMAGE=REVIEWED_REPOSITORY@sha256:REVIEWED_64_HEX_DIGEST
+export PBCANARY_GPU_IMAGE
 export PYTHONPATH="$R/src"
 mkdir -p "$E"
 python3 -m prismabuild.installed_bootstrap inventory --out "$E/inventory"
@@ -5080,19 +5148,19 @@ set -euo pipefail
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
 	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
 	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py \
+	-- "$PREDEPLOY_PY" tests/compat/support/compat_predeploy.py \
 	capture --out "$E/window-census"
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
 	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
 	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_sources.py capture \
+	-- "$PREDEPLOY_PY" tests/compat/support/compat_sources.py capture \
 	--status "$E/window-census/status.json" --generations "${G%/*}" \
 	--rollback-generation "${OLD##*/}" --rollback-commit a17477b2b206adf79d89e65c7b9d09584f0bfa34 \
 	--git-root "$R" --out "$E/window"
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
 	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
 	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py qualify \
+	-- "$PREDEPLOY_PY" tests/compat/support/compat_predeploy.py qualify \
 	--census-dir "$E/predeploy-census" --window "$E/window/window.json" \
 	--designation "$R/docs/compatibility_rollback_designation.json" --generations "${G%/*}" \
 	--candidate "$G" --out "$E/predeploy.json" --installed-bootstrap "$E/forward/assessment.json"
@@ -5199,7 +5267,12 @@ python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
 ```
 
 **Interrupted forward:** verify the existing pending intent. This branch makes
-no reservation and needs no forward acceptance archive. If any host has an
+no reservation and needs no forward acceptance archive. Reverse activation
+selects restore under the publication lock only for this exact ID, original
+forward-plan hash and source/target pair. Its durable `direction_decision`
+retains the previous pending intent and the reverse-plan hash. Once selected,
+retry the reverse assessment; returning to forward through this marker refuses.
+If any host has an
 incomplete installation, reinstall its original forward plan, reconcile a
 changed boot as below, and finish `prepare` there before this branch. That
 establishes the complete retained-leaf closure needed for restoration.
@@ -5220,9 +5293,11 @@ ACTIVE_PLAN_SHA=$REVERSE_SHA
 ```
 
 **Continue either branch:** install the reverse plan and restore one host at a
-time. Each command must succeed before the next host. When a boot changed,
-execute its explicit reconciliation command after copying its reverse plan and
-before `restore`; retain the output. Do not edit the original boot IDs.
+time. Each command must succeed before the next host. The explicit
+`reconcile-boot --if-needed` step follows the reverse-plan copy on every host.
+It verifies an unchanged/already reconciled boot without rewriting; a changed
+boot follows the full root reconciliation path before restore. Retain its
+output. Do not edit the original boot IDs.
 
 ```bash
 set -euo pipefail
@@ -5230,7 +5305,7 @@ restore_host() {
     local host=$1
     local B=/opt/prismabuild-bootstrap/$ID
     cat "$E/reverse/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
-    # If this host rebooted, run reconcile-boot with REVERSE_SHA here first.
+    ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" reconcile-boot --if-needed --id "$ID" --plan-sha256 "$REVERSE_SHA"
     ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" restore --id "$ID" --plan-sha256 "$REVERSE_SHA"
     ssh "$host" sudo -n /usr/bin/sha256sum /opt/prismabuild-resource-broker/upgrade_client.py
 }
@@ -5279,7 +5354,12 @@ challenges immediately before activation. Unknown live writers, ambiguous
 same-commit generations, active broker scopes, or any ready/claimed row refuse
 the pointer move. A saved root transcript remains audit data; the publisher never
 loads it as authority. Accepted decisions name the root transcripts and verified
-canary sidecar digest.
+canary sidecar digest. Each root response is a bounded observation, not a host
+lease. A reboot after a host replies can precede pointer movement. Durable
+fences and the complete installed closure contain that interval; post-move fresh
+convergence detects the changed boot and leaves acceptance pending. Reconcile
+the affected host and retry the selected direction. Exact timing, repeated reboot
+and physical durability evidence remain part of the master's root qualification.
 
 The reverse assessment generated above records `canary_admission: ordinary`
 and its reason. That canary uses normal PB admission and a separate nonce-named

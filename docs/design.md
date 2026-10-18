@@ -19737,3 +19737,34 @@ refuses even with otherwise complete successful indexed outcomes. The master
 commits all attested source names, including native profiles and
 `qualification_dependencies.json`, to the final Git tree before freezing it;
 generated-only snapshot artifacts do not satisfy source identity.
+
+Publication ownership consists of schema, operation ID, original forward-plan
+hash and exact source/target identities. Direction is a recovery decision.
+Under the same publication lock, an explicit restore assessment may change an
+unfinished forward pending marker from `reserved`, `activation-intent`,
+`awaiting-convergence` or `ordinary-canary` to `restore-selected` at either
+pointer position. Before fresh external reads, the durable `direction_decision`
+binds the reverse plan hash, selection time and complete previous intent.
+Every later progress record and accepted archive preserves it. Restore retries
+must retain that decision; restore-to-forward and foreign ownership refuse.
+An accepted forward marker must complete its archive before the separate
+accepted-forward rollback reservation. Dry-run never selects a direction.
+
+The reverse runbook copies each host's reverse plan and explicitly executes
+`reconcile-boot --if-needed` before `restore`. This option is valid only for
+`reconcile-boot`. For an unchanged or already reconciled boot it verifies the
+normal root context and bound broker process without rewriting the record.
+Otherwise it executes full reconciliation, retaining original intent and backup.
+The root operation lock admits this explicit reconciliation entry across boot;
+restore itself still refuses an unrecorded changed boot.
+
+Root responses are bounded samples, not continuous leases. A post-response
+reboot may precede pointer movement; persistent fences and durable installed
+closure contain that interval, and new post-move convergence detects it before
+acceptance. The pending marker remains selected in its direction until fresh
+observations and the mandatory canary succeed. Physical reboot timing and
+production root/systemd evidence remain release qualification, not worker
+non-root test credit. Staging's existing reader-direction exemption authorizes
+sealing only; shape input, PB admission and later installed assessment remain
+required. The bootstrap canary overrides the ordinary existing-generation
+no-canary/new-publication retry advice without issuing a replacement grant.
