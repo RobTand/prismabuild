@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 from dataclasses import replace
 import json
+import os
 import sys
 
 import pytest
@@ -52,6 +53,51 @@ def test_archival_executable_identity_mismatch_stops_before_the_writer(generatio
     assert binding["selected"]["sha256"] == "0" * 64
     assert binding["observed"]["sha256"] == qualified.sha256
     assert "explicit qualification" in binding["error"]
+    assert "result" not in observed and not store.exists()
+
+
+@pytest.mark.parametrize("native_only", [False, True], ids=["python-environment", "native-environment"])
+def test_archival_writer_uses_the_selected_environment_after_ambient_change(generations, tmp_path, monkeypatch,
+                                                                         native_only):
+    case = "shape-table/unhashed"
+    generation, old, manifest = historical_shape(generations, case)
+    monkeypatch.setenv("COMPAT_ARCHIVAL_ENV_CONTROL", "selected")
+    run = record_compat.subprocess.run
+
+    def change_ambient_environment(command, **kwargs):
+        if native_only:
+            os.putenv("COMPAT_ARCHIVAL_ENV_CONTROL", "changed-before-spawn")
+        else:
+            monkeypatch.setenv("COMPAT_ARCHIVAL_ENV_CONTROL", "changed-before-spawn")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(record_compat.subprocess, "run", change_ambient_environment)
+    observed = invoke(old, case, tmp_path / "writer", manifest=manifest,
+                      archival_runtime=archival_runtime(),
+                      runtime_observe=runtime_observer("archival-environment-snapshot-control", generation, case))
+    assert observed["returncode"] == 0, observed
+    assert base64.b64decode(accepted(observed)["raw"]) == decoded(HISTORY[generation, case])
+
+
+def test_archival_writer_refuses_a_changed_child_environment(generations, tmp_path, monkeypatch):
+    case = "shape-table/unhashed"
+    generation, old, manifest = historical_shape(generations, case)
+    monkeypatch.setenv("COMPAT_ARCHIVAL_ENV_CONTROL", "selected")
+    run = record_compat.subprocess.run
+
+    def change_child_environment(command, **kwargs):
+        environment = dict(kwargs.get("env") or os.environ)
+        environment["COMPAT_ARCHIVAL_ENV_CONTROL"] = "changed-before-spawn"
+        return run(command, **{**kwargs, "env": environment})
+
+    monkeypatch.setattr(record_compat.subprocess, "run", change_child_environment)
+    store = tmp_path / "writer"
+    observed = invoke(old, case, store, manifest=manifest, archival_runtime=archival_runtime(),
+                      runtime_observe=runtime_observer("archival-environment-mismatch-control", generation, case))
+    binding = observed["archival_runtime"]
+    assert observed["returncode"] == 2 and observed["process_returncode"] != 0
+    assert "explicit qualification" in binding["error"]
+    assert binding["selected"]["environment_digest"] != binding["observed"]["environment_digest"]
     assert "result" not in observed and not store.exists()
 
 

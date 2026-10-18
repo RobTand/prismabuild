@@ -294,15 +294,17 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
         if manifest:
             namespace.extend(["--ro-bind", str(manifest), str(stable / "manifest.json")])
             command.extend(["--manifest", str(stable / "manifest.json")])
+    environment = None
     if archival_runtime is not None:
-        environment = json.dumps(dict(os.environ), sort_keys=True, separators=(",", ":")).encode("ascii")
+        environment = dict(os.environ)
+        environment_bytes = json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("ascii")
         expected = {**asdict(archival_runtime),
                     "environment_before_driver": {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
                                                   "OPENBLAS_NUM_THREADS": "1", "TMPDIR": "/home/rob/pbt17",
-                                                  "TZ": os.environ.get("TZ")},
+                                                  "TZ": environment.get("TZ")},
                     "environment_digest": {"algorithm": "sha256", "domain": _ENVIRONMENT_DOMAIN,
                                            "encoding": "json-sort-keys-compact-ascii",
-                                           "sha256": sha(_ENVIRONMENT_DOMAIN.encode("ascii") + b"\0" + environment)},
+                                           "sha256": sha(_ENVIRONMENT_DOMAIN.encode("ascii") + b"\0" + environment_bytes)},
                     "affinity": sorted(os.sched_getaffinity(0)),
                     "isolated": True, "no_site": True, "invocation_matches_running": True}
         command = [archival_runtime.path, "-I", "-S", "-c", _ARCHIVAL_BOOTSTRAP,
@@ -310,7 +312,7 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     if namespace:
         command = namespace + ["--"] + command
     try:
-        process = subprocess.run(command, input=json.dumps(request), text=True,
+        process = subprocess.run(command, input=json.dumps(request), text=True, env=environment,
                                  capture_output=True, timeout=45)
     except (OSError, subprocess.TimeoutExpired) as exc:
         result = {"returncode": 2, "process_returncode": None,
