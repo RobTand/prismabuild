@@ -572,7 +572,7 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
     walk_runtime_path(plan['reader_target'], observer.lookup)
     facts = dict(roots=observer.roots, components=observer.components,
         directory_witnesses=observer.witnesses, plan=plan,
-        completion=dict(host_checkpoint=host_checkpoint,
+        completion=dict(host_checkpoint=host_checkpoint, base_image_roots=image['roots'],
                         host_directory_observations=host['directory_observations']))
     installation = runtime_reader_installation(facts)
     before_plan = dict(plan, required_spellings=[path for path in plan['required_spellings']

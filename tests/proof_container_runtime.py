@@ -240,8 +240,7 @@ def load_profile(path, source_root):
             raise ValueError('runtime namespace audit belongs to another state')
     if combined['native_audit'] != combined['namespace_states']['before_installation']['native_audit']:
         raise ValueError('runtime primary native audit differs from its before-installation state')
-    if closure['link_outcomes'] != closure['namespace_states']['before_installation']['link_outcomes']:
-        raise ValueError('runtime observed link outcomes differ from the before-installation state')
+    audit_observed_runtime_links(closure)
     return RuntimeProfile(path, digest(raw), image, value['primary'], reader, closure)
 
 
@@ -646,6 +645,27 @@ def runtime_path_authority(closure, path):
     return 'image'
 
 
+def runtime_directory_expectation(closure, key, state):
+    witness = closure['directory_witnesses'][key]
+    if witness['authority'] != 'image':
+        return witness
+    names = set(witness['names']) | set(runtime_mount_ancestor(closure, witness['parent']) or ())
+    installation = closure.get('reader_installation')
+    if (state == 'after_installation' and installation is not None
+            and witness['parent'] == str(Path(installation['path']).parent)):
+        if key == installation['absent_before']['witness']:
+            raise ValueError('reader creation absence is inactive after installation')
+        names.add(Path(installation['path']).name)
+    if sorted(names) == list(witness['names']):
+        return witness
+    expected = dict(authority='image', operation='namespace_directory_expectation',
+                    parent=witness['parent'], name=witness['name'], basis=key,
+                    state=state, names=sorted(names))
+    if installation is not None:
+        expected['installation_sha256'] = digest(canonical(installation))
+    return expected
+
+
 def runtime_absence_witness(closure, key):
     witness = closure['directory_witnesses'][key]
     if digest(canonical(witness)) != key:
@@ -654,19 +674,14 @@ def runtime_absence_witness(closure, key):
     name = witness['name']
     if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\0' in name:
         raise ValueError('runtime absence witness has an invalid child name')
-    if witness.get('operation') == 'reader_installation_expectation':
-        if closure.get('_namespace_state') != 'after_installation':
-            raise ValueError('derived runtime absence belongs only to the post-installation namespace')
-        original = runtime_absence_witness(closure['_before_namespace'], witness['basis'])
-        installation = closure['reader_installation']
-        expected = dict(authority='image', operation='reader_installation_expectation',
-            parent=original['parent'], name=original['name'], basis=witness['basis'],
-            names=sorted([*original['names'], Path(installation['path']).name]),
-            installation_sha256=digest(canonical(installation)))
-        if (canonical(witness) != canonical(expected) or original['authority'] != 'image'
-                or original['parent'] != str(Path(installation['path']).parent)
-                or name == Path(installation['path']).name):
-            raise ValueError('derived runtime absence differs from its authorized reader insertion')
+    if witness.get('operation') == 'namespace_directory_expectation':
+        state = closure.get('_namespace_state')
+        if state not in NAMESPACE_STATES or witness['state'] != state:
+            raise ValueError('derived runtime absence belongs to another namespace state')
+        runtime_absence_witness(closure['_before_namespace'], witness['basis'])
+        expected = runtime_directory_expectation(closure['_before_namespace'], witness['basis'], state)
+        if canonical(witness) != canonical(expected) or name in expected['names']:
+            raise ValueError('derived runtime absence differs from its composed namespace directory')
         return witness
     if witness.get('authority') == 'mount':
         expected = runtime_mount_component(closure, parent)
@@ -706,7 +721,12 @@ def runtime_absence_witness(closure, key):
         raise ValueError('runtime absence parent is not a retained directory')
     if parent_entry['mode'] != stat.S_IMODE(before[2]):
         raise ValueError('runtime absence parent mode differs from its retained directory')
-    for path in entries:
+    child_entries = entries
+    if authority == 'image':
+        image_roots = [root for root in closure['roots'] if root['origin'] == 'image']
+        image_roots += closure.get('completion', {}).get('base_image_roots', [])
+        child_entries = runtime_namespace_entries(dict(roots=image_roots))
+    for path in child_entries:
         if str(Path(path).parent) == parent and Path(path).name not in names:
             raise ValueError('runtime absence listing omits a retained child')
     if authority == 'host':
@@ -768,6 +788,7 @@ def runtime_reader_installation(closure):
         return None
     witness = runtime_absence_witness(closure, outcome.witness)
     if (outcome.missing != path or outcome.remaining or witness['authority'] != 'image'
+            or runtime_mount_ancestor(closure, path) is not None
             or witness.get('operation') != 'lstat_at_nofollow' or witness.get('errno') != 'ENOENT'):
         raise ValueError('runtime reader creation requires exact image-owned leaf ENOENT')
     target = closure['plan']['reader_target']
@@ -792,30 +813,21 @@ def runtime_namespace_state(closure, state):
     view['roots'] = [dict(root, entries={name: dict(entry) for name, entry in root['entries'].items()})
                      for root in closure['roots']]
     view['components'] = {path: dict(component) for path, component in closure['components'].items()}
-    view['directory_witnesses'] = dict(closure['directory_witnesses'])
+    view['directory_witnesses'] = {}
     view['plan'] = dict(closure['plan'])
     installation = closure.get('reader_installation')
     required = set(closure['plan']['required_spellings'])
+    for key, witness in closure['directory_witnesses'].items():
+        if (state == 'after_installation' and installation is not None
+                and key == installation['absent_before']['witness']):
+            continue
+        expected = runtime_directory_expectation(closure, key, state)
+        view['directory_witnesses'][digest(canonical(expected))] = expected
     if installation is not None:
         path = installation['path']
         if state == 'before_installation':
             required.remove(path)
         else:
-            creation = installation['absent_before']['witness']
-            parent = str(Path(path).parent)
-            witnesses = {}
-            for key, witness in closure['directory_witnesses'].items():
-                if key == creation:
-                    continue
-                if witness['parent'] == parent:
-                    derived = dict(authority='image', operation='reader_installation_expectation',
-                        parent=parent, name=witness['name'], basis=key,
-                        names=sorted([*witness['names'], Path(path).name]),
-                        installation_sha256=digest(canonical(installation)))
-                    witnesses[digest(canonical(derived))] = derived
-                else:
-                    witnesses[key] = witness
-            view['directory_witnesses'] = witnesses
             for root in view['roots']:
                 if Path(path).is_relative_to(root['path']):
                     relative = str(Path(path).relative_to(root['path']))
@@ -837,6 +849,13 @@ def runtime_namespace_state_record(view):
     return dict(link_outcomes=dict(sorted(outcomes.items())),
                 required_spellings=view['plan']['required_spellings'],
                 directory_witnesses_sha256=digest(canonical(view['directory_witnesses'])))
+
+
+def audit_observed_runtime_links(closure):
+    observed = runtime_namespace_state(closure, 'before_installation')
+    observed['directory_witnesses'] = closure['directory_witnesses']
+    observed['link_outcomes'] = closure['link_outcomes']
+    return audit_link_outcomes(observed)
 
 
 def audit_link_outcomes(closure):
@@ -1210,8 +1229,7 @@ def audit_runtime_closure(closure, byte_path, *, content_path=None):
         if closure['namespace_states'][state] != runtime_namespace_state_record(view):
             raise ValueError('runtime namespace state differs from independently replayed facts: ' + state)
         audit_link_outcomes(view)
-    if closure['link_outcomes'] != views['before_installation']['link_outcomes']:
-        raise ValueError('runtime observed link outcomes differ from the before-installation state')
+    audit_observed_runtime_links(closure)
     executable = closure['completion']['host_observation']['executable']
     primary = closure['completion']['host_elf_index'][executable['resolved_path']]
     if len(primary['interpreters']) != 1:
@@ -1294,7 +1312,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
         try:
             before = os.fstat(descriptor)
             recorded = (runtime_absence_witness(closure['_before_namespace'], witness['basis'])
-                        if witness.get('operation') == 'reader_installation_expectation' else witness)
+                        if witness.get('operation') == 'namespace_directory_expectation' else witness)
             if (witness['authority'] != 'mount'
                     and stat.S_IMODE(before.st_mode) != stat.S_IMODE(recorded['before'][2])):
                 raise ValueError('mounted runtime absence parent mode differs: ' + witness['parent'])
@@ -1446,10 +1464,11 @@ def verify_reader_namespace_transition(closure, before, after, custody):
             raise ValueError('existing mounted reader namespace changed unexpectedly')
     else:
         witness = runtime_absence_witness(closure, installation['absent_before']['witness'])
+        initial_names = sorted(set(witness['names']) | set(runtime_mount_ancestor(closure, parent) or ()))
         expected_names = sorted([*before['names'], Path(path).name])
         expected_custody = installation['expected_custody']
         if (before['entry'] is not None or Path(path).name in before['names']
-                or before['names'] != list(witness['names']) or after['names'] != expected_names
+                or before['names'] != initial_names or after['names'] != expected_names
                 or after['entry'] != installation['entry']
                 or any(after[name] != expected_custody[name] for name in ('uid', 'gid'))
                 or before['parent_uid'] != 0 or before['parent_mode'] & 0o022

@@ -916,6 +916,7 @@ def test_mount_created_directory_is_verified_after_mount(required_graph_tree, ch
 
 
 def graph_reader_transition_fixture(tree, *, primary_through_reader=False):
+    tree.directory('image', '/usr/bin')
     tree.physical('image', '/usr/bin/python3').unlink()
     tree.image_executable = '/usr/local/bin/python3.12'
     tree.image_paths.remove(HOST_EXECUTABLE)
@@ -1106,7 +1107,9 @@ def graph_retained_root_custody_claim(before, after, custody):
     """Pure replay inputs assert root custody; real fixture owners are logged."""
     print('reader-transition actual fixture custody:', dict(
         before_parent_uid=before['parent_uid'], after_parent_uid=after['parent_uid'],
+        before_parent_mode=oct(before['parent_mode']), after_parent_mode=oct(after['parent_mode']),
         reader_uid=after['uid'], reader_gid=after['gid']))
+    assert before['parent_mode'] == after['parent_mode'] == 0o755
     claimed_before, claimed_after, claimed_custody = map(copy.deepcopy, (before, after, custody))
     for observation in (claimed_before, claimed_after):
         observation['parent_uid'] = observation['parent_gid'] = 0
