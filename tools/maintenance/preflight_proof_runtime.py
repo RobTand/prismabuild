@@ -55,6 +55,17 @@ def preflight_image(payload):
     original_discovery = capture.discover_image_runtime_graph
     original_search = capture.runtime_elf_search_directories
     original_walk = capture.walk_runtime_path
+    original_candidates = capture.runtime_directory_candidate_spellings
+    candidate_cache = [None, {}]
+    def candidates(entries, directory, needed, **options):
+        if entries is not candidate_cache[0]:
+            candidate_cache[:] = [entries, {}]
+        key = (directory,needed,tuple(options.items()))
+        if key not in candidate_cache[1]:
+            candidate_cache[1][key] = original_candidates(entries,directory,needed,**options)
+        return candidate_cache[1][key]
+    capture.runtime_directory_candidate_spellings = candidates
+    runtime.runtime_directory_candidate_spellings = candidates
     active = [{}]
     def discovery(*args, **kwargs):
         current[0] = ('before_installation','after_installation')[calls[0] % 2]
