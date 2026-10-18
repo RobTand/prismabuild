@@ -99,7 +99,7 @@ def run_profile(root, required, tests, affinity, path, collect_only):
     if outer['affinity'] != affinity or outer['native_threads'] != {
             name: '1' for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')}:
         raise ValueError('outer runtime changed PB affinity or native thread bounds')
-    outer_closure = verify_closure(runtime, ('host',))
+    outer_closure = verify_closure(runtime, ('host',), state='before_installation')
     inspected = json.loads(subprocess.check_output([
         'docker', 'image', 'inspect', runtime.image, '--format',
         '{"id":{{json .Id}},"architecture":{{json .Architecture}}}'], text=True))
@@ -140,7 +140,7 @@ def run_profile(root, required, tests, affinity, path, collect_only):
             raise ValueError('inner attestation differs from the selected profile or mode')
         if record['exitstatus'] != result.returncode:
             raise ValueError('inner status differs from actual Docker termination')
-        record['closure']['outer'] = verify_closure(runtime, ('host',))
+        record['closure']['outer'] = verify_closure(runtime, ('host',), state='before_installation')
     except (OSError, ValueError, KeyError) as exc:
         record = dict(schema=ATTESTATION_SCHEMA, mode=mode, complete=False,
             profile_sha256=runtime.sha256, image=image, outer=outer, inner=None, installed_reader=None,

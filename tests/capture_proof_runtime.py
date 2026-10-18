@@ -29,7 +29,8 @@ from proof_container_runtime import (
     audit_link_outcomes, audit_runtime_closure, read_runtime_elf, runtime_charge, runtime_completion_plan,
     runtime_outcome_record, runtime_stamp, walk_runtime_path, runtime_elf_search_directories,
     runtime_directory_candidate_spellings, runtime_elf_observation, runtime_capture_work,
-    runtime_mount_ancestor, runtime_mount_component,
+    runtime_mount_ancestor, runtime_mount_component, runtime_reader_installation,
+    runtime_namespace_state, runtime_namespace_state_record,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -467,7 +468,7 @@ class ImageClosureObserver:
                 raise ValueError('image navigation directory changed before completion: ' + logical)
 
 
-def discover_image_runtime_graph(observer, host, image, plan, lookup):
+def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additional_links=()):
     outcomes = {}
     aliases = {}
     metadata_by_path = {}
@@ -517,7 +518,7 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup):
         links = {str(Path(root['path']) / relative): entry
                  for root in observer.roots for relative, entry in root['entries'].items()
                  if entry['kind'] == 'symlink'}
-        for spelling in sorted((set(links) | set(plan['required_spellings'])) - outcomes.keys()):
+        for spelling in sorted((set(links) | set(additional_links) | set(plan['required_spellings'])) - outcomes.keys()):
             resolve_observation(spelling, required=spelling in plan['required_spellings'])
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}
@@ -565,7 +566,33 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup):
 def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=Path('/')):
     observer = ImageClosureObserver(host, image, budget, host_checkpoint, image_root)
     plan = runtime_completion_plan(host, image)
-    outcomes = discover_image_runtime_graph(observer, host, image, plan, observer.lookup)
+    # Observe the fixed reader path without granting any primary exemption.
+    # Only the shared owner may turn an exact image leaf absence into creation.
+    walk_runtime_path(plan['reader_spelling'], observer.lookup)
+    walk_runtime_path(plan['reader_target'], observer.lookup)
+    facts = dict(roots=observer.roots, components=observer.components,
+        directory_witnesses=observer.witnesses, plan=plan,
+        completion=dict(host_checkpoint=host_checkpoint,
+                        host_directory_observations=host['directory_observations']))
+    installation = runtime_reader_installation(facts)
+    before_plan = dict(plan, required_spellings=[path for path in plan['required_spellings']
+        if installation is None or path != plan['reader_spelling']])
+
+    def installed_lookup(path):
+        if installation is not None and path == installation['path']:
+            return installation['entry']
+        return observer.lookup(path)
+
+    for _ in range(64):
+        before = (len(observer.roots), len(observer.components), len(observer.witnesses))
+        outcomes = discover_image_runtime_graph(observer, host, image, before_plan, observer.lookup)
+        discover_image_runtime_graph(observer, host, image, plan, installed_lookup,
+            additional_links=() if installation is None else (installation['path'],))
+        after = (len(observer.roots), len(observer.components), len(observer.witnesses))
+        if before == after:
+            break
+    else:
+        raise ValueError('runtime namespace states did not converge inside their finite bound')
     observer.finish()
     links = {str(Path(root['path']) / relative) for root in observer.roots
              for relative, entry in root['entries'].items() if entry['kind'] == 'symlink'}
@@ -586,8 +613,15 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
     result = CompletedRuntimeNamespace(tuple(observer.roots),
         tuple(sorted(set(host['native_library_roots'] + image['native_library_roots']))),
         observer.components, observer.witnesses, {key: outcomes[key] for key in sorted(links)}, plan,
-        {key: budget[key] for key in ('members', 'regular_bytes')}, completion)
-    audit_link_outcomes(asdict(result))
+        {key: budget[key] for key in ('members', 'regular_bytes')}, completion,
+        installation, {})
+    namespace = asdict(result)
+    for state in ('before_installation', 'after_installation'):
+        view = runtime_namespace_state(namespace, state)
+        record = runtime_namespace_state_record(view)
+        view['link_outcomes'] = record['link_outcomes']
+        audit_link_outcomes(view)
+        result.namespace_states[state] = record
     return result
 
 

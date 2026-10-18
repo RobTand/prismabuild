@@ -203,18 +203,15 @@ def load_profile(path, source_root):
     for seed in closure['elf_roots']:
         _absolute(seed)
     combined = closure['audit']
-    if (combined['schema'] != 'prismabuild.proof_runtime_closure_audit.v1'
+    if (combined['schema'] != 'prismabuild.proof_runtime_closure_audit.v2'
             or closure['graph_policy'] != 'required-runtime-graph-v1'
             or combined['link_outcomes_sha256'] != digest(canonical(closure['link_outcomes']))
-            or combined['completion_sha256'] != digest(canonical(closure['completion']))):
+            or combined['completion_sha256'] != digest(canonical(closure['completion']))
+            or combined['reader_installation_sha256'] != digest(canonical(closure['reader_installation']))
+            or combined['namespace_states_sha256'] != digest(canonical(closure['namespace_states']))
+            or set(combined['namespace_states']) != set(NAMESPACE_STATES)):
         raise ValueError('runtime closure requires its retained graph and completion audit')
-    audit = combined['native_audit']
-    if audit['schema'] != 'prismabuild.proof_native_closure_audit.v3' or any(type(audit[name]) is not int or audit[name] < 0 for name in ('elf_files', 'symlinks')):
-        raise ValueError('runtime closure requires its retained native dependency audit')
-    _sha(audit['edges_sha256'])
-    _sha(audit['symlinks_sha256'])
-    for name in ('search_directories_sha256', 'default_directories_sha256', 'cache_sha256'):
-        _sha(audit[name])
+    validate_runtime_native_audit(combined['native_audit'])
     roots = closure['roots']
     validate_runtime_roots(roots)
     for path_value in value['primary']['executable']['path'], value['primary']['executable']['resolved_path']:
@@ -230,8 +227,31 @@ def load_profile(path, source_root):
             != closure['plan']['reader_identity']
             or reader.get('link_target') != closure['plan']['reader_target']):
         raise ValueError('runtime installed reader differs from the derived completion identity')
-    audit_link_outcomes(closure)
+    if closure['reader_installation'] != runtime_reader_installation(closure):
+        raise ValueError('runtime reader installation differs from retained namespace facts')
+    for state in NAMESPACE_STATES:
+        view = runtime_namespace_state(closure, state)
+        if closure['namespace_states'][state] != runtime_namespace_state_record(view):
+            raise ValueError('runtime namespace state differs from retained replay: ' + state)
+        audit_link_outcomes(view)
+        state_audit = combined['namespace_states'][state]
+        validate_runtime_native_audit(state_audit['native_audit'])
+        if state_audit['state_sha256'] != digest(canonical(closure['namespace_states'][state])):
+            raise ValueError('runtime namespace audit belongs to another state')
+    if combined['native_audit'] != combined['namespace_states']['before_installation']['native_audit']:
+        raise ValueError('runtime primary native audit differs from its before-installation state')
+    if closure['link_outcomes'] != closure['namespace_states']['before_installation']['link_outcomes']:
+        raise ValueError('runtime observed link outcomes differ from the before-installation state')
     return RuntimeProfile(path, digest(raw), image, value['primary'], reader, closure)
+
+
+def validate_runtime_native_audit(audit):
+    if audit['schema'] != 'prismabuild.proof_native_closure_audit.v3' or any(type(audit[name]) is not int or audit[name] < 0 for name in ('elf_files', 'symlinks')):
+        raise ValueError('runtime closure requires its retained native dependency audit')
+    _sha(audit['edges_sha256'])
+    _sha(audit['symlinks_sha256'])
+    for name in ('search_directories_sha256', 'default_directories_sha256', 'cache_sha256'):
+        _sha(audit[name])
 
 
 def validate_runtime_roots(roots):
@@ -634,6 +654,20 @@ def runtime_absence_witness(closure, key):
     name = witness['name']
     if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\0' in name:
         raise ValueError('runtime absence witness has an invalid child name')
+    if witness.get('operation') == 'reader_installation_expectation':
+        if closure.get('_namespace_state') != 'after_installation':
+            raise ValueError('derived runtime absence belongs only to the post-installation namespace')
+        original = runtime_absence_witness(closure['_before_namespace'], witness['basis'])
+        installation = closure['reader_installation']
+        expected = dict(authority='image', operation='reader_installation_expectation',
+            parent=original['parent'], name=original['name'], basis=witness['basis'],
+            names=sorted([*original['names'], Path(installation['path']).name]),
+            installation_sha256=digest(canonical(installation)))
+        if (canonical(witness) != canonical(expected) or original['authority'] != 'image'
+                or original['parent'] != str(Path(installation['path']).parent)
+                or name == Path(installation['path']).name):
+            raise ValueError('derived runtime absence differs from its authorized reader insertion')
+        return witness
     if witness.get('authority') == 'mount':
         expected = runtime_mount_component(closure, parent)
         expected_witness = asdict(MountRuntimeAbsence(parent, name, tuple(expected['names'])))
@@ -720,6 +754,89 @@ def runtime_replay_lookup(closure):
 
 def replay_runtime_path(closure, path):
     return walk_runtime_path(path, runtime_replay_lookup(closure))
+
+
+def runtime_reader_installation(closure):
+    path = '/usr/bin/python3'
+    outcome = replay_runtime_path(closure, path)
+    if isinstance(outcome, RuntimeResolved):
+        expected = closure['plan']['reader_identity']['executable']
+        entry = runtime_namespace_entries(closure).get(outcome.terminal)
+        if (outcome.terminal != expected['resolved_path'] or entry is None or entry['kind'] != 'file'
+                or any(entry[name] != expected[name] for name in ('bytes', 'sha256'))):
+            raise ValueError('existing runtime reader differs from its selected identity')
+        return None
+    witness = runtime_absence_witness(closure, outcome.witness)
+    if (outcome.missing != path or outcome.remaining or witness['authority'] != 'image'
+            or witness.get('operation') != 'lstat_at_nofollow' or witness.get('errno') != 'ENOENT'):
+        raise ValueError('runtime reader creation requires exact image-owned leaf ENOENT')
+    target = closure['plan']['reader_target']
+    resolved = replay_runtime_path(closure, target)
+    expected = closure['plan']['reader_identity']['executable']
+    entry = runtime_namespace_entries(closure).get(resolved.terminal) if isinstance(resolved, RuntimeResolved) else None
+    if (not isinstance(resolved, RuntimeResolved) or resolved.terminal != expected['resolved_path']
+            or entry is None or entry['kind'] != 'file'
+            or any(entry[name] != expected[name] for name in ('bytes', 'sha256'))):
+        raise ValueError('runtime reader insertion target differs from its selected identity')
+    return dict(path=path, target=target, absent_before=runtime_outcome_record(outcome),
+                entry=dict(kind='symlink', mode=0o777, target=target),
+                expected_custody=dict(uid=0, gid=0, mode=0o777))
+
+
+def runtime_namespace_state(closure, state):
+    if state not in NAMESPACE_STATES:
+        raise ValueError('unsupported runtime namespace state: ' + state)
+    view = dict(closure)
+    view['_namespace_state'] = state
+    view['_before_namespace'] = closure
+    view['roots'] = [dict(root, entries={name: dict(entry) for name, entry in root['entries'].items()})
+                     for root in closure['roots']]
+    view['components'] = {path: dict(component) for path, component in closure['components'].items()}
+    view['directory_witnesses'] = dict(closure['directory_witnesses'])
+    view['plan'] = dict(closure['plan'])
+    installation = closure.get('reader_installation')
+    required = set(closure['plan']['required_spellings'])
+    if installation is not None:
+        path = installation['path']
+        if state == 'before_installation':
+            required.remove(path)
+        else:
+            creation = installation['absent_before']['witness']
+            parent = str(Path(path).parent)
+            witnesses = {}
+            for key, witness in closure['directory_witnesses'].items():
+                if key == creation:
+                    continue
+                if witness['parent'] == parent:
+                    derived = dict(authority='image', operation='reader_installation_expectation',
+                        parent=parent, name=witness['name'], basis=key,
+                        names=sorted([*witness['names'], Path(path).name]),
+                        installation_sha256=digest(canonical(installation)))
+                    witnesses[digest(canonical(derived))] = derived
+                else:
+                    witnesses[key] = witness
+            view['directory_witnesses'] = witnesses
+            for root in view['roots']:
+                if Path(path).is_relative_to(root['path']):
+                    relative = str(Path(path).relative_to(root['path']))
+                    if relative in root['entries']:
+                        raise ValueError('runtime reader insertion would replace a retained member')
+                    root['entries'][relative] = dict(installation['entry'])
+                    break
+            else:
+                view['roots'].append(dict(origin='image', path=path, entries={'.': dict(installation['entry'])}))
+    view['plan']['required_spellings'] = sorted(required)
+    view['link_outcomes'] = dict(closure.get('namespace_states', {}).get(state, {}).get('link_outcomes', {}))
+    return view
+
+
+def runtime_namespace_state_record(view):
+    lookup = runtime_replay_lookup(view)
+    outcomes = {path: runtime_outcome_record(walk_runtime_path(path, lookup))
+                for path, entry in runtime_namespace_entries(view).items() if entry['kind'] == 'symlink'}
+    return dict(link_outcomes=dict(sorted(outcomes.items())),
+                required_spellings=view['plan']['required_spellings'],
+                directory_witnesses_sha256=digest(canonical(view['directory_witnesses'])))
 
 
 def audit_link_outcomes(closure):
@@ -1085,7 +1202,16 @@ def audit_runtime_closure(closure, byte_path, *, content_path=None):
     if closure['schema'] != CLOSURE_SCHEMA or closure['graph_policy'] != 'required-runtime-graph-v1':
         raise ValueError('unsupported runtime closure graph contract')
     audit_runtime_completion(closure, byte_path, content_path)
-    audit_link_outcomes(closure)
+    installation = runtime_reader_installation(closure)
+    if closure['reader_installation'] != installation or set(closure['namespace_states']) != set(NAMESPACE_STATES):
+        raise ValueError('runtime reader transition differs from its derived namespace states')
+    views = {state: runtime_namespace_state(closure, state) for state in NAMESPACE_STATES}
+    for state, view in views.items():
+        if closure['namespace_states'][state] != runtime_namespace_state_record(view):
+            raise ValueError('runtime namespace state differs from independently replayed facts: ' + state)
+        audit_link_outcomes(view)
+    if closure['link_outcomes'] != views['before_installation']['link_outcomes']:
+        raise ValueError('runtime observed link outcomes differ from the before-installation state')
     executable = closure['completion']['host_observation']['executable']
     primary = closure['completion']['host_elf_index'][executable['resolved_path']]
     if len(primary['interpreters']) != 1:
@@ -1097,8 +1223,13 @@ def audit_runtime_closure(closure, byte_path, *, content_path=None):
             or closure['loader']['diagnostics']['executable']['path'] != interpreter
             or closure['loader']['diagnostics']['executable']['resolved_path'] != outcome.terminal):
         raise ValueError('runtime primary PT chain differs from the captured host loader')
-    native = audit_native_closure(closure, byte_path)
-    return dict(schema='prismabuild.proof_runtime_closure_audit.v1', native_audit=native,
+    states = {state: dict(native_audit=audit_native_closure(view, byte_path),
+                          state_sha256=digest(canonical(closure['namespace_states'][state])))
+              for state, view in views.items()}
+    return dict(schema='prismabuild.proof_runtime_closure_audit.v2',
+                native_audit=states['before_installation']['native_audit'], namespace_states=states,
+                reader_installation_sha256=digest(canonical(installation)),
+                namespace_states_sha256=digest(canonical(closure['namespace_states'])),
                 link_outcomes_sha256=digest(canonical(closure['link_outcomes'])),
                 completion_sha256=digest(canonical(closure['completion'])))
 
@@ -1162,8 +1293,10 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
             raise
         try:
             before = os.fstat(descriptor)
+            recorded = (runtime_absence_witness(closure['_before_namespace'], witness['basis'])
+                        if witness.get('operation') == 'reader_installation_expectation' else witness)
             if (witness['authority'] != 'mount'
-                    and stat.S_IMODE(before.st_mode) != stat.S_IMODE(witness['before'][2])):
+                    and stat.S_IMODE(before.st_mode) != stat.S_IMODE(recorded['before'][2])):
                 raise ValueError('mounted runtime absence parent mode differs: ' + witness['parent'])
             try:
                 os.stat(witness['name'], dir_fd=descriptor, follow_symlinks=False)
@@ -1222,18 +1355,112 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
             raise ValueError('mounted runtime negative lookup differs: ' + spelling)
 
 
-def verify_closure(profile, origins=('host', 'image')):
-    maps = {}
-    for root in profile.closure['roots']:
-        if root['origin'] not in origins:
-            continue
-        actual = inventory(root['path'])
-        if actual != root['entries']:
-            raise ValueError(f'runtime root inventory differs: {root["path"]}')
-        maps[root['path']] = dict(origin=root['origin'], members=len(actual),
-                                  entries_sha256=digest(canonical(actual)))
-    verify_runtime_negatives(profile.closure, origins=origins)
+def runtime_closure_verification(closure, origins=('host', 'image')):
+    maps = {root['path']: dict(origin=root['origin'], members=len(root['entries']),
+                              entries_sha256=digest(canonical(root['entries'])))
+            for root in closure['roots'] if root['origin'] in origins}
     return dict(verified=True, member_maps=maps, member_maps_sha256=digest(canonical(maps)))
+
+
+def verify_closure(profile, origins=('host', 'image'), *, state='before_installation'):
+    closure = runtime_namespace_state(profile.closure, state)
+    for root in closure['roots']:
+        if root['origin'] in origins and inventory(root['path']) != root['entries']:
+            raise ValueError(f'runtime root inventory differs: {root["path"]}')
+    verify_runtime_negatives(closure, origins=origins)
+    return runtime_closure_verification(closure, origins)
+
+
+def observe_reader_namespace(closure, state, *, image_root=Path('/')):
+    if state not in NAMESPACE_STATES:
+        raise ValueError('unsupported mounted reader namespace state')
+    path = '/usr/bin/python3'
+    parent = str(Path(path).parent)
+    descriptor = os.open(image_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in PurePosixPath(parent).parts[1:]:
+            following = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = following
+        before = os.fstat(descriptor)
+        name = Path(path).name
+        try:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError as error:
+            if error.errno != 2:
+                raise
+            info = None
+        entry = None
+        if info is not None:
+            if stat.S_ISLNK(info.st_mode):
+                entry = dict(kind='symlink', mode=stat.S_IMODE(info.st_mode),
+                             target=os.readlink(name, dir_fd=descriptor))
+            elif stat.S_ISREG(info.st_mode):
+                entry = inventory(Path('/proc/self/fd') / str(descriptor) / name)['.']
+            else:
+                raise ValueError('mounted reader path has an unsupported inode kind')
+        names = []
+        with os.scandir(descriptor) as children:
+            for child in children:
+                if len(names) >= CAPTURE_BOUNDS['members']:
+                    raise ValueError('mounted reader parent enumeration exceeds its finite bound')
+                names.append(child.name)
+        try:
+            later = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError as error:
+            if error.errno != 2:
+                raise
+            later = None
+        after = os.fstat(descriptor)
+        if ((info is None) != (later is None) or (info is not None and runtime_stamp(info) != runtime_stamp(later))
+                or runtime_stamp(before) != runtime_stamp(after)):
+            raise ValueError('mounted reader namespace changed during observation')
+        return dict(state=state, path=path, parent=parent, before=list(runtime_stamp(before)),
+                    after=list(runtime_stamp(after)), names=sorted(names), entry=entry,
+                    uid=None if info is None else info.st_uid, gid=None if info is None else info.st_gid,
+                    parent_uid=before.st_uid, parent_gid=before.st_gid, parent_mode=stat.S_IMODE(before.st_mode))
+    finally:
+        os.close(descriptor)
+
+
+def verify_reader_namespace_transition(closure, before, after, custody):
+    installation = closure['reader_installation']
+    path = '/usr/bin/python3'
+    parent = str(Path(path).parent)
+    for state, observed in zip(NAMESPACE_STATES, (before, after)):
+        stamp = observed['before']
+        if (observed['state'] != state or observed['path'] != path or observed['parent'] != parent
+                or len(stamp) != 6 or any(type(value) is not int for value in stamp)
+                or stamp != observed['after'] or not stat.S_ISDIR(stamp[2])
+                or observed['names'] != sorted(set(observed['names']))
+                or stat.S_IMODE(stamp[2]) != observed['parent_mode']):
+            raise ValueError('mounted reader namespace lacks its exact stable state observation')
+    if (before['before'][:3] != after['before'][:3]
+            or any(before[name] != after[name] for name in ('parent_uid', 'parent_gid', 'parent_mode'))):
+        raise ValueError('mounted reader creation changed or replaced its parent directory')
+    if installation is None:
+        expected = runtime_namespace_entries(closure).get(path)
+        if (before['entry'] != expected or after['entry'] != expected
+                or before['names'] != after['names'] or custody['created_symlink'] is not False
+                or custody['existed_before'] is not True):
+            raise ValueError('existing mounted reader namespace changed unexpectedly')
+    else:
+        witness = runtime_absence_witness(closure, installation['absent_before']['witness'])
+        expected_names = sorted([*before['names'], Path(path).name])
+        expected_custody = installation['expected_custody']
+        if (before['entry'] is not None or Path(path).name in before['names']
+                or before['names'] != list(witness['names']) or after['names'] != expected_names
+                or after['entry'] != installation['entry']
+                or any(after[name] != expected_custody[name] for name in ('uid', 'gid'))
+                or before['parent_uid'] != 0 or before['parent_mode'] & 0o022
+                or custody['created_symlink'] is not True or custody['existed_before'] is not False):
+            raise ValueError('mounted reader insertion differs from its authorized one-name delta or custody')
+    if (after['uid'] != 0 or custody['path'] != path
+            or any(custody[name] != after[name] for name in ('uid', 'gid'))
+            or custody['mode'] != after['entry']['mode']
+            or custody['target'] != after['entry'].get('target')):
+        raise ValueError('mounted reader custody differs from its observed namespace entry')
+    return True
 
 
 def observe_runtime():
@@ -1339,6 +1566,9 @@ def observe_reader(profile):
     path = Path(expected['executable']['path'])
     existed = path.exists() or path.is_symlink()
     created = False
+    installation = profile.closure['reader_installation']
+    if (not existed) != (installation is not None):
+        raise ValueError('mounted reader presence differs from its authorized installation state')
     if not existed:
         target = expected.get('link_target')
         if target is None or not Path(target).is_file():
@@ -1396,12 +1626,18 @@ def observe_container_roles(profile, expected_affinity):
     if inner['loader_environment'] or inner['at_secure'] != 0:
         raise ValueError('primary container has an unsupported loader override')
     mapped = mapped_native_providers(profile)
+    before = observe_reader_namespace(profile.closure, 'before_installation')
     reader, providers = observe_reader(profile)
+    after = observe_reader_namespace(profile.closure, 'after_installation')
+    verify_reader_namespace_transition(profile.closure, before, after, reader['link_custody'])
     if reader['loader_environment'] or reader['at_secure'] != 0:
         raise ValueError('installed reader has an unsupported loader override')
     if reader['affinity'] != expected_affinity or reader['native_threads'] != {name: '1' for name in THREADS}:
         raise ValueError('installed reader changed PB affinity or native bounds')
-    verify_runtime_negatives(profile.closure)
+    after_verification = verify_closure(profile, state='after_installation')
+    if profile.closure['reader_installation'] is not None:
+        closure = dict(closure, namespace_states=dict(before_installation=before, after_installation=after),
+                       after_verification=after_verification)
     return dict(inner=inner, installed_reader=reader, closure=closure,
                 mapped_native_providers=dict(inner_before=mapped, installed_reader=providers))
 
@@ -1428,7 +1664,11 @@ def run(profile_path, tests, mode, outer, outer_closure, image, expected_affinit
         status = int(owner['main'](arguments,
             collection_spec={'files': tests, 'roots': [[path, 'file'] for path in tests]},
             collection_source=(root / 'src/prismabuild/pbtest_collection.py').read_text()))
-        record['closure']['inner'] = verify_closure(profile)
+        verified = verify_closure(profile, state='after_installation')
+        if profile.closure['reader_installation'] is not None:
+            record['closure']['inner']['after_verification'] = verified
+        else:
+            record['closure']['inner'] = verified
         record['closure']['mapped_native_providers']['inner_after'] = mapped_native_providers(profile)
         record['complete'] = True
     except BaseException as exc:

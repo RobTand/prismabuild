@@ -113,7 +113,7 @@ def capture_assigned_affinity(request, terminal, producer, bounds):
 def verify_capture_completion_checkpoints(closure, host, image, host_descriptor, owner):
     namespace = image['completed_namespace']
     names = ('native_library_roots', 'components', 'directory_witnesses', 'link_outcomes',
-             'plan', 'consumed_budget', 'completion')
+             'plan', 'consumed_budget', 'completion', 'reader_installation', 'namespace_states')
     if set(namespace) != {'roots', *names} or any(namespace[name] != closure[name] for name in names):
         raise ValueError('durable runtime image completion differs from the profile namespace')
     def root_map(roots):
@@ -164,6 +164,27 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
         raise ValueError('durable image consumed budget omits earlier host observation work')
     if closure['elf_roots'] != namespace['plan']['elf_roots']:
         raise ValueError('captured ELF roots differ from the completion plan')
+
+
+def verify_capture_reader_states(closure, verification, custody, owner):
+    before = owner['runtime_namespace_state'](closure, 'before_installation')
+    expected = owner['runtime_closure_verification'](before)
+    if closure['reader_installation'] is None:
+        if verification != expected:
+            raise ValueError('capture mounted closure verification differs')
+        return
+    if set(verification) != {*expected, 'namespace_states', 'after_verification'}:
+        raise ValueError('capture mounted reader state verification roster differs')
+    if {name:verification[name] for name in expected} != expected:
+        raise ValueError('capture mounted pre-installation closure verification differs')
+    after = owner['runtime_namespace_state'](closure, 'after_installation')
+    if verification['after_verification'] != owner['runtime_closure_verification'](after):
+        raise ValueError('capture mounted post-installation closure verification differs')
+    states = verification['namespace_states']
+    if set(states) != {'before_installation', 'after_installation'}:
+        raise ValueError('capture mounted reader namespace state keys differ')
+    owner['verify_reader_namespace_transition'](closure,
+        states['before_installation'], states['after_installation'], custody)
 
 
 def verify_capture_storage_record(capture, request, terminal, producer, policy, capacity_policy):
@@ -302,7 +323,7 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if len(lines) != 1:
         raise ValueError('capture must produce exactly one source-owned record')
     capture = decode_strict_json(lines[0].encode(), where='root capture record')
-    if capture['schema'] != 'prismabuild.proof_runtime_capture.v2' or capture['complete'] is not True:
+    if capture['schema'] != 'prismabuild.proof_runtime_capture.v3' or capture['complete'] is not True:
         raise ValueError('capture record is incomplete or unsupported')
     if set(capture['source_sha256']) != set(HELPERS):
         raise ValueError('capture helper source set differs')
@@ -316,10 +337,10 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if len(raw_profile) != capture['profile_bytes'] or raw_sha256(raw_profile) != capture['profile_sha256']:
         raise ValueError('capture profile bytes differ')
     profile = decode_strict_json(raw_profile, where='captured runtime profile')
-    if profile['schema'] != 'prismabuild.proof_runtime_profile.v2':
+    if profile['schema'] != 'prismabuild.proof_runtime_profile.v3':
         raise ValueError('unsupported captured profile')
     closure = profile['closure']
-    if closure['schema'] != 'prismabuild.proof_runtime_closure.v2':
+    if closure['schema'] != 'prismabuild.proof_runtime_closure.v3':
         raise ValueError('unsupported captured closure')
     if closure['sha256'] != raw_sha256(compact_ascii_json_bytes({k:v for k,v in closure.items() if k != 'sha256'})):
         raise ValueError('captured closure digest differs')
@@ -345,12 +366,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if (sum(len(root['entries']) for root in closure['roots']) > owner['CAPTURE_BOUNDS']['members']
             or sum(entry['bytes'] for entry in members.values()) > owner['CAPTURE_BOUNDS']['regular_bytes']):
         raise ValueError('capture closure exceeds its full-byte member budget')
-    verification = capture['closure_verification']
-    maps = {root['path']:dict(origin=root['origin'], members=len(root['entries']),
-            entries_sha256=raw_sha256(compact_ascii_json_bytes(root['entries']))) for root in closure['roots']}
-    if verification != dict(verified=True, member_maps=maps,
-                            member_maps_sha256=raw_sha256(compact_ascii_json_bytes(maps))):
-        raise ValueError('capture mounted closure verification differs')
+    verify_capture_reader_states(closure, capture['closure_verification'],
+        capture['installed_reader']['link_custody'], owner)
     for providers in capture['mapped_native_providers'].values():
         for path,actual in providers.items():
             expected = members[path]
