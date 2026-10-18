@@ -19071,9 +19071,20 @@ requires a complete stable host-directory enumeration bound to the durable host
 checkpoint. A missing member-map key is not absence evidence. Unknown outcomes,
 cycles, mutation, unsupported lookups, and missing witnesses refuse capture.
 Components are looked up in order; a missing or non-directory component cannot
-be cancelled by a later `..`. Namespace authority is host-preferred only inside
-the explicit host mounts. Each expanded path outside those mounts belongs to
-the existing image.
+be cancelled by a later `..`. Namespace authority is host-preferred at and below
+the explicit host mounts. A proper ancestor of a host mount is a mount-plan
+ancestor. A present image directory supplies its observed entry; an image
+symlink or other non-directory there refuses ambiguous mount authority. An
+absent image ancestor becomes an explicit mount-created directory whose exact
+children are derived only from the paths toward host mounts. It is navigation
+evidence, not a complete image inventory, and claims no image stamp or mode.
+A missing sibling under it has a mount-plan absence witness, independently
+rederived by the auditor. Existing native-only off-graph absence and strict
+required-path rules still apply. Each synthetic component or absence record
+consumes one member before enqueue. Mounted verification checks the actual
+directories' kind and complete child names against that derived expectation,
+without comparing image stamps. All other expanded paths outside host mounts
+belong to the existing image.
 
 The primary starts with `-S` and the existing pinned qualification dependency
 path, excluding unsealed host venv site-packages. The installed reader retains
