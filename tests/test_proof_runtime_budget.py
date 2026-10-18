@@ -10,6 +10,18 @@ import proof_capture_capacity as capacity
 import proof_container_runtime as runtime
 
 
+@pytest.mark.parametrize('absolute', [False, True], ids=['relative', 'absolute'])
+def test_capture_private_directory_is_absolute_for_docker_bind_source(tmp_path, monkeypatch, absolute):
+    monkeypatch.chdir(tmp_path)
+    output = Path('_proof_runtime_profiles/profile.json')
+    if absolute:
+        output = tmp_path / output
+    private = capture.capture_private_directory(output)
+    assert private == tmp_path / '_proof_runtime_profiles/profile.json.members'
+    assert private.is_absolute()
+    assert private.is_dir()
+
+
 def test_image_extra_directory_shares_the_primary_inventory_budget(tmp_path, monkeypatch):
     actual = runtime.observe_runtime()
     observation = dict(actual, sys_path=[])

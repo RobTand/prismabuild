@@ -201,7 +201,7 @@ def capture_private_directory(output):
     output.parent.mkdir(parents=True, exist_ok=True)
     private = output.parent / (output.name + '.members')
     private.mkdir()
-    return private
+    return private.resolve(strict=True)
 
 
 def main(argv=None):
