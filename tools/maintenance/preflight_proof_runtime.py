@@ -21,8 +21,16 @@ def preflight_module(name, source):
 
 
 def preflight_collect_loops(module, source, names, record):
-    """Continue independent loop items after recording a production refusal."""
+    """Collect errors and continue known positive edges; never certify this pass."""
     class Collect(ast.NodeTransformer):
+        def visit_FunctionDef(self, node):
+            self.generic_visit(node)
+            if node.name == 'directory_candidates':
+                handler = ast.parse("try:\n pass\nexcept (ValueError, OSError, KeyError, RuntimeError) as error:\n _proof_preflight_refusal(error, locals())\n return locals().get('found', set()), False").body[0]
+                handler.body = node.body
+                node.body = [ast.copy_location(handler, node)]
+            return node
+
         def visit_For(self, node):
             self.generic_visit(node)
             handler = ast.parse("try:\n pass\nexcept (ValueError, OSError, KeyError, RuntimeError) as error:\n _proof_preflight_refusal(error, locals())\n continue").body[0]
