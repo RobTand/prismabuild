@@ -156,3 +156,44 @@ def test_image_unused_lib64_observation(tmp_path, monkeypatch, image_paths, kind
         assert entries['.']['kind'] == kind
         if kind == 'directory':
             assert entries['unused_python_only.py']['kind'] == 'file'
+
+
+@pytest.mark.parametrize('name', ['sitecustomize.py', 'usercustomize.py'])
+@pytest.mark.parametrize('state', ['external', 'selected', 'missing', 'nonroot'])
+def test_host_customization_file_root_selection(tmp_path, monkeypatch, name, state):
+    stdlib, native, venv = tmp_path / 'stdlib', tmp_path / 'native', tmp_path / 'venv'
+    for path in (stdlib, native / 'fixture-native', venv / 'bin'):
+        path.mkdir(parents=True)
+    executable = tmp_path / 'python'
+    executable.write_bytes(b'fixture interpreter')
+    (venv / 'bin' / 'python').symlink_to(executable)
+    (venv / 'pyvenv.cfg').write_bytes(b'home = fixture\n')
+    # This real root-owned file is read only. No privilege or compiler is needed.
+    target = Path('/etc/hostname')
+    assert target.is_file() and target.stat().st_uid == 0
+    if state in ('missing', 'nonroot', 'selected'):
+        target = (stdlib if state == 'selected' else tmp_path) / 'customization-target'
+        if state != 'missing':
+            target.write_bytes(b'CUSTOMIZATION = True\n')
+    (stdlib / name).symlink_to(target)
+    observation = dict(executable=dict(path=str(venv / 'bin' / 'python'),
+        resolved_path=str(executable)), prefix=str(venv), sys_path=[],
+        loader_environment={}, at_secure=0)
+    real_path = capture.Path
+    monkeypatch.setattr(capture, 'Path',
+        lambda value: native if str(value) == '/usr/lib' else real_path(value))
+    monkeypatch.setattr(capture, 'observe_runtime', lambda: observation)
+    monkeypatch.setattr(capture, 'native_provider_paths', lambda **options: [])
+    monkeypatch.setattr(capture.sysconfig, 'get_path', lambda key: str(stdlib))
+    monkeypatch.setattr(capture.sysconfig, 'get_config_var', lambda key: 'fixture-native')
+    monkeypatch.setattr(capture.sys, 'prefix', str(venv))
+    monkeypatch.setattr(capture.sys, 'executable', str(venv / 'bin' / 'python'))
+    actual = capture.runtime_capture('host')
+    roots = {root['path']: root for root in actual['roots']}
+    if state == 'external':
+        assert roots[str(target)]['entries']['.'] == runtime.inventory(target)['.']
+        assert actual['customization_roots'] == [dict(link=str(stdlib / name), target=str(target))]
+        assert actual['inventory_budget'] == runtime.runtime_capture_work(actual)
+    else:
+        assert str(target) not in roots
+        assert actual.get('customization_roots', []) == []

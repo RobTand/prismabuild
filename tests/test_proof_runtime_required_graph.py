@@ -15,8 +15,10 @@ import os
 import runpy
 from pathlib import Path
 import shutil
+import stat
 import struct
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,6 +67,9 @@ class RequiredGraphFilesystem:
         self.host_root = root / 'host'
         self.image_root = root / 'image'
         self.host_executable = host_executable
+        self.external_host_files = {}
+        self.customization_roots = []
+        self.customization_probes = []
         self.host_paths = ['/h/stdlib', NATIVE, '/h/venv/bin',
                            '/h/venv/pyvenv.cfg', self.host_executable]
         self.image_paths = ['/i/stdlib', NATIVE, HOST_EXECUTABLE,
@@ -91,6 +96,8 @@ class RequiredGraphFilesystem:
         self.image_link('/usr/lib/ld-fixture.so', 'fixture-native/ld-fixture.so')
 
     def physical(self, origin, spelling):
+        if origin == 'host' and spelling in self.external_host_files:
+            return self.external_host_files[spelling]
         return (self.host_root if origin == 'host' else self.image_root) / spelling.lstrip('/')
 
     def directory(self, origin, spelling):
@@ -148,7 +155,7 @@ class RequiredGraphFilesystem:
                 resolved_path=executable_path, bytes=len(executable_bytes),
                 sha256=runtime.digest(executable_bytes)),
             kernel=dict(release='6.8.0', system='Linux', machine='aarch64'),
-            loader_environment={}, at_secure=0, sys_path=[])
+            loader_environment={}, at_secure=0, sys_path=[], prefix='/h/venv')
         result = dict(observation=observation, roots=roots,
             stdlib='/h/stdlib' if origin == 'host' else '/i/stdlib',
             providers={}, elf_roots=['/h/stdlib' if origin == 'host' else '/i/stdlib', executable_path],
@@ -157,6 +164,11 @@ class RequiredGraphFilesystem:
             directory_observations=observations, elf_index=elf_index,
             inventory_budget={key: budget[key] for key in ('members', 'regular_bytes')},
             consumed_budget={key: budget[key] for key in ('members', 'regular_bytes')})
+        if origin == 'host':
+            result.update(customization_roots=self.customization_roots,
+                          customization_probes=self.customization_probes)
+            for name in ('inventory_budget', 'consumed_budget'):
+                result[name]['members'] += len(self.customization_probes)
         if origin == 'image':
             cache = next(root['entries']['.'] for root in roots if root['path'] == '/etc/ld.so.cache')
             tool = next(root['entries']['.'] for root in roots if root['path'] == '/sbin/ldconfig')
@@ -1295,3 +1307,84 @@ def test_runtime_replay_indexes_inventory_once_per_lookup(required_graph_tree, m
         assert isinstance(outcome, runtime.RuntimeWitnessedAbsent)
         assert outcome.missing == '/etc/alternatives/unused-' + str(number)
     assert len(calls) <= 3, 'one namespace index per lookup, independent of witness count'
+
+
+CUSTOMIZATION_TARGET = '/etc/python3.14/sitecustomize.py'
+
+
+def graph_customization_tree(tmp_path, *, image_copy=False, missing=False):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_link('/h/stdlib/sitecustomize.py', CUSTOMIZATION_TARGET)
+    tree.directory('host', '/etc/python3.14')
+    if not missing:
+        source = Path('/etc/hostname')
+        assert source.is_file() and source.stat().st_uid == 0
+        tree.external_host_files[CUSTOMIZATION_TARGET] = source
+        tree.host_paths.append(CUSTOMIZATION_TARGET)
+    if image_copy:
+        tree.image_file(CUSTOMIZATION_TARGET, b'IMAGE_CUSTOMIZATION = True\n')
+    def observe(path):
+        physical = tree.physical('host', path)
+        try:
+            before = physical.lstat()
+        except FileNotFoundError:
+            tree.customization_probes.append(dict(path=path, entry=None))
+            raise
+        entry = dict(kind='directory', mode=stat.S_IMODE(before.st_mode))
+        if stat.S_ISLNK(before.st_mode):
+            entry.update(kind='symlink', target=os.readlink(physical))
+        elif stat.S_ISREG(before.st_mode):
+            entry.update(kind='file', bytes=before.st_size)
+        after = physical.lstat()
+        tree.customization_probes.append(dict(path=path, entry=entry, uid=before.st_uid,
+            before=list(runtime.runtime_stamp(before)), after=list(runtime.runtime_stamp(after))))
+        return entry
+    try:
+        outcome = runtime.walk_runtime_path('/h/stdlib/sitecustomize.py', observe)
+    except FileNotFoundError:
+        pass
+    else:
+        tree.customization_roots.append(dict(link='/h/stdlib/sitecustomize.py', target=outcome.terminal))
+    return tree
+
+
+@pytest.mark.parametrize('image_copy', [False, True], ids=['x86-missing-image-parent', 'arm-image-copy'])
+def test_customization_host_file_root_resolves_and_shadows_image(tmp_path, monkeypatch, image_copy):
+    tree = graph_customization_tree(tmp_path, image_copy=image_copy)
+    closure = tree.complete()
+    assert closure['completion']['host_customization_roots'] == tree.customization_roots
+    assert graph_outcome(closure, '/h/stdlib/sitecustomize.py')['terminal'] == CUSTOMIZATION_TARGET
+    roots = [root for root in closure['roots'] if root['path'] == CUSTOMIZATION_TARGET]
+    assert len(roots) == 1 and roots[0]['origin'] == 'host'
+    assert roots[0]['entries']['.']['sha256'] == runtime.digest(Path('/etc/hostname').read_bytes())
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    tree.mount_host_roots()
+    original_inventory, original_negatives = runtime.inventory, runtime.verify_runtime_negatives
+    monkeypatch.setattr(runtime, 'inventory',
+        lambda path, **options: original_inventory(tree.physical('image', str(path)), **options))
+    monkeypatch.setattr(runtime, 'verify_runtime_negatives',
+        lambda view, **options: original_negatives(view, image_root=tree.image_root, **options))
+    runtime.verify_closure(SimpleNamespace(closure=closure))
+    assert tree.physical('image', CUSTOMIZATION_TARGET).read_bytes() == Path('/etc/hostname').read_bytes()
+    tree.physical('image', CUSTOMIZATION_TARGET).write_bytes(b'tampered bound customization')
+    with pytest.raises(ValueError, match='inventory|differ|changed'):
+        runtime.verify_closure(SimpleNamespace(closure=closure))
+
+
+def test_customization_missing_host_target_remains_strict(tmp_path):
+    tree = graph_customization_tree(tmp_path, missing=True)
+    assert not tree.customization_roots and CUSTOMIZATION_TARGET not in tree.host_paths
+    with pytest.raises(ValueError, match='required runtime alias is absent outside the permitted native graph'):
+        tree.complete()
+
+
+def test_customization_unjustified_extra_host_file_root_refuses(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/etc/unjustified.py', b'UNJUSTIFIED = True\n')
+    tree.host_paths.append('/etc/unjustified.py')
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    tree.checkpoint_agreement(closure)
+    with pytest.raises(ValueError, match='host root.*selection|unjustified host|host.*root.*deriv'):
+        tree.audit(closure, retained)
