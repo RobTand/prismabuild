@@ -493,7 +493,13 @@ def verify_closure(profile, origins=('host', 'image')):
 
 def observe_runtime():
     preload = Path('/etc/ld.so.preload')
-    if preload.exists():
+    try:
+        preload_info = preload.lstat()
+    except FileNotFoundError:
+        preload_info = None
+    if preload_info is not None:
+        if not stat.S_ISREG(preload_info.st_mode):
+            raise ValueError('runtime capture refuses a nonregular system-wide loader preload file')
         with preload.open('rb') as handle:
             raw_preload = handle.read(65537)
         if len(raw_preload) > 65536 or raw_preload.strip():

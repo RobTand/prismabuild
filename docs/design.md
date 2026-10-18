@@ -19095,6 +19095,9 @@ have accepted cumulative units4 in the final closure_archive phase.
 One cumulative pre-read member/byte/deadline budget covers every selected root,
 including the image loader aliases. Directory enumeration bounds the pending
 frontier before it can enqueue a complete over-budget directory.
+Optional startup directories and loader aliases use strict stat/lstat observations;
+only FileNotFoundError establishes absence. A preload path must be a regular file
+with bounded empty contents; other lookup and read errors refuse observation.
 Source caps refuse more than20,000 profile members,8GiB regular bytes,
 9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
 JSON. Checkpoint, image and final record metadata each refuse above64MiB before

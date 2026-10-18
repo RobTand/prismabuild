@@ -8,6 +8,7 @@ from pathlib import Path
 import runpy
 import shutil
 import site
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -153,8 +154,17 @@ def runtime_capture(origin):
     paths.extend(Path(path) for path in providers)
     elf_roots = {str(stdlib), observation['executable']['resolved_path']}
     if origin == 'image':
-        startup = {Path(path).resolve() for path in [*site.getsitepackages(), *observation['sys_path']]
-                   if Path(path).is_dir() and not Path(path).resolve().is_relative_to('/source')}
+        startup = set()
+        for value in [*site.getsitepackages(), *observation['sys_path']]:
+            path = Path(value)
+            try:
+                info = path.stat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                path = path.resolve(strict=True)
+                if not path.is_relative_to('/source'):
+                    startup.add(path)
         paths.extend(startup)
         elf_roots.update(map(str, startup))
         if stdlib.is_relative_to('/usr/local/lib'):
@@ -172,7 +182,11 @@ def runtime_capture(origin):
     if origin == 'image':
         for name in ('/lib', '/lib64', '/usr/lib64'):
             path = Path(name)
-            if (path.is_symlink() or (name == '/usr/lib64' and path.is_dir())) and not any(path.is_relative_to(root['path']) for root in roots):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (stat.S_ISLNK(info.st_mode) or (name == '/usr/lib64' and stat.S_ISDIR(info.st_mode))) and not any(path.is_relative_to(root['path']) for root in roots):
                 roots.append(dict(origin=origin, path=name, entries=inventory(path, budget=budget)))
     result = dict(observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
