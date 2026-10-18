@@ -68,6 +68,7 @@ class RequiredGraphFilesystem:
                            '/h/venv/pyvenv.cfg', HOST_EXECUTABLE]
         self.image_paths = ['/i/stdlib', NATIVE, HOST_EXECUTABLE,
                             '/etc/ld.so.cache', '/sbin/ldconfig']
+        self.image_executable = HOST_EXECUTABLE
         self.cache_listing = '0 libs found in cache fixture:\n'
         self.host_interpreter = LOADER
         self.image_interpreter = LOADER
@@ -139,16 +140,17 @@ class RequiredGraphFilesystem:
                 if entry['kind'] == 'file':
                     logical = str(Path(spelling) / name)
                     elf_index[logical] = runtime.elf_requirements(physical / name)
-        executable_bytes = self.physical(origin, HOST_EXECUTABLE).read_bytes()
+        executable_path = HOST_EXECUTABLE if origin == 'host' else self.image_executable
+        executable_bytes = self.physical(origin, executable_path).read_bytes()
         observation = dict(version=[3, 12, 3], elf_machine=183,
-            executable=dict(path=PRIMARY if origin == 'host' else HOST_EXECUTABLE,
-                resolved_path=HOST_EXECUTABLE, bytes=len(executable_bytes),
+            executable=dict(path=PRIMARY if origin == 'host' else executable_path,
+                resolved_path=executable_path, bytes=len(executable_bytes),
                 sha256=runtime.digest(executable_bytes)),
             kernel=dict(release='6.8.0', system='Linux', machine='aarch64'),
             loader_environment={}, at_secure=0, sys_path=[])
         result = dict(observation=observation, roots=roots,
             stdlib='/h/stdlib' if origin == 'host' else '/i/stdlib',
-            providers={}, elf_roots=['/h/stdlib' if origin == 'host' else '/i/stdlib', HOST_EXECUTABLE],
+            providers={}, elf_roots=['/h/stdlib' if origin == 'host' else '/i/stdlib', executable_path],
             executable_binary=base64.b64encode(executable_bytes).decode(),
             multiarch='fixture-native', native_library_roots=[NATIVE],
             directory_observations=observations, elf_index=elf_index,
@@ -910,3 +912,43 @@ def test_mount_created_directory_is_verified_after_mount(required_graph_tree, ch
         parent.symlink_to('../../redirected-venv', target_is_directory=True)
     with pytest.raises((OSError, ValueError), match='mount|directory|component'):
         runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+
+
+def graph_reader_transition_fixture(tree, *, primary_through_reader=False):
+    tree.physical('image', '/usr/bin/python3').unlink()
+    tree.image_executable = '/usr/local/bin/python3.12'
+    tree.image_paths.remove(HOST_EXECUTABLE)
+    tree.image_paths.append(tree.image_executable)
+    tree.image_file(tree.image_executable,
+                    graph_fixture_elf(interpreter=LOADER, marker=b'image-local-reader'))
+    tree.image_link('/usr/local/bin/python3', 'python3.12')
+    if not primary_through_reader:
+        tree.physical('host', '/h/venv/bin/python3').unlink()
+        tree.host_link('/h/venv/bin/python3', HOST_EXECUTABLE)
+    return tree
+
+
+def test_reader_alias_creation_has_separate_namespace_states(required_graph_tree):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    closure = tree.complete()
+    audit = tree.audit(closure, tree.retained_members(closure))
+    assert set(closure['namespace_states']) == {'before_installation', 'after_installation'}
+    assert set(audit['namespace_states']) == set(closure['namespace_states'])
+    before = runtime.runtime_namespace_state(closure, 'before_installation')
+    after = runtime.runtime_namespace_state(closure, 'after_installation')
+    absent = runtime.replay_runtime_path(before, '/usr/bin/python3')
+    assert isinstance(absent, runtime.RuntimeWitnessedAbsent)
+    assert absent.missing == '/usr/bin/python3' and not absent.remaining
+    assert before['directory_witnesses'][absent.witness]['authority'] == 'image'
+    assert runtime.replay_runtime_path(before, PRIMARY).terminal == HOST_EXECUTABLE
+    assert '/usr/bin/python3' not in before['plan']['required_spellings']
+    assert '/usr/bin/python3' in after['plan']['required_spellings']
+    assert runtime.replay_runtime_path(after, '/usr/bin/python3').terminal == tree.image_executable
+    assert absent.witness not in after['directory_witnesses']
+    assert not tree.physical('image', '/usr/bin/python3').exists()
+
+
+def test_reader_creation_cannot_repair_primary_namespace(required_graph_tree):
+    tree = graph_reader_transition_fixture(required_graph_tree, primary_through_reader=True)
+    with pytest.raises(ValueError, match='required runtime alias.*' + PRIMARY):
+        tree.complete()
