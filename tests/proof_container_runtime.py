@@ -1111,7 +1111,7 @@ def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
         if key not in queries:
             queries[key] = directory_candidates(directory, needed)
         return queries[key]
-    edges = {}
+    edges, unresolved = {}, []
     for path, metadata in list(metadata_by_path.items()):
         if metadata['nodeflib']:
             raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
@@ -1147,9 +1147,9 @@ def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
                         if provider is not None:
                             break
                 if provider is None:
-                    raise ValueError('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
+                    unresolved.append('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
         edges[path] = sorted(targets)
-    return edges, directories
+    return edges, directories, unresolved
 
 
 def require_runtime_loader_observations(before, after):
@@ -1168,13 +1168,20 @@ def runtime_search_directory_mode(roots, directory):
     return None
 
 
-def runtime_directory_candidate_spellings(entries, directory, needed, *, direct=False):
+def runtime_candidate_name_index(entries):
+    result = {}
+    for path, entry in entries.items():
+        if entry['kind'] in ('file', 'symlink'):
+            result.setdefault(Path(path).name, []).append(path)
+    return result
+
+
+def runtime_directory_candidate_spellings(entries, directory, needed, *, direct=False, by_name=None):
     if direct:
         path = str(Path(directory) / needed)
         return [path] if entries.get(path, {}).get('kind') in ('file', 'symlink') else []
-    return sorted(path for path, entry in entries.items()
-                  if entry['kind'] in ('file', 'symlink') and Path(path).name == needed
-                  and Path(path).is_relative_to(directory))
+    candidates = (runtime_candidate_name_index(entries) if by_name is None else by_name).get(needed, ())
+    return sorted(path for path in candidates if Path(path).is_relative_to(directory))
 
 def audit_native_closure(closure, byte_path):
     entries = runtime_namespace_entries(closure)
@@ -1211,6 +1218,7 @@ def audit_native_closure(closure, byte_path):
             raise ValueError('loader observation command differs from its sealed executable')
     metadata_by_path = {}
     required = set()
+    candidates_by_name = runtime_candidate_name_index(entries)
 
     def directory_candidates(directory, needed):
         spelling = directory
@@ -1224,7 +1232,8 @@ def audit_native_closure(closure, byte_path):
                     and 'mode' in entry and not entry['mode'] & 0o001):
                 raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
         found = {sealed_candidate(str(Path(spelling) / Path(path).relative_to(directory)))
-                 for path in runtime_directory_candidate_spellings(entries, directory, needed, direct=mode == 'direct')}
+                 for path in runtime_directory_candidate_spellings(entries, directory, needed,
+                     direct=mode == 'direct', by_name=candidates_by_name)}
         direct = str(Path(directory) / needed)
         entry = entries.get(direct, closure['components'].get(direct, {}).get('entry'))
         base = None
@@ -1257,11 +1266,13 @@ def audit_native_closure(closure, byte_path):
                 raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
             metadata_by_path[path] = metadata
         origins_before = len(resolved)
-        edges, directories = runtime_loader_edges(metadata_by_path, resolved, cache, defaults,
+        edges, directories, unresolved = runtime_loader_edges(metadata_by_path, resolved, cache, defaults,
             directory_candidates=directory_candidates, resolve_candidate=sealed_candidate)
         required = {target for targets in edges.values() for target in targets}
         pending = sorted(required - metadata_by_path.keys())
         if not pending and len(resolved) == origins_before:
+            if unresolved:
+                raise ValueError(unresolved[0])
             break
     else:
         raise ValueError('loader candidate graph did not converge inside its finite bound')

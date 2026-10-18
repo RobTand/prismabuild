@@ -32,6 +32,7 @@ from proof_container_runtime import (
     runtime_mount_ancestor, runtime_mount_component, runtime_reader_installation,
     runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
     runtime_customization_selection, runtime_search_directory_mode, runtime_loader_edges,
+    runtime_candidate_name_index,
     require_runtime_loader_observations,
 )
 
@@ -580,12 +581,13 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
             resolve_observation(spelling, required=True, search=True)
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}
+        candidates_by_name = runtime_candidate_name_index(entries)
         def directory_candidates(spelling, needed):
             directory = resolve_observation(spelling, required=True, search=True).terminal
             direct_search = runtime_search_directory_mode(observer.roots, directory) == 'direct'
             found = {retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
                 for candidate in runtime_directory_candidate_spellings(
-                    entries, directory, needed, direct=direct_search)}
+                    entries, directory, needed, direct=direct_search, by_name=candidates_by_name)}
             direct = str(Path(directory) / needed)
             probe = walk_runtime_path(str(Path(spelling) / needed), lookup)
             if isinstance(probe, RuntimeWitnessedAbsent):
@@ -598,11 +600,13 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
             found.add(target)
             return found, target
 
-        runtime_loader_edges(metadata_by_path, aliases, cache, defaults,
+        _, _, unresolved = runtime_loader_edges(metadata_by_path, aliases, cache, defaults,
             directory_candidates=directory_candidates, resolve_candidate=retain_candidate)
         after = (len(observer.roots), len(observer.components), len(observer.witnesses),
                  len(outcomes), len(aliases), len(metadata_by_path))
         if before == after:
+            if unresolved:
+                raise ValueError(unresolved[0])
             break
     else:
         raise ValueError('runtime image completion did not converge inside its finite bound')

@@ -72,7 +72,7 @@ def preflight_image(payload):
     def candidates(entries, directory, needed, **options):
         if entries is not candidate_cache[0]:
             candidate_cache[:] = [entries, {}]
-        key = (directory,needed,tuple(options.items()))
+        key = (directory,needed,options.get('direct',False))
         if key not in candidate_cache[1]:
             candidate_cache[1][key] = original_candidates(entries,directory,needed,**options)
         return candidate_cache[1][key]
