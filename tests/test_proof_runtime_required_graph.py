@@ -1806,3 +1806,87 @@ def test_capture_terminal_requires_exact_capture_demand(resources, accepted):
         with pytest.raises(ValueError, match='one-CPU demand'):
             auditor['capture_assigned_affinity'](
                 request, terminal, producer, runtime.CAPTURE_BOUNDS, runtime.CAPTURE_DEMAND)
+
+
+@pytest.mark.parametrize('role', ['reader', 'candidate'])
+@pytest.mark.parametrize('stage', ['completion', 'before_installation', 'after_installation'])
+def test_distinct_runtime_loader_refuses_modern_ldd_and_primary(tmp_path, monkeypatch, role, stage):
+    tree = RequiredGraphFilesystem(tmp_path)
+    legacy = '/opt/legacy/ld.so'
+    tree.image_file(legacy, graph_fixture_elf(marker=b'legacy glibc 2.36 loader'))
+    tree.image_paths.append(legacy)
+    if role == 'reader':
+        tree.physical('host', '/h/venv/bin/python3').unlink()
+        tree.host_link('/h/venv/bin/python3', HOST_EXECUTABLE)
+        tree.image_executable = '/i/reader'
+        tree.image_file(tree.image_executable, graph_fixture_elf(interpreter=legacy, marker=b'reader'))
+        tree.image_paths.append(tree.image_executable)
+        tree.physical('image', '/usr/bin/python3').unlink()
+        tree.image_link('/usr/bin/python3', tree.image_executable)
+    else:
+        tree.host_file('/h/stdlib/extension.so', graph_fixture_elf(interpreter=legacy))
+    if stage == 'completion':
+        with pytest.raises(ValueError, match='distinct runtime loader is not admitted'):
+            tree.complete()
+        return
+    # Build retained evidence without the producer's PT edge check, then require
+    # the independent byte-parsing replay to reject the actual ELF interpreter.
+    original = capture.runtime_loader_edges
+    def omit_producer_pt(metadata, *args, **kwargs):
+        metadata = {path: dict(value, interpreters=[]) for path, value in metadata.items()}
+        return original(metadata, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(capture, 'runtime_loader_edges', omit_producer_pt)
+        closure = tree.complete()
+    with pytest.raises(ValueError, match='distinct runtime loader is not admitted'):
+        runtime.audit_native_closure(runtime.runtime_namespace_state(closure, stage),
+            lambda path: tree.bytes_path(closure, path))
+
+
+@pytest.mark.parametrize('version,accepted', [
+    ('2.3.6', False), ('2.36.9000', False), (None, False),
+    ('2.39', True), ('2.43', True), ('2.39junk', False), ('2.39.1', True),
+])
+@pytest.mark.parametrize('stage', ['completion', 'audit'])
+def test_loader_own_complete_version_controls_admission(tmp_path, version, accepted, stage):
+    tree = RequiredGraphFilesystem(tmp_path)
+    raw = tree.diagnostic_raw.replace('version.version="2.39"\n',
+        '' if version is None else 'version.version=' + json.dumps(version) + '\n')
+    if stage == 'completion':
+        tree.diagnostic_raw = raw
+        operation = tree.complete
+    else:
+        closure = tree.complete()
+        closure['completion']['pre_completion_diagnostics']['raw'] = raw
+        closure['loader']['diagnostics']['raw'] = raw
+        operation = lambda: runtime.audit_native_closure(closure, lambda path: tree.bytes_path(closure, path))
+    if accepted:
+        operation()
+    else:
+        with pytest.raises(ValueError, match='glibc|loader'):
+            operation()
+
+
+@pytest.mark.parametrize('release', [None, 'development'])
+@pytest.mark.parametrize('stage', ['completion', 'audit'])
+def test_loader_requires_its_own_release_build(tmp_path, release, stage):
+    tree = RequiredGraphFilesystem(tmp_path)
+    raw = tree.diagnostic_raw + ('' if release is None else 'version.release=' + json.dumps(release) + '\n')
+    if stage == 'completion':
+        tree.diagnostic_raw = raw
+        operation = tree.complete
+    else:
+        closure = tree.complete()
+        closure['completion']['pre_completion_diagnostics']['raw'] = raw
+        closure['loader']['diagnostics']['raw'] = raw
+        operation = lambda: runtime.audit_native_closure(closure, lambda path: tree.bytes_path(closure, path))
+    with pytest.raises(ValueError, match='loader.*release'):
+        operation()
+
+
+def test_ldd_version_is_information_only(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    host, image, checkpoint, budget = tree.inputs()
+    image['glibc'] = 'ldd (GNU libc) 2.36\n'
+    closure = tree.complete((host, image, checkpoint, budget))
+    tree.audit(closure)
