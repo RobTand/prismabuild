@@ -18,7 +18,7 @@ import time
 from proof_container_runtime import (
     CAPTURE_BOUNDS, CAPTURE_PHASES, CAPTURE_PUBLISHED_SOURCES, CLOSURE_SCHEMA, PROFILE_SCHEMA,
     audit_native_closure, canonical, digest, elf_requirements,
-    inventory, loader_cache_entries, loader_default_directories, loader_kernel, native_providers, observe_runtime,
+    inventory, loader_cache_entries, loader_default_directories, loader_kernel, merge_runtime_roots, native_providers, observe_runtime,
     resolve_runtime_path,
 )
 
@@ -304,14 +304,7 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
         raise ValueError('image capture did not use real UID/GID0')
     if image['observation']['affinity'] != affinity or image['observation']['elf_machine'] != host['observation']['elf_machine']:
         raise ValueError('image capture changed actual architecture or assigned affinity')
-    roots = list(host['roots'])
-    for captured in image['roots']:
-        path = Path(captured['path'])
-        if any(path.is_relative_to(known['path']) for known in roots):
-            continue
-        if any(Path(known['path']).is_relative_to(path) for known in roots):
-            raise ValueError('image runtime root would replace a primary host root')
-        roots.append(captured)
+    roots = merge_runtime_roots(host['roots'], image['roots'])
     interpreter, = elf_requirements(host['observation']['executable']['resolved_path'])['interpreters']
     entries = {str(Path(root['path']) / name):entry for root in roots for name,entry in root['entries'].items()}
     if resolve_runtime_path(entries, interpreter) != str(Path(interpreter).resolve()):

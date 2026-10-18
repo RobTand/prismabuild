@@ -347,6 +347,18 @@ def require_profile_kernel(profile, observation):
         raise ValueError('actual runtime kernel predates the sealed loader eligibility check')
 
 
+def merge_runtime_roots(host_roots, image_roots):
+    roots = list(host_roots)
+    for captured in image_roots:
+        path = Path(captured['path'])
+        if any(path.is_relative_to(known['path']) for known in roots):
+            continue
+        if any(Path(known['path']).is_relative_to(path) for known in roots):
+            raise ValueError('image runtime root would replace a primary host root')
+        roots.append(captured)
+    return roots
+
+
 def resolve_runtime_path(entries, path):
     path = posixpath.normpath(path)
     for _ in range(64):
