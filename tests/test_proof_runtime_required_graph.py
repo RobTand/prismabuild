@@ -1,4 +1,10 @@
-"""Required native graph controls using actual temporary filesystem objects."""
+"""Required native graph controls using actual temporary filesystem objects.
+
+The native audit is static over ELF metadata, so metadata-only ELF fixtures
+fully exercise its parser and dependency decisions. They do not run a loader.
+Actual loader behavior is proven by a real capture's mounted role observations
+and process mappings, outside these tests.
+"""
 import base64
 from contextlib import contextmanager
 import copy
@@ -201,11 +207,14 @@ class RequiredGraphFilesystem:
                     return path
         raise AssertionError('no physical fixture bytes for ' + spelling)
 
-    def audit(self, closure, retained=None):
+    def checkpoint_agreement(self, closure):
         auditor = runpy.run_path(str(Path(__file__).resolve().parents[1]
             / 'tools/maintenance/verify_proof_runtime_capture.py'))
         auditor['verify_capture_completion_checkpoints'](closure, self.host_checkpoint,
             self.image_checkpoint, self.host_descriptor, runtime.__dict__)
+
+    def audit(self, closure, retained=None):
+        self.checkpoint_agreement(closure)
         if retained is None:
             return runtime.audit_runtime_closure(closure, lambda path: self.bytes_path(closure, path),
                 content_path=lambda sha: self.content_path(closure, sha))
@@ -339,18 +348,28 @@ def test_map_gap_cannot_be_classified_as_absence(required_graph_tree):
 def test_late_alias_adds_origin_before_completion(required_graph_tree):
     tree = required_graph_tree
     tree.host_file('/h/stdlib/mod.so', graph_fixture_elf(
-        needed=('libdep.so',), runpath=('$ORIGIN/private',)))
-    tree.host_file('/h/stdlib/private/libdep.so', graph_fixture_elf(
-        needed=('liblate.so',), runpath=('$ORIGIN/extra',), marker=b'first-candidate'))
-    tree.host_file('/h/stdlib/private/extra/liblate.so', graph_fixture_elf(marker=b'late-good'))
-    tree.host_link(NATIVE + '/variant/libdep.so', '/etc/alternatives/libdep.so')
-    tree.image_link('/etc/alternatives/libdep.so', '/h/stdlib/private/libdep.so')
-    tree.image_file('/etc/alternatives/extra/liblate.so', graph_fixture_elf(machine=62))
-    tree.host_file(NATIVE + '/variant/extra/liblate.so', graph_fixture_elf(marker=b'variant-good'))
-    tree.host_file(NATIVE + '/libdep.so', graph_fixture_elf(marker=b'default-provider'))
+        needed=('libdep.so',), runpath=('/generated/providers',)))
+    tree.host_file(NATIVE + '/pool/libdep.so', graph_fixture_elf(
+        needed=('liblate.so',), runpath=('${ORIGIN}-private',), marker=b'generated-candidate'))
+    tree.host_file(NATIVE + '/pool-private/liblate.so', graph_fixture_elf(marker=b'late-good'))
+    tree.image_link('/generated/providers', NATIVE + '/pool')
+    tree.image_file('/generated/providers-private/liblate.so', graph_fixture_elf(machine=62))
     closure = tree.complete()
-    assert graph_outcome(closure, '/etc/alternatives/libdep.so')['terminal'] == '/h/stdlib/private/libdep.so'
-    assert tree.entry(closure, '/etc/alternatives/extra/liblate.so')['kind'] == 'file'
+    generated = '/generated/providers/libdep.so'
+    entries = runtime.runtime_namespace_entries(closure)
+    assert generated not in entries
+    assert generated not in closure['link_outcomes']
+    assert graph_outcome(closure, generated)['terminal'] == NATIVE + '/pool/libdep.so'
+    assert entries['/generated/providers']['kind'] == 'symlink'
+    assert entries['/generated/providers-private/liblate.so']['kind'] == 'file'
+    metadata = {NATIVE + '/pool/libdep.so': runtime.elf_requirements(
+        tree.physical('host', NATIVE + '/pool/libdep.so'))}
+    declared = runtime.audit_link_outcomes(closure)
+    without_generated, _ = runtime.runtime_elf_search_directories(metadata, declared)
+    with_generated, _ = runtime.runtime_elf_search_directories(
+        metadata, dict(declared, **{generated: NATIVE + '/pool/libdep.so'}))
+    assert '/generated/providers-private' not in without_generated
+    assert with_generated - without_generated == {'/generated/providers-private'}
     with pytest.raises(ValueError, match='unsupported architecture|architecture.*ABI'):
         tree.audit(closure)
 
@@ -643,6 +662,106 @@ def test_retained_auditor_recomputes_graph_and_absences(required_graph_tree, tam
         forged['schema'] = 'prismabuild.proof_runtime_closure.v1'
     with pytest.raises((ValueError, KeyError), match='runtime|closure|witness|budget|plan|schema|checkpoint|ELF|completion'):
         tree.audit(forged, retained)
+
+
+def graph_replace_witness(closure, old_key, witness):
+    new_key = runtime.digest(runtime.canonical(witness))
+    del closure['directory_witnesses'][old_key]
+    closure['directory_witnesses'][new_key] = witness
+    for outcome in closure['link_outcomes'].values():
+        if outcome.get('witness') == old_key:
+            outcome['witness'] = new_key
+    for charge in closure['completion']['charges']:
+        if charge.get('witness') == old_key:
+            charge['witness'] = new_key
+    return new_key
+
+
+def graph_sync_namespace(tree, closure):
+    namespace = tree.image_checkpoint['completed_namespace']
+    tree.image_checkpoint['completed_namespace'] = {
+        name: copy.deepcopy(closure[name]) for name in namespace}
+    tree.image_checkpoint['consumed_budget'] = copy.deepcopy(closure['consumed_budget'])
+
+
+@pytest.mark.parametrize('tamper, message', [
+    ('plan', 'plan differs from independently derived seeds'),
+    ('elf_index', 'ELF index differs from retained bytes'),
+    ('witness', 'listing omits a retained child'),
+    ('budget', 'charge counters differ from observed work'),
+], ids=['plan', 'elf_index', 'witness', 'budget'])
+def test_semantic_replay_rejects_coherent_checkpoint_tampering(required_graph_tree, tamper, message):
+    tree = required_graph_tree
+    tree.host_link(NATIVE + '/unused.pc', '/etc/alternatives/unused.pc')
+    tree.host_link(NATIVE + '/present.pc', '/etc/alternatives/present.pc')
+    tree.image_file('/etc/alternatives/present.pc', b'positive retained child')
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    forged = copy.deepcopy(closure)
+    if tamper == 'plan':
+        forged['plan']['required_spellings'].remove(PRIMARY)
+    elif tamper == 'elf_index':
+        path = '/i/stdlib/plain.py'
+        metadata = copy.deepcopy(forged['completion']['host_elf_index'][NATIVE + '/ld-fixture.so'])
+        forged['completion']['image_elf_index'][path] = metadata
+        tree.image_checkpoint['elf_index'][path] = copy.deepcopy(metadata)
+    elif tamper == 'witness':
+        old_key = forged['link_outcomes'][NATIVE + '/unused.pc']['witness']
+        witness = copy.deepcopy(forged['directory_witnesses'][old_key])
+        witness['names'].remove('present.pc')
+        new_key = graph_replace_witness(forged, old_key, witness)
+        for charge in forged['completion']['charges']:
+            if charge.get('witness') == new_key:
+                charge['members'] -= 1
+                forged['consumed_budget']['members'] -= 1
+    else:
+        charge = next(charge for charge in forged['completion']['charges']
+                      if charge['kind'] == 'absence')
+        charge['members'] += 1
+        forged['consumed_budget']['members'] += 1
+    graph_sync_namespace(tree, forged)
+    tree.checkpoint_agreement(forged)
+    with pytest.raises(ValueError, match=message):
+        tree.audit(forged, retained)
+
+
+@pytest.mark.parametrize('stage', ['producer', 'auditor'])
+def test_host_absence_witness_is_bound_to_checkpoint_observation(required_graph_tree, monkeypatch, stage):
+    tree = required_graph_tree
+    spelling = NATIVE + '/hidden.pc'
+    tree.host_link(spelling, NATIVE + '/absent-under-mount')
+    tree.image_file(NATIVE + '/absent-under-mount', b'hidden image positive')
+    calls = []
+
+    def changed_host_stamp(parent, name, before, after, names, checkpoint_sha256):
+        altered = tuple(value + 1 if index == 1 else value for index, value in enumerate(before))
+        calls.append(parent)
+        return runtime.HostRuntimeAbsence(parent, name, altered, altered, names, checkpoint_sha256)
+
+    if stage == 'producer':
+        monkeypatch.setattr(capture, 'HostRuntimeAbsence', changed_host_stamp)
+        with pytest.raises(ValueError, match='host runtime absence.*checkpoint.*observation'):
+            tree.complete()
+        assert calls == [NATIVE]
+        return
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    old_key = closure['link_outcomes'][spelling]['witness']
+    witness = copy.deepcopy(closure['directory_witnesses'][old_key])
+    original = copy.deepcopy(closure['completion']['host_directory_observations'][NATIVE])
+    witness['before'][1] += 1
+    witness['after'][1] += 1
+    new_key = graph_replace_witness(closure, old_key, witness)
+    assert new_key != old_key
+    assert witness['before'] == witness['after']
+    assert witness['names'] == original['names']
+    graph_sync_namespace(tree, closure)
+    tree.checkpoint_agreement(closure)
+    assert closure['completion']['host_directory_observations'][NATIVE] == original
+    with pytest.raises(ValueError, match='host runtime absence.*checkpoint.*observation'):
+        tree.audit(closure, retained)
 
 
 def test_absent_target_appearing_invalidates_mounted_profile(required_graph_tree):
