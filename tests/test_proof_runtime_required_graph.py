@@ -1604,3 +1604,15 @@ def test_loader_missing_cache_row_refuses_despite_default_hit(tmp_path):
     tree.cache_listing = '1 libs found in cache fixture:\n libcached.so (libc6,AArch64) => /usr/lib/libcached.so\n'
     with pytest.raises(ValueError, match='required runtime alias is absent|cache candidate'):
         tree.complete()
+
+
+def test_loader_resolution_waits_for_inherited_context_fixed_point(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/a-seed.so', graph_fixture_elf(needed=('liblate.so',)))
+    tree.host_file('/h/stdlib/b-seed.so', graph_fixture_elf(needed=('libparent.so',)))
+    tree.host_file('/h/stdlib/private/liblate.so', graph_fixture_elf(marker=b'late-provider'))
+    tree.host_file(NATIVE + '/libparent.so', graph_fixture_elf(rpath=('/h/stdlib/private',)))
+    tree.cache_listing = '1 libs found in cache fixture:\n libparent.so (libc6,AArch64) => ' + NATIVE + '/libparent.so\n'
+    closure = tree.complete()
+    assert tree.audit(closure, tree.retained_members(closure))
+    assert graph_outcome(closure, '/h/stdlib/private/liblate.so')['terminal'] == '/h/stdlib/private/liblate.so'
