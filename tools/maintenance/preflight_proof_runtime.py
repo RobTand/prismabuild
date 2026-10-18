@@ -196,6 +196,8 @@ def main():
     parser.add_argument('--source-ref', default='HEAD')
     args = parser.parse_args()
     if args.versions_only:
+        source = Path(__file__).resolve().parents[2] / 'tests/proof_container_runtime.py'
+        version_owner = preflight_module('proof_container_runtime', source.read_text())
         host = subprocess.check_output(['ldd','--version'],text=True,timeout=30)
         image = None if args.image is None else subprocess.check_output(['docker','run','--rm','--read-only','--network','none',
             '--cap-drop','ALL','--user',str(os.getuid())+':'+str(os.getgid()),
@@ -203,8 +205,9 @@ def main():
             '--entrypoint','ldd',args.image,'--version'],text=True,timeout=30)
         print('proof-runtime-glibc: ' + json.dumps(dict(host=host,image=image,
             node=os.uname().nodename,uid=os.getuid(),affinity=sorted(os.sched_getaffinity(0)),
-            interpreter=sys.version,executable=dict(path=sys.executable,
-                bytes=Path('/proc/self/exe').stat().st_size))),flush=True)
+            interpreter=sys.version,executable=dict(path=sys.executable, resolved_path=str(Path(sys.executable).resolve()),
+                bytes=Path('/proc/self/exe').stat().st_size,sha256=version_owner.digest(Path('/proc/self/exe').read_bytes())),
+            native_threads={key:os.environ.get(key) for key in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS')})),flush=True)
         return 0
     if args.image_child:
         print(json.dumps(preflight_image(json.load(sys.stdin))), flush=True)

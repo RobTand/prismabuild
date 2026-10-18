@@ -625,6 +625,8 @@ class RuntimeNamespaceIndex:
         self.image_children = self.immediate_names(runtime_namespace_entries(dict(roots=image_roots)))
         for path, component in closure.get('components', {}).items():
             parent, _, name = path.rpartition('/')
+            if not name:
+                continue
             self.children.setdefault(parent or '/', set()).add(name)
             if component['origin'] == 'image':
                 self.image_children.setdefault(parent or '/', set()).add(name)
@@ -1630,6 +1632,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
                 raise ValueError('mounted hwcaps directory listing changed: ' + parent)
         finally:
             os.close(descriptor)
+    directory_error = None
     for key in closure['directory_witnesses']:
         witness = runtime_absence_witness(closure, key, index=index)
         if witness['authority'] not in origins:
@@ -1669,9 +1672,11 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
                 raise ValueError('mounted runtime absent target appeared during verification')
             after = os.fstat(descriptor)
             if runtime_stamp(before) != runtime_stamp(after) or names != list(witness['names']):
-                raise ValueError('mounted runtime absence directory changed: ' + witness['parent'])
+                directory_error = directory_error or ('mounted runtime absence directory changed: ' + witness['parent'])
         finally:
             os.close(descriptor)
+    if directory_error is not None:
+        raise ValueError(directory_error)
     if not {'host', 'image'} <= origins:
         return
     for spelling, record in closure['link_outcomes'].items():
