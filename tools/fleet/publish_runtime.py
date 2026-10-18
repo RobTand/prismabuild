@@ -1537,6 +1537,7 @@ def _reserve_installed_bootstrap(assessment_path):
                 raise SystemExit("rollback differs from the accepted original bootstrap intent")
         _write_bootstrap_pending(_bootstrap_pending_path(), {
             "schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
+            "direction": plan.get("direction", "forward"),
             "source": plan["source"], "target": plan["target"],
             "forward_plan_sha256": canonical_sha256({**plan, "direction": "forward"}), "state": "reserved"})
         return 0
@@ -1566,6 +1567,7 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
         roster = _bootstrap_roster(source, target)
         pending = _bootstrap_pending_path()
         intent = {"schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
+            "direction": plan.get("direction", "forward"),
                   "source": plan["source"], "target": plan["target"],
                   "forward_plan_sha256": canonical_sha256({**plan, "direction": "forward"})}
         if pending.is_symlink():

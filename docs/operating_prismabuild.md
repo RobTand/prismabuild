@@ -5019,14 +5019,23 @@ stage_host() {
 		cat "$E/forward/$key/$file" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/$file"
 	done
 	ssh "$host" sudo -n /usr/bin/sha256sum "$B/bootstrap_client.py" "$B/reader/upgrade_client.py" \
-		"$B/reader/digest_primitives.py" "$B/reader/generation_receipt.py" "$B/reader/park_proof.py"
+		"$B/reader/digest_primitives.py" "$B/reader/generation_receipt.py" "$B/reader/park_proof.py" > "$E/$host-staged.sha256"
+	python3 - "$E/forward/plan.json" "$E/$host-staged.sha256" <<'PYCODE'
+import json, pathlib, sys
+plan = json.load(open(sys.argv[1]))
+expected = {name: plan['target_files'][name] for name in ('upgrade_client.py', 'digest_primitives.py', 'generation_receipt.py', 'park_proof.py')}
+expected['bootstrap_client.py'] = plan['tool_sha256']
+actual = {pathlib.Path(path).name: digest for digest, path in (line.split() for line in open(sys.argv[2]))}
+assert actual == expected, actual
+PYCODE
 }
 stage_host sparky
 stage_host sparklina
 stage_host dl380g10
 ```
 
-Compare every reported hash with the reviewed plan before executing root code.
+Each host staging call compares every reported code hash with the reviewed plan
+before continuing to the next host. Stop immediately on any failed command.
 Do not overwrite a preexisting operation directory with different bytes. The
 helper checks the tool, private reader, receipt and enrollment identities again.
 Then prepare each host. It creates persistent conditions for both upgrader units,
@@ -5200,7 +5209,7 @@ import json, sys
 from prismabuild.digest_primitives import canonical_sha256
 plan = json.load(open(sys.argv[1])); pending = json.load(open(sys.argv[2]))
 assert pending['id'] == plan['id'] and pending['source'] == plan['source'] and pending['target'] == plan['target']
-assert pending.get('direction', 'forward') == 'forward' and pending['state'] != 'accepted'
+assert pending['direction'] == 'forward' and pending['state'] != 'accepted'
 assert pending['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
 PYCODE
 python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"

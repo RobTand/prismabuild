@@ -19696,3 +19696,11 @@ jobs; it grants no authority to terminate or signal them. Operator command
 blocks stop at the first error, verify pending/accepted intent before choosing
 rollback, and verify the direction-specific accepted archive before producing a
 root-local release decision.
+
+The root receipt-reader population is registered once, in
+`tests/proof_execution.json`, alongside the bootstrap root population. The receipt
+execution document retains its image/history metadata and no duplicate file
+entry. This preserves all node IDs and gives the shared source inspector/runner
+one owner per root file. New reservations explicitly record their direction,
+including the initial `reserved` phase; interrupted-forward operator checks
+require that literal direction before using the retained intent.

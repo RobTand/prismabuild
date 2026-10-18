@@ -137,6 +137,8 @@ def _bootstrap_seal_local(base):
     paths = [base / name for name in ('bootstrap_client.py', 'plan.json',
         'source-config.json', 'target-config.json', 'source-receipt.json', 'target-receipt.json')]
     paths += [base / 'reader' / name for name in REPLACE]
+    if (base / 'accepted.json').exists():
+        paths.append(base / 'accepted.json')
     for path in paths:
         before, metadata = _bootstrap_capture(_bootstrap_trusted(path))
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -375,7 +377,8 @@ def original_plan_hash(plan):
 
 def read_journal(plan, path):
     journal = _bootstrap_read_json(_bootstrap_trusted(path))
-    if journal['plan_sha256'] != original_plan_hash(plan):
+    if (journal['plan_sha256'] != original_plan_hash(plan)
+            or journal.get('original_plan', {**plan, 'direction': 'forward'}) != {**plan, 'direction': 'forward'}):
         raise ValueError('bootstrap journal belongs to a different plan')
     return journal
 
@@ -431,7 +434,8 @@ def prepare_bootstrap(plan):
     if path.exists():
         journal = read_journal(plan, path)
     else:
-        journal = {'plan_sha256': original_plan_hash(plan), 'phase': 'fencing'}
+        journal = {'plan_sha256': original_plan_hash(plan), 'phase': 'fencing',
+                   'original_plan': {**plan, 'direction': 'forward'}}
         _bootstrap_save(path, journal)
     ensure_fence(plan, journal, path)
     with _bootstrap_upgrade_lock(plan) as (_, base, config, reader, _):
@@ -584,7 +588,8 @@ def reconcile_boot(plan):
     path = journal_for(plan)
     existed = path.exists()
     journal = read_journal(plan, path) if existed else {
-        'plan_sha256': original_plan_hash(plan), 'phase': 'fencing'}
+        'plan_sha256': original_plan_hash(plan), 'phase': 'fencing',
+        'original_plan': {**plan, 'direction': 'forward'}}
     if not existed:
         # No live rename is legal before this journal. A missing journal with
         # a final updater is lost recovery state, never a new backup authority.
@@ -625,7 +630,9 @@ def reconcile_boot(plan):
                   'plan_sha256': original_plan_hash(plan), 'approved_unix': time.time(),
                   'direction': plan.get('direction', 'forward'), 'previous_phase': journal['phase'],
                   'initialized_without_journal': not existed,
+                  'previous_map_sha256': _bootstrap_sha(_bootstrap_canonical(journal.get('previous'))),
                   'previous_journal_sha256': _bootstrap_sha(_bootstrap_capture(path)[0])}
+        journal.setdefault('original_plan', {**plan, 'direction': 'forward'})
         journal.setdefault('boot_reconciliations', []).append(record)
         journal['boot_reconciliation'] = record
         _bootstrap_save(path, journal)
@@ -665,7 +672,7 @@ def observe_processes(plan, reader, gate):
                                                         and resolved.is_relative_to(selected)))
                 if not row['selected']:
                     row['reason'] = 'matching script basename outside selected generation'
-            except OSError as exc:
+            except (OSError, RuntimeError) as exc:
                 row['reason'] = 'matching script basename cannot be resolved: ' + str(exc)
             processes.append(row)
     kinds = [row['script'] for row in processes]
