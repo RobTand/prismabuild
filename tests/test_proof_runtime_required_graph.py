@@ -1504,3 +1504,17 @@ def test_reader_alias_adds_image_interpreter_ancestor_search(tmp_path):
     assert any(value['parent'] == '/usr/lib' and value['name'] == 'libreader.so'
                for value in closure['directory_witnesses'].values())
     assert not any(root['path'] == '/usr/lib' for root in closure['roots'])
+
+
+def test_ancestor_search_preserves_inherited_rpath_candidates(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/inherited-rpath-seed.so', graph_fixture_elf(
+        needed=('libparent.so',), rpath=('/usr/lib',), marker=b'rpath-parent-seed'))
+    tree.host_file(NATIVE + '/libparent.so', graph_fixture_elf(
+        needed=('libinherited.so',), marker=b'parent-provider'))
+    tree.host_file(NATIVE + '/libinherited.so', graph_fixture_elf(marker=b'good-fallback'))
+    tree.image_file('/usr/lib/libinherited.so', graph_fixture_elf(machine=62, marker=b'bad-inherited-provider'))
+    tree.cache_listing = ('1 libs found in cache fixture:\n'
+        ' libparent.so (libc6,AArch64) => ' + NATIVE + '/libparent.so\n')
+    with pytest.raises(ValueError, match='unsupported architecture'):
+        tree.audit(tree.complete())
