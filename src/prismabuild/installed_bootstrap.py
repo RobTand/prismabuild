@@ -29,6 +29,9 @@ def read_assessment(path):
             or re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,95}', plan['id']) is None
             or not value.get('qualification_actions')):
         raise WindowError('invalid installed bootstrap plan/qualification')
+    admission = value.get('canary_admission', 'publication-slot')
+    if admission not in ('ordinary', 'publication-slot') or (admission == 'ordinary' and not str(value.get('ordinary_canary_reason', '')).strip()):
+        raise WindowError('ordinary bootstrap canary needs an explicit operator reason')
     return value
 
 
@@ -135,13 +138,62 @@ def collect_responses(plan):
     return RootBootstrapResponses(rows, nonce=nonce, started_unix=started)
 
 
-def assess(assessment, *, checkout, fleet_root, source, target, roster):
+def enrolled_roster(source, target):
+    from .fleet_roster import Roster, is_absent
+    from .generation_receipt import GenerationReceipt
+    captures = []
+    for root in (source, target):
+        receipt = GenerationReceipt.capture((Path(root) / 'RUNTIME_VERSION.json').read_bytes())
+        roster = Roster.qualified(root, receipt.files)
+        groups = {}
+        for host, aliases, box in roster.barrier_declarations():
+            if not is_absent(host, box):
+                groups[host] = sorted(aliases)
+        captures.append(groups)
+    if captures[0] != captures[1]:
+        raise WindowError('bootstrap source/target enrollment differs')
+    return captures[0]
+
+
+def assess(assessment, *, checkout, fleet_root, source, target, roster, verify_live=False):
     qualification = verify_qualification(assessment, checkout=checkout, fleet_root=fleet_root)
+    live = require_live_window(assessment['plan'], target=target) if verify_live else None
     observations = collect_responses(assessment['plan'])
     result = require_installed_bootstrap(
         source, target, observations, roster=roster,
         qualification=qualification, rollback_designation=assessment['rollback_designation'])
+    if live is not None:
+        result["live_window"] = live
     return result, observations
+
+
+def require_live_window(plan, *, target):
+    import sys
+    result = subprocess.run([sys.executable, str(Path(target) / 'tools/pbstatus.py'),
+        '--json', '--transport', 'pool', '--recent', '0', '--timeout-s', '30'],
+        capture_output=True, timeout=45, check=True)
+    if len(result.stdout) > 4 * 1024 * 1024:
+        raise WindowError('oversized live bootstrap census')
+    status = json.loads(result.stdout)
+    if (status.get('complete') is not True or status.get('timed_out_sections')
+            or status.get('unavailable_sections')):
+        raise WindowError('bootstrap live window census is incomplete')
+    live = [row for row in status['nodes'] if row.get('state') == 'live']
+    hosts = {row['node'] for row in live}
+    if (len(live) != len(plan['roster']) or len(hosts) != len(live)
+            or any(len(hosts & set(aliases)) != 1 for aliases in plan['roster'].values())):
+        raise WindowError('bootstrap live census does not cover the enrolled roster')
+    commits = {row.get('runtime_commit') for row in live}
+    if not commits <= {plan['source']['commit'], plan['target']['commit']}:
+        raise WindowError('live window changed; recapture and rerun the exact corpus')
+    for commit in commits:
+        matches = [path.parent.name for path in Path(target).parent.glob('*/RUNTIME_VERSION.json')
+                   if json.loads(path.read_bytes()).get('commit') == commit]
+        expected = [plan[key]['generation'] for key in ('source', 'target') if plan[key]['commit'] == commit]
+        if sorted(matches) != sorted(expected):
+            raise WindowError('bootstrap live generation became ambiguous')
+    return {'captured_unix': time.time(), 'status_sha256': raw_sha256(result.stdout),
+            'hosts': sorted(hosts), 'commits': sorted(commits)}
 
 
 def require_convergence(plan, *, fleet_root):
@@ -164,6 +216,7 @@ def require_convergence(plan, *, fleet_root):
                     offers.append(offer)
         if len(offers) != 1 or ('runtime-generation:' + selected['generation']) not in offers[0].get('tags', []):
             raise WindowError('bootstrap needs one fresh selected-generation worker offer for ' + host)
+    return observations
 
 
 def capture_inventory(out):
@@ -272,6 +325,8 @@ def main():
     if args.command == 'reverse':
         value = read_assessment(args.assessment)
         value['plan']['direction'] = 'restore'
+        value['canary_admission'] = 'ordinary'
+        value['ordinary_canary_reason'] = 'operator restoration uses an ordinary canary and preserves the source generation publication grant'
         args.out.mkdir(mode=0o700, parents=True, exist_ok=False)
         (args.out / 'assessment.json').write_text(json.dumps(value, indent=2) + '\n')
         (args.out / 'plan.json').write_text(json.dumps(value['plan'], indent=2) + '\n')

@@ -200,7 +200,18 @@ def require_installed_bootstrap(source, target, observations, *, roster,
                 raise WindowError("bootstrap generation member is not sealed")
     if plan["source"] == plan["target"]:
         raise WindowError("bootstrap target must be a distinct qualified generation")
+    target_receipt = GenerationReceipt.capture((Path(target) / "RUNTIME_VERSION.json").read_bytes())
+    if target_receipt.files.get("tools/bootstrap_client.py") != plan["tool_sha256"]:
+        raise WindowError("bootstrap tool identity differs from the sealed target")
+    if len(set(plan["boots"].values())) != len(roster):
+        raise WindowError("bootstrap boot identities are ambiguous")
     members = plan["members"]
+    final_protocol = client_protocol(target)
+    updater_member = final_protocol["updater_member"]
+    declarations = target_receipt.source_declarations(updater_member, (Path(target) / updater_member).read_bytes())
+    member_paths = {**declarations.members("MEMBERS"), **declarations.members("OPTIONAL_MEMBERS")}
+    if members != member_paths:
+        raise WindowError("bootstrap member paths differ from the final updater's source contract")
     if set(members) != set(BOOTSTRAP_MEMBERS):
         raise WindowError("bootstrap requires exactly eight target members")
     for root, field in ((source, "source_files"), (target, "target_files")):
@@ -254,7 +265,7 @@ def require_installed_bootstrap(source, target, observations, *, roster,
             raise WindowError("installed bootstrap reader/leaf closure differs for " + host)
         metadata = row.get("metadata", {})
         if set(metadata) != set(expected) or any(
-                item.get("uid") != 0 or item.get("gid") != 0
+                item.get("uid") != 0 or type(item.get("gid")) is not int or not 0 <= item["gid"] < 2**32 - 1
                 or type(item.get("mode")) is not int or not 0 <= item["mode"] <= 0o7777 or item["mode"] & 0o022
                 for item in metadata.values()):
             raise WindowError("unsafe root custody for " + host)

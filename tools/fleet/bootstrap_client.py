@@ -138,7 +138,7 @@ def _bootstrap_load_code(path, expected):
     return module, _bootstrap_sha(raw)
 
 
-def validate_plan(plan):
+def _bootstrap_validate_plan(plan):
     _bootstrap_identity(plan['id'])
     if (plan.get('schema') != 'prismabuild.client_bootstrap.plan.v1'
             or plan['source']['generation'] != SOURCE
@@ -165,7 +165,7 @@ def validate_plan(plan):
 
 
 def local_context(plan):
-    validate_plan(plan)
+    _bootstrap_validate_plan(plan)
     host = socket.gethostname()
     hosts = [key for key, aliases in plan['roster'].items() if host in aliases]
     if len(hosts) != 1:
@@ -183,6 +183,8 @@ def local_context(plan):
         raise ValueError('bootstrap boot identity changed; recapture before continuing')
     _bootstrap_trusted(INSTALL)
     _bootstrap_trusted(STATE)
+    if (STATE / 'transaction.json').exists() or (STATE / 'rollout-epoch.json').exists():
+        raise ValueError('resolve automatic journal/epoch before bootstrap')
     _bootstrap_require_reservation(plan, base, config)
     return key, base, config
 
@@ -204,7 +206,7 @@ def _bootstrap_require_reservation(plan, base, config):
         raise ValueError('shared bootstrap reservation differs')
 
 @contextmanager
-def host_lock(plan):
+def _bootstrap_upgrade_lock(plan):
     key, base, config = local_context(plan)
     path = _bootstrap_trusted(STATE / 'upgrade.lock')
     fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
@@ -216,6 +218,8 @@ def host_lock(plan):
         if (STATE / 'transaction.json').exists() or (STATE / 'rollout-epoch.json').exists():
             raise ValueError('resolve automatic journal/epoch before bootstrap')
         reader, _ = _bootstrap_load_code(base / 'reader/upgrade_client.py', plan['target_files']['upgrade_client.py'])
+        if plan['members'] != {**reader.MEMBERS, **reader.OPTIONAL_MEMBERS}:
+            raise ValueError('bootstrap member paths differ from frozen updater contract')
         for name in LEAVES:
             if _bootstrap_sha(_bootstrap_capture(_bootstrap_trusted(base / 'reader' / name))[0]) != plan['target_files'][name]:
                 raise ValueError('bootstrap private reader closure changed')
@@ -233,6 +237,8 @@ def host_lock(plan):
             intake = _bootstrap_read_json(_bootstrap_trusted(base / (label + '-config.json')))
             if intake != {**config, 'runtime': plan[label]['directory']}:
                 raise ValueError('private bootstrap intake enrollment differs')
+        if captured.member_digest('tools/bootstrap_client.py') != plan['tool_sha256']:
+            raise ValueError('bootstrap tool is not the sealed target helper')
         rollout = reader.rollout_as_reader(CONFIG, config)
         if rollout is not None:
             raise ValueError('unresolved shared rollout epoch')
@@ -341,7 +347,7 @@ def verify_services(plan, reader, config):
     files = {}
     for name in SERVICE_MEMBERS:
         raw, metadata = _bootstrap_capture(_bootstrap_trusted(INSTALL / name))
-        if metadata['gid'] != 0 or _bootstrap_sha(raw) != plan['source_files'][name]:
+        if _bootstrap_sha(raw) != plan['source_files'][name]:
             raise ValueError('installed service differs: ' + name)
         files[name] = _bootstrap_sha(raw)
     broker = reader.request(config.get('socket', '/run/prismabuild/resources.sock'), 'status')
@@ -366,7 +372,7 @@ def prepare_bootstrap(plan):
         journal = {'plan_sha256': original_plan_hash(plan), 'phase': 'fencing'}
         _bootstrap_save(path, journal)
     ensure_fence(plan, journal, path)
-    with host_lock(plan) as (_, base, config, reader, _):
+    with _bootstrap_upgrade_lock(plan) as (_, base, config, reader, _):
         journal = read_journal(plan, path)
         if 'previous' not in journal:
             previous = {}
@@ -412,7 +418,7 @@ def restore_updater(plan):
     path = journal_for(plan)
     journal = read_journal(plan, path)
     ensure_fence(plan, journal, path)
-    with host_lock(plan) as (_, _, config, reader, _):
+    with _bootstrap_upgrade_lock(plan) as (_, _, config, reader, _):
         journal = read_journal(plan, path)
         verify_services(plan, reader, config)
         backup = path.parent / 'previous'
@@ -448,7 +454,7 @@ def restore_updater(plan):
 def observe_bootstrap(plan, *, nonce):
     if re.fullmatch('[0-9a-f]{64}', nonce) is None:
         raise ValueError('bootstrap requires a fresh coordinator nonce')
-    with host_lock(plan) as (host, base, config, reader, inode):
+    with _bootstrap_upgrade_lock(plan) as (host, base, config, reader, inode):
         path = journal_for(plan)
         read_journal(plan, path)
         if not fenced(plan):
@@ -513,7 +519,8 @@ def observe_processes(plan, reader, gate):
         for script in scripts:
             resolved = Path(script).resolve(strict=True)
             processes.append({'pid': pid, 'starttime': start, 'script': Path(script).name,
-                              'path': str(resolved), 'selected': resolved.is_relative_to(selected)})
+                              'path': str(resolved), 'selected': (Path(script).is_absolute() and Path(script) == resolved
+                                                               and resolved.is_relative_to(selected))})
     kinds = [row['script'] for row in processes]
     required = ('tier_loop.py', 'prewarm_loop.py', 'pbmetrics.py') if socket.gethostname() == 'dl380g10' else ()
     complete = (gate.get('draining') is False and kinds.count('supervise.py') == 1
@@ -549,7 +556,7 @@ def main():
     base = _bootstrap_trusted(CONTROL / _bootstrap_identity(args.id))
     plan = _bootstrap_read_json(_bootstrap_trusted(base / 'plan.json'))
     if _bootstrap_sha(_bootstrap_canonical(plan)) != args.plan_sha256 or plan['id'] != args.id:
-        parser.error('local plan _bootstrap_identity differs')
+        parser.error('local plan identity differs')
     _bootstrap_trusted(Path(__file__).absolute())
     if _bootstrap_sha(_bootstrap_capture(Path(__file__))[0]) != plan['tool_sha256']:
         parser.error('executing helper differs from approved plan')
@@ -580,7 +587,7 @@ def main():
         else:
             # The operator installs a root-owned terminal decision after the
             # publisher has accepted the exact direction. No shared file releases.
-            with host_lock(plan) as (_, _, config, reader, _):
+            with _bootstrap_upgrade_lock(plan) as (_, _, config, reader, _):
                 decision = _bootstrap_read_json(_bootstrap_trusted(base / 'accepted.json'))
                 if decision != {'plan_sha256': _bootstrap_sha(_bootstrap_canonical(plan)), 'direction': plan.get('direction', 'forward')}:
                     raise ValueError('root-local acceptance decision differs')

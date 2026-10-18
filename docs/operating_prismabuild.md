@@ -5137,3 +5137,54 @@ reverse hash as above. Observe actual a174 `current` ticks and source-generation
 roles/offers. Keep receipt and proof leaves, independent recovery code, failed
 canary evidence and both generation directories. This procedure removes no
 broker authority, automatic journal, initialized marker or permanent lock.
+
+For predeploy, capture the window and run qualification with these admitted
+commands after preparing the hosts. `pbrun` supplies ordinary CPU admission;
+its child executes the named script directly.
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py \
+	capture --out "$E/window-census"
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_sources.py capture \
+	--status "$E/window-census/status.json" --generations "${G%/*}" \
+	--rollback-generation "${OLD##*/}" --rollback-commit a17477b2b206adf79d89e65c7b9d09584f0bfa34 \
+	--git-root "$R" --out "$E/window"
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py qualify \
+	--census-dir "$E/predeploy-census" --window "$E/window/window.json" \
+	--designation "$R/docs/compatibility_rollback_designation.json" --generations "${G%/*}" \
+	--candidate "$G" --out "$E/predeploy.json" --installed-bootstrap "$E/forward/assessment.json"
+```
+
+The publication lock protects a new live-window census and new authenticated root
+challenges immediately before activation. Unknown live writers, ambiguous
+same-commit generations, active broker scopes, or any ready/claimed row refuse
+the pointer move. A saved root transcript remains audit data; the publisher never
+loads it as authority. Accepted decisions name the root transcripts and verified
+canary sidecar digest.
+
+The reverse assessment generated above records `canary_admission: ordinary`
+and its reason. That canary uses normal PB admission and a separate nonce-named
+sidecar, preserving the old generation's spent publication grant and history.
+For a spent forward grant, explicitly record the ordinary mode and reason in a
+new assessment copy, preserving the original plan and qualification keys:
+
+```bash
+python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); v["canary_admission"]="ordinary"; v["ordinary_canary_reason"]=sys.argv[3]; json.dump(v,open(sys.argv[2],"x"),indent=2)' \
+	"$E/forward/assessment.json" "$E/forward/ordinary-assessment.json" \
+	'operator-reviewed continuation of the retained spent canary; normal admission'
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${G##*/}" \
+	--rollout rolling --rollout-reason 'same bootstrap intent; explicit ordinary canary continuation' \
+	--installed-bootstrap "$E/forward/ordinary-assessment.json"
+```
+
+Wait for outstanding canary actions to settle first. Retain their keys and
+receipts. The ordinary mode grants no queue priority or admission exemption.

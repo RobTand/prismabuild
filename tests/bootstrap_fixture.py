@@ -30,6 +30,16 @@ def bootstrap_case(tmp_path, monkeypatch):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             files[member] = named[name] = raw_sha256(raw)
+        tool = root / 'tools/bootstrap_client.py'
+        tool.parent.mkdir(parents=True, exist_ok=True)
+        tool.write_bytes((ROOT / 'tools/fleet/bootstrap_client.py').read_bytes())
+        files['tools/bootstrap_client.py'] = raw_sha256(tool.read_bytes())
+        publisher = root / 'tools/publish_runtime.py'
+        publisher.write_bytes((ROOT / 'tools/fleet/publish_runtime.py').read_bytes())
+        files['tools/publish_runtime.py'] = raw_sha256(publisher.read_bytes())
+        roster_path = root / 'tools/fleet_boxes.json'
+        roster_path.write_bytes(compact_ascii_json_bytes({'boxes': {'one': {}, 'two': {'_alias': 'alias-two'}}}))
+        files['tools/fleet_boxes.json'] = raw_sha256(roster_path.read_bytes())
         receipt_raw = compact_ascii_json_bytes(generation_receipt(root.name, commit, files))
         (root / 'RUNTIME_VERSION.json').write_bytes(receipt_raw)
         identities.append({'generation': root.name, 'commit': commit, 'directory': str(root),
@@ -38,6 +48,8 @@ def bootstrap_case(tmp_path, monkeypatch):
         for path in root.rglob('*'):
             path.chmod(0o555 if path.is_dir() else 0o444)
         root.chmod(0o555)
+    for state in ('ready', 'claimed'):
+        (tmp_path / 'pb-queue' / state).mkdir(parents=True, exist_ok=True)
     source, target = identities
     # Synthetic fixtures exercise the predicate; a separate assertion pins the
     # production-only designation. No fixture is usable as a live assessment.
@@ -61,7 +73,7 @@ def bootstrap_case(tmp_path, monkeypatch):
              'fenced': True, 'oneshot_exited': True, 'automatic_journal': False, 'epoch': None,
              'upgrade_lock': {'held': True, 'inode': plan['locks'][host]},
              'enrollment_sha256': plan['enrollments'][host], 'journal_sha256': 'd' * 64,
-             'broker': {'health': True, 'maintenance_durable_protocol': 1, 'draining': False,
+             'broker': {'health': True, 'active_scopes': 0, 'maintenance_durable_protocol': 1, 'draining': False,
                         'installed_sha256': {name: file_maps[0][name] for name in window.BOOTSTRAP_SERVICE_MEMBERS}},
              'gate': {'draining': False}} for host in plan['roster']}
     observations = window.RootBootstrapResponses(rows, nonce='c' * 64, started_unix=now - .01)

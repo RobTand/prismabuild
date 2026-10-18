@@ -102,7 +102,7 @@ def validate(args):
     require_generation(target, rollback)
     bootstrap = getattr(args, "installed_bootstrap", None)
     if bootstrap is not None:
-        from prismabuild.installed_bootstrap import read_assessment, assess
+        from prismabuild.installed_bootstrap import read_assessment, assess, enrolled_roster
         assessment = read_assessment(bootstrap)
         if assessment["rollback_designation"] != designation:
             raise WindowError("bootstrap rollback designation differs")
@@ -110,9 +110,10 @@ def validate(args):
         if str(candidate) != assessment["plan"]["target"]["directory"]:
             raise WindowError("bootstrap candidate is not the qualified sealed target")
         facts, _ = assess(assessment, checkout=root, fleet_root=args.generations.parent,
-                          source=target, target=candidate, roster=assessment["plan"]["roster"])
-        if set(hosts) != {alias for aliases in assessment["plan"]["roster"].values()
-                         for alias in aliases if alias in hosts} or len(hosts) != len(assessment["plan"]["roster"]):
+                          source=target, target=candidate, roster=enrolled_roster(target, candidate))
+        if (len(hosts) != len(assessment["plan"]["roster"])
+                or any(len(set(hosts) & set(aliases)) != 1
+                       for aliases in assessment["plan"]["roster"].values())):
             raise WindowError("bootstrap census does not cover its exact enrolled roster")
     else:
         facts = require_reachable(args.candidate, target)

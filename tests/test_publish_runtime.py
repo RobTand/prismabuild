@@ -1121,10 +1121,14 @@ def test_installed_bootstrap_activates_and_runs_canary_under_lock(tmp_path, monk
         assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
         assert mirror.resolve() == target
         events.append('convergence')
+        return observations
     def canary(**kw):
         assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
         assert kw['enabled'] is True
         events.append('canary')
+        if canary_code == 0:
+            path = publish_runtime._canary_record_path(target.parent, target.name)
+            path.write_text(json.dumps({'generation': target.name, 'commit': plan['target']['commit'], 'canary_status': 'verified'}))
         return canary_code
     monkeypatch.setattr(installed_bootstrap, 'assess', assess)
     monkeypatch.setattr(installed_bootstrap, 'require_convergence', convergence)
@@ -1144,6 +1148,7 @@ def test_installed_bootstrap_activates_and_runs_canary_under_lock(tmp_path, monk
 
 
 def test_installed_bootstrap_refuses_substituted_activation_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish_runtime, 'MIRROR', tmp_path / 'repo')
     from bootstrap_fixture import bootstrap_case
     case = bootstrap_case(tmp_path, monkeypatch)
     plan, _, _, designation = case
@@ -1152,3 +1157,15 @@ def test_installed_bootstrap_refuses_substituted_activation_name(tmp_path, monke
         'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
     with pytest.raises(SystemExit, match='target differs'):
         publish_runtime._activate_installed_bootstrap('old', path)
+
+
+def test_bootstrap_ordinary_canary_does_not_receive_a_publication_grant(monkeypatch):
+    captured = []
+    def driver(*, generation, publication_canary_authorizer=None):
+        captured.append(publication_canary_authorizer)
+        return 0
+    monkeypatch.setattr(publish_runtime, '_load_canary_driver', lambda: driver)
+    assert publish_runtime._invoke_canary_driver('generation', publication_slot=False)[0] == 0
+    assert captured == [None]
+    assert publish_runtime._invoke_canary_driver('generation')[0] == 0
+    assert callable(captured[-1])

@@ -18966,8 +18966,9 @@ The existing same-updater and same-coordinator barrier prerequisites remain.
 A bridge's pair addition or removal can satisfy them. Changing from that bridge
 to the final importing updater cannot use a rolling history claim or relax those
 prerequisites. It requires a separately authorized installed-reader bootstrap
-and activation assessment. The current predeploy census exposes no such
-installed proof and refuses receipt-pair deployment. No bootstrap or live
+and activation assessment. The default predeploy census exposes no such
+installed proof and refuses receipt-pair deployment. The explicit installed bootstrap
+assessment described below obtains that authority through fresh root responses. No bootstrap or live
 rollout is authorized or qualified by the source/corpus checks.
 See [the receipt architecture](c15_receipt_architecture.md) and the rerunnable
 source and evidence tools under `docs/evidence` for exact caller and ship maps.
@@ -18988,7 +18989,9 @@ The supported window is the union of live worker generations and an explicitly
 designated rollback target. Retained directories alone grant no support. The
 persistent local designation in `compatibility_rollback_designation.json` pins
 a17477b2b206-1791745175-65dffa700dfb by directory, commit, raw receipt digest and
-complete content-map digest, only for candidates without B09's proof member.
+complete content-map digest. Automatic reachability applies only to candidates
+without B09's proof member. The explicit operator-restoration mode below retains
+the final leaves and has automatic_reachability false.
 A fresh complete status capture and every actual rollback byte must be checked
 again before rollout. A changed live generation expands the observed window;
 it never silently replaces the designated rollback target. Offline WSL is not
@@ -18996,7 +18999,8 @@ live. GC's every-reader preconditions include the designated target.
 
 Once either installed or candidate source contains optional `park_proof.py`,
 both updaters require optional-member protocol 2 and proof-member protocol 2.
-a174 is then unreachable as rollback. The unpublished 6fa9b780304d bridge has a
+a174 is then unreachable through automatic rollback. The independent operator
+restoration below keeps all three final leaves while restoring the old updater. The unpublished 6fa9b780304d bridge has a
 capable updater, the deployed broker/behavior and no proof source. Its captured
 reader closure is a prepared source control. Publication, fleet convergence,
 actual immutable generation designation and physical G-to-bridge rollback
@@ -19595,3 +19599,21 @@ requirements above still apply to automatic transports and dependency removal.
 The explicit predeploy assessment retains a fresh complete live-plus-rollback
 census and exact immutable rollback bytes; it records operator restoration and
 never claims automatic a174 reachability.
+
+Activation rechecks a fresh complete live record-window census after receipt
+qualification and before issuing root challenges. Unknown writers, missing or
+ambiguous enrolled generations refuse. Immediately before the pointer move,
+every broker must report integer zero active scopes and the ready/claimed queue
+must be observed empty. This enforces publication's existing idle boundary;
+preparation can still run while actions finish.
+
+The publisher retains each authenticated root transcript as a write-once audit
+record and hashes it into the pending/accepted decision. Reading that saved
+record later grants no authority. Acceptance also binds the verified canary
+sidecar bytes and a fresh post-canary root transcript. Operator restoration
+selects explicitly recorded ordinary canary admission so the old generation's
+one-use publication grant stays spent. An operator may select the same ordinary
+mode with a nonblank reason when resuming a spent forward canary. The driver
+receives no publication authorizer in this mode, all normal PB admission applies,
+and a separate operation/nonce sidecar preserves the original canary evidence.
+No automatic retry mints a replacement grant.

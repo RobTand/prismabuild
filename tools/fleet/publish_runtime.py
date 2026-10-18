@@ -1146,7 +1146,7 @@ def _load_canary_driver():
     return entry
 
 
-def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
+def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
     """Run the driver against the just-activated generation; return (code, detail)."""
 
     # Resolve the shared helper before the driver starts its submission budget.
@@ -1201,7 +1201,7 @@ def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
         # New drivers return their durable per-leg identities through report.
         parameters = inspect.signature(entry).parameters
         options: dict[str, object] = {"report": report} if "report" in parameters else {}
-        if "publication_canary_authorizer" in parameters:
+        if publication_slot and "publication_canary_authorizer" in parameters:
             options["publication_canary_authorizer"] = authorize
         result = entry(generation=generation_name, **options)
     except SystemExit as exc:
@@ -1265,7 +1265,8 @@ def _write_canary_record(
 
 def _run_rollout_canary(
     *, store: Path, generation_name: str, commit: str, enabled: bool,
-    shape_gate: dict[str, object],
+    shape_gate: dict[str, object], publication_slot: bool = True,
+    record_path: Path | None = None,
 ) -> int:
     """Record the canary outcome for an activated generation; return the process exit.
 
@@ -1276,7 +1277,7 @@ def _run_rollout_canary(
     and never touches admission -- campaign-primacy (issue #688 non-goals).
     """
 
-    record = _canary_record_path(store, generation_name)
+    record = record_path if record_path is not None else _canary_record_path(store, generation_name)
     # A waived gate is said on every rollout, whatever the canary does.
     print(f"{generation_name} {_shape_gate_line(shape_gate)}",
           file=sys.stderr if shape_gate.get("verdict") == "waived" else sys.stdout)
@@ -1293,7 +1294,8 @@ def _run_rollout_canary(
                          detail="canary submitted against the activated generation")
     print(f"canary pending for {generation_name}; invoking the driver", flush=True)
     try:
-        code, detail = _invoke_canary_driver(generation_name)
+        code, detail = (_invoke_canary_driver(generation_name) if publication_slot else
+                        _invoke_canary_driver(generation_name, publication_slot=False))
     except _CanaryPrecondition as exc:
         _write_canary_record(record, generation=generation_name, commit=commit,
                              shape_gate=shape_gate, status="failed", exit_code=None, detail=str(exc))
@@ -1472,6 +1474,18 @@ def _write_bootstrap_pending(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def _record_bootstrap_root_responses(plan, observations, phase):
+    from prismabuild.digest_primitives import canonical_sha256
+    directory = MIRROR.parent / "rollout/bootstrap" / plan["id"]
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (phase + "-" + observations.nonce + ".json")
+    digest = _write_receipt(path, {"schema": "prismabuild.bootstrap_root_transcript.v1",
+        "plan_sha256": canonical_sha256(plan), "nonce": observations.nonce,
+        "started_unix": observations.started_unix, "responses": observations.rows})
+    _fsync_directory(directory)
+    return {"path": str(path), "sha256": digest}
+
+
 def _reserve_installed_bootstrap(assessment_path):
     from prismabuild import installed_bootstrap
     from prismabuild.digest_primitives import canonical_sha256
@@ -1485,6 +1499,7 @@ def _reserve_installed_bootstrap(assessment_path):
         if MIRROR.resolve(strict=True) != expected_pointer or _bootstrap_roster(source, target) != plan["roster"]:
             raise SystemExit("bootstrap reservation source or roster changed")
         installed_bootstrap.verify_qualification(assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent)
+        installed_bootstrap.require_live_window(plan, target=target)
         if plan.get("direction") == "restore":
             accepted = _bootstrap_pending_path().parent / ("bootstrap-" + plan["id"] + "-forward.accepted.json")
             prior = json.loads(accepted.read_bytes())
@@ -1516,6 +1531,8 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
             raise SystemExit("active rollout epoch excludes installed bootstrap")
         source, _ = _sealed_generation(plan["source"]["generation"])
         target, receipt = _sealed_generation(plan["target"]["generation"])
+        if receipt["files"].get("tools/publish_runtime.py") != _coordinator_sha256():
+            raise WindowError("bootstrap coordinator differs from the sealed target")
         roster = _bootstrap_roster(source, target)
         pending = _bootstrap_pending_path()
         intent = {"schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
@@ -1535,11 +1552,12 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
         # follow it, while the same publication lock still excludes mutation.
         result, observations = installed_bootstrap.assess(
             assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent,
-            source=source, target=target, roster=roster)
+            source=source, target=target, roster=roster, verify_live=True)
         if dry_run:
             return 0
+        transcript = _record_bootstrap_root_responses(plan, observations, "before-activation")
         _write_bootstrap_pending(pending, {**intent, "state": "activation-intent",
-                                         "direction": direction, "assessment": result})
+            "direction": direction, "assessment": result, "root_transcript": transcript})
         # Recheck both sealed identities after all external reads. Responses
         # carry their own maximum age and exact captured/compiled identities.
         _sealed_generation(source.name)
@@ -1549,20 +1567,51 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
         require_installed_bootstrap(source, target, observations, roster=roster,
             qualification=BootstrapQualification(plan, action_keys=result["actions"]),
             rollback_designation=assessment["rollback_designation"])
+        for row in observations.rows.values():
+            scopes = row.get("broker", {}).get("active_scopes")
+            if type(scopes) is not int or scopes != 0:
+                raise WindowError("bootstrap activation waits for the ordinary idle-queue boundary")
+        for state in ("ready", "claimed"):
+            directory = MIRROR.parent / "pb-queue" / state
+            if not directory.is_dir() or next(directory.glob("*.json"), None) is not None:
+                raise WindowError("bootstrap activation requires an observed empty ready and claimed queue")
         _activate(target if direction == "forward" else source, migrate_directory=False)
-        _write_bootstrap_pending(pending, {**intent, "state": "awaiting-convergence", "direction": direction})
+        _write_bootstrap_pending(pending, {**intent, "state": "awaiting-convergence",
+            "direction": direction, "assessment": result, "root_transcript": transcript})
         # Root observes real generation-pinned serving processes and fresh
         # worker offers after the pointer move. No process is stopped here.
         installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
         selected_root = target if direction == "forward" else source
         selected_receipt = receipt if direction == "forward" else json.loads((source / "RUNTIME_VERSION.json").read_bytes())
+        admission = assessment.get("canary_admission", "publication-slot")
+        if admission not in ("ordinary", "publication-slot"):
+            raise WindowError("unknown bootstrap canary admission mode")
+        options = {}
+        if admission == "ordinary":
+            reason = assessment.get("ordinary_canary_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise WindowError("ordinary bootstrap canary requires an explicit operator reason")
+            record_path = target.parent / (selected_root.name + ".bootstrap-" + plan["id"] + "-" + observations.nonce + ".canary.json")
+            options = {"publication_slot": False, "record_path": record_path}
+            _write_bootstrap_pending(pending, {**intent, "state": "ordinary-canary", "direction": direction,
+                "canary_record": str(record_path), "canary_admission": admission, "reason": reason,
+                "assessment": result, "root_transcript": transcript})
         code = _run_rollout_canary(store=target.parent, generation_name=selected_root.name,
                     commit=selected_receipt["commit"], enabled=True,
-                    shape_gate=selected_receipt.get("shape_gate", {}))
+                    shape_gate=selected_receipt.get("shape_gate", {}), **options)
         if code:
             return code
-        installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
-        _write_bootstrap_pending(pending, {**intent, "state": "accepted", "direction": direction})
+        final_observations = installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
+        final_transcript = _record_bootstrap_root_responses(plan, final_observations, "after-canary")
+        canary_record = options.get("record_path", _canary_record_path(target.parent, selected_root.name))
+        canary = json.loads(canary_record.read_bytes())
+        if (canary.get("canary_status") != "verified" or canary.get("generation") != selected_root.name
+                or canary.get("commit") != selected_receipt["commit"]):
+            raise WindowError("bootstrap canary lacks a verified bound record")
+        _write_bootstrap_pending(pending, {**intent, "state": "accepted", "direction": direction,
+            "assessment": result, "root_transcript": transcript, "final_root_transcript": final_transcript,
+            "canary_admission": admission, "canary_record": str(canary_record),
+            "canary_sha256": raw_sha256(canary_record.read_bytes())})
         archive = pending.parent / ("bootstrap-" + plan["id"] + "-" + direction + ".accepted.json")
         os.replace(pending, archive)
         _fsync_directory(archive.parent)

@@ -45,6 +45,8 @@ def private_bootstrap(publication, monkeypatch):
     reader = SimpleNamespace(**reader)
     config = json.loads(config_path.read_bytes())
     version, blobs = reader.desired(config)
+    for name in helper.SERVICE_MEMBERS:
+        (install / name).write_bytes(blobs[name])
     old = a174_updater()
     (install / 'upgrade_client.py').write_bytes(old)
     for name in helper.LEAVES:
@@ -67,7 +69,7 @@ def private_bootstrap(publication, monkeypatch):
     monkeypatch.setattr(helper, 'INSTALL', install)
     monkeypatch.setattr(helper, 'STATE', state)
     monkeypatch.setattr(helper, 'local_context', lambda plan: ('private', base, config))
-    monkeypatch.setattr(helper, 'host_lock', locked)
+    monkeypatch.setattr(helper, '_bootstrap_upgrade_lock', locked)
     monkeypatch.setattr(helper, 'ensure_fence', lambda *a: None)
     monkeypatch.setattr(helper, 'verify_services', lambda *a: ({'health': True}, {'draining': False}))
     monkeypatch.setattr(reader, 'desired_as_reader', lambda *a: (version, blobs))
@@ -138,3 +140,45 @@ def test_actual_final_receipt_and_proof_loaders_use_captured_installed_bytes(pri
     (install / 'digest_primitives.py').chmod(0o666)
     with pytest.raises(ValueError, match='root-trusted'):
         module.receipt_owner()
+
+
+def test_native_isolated_installed_reader_executes_the_captured_source(private_bootstrap):
+    helper, plan, install, _, _, _, _ = private_bootstrap
+    helper.prepare_bootstrap(plan)
+    program = """
+import hashlib, json, os, pathlib, sys, types
+assert sys.flags.isolated == 1 and os.geteuid() == 0
+path = pathlib.Path(sys.argv[1])
+raw = path.read_bytes()
+module = types.ModuleType('captured_installed_reader')
+module.__file__ = str(path)
+exec(compile(raw, str(path), 'exec'), module.__dict__)
+assert module.Upgrader._run_once.__globals__ is module.__dict__
+assert module.receipt_owner().GenerationReceipt
+proof = module.load_installed_park_proof(path.parent)
+print(json.dumps({'captured_sha256': hashlib.sha256(raw).hexdigest(),
+ 'proof_sha256': proof.sha256, 'version': list(sys.version_info[:3]),
+ 'executable': sys.executable, 'affinity': sorted(os.sched_getaffinity(0)),
+ 'executable_sha256': hashlib.sha256(pathlib.Path('/proc/self/exe').read_bytes()).hexdigest()}))
+"""
+    result = subprocess.check_output(['/usr/bin/python3', '-I', '-c', program,
+                                      str(install / 'upgrade_client.py')], text=True)
+    observed = json.loads(result)
+    assert observed['captured_sha256'] == plan['target_files']['upgrade_client.py']
+    assert observed['proof_sha256'] == plan['target_files']['park_proof.py']
+    assert observed['affinity'] == sorted(os.sched_getaffinity(0))
+    print('bootstrap-installed-native-runtime: ' + result.strip())
+
+
+def test_bootstrap_installed_reader_intake_permanently_drops_credentials(private_bootstrap, publication):
+    helper, plan, install, _, _, _, _ = private_bootstrap
+    helper.prepare_bootstrap(plan)
+    config_path = publication[3]
+    config = json.loads(config_path.read_bytes())
+    config['reader_uid'] = 65534
+    config_path.write_text(json.dumps(config))
+    installed, _ = helper._bootstrap_load_code(install / 'upgrade_client.py', plan['target_files']['upgrade_client.py'])
+    expected = installed.desired(config)
+    actual = installed.desired_as_reader(config_path, config)
+    assert actual == expected
+    assert actual[0]['files'] == plan['target_files']
