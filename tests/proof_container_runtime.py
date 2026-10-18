@@ -1,5 +1,5 @@
 """Interpret a sealed root-test runtime profile inside its admitted container."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import base64
 import hashlib
 import io
@@ -16,8 +16,9 @@ import sys
 import time
 
 
-PROFILE_SCHEMA = 'prismabuild.proof_runtime_profile.v2'
-CLOSURE_SCHEMA = 'prismabuild.proof_runtime_closure.v2'
+PROFILE_SCHEMA = 'prismabuild.proof_runtime_profile.v3'
+CLOSURE_SCHEMA = 'prismabuild.proof_runtime_closure.v3'
+NAMESPACE_STATES = ('before_installation', 'after_installation')
 ATTESTATION_SCHEMA = 'prismabuild.root_test_runtime.v1'
 THREADS = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')
 BROAD_ROOTS = {'/', '/usr', '/usr/bin', '/usr/lib', '/home', '/home/rob', '/etc', '/var', '/mnt'}
@@ -166,6 +167,8 @@ class CompletedRuntimeNamespace:
     plan: dict
     consumed_budget: dict
     completion: dict
+    reader_installation: dict | None = None
+    namespace_states: dict = field(default_factory=dict)
 
 
 def load_profile(path, source_root):

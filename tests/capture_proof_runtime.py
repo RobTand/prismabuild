@@ -35,7 +35,7 @@ from proof_container_runtime import (
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
 
 
-CAPTURE_SCHEMA = 'prismabuild.proof_runtime_capture.v2'
+CAPTURE_SCHEMA = 'prismabuild.proof_runtime_capture.v3'
 
 
 class HashedReader:

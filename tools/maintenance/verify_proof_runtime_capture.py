@@ -18,7 +18,7 @@ from prismabuild.digest_primitives import (
 from prismabuild.immutable_files import file_identity_nofollow
 
 
-SCHEMA = 'prismabuild.proof_runtime_capture_binding.v2'
+SCHEMA = 'prismabuild.proof_runtime_capture_binding.v3'
 PREFIX = 'prismabuild-root-capture: '
 HELPERS = ('tests/capture_proof_runtime.py', 'tests/proof_container_runtime.py',
            'tests/run_proof_container.py', 'tests/proof_capture_capacity.py')
