@@ -1980,9 +1980,9 @@ def test_python_root_alias_extension_seals_dependencies(tmp_path, monkeypatch, f
     closure = tree.complete()
     assert provider in runtime.runtime_namespace_entries(closure)
     audit = tree.audit(closure)
-    logical_directory = '/h/stdlib/private' if form == 'directory' else '/h/private'
+    logical_directory = str(Path(logical).parent) + '/../private'
     assert audit['native_audit']['search_directories_sha256'] == runtime.digest(
-        runtime.canonical(sorted([logical_directory, '/opt/private'])))
+        runtime.canonical(sorted([logical_directory, '/opt/pkg/../private'])))
 
 
 def test_nested_python_directory_aliases_promote_external_elf(tmp_path):
