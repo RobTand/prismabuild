@@ -77,6 +77,9 @@ def validate(args):
     if sha(raw) != envelope["status_sha256"] or envelope["status_exit"] != 0:
         raise WindowError("census provenance or completion changed")
     status = json.loads(raw)
+    if getattr(args, "installed_bootstrap", None) is not None:
+        status = {**status, "nodes": [{**node, "state": "live"} if node.get("state") == "draining" else node
+                                    for node in status["nodes"]]}
     window = json.loads(args.window.read_bytes())
     designation = json.loads(args.designation.read_bytes())
     rollback = designation["rollback"]

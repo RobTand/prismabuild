@@ -169,9 +169,31 @@ class RootBootstrapResponses:
 
 class BootstrapQualification:
     """Receipt verifier result, distinct from the operator's unverified index."""
-    def __init__(self, plan, *, action_keys):
+    def __init__(self, plan, *, action_keys, runtimes=()):
         self.plan = plan
         self.action_keys = tuple(action_keys)
+        self.runtimes = tuple(runtimes)
+
+
+def require_bootstrap_host_identity(plan, host, row):
+    """A changed boot needs the helper's explicit root-local reconciliation."""
+    process = row.get('broker_process')
+    if (not isinstance(process, dict) or set(process) != {'pid', 'starttime'}
+            or type(process['pid']) is not int or process['pid'] <= 0
+            or not isinstance(process['starttime'], str) or not process['starttime'].isdigit()):
+        raise WindowError('bootstrap broker process identity is malformed for ' + host)
+    if row.get('boot_id') == plan['boots'][host] and row.get('broker_process') == plan['brokers'][host]:
+        return
+    record = row.get('boot_reconciliation')
+    if (not isinstance(record, dict) or not isinstance(row.get('boot_id'), str)
+            or not row['boot_id'] or row['boot_id'] == plan['boots'][host]
+            or record.get('original_boot_id') != plan['boots'][host]
+            or record.get('boot_id') != row['boot_id']
+            or record.get('broker_process') != row.get('broker_process')
+            or record.get('plan_sha256') != canonical_sha256({**plan, 'direction': 'forward'})
+            or type(record.get('approved_unix')) not in (int, float)
+            or not 0 < record['approved_unix'] <= row.get('observed_unix', 0)):
+        raise WindowError('bootstrap boot/broker changed without root reconciliation for ' + host)
 
 
 def require_installed_bootstrap(source, target, observations, *, roster,
@@ -183,6 +205,8 @@ def require_installed_bootstrap(source, target, observations, *, roster,
     if not isinstance(qualification, BootstrapQualification) or not qualification.action_keys:
         raise WindowError("bootstrap requires verified PB corpus and crash/reverse qualification receipts")
     plan = qualification.plan
+    if plan.get("qualified_runtimes") != list(qualification.runtimes):
+        raise WindowError("bootstrap plan does not bind its verified native runtimes")
     if any(plan["source"].get(key) != value for key, value in BOOTSTRAP_SOURCE.items()):
         raise WindowError("bootstrap source must be the exact designated a174 generation")
     if (rollback_designation.get("mode") != "operator-restoration"
@@ -248,14 +272,15 @@ def require_installed_bootstrap(source, target, observations, *, roster,
         expected["upgrade_client.py"] = plan["source_files"]["upgrade_client.py"]
     agent = expected["upgrade_client.py"]
     for host, row in rows.items():
+        require_bootstrap_host_identity(plan, host, row)
+        if row.get("runtime") not in qualification.runtimes:
+            raise WindowError("root bootstrap interpreter has no matching qualified runtime receipt for " + host)
         stamp = row.get("observed_unix")
         if (row.get("schema") != "prismabuild.client_bootstrap.observation.v1"
                 or row.get("nonce") != observations.nonce
                 or not isinstance(stamp, (int, float)) or not math.isfinite(stamp)
                 or not observations.started_unix <= stamp <= now
                 or row.get("host") not in roster[host]
-                or row.get("boot_id") != plan["boots"].get(host)
-                or row.get("broker_process") != plan["brokers"].get(host)
                 or row.get("plan_sha256") != canonical_sha256(plan)
                 or row.get("source") != plan["source"] or row.get("target") != plan["target"]):
             raise WindowError("stale, replayed or substituted bootstrap response for " + host)
@@ -265,7 +290,7 @@ def require_installed_bootstrap(source, target, observations, *, roster,
             raise WindowError("installed bootstrap reader/leaf closure differs for " + host)
         metadata = row.get("metadata", {})
         if set(metadata) != set(expected) or any(
-                item.get("uid") != 0 or type(item.get("gid")) is not int or not 0 <= item["gid"] < 2**32 - 1
+                type(item.get("uid")) is not int or item["uid"] != 0 or type(item.get("gid")) is not int or not 0 <= item["gid"] < 2**32 - 1
                 or type(item.get("mode")) is not int or not 0 <= item["mode"] <= 0o7777 or item["mode"] & 0o022
                 for item in metadata.values()):
             raise WindowError("unsafe root custody for " + host)
@@ -274,6 +299,7 @@ def require_installed_bootstrap(source, target, observations, *, roster,
                 or row.get("enrollment_sha256") != plan["enrollments"].get(host)
                 or not isinstance(row.get("journal_sha256"), str)
                 or len(row["journal_sha256"]) != 64
+                or any(character not in "0123456789abcdef" for character in row["journal_sha256"])
                 or row.get("upgrade_lock", {}).get("held") is not True
                 or row["upgrade_lock"].get("inode") != plan["locks"].get(host)):
             raise WindowError("bootstrap fence, journal or enrollment differs for " + host)
@@ -293,4 +319,5 @@ def require_installed_bootstrap(source, target, observations, *, roster,
         require_receipt_participants(final_direction, {host: agent for host in rows}, roster)
     return {"mode": "operator-restoration", "automatic_reachability": False,
             "direction": direction, "hosts": sorted(rows), "actions": list(qualification.action_keys),
+            "qualified_runtimes": list(qualification.runtimes),
             "source": plan["source"], "target": plan["target"]}

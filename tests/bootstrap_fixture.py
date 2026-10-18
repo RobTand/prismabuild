@@ -63,8 +63,12 @@ def bootstrap_case(tmp_path, monkeypatch):
             'tool_sha256': raw_sha256((ROOT / 'tools/fleet/bootstrap_client.py').read_bytes())}
     designation = {'rollback': source, 'mode': 'operator-restoration', 'automatic_reachability': False,
                    'retained_leaves': list(window.BOOTSTRAP_LEAVES)}
+    runtime = {'version': [3, 12, 0], 'elf_machine': 62,
+               'executable': {'path': '/usr/bin/python3', 'resolved_path': '/usr/bin/python3.12',
+                              'bytes': 100, 'sha256': '9' * 64}}
+    plan['qualified_runtimes'] = [runtime]
     now = time.time()
-    rows = {host: {'schema': 'prismabuild.client_bootstrap.observation.v1', 'host': host,
+    rows = {host: {'runtime': runtime, 'schema': 'prismabuild.client_bootstrap.observation.v1', 'host': host,
              'nonce': 'c' * 64, 'observed_unix': now, 'boot_id': plan['boots'][host], 'broker_process': plan['brokers'][host],
              'source': source, 'target': target, 'plan_sha256': canonical_sha256(plan),
              'files': deepcopy(file_maps[1]), 'executing_sha256': file_maps[1]['upgrade_client.py'],
@@ -77,7 +81,7 @@ def bootstrap_case(tmp_path, monkeypatch):
                         'installed_sha256': {name: file_maps[0][name] for name in window.BOOTSTRAP_SERVICE_MEMBERS}},
              'gate': {'draining': False}} for host in plan['roster']}
     observations = window.RootBootstrapResponses(rows, nonce='c' * 64, started_unix=now - .01)
-    qualification = window.BootstrapQualification(plan, action_keys=['1' * 64])
+    qualification = window.BootstrapQualification(plan, action_keys=['1' * 64], runtimes=[runtime])
     return plan, observations, qualification, designation
 
 

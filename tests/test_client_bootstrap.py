@@ -139,14 +139,17 @@ def test_bootstrap_is_bound_to_exact_source_tool_paths_and_operator_mode(bootstr
         assess_case(bootstrap)
 
 
-@pytest.mark.parametrize('fault', [None, 'incomplete', 'missing-host', 'unknown-writer', 'ambiguous'])
+@pytest.mark.parametrize('fault', [None, 'draining', 'incomplete', 'missing-host', 'unknown-writer', 'ambiguous'])
 def test_publication_rechecks_the_live_record_window(bootstrap, monkeypatch, fault):
     import json
     from types import SimpleNamespace
     plan = bootstrap[0]
     status = {'complete': True, 'nodes': [
         {'node': host, 'state': 'live', 'runtime_commit': plan['source']['commit']} for host in plan['roster']]}
-    if fault == 'incomplete':
+    if fault == 'draining':
+        for node in status['nodes']:
+            node['state'] = 'draining'
+    elif fault == 'incomplete':
         status['complete'] = False
     elif fault == 'missing-host':
         status['nodes'].pop()
@@ -157,8 +160,73 @@ def test_publication_rechecks_the_live_record_window(bootstrap, monkeypatch, fau
         other.mkdir()
         (other / 'RUNTIME_VERSION.json').write_bytes((Path(plan['source']['directory']) / 'RUNTIME_VERSION.json').read_bytes())
     monkeypatch.setattr(collector.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=json.dumps(status).encode()))
-    if fault is None:
+    if fault in (None, 'draining'):
         assert collector.require_live_window(plan, target=plan['target']['directory'])['hosts'] == ['one', 'two']
     else:
         with pytest.raises(window.WindowError):
             collector.require_live_window(plan, target=plan['target']['directory'])
+
+
+def test_changed_boot_requires_fresh_root_reconciliation_of_the_original_plan(bootstrap):
+    plan, observations, _, _ = bootstrap
+    row = observations.rows['one']
+    row['boot_id'] = 'new-boot'
+    row['broker_process'] = {'pid': 222, 'starttime': '333'}
+    with pytest.raises(window.WindowError, match='root reconciliation'):
+        assess_case(bootstrap)
+    row['boot_reconciliation'] = {'original_boot_id': plan['boots']['one'], 'boot_id': row['boot_id'],
+        'broker_process': row['broker_process'], 'plan_sha256': canonical_sha256({**plan, 'direction': 'forward'}),
+        'approved_unix': observations.started_unix}
+    assert assess_case(bootstrap)['automatic_reachability'] is False
+    row['boot_reconciliation']['plan_sha256'] = '0' * 64
+    with pytest.raises(window.WindowError, match='root reconciliation'):
+        assess_case(bootstrap)
+
+
+def test_bootstrap_uses_broker_maintenance_status_rpc(bootstrap, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import json
+    plan = bootstrap[0]
+    install = tmp_path / 'installed'
+    install.mkdir()
+    for name in helper.SERVICE_MEMBERS:
+        (install / name).write_bytes((Path(plan['source']['directory']) / plan['members'][name]).read_bytes())
+    gate = tmp_path / 'gate.json'
+    gate.write_text('{"draining":false}')
+    monkeypatch.setattr(helper, 'INSTALL', install)
+    monkeypatch.setattr(helper, 'GATE', gate)
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda path: Path(path))
+    calls = []
+    def rpc(endpoint, operation):
+        calls.append(operation)
+        assert operation == 'maintenance_status'
+        return {'health': True, 'draining': False, 'maintenance_durable_protocol': 1,
+                'installed_sha256': {name: plan['source_files'][name] for name in helper.SERVICE_MEMBERS}}
+    broker, observed = helper.verify_services(plan, SimpleNamespace(request=rpc), {'socket': '/private'})
+    assert broker['health'] is True and observed['draining'] is False
+    assert calls == ['maintenance_status']
+
+
+def test_fresh_root_response_requires_the_qualified_native_interpreter(bootstrap):
+    row = bootstrap[1].rows['one']
+    row['runtime'] = {**row['runtime'], 'version': [3, 99, 0]}
+    with pytest.raises(window.WindowError, match='qualified runtime receipt'):
+        assess_case(bootstrap)
+
+
+def test_captured_updater_code_uses_its_own_module_globals(bootstrap, monkeypatch):
+    from prismabuild.digest_primitives import raw_sha256
+    path = ROOT / 'tools/fleet/upgrade_client.py'
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda path: Path(path))
+    module, captured = helper._bootstrap_load_code(path, raw_sha256(path.read_bytes()))
+    assert module.Upgrader._run_once.__globals__ is module.__dict__
+    assert captured == raw_sha256(path.read_bytes())
+    assert module.ProofFileMetadata(0, 0, 0o644).uid == 0
+
+
+def test_gate_native_runtime_identity_is_actual_elf():
+    import json
+    import os
+    runtime = helper.bootstrap_runtime_identity()
+    assert runtime['elf_machine'] == {'x86_64': 62, 'aarch64': 183}[os.uname().machine]
+    print('bootstrap-gate-native-runtime: ' + json.dumps(runtime))

@@ -1,5 +1,5 @@
 {
-  "authority": "Rob implementation brief and bridge correction 2026-10-16",
+  "authority": "Rob implementation brief 2026-10-18, amended P; qualification and explicit activation required",
   "b09_transition": {
     "actual_rollback_generation": null,
     "bridge_commit": "6fa9b780304df7b24bad5ea3bb0fde540ff95153",

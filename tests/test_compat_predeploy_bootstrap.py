@@ -34,8 +34,19 @@ def inputs(tmp_path, case):
         installed_bootstrap=assessment, out=tmp_path / 'result.json')
 
 
-def test_explicit_predeploy_keeps_operator_only_rollback(tmp_path, bootstrap, monkeypatch):
+@pytest.mark.parametrize('draining', [False, True])
+def test_explicit_predeploy_keeps_operator_only_rollback(tmp_path, bootstrap, monkeypatch, draining):
     args = inputs(tmp_path, bootstrap)
+    if draining:
+        path = args.census.parent / 'status.json'
+        status = json.loads(path.read_bytes())
+        for node in status['nodes']:
+            node['state'] = 'draining'
+        raw = json.dumps(status).encode()
+        path.write_bytes(raw)
+        envelope = json.loads(args.census.read_bytes())
+        envelope['status_sha256'] = raw_sha256(raw)
+        args.census.write_text(json.dumps(envelope))
     monkeypatch.setattr(installed_bootstrap, 'verify_qualification', lambda *a, **k: bootstrap[2])
     monkeypatch.setattr(installed_bootstrap, 'collect_responses', lambda *a: bootstrap[1])
     validate = runpy.run_path(str(ROOT / 'tests/compat/support/compat_predeploy.py'))['validate']

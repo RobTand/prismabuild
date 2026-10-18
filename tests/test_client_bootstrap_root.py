@@ -59,9 +59,10 @@ def private_bootstrap(publication, monkeypatch):
     (base / 'target-config.json').write_text(json.dumps(config))
     plan = {'id': 'root-case', 'direction': 'forward', 'source': {'generation': helper.SOURCE},
             'target': {'generation': generation.name}, 'source_files': source_files,
-            'target_files': version['files']}
+            'target_files': version['files'], 'boots': {'private': 'old-boot'},
+            'brokers': {'private': {'pid': 1, 'starttime': '1'}}}
     @contextmanager
-    def locked(plan):
+    def locked(plan, **kwargs):
         import fcntl
         with (state / 'upgrade.lock').open('a') as stream:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -182,3 +183,17 @@ def test_bootstrap_installed_reader_intake_permanently_drops_credentials(private
     actual = installed.desired_as_reader(config_path, config)
     assert actual == expected
     assert actual[0]['files'] == plan['target_files']
+
+
+def test_root_reconciles_boot_without_replacing_intent_or_backup(private_bootstrap, monkeypatch):
+    helper, plan, install, state, _, _, old = private_bootstrap
+    helper.prepare_bootstrap(plan)
+    before = json.loads((state / 'bootstrap/root-case/journal.json').read_bytes())
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'new-boot')
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 234, 'starttime': '789'})
+    result = helper.reconcile_boot(plan)
+    after = json.loads((state / 'bootstrap/root-case/journal.json').read_bytes())
+    assert result['boot_reconciliation']['boot_id'] == 'new-boot'
+    assert after['previous'] == before['previous']
+    assert after['plan_sha256'] == before['plan_sha256']
+    assert (state / 'bootstrap/root-case/previous/upgrade_client.py').read_bytes() == old

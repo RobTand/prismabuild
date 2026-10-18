@@ -11,7 +11,7 @@ import uuid
 
 from .compatibility_window import (
     BootstrapQualification, RootBootstrapResponses, WindowError,
-    require_installed_bootstrap,
+    require_installed_bootstrap, require_bootstrap_host_identity,
 )
 from .digest_primitives import canonical_sha256, raw_sha256
 
@@ -54,7 +54,7 @@ def verify_qualification(assessment, *, checkout, fleet_root):
         return module
     gate, outcomes = load('shape_gate'), load('pbtest_outcomes')
     cas = pb.PrismaBuildCAS(Path(fleet_root) / 'cas')
-    lanes, keys = {}, []
+    lanes, keys, runtimes = {}, [], []
     expected_files = set((*CORPUS_FILES, *ROOT_FILES))
     for key in assessment['qualification_actions']:
         full, terminal = gate.resolve_action_key(Path(fleet_root) / 'pb-queue', key)
@@ -97,20 +97,26 @@ def verify_qualification(assessment, *, checkout, fleet_root):
         if kind == 'root' and not set(files) <= set(ROOT_FILES):
             raise WindowError('root and corpus qualification use separate populations')
         machine = receipt['producer']['evidence']['machine']
-        rows = lanes.setdefault((kind, machine), [])
+        runtime_key = ''
+        if kind == 'root':
+            runtime = {key: records[0]['installed_reader'][key] for key in ('version', 'executable', 'elf_machine')}
+            if runtime not in runtimes:
+                runtimes.append(runtime)
+            runtime_key = canonical_sha256(runtime)
+        rows = lanes.setdefault((kind, machine, runtime_key), [])
         rows.append({'shard': len(rows), 'files': files, 'returncode': 0,
                      'timed_out': False, 'output': log})
         keys.append(full)
-    if (not {('root', 'aarch64'), ('root', 'x86_64')} <= set(lanes)
-            or not any(kind == 'corpus' for kind, _ in lanes)):
+    if (not {('root', 'aarch64'), ('root', 'x86_64')} <= {(kind, machine) for kind, machine, _ in lanes}
+            or not any(kind == 'corpus' for kind, _, _ in lanes)):
         raise WindowError('bootstrap needs native ARM and x86 root qualification plus the exact record corpus')
-    for (kind, _), rows in lanes.items():
+    for (kind, _, _), rows in lanes.items():
         population = ROOT_FILES if kind == 'root' else CORPUS_FILES
         nodes = [node for row in rows for node in outcomes.parse(row['output'])['collected']]
         verdict = outcomes.judge_shards(rows, requested_files=population, required_nodes=nodes)
         if not verdict['green']:
             raise WindowError('bootstrap qualification is incomplete or contains skips/failures')
-    return BootstrapQualification(plan, action_keys=keys)
+    return BootstrapQualification(plan, action_keys=keys, runtimes=runtimes)
 
 
 def collect_responses(plan):
@@ -178,7 +184,7 @@ def require_live_window(plan, *, target):
     if (status.get('complete') is not True or status.get('timed_out_sections')
             or status.get('unavailable_sections')):
         raise WindowError('bootstrap live window census is incomplete')
-    live = [row for row in status['nodes'] if row.get('state') == 'live']
+    live = [row for row in status['nodes'] if row.get('state') in ('live', 'draining')]
     hosts = {row['node'] for row in live}
     if (len(live) != len(plan['roster']) or len(hosts) != len(live)
             or any(len(hosts & set(aliases)) != 1 for aliases in plan['roster'].values())):
@@ -201,7 +207,8 @@ def require_convergence(plan, *, fleet_root):
     selected = plan['source' if plan.get('direction') == 'restore' else 'target']
     now = time.time()
     for host, row in observations.rows.items():
-        if (row.get('nonce') != observations.nonce or row.get('boot_id') != plan['boots'][host]
+        require_bootstrap_host_identity(plan, host, row)
+        if (row.get('nonce') != observations.nonce
                 or row.get('plan_sha256') != canonical_sha256(plan)
                 or not observations.started_unix <= row.get('observed_unix', 0) <= now
                 or now - observations.started_unix > 60
@@ -294,10 +301,12 @@ def write_plan(*, source, target, inventory, actions, designation, out, operatio
         'tool_sha256': after['files']['tools/bootstrap_client.py']}
     if any(plan['source_files'][name] != plan['target_files'][name] for name in BOOTSTRAP_SERVICE_MEMBERS):
         raise WindowError('bootstrap cannot change a broker service member')
-    out.mkdir(mode=0o700, parents=True, exist_ok=False)
-    (out / 'plan.json').write_bytes(json.dumps(plan, indent=2).encode())
     assessment = {'schema': 'prismabuild.installed_bootstrap.assessment.v1', 'plan': plan,
         'rollback_designation': declared, 'qualification_actions': json.loads(Path(actions).read_bytes())}
+    qualification = verify_qualification(assessment, checkout=Path(__file__).resolve().parents[2], fleet_root=target.parent.parent)
+    plan['qualified_runtimes'] = list(qualification.runtimes)
+    out.mkdir(mode=0o700, parents=True, exist_ok=False)
+    (out / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     (out / 'assessment.json').write_text(json.dumps(assessment, indent=2) + '\n')
     for host, row in facts.items():
         directory = out / host

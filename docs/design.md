@@ -19617,3 +19617,20 @@ mode with a nonblank reason when resuming a spent forward canary. The driver
 receives no publication authorizer in this mode, all normal PB admission applies,
 and a separate operation/nonce sidecar preserves the original canary evidence.
 No automatic retry mints a replacement grant.
+
+The bootstrap plan binds the installed-reader executable path, resolved path,
+byte count, SHA-256, full Python patch version and native ELF machine from
+verified root runtime receipts. The host helper checks its own running
+`/proc/self/exe` and invocation path against those identities before preparation.
+Fresh root observations carry the same identity. Both native ARM and x86 root
+populations are required; a declaration or image name alone cannot qualify one.
+
+A host reboot requires explicit `reconcile-boot` while the persistent fences
+remain installed. The root helper retains the original plan hash, previous
+updater and leaf history, verifies unchanged service bytes and loaded health,
+then journals the new boot and broker PID/start identity. Fresh authenticated
+responses must carry that root-local reconciliation. A shared-file edit, changed
+lock inode, unknown file, new interpreter or unresolved automatic epoch/journal
+cannot rebind it. The helper never starts the broker or releases its boot gate.
+Fresh draining offers remain members of the explicit bootstrap record window;
+that observation grants no admission. The default predeploy rules are unchanged.

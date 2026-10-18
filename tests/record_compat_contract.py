@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests/compat/support"))
 from record_compat import accepted, archival_runtime, decode_wire, historical_absence, historical_writer, invoke, probe_wire, retained, write
 from prismabuild.record_kinds import KINDS
-from prismabuild.digest_primitives import canonical_sha256
+from prismabuild.digest_primitives import canonical_sha256, raw_sha256
 from compat_references import generation_reference
 
 DATA = ROOT / "tests/compat"
@@ -80,6 +80,14 @@ RUNTIME_EVIDENCE = None
 
 class OperationRuntimeEvidence:
     def __init__(self):
+        running = Path('/proc/self/exe').read_bytes()
+        assert running[:6] == b'\x7fELF\x02\x01'
+        assert Path(sys.executable).read_bytes() == running
+        machine = int.from_bytes(running[18:20], 'little')
+        assert machine == {'x86_64': 62, 'aarch64': 183}[os.uname().machine]
+        self.gate_runtime = {'version': list(sys.version_info[:3]), 'elf_machine': machine,
+            'executable': {'path': sys.executable, 'resolved_path': str(Path(sys.executable).resolve()),
+                           'bytes': len(running), 'sha256': raw_sha256(running)}}
         self.records = []
         self.outcomes = {}
 
@@ -104,6 +112,7 @@ class OperationRuntimeEvidence:
         self.outcomes[report.nodeid, report.when] = report.outcome
 
     def pytest_terminal_summary(self, terminalreporter):
+        terminalreporter.write_line("compat-gate-native-runtime: " + json.dumps(self.gate_runtime))
         for record in self.records:
             native = record["native"]
             record["native_outcome"] = (self.outcomes.get((native[:-7], "call"), "unavailable")

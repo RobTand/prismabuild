@@ -5189,3 +5189,44 @@ python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${G##*/}" \
 
 Wait for outstanding canary actions to settle first. Retain their keys and
 receipts. The ordinary mode grants no queue priority or admission exemption.
+
+If a host reboots during an unfinished bootstrap, retain the original plan and
+all backups. Reconcile only after the same qualified native interpreter, lock
+inode and unchanged broker files are available. The standard broker service may
+have restarted during boot; the helper records its new identity after health
+and loaded-hash checks. It performs no broker start or admission operation.
+
+```bash
+# Use PLAN_SHA for forward, REVERSE_SHA after installing the reverse plan.
+ssh sparky sudo -n /usr/bin/python3 -I \
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
+ssh sparklina sudo -n /usr/bin/python3 -I \
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
+ssh dl380g10 sudo -n /usr/bin/python3 -I \
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
+```
+
+Run that command only on hosts whose boot changed. Then resume their interrupted
+`prepare` or `restore` and the same publisher assessment. Reconciliation changes
+root-local evidence, not the original intent or backup. An interpreter change or
+lost permanent lock requires separate repair and qualification.
+
+After boot, the broker may retain its normal `client-upgrade` boot hold. Once the
+pointer names the intended generation and root observations prove its exact
+installed closure, run the existing installed updater once to perform its owned
+current-client handshake. Keep its timer/service fences installed. It must report
+`current`, perform no replacement, and preserve foreign holds. Do not run this
+command against a mismatched pointer.
+
+```bash
+for host in sparky sparklina dl380g10; do
+	ssh "$host" sudo -n /usr/bin/python3 -I /opt/prismabuild-resource-broker/upgrade_client.py \
+		--config /etc/prismabuild/client-upgrade.json
+	ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
+done
+```
+
+Then resume the pending publisher command for convergence and canary verification.
+The helper itself never opens the gate. Qualified runtime identities are copied
+from verified root receipts into the plan and checked before host preparation;
+changing the plan's runtime list is not a qualification route.

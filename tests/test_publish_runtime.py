@@ -1169,3 +1169,32 @@ def test_bootstrap_ordinary_canary_does_not_receive_a_publication_grant(monkeypa
     assert captured == [None]
     assert publish_runtime._invoke_canary_driver('generation')[0] == 0
     assert callable(captured[-1])
+
+
+def test_bootstrap_unreadable_queue_cannot_authorize_activation(tmp_path, monkeypatch):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    from prismabuild import installed_bootstrap
+    from prismabuild.compatibility_window import WindowError
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, observations, _, designation = case
+    mirror = tmp_path / 'repo'
+    source = Path(plan['source']['directory'])
+    mirror.symlink_to(source)
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    monkeypatch.setattr(installed_bootstrap, 'assess', lambda *a, **kw: (assess_case(case), observations))
+    monkeypatch.setattr(installed_bootstrap, 'require_convergence', lambda *a, **kw: observations)
+    monkeypatch.setattr(publish_runtime, '_run_rollout_canary', lambda **kw: 1)
+    path = tmp_path / 'assessment.json'
+    path.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    original = os.scandir
+    def unreadable(directory):
+        if isinstance(directory, (str, os.PathLike)) and Path(directory) == tmp_path / 'pb-queue/ready':
+            raise PermissionError('queue census unavailable')
+        return original(directory)
+    monkeypatch.setattr(os, 'scandir', unreadable)
+    with pytest.raises((PermissionError, WindowError), match='queue'):
+        publish_runtime._activate_installed_bootstrap('final', path)
+    assert mirror.resolve() == source

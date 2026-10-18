@@ -164,8 +164,10 @@ def _bootstrap_validate_plan(plan):
     return plan
 
 
-def local_context(plan):
+def local_context(plan, *, allow_boot_change=False):
     _bootstrap_validate_plan(plan)
+    if bootstrap_runtime_identity() not in plan.get("qualified_runtimes", []):
+        raise ValueError("host interpreter is outside the qualified bootstrap runtime population")
     host = socket.gethostname()
     hosts = [key for key, aliases in plan['roster'].items() if host in aliases]
     if len(hosts) != 1:
@@ -177,10 +179,17 @@ def local_context(plan):
     config = _bootstrap_read_json(_bootstrap_trusted(CONFIG))
     if (_bootstrap_sha(_bootstrap_capture(CONFIG)[0]) != plan['enrollments'][key]
             or config['install_dir'] != str(INSTALL) or config['state_dir'] != str(STATE)
+            or config.get('maintenance_gate', str(GATE)) != str(GATE)
+            or config.get('socket', '/run/prismabuild/resources.sock') != '/run/prismabuild/resources.sock'
             or Path(config['generation_store']) != Path(plan['target']['directory']).parent):
         raise ValueError('bootstrap enrollment changed')
-    if Path('/proc/sys/kernel/random/boot_id').read_text().strip() != plan['boots'][key]:
-        raise ValueError('bootstrap boot identity changed; recapture before continuing')
+    if bootstrap_boot_id() != plan['boots'][key] and not allow_boot_change:
+        journal = _bootstrap_read_json(_bootstrap_trusted(STATE / 'bootstrap' / plan['id'] / 'journal.json'))
+        record = journal.get('boot_reconciliation', {})
+        if (record.get('boot_id') != bootstrap_boot_id()
+                or record.get('original_boot_id') != plan['boots'][key]
+                or record.get('plan_sha256') != original_plan_hash(plan)):
+            raise ValueError('bootstrap boot changed; run explicit reconcile-boot while fenced')
     _bootstrap_trusted(INSTALL)
     _bootstrap_trusted(STATE)
     if (STATE / 'transaction.json').exists() or (STATE / 'rollout-epoch.json').exists():
@@ -206,8 +215,8 @@ def _bootstrap_require_reservation(plan, base, config):
         raise ValueError('shared bootstrap reservation differs')
 
 @contextmanager
-def _bootstrap_upgrade_lock(plan):
-    key, base, config = local_context(plan)
+def _bootstrap_upgrade_lock(plan, *, allow_boot_change=False):
+    key, base, config = local_context(plan, allow_boot_change=allow_boot_change)
     path = _bootstrap_trusted(STATE / 'upgrade.lock')
     fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
     try:
@@ -350,7 +359,7 @@ def verify_services(plan, reader, config):
         if _bootstrap_sha(raw) != plan['source_files'][name]:
             raise ValueError('installed service differs: ' + name)
         files[name] = _bootstrap_sha(raw)
-    broker = reader.request(config.get('socket', '/run/prismabuild/resources.sock'), 'status')
+    broker = reader.request(config.get('socket', '/run/prismabuild/resources.sock'), 'maintenance_status')
     if (broker.get('health') is not True or broker.get('installed_sha256') != files
             or broker.get('maintenance_durable_protocol') != 1):
         raise ValueError('running broker differs or is unhealthy')
@@ -456,7 +465,7 @@ def observe_bootstrap(plan, *, nonce):
         raise ValueError('bootstrap requires a fresh coordinator nonce')
     with _bootstrap_upgrade_lock(plan) as (host, base, config, reader, inode):
         path = journal_for(plan)
-        read_journal(plan, path)
+        journal = read_journal(plan, path)
         if not fenced(plan):
             raise ValueError('bootstrap updater is not persistently fenced and exited')
         expected = dict(plan['target_files'])
@@ -486,8 +495,9 @@ def observe_bootstrap(plan, *, nonce):
         if _bootstrap_sha(_bootstrap_capture(INSTALL / 'upgrade_client.py')[0]) != executing:
             raise ValueError('installed reader changed while executing')
         convergence = observe_processes(plan, reader, gate)
-        return {'convergence': convergence, 'schema': 'prismabuild.client_bootstrap.observation.v1', 'nonce': nonce,
-                'observed_unix': time.time(), 'host': socket.gethostname(), 'boot_id': plan['boots'][host],
+        return {'runtime': bootstrap_runtime_identity(), 'convergence': convergence, 'schema': 'prismabuild.client_bootstrap.observation.v1', 'nonce': nonce,
+                'observed_unix': time.time(), 'host': socket.gethostname(), 'boot_id': bootstrap_boot_id(),
+                'boot_reconciliation': journal.get('boot_reconciliation'),
                 'plan_sha256': _bootstrap_sha(_bootstrap_canonical(plan)), 'source': plan['source'], 'target': plan['target'],
                 'files': files, 'metadata': metadata, 'executing_sha256': executing,
                 'captured_sha256': executing, 'reader_loaded': True, 'proof_loaded': True,
@@ -496,14 +506,69 @@ def observe_bootstrap(plan, *, nonce):
                 'upgrade_lock': {'held': True, 'inode': inode}, 'broker': broker, 'gate': gate}
 
 
-def observe_broker_process(plan):
+def bootstrap_runtime_identity():
+    running = Path('/proc/self/exe').read_bytes()
+    if running[:6] != b'\x7fELF\x02\x01' or Path(sys.executable).read_bytes() != running:
+        raise ValueError('bootstrap requires the actual native installed interpreter')
+    machine = int.from_bytes(running[18:20], 'little')
+    if machine != {'x86_64': 62, 'aarch64': 183}.get(os.uname().machine):
+        raise ValueError('bootstrap interpreter ELF differs from the native kernel')
+    return {'version': list(sys.version_info[:3]),
+        'executable': {'path': sys.executable, 'resolved_path': str(Path(sys.executable).resolve()),
+                       'bytes': len(running), 'sha256': _bootstrap_sha(running)},
+        'elf_machine': machine}
+
+
+def bootstrap_boot_id():
+    return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
+def reconcile_boot(plan):
+    """Approve a reboot using fresh root facts; retain the immutable intent."""
+    with _bootstrap_upgrade_lock(plan, allow_boot_change=True) as (host, _, config, reader, _):
+        path = journal_for(plan)
+        journal = read_journal(plan, path)
+        if journal['phase'].startswith('accepted-') or bootstrap_boot_id() == plan['boots'][host]:
+            raise ValueError('reconcile-boot requires an interrupted operation and a changed boot')
+        ensure_fence(plan, journal, path)
+        verify_services(plan, reader, config)
+        for name in REPLACE:
+            try:
+                raw, _ = _bootstrap_capture(_bootstrap_trusted(INSTALL / name))
+            except FileNotFoundError:
+                if name == 'upgrade_client.py':
+                    raise
+                continue
+            permitted = {plan['target_files'][name]}
+            if name == 'upgrade_client.py':
+                permitted.add(plan['source_files'][name])
+            if _bootstrap_sha(raw) not in permitted:
+                raise ValueError('reboot found an unknown installed bootstrap member')
+        previous = journal.get('previous', {}).get('upgrade_client.py')
+        if previous is not None and _bootstrap_sha(_bootstrap_capture(
+                _bootstrap_trusted(path.parent / 'previous/upgrade_client.py'))[0]) != previous['sha256']:
+            raise ValueError('reboot found a changed previous updater backup')
+        record = {'original_boot_id': plan['boots'][host], 'boot_id': bootstrap_boot_id(),
+                  'broker_process': observe_broker_process(plan, allow_boot_change=True),
+                  'plan_sha256': original_plan_hash(plan), 'approved_unix': time.time()}
+        journal.setdefault('boot_reconciliations', []).append(record)
+        journal['boot_reconciliation'] = record
+        _bootstrap_save(path, journal)
+        return {'phase': journal['phase'], 'boot_reconciliation': record}
+
+
+def observe_broker_process(plan, *, allow_boot_change=False):
     host = next(host for host, aliases in plan['roster'].items() if socket.gethostname() in aliases)
     pid = _bootstrap_systemctl('show', 'prismabuild-resource-broker.service', '--property=MainPID', '--value')
     if not pid.isdecimal() or int(pid) <= 0:
         raise ValueError('broker process identity is unavailable')
     start = Path('/proc', pid, 'stat').read_text().rpartition(')')[2].split()[19]
     observed = {'pid': int(pid), 'starttime': start}
-    if observed != plan['brokers'][host]:
+    expected = plan['brokers'][host]
+    if bootstrap_boot_id() != plan['boots'][host]:
+        journal = read_journal(plan, journal_for(plan))
+        expected = journal.get('boot_reconciliation', {}).get('broker_process')
+    if not allow_boot_change and observed != expected:
         raise ValueError('bootstrap broker process changed')
     return observed
 
@@ -530,8 +595,8 @@ def observe_processes(plan, reader, gate):
 
 
 @contextmanager
-def bootstrap_operation_lock(plan):
-    local_context(plan)
+def bootstrap_operation_lock(plan, *, allow_boot_change=False):
+    local_context(plan, allow_boot_change=allow_boot_change)
     path = STATE / 'bootstrap.lock'
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
@@ -546,7 +611,7 @@ def bootstrap_operation_lock(plan):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('prepare', 'observe', 'restore', 'unfence', 'export-reservation'))
+    parser.add_argument('operation', choices=('prepare', 'observe', 'restore', 'unfence', 'export-reservation', 'reconcile-boot'))
     parser.add_argument('--id', required=True)
     parser.add_argument('--plan-sha256', required=True)
     parser.add_argument('--nonce')
@@ -577,8 +642,10 @@ def main():
         return 0
     if os.geteuid() != 0:
         parser.error('host mutations require root')
-    with bootstrap_operation_lock(plan):
-        if args.operation == 'prepare':
+    with bootstrap_operation_lock(plan, allow_boot_change=args.operation == 'reconcile-boot'):
+        if args.operation == 'reconcile-boot':
+            result = reconcile_boot(plan)
+        elif args.operation == 'prepare':
             result = prepare_bootstrap(plan)
         elif args.operation == 'restore':
             result = restore_updater(plan)

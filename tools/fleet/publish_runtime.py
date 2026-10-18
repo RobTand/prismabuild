@@ -1498,7 +1498,9 @@ def _reserve_installed_bootstrap(assessment_path):
         expected_pointer = target if plan.get("direction") == "restore" else source
         if MIRROR.resolve(strict=True) != expected_pointer or _bootstrap_roster(source, target) != plan["roster"]:
             raise SystemExit("bootstrap reservation source or roster changed")
-        installed_bootstrap.verify_qualification(assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent)
+        qualification = installed_bootstrap.verify_qualification(assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent)
+        if plan.get("qualified_runtimes") != list(qualification.runtimes):
+            raise WindowError("bootstrap reservation native runtime bindings differ from verified receipts")
         installed_bootstrap.require_live_window(plan, target=target)
         if plan.get("direction") == "restore":
             accepted = _bootstrap_pending_path().parent / ("bootstrap-" + plan["id"] + "-forward.accepted.json")
@@ -1565,7 +1567,7 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
         from prismabuild.compatibility_window import require_installed_bootstrap
         from prismabuild.compatibility_window import BootstrapQualification
         require_installed_bootstrap(source, target, observations, roster=roster,
-            qualification=BootstrapQualification(plan, action_keys=result["actions"]),
+            qualification=BootstrapQualification(plan, action_keys=result["actions"], runtimes=result["qualified_runtimes"]),
             rollback_designation=assessment["rollback_designation"])
         for row in observations.rows.values():
             scopes = row.get("broker", {}).get("active_scopes")
@@ -1573,8 +1575,13 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
                 raise WindowError("bootstrap activation waits for the ordinary idle-queue boundary")
         for state in ("ready", "claimed"):
             directory = MIRROR.parent / "pb-queue" / state
-            if not directory.is_dir() or next(directory.glob("*.json"), None) is not None:
-                raise WindowError("bootstrap activation requires an observed empty ready and claimed queue")
+            if not directory.is_dir():
+                raise WindowError("bootstrap queue directory is unavailable")
+            with os.scandir(directory) as entries:
+                if any(entry.name.endswith('.json') for entry in entries):
+                    raise WindowError("bootstrap activation requires an observed empty ready and claimed queue")
+        if not 0 <= time.time() - observations.started_unix <= 60:
+            raise WindowError("bootstrap root responses expired while checking the queue")
         _activate(target if direction == "forward" else source, migrate_directory=False)
         _write_bootstrap_pending(pending, {**intent, "state": "awaiting-convergence",
             "direction": direction, "assessment": result, "root_transcript": transcript})
