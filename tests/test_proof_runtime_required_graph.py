@@ -1709,3 +1709,49 @@ def test_unused_absolute_search_directory_is_lazy_in_both_owners(tmp_path):
     closure = tree.complete()
     assert not any(value['parent'] == '/missing' for value in closure['directory_witnesses'].values())
     assert tree.audit(closure, tree.retained_members(closure))
+
+
+def test_legacy_glibc_configuration_is_refused(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    host,image,checkpoint,budget = tree.inputs()
+    image['glibc'] = 'ldd (GNU libc) 2.36\n'
+    with pytest.raises(ValueError, match='legacy.*hwcap|glibc.*2.37'):
+        tree.complete((host,image,checkpoint,budget))
+
+
+def test_absence_stamp_must_match_retained_parent_component(tmp_path):
+    tree = graph_ancestor_search_tree(tmp_path)
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    forged = copy.deepcopy(closure)
+    for old_key,value in list(forged['directory_witnesses'].items()):
+        if value['parent'] != '/usr/lib':
+            continue
+        witness = copy.deepcopy(value)
+        witness['before'][-1] += 1
+        witness['after'][-1] += 1
+        graph_replace_witness(forged, old_key, witness)
+    graph_sync_namespace(tree, forged)
+    tree.checkpoint_agreement(forged)
+    with pytest.raises(ValueError, match='parent.*stamp|stamp.*directory|directory.*stamp'):
+        tree.audit(forged, retained)
+
+
+def test_hwcaps_positive_listing_mutation_refuses(tmp_path, monkeypatch):
+    tree = graph_ancestor_search_tree(tmp_path)
+    cap = '/usr/lib/glibc-hwcaps/x86-64-v3'
+    tree.image_file(cap + '/libancestor.so', graph_fixture_elf())
+    inputs = tree.inputs()
+    original = os.scandir
+    changed = []
+    @contextmanager
+    def changing_hwcaps_listing(path):
+        with original(path) as children:
+            yield children
+        if isinstance(path, int) and Path('/proc/self/fd/' + str(path)).resolve() == tree.physical('image', cap):
+            tree.image_file(cap + '/late-member', b'mutating')
+            changed.append(True)
+    monkeypatch.setattr(os, 'scandir', changing_hwcaps_listing)
+    with pytest.raises(ValueError, match='listing.*changed|directory.*changed'):
+        tree.complete(inputs)
+    assert changed
