@@ -292,7 +292,7 @@ def require_convergence(plan, *, fleet_root):
                 or row.get('convergence', {}).get('complete') is not True):
             pending = row.get('convergence', {}).get('pending', [])
             raise WindowError('bootstrap pending actual in-band convergence on ' + host
-                + '; process observations=' + json.dumps(pending, sort_keys=True)
+                + '; process observations=' + json.dumps(pending)
                 + '; observation refusal grants no permission to terminate processes')
         offers = []
         for alias in plan['roster'][host]:

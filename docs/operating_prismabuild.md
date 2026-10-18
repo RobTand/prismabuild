@@ -4982,6 +4982,7 @@ python3 -m prismabuild.installed_bootstrap plan --id "$ID" \
 	--actions "$E/qualification-actions.json" --qualification-index "$E/qualification-index.json" \
 	--designation "$R/docs/compatibility_rollback_designation.json" --out "$E/forward"
 PLAN_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/forward/plan.json")
+ACTIVE_PLAN_SHA=$PLAN_SHA
 python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
 	--rollout-reason 'reviewed amended P, unchanged broker and two-way record corpus' \
 	--reserve-installed-bootstrap "$E/forward/assessment.json"
@@ -5191,6 +5192,7 @@ assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction':
 PYCODE
 python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
 REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
+ACTIVE_PLAN_SHA=$REVERSE_SHA
 python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
     --rollout-reason 'qualified operator restoration; retain all leaves' \
     --reserve-installed-bootstrap "$E/reverse/assessment.json"
@@ -5214,6 +5216,7 @@ assert pending['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 
 PYCODE
 python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
 REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
+ACTIVE_PLAN_SHA=$REVERSE_SHA
 ```
 
 **Continue either branch:** install the reverse plan and restore one host at a
@@ -5305,13 +5308,13 @@ and loaded-hash checks. It performs no broker start or admission operation.
 
 ```bash
 set -euo pipefail
-# Use PLAN_SHA for forward, REVERSE_SHA after installing the reverse plan.
+# ACTIVE_PLAN_SHA was set by the selected forward or reverse entry branch.
 ssh sparky sudo -n /usr/bin/python3 -I \
-	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$ACTIVE_PLAN_SHA"
 ssh sparklina sudo -n /usr/bin/python3 -I \
-	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$ACTIVE_PLAN_SHA"
 ssh dl380g10 sudo -n /usr/bin/python3 -I \
-	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$ACTIVE_PLAN_SHA"
 ```
 
 Run that command only on hosts whose boot changed. Then resume their interrupted

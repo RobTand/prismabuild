@@ -1613,6 +1613,7 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
         if not 0 <= time.time() - observations.started_unix <= 60:
             raise WindowError("bootstrap root responses expired while checking the queue")
         _activate(target if direction == "forward" else source, migrate_directory=False)
+        _bootstrap_fsync_directory(MIRROR.parent)
         _write_bootstrap_pending(pending, {**intent, "state": "awaiting-convergence",
             "direction": direction, "assessment": result, "root_transcript": transcript})
         # Root observes real generation-pinned serving processes and fresh

@@ -19704,3 +19704,9 @@ entry. This preserves all node IDs and gives the shared source inspector/runner
 one owner per root file. New reservations explicitly record their direction,
 including the initial `reserved` phase; interrupted-forward operator checks
 require that literal direction before using the retained intent.
+
+Installed-bootstrap activation also strictly fsyncs the actual pointer parent
+after `_activate()` returns and before recording activation progress. A namespace
+sync failure leaves the pending operation for explicit reconciliation. The
+independent bootstrap lock's directory entry is read back against the locked FD
+before work proceeds.

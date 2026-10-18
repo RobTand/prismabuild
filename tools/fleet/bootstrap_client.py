@@ -696,6 +696,9 @@ def bootstrap_operation_lock(plan, *, allow_boot_change=False):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         os.fsync(fd)
         _bootstrap_sync(STATE)
+        linked = path.lstat()
+        if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError('independent bootstrap lock readback differs')
         yield
     finally:
         os.close(fd)
