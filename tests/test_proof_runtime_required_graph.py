@@ -1772,3 +1772,12 @@ def test_hwcaps_positive_listing_mutation_refuses(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='listing.*changed|directory.*changed'):
         tree.complete(inputs)
     assert changed
+
+
+def test_root_navigation_is_not_its_own_directory_child(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_link(NATIVE + '/unused-root-leaf', '/off-graph-absent-leaf')
+    closure = tree.complete()
+    assert any(value['parent'] == '/' and value['name'] == 'off-graph-absent-leaf'
+               for value in closure['directory_witnesses'].values())
+    assert tree.audit(closure, tree.retained_members(closure))
