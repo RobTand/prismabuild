@@ -133,6 +133,17 @@ def captured_roots(origin, paths, budget):
     return roots
 
 
+def capture_optional_runtime_aliases(origin, roots, budget):
+    for name in ('/lib', '/lib64', '/usr/lib64'):
+        path = Path(name)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISLNK(info.st_mode) or (name == '/usr/lib64' and stat.S_ISDIR(info.st_mode))) and not any(path.is_relative_to(root['path']) for root in roots):
+            roots.append(dict(origin=origin, path=name, entries=inventory(path, budget=budget)))
+
+
 def runtime_capture(origin):
     observation = observe_runtime()
     if observation['loader_environment'] or observation['at_secure'] != 0:
@@ -180,14 +191,7 @@ def runtime_capture(origin):
     budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
     roots = captured_roots(origin, paths, budget)
     if origin == 'image':
-        for name in ('/lib', '/lib64', '/usr/lib64'):
-            path = Path(name)
-            try:
-                info = path.lstat()
-            except FileNotFoundError:
-                continue
-            if (stat.S_ISLNK(info.st_mode) or (name == '/usr/lib64' and stat.S_ISDIR(info.st_mode))) and not any(path.is_relative_to(root['path']) for root in roots):
-                roots.append(dict(origin=origin, path=name, entries=inventory(path, budget=budget)))
+        capture_optional_runtime_aliases(origin, roots, budget)
     result = dict(observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode())
