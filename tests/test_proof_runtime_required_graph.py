@@ -1414,7 +1414,8 @@ def test_runpath_ancestor_absent_child_has_search_witness(tmp_path):
     closure = tree.complete()
     key, witness = next((key, value) for key,value in closure['directory_witnesses'].items()
                         if value['parent'] == '/usr/lib' and value['name'] == 'libancestor.so')
-    assert witness['authority'] == 'image' and witness['operation'] == 'lstat_enoent'
+    assert witness['authority'] == 'image' and witness['operation'] == 'lstat_at_nofollow'
+    assert witness['errno'] == 'ENOENT'
     assert witness['before'] == witness['after']
     assert witness['names'] == sorted(child.name for child in tree.physical('image', '/usr/lib').iterdir())
     assert '/usr/lib' not in {root['path'] for root in closure['roots']}

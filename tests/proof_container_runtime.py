@@ -1077,7 +1077,20 @@ def runtime_elf_search_directories(metadata_by_path, resolved):
     return directories, own_directories
 
 
-def runtime_directory_candidate_spellings(entries, directory, needed):
+def runtime_search_directory_mode(roots, directory):
+    path = Path(directory)
+    if any(path.is_relative_to(root['path']) and root['entries']['.']['kind'] == 'directory'
+           for root in roots):
+        return 'complete'
+    if any(Path(root['path']) != path and Path(root['path']).is_relative_to(path) for root in roots):
+        return 'direct'
+    return None
+
+
+def runtime_directory_candidate_spellings(entries, directory, needed, *, direct=False):
+    if direct:
+        path = str(Path(directory) / needed)
+        return [path] if entries.get(path, {}).get('kind') in ('file', 'symlink') else []
     return sorted(path for path, entry in entries.items()
                   if entry['kind'] in ('file', 'symlink') and Path(path).name == needed
                   and Path(path).is_relative_to(directory))
@@ -1113,11 +1126,11 @@ def audit_native_closure(closure, byte_path):
     metadata_by_path = {}
     required = set()
 
-    def directory_candidates(directory, needed):
+    def directory_candidates(directory, needed, *, allow_ancestor=False):
         spelling = directory
         directory = resolve(directory)
-        if not any(Path(directory).is_relative_to(root['path']) and root['entries']['.']['kind'] == 'directory'
-                   for root in closure['roots']):
+        mode = runtime_search_directory_mode(closure['roots'], directory)
+        if mode is None or mode == 'direct' and not allow_ancestor:
             raise ValueError('loader search directory is not completely inventoried: ' + directory)
         for prefix in (Path(directory), *Path(directory).parents):
             entry = entries.get(str(prefix), closure['components'].get(str(prefix), {}).get('entry'))
@@ -1125,7 +1138,7 @@ def audit_native_closure(closure, byte_path):
                     and 'mode' in entry and not entry['mode'] & 0o001):
                 raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
         found = {resolve(str(Path(spelling) / Path(path).relative_to(directory)))
-                 for path in runtime_directory_candidate_spellings(entries, directory, needed)}
+                 for path in runtime_directory_candidate_spellings(entries, directory, needed, direct=mode == 'direct')}
         direct = str(Path(directory) / needed)
         if direct in entries:
             base = entries.get(resolve(str(Path(spelling) / needed)), {}).get('kind') == 'file'
@@ -1160,11 +1173,14 @@ def audit_native_closure(closure, byte_path):
                     targets.add(resolve(needed))
                     continue
                 for directory in directories:
-                    targets.update(directory_candidates(directory, needed)[0])
+                    if (runtime_search_directory_mode(closure['roots'], resolve(directory)) == 'direct'
+                            and directory not in own_directories[path]):
+                        continue
+                    targets.update(directory_candidates(directory, needed, allow_ancestor=True)[0])
                 cached = [row for row in cache if row['name'] == needed]
                 targets.update(resolve(row['path']) for row in cached)
                 own = own_directories[path]
-                if not own or not all(directory_candidates(directory, needed)[1] for directory in own):
+                if not own or not all(directory_candidates(directory, needed, allow_ancestor=True)[1] for directory in own):
                     for directory in defaults:
                         candidates, base = directory_candidates(directory, needed)
                         targets.update(candidates)
