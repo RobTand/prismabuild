@@ -128,6 +128,9 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
     completion = namespace['completion']
     if completion['host_checkpoint'] != {name: host_descriptor[name] for name in ('sha256', 'bytes')}:
         raise ValueError('runtime completion belongs to another durable host checkpoint')
+    for name in ('stdlib', 'providers', 'customization_roots', 'customization_probes'):
+        if completion['host_' + name] != host[name]:
+            raise ValueError('runtime host root selection differs from its durable checkpoint: ' + name)
     fields = dict(observation='observation', multiarch='multiarch', elf_roots='elf_roots',
                   elf_index='elf_index',
                   directory_observations='directory_observations')

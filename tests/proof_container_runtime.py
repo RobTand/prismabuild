@@ -320,6 +320,7 @@ def runtime_capture_work(captured):
             raise ValueError('runtime provider header probe differs from its captured file size')
         work['members'] += 1
         work['regular_bytes'] += len(raw)
+    work['members'] += len(captured.get('customization_probes', []))
     observations = captured.get('cache_observations', [])
     if observations:
         if ([item['boundary'] for item in observations] != ['listing', 'recheck']
@@ -907,6 +908,93 @@ def audit_link_outcomes(closure):
     return aliases
 
 
+def runtime_customization_selection(stdlib, selected_paths, lookup):
+    """Select only root-owned regular terminals of the two stdlib links."""
+    observed, roots = {}, []
+    def observed_lookup(path):
+        observed[path] = lookup(path)
+        return observed[path]
+    for name in ('sitecustomize.py', 'usercustomize.py'):
+        link = str(Path(stdlib) / name)
+        try:
+            if observed_lookup(link)['kind'] != 'symlink':
+                continue
+            outcome = walk_runtime_path(link, observed_lookup)
+        except FileNotFoundError:
+            continue
+        target = outcome.terminal
+        entry = observed[target]
+        if (entry['kind'] == 'file' and entry['uid'] == 0
+                and not any(Path(target).is_relative_to(path) for path in selected_paths)):
+            roots.append(dict(link=link, target=target))
+    return roots
+
+
+def runtime_host_root_selection(captured):
+    """Rederive every admitted host root, including exact customization files."""
+    entries = runtime_namespace_entries(captured)
+    executable = captured['observation']['executable']
+    selected = [captured['stdlib'], *captured['native_library_roots'],
+                executable['resolved_path'], str(Path(executable['path']).parent),
+                str(Path(captured['observation']['prefix']) / 'pyvenv.cfg')]
+    headers = {probe['path']: probe['header'] for probe in captured.get('pre_inventory_probes', [])}
+    for path, provider in captured['providers'].items():
+        entry = entries.get(path)
+        if (entry is None or entry['kind'] != 'file' or headers.get(path) != '7f454c46'
+                or provider != dict(resolved_path=path, bytes=entry['bytes'], sha256=entry['sha256'])):
+            raise ValueError('host root selection provider differs from its observed ELF header: ' + path)
+        selected.append(path)
+    selected = [str(_absolute(path)) for path in selected]
+    observed = {}
+    for probe in captured['customization_probes']:
+        path = str(_absolute(probe['path']))
+        entry = probe['entry']
+        if entry is None:
+            if set(probe) != {'path', 'entry'}:
+                raise ValueError('host customization absence probe has unsupported fields')
+        else:
+            if (set(probe) != {'path', 'entry', 'uid', 'before', 'after'}
+                    or probe['before'] != probe['after'] or len(probe['before']) != 6
+                    or type(probe['uid']) is not int or probe['uid'] < 0):
+                raise ValueError('host customization selection lacks stable custody observations')
+            mode = probe['before'][2]
+            kind = ('directory' if stat.S_ISDIR(mode) else 'symlink' if stat.S_ISLNK(mode)
+                    else 'file' if stat.S_ISREG(mode) else None)
+            fields = {'kind', 'mode'} | ({'target'} if kind == 'symlink' else {'bytes'} if kind == 'file' else set())
+            if (kind is None or set(entry) != fields or entry['kind'] != kind
+                    or entry['mode'] != stat.S_IMODE(mode)
+                    or kind == 'file' and entry['bytes'] != probe['before'][3]):
+                raise ValueError('host customization component differs from its stable observation')
+        known = entries.get(path)
+        covered = any(Path(path).is_relative_to(root['path']) for root in captured['roots'])
+        if (known is None and covered and entry is not None
+                or known is not None and (entry is None or any(known.get(name) != value for name, value in entry.items()))):
+            raise ValueError('host customization observation differs from host inventory: ' + path)
+        if path in observed and observed[path] != probe:
+            raise ValueError('host customization component changed between observations: ' + path)
+        observed[path] = probe
+    def lookup(path):
+        probe = observed.get(path)
+        if probe is None:
+            raise ValueError('host customization selection lacks a component observation: ' + path)
+        if probe['entry'] is None:
+            raise FileNotFoundError(path)
+        return dict(probe['entry'], uid=probe['uid'])
+    derived = runtime_customization_selection(captured['stdlib'], selected, lookup)
+    if any(entries.get(item['target'], {}).get('kind') != 'file' for item in derived):
+        raise ValueError('host customization target is outside its retained file inventory')
+    if captured['customization_roots'] != derived:
+        raise ValueError('host customization roots differ from independently derived selection')
+    selected.extend(item['target'] for item in derived)
+    expected = []
+    for path in sorted(set(selected), key=lambda value: (len(Path(value).parts), value)):
+        if not any(Path(path).is_relative_to(parent) for parent in expected):
+            expected.append(path)
+    if sorted(root['path'] for root in captured['roots']) != sorted(expected):
+        raise ValueError('host roots differ from independently derived host root selection')
+    return derived
+
+
 def runtime_completion_plan(host, image):
     primary = host['observation']['executable']
     primary_spellings = {primary['path'], primary['resolved_path']}
@@ -1131,6 +1219,13 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
                      pre_inventory_probes=completion.get(origin + '_pre_inventory_probes', []),
                      cache_observations=completion.get(origin + '_cache_observations', []))
         validate_runtime_roots(facts['roots'])
+        if origin == 'host':
+            facts.update(multiarch=completion['host_multiarch'],
+                native_library_roots=['/usr/lib/' + completion['host_multiarch']], stdlib=completion['host_stdlib'],
+                providers=completion['host_providers'],
+                customization_roots=completion['host_customization_roots'],
+                customization_probes=completion['host_customization_probes'])
+            runtime_host_root_selection(facts)
         if origin == 'image':
             facts['loader_cache'] = completion['image_loader_cache']
             if closure['loader']['cache'] != facts['loader_cache']:

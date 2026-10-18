@@ -15,7 +15,6 @@ import os
 import runpy
 from pathlib import Path
 import shutil
-import stat
 import struct
 import time
 from types import SimpleNamespace
@@ -135,6 +134,13 @@ class RequiredGraphFilesystem:
         paths = self.host_paths if origin == 'host' else self.image_paths
         roots, observations, elf_index = [], {}, {}
         budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + 30)
+        if origin == 'host':
+            previous = {item['target'] for item in self.customization_roots}
+            paths = [path for path in paths if path not in previous]
+            self.customization_roots, self.customization_probes = capture.capture_host_customizations(
+                '/h/stdlib', paths, budget, physical=lambda path: self.physical('host', path))
+            paths.extend(item['target'] for item in self.customization_roots)
+            self.host_paths = paths
         for spelling in paths:
             physical = self.physical(origin, spelling)
             directories = {}
@@ -167,8 +173,6 @@ class RequiredGraphFilesystem:
         if origin == 'host':
             result.update(customization_roots=self.customization_roots,
                           customization_probes=self.customization_probes)
-            for name in ('inventory_budget', 'consumed_budget'):
-                result[name]['members'] += len(self.customization_probes)
         if origin == 'image':
             cache = next(root['entries']['.'] for root in roots if root['path'] == '/etc/ld.so.cache')
             tool = next(root['entries']['.'] for root in roots if root['path'] == '/sbin/ldconfig')
@@ -1320,31 +1324,8 @@ def graph_customization_tree(tmp_path, *, image_copy=False, missing=False):
         source = Path('/etc/hostname')
         assert source.is_file() and source.stat().st_uid == 0
         tree.external_host_files[CUSTOMIZATION_TARGET] = source
-        tree.host_paths.append(CUSTOMIZATION_TARGET)
     if image_copy:
         tree.image_file(CUSTOMIZATION_TARGET, b'IMAGE_CUSTOMIZATION = True\n')
-    def observe(path):
-        physical = tree.physical('host', path)
-        try:
-            before = physical.lstat()
-        except FileNotFoundError:
-            tree.customization_probes.append(dict(path=path, entry=None))
-            raise
-        entry = dict(kind='directory', mode=stat.S_IMODE(before.st_mode))
-        if stat.S_ISLNK(before.st_mode):
-            entry.update(kind='symlink', target=os.readlink(physical))
-        elif stat.S_ISREG(before.st_mode):
-            entry.update(kind='file', bytes=before.st_size)
-        after = physical.lstat()
-        tree.customization_probes.append(dict(path=path, entry=entry, uid=before.st_uid,
-            before=list(runtime.runtime_stamp(before)), after=list(runtime.runtime_stamp(after))))
-        return entry
-    try:
-        outcome = runtime.walk_runtime_path('/h/stdlib/sitecustomize.py', observe)
-    except FileNotFoundError:
-        pass
-    else:
-        tree.customization_roots.append(dict(link='/h/stdlib/sitecustomize.py', target=outcome.terminal))
     return tree
 
 

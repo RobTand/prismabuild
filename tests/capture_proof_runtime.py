@@ -30,7 +30,8 @@ from proof_container_runtime import (
     runtime_outcome_record, runtime_stamp, walk_runtime_path, runtime_elf_search_directories,
     runtime_directory_candidate_spellings, runtime_elf_observation, runtime_capture_work,
     runtime_mount_ancestor, runtime_mount_component, runtime_reader_installation,
-    runtime_namespace_state, runtime_namespace_state_record,
+    runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
+    runtime_customization_selection,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -156,6 +157,35 @@ def capture_optional_runtime_aliases(origin, roots, budget):
             roots.append(dict(origin=origin, path=name, entries=inventory(path, budget=budget)))
 
 
+def capture_host_customizations(stdlib, selected_paths, budget, *, physical=Path):
+    probes = []
+    def lookup(path):
+        runtime_charge(budget, members=1)
+        location = physical(path)
+        try:
+            before = location.lstat()
+        except FileNotFoundError:
+            probes.append(dict(path=path, entry=None))
+            raise
+        mode = stat.S_IMODE(before.st_mode)
+        if stat.S_ISLNK(before.st_mode):
+            entry = dict(kind='symlink', mode=mode, target=os.readlink(location))
+        elif stat.S_ISDIR(before.st_mode):
+            entry = dict(kind='directory', mode=mode)
+        elif stat.S_ISREG(before.st_mode):
+            entry = dict(kind='file', mode=mode, bytes=before.st_size)
+        else:
+            raise ValueError('unsupported host customization component: ' + path)
+        after = location.lstat()
+        if runtime_stamp(before) != runtime_stamp(after) or before.st_uid != after.st_uid:
+            raise ValueError('host customization component changed during selection: ' + path)
+        probes.append(dict(path=path, entry=entry, uid=before.st_uid,
+            before=list(runtime_stamp(before)), after=list(runtime_stamp(after))))
+        return dict(entry, uid=before.st_uid)
+    roots = runtime_customization_selection(stdlib, selected_paths, lookup)
+    return roots, probes
+
+
 def runtime_capture(origin, budget=None):
     if budget is None:
         budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
@@ -180,6 +210,10 @@ def runtime_capture(origin, budget=None):
         paths.extend([Path(sys.executable).parent, configuration])
     provider_paths = native_provider_paths(budget=budget, probes=pre_inventory_probes)
     paths.extend(Path(path) for path in provider_paths)
+    customization_roots, customization_probes = [], []
+    if origin == 'host':
+        customization_roots, customization_probes = capture_host_customizations(stdlib, paths, budget)
+        paths.extend(Path(item['target']) for item in customization_roots)
     elf_roots = {str(stdlib), observation['executable']['resolved_path']}
     if origin == 'image':
         startup = set()
@@ -227,6 +261,15 @@ def runtime_capture(origin, budget=None):
             runtime_charge(budget)
             name = str(Path(captured['path']) / relative)
             elf_index[name] = runtime_elf_observation(name)
+    if origin == 'host':
+        for item in customization_roots:
+            observed = next(probe for probe in reversed(customization_probes)
+                            if probe['path'] == item['target'])
+            runtime_charge(budget, members=1)
+            info = Path(item['target']).lstat()
+            if list(runtime_stamp(info)) != observed['after'] or info.st_uid != observed['uid']:
+                raise ValueError('host customization target changed during inventory: ' + item['target'])
+            customization_probes.append(dict(observed))
     result = dict(observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode(),
@@ -235,6 +278,9 @@ def runtime_capture(origin, budget=None):
                   pre_inventory_probes=pre_inventory_probes, cache_observations=cache_observations,
                   inventory_budget={key: budget[key] - before_budget[key] for key in before_budget},
                   consumed_budget={key: budget[key] for key in before_budget})
+    if origin == 'host':
+        result.update(customization_roots=customization_roots, customization_probes=customization_probes)
+        runtime_host_root_selection(result)
     if origin == 'image':
         result['loader_cache'] = dict(path=str(cache), **before, raw_listing=listing,
             tool=dict(path=str(tool), resolved_path=str(tool),
@@ -599,6 +645,9 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
     completion = dict(host_checkpoint=host_checkpoint,
         host_observation=host['observation'], image_observation=image['observation'],
         host_multiarch=host['multiarch'], image_multiarch=image['multiarch'],
+        host_stdlib=host['stdlib'], host_providers=host['providers'],
+        host_customization_roots=host['customization_roots'],
+        host_customization_probes=host['customization_probes'],
         host_elf_roots=host['elf_roots'], image_elf_roots=image['elf_roots'],
         host_elf_index=host['elf_index'], image_elf_index=image['elf_index'],
         image_loader_cache=image['loader_cache'],
