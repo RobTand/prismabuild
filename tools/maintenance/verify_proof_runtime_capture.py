@@ -158,6 +158,8 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
             raise ValueError('durable runtime inventory budget differs from its complete roots: ' + origin)
     if completion['image_loader_cache'] != image['loader_cache'] or closure['loader']['cache'] != image['loader_cache']:
         raise ValueError('runtime image loader cache differs from its durable observation')
+    if completion['image_glibc'] != image['glibc']:
+        raise ValueError('runtime image glibc differs from its durable observation')
     if completion['pre_completion_diagnostics'] != image['pre_completion_diagnostics']:
         raise ValueError('runtime mounted loader input differs from its durable image checkpoint')
     owner['require_runtime_loader_observations'](image['pre_completion_diagnostics'], closure['loader']['diagnostics'])

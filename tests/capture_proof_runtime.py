@@ -33,7 +33,8 @@ from proof_container_runtime import (
     runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
     runtime_customization_selection, runtime_search_directory_mode, runtime_loader_edges,
     runtime_candidate_name_index,
-    require_runtime_loader_observations,
+    require_runtime_loader_observations, require_modern_glibc, require_modern_loader_diagnostics,
+    runtime_hwcaps_spellings,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -189,6 +190,8 @@ def capture_host_customizations(stdlib, selected_paths, budget, *, physical=Path
 
 
 def runtime_capture(origin, budget=None):
+    glibc = subprocess.check_output(['ldd', '--version'], text=True, timeout=30)
+    require_modern_glibc(glibc)
     if budget is None:
         budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
     before_budget = {key: budget[key] for key in ('members', 'regular_bytes')}
@@ -272,7 +275,7 @@ def runtime_capture(origin, budget=None):
             if list(runtime_stamp(info)) != observed['after'] or info.st_uid != observed['uid']:
                 raise ValueError('host customization target changed during inventory: ' + item['target'])
             customization_probes.append(dict(observed))
-    result = dict(observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
+    result = dict(glibc=glibc, observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode(),
                   multiarch=multiarch, native_library_roots=[str(native)], elf_index=elf_index,
@@ -301,6 +304,7 @@ class ImageClosureObserver:
         self.image_roots = list(image['roots'])
         self.roots = merge_runtime_roots(self.host_roots, self.image_roots)
         self.components = {}
+        self.search_directories = {}
         self.witnesses = {}
         self.negative = {}
         self.observed = {}
@@ -502,6 +506,37 @@ class ImageClosureObserver:
         self.components.pop(logical, None)
         self.record_work(before, 'inventory', logical, entries=entries)
 
+    def directory_names(self, logical):
+        if any(Path(logical).is_relative_to(root['path']) and root['entries']['.']['kind'] == 'directory'
+               for root in self.roots):
+            entries = {str(Path(root['path']) / relative): entry
+                       for root in self.roots for relative, entry in root['entries'].items()}
+            if entries.get(logical, {}).get('kind') != 'directory':
+                raise ValueError('complete hwcaps inventory omits its directory')
+            return sorted(Path(path).name for path in entries if str(Path(path).parent) == logical and path != logical)
+        component = self.components.get(logical, {})
+        if component.get('origin') == 'mount':
+            return component['names']
+        if logical not in self.search_directories:
+            before_budget = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+            runtime_charge(self.budget, members=1)
+            with self.image_parent(str(Path(logical) / '.listing')) as descriptor:
+                before = runtime_stamp(os.fstat(descriptor))
+                names = []
+                with os.scandir(descriptor) as children:
+                    for child in children:
+                        runtime_charge(self.budget, members=1)
+                        names.append(child.name)
+                after = runtime_stamp(os.fstat(descriptor))
+            if before != after:
+                raise ValueError('hwcaps directory listing changed during observation: ' + logical)
+            observed = dict(before=list(before), after=list(after), names=sorted(names))
+            self.search_directories[logical] = observed
+            self.record_work(before_budget, 'listing', logical, observation=observed)
+        names = self.search_directories[logical]['names']
+        mount = runtime_mount_ancestor(dict(roots=self.roots), logical) or ()
+        return sorted(set(names) | set(mount))
+
     def finish(self):
         for logical, stamp in self.image_directories.items():
             runtime_charge(self.budget)
@@ -576,29 +611,60 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
                 metadata = candidate_metadata(path)
                 if metadata is not None:
                     metadata_by_path[path] = metadata
-        directories, _ = runtime_elf_search_directories(metadata_by_path, aliases)
-        for spelling in sorted(directories):
-            resolve_observation(spelling, required=True, search=True)
+        runtime_elf_search_directories(metadata_by_path, aliases)
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}
         candidates_by_name = runtime_candidate_name_index(entries)
+        directory_name_cache = {}
+        candidate_index = [entries, candidates_by_name, len(observer.roots)]
+        def directory_names(spelling, *, required):
+            key = (spelling, required)
+            if key in directory_name_cache:
+                return directory_name_cache[key]
+            parent = walk_runtime_path(str(Path(spelling).parent), lookup)
+            if not isinstance(parent, RuntimeResolved):
+                raise ValueError('hwcaps parent directory is not resolved: ' + spelling)
+            expected = str(Path(parent.terminal) / Path(spelling).name)
+            outcome = walk_runtime_path(spelling, lookup)
+            if isinstance(outcome, RuntimeWitnessedAbsent):
+                if required or outcome.missing != expected or outcome.remaining:
+                    raise ValueError('required hwcaps directory is not sealed: ' + spelling)
+                return None
+            aliases[spelling] = outcome.terminal
+            if lookup(outcome.terminal)['kind'] != 'directory':
+                raise ValueError('hwcaps component is not a directory: ' + spelling)
+            names = observer.directory_names(outcome.terminal)
+            directory_name_cache[key] = names
+            return names
+
         def directory_candidates(spelling, needed):
             directory = resolve_observation(spelling, required=True, search=True).terminal
             direct_search = runtime_search_directory_mode(observer.roots, directory) == 'direct'
+            if candidate_index[2] != len(observer.roots):
+                current = {str(Path(root['path']) / relative): entry
+                           for root in observer.roots for relative, entry in root['entries'].items()}
+                candidate_index[:] = [current, runtime_candidate_name_index(current), len(observer.roots)]
+            current_entries = candidate_index[0]
             found = {retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
                 for candidate in runtime_directory_candidate_spellings(
-                    entries, directory, needed, direct=direct_search, by_name=candidates_by_name)}
-            direct = str(Path(directory) / needed)
-            probe = walk_runtime_path(str(Path(spelling) / needed), lookup)
-            if isinstance(probe, RuntimeWitnessedAbsent):
-                if probe.missing != direct or probe.remaining:
-                    raise ValueError('loader search miss is not an exact child: ' + str(Path(spelling) / needed))
-                return found, None
-            if lookup(probe.terminal)['kind'] != 'file':
-                return found, None
-            target = retain_candidate(str(Path(spelling) / needed))
-            found.add(target)
-            return found, target
+                    current_entries, directory, needed, direct=direct_search,
+                    by_name=candidate_index[1])}
+            base = None
+            for candidate in runtime_hwcaps_spellings(spelling, needed, directory_names):
+                parent = walk_runtime_path(str(Path(candidate).parent), lookup)
+                probe = walk_runtime_path(candidate, lookup)
+                expected = str(Path(parent.terminal) / needed)
+                if isinstance(probe, RuntimeWitnessedAbsent):
+                    if probe.missing != expected or probe.remaining:
+                        retain_candidate(candidate)
+                    continue
+                if lookup(probe.terminal)['kind'] != 'file':
+                    continue
+                target = retain_candidate(candidate)
+                found.add(target)
+                if candidate == str(Path(spelling) / needed):
+                    base = target
+            return found, base
 
         _, _, unresolved = runtime_loader_edges(metadata_by_path, aliases, cache, defaults,
             directory_candidates=directory_candidates, resolve_candidate=retain_candidate)
@@ -614,6 +680,8 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
 
 
 def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=Path('/')):
+    require_modern_glibc(image['glibc'])
+    require_modern_loader_diagnostics(image['pre_completion_diagnostics']['raw'])
     observer = ImageClosureObserver(host, image, budget, host_checkpoint, image_root)
     plan = runtime_completion_plan(host, image)
     # Observe the fixed reader path without granting any primary exemption.
@@ -654,7 +722,8 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
         host_customization_probes=host['customization_probes'],
         host_elf_roots=host['elf_roots'], image_elf_roots=image['elf_roots'],
         host_elf_index=host['elf_index'], image_elf_index=image['elf_index'],
-        image_loader_cache=image['loader_cache'],
+        image_loader_cache=image['loader_cache'], image_glibc=image['glibc'],
+        search_directory_observations=observer.search_directories,
         pre_completion_diagnostics=image['pre_completion_diagnostics'],
         base_host_roots=host['roots'], base_image_roots=image['roots'],
         host_pre_inventory_probes=host.get('pre_inventory_probes', []),

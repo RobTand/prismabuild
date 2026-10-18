@@ -617,12 +617,41 @@ class RuntimeNamespaceIndex:
     """Indexes valid only for one operation over its unchanged namespace facts."""
     def __init__(self, closure, *, entries=None):
         self.closure = closure
+        self.directory_listings = {}
         self.entries = runtime_namespace_entries(closure) if entries is None else entries
         self.children = self.immediate_names(self.entries)
         image_roots = [root for root in closure['roots'] if root['origin'] == 'image']
         image_roots += closure.get('completion', {}).get('base_image_roots', [])
         self.image_children = self.immediate_names(runtime_namespace_entries(dict(roots=image_roots)))
         self._before = None
+        for witness in closure.get('directory_witnesses', {}).values():
+            if witness.get('authority') in ('host', 'image') and witness.get('operation') != 'namespace_directory_expectation':
+                self.check_listing(witness['parent'], witness, witness['authority'])
+        for parent, observation in closure.get('completion', {}).get('search_directory_observations', {}).items():
+            self.check_listing(parent, observation, runtime_path_authority(closure, parent))
+
+    def check_listing(self, parent, observed, authority):
+        before, after, names = observed['before'], observed['after'], observed['names']
+        if (not isinstance(before, (tuple, list)) or len(before) != 6
+                or any(type(value) is not int for value in before) or before != after
+                or not stat.S_ISDIR(before[2]) or not isinstance(names, (tuple, list))
+                or any(not isinstance(value, str) or value in ('', '.', '..') or '/' in value for value in names)
+                or list(names) != sorted(set(names))):
+            raise ValueError('runtime directory listing lacks stable complete observations')
+        if authority == 'image' and not self.image_children.get(parent, set()).issubset(names):
+            raise ValueError('runtime absence listing omits a retained child')
+        key = (parent, tuple(before))
+        previous = self.directory_listings.setdefault(key, list(names))
+        if previous != list(names):
+            raise ValueError('conflicting runtime directory listings for the same parent stamp')
+        completion = self.closure.get('completion', {})
+        basis = completion.get(authority + '_directory_observations', {}).get(parent)
+        stamp = self.closure.get('components', {}).get(parent, {}).get('stamp')
+        if ((basis is not None and (list(before) != basis['before'] or list(names) != basis['names']))
+                or (stamp is not None and list(before) != list(stamp))):
+            if authority == 'host':
+                raise ValueError('host runtime absence differs from its checkpoint directory observation')
+            raise ValueError('runtime directory listing differs from its retained parent stamp or listing')
 
     @staticmethod
     def immediate_names(entries):
@@ -1061,10 +1090,14 @@ def require_runtime_candidate_absence(closure, directory, needed, *, lookup=None
 
 
 def runtime_expand_search_paths(values, origin):
+    def token(match):
+        if (match[1] or match[2]) != 'ORIGIN':
+            raise ValueError('runtime ELF uses an unsupported library search token')
+        return origin
     result = []
     for value in values:
         for directory in value.split(':'):
-            expanded = directory.replace('${ORIGIN}', origin).replace('$ORIGIN', origin)
+            expanded = re.sub(r'\$(?:\{([^}]*)\}|([A-Za-z_][A-Za-z_0-9]*))', token, directory)
             if not expanded.startswith('/') or '$' in expanded:
                 raise ValueError('runtime ELF uses an unsupported library search token')
             result.append(expanded)
@@ -1087,21 +1120,15 @@ def runtime_elf_search_directories(metadata_by_path, resolved):
 
 def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
                          directory_candidates, resolve_candidate):
-    """One conservative candidate graph and ordered provider rule for both owners.
-
-    Callbacks retain real observations during capture and demand those same facts
-    during replay. Global contexts include possible inherited RPATHs; RUNPATH is
-    used for the owning object's provider lookup only, never inherited.
-    """
+    """Exhaust the evidence union; provider existence can never skip a query."""
     directories, _ = runtime_elf_search_directories(metadata_by_path, resolved)
     origins = {}
     for alias, target in resolved.items():
         origins.setdefault(target, set()).add(str(Path(alias).parent))
-    inherited = []
-    for path, metadata in sorted(metadata_by_path.items()):
-        if not metadata['runpath']:
-            for origin in sorted({str(Path(path).parent), *origins.get(path, ())}):
-                inherited.extend(runtime_expand_search_paths(metadata['rpath'], origin))
+    inherited = set()
+    for path, metadata in metadata_by_path.items():
+        for origin in {str(Path(path).parent), *origins.get(path, ())}:
+            inherited.update(runtime_expand_search_paths(metadata['rpath'], origin))
     cache_by_name = {}
     for row in cache:
         cache_by_name.setdefault(row['name'], []).append(row['path'])
@@ -1116,40 +1143,55 @@ def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
         if metadata['nodeflib']:
             raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
         targets = {resolve_candidate(interpreter) for interpreter in metadata['interpreters']}
+        contexts = set(inherited)
+        for origin in {str(Path(path).parent), *origins.get(path, ())}:
+            contexts.update(runtime_expand_search_paths(metadata['runpath'], origin))
         for needed in metadata['needed']:
             if '$' in needed or ('/' in needed and not needed.startswith('/')):
                 raise ValueError('runtime ELF uses an unsupported dependency path')
             if needed.startswith('/'):
                 targets.add(resolve_candidate(needed))
                 continue
-            for directory in sorted(directories):
-                targets.update(search(directory, needed)[0])
-            cached = [resolve_candidate(candidate) for candidate in cache_by_name.get(needed, ())]
-            targets.update(cached)
-            for origin in sorted({str(Path(path).parent), *origins.get(path, ())}):
-                ordered = []
-                if not metadata['runpath']:
-                    ordered.extend(runtime_expand_search_paths(metadata['rpath'], origin))
-                    ordered.extend(inherited)
-                ordered.extend(runtime_expand_search_paths(metadata['runpath'], origin))
-                provider = None
-                for directory in dict.fromkeys(ordered):
-                    candidates, provider = search(directory, needed)
-                    targets.update(candidates)
-                    if provider is not None:
-                        break
-                if provider is None and cached:
-                    provider = cached[0]
-                if provider is None:
-                    for directory in defaults:
-                        candidates, provider = search(directory, needed)
-                        targets.update(candidates)
-                        if provider is not None:
-                            break
-                if provider is None:
-                    unresolved.append('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
+            candidates = set()
+            for directory in dict.fromkeys([*sorted(contexts), *defaults]):
+                candidates.update(search(directory, needed)[0])
+            candidates.update(resolve_candidate(candidate) for candidate in cache_by_name.get(needed, ()))
+            targets.update(candidates)
+            if not candidates:
+                unresolved.append('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
         edges[path] = sorted(targets)
     return edges, directories, unresolved
+
+
+def runtime_hwcaps_spellings(directory, needed, directory_names):
+    root = str(Path(directory) / 'glibc-hwcaps')
+    names = directory_names(root, required=False)
+    result = [str(Path(directory) / needed)]
+    if names is not None:
+        for child in names:
+            subdirectory = str(Path(root) / child)
+            directory_names(subdirectory, required=True)
+            result.append(str(Path(subdirectory) / needed))
+    return result
+
+
+def require_modern_glibc(raw):
+    lines = raw.splitlines()
+    match = re.search(r'(\d+)\.(\d+)$', lines[0]) if lines else None
+    if match is None or not any(name in lines[0] for name in ('GLIBC', 'GNU libc')):
+        raise ValueError('runtime requires observed GNU glibc 2.37 or newer')
+    version = tuple(map(int, match.groups()))
+    if version < (2, 37):
+        raise ValueError('legacy hwcap and platform searches require glibc 2.37 or newer')
+    return version
+
+
+def require_modern_loader_diagnostics(raw):
+    versions = [json.loads(line.split('=', 1)[1]) for line in raw.splitlines()
+                if line.startswith('version.version=')]
+    if len(versions) != 1:
+        raise ValueError('mounted loader lacks its observed glibc version')
+    require_modern_glibc('ldd (GNU libc) ' + versions[0])
 
 
 def require_runtime_loader_observations(before, after):
@@ -1186,7 +1228,8 @@ def runtime_directory_candidate_spellings(entries, directory, needed, *, direct=
 def audit_native_closure(closure, byte_path):
     entries = runtime_namespace_entries(closure)
     resolved = audit_link_outcomes(closure)
-    lookup = runtime_replay_lookup(closure)
+    index = RuntimeNamespaceIndex(closure, entries=entries)
+    lookup = runtime_replay_lookup(closure, index=index)
     def resolve(path):
         if path not in resolved:
             outcome = walk_runtime_path(path, lookup)
@@ -1202,6 +1245,8 @@ def audit_native_closure(closure, byte_path):
     if loader['schema'] != 'prismabuild.proof_loader_search.v1':
         raise ValueError('unsupported runtime loader search contract')
     pre_diagnostics = closure['completion']['pre_completion_diagnostics']
+    require_modern_loader_diagnostics(pre_diagnostics['raw'])
+    require_modern_glibc(closure['completion']['image_glibc'])
     require_runtime_loader_observations(pre_diagnostics, loader['diagnostics'])
     if (pre_diagnostics['executable'] != loader['diagnostics']['executable']
             or pre_diagnostics['command'] != [loader['diagnostics']['executable']['path'], '--list-diagnostics']):
@@ -1220,6 +1265,31 @@ def audit_native_closure(closure, byte_path):
     required = set()
     candidates_by_name = runtime_candidate_name_index(entries)
 
+    def directory_names(spelling, *, required):
+        parent = resolve(str(Path(spelling).parent))
+        expected = str(Path(parent) / Path(spelling).name)
+        outcome = walk_runtime_path(spelling, lookup)
+        if isinstance(outcome, RuntimeWitnessedAbsent):
+            if required or outcome.missing != expected or outcome.remaining:
+                raise ValueError('required hwcaps directory is not sealed: ' + spelling)
+            return None
+        directory = outcome.terminal
+        entry = entries.get(directory, closure['components'].get(directory, {}).get('entry'))
+        if entry is None or entry['kind'] != 'directory':
+            raise ValueError('hwcaps component is not a directory: ' + spelling)
+        if runtime_search_directory_mode(closure['roots'], directory) == 'complete':
+            if entries.get(directory, {}).get('kind') != 'directory':
+                raise ValueError('complete hwcaps inventory omits its directory')
+            return sorted(index.children.get(directory, ()))
+        component = closure['components'].get(directory, {})
+        if component.get('origin') == 'mount':
+            return component['names']
+        observation = closure['completion']['search_directory_observations'].get(directory)
+        if observation is None:
+            raise ValueError('missing complete hwcaps directory listing: ' + directory)
+        index.check_listing(directory, observation, runtime_path_authority(closure, directory))
+        return sorted(set(observation['names']) | set(runtime_mount_ancestor(closure, directory) or ()))
+
     def directory_candidates(directory, needed):
         spelling = directory
         directory = resolve(directory)
@@ -1234,15 +1304,21 @@ def audit_native_closure(closure, byte_path):
         found = {sealed_candidate(str(Path(spelling) / Path(path).relative_to(directory)))
                  for path in runtime_directory_candidate_spellings(entries, directory, needed,
                      direct=mode == 'direct', by_name=candidates_by_name)}
-        direct = str(Path(directory) / needed)
-        entry = entries.get(direct, closure['components'].get(direct, {}).get('entry'))
         base = None
-        if entry is not None:
-            target = resolve(str(Path(spelling) / needed))
-            if entries.get(target, {}).get('kind') == 'file':
-                base = target
-        else:
-            require_runtime_candidate_absence(closure, directory, needed, lookup=lookup)
+        for candidate in runtime_hwcaps_spellings(spelling, needed, directory_names):
+            outcome = walk_runtime_path(candidate, lookup)
+            if isinstance(outcome, RuntimeWitnessedAbsent):
+                parent = resolve(str(Path(candidate).parent))
+                expected = str(Path(parent) / needed)
+                if outcome.missing != expected or outcome.remaining:
+                    raise ValueError('missing candidate absence evidence: ' + candidate)
+                continue
+            entry = entries.get(outcome.terminal, closure['components'].get(outcome.terminal, {}).get('entry'))
+            if entry is not None and entry['kind'] == 'file':
+                target = sealed_candidate(candidate)
+                found.add(target)
+                if candidate == str(Path(spelling) / needed):
+                    base = target
         return found, base
 
     def sealed_candidate(path):
@@ -1323,6 +1399,7 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
             runtime_host_root_selection(facts)
         if origin == 'image':
             facts['loader_cache'] = completion['image_loader_cache']
+            require_modern_glibc(completion['image_glibc'])
             if closure['loader']['cache'] != facts['loader_cache']:
                 raise ValueError('runtime image cache differs from its captured loader observation')
         parsed = {}
@@ -1382,7 +1459,7 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
     witnessed = set()
     observed = {}
     for charge in charges:
-        if charge['kind'] not in ('inventory', 'component', 'absence', 'host_absence', 'mount_absence', 'recheck'):
+        if charge['kind'] not in ('inventory', 'component', 'absence', 'host_absence', 'mount_absence', 'recheck', 'listing'):
             raise ValueError('runtime completion has an unsupported observation charge')
         _absolute(charge['path'])
         if charge['kind'] == 'inventory':
@@ -1396,6 +1473,12 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
                 observed[path] = entry
             expected_members = len(facts)
             expected_bytes = sum(entry['bytes'] for entry in facts.values() if entry['kind'] == 'file')
+        elif charge['kind'] == 'listing':
+            observation = completion['search_directory_observations'][charge['path']]
+            if charge['observation'] != observation:
+                raise ValueError('runtime search listing charge differs from its observation')
+            index.check_listing(charge['path'], observation, runtime_path_authority(closure, charge['path']))
+            expected_members, expected_bytes = 1 + len(observation['names']), 0
         elif charge['kind'] in ('component', 'recheck'):
             entry = charge['entry']
             if entry != entries.get(charge['path'], closure['components'].get(charge['path'], {}).get('entry')):
@@ -1418,6 +1501,9 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
             if type(charge[name]) is not int or charge[name] < 0:
                 raise ValueError('runtime completion has an invalid observation charge')
             totals[name] += charge[name]
+    if ({charge['path'] for charge in charges if charge['kind'] == 'listing'}
+            != set(completion['search_directory_observations'])):
+        raise ValueError('runtime completion budget omits a search directory listing')
     if witnessed != set(closure['directory_witnesses']):
         raise ValueError('runtime completion budget omits an absence observation')
     if any(path not in observed for path in closure['components']):
@@ -1513,6 +1599,24 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
                 or ('mode' in component['entry'] and stat.S_IMODE(before.st_mode) != component['entry']['mode'])
                 or runtime_stamp(before) != runtime_stamp(location.lstat())):
             raise ValueError('mounted runtime navigation component differs: ' + path)
+    for parent, observation in closure['completion']['search_directory_observations'].items():
+        if runtime_path_authority(closure, parent) not in origins:
+            continue
+        descriptor = os.open(image_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name in PurePosixPath(parent).parts[1:]:
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            before = os.fstat(descriptor)
+            with os.scandir(descriptor) as children:
+                names = sorted(child.name for child in children)
+            expected = sorted(set(observation['names']) | set(runtime_mount_ancestor(closure, parent) or ()))
+            if (names != expected or stat.S_IMODE(before.st_mode) != stat.S_IMODE(observation['before'][2])
+                    or runtime_stamp(before) != runtime_stamp(os.fstat(descriptor))):
+                raise ValueError('mounted hwcaps directory listing changed: ' + parent)
+        finally:
+            os.close(descriptor)
     for key in closure['directory_witnesses']:
         witness = runtime_absence_witness(closure, key, index=index)
         if witness['authority'] not in origins:
