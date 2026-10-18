@@ -222,80 +222,84 @@ def inventory(path, *, budget=None):
 
 def elf_requirements(path):
     with Path(path).open('rb') as handle:
-        header = handle.read(64)
-        if header[:4] != b'\x7fELF':
-            return None
-        if len(header) != 64 or header[:6] != b'\x7fELF\x02\x01':
-            raise ValueError('closure contains an unsupported ELF format')
-        fields = struct.unpack('<16sHHIQQQIHHHHHH', header)
-        if fields[1] not in (2, 3):
-            return None
-        if (header[6] != 1 or header[7] not in (0, 3) or header[8] != 0
-                or fields[3] != 1 or fields[7] != 0 or fields[8] != 64):
-            raise ValueError('runtime ELF has an unsupported ABI or header')
-        offset, size, count = fields[5], fields[9], fields[10]
-        if size != 56 or count > 4096:
-            raise ValueError('unsupported ELF program header table')
-        handle.seek(offset)
-        segments = [struct.unpack('<IIQQQQQQ', handle.read(size)) for _ in range(count)]
-        interpreters, dynamic, abi_kernels = [], [], []
-        for segment in segments:
-            if segment[0] not in (2, 3, 4):
-                continue
-            if segment[5] > 16 * 1024 * 1024:
-                raise ValueError('ELF metadata exceeds the capture bound')
-            handle.seek(segment[2])
-            raw = handle.read(segment[5])
-            if len(raw) != segment[5]:
-                raise ValueError('truncated ELF metadata')
-            if segment[0] == 3:
-                interpreters.append(raw.rstrip(b'\0').decode())
-            elif segment[0] == 4:
-                cursor = 0
-                while cursor < len(raw):
-                    names, description, kind = struct.unpack_from('<III', raw, cursor)
-                    cursor += 12
-                    name = raw[cursor:cursor + names]
-                    cursor += (names + 3) & ~3
-                    value = raw[cursor:cursor + description]
-                    cursor += (description + 3) & ~3
-                    if cursor > len(raw) or len(value) != description:
-                        raise ValueError('truncated runtime ELF note')
-                    if name == b'GNU\0' and kind == 1:
-                        if len(value) != 16:
-                            raise ValueError('unsupported GNU ABI note')
-                        operating_system, *version = struct.unpack('<IIII', value)
-                        if operating_system != 0:
-                            raise ValueError('runtime dependency does not target Linux')
-                        abi_kernels.append(version)
-            else:
-                if len(raw) % 16:
-                    raise ValueError('invalid ELF dynamic table')
-                for index in range(0, len(raw), 16):
-                    row = struct.unpack_from('<qQ', raw, index)
-                    if row[0] == 0:
-                        break
-                    dynamic.append(row)
-        if any(tag in (0x6ffffefa, 0x6ffffefb, 0x6ffffefc, 0x7ffffffd, 0x7fffffff)
-               for tag,value in dynamic):
-            raise ValueError('runtime ELF uses unsupported audit, filter or configuration loading')
-        strings = {tag:value for tag,value in dynamic if tag in (5, 10)}
-        values = {1:[], 15:[], 29:[]}
-        if dynamic:
-            address, length = strings[5], strings[10]
-            mapped = [segment for segment in segments if segment[0] == 1
-                      and segment[3] <= address and address + length <= segment[3] + segment[5]]
-            if len(mapped) != 1 or length > 16 * 1024 * 1024:
-                raise ValueError('unsupported ELF string table')
-            handle.seek(mapped[0][2] + address - mapped[0][3])
-            table = handle.read(length)
-            for tag,value in dynamic:
-                if tag in values:
-                    values[tag].append(table[value:table.index(b'\0', value)].decode())
-        return dict(machine=fields[2], interpreters=interpreters,
-                    needed=values[1], rpath=values[15], runpath=values[29],
-                    nodeflib=any(tag == 0x6ffffffb and value & 0x800 for tag,value in dynamic),
-                    abi_kernels=abi_kernels)
+        return read_runtime_elf(handle)
+
+
+def read_runtime_elf(handle):
+    header = handle.read(64)
+    if header[:4] != b'\x7fELF':
+        return None
+    if len(header) != 64 or header[:6] != b'\x7fELF\x02\x01':
+        raise ValueError('closure contains an unsupported ELF format')
+    fields = struct.unpack('<16sHHIQQQIHHHHHH', header)
+    if fields[1] not in (2, 3):
+        return None
+    if (header[6] != 1 or header[7] not in (0, 3) or header[8] != 0
+            or fields[3] != 1 or fields[7] != 0 or fields[8] != 64):
+        raise ValueError('runtime ELF has an unsupported ABI or header')
+    offset, size, count = fields[5], fields[9], fields[10]
+    if size != 56 or count > 4096:
+        raise ValueError('unsupported ELF program header table')
+    handle.seek(offset)
+    segments = [struct.unpack('<IIQQQQQQ', handle.read(size)) for _ in range(count)]
+    interpreters, dynamic, abi_kernels = [], [], []
+    for segment in segments:
+        if segment[0] not in (2, 3, 4):
+            continue
+        if segment[5] > 16 * 1024 * 1024:
+            raise ValueError('ELF metadata exceeds the capture bound')
+        handle.seek(segment[2])
+        raw = handle.read(segment[5])
+        if len(raw) != segment[5]:
+            raise ValueError('truncated ELF metadata')
+        if segment[0] == 3:
+            interpreters.append(raw.rstrip(b'\0').decode())
+        elif segment[0] == 4:
+            cursor = 0
+            while cursor < len(raw):
+                names, description, kind = struct.unpack_from('<III', raw, cursor)
+                cursor += 12
+                name = raw[cursor:cursor + names]
+                cursor += (names + 3) & ~3
+                value = raw[cursor:cursor + description]
+                cursor += (description + 3) & ~3
+                if cursor > len(raw) or len(value) != description:
+                    raise ValueError('truncated runtime ELF note')
+                if name == b'GNU\0' and kind == 1:
+                    if len(value) != 16:
+                        raise ValueError('unsupported GNU ABI note')
+                    operating_system, *version = struct.unpack('<IIII', value)
+                    if operating_system != 0:
+                        raise ValueError('runtime dependency does not target Linux')
+                    abi_kernels.append(version)
+        else:
+            if len(raw) % 16:
+                raise ValueError('invalid ELF dynamic table')
+            for index in range(0, len(raw), 16):
+                row = struct.unpack_from('<qQ', raw, index)
+                if row[0] == 0:
+                    break
+                dynamic.append(row)
+    if any(tag in (0x6ffffefa, 0x6ffffefb, 0x6ffffefc, 0x7ffffffd, 0x7fffffff)
+           for tag,value in dynamic):
+        raise ValueError('runtime ELF uses unsupported audit, filter or configuration loading')
+    strings = {tag:value for tag,value in dynamic if tag in (5, 10)}
+    values = {1:[], 15:[], 29:[]}
+    if dynamic:
+        address, length = strings[5], strings[10]
+        mapped = [segment for segment in segments if segment[0] == 1
+                  and segment[3] <= address and address + length <= segment[3] + segment[5]]
+        if len(mapped) != 1 or length > 16 * 1024 * 1024:
+            raise ValueError('unsupported ELF string table')
+        handle.seek(mapped[0][2] + address - mapped[0][3])
+        table = handle.read(length)
+        for tag,value in dynamic:
+            if tag in values:
+                values[tag].append(table[value:table.index(b'\0', value)].decode())
+    return dict(machine=fields[2], interpreters=interpreters,
+                needed=values[1], rpath=values[15], runpath=values[29],
+                nodeflib=any(tag == 0x6ffffffb and value & 0x800 for tag,value in dynamic),
+                abi_kernels=abi_kernels)
 
 
 def loader_default_directories(raw):
