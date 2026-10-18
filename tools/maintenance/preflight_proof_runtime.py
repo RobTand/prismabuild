@@ -1,5 +1,6 @@
 """Read-only, admitted proof-runtime graph diagnosis using real retained inputs."""
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,22 @@ def preflight_module(name, source):
     return module
 
 
+def preflight_collect_loops(module, source, names, record):
+    """Continue independent loop items after recording a production refusal."""
+    class Collect(ast.NodeTransformer):
+        def visit_For(self, node):
+            self.generic_visit(node)
+            handler = ast.parse("try:\n pass\nexcept (ValueError, OSError, KeyError, RuntimeError) as error:\n _proof_preflight_refusal(error, locals())\n continue").body[0]
+            handler.body = node.body
+            node.body = [ast.copy_location(handler, node)]
+            return node
+    tree = ast.parse(source)
+    tree.body = [Collect().visit(node) for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name in names]
+    module.__dict__['_proof_preflight_refusal'] = record
+    exec(compile(ast.fix_missing_locations(tree), module.__file__, 'exec'), module.__dict__)
+
+
 def preflight_image(payload):
     sources = payload['sources']
     runtime = preflight_module('proof_container_runtime', sources['proof_container_runtime'])
@@ -26,13 +43,22 @@ def preflight_image(payload):
     host = payload['host']
     budget = dict(host['consumed_budget'], deadline=time.monotonic() + runtime.CAPTURE_BOUNDS['runtime_seconds'])
     image = capture.runtime_capture('image', budget)
-    states, current, edges = {}, ['before_installation'], []
+    states, current, edges, calls = {}, ['before_installation'], [], [0]
+    refusals = {}
+    def record(error, context):
+        selected = {key:value for key,value in context.items()
+                    if key in ('path','spelling','needed','interpreter','directory') and isinstance(value,str)}
+        value = dict(type=type(error).__name__, message=str(error), state=current[0], context=selected)
+        refusals[json.dumps(value)] = value
+        if isinstance(error, TimeoutError) or 'capture geometry exceeds' in str(error):
+            raise error
     original_discovery = capture.discover_image_runtime_graph
     original_search = capture.runtime_elf_search_directories
     original_walk = capture.walk_runtime_path
     active = [{}]
     def discovery(*args, **kwargs):
-        current[0] = 'after_installation' if kwargs.get('additional_links') else 'before_installation'
+        current[0] = ('before_installation','after_installation')[calls[0] % 2]
+        calls[0] += 1
         return original_discovery(*args, **kwargs)
     def search(metadata, aliases):
         active[0] = metadata
@@ -59,8 +85,23 @@ def preflight_image(payload):
     refusal = None
     try:
         capture.complete_image_closure(host, image, budget, host_checkpoint=payload['host_descriptor'])
-    except Exception as error:
+    except (ValueError,OSError,KeyError,RuntimeError) as error:
         refusal = dict(type=type(error).__name__, message=str(error), state=current[0])
+        record(error,{})
+        preflight_collect_loops(runtime,sources['proof_container_runtime'],
+            {'runtime_elf_search_directories'},record)
+        preflight_collect_loops(capture,sources['capture_proof_runtime'],
+            {'discover_image_runtime_graph'},record)
+        original_search = runtime.runtime_elf_search_directories
+        original_discovery = capture.discover_image_runtime_graph
+        capture.runtime_elf_search_directories = search
+        capture.discover_image_runtime_graph = discovery
+        budget = dict(image['consumed_budget'],deadline=budget['deadline'])
+        calls[0] = 0
+        try:
+            capture.complete_image_closure(host,image,budget,host_checkpoint=payload['host_descriptor'])
+        except (ValueError,OSError,KeyError,RuntimeError) as remaining:
+            record(remaining,{})
     return dict(schema='prismabuild.proof_runtime_preflight.v1',
         source_ref=payload['source_ref'], source_sha256={key:runtime.digest(value.encode()) for key,value in sources.items()},
         host_checkpoint=payload['host_descriptor'], host_observation=host['observation'],
@@ -68,7 +109,9 @@ def preflight_image(payload):
         image_executable_metadata=image['elf_index'][image['observation']['executable']['resolved_path']],
         image_executable_inventory=next(root['entries']['.'] for root in image['roots']
             if root['path'] == image['observation']['executable']['resolved_path']),
-        states=states, candidate_edges=edges, refusal=refusal,
+        states=states, candidate_edges=edges, refusal=refusal, refusals=list(refusals.values()),
+        diagnostic_continuation=refusal is not None,
+        zero_refusals_requires_unmodified_production_success=True,
         image_credentials=dict(uid=os.getuid(),gid=os.getgid()),
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         unobservable=['root-owned reader creation and root role credentials; this action creates no reader link'])
@@ -96,7 +139,8 @@ def main():
     command = ['docker','run','--rm','--read-only','--network','none','--cap-drop','ALL',
         '--security-opt','no-new-privileges','--user',str(os.getuid()) + ':' + str(os.getgid()),
         '--cpuset-cpus',','.join(map(str,sorted(os.sched_getaffinity(0)))),
-        '-e','PYTHONDONTWRITEBYTECODE=1','-v',str(root) + ':/source:ro','-i',
+        '-e','PYTHONDONTWRITEBYTECODE=1',
+        '-e','OMP_NUM_THREADS=1','-e','MKL_NUM_THREADS=1','-e','OPENBLAS_NUM_THREADS=1','-v',str(root) + ':/source:ro','-i',
         '--entrypoint',args.image_python,args.image,'-B',
         '/source/tools/maintenance/preflight_proof_runtime.py','--image-child']
     result = subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=600)
