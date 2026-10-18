@@ -33,7 +33,7 @@ from proof_container_runtime import (
     runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
     runtime_customization_selection, runtime_search_directory_mode, runtime_loader_edges,
     runtime_candidate_name_index,
-    require_runtime_loader_observations, require_modern_glibc, require_modern_loader_diagnostics,
+    require_runtime_loader_observations, require_modern_loader_diagnostics,
     runtime_hwcaps_spellings,
 )
 
@@ -276,7 +276,6 @@ def runtime_capture(origin, budget=None):
     runtime_charge(budget)
     glibc = subprocess.check_output(['ldd', '--version'], text=True,
         timeout=min(30, budget['deadline'] - time.monotonic()))
-    require_modern_glibc(glibc)
     result = dict(glibc=glibc, observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode(),
@@ -597,6 +596,13 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
 
     cache = loader_cache_entries(image['loader_cache']['raw_listing']) if 'loader_cache' in image else []
     defaults = loader_default_directories(image['pre_completion_diagnostics']['raw'])
+    diagnostics = image['pre_completion_diagnostics']
+    loader = diagnostics['executable']
+    diagnosed_loader = resolve_observation(loader['path'], required=True).terminal
+    if (diagnosed_loader != loader['resolved_path']
+            or diagnostics['command'] != [loader['path'], '--list-diagnostics']
+            or any(lookup(diagnosed_loader)[name] != loader[name] for name in ('bytes', 'sha256'))):
+        raise ValueError('loader observation command differs from its sealed executable')
     for _ in range(64):
         before = (len(observer.roots), len(observer.components), len(observer.witnesses),
                   len(outcomes), len(aliases), len(metadata_by_path))
@@ -669,7 +675,8 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
             return found, base
 
         _, _, unresolved = runtime_loader_edges(metadata_by_path, aliases, cache, defaults,
-            directory_candidates=directory_candidates, resolve_candidate=retain_candidate)
+            directory_candidates=directory_candidates, resolve_candidate=retain_candidate,
+            diagnosed_loader=diagnosed_loader)
         after = (len(observer.roots), len(observer.components), len(observer.witnesses),
                  len(outcomes), len(aliases), len(metadata_by_path))
         if before == after:
@@ -682,7 +689,6 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
 
 
 def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=Path('/')):
-    require_modern_glibc(image['glibc'])
     require_modern_loader_diagnostics(image['pre_completion_diagnostics']['raw'])
     observer = ImageClosureObserver(host, image, budget, host_checkpoint, image_root)
     plan = runtime_completion_plan(host, image)

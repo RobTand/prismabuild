@@ -75,7 +75,7 @@ class RequiredGraphFilesystem:
                             '/etc/ld.so.cache', '/sbin/ldconfig']
         self.image_executable = HOST_EXECUTABLE
         self.cache_listing = '0 libs found in cache fixture:\n'
-        self.diagnostic_raw = 'version.version=\"2.39\"\npath.system_dirs[0]=\"' + NATIVE + '/\"\nuname.release=\"6.8.0\"\n'
+        self.diagnostic_raw = 'version.release=\"stable\"\nversion.version=\"2.39\"\npath.system_dirs[0]=\"' + NATIVE + '/\"\nuname.release=\"6.8.0\"\n'
         self.host_interpreter = LOADER
         self.image_interpreter = LOADER
         self.host_file('/h/stdlib/plain.py', b'VALUE = 1\n')
@@ -1529,7 +1529,7 @@ def test_ancestor_search_preserves_inherited_rpath_candidates(tmp_path):
 
 def graph_default_search_tree(tmp_path):
     tree = RequiredGraphFilesystem(tmp_path)
-    tree.diagnostic_raw = ('version.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\n'
+    tree.diagnostic_raw = ('version.release=\"stable\"\nversion.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\n'
         'path.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n')
     tree.host_file('/h/stdlib/tkinter.so', graph_fixture_elf(needed=('libtk.so',)))
     tree.host_file(NATIVE + '/libtk.so', graph_fixture_elf(needed=('libXft.so',)))
@@ -1626,7 +1626,7 @@ def test_ancestor_hwcaps_candidates_are_sealed(tmp_path, context, base_present):
     tree.image_file(optimized, graph_fixture_elf(marker=b'optimized-provider'))
     if context == 'default':
         tree.host_file('/h/stdlib/ancestor-extension.so', graph_fixture_elf(needed=('libancestor.so',)))
-        tree.diagnostic_raw = 'version.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+        tree.diagnostic_raw = 'version.release=\"stable\"\nversion.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
     tree.host_file('/h/stdlib/hwcap-miss.so', graph_fixture_elf(needed=('libother.so',), runpath=('/usr/lib',)))
     tree.host_file(NATIVE + '/libother.so', graph_fixture_elf())
     closure = tree.complete()
@@ -1655,7 +1655,7 @@ def test_unrelated_rpath_does_not_suppress_default_evidence(tmp_path):
     tree.host_file('/h/stdlib/b.so', graph_fixture_elf(rpath=('/h/stdlib/private',)))
     tree.host_file('/h/stdlib/private/libfoo.so', graph_fixture_elf(marker=b'unrelated-provider'))
     tree.image_file('/usr/lib/libfoo.so', graph_fixture_elf(marker=b'default-provider'))
-    tree.diagnostic_raw = 'version.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+    tree.diagnostic_raw = 'version.release=\"stable\"\nversion.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
     closure = tree.complete()
     assert tree.entry(closure, '/usr/lib/libfoo.so')['kind'] == 'file'
     assert any(value['parent'] == NATIVE and value['name'] == 'libfoo.so'
@@ -1670,7 +1670,7 @@ def test_ineligible_cache_row_does_not_suppress_default_evidence(tmp_path):
     tree.host_file(cached, graph_fixture_elf(marker=b'ineligible-cache-provider'))
     tree.image_file('/usr/lib/libfoo.so', graph_fixture_elf(marker=b'ordinary-default-provider'))
     tree.cache_listing = '1 libs found in cache fixture:\n libfoo.so (libc6,AArch64, hwcap: "x86-64-v4") => ' + cached + '\n'
-    tree.diagnostic_raw = 'version.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+    tree.diagnostic_raw = 'version.release=\"stable\"\nversion.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
     closure = tree.complete()
     assert tree.entry(closure, '/usr/lib/libfoo.so')['kind'] == 'file'
     assert graph_outcome(closure, cached)['terminal'] == cached
@@ -1732,6 +1732,7 @@ def test_legacy_glibc_configuration_is_refused(tmp_path):
     tree = RequiredGraphFilesystem(tmp_path)
     host,image,checkpoint,budget = tree.inputs()
     image['glibc'] = 'ldd (GNU libc) 2.36\n'
+    image['pre_completion_diagnostics']['raw'] = tree.diagnostic_raw.replace('2.39', '2.36')
     with pytest.raises(ValueError, match='legacy.*hwcap|glibc.*2.37'):
         tree.complete((host,image,checkpoint,budget))
 
@@ -1871,7 +1872,7 @@ def test_loader_own_complete_version_controls_admission(tmp_path, version, accep
 @pytest.mark.parametrize('stage', ['completion', 'audit'])
 def test_loader_requires_its_own_release_build(tmp_path, release, stage):
     tree = RequiredGraphFilesystem(tmp_path)
-    raw = tree.diagnostic_raw + ('' if release is None else 'version.release=' + json.dumps(release) + '\n')
+    raw = tree.diagnostic_raw.replace('version.release="stable"\n', '') + ('' if release is None else 'version.release=' + json.dumps(release) + '\n')
     if stage == 'completion':
         tree.diagnostic_raw = raw
         operation = tree.complete

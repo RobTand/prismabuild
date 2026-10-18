@@ -19194,11 +19194,17 @@ Mounted verification re-observes their kind, mode and complete composed names,
 using fresh stable observations rather than asserting image syscall stamps.
 No broad roots, root widening or declared-link exception under A1 are added.
 
-Image and host capture observe `ldd --version`; image output is retained with
-the completion facts. The mounted host loader's version is also bound by its
-actual diagnostics. GNU glibc before 2.37, which still supports legacy hwcap,
-AT_PLATFORM and tls subdirectory searches, refuses. Those older mechanisms are
-not modeled. Supported dynamic string expansion has one parser: `$ORIGIN` must
+Image and host capture retain `ldd --version` as information only. Admission
+uses the diagnosed loader's own retained `--list-diagnostics` output, bound to
+its sealed executable identity before and after completion. Both observations
+must report exactly one `version.version` and `version.release="stable"`. The
+complete version token must match `^(\d+)\.(\d+)(?:\.(\d+))?$`; its leading
+major/minor must be at least 2.37. Missing, unparsable, non-release or older
+versions refuse. Every PT_INTERP in the runtime graph, including the primary,
+installed reader and every ELF candidate, must resolve in each namespace state
+to this single diagnosed loader terminal. A distinct terminal refuses with
+"distinct runtime loader is not admitted". Distinct loaders and legacy hwcap,
+AT_PLATFORM and tls subdirectory searches are not modeled. Supported dynamic string expansion has one parser: `$ORIGIN` must
 end at a non-identifier boundary or end of string, and `${ORIGIN}` may precede a
 suffix. `$LIB`, `$PLATFORM`, longer identifiers and other dollar tokens refuse.
 Empty search elements remain unsupported; cwd is not modeled. Supported search

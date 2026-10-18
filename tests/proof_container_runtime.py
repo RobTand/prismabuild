@@ -1127,7 +1127,7 @@ def runtime_elf_search_directories(metadata_by_path, resolved):
 
 
 def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
-                         directory_candidates, resolve_candidate):
+                         directory_candidates, resolve_candidate, diagnosed_loader):
     """Exhaust the evidence union; provider existence can never skip a query."""
     directories, _ = runtime_elf_search_directories(metadata_by_path, resolved)
     origins = {}
@@ -1150,7 +1150,12 @@ def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
     for path, metadata in list(metadata_by_path.items()):
         if metadata['nodeflib']:
             raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
-        targets = {resolve_candidate(interpreter) for interpreter in metadata['interpreters']}
+        targets = set()
+        for interpreter in metadata['interpreters']:
+            target = resolve_candidate(interpreter)
+            if target != diagnosed_loader:
+                raise ValueError('distinct runtime loader is not admitted: ' + interpreter)
+            targets.add(target)
         contexts = set(inherited)
         for origin in {str(Path(path).parent), *origins.get(path, ())}:
             contexts.update(runtime_expand_search_paths(metadata['runpath'], origin))
@@ -1183,28 +1188,33 @@ def runtime_hwcaps_spellings(directory, needed, directory_names):
     return result
 
 
-def require_modern_glibc(raw):
-    lines = raw.splitlines()
-    match = re.search(r'(\d+)\.(\d+)$', lines[0]) if lines else None
-    if match is None or not any(name in lines[0] for name in ('GLIBC', 'GNU libc')):
+def require_modern_glibc(version):
+    match = re.fullmatch(r'(\d+)\.(\d+)(?:\.(\d+))?', version) if isinstance(version, str) else None
+    if match is None:
         raise ValueError('runtime requires observed GNU glibc 2.37 or newer')
-    version = tuple(map(int, match.groups()))
-    if version < (2, 37):
+    major_minor = tuple(map(int, match.group(1, 2)))
+    if major_minor < (2, 37):
         raise ValueError('legacy hwcap and platform searches require glibc 2.37 or newer')
-    return version
+    return major_minor
 
 
 def require_modern_loader_diagnostics(raw):
-    versions = [json.loads(line.split('=', 1)[1]) for line in raw.splitlines()
-                if line.startswith('version.version=')]
-    if len(versions) != 1:
+    fields = {name: [json.loads(line.split('=', 1)[1]) for line in raw.splitlines()
+                     if line.startswith('version.' + name + '=')]
+              for name in ('version', 'release')}
+    if len(fields['version']) != 1:
         raise ValueError('mounted loader lacks its observed glibc version')
-    require_modern_glibc('ldd (GNU libc) ' + versions[0])
+    if fields['release'] != ['stable']:
+        raise ValueError('mounted loader requires an observed stable release build')
+    version, = fields['version']
+    require_modern_glibc(version)
+    return version
 
 
 def require_runtime_loader_observations(before, after):
     if (loader_default_directories(before['raw']) != loader_default_directories(after['raw'])
-            or loader_kernel(before['raw']) != loader_kernel(after['raw'])):
+            or loader_kernel(before['raw']) != loader_kernel(after['raw'])
+            or require_modern_loader_diagnostics(before['raw']) != require_modern_loader_diagnostics(after['raw'])):
         raise ValueError('pre-completion mounted loader diagnostics changed after completion')
 
 
@@ -1262,7 +1272,6 @@ def audit_native_closure(closure, byte_path):
         raise ValueError('unsupported runtime loader search contract')
     pre_diagnostics = closure['completion']['pre_completion_diagnostics']
     require_modern_loader_diagnostics(pre_diagnostics['raw'])
-    require_modern_glibc(closure['completion']['image_glibc'])
     require_runtime_loader_observations(pre_diagnostics, loader['diagnostics'])
     if (pre_diagnostics['executable'] != loader['diagnostics']['executable']
             or pre_diagnostics['command'] != [loader['diagnostics']['executable']['path'], '--list-diagnostics']):
@@ -1359,7 +1368,8 @@ def audit_native_closure(closure, byte_path):
             metadata_by_path[path] = metadata
         origins_before = len(resolved)
         edges, directories, unresolved = runtime_loader_edges(metadata_by_path, resolved, cache, defaults,
-            directory_candidates=directory_candidates, resolve_candidate=sealed_candidate)
+            directory_candidates=directory_candidates, resolve_candidate=sealed_candidate,
+            diagnosed_loader=loader['diagnostics']['executable']['resolved_path'])
         required = {target for targets in edges.values() for target in targets}
         pending = sorted(required - metadata_by_path.keys())
         if not pending and len(resolved) == origins_before:
@@ -1415,7 +1425,6 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
             runtime_host_root_selection(facts)
         if origin == 'image':
             facts['loader_cache'] = completion['image_loader_cache']
-            require_modern_glibc(completion['image_glibc'])
             if closure['loader']['cache'] != facts['loader_cache']:
                 raise ValueError('runtime image cache differs from its captured loader observation')
         parsed = {}
