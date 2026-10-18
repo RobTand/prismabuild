@@ -136,12 +136,13 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
         for retained, source in fields.items():
             if completion[origin + '_' + retained] != checkpoint[source]:
                 raise ValueError('runtime completion observation differs from its durable checkpoint: ' + origin + ' ' + retained)
+        for name in ('pre_inventory_probes', 'cache_observations'):
+            if completion.get(origin + '_' + name, []) != checkpoint.get(name, []):
+                raise ValueError('runtime completion work observations differ from their durable checkpoint: ' + origin + ' ' + name)
         expected_native = ['/usr/lib/' + checkpoint['multiarch']]
         if checkpoint['native_library_roots'] != expected_native:
             raise ValueError('durable runtime native roots differ from selected MULTIARCH: ' + origin)
-        expected_budget = dict(members=sum(len(root['entries']) for root in checkpoint['roots']),
-            regular_bytes=sum(entry['bytes'] for root in checkpoint['roots']
-                              for entry in root['entries'].values() if entry['kind'] == 'file'))
+        expected_budget = owner['runtime_capture_work'](checkpoint)
         if checkpoint['inventory_budget'] != expected_budget:
             raise ValueError('durable runtime inventory budget differs from its complete roots: ' + origin)
     if completion['image_loader_cache'] != image['loader_cache'] or closure['loader']['cache'] != image['loader_cache']:

@@ -23,12 +23,12 @@ import time
 from proof_container_runtime import (
     CAPTURE_BOUNDS, CAPTURE_PHASES, CAPTURE_PUBLISHED_SOURCES, CLOSURE_SCHEMA, PROFILE_SCHEMA,
     canonical, digest, elf_requirements,
-    inventory, loader_cache_entries, loader_default_directories, loader_kernel, merge_runtime_roots, native_providers, observe_runtime,
+    inventory, loader_cache_entries, loader_default_directories, loader_kernel, merge_runtime_roots, native_provider_paths, observe_runtime,
     resolve_runtime_path, BROAD_ROOTS, CompletedRuntimeNamespace, ImageRuntimeAbsence,
     HostRuntimeAbsence, RuntimeLookupAbsent, RuntimeResolved, RuntimeWitnessedAbsent,
     audit_link_outcomes, audit_runtime_closure, read_runtime_elf, runtime_charge, runtime_completion_plan,
     runtime_outcome_record, runtime_stamp, walk_runtime_path, runtime_elf_search_directories,
-    runtime_directory_candidate_spellings, runtime_elf_observation,
+    runtime_directory_candidate_spellings, runtime_elf_observation, runtime_capture_work,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -155,6 +155,11 @@ def capture_optional_runtime_aliases(origin, roots, budget):
 
 
 def runtime_capture(origin, budget=None):
+    if budget is None:
+        budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
+    before_budget = {key: budget[key] for key in ('members', 'regular_bytes')}
+    pre_inventory_probes = []
+    cache_observations = []
     observation = observe_runtime()
     if observation['loader_environment'] or observation['at_secure'] != 0:
         raise ValueError('capture refuses ambient dynamic-loader overrides')
@@ -171,8 +176,8 @@ def runtime_capture(origin, budget=None):
         if not configuration.is_file():
             raise ValueError('the declared primary must be the selected standard venv')
         paths.extend([Path(sys.executable).parent, configuration])
-    providers = native_providers()
-    paths.extend(Path(path) for path in providers)
+    provider_paths = native_provider_paths(budget=budget, probes=pre_inventory_probes)
+    paths.extend(Path(path) for path in provider_paths)
     elf_roots = {str(stdlib), observation['executable']['resolved_path']}
     if origin == 'image':
         startup = set()
@@ -192,19 +197,26 @@ def runtime_capture(origin, budget=None):
             paths.append(Path('/usr/local/lib'))
         cache = Path('/etc/ld.so.cache')
         tool = Path('/sbin/ldconfig').resolve(strict=True)
-        before = file_descriptor(cache)
-        listing = subprocess.check_output([str(tool), '-p', '-C', str(cache)], text=True)
-        loader_cache_entries(listing)
-        if file_descriptor(cache) != before:
-            raise ValueError('image loader cache changed while reading its listing')
         paths.extend([cache, tool])
-    if budget is None:
-        budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
-    before_budget = {key: budget[key] for key in ('members', 'regular_bytes')}
     directory_observations = {}
     roots = captured_roots(origin, paths, budget, directory_observations)
     if origin == 'image':
         capture_optional_runtime_aliases(origin, roots, budget)
+    selected = regular_members(roots)
+    providers = {path:dict(resolved_path=path, bytes=selected[path]['bytes'], sha256=selected[path]['sha256'])
+                 for path in provider_paths}
+    if origin == 'image':
+        cache_entry = selected[str(cache)]
+        before = {key: cache_entry[key] for key in ('bytes', 'sha256')}
+        runtime_charge(budget, members=1, regular_bytes=before['bytes'])
+        cache_observations.append(dict(path=str(cache), entry=cache_entry, boundary='listing'))
+        listing = subprocess.check_output([str(tool), '-p', '-C', str(cache)], text=True)
+        loader_cache_entries(listing)
+        rechecked = inventory(cache, budget=budget)['.']
+        cache_observations.append(dict(path=str(cache), entry=rechecked, boundary='recheck'))
+        if rechecked != cache_entry:
+            raise ValueError('image loader cache changed while reading its listing')
+
     elf_index = {}
     for captured in roots:
         for relative, entry in captured['entries'].items():
@@ -218,6 +230,7 @@ def runtime_capture(origin, budget=None):
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode(),
                   multiarch=multiarch, native_library_roots=[str(native)], elf_index=elf_index,
                   directory_observations=directory_observations,
+                  pre_inventory_probes=pre_inventory_probes, cache_observations=cache_observations,
                   inventory_budget={key: budget[key] - before_budget[key] for key in before_budget},
                   consumed_budget={key: budget[key] for key in before_budget})
     if origin == 'image':
@@ -526,6 +539,10 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
         host_elf_index=host['elf_index'], image_elf_index=image['elf_index'],
         image_loader_cache=image['loader_cache'],
         base_host_roots=host['roots'], base_image_roots=image['roots'],
+        host_pre_inventory_probes=host.get('pre_inventory_probes', []),
+        image_pre_inventory_probes=image.get('pre_inventory_probes', []),
+        host_cache_observations=host.get('cache_observations', []),
+        image_cache_observations=image.get('cache_observations', []),
         host_directory_observations=host['directory_observations'],
         image_directory_observations=image['directory_observations'],
         base_consumed_budget=observer.initial_budget, charges=observer.charges)
@@ -555,9 +572,7 @@ def read_host_capture_checkpoint(path, expected, primary_interpreter):
     if host['native_library_roots'] != ['/usr/lib/' + host['multiarch']]:
         raise ValueError('host checkpoint native library root differs from its selected MULTIARCH')
     counters = {name: host['consumed_budget'][name] for name in ('members', 'regular_bytes')}
-    if (counters['members'] != sum(len(root['entries']) for root in host['roots'])
-            or counters['regular_bytes'] != sum(entry['bytes'] for root in host['roots']
-                for entry in root['entries'].values() if entry['kind'] == 'file')):
+    if counters != runtime_capture_work(host):
         raise ValueError('host checkpoint consumed inventory counters cannot be replayed')
     return host
 

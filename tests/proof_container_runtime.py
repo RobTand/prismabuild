@@ -271,6 +271,42 @@ def runtime_charge(budget, *, members=0, regular_bytes=0):
         raise TimeoutError('capture inventory exceeded its finite deadline')
 
 
+def runtime_capture_work(captured):
+    entries = runtime_namespace_entries(captured)
+    work = dict(members=sum(len(root['entries']) for root in captured['roots']),
+                regular_bytes=sum(entry['bytes'] for entry in entries.values() if entry['kind'] == 'file'))
+    for probe in captured.get('pre_inventory_probes', []):
+        if set(probe) != {'path', 'header'}:
+            raise ValueError('runtime provider header probe has an unsupported field set')
+        path = str(_absolute(probe['path']))
+        raw = bytes.fromhex(probe['header'])
+        if len(raw) > 4 or raw.hex() != probe['header']:
+            raise ValueError('runtime provider header probe exceeds its bounded read')
+        entry = entries.get(path)
+        if raw == b'\x7fELF' and (entry is None or entry['kind'] != 'file'):
+            raise ValueError('runtime ELF header probe is outside its captured providers')
+        if entry is not None and (entry['kind'] != 'file' or len(raw) != min(4, entry['bytes'])):
+            raise ValueError('runtime provider header probe differs from its captured file size')
+        work['members'] += 1
+        work['regular_bytes'] += len(raw)
+    observations = captured.get('cache_observations', [])
+    if observations:
+        if ([item['boundary'] for item in observations] != ['listing', 'recheck']
+                or any(root['origin'] != 'image' for root in captured['roots'])):
+            raise ValueError('runtime cache observation boundaries differ from image capture')
+        cache = captured['loader_cache']
+        entry = entries[cache['path']]
+        if entry['kind'] != 'file' or any(entry[name] != cache[name] for name in ('bytes', 'sha256')):
+            raise ValueError('runtime cache observations differ from their retained cache file')
+        for observation in observations:
+            if (set(observation) != {'path', 'entry', 'boundary'}
+                    or observation['path'] != cache['path'] or observation['entry'] != entry):
+                raise ValueError('runtime cache observation differs from its inventoried file')
+            work['members'] += 1
+            work['regular_bytes'] += entry['bytes']
+    return work
+
+
 def inventory(path, *, budget=None, directory_observations=None):
     path = Path(path)
     members = {}
@@ -862,7 +898,9 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
                      roots=completion['base_' + origin + '_roots'],
                      elf_roots=completion[origin + '_elf_roots'],
                      elf_index=completion[origin + '_elf_index'],
-                     executable_binary=completion[origin + '_executable_binary'])
+                     executable_binary=completion[origin + '_executable_binary'],
+                     pre_inventory_probes=completion.get(origin + '_pre_inventory_probes', []),
+                     cache_observations=completion.get(origin + '_cache_observations', []))
         validate_runtime_roots(facts['roots'])
         if origin == 'image':
             facts['loader_cache'] = completion['image_loader_cache']
@@ -879,6 +917,16 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
                 parsed[path] = retained_file(path, entry)
         if parsed != facts['elf_index']:
             raise ValueError('runtime completion ELF index differs from retained bytes: ' + origin)
+        runtime_capture_work(facts)
+        base_entries = runtime_namespace_entries(facts)
+        for probe in facts['pre_inventory_probes']:
+            entry = base_entries.get(probe['path'])
+            if entry is None:
+                continue
+            source = content_path(entry['sha256']) if content_path is not None else byte_path(probe['path'])
+            with Path(source).open('rb') as handle:
+                if handle.read(min(4, entry['bytes'])).hex() != probe['header']:
+                    raise ValueError('runtime provider header probe differs from retained bytes')
         multiarch = completion[origin + '_multiarch']
         if not isinstance(multiarch, str) or not multiarch or '/' in multiarch:
             raise ValueError('runtime completion has an unsupported MULTIARCH')
@@ -960,10 +1008,8 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
     if (totals != closure['consumed_budget'] or totals['members'] > CAPTURE_BOUNDS['members']
             or totals['regular_bytes'] > CAPTURE_BOUNDS['regular_bytes']):
         raise ValueError('runtime completion consumed budget differs from its retained work')
-    minimum_members = sum(len(root['entries']) for facts in captured.values() for root in facts['roots'])
-    minimum_bytes = sum(entry['bytes'] for facts in captured.values() for root in facts['roots']
-                        for entry in root['entries'].values() if entry['kind'] == 'file')
-    if base != dict(members=minimum_members, regular_bytes=minimum_bytes):
+    initial_work = [runtime_capture_work(facts) for facts in captured.values()]
+    if base != {name: sum(work[name] for work in initial_work) for name in ('members', 'regular_bytes')}:
         raise ValueError('runtime completion base budget omits shadowed observation work')
     return expected_plan
 
@@ -1158,18 +1204,36 @@ def require_identity(observed, expected):
         raise ValueError('runtime ELF differs from actual kernel architecture')
 
 
-def native_providers():
-    providers = {}
+def native_provider_paths(*, budget=None, probes=None):
+    providers, seen = set(), set()
     for line in Path('/proc/self/maps').read_text().splitlines():
         parts = line.split(None, 5)
         if len(parts) != 6 or not parts[5].startswith('/'):
             continue
         path = Path(parts[5]).resolve()
-        if str(path) in providers:
+        if str(path) in seen:
             continue
+        seen.add(str(path))
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('mapped runtime provider is not a regular file: ' + str(path))
+        size = min(4, before.st_size)
+        runtime_charge(budget, members=1, regular_bytes=size)
         with path.open('rb') as handle:
-            if handle.read(4) != b'\x7fELF':
-                continue
+            header = handle.read(size)
+        if len(header) != size or runtime_stamp(before) != runtime_stamp(path.lstat()):
+            raise ValueError('mapped runtime provider changed during header observation: ' + str(path))
+        if probes is not None:
+            probes.append(dict(path=str(path), header=header.hex()))
+        if header == b'\x7fELF':
+            providers.add(str(path))
+    return sorted(providers)
+
+
+def native_providers():
+    providers = {}
+    for name in native_provider_paths():
+        path = Path(name)
         actual = inventory(path)['.']
         providers[str(path)] = dict(resolved_path=str(path), bytes=actual['bytes'], sha256=actual['sha256'])
     return dict(sorted(providers.items()))
@@ -1258,6 +1322,7 @@ def observe_container_roles(profile, expected_affinity):
         raise ValueError('installed reader has an unsupported loader override')
     if reader['affinity'] != expected_affinity or reader['native_threads'] != {name: '1' for name in THREADS}:
         raise ValueError('installed reader changed PB affinity or native bounds')
+    verify_runtime_negatives(profile.closure)
     return dict(inner=inner, installed_reader=reader, closure=closure,
                 mapped_native_providers=dict(inner_before=mapped, installed_reader=providers))
 

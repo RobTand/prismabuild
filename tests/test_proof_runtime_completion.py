@@ -1,12 +1,14 @@
 """PT draft controls adapted to the complete image observation owner."""
 import errno
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 import capture_proof_runtime as capture
 import proof_container_runtime as runtime
+from test_proof_runtime_observation import image_paths
 from test_proof_runtime_required_graph import (
     HOST_EXECUTABLE, NATIVE, graph_fixture_elf, graph_outcome, required_graph_tree,
 )
@@ -172,3 +174,38 @@ def test_image_capture_cli_requires_explicit_absolute_primary_interpreter(tmp_pa
     assert caught.value.code == 2
     assert 'image capture requires an explicit absolute primary interpreter' in capsys.readouterr().err
     assert not output.exists()
+
+
+def test_provider_header_observation_is_admitted_before_open(tmp_path, monkeypatch):
+    provider = tmp_path / 'provider.so'
+    provider.write_bytes(graph_fixture_elf())
+    mappings = tmp_path / 'maps'
+    mappings.write_text('1000-2000 r-xp 0 00:00 0 ' + str(provider) + '\n')
+    actual_path, actual_open = runtime.Path, Path.open
+    monkeypatch.setattr(runtime, 'Path', lambda value: mappings if str(value) == '/proc/self/maps' else actual_path(value))
+    opened = []
+    def provider_open(path, *args, **kwargs):
+        if path == provider:
+            opened.append(str(path))
+        return actual_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', provider_open)
+    monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'regular_bytes', 0)
+    probes = []
+    with pytest.raises(ValueError, match='capture geometry exceeds'):
+        runtime.native_provider_paths(budget=dict(members=0, regular_bytes=0,
+            deadline=time.monotonic() + 30), probes=probes)
+    assert opened == []
+    assert probes == []
+
+
+def test_image_cache_listing_follows_inventory_admission(monkeypatch, image_paths):
+    calls = []
+    monkeypatch.setattr(capture, 'native_provider_paths', lambda **options: [])
+    def cache_listing(*args, **kwargs):
+        calls.append(args)
+        return '0 libs found in cache fixture:\n'
+    monkeypatch.setattr(capture.subprocess, 'check_output', cache_listing)
+    monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'regular_bytes', 0)
+    with pytest.raises(ValueError, match='capture geometry exceeds'):
+        capture.runtime_capture('image')
+    assert calls == []

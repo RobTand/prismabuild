@@ -46,7 +46,7 @@ def test_image_extra_directory_shares_the_primary_inventory_budget(tmp_path, mon
         return real_inventory(path, budget=budget, **options)
     monkeypatch.setattr(capture, 'Path', image_fixture_path)
     monkeypatch.setattr(capture, 'observe_runtime', lambda: observation)
-    monkeypatch.setattr(capture, 'native_providers', lambda: {})
+    monkeypatch.setattr(capture, 'native_provider_paths', lambda **options: [])
     monkeypatch.setattr(capture.sysconfig, 'get_path', lambda name: str(stdlib))
     monkeypatch.setattr(capture.sysconfig, 'get_config_var', lambda name: 'fixture-native')
     monkeypatch.setattr(capture.site, 'getsitepackages', lambda: [])
