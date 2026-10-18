@@ -186,12 +186,24 @@ def preflight_image(payload):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image-child', action='store_true')
+    parser.add_argument('--versions-only', action='store_true')
     parser.add_argument('--require-clean', action='store_true')
     parser.add_argument('--image')
     parser.add_argument('--image-python')
     parser.add_argument('--host-checkpoint', type=Path)
     parser.add_argument('--source-ref', default='HEAD')
     args = parser.parse_args()
+    if args.versions_only:
+        host = subprocess.check_output(['ldd','--version'],text=True,timeout=30)
+        image = subprocess.check_output(['docker','run','--rm','--read-only','--network','none',
+            '--cap-drop','ALL','--user',str(os.getuid())+':'+str(os.getgid()),
+            '--cpuset-cpus',','.join(map(str,sorted(os.sched_getaffinity(0)))),
+            '--entrypoint','ldd',args.image,'--version'],text=True,timeout=30)
+        print('proof-runtime-glibc: ' + json.dumps(dict(host=host,image=image,
+            node=os.uname().nodename,uid=os.getuid(),affinity=sorted(os.sched_getaffinity(0)),
+            interpreter=sys.version,executable=dict(path=sys.executable,
+                bytes=Path('/proc/self/exe').stat().st_size))),flush=True)
+        return 0
     if args.image_child:
         print(json.dumps(preflight_image(json.load(sys.stdin))), flush=True)
         return 0

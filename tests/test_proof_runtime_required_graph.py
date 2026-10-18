@@ -1616,3 +1616,96 @@ def test_loader_resolution_waits_for_inherited_context_fixed_point(tmp_path):
     closure = tree.complete()
     assert tree.audit(closure, tree.retained_members(closure))
     assert graph_outcome(closure, '/h/stdlib/private/liblate.so')['terminal'] == '/h/stdlib/private/liblate.so'
+
+
+@pytest.mark.parametrize('context', ['runpath', 'default'])
+@pytest.mark.parametrize('base_present', [False, True])
+def test_ancestor_hwcaps_candidates_are_sealed(tmp_path, context, base_present):
+    tree = graph_ancestor_search_tree(tmp_path, present=base_present)
+    optimized = '/usr/lib/glibc-hwcaps/x86-64-v3/libancestor.so'
+    tree.image_file(optimized, graph_fixture_elf(marker=b'optimized-provider'))
+    if context == 'default':
+        tree.host_file('/h/stdlib/ancestor-extension.so', graph_fixture_elf(needed=('libancestor.so',)))
+        tree.diagnostic_raw = 'path.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+    closure = tree.complete()
+    assert tree.entry(closure, optimized)['sha256'] == runtime.digest(tree.physical('image', optimized).read_bytes())
+    assert tree.audit(closure, tree.retained_members(closure))
+
+
+def test_unrelated_rpath_does_not_suppress_default_evidence(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/a.so', graph_fixture_elf(needed=('libfoo.so',)))
+    tree.host_file('/h/stdlib/b.so', graph_fixture_elf(rpath=('/h/stdlib/private',)))
+    tree.host_file('/h/stdlib/private/libfoo.so', graph_fixture_elf(marker=b'unrelated-provider'))
+    tree.image_file('/usr/lib/libfoo.so', graph_fixture_elf(marker=b'default-provider'))
+    tree.diagnostic_raw = 'path.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+    closure = tree.complete()
+    assert tree.entry(closure, '/usr/lib/libfoo.so')['kind'] == 'file'
+    assert any(value['parent'] == NATIVE and value['name'] == 'libfoo.so'
+               for value in closure['directory_witnesses'].values())
+    assert tree.audit(closure, tree.retained_members(closure))
+
+
+def test_ineligible_cache_row_does_not_suppress_default_evidence(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/a.so', graph_fixture_elf(needed=('libfoo.so',)))
+    cached = NATIVE + '/glibc-hwcaps/x86-64-v4/libfoo.so'
+    tree.host_file(cached, graph_fixture_elf(marker=b'ineligible-cache-provider'))
+    tree.image_file('/usr/lib/libfoo.so', graph_fixture_elf(marker=b'ordinary-default-provider'))
+    tree.cache_listing = '1 libs found in cache fixture:\n libfoo.so (libc6,AArch64, hwcap: "x86-64-v4") => ' + cached + '\n'
+    tree.diagnostic_raw = 'path.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+    closure = tree.complete()
+    assert tree.entry(closure, '/usr/lib/libfoo.so')['kind'] == 'file'
+    assert graph_outcome(closure, cached)['terminal'] == cached
+    assert tree.audit(closure, tree.retained_members(closure))
+
+
+@pytest.mark.parametrize('token', ['$ORIGIN_SUFFIX', '$ORIGIN1', '${ORIGIN_SUFFIX}', '$LIB', '${PLATFORM}'])
+def test_dynamic_token_identifier_prefix_is_refused(tmp_path, token):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/token.so', graph_fixture_elf(runpath=('/p/' + token,)))
+    tree.image_file('/p/h/stdlib_SUFFIX/libfoo.so', graph_fixture_elf())
+    tree.image_file('/p/h/stdlib1/libfoo.so', graph_fixture_elf())
+    with pytest.raises(ValueError, match='unsupported library search token'):
+        tree.complete()
+
+
+@pytest.mark.parametrize('token', ['$ORIGIN/x', '${ORIGIN}-x'])
+def test_dynamic_origin_token_valid_boundaries_are_preserved(tmp_path, token):
+    tree = RequiredGraphFilesystem(tmp_path)
+    path = '/h/stdlib/x' if token == '$ORIGIN/x' else '/h/stdlib-x'
+    tree.image_file(path + '/libfoo.so', graph_fixture_elf())
+    tree.host_file('/h/stdlib/token.so', graph_fixture_elf(needed=('libfoo.so',), runpath=(token,)))
+    if path == '/h/stdlib/x':
+        tree.host_file(path + '/libfoo.so', graph_fixture_elf())
+    closure = tree.complete()
+    assert tree.audit(closure, tree.retained_members(closure))
+
+
+def test_absence_listings_cannot_remove_an_unretained_name(tmp_path):
+    tree = graph_ancestor_search_tree(tmp_path)
+    tree.host_file('/h/stdlib/another.so', graph_fixture_elf(needed=('libother.so',), runpath=('/usr/lib',)))
+    tree.host_file(NATIVE + '/libother.so', graph_fixture_elf())
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    forged = copy.deepcopy(closure)
+    old_key, witness = next((key,copy.deepcopy(value)) for key,value in forged['directory_witnesses'].items()
+        if value['parent'] == '/usr/lib' and value['name'] == 'libancestor.so')
+    witness['names'].remove('unrelated-search-child')
+    new_key = graph_replace_witness(forged, old_key, witness)
+    for charge in forged['completion']['charges']:
+        if charge.get('witness') == new_key:
+            charge['members'] -= 1
+            forged['consumed_budget']['members'] -= 1
+    graph_sync_namespace(tree, forged)
+    tree.checkpoint_agreement(forged)
+    with pytest.raises(ValueError, match='conflicting.*listing|listing.*differs|parent.*stamp'):
+        tree.audit(forged, retained)
+
+
+def test_unused_absolute_search_directory_is_lazy_in_both_owners(tmp_path):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.host_file('/h/stdlib/unused-runpath.so', graph_fixture_elf(runpath=('/missing',)))
+    closure = tree.complete()
+    assert not any(value['parent'] == '/missing' for value in closure['directory_witnesses'].values())
+    assert tree.audit(closure, tree.retained_members(closure))
