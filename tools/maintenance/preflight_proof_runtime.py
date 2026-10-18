@@ -118,7 +118,11 @@ def main():
                               metadata=actual)
     report.update(actual_host_elfs_verified=verified, image=args.image,
         host_credentials=dict(uid=os.getuid(),gid=os.getgid()),
-        interpreter=dict(version=sys.version,executable=sys.executable),
+        interpreter=dict(version=sys.version,version_info=list(sys.version_info[:3]),
+            executable=dict(path=sys.executable,resolved_path=str(Path(sys.executable).resolve()),
+                bytes=Path('/proc/self/exe').stat().st_size,sha256=runtime.digest(Path('/proc/self/exe').read_bytes()))),
+        affinity=sorted(os.sched_getaffinity(0)),
+        native_threads={key:os.environ.get(key) for key in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS')},
         host_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     print('proof-runtime-preflight: ' + json.dumps(report,separators=(',',':')),flush=True)
     return 0
