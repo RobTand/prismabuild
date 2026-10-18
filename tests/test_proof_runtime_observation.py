@@ -20,7 +20,8 @@ def unknown_lookup(monkeypatch, target, operations):
 
             def lookup(path, *args, _original=original, _operation=operation, **kwargs):
                 if isinstance(path, (str, bytes, os.PathLike)) and os.fspath(path) == str(target):
-                    calls.append(_operation)
+                    calls.append(dict(operation=_operation,
+                        follow_symlinks=kwargs.get('follow_symlinks', _operation != 'lstat')))
                     raise OSError(errno.ELOOP, 'scoped runtime observation lookup failure', str(target))
                 return _original(path, *args, **kwargs)
 
