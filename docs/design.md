@@ -19091,17 +19091,37 @@ path, excluding unsealed host venv site-packages. The installed reader retains
 its production spelling, isolated startup, root custody, and real unprivileged
 credentials. Executable, venv, stdlib, site, cache/tool, and library-alias roots
 retain the strict every-link rule and existing Python startup semantics. This
-contract adds no Python startup model, customization restriction, or reader
-namespace states. Completion captures a present external startup-link target
-as a narrow exact image root with complete bytes; it cannot excuse a missing
-stdlib or venv alias as an unused native link. The existing installed-reader
-alias creation remains unchanged and cannot repair a required primary path.
+contract adds no Python startup model or customization restriction. Completion
+captures a present external startup-link target as a narrow exact image root
+with complete bytes; it cannot excuse a missing stdlib or venv alias as an
+unused native link.
 
-The required graph includes primary executable spellings, the installed-reader
-spelling, independently extracted host and image PT_INTERP chains, and PT_INTERP
+Reader installation has separately sealed `before_installation` and
+`after_installation` namespace states. Only an exact image-owned absence witness
+for `/usr/bin/python3`, with stable complete `/usr/bin` child names and no-follow
+ENOENT at that leaf, authorizes the existing fixed creation of
+`/usr/bin/python3 -> reader_target`. The target remains the image executable's
+observed resolved path, with host precedence applied to its identity. The
+primary and every required primary spelling must resolve before creation;
+an alias through the absent reader refuses. The reader spelling is required
+in the post-installation graph. That state adds exactly the authorized link,
+removes its historical absence witness from active negatives, and independently
+recomputes aliases, positive origins and native requirements. Other negatives
+below the modified parent use explicit name expectations derived from the
+original observation and this one insertion, never invented post-installation
+syscall stamps. The auditor rederives both state graphs and the transition.
+Mounted verification records fresh stable before and after observations,
+requires the precise one-name `/usr/bin` delta, checks the exact raw link and
+root custody, and re-observes each state's active negatives. An existing image
+reader causes no namespace mutation and retains the existing ARM behavior.
+
+Each state has its own required graph. Both include primary executable spellings,
+independently extracted host and image PT_INTERP chains, and PT_INTERP
 and DT_NEEDED from all selected stdlib ELFs, interpreters, and recursively
-required native candidates. Completion derives these seeds from the verified
-host checkpoint and separately observed image identity. Every positive inventory
+required native candidates. The installed-reader spelling is required in both
+states when it already exists, and after creation when insertion is authorized.
+Completion derives these seeds from the verified host checkpoint and separately
+observed image identity. Every positive inventory
 alias and successful generated candidate spelling contributes its applicable
 `$ORIGIN` context, including positive aliases never observed in process mappings.
 A witnessed dangling alias contributes no positive origin. A dangling link
