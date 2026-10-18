@@ -52,6 +52,9 @@ def check_published_capture_modules(published, sources):
             spec = getattr(module, '__spec__', None)
             if path not in expected or spec is None or spec.origin != path:
                 raise ValueError('capture imported an unsealed product module: ' + name)
+            if name == 'prismabuild' and (list(module.__path__) != [str(published / 'src/prismabuild')]
+                    or list(spec.submodule_search_locations) != list(module.__path__)):
+                raise ValueError('capture product package search path is not the physical published generation')
     if published_capture_sources(published) != sources:
         raise ValueError('published capture owner sources changed during execution')
 
