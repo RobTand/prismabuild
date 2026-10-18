@@ -19057,25 +19057,81 @@ whole files, source, profile and closure as execution.
 
 A profile binds the existing native image, exact primary interpreter, separate
 installed-reader interpreter, and complete inventories of selected read-only
-host mounts and required image paths. The primary starts with `-S` and the
-existing pinned qualification dependency path, excluding unsealed host venv
-site-packages. Capture seals the selected base stdlibs and native providers.
-Its retained-byte audit checks every declared symlink and traverses PT_INTERP
-and DT_NEEDED from all selected stdlib ELFs and interpreters. The existing image
-cache, its read-only `ldconfig` listing and the captured host loader's actual
-diagnostics bind a conservative provider candidate graph. It includes declared
-RPATH/RUNPATH contexts, cache entries and variants below fully inventoried
-search directories. It never substitutes a found fallback for the real loader's
-choice. Unknown directories/candidates, loader overrides, secure mode and
-unsupported tokens or NODEFLIB refuse capture. The supported candidate format
-is native ELF64 Linux with ordinary ABI headers and world-readable files.
-GNU ABI kernel requirements must fit the actual diagnostic kernel release.
-ELF audit/filter/configuration loading and system-wide preloads refuse capture.
-Later outer, inner and reader kernels must be at least that captured kernel
-version. This conservative eligibility fence uses actual observations and
-does not direct fleet placement.
-Observed process mappings supply separate evidence for providers actually used
-during qualification.
+host mounts and required image paths. Every declared inventory member remains
+an exact retained fact. Each symlink retains its raw target and an ordered,
+replayable component-resolution outcome. Every declared link outside the selected
+native library root must resolve inside the sealed closure. The closure records
+that root explicitly as `native_library_roots`, derived from each selected
+runtime's `/usr/lib/<MULTIARCH>` inventory. Only a link declared inside that
+root and outside the derived required native graph may terminate at witnessed
+absence. The profile retains the exact expanded lookup, stable parent
+observations, and complete immediate child-name evidence. Image-owned absence
+also requires an actual no-follow ENOENT result. Host-owned absence instead
+requires a complete stable host-directory enumeration bound to the durable host
+checkpoint. A missing member-map key is not absence evidence. Unknown outcomes,
+cycles, mutation, unsupported lookups, and missing witnesses refuse capture.
+Components are looked up in order; a missing or non-directory component cannot
+be cancelled by a later `..`. Namespace authority is host-preferred only inside
+the explicit host mounts. Each expanded path outside those mounts belongs to
+the existing image.
+
+The primary starts with `-S` and the existing pinned qualification dependency
+path, excluding unsealed host venv site-packages. The installed reader retains
+its production spelling, isolated startup, root custody, and real unprivileged
+credentials. Executable, venv, stdlib, site, cache/tool, and library-alias roots
+retain the strict every-link rule and existing Python startup semantics. This
+contract adds no Python startup model, customization restriction, or reader
+namespace states. Completion captures a present external startup-link target
+as a narrow exact image root with complete bytes; it cannot excuse a missing
+stdlib or venv alias as an unused native link. The existing installed-reader
+alias creation remains unchanged and cannot repair a required primary path.
+
+The required graph includes primary executable spellings, the installed-reader
+spelling, independently extracted host and image PT_INTERP chains, and PT_INTERP
+and DT_NEEDED from all selected stdlib ELFs, interpreters, and recursively
+required native candidates. Completion derives these seeds from the verified
+host checkpoint and separately observed image identity. Every positive inventory
+alias and successful generated candidate spelling contributes its applicable
+`$ORIGIN` context, including positive aliases never observed in process mappings.
+A witnessed dangling alias contributes no positive origin. A dangling link
+selected by a conservative basename query, cache row, absolute dependency, or
+PT chain is required and refuses even when another provider works. Requiredness
+and positive alias origins converge together and are independently replayed;
+a serialized off-graph label grants no exemption.
+
+The existing image cache, its read-only `ldconfig` listing and the captured host
+loader's actual mounted diagnostics bind the conservative provider candidate
+graph. It includes both RPATH and RUNPATH contexts, all positive alias origins,
+matching cache entries, and variants below fully inventoried search directories,
+with the existing ordered default-directory rules. It never substitutes a found
+fallback for the real loader's choice. Unknown directories or candidates,
+required dangling candidates, loader overrides, secure mode, unsupported tokens,
+and NODEFLIB refuse capture. No tentative loader diagnostics are placed in the
+host checkpoint. If the authoritative mounted-loader audit needs uncaptured
+facts, capture refuses. The supported candidate format is native ELF64 Linux
+with ordinary ABI headers and world-readable files. GNU ABI kernel requirements
+must fit the actual diagnostic kernel release. ELF audit, filter, and
+configuration loading and system-wide preloads refuse capture. Later outer,
+inner, and reader kernels must be at least that captured kernel version. This
+eligibility fence uses actual observations and does not direct fleet placement.
+
+All regular inventory members and selected runtime files retain complete
+archived bytes, including original image observations hidden by host mounts.
+Shallow directory-navigation and child-name witnesses make no file-content
+claim and cannot stand in for complete search inventories. The image child
+receives the durable host checkpoint, explicit host PT seed, consumed member
+and regular-byte counters, and remaining outer allowance. Original base-image
+work remains charged even when host mounts shadow it. Newly retained entries
+and witness names consume the existing budget before content reads or enqueue;
+rechecks spend the same monotonic deadline and their recorded observation work.
+No completion iteration or graph discovery publishes progress. Mounted
+verification rechecks inventories and re-observes negative witnesses, including
+a negative target that becomes present. The retained auditor reconstructs path
+outcomes, required seeds, budgets, and the native graph from the full
+source-bound evidence and archived bytes. Profile, closure, capture, and binding
+schemas are explicitly versioned; historical profiles retain their original
+pinned contract. Observed process mappings supply separate evidence for
+providers actually used during qualification.
 
 Capture runs through published PB with the exact interpreter and existing image
 as placement dependencies. It publishes an archive through the published CAS
