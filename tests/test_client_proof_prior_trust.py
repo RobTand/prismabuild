@@ -70,7 +70,7 @@ def _retain_proof(publication, kind):
     target.chmod(mode)
     if kind != "trusted":
         writer = subprocess.run(
-            [sys.executable, "-I", "-c",
+            [str(Path(sys.executable).resolve(strict=True)), "-I", "-c",
              "import os, pathlib, sys; assert (os.getuid(), os.getgid()) == (65534, 65533); "
              "pathlib.Path(sys.argv[1]).write_bytes(sys.stdin.buffer.read())", str(target)],
             input=data, capture_output=True, timeout=15,
