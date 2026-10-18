@@ -197,6 +197,13 @@ def runtime_capture(origin):
     return result
 
 
+def capture_private_directory(output):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    private = output.parent / (output.name + '.members')
+    private.mkdir()
+    return private
+
+
 def main(argv=None):
     deadline = time.monotonic() + CAPTURE_BOUNDS['runtime_seconds']
     def remaining():
@@ -234,9 +241,7 @@ def main(argv=None):
     root = Path(__file__).resolve().parents[1]
     if args.output.absolute() != root / relative or Path.cwd().resolve() != root:
         raise ValueError('profile must be an explicit snapshot-local derived capture output')
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    private = args.output.parent / (args.output.name + '.members')
-    private.mkdir()
+    private = capture_private_directory(args.output)
     progress_helper = Path(os.environ['PRISMABUILD_ACTION_PROGRESS_HELPER']).resolve(strict=True)
     progress = runpy.run_path(str(progress_helper))
     if (progress['declared_phases']() != CAPTURE_PHASES
