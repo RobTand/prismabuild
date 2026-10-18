@@ -817,3 +817,92 @@ def test_mounted_positive_navigation_component_change_refuses(required_graph_tre
     assert (parent / 'sitecustomize.py').read_bytes() == (redirected / 'sitecustomize.py').read_bytes()
     with pytest.raises((OSError, ValueError), match='directory|component|navigation'):
         runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+
+
+def test_mount_created_ancestors_close_primary_alias(required_graph_tree):
+    tree = required_graph_tree
+    shutil.rmtree(tree.physical('image', '/h'))
+    closure = tree.complete()
+    assert graph_outcome(closure, PRIMARY)['terminal'] == HOST_EXECUTABLE
+    assert any(step['path'] == '/usr/bin/python3'
+               for step in closure['link_outcomes'][PRIMARY]['chain'])
+    for path, names in (('/h', ['stdlib', 'venv']), ('/h/venv', ['bin', 'pyvenv.cfg'])):
+        assert closure['components'][path] == dict(origin='mount', entry=dict(kind='directory'), names=names)
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    tree.mount_host_roots()
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+    tree.physical('image', '/h/venv').chmod(0o750)
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'file'])
+def test_image_host_mount_ancestor_refuses_non_directory(required_graph_tree, kind):
+    tree = required_graph_tree
+    shutil.rmtree(tree.physical('image', '/h'))
+    if kind == 'symlink':
+        tree.directory('image', '/image-h')
+        tree.image_link('/h', '/image-h')
+    else:
+        tree.image_file('/h', b'cannot create a host bind destination below this file')
+    host, image, checkpoint, budget = tree.inputs()
+    observer = capture.ImageClosureObserver(host, image, budget, checkpoint, tree.image_root)
+    with pytest.raises(ValueError, match='mount.*ancestor.*directory'):
+        observer.lookup('/h')
+    with pytest.raises(ValueError, match='mount.*ancestor.*directory'):
+        tree.complete()
+
+
+@pytest.mark.parametrize('state', ['off_graph', 'required', 'tampered'])
+def test_mount_created_missing_sibling_requires_plan_witness(required_graph_tree, state):
+    tree = required_graph_tree
+    shutil.rmtree(tree.physical('image', '/h'))
+    spelling, missing = NATIVE + '/unused.pc', '/h/venv/not-mounted'
+    tree.host_link(spelling, missing)
+    if state == 'required':
+        tree.host_file('/h/stdlib/mod.so', graph_fixture_elf(needed=(missing,)))
+        with pytest.raises(ValueError, match='required.*absent.*not-mounted'):
+            tree.complete()
+        return
+    closure = tree.complete()
+    outcome = closure['link_outcomes'][spelling]
+    assert outcome['status'] == 'witnessed_absent'
+    assert outcome['missing'] == missing
+    witness = closure['directory_witnesses'][outcome['witness']]
+    assert witness == dict(parent='/h/venv', name='not-mounted', names=['bin', 'pyvenv.cfg'],
+                          authority='mount', operation='mount_plan_children')
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    if state == 'tampered':
+        forged = copy.deepcopy(closure)
+        forged['components']['/h/venv']['names'].append('invented')
+        changed = copy.deepcopy(witness)
+        changed['names'].append('invented')
+        graph_replace_witness(forged, outcome['witness'], changed)
+        graph_sync_namespace(tree, forged)
+        tree.checkpoint_agreement(forged)
+        with pytest.raises(ValueError, match='mount.*(children|listing|component)'):
+            tree.audit(forged, retained)
+        return
+    tree.mount_host_roots()
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+    tree.image_file(missing, b'a mounted sibling appeared')
+    with pytest.raises(ValueError, match='mount.*(children|listing)|absen|negative'):
+        runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+
+
+@pytest.mark.parametrize('change', ['extra_child', 'symlink'])
+def test_mount_created_directory_is_verified_after_mount(required_graph_tree, change):
+    tree = required_graph_tree
+    shutil.rmtree(tree.physical('image', '/h'))
+    closure = tree.complete()
+    tree.mount_host_roots()
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+    if change == 'extra_child':
+        tree.image_file('/h/venv/unplanned', b'extra child is outside the mount plan')
+    else:
+        parent = tree.physical('image', '/h/venv')
+        parent.rename(parent.with_name('redirected-venv'))
+        parent.symlink_to('redirected-venv', target_is_directory=True)
+    with pytest.raises((OSError, ValueError), match='mount|directory|component'):
+        runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
