@@ -61,11 +61,12 @@ def graph_fixture_elf(*, interpreter=None, needed=(), runpath=(), rpath=(), mach
 
 
 class RequiredGraphFilesystem:
-    def __init__(self, root):
+    def __init__(self, root, *, host_executable=HOST_EXECUTABLE):
         self.host_root = root / 'host'
         self.image_root = root / 'image'
+        self.host_executable = host_executable
         self.host_paths = ['/h/stdlib', NATIVE, '/h/venv/bin',
-                           '/h/venv/pyvenv.cfg', HOST_EXECUTABLE]
+                           '/h/venv/pyvenv.cfg', self.host_executable]
         self.image_paths = ['/i/stdlib', NATIVE, HOST_EXECUTABLE,
                             '/etc/ld.so.cache', '/sbin/ldconfig']
         self.image_executable = HOST_EXECUTABLE
@@ -78,7 +79,7 @@ class RequiredGraphFilesystem:
         self.host_link(PRIMARY, 'python3')
         self.host_link('/h/venv/bin/python3', '/usr/bin/python3')
         self.host_link('/h/venv/bin/python3.12', 'python3')
-        self.host_file(HOST_EXECUTABLE, graph_fixture_elf(interpreter=LOADER, marker=b'host'))
+        self.host_file(self.host_executable, graph_fixture_elf(interpreter=LOADER, marker=b'host'))
         self.image_file('/i/stdlib/plain.py', b'IMAGE_VALUE = 1\n')
         self.image_file(NATIVE + '/ld-fixture.so', graph_fixture_elf(marker=b'hidden-image-loader'))
         self.image_file(HOST_EXECUTABLE, graph_fixture_elf(interpreter=LOADER, marker=b'image'))
@@ -140,7 +141,7 @@ class RequiredGraphFilesystem:
                 if entry['kind'] == 'file':
                     logical = str(Path(spelling) / name)
                     elf_index[logical] = runtime.elf_requirements(physical / name)
-        executable_path = HOST_EXECUTABLE if origin == 'host' else self.image_executable
+        executable_path = self.host_executable if origin == 'host' else self.image_executable
         executable_bytes = self.physical(origin, executable_path).read_bytes()
         observation = dict(version=[3, 12, 3], elf_machine=183,
             executable=dict(path=PRIMARY if origin == 'host' else executable_path,
@@ -187,7 +188,7 @@ class RequiredGraphFilesystem:
         closure.update(schema=runtime.CLOSURE_SCHEMA, graph_policy='required-runtime-graph-v1',
             elf_machine=183, elf_roots=sorted(set(host['elf_roots'] + image['elf_roots'])))
         loader_entry = self.entry(closure, NATIVE + '/ld-fixture.so')
-        host_pt, = host['elf_index'][HOST_EXECUTABLE]['interpreters']
+        host_pt, = host['elf_index'][self.host_executable]['interpreters']
         closure['loader'] = dict(schema='prismabuild.proof_loader_search.v1',
             cache=image['loader_cache'], diagnostics=dict(
                 raw='path.system_dirs[0]="' + NATIVE + '/"\nuname.release="6.8.0"\n',
@@ -924,7 +925,7 @@ def graph_reader_transition_fixture(tree, *, primary_through_reader=False):
     tree.image_link('/usr/local/bin/python3', 'python3.12')
     if not primary_through_reader:
         tree.physical('host', '/h/venv/bin/python3').unlink()
-        tree.host_link('/h/venv/bin/python3', HOST_EXECUTABLE)
+        tree.host_link('/h/venv/bin/python3', tree.host_executable)
     return tree
 
 
@@ -952,3 +953,319 @@ def test_reader_creation_cannot_repair_primary_namespace(required_graph_tree):
     tree = graph_reader_transition_fixture(required_graph_tree, primary_through_reader=True)
     with pytest.raises(ValueError, match='required runtime alias.*' + PRIMARY):
         tree.complete()
+
+
+def test_reader_creation_preserves_direct_python314_primary_route(tmp_path):
+    tree = graph_reader_transition_fixture(RequiredGraphFilesystem(
+        tmp_path / 'python314-route', host_executable='/usr/bin/python3.14'))
+    closure = tree.complete()
+    installation = closure['reader_installation']
+    assert installation['path'] == '/usr/bin/python3'
+    assert installation['target'] == '/usr/local/bin/python3.12'
+    assert installation['absent_before']['status'] == 'witnessed_absent'
+    assert installation['absent_before']['missing'] == '/usr/bin/python3'
+    assert installation['entry'] == dict(kind='symlink', mode=0o777,
+                                         target=installation['target'])
+    before = runtime.runtime_namespace_state(closure, 'before_installation')
+    after = runtime.runtime_namespace_state(closure, 'after_installation')
+    assert runtime.replay_runtime_path(before, PRIMARY).terminal == '/usr/bin/python3.14'
+    assert runtime.replay_runtime_path(after, PRIMARY).terminal == '/usr/bin/python3.14'
+    assert runtime.replay_runtime_path(after, '/usr/bin/python3').terminal == tree.image_executable
+    audit = tree.audit(closure, tree.retained_members(closure))
+    pre_native = audit['namespace_states']['before_installation']['native_audit']
+    post_native = audit['namespace_states']['after_installation']['native_audit']
+    assert audit['native_audit'] == pre_native
+    assert post_native['symlinks'] == pre_native['symlinks'] + 1
+    assert post_native['symlinks_sha256'] != pre_native['symlinks_sha256']
+
+
+def test_existing_image_reader_retains_both_state_identities(required_graph_tree):
+    tree = required_graph_tree
+    closure = tree.complete()
+    assert closure['reader_installation'] is None
+    assert set(closure['namespace_states']) == {'before_installation', 'after_installation'}
+    for state in closure['namespace_states']:
+        view = runtime.runtime_namespace_state(closure, state)
+        assert runtime.replay_runtime_path(view, PRIMARY).terminal == HOST_EXECUTABLE
+        assert runtime.replay_runtime_path(view, '/usr/bin/python3').terminal == HOST_EXECUTABLE
+        assert view['plan']['reader_identity'] == closure['plan']['reader_identity']
+    audit = tree.audit(closure, tree.retained_members(closure))
+    assert (audit['namespace_states']['before_installation']['native_audit']
+            == audit['namespace_states']['after_installation']['native_audit'])
+    assert os.readlink(tree.physical('image', '/usr/bin/python3')) == 'python3.12'
+
+
+@pytest.mark.parametrize('provider', ['native', 'wrong_machine'])
+def test_reader_creation_promotes_off_graph_alias_origin(required_graph_tree, provider):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    spelling = NATIVE + '/unused-reader.pc'
+    tree.host_link(spelling, '/usr/bin/python3')
+    tree.image_file(tree.image_executable, graph_fixture_elf(interpreter=LOADER,
+        needed=('libreader.so',), runpath=('$ORIGIN/private',), marker=b'image-reader-origin'))
+    tree.image_file('/usr/local/bin/private/libreader.so', graph_fixture_elf(marker=b'physical-origin'))
+    tree.host_file(NATIVE + '/private/libreader.so', graph_fixture_elf(marker=b'native-alias-origin'))
+    tree.image_file('/usr/bin/private/libreader.so', graph_fixture_elf(
+        machine=62 if provider == 'wrong_machine' else 183, marker=b'created-reader-origin'))
+    closure = tree.complete()
+    before = runtime.runtime_namespace_state(closure, 'before_installation')
+    after = runtime.runtime_namespace_state(closure, 'after_installation')
+    assert graph_outcome(before, spelling)['status'] == 'witnessed_absent'
+    assert graph_outcome(after, spelling)['terminal'] == tree.image_executable
+    assert tree.entry(closure, '/usr/bin/private/libreader.so')['kind'] == 'file'
+    pre_native = runtime.audit_native_closure(before, lambda path: tree.bytes_path(closure, path))
+    retained = tree.retained_members(closure)
+    if provider == 'wrong_machine':
+        with pytest.raises(ValueError, match='unsupported architecture'):
+            tree.audit(closure, retained)
+        return
+    audit = tree.audit(closure, retained)
+    assert audit['namespace_states']['before_installation']['native_audit'] == pre_native
+    assert (audit['namespace_states']['after_installation']['native_audit']['search_directories_sha256']
+            != pre_native['search_directories_sha256'])
+
+
+def test_reader_creation_rederives_sibling_negative_parent_names(required_graph_tree):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    spelling = NATIVE + '/unrelated.pc'
+    tree.host_link(spelling, '/usr/bin/unrelated-absent')
+    closure = tree.complete()
+    before = runtime.runtime_namespace_state(closure, 'before_installation')
+    after = runtime.runtime_namespace_state(closure, 'after_installation')
+    pre_negative = graph_outcome(before, spelling)
+    post_negative = graph_outcome(after, spelling)
+    assert pre_negative['status'] == post_negative['status'] == 'witnessed_absent'
+    assert pre_negative['witness'] != post_negative['witness']
+    pre_names = before['directory_witnesses'][pre_negative['witness']]['names']
+    post_names = after['directory_witnesses'][post_negative['witness']]['names']
+    assert 'python3' not in pre_names
+    assert post_names == sorted([*pre_names, 'python3'])
+    creation_key = closure['reader_installation']['absent_before']['witness']
+    assert creation_key not in after['directory_witnesses']
+    tree.mount_host_roots()
+    observed_before = runtime.observe_reader_namespace(closure, 'before_installation', image_root=tree.image_root)
+    assert observed_before['names'] == pre_names
+    tree.image_link('/usr/bin/python3', closure['reader_installation']['target'])
+    observed_after = runtime.observe_reader_namespace(closure, 'after_installation', image_root=tree.image_root)
+    assert observed_after['names'] == post_names
+    runtime.verify_runtime_negatives(after, image_root=tree.image_root)
+    with pytest.raises(ValueError, match='absen|negative|appeared|directory changed'):
+        runtime.verify_runtime_negatives(before, image_root=tree.image_root)
+
+
+def test_retained_state_auditor_rejects_coherent_stale_reader_negative(required_graph_tree):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    forged = copy.deepcopy(closure)
+    before = runtime.runtime_namespace_state(forged, 'before_installation')
+    after = runtime.runtime_namespace_state(forged, 'after_installation')
+    absence = forged['reader_installation']['absent_before']
+    stale_witnesses = dict(after['directory_witnesses'])
+    stale_witnesses[absence['witness']] = before['directory_witnesses'][absence['witness']]
+    after_record = forged['namespace_states']['after_installation']
+    after_record['link_outcomes']['/usr/bin/python3'] = copy.deepcopy(absence)
+    after_record['directory_witnesses_sha256'] = runtime.digest(runtime.canonical(stale_witnesses))
+    assert '/usr/bin/python3' in after_record['required_spellings']
+    graph_sync_namespace(tree, forged)
+    tree.checkpoint_agreement(forged)
+    with pytest.raises(ValueError, match='namespace|state|reader|stale'):
+        tree.audit(forged, retained)
+
+
+@pytest.mark.parametrize('source', ['image_dangling', 'host_dangling', 'missing_parent'])
+def test_reader_creation_refuses_unauthorized_absence_authority(tmp_path, source):
+    executable = '/opt/primary/python3.14' if source == 'missing_parent' else HOST_EXECUTABLE
+    tree = graph_reader_transition_fixture(RequiredGraphFilesystem(
+        tmp_path / source, host_executable=executable))
+    if source == 'image_dangling':
+        tree.directory('image', '/missing-image-reader')
+        tree.image_link('/usr/bin/python3', '/missing-image-reader/python3')
+    elif source == 'host_dangling':
+        tree.directory('host', '/host-reader-target')
+        tree.host_paths.append('/host-reader-target')
+        tree.image_link('/usr/bin/python3', '/host-reader-target/python3')
+    else:
+        shutil.rmtree(tree.physical('image', '/usr/bin'))
+    with pytest.raises(ValueError, match='reader|alias.*absen|absen.*reader|required runtime'):
+        tree.complete()
+
+
+def graph_observed_reader_transition(tree, closure):
+    tree.mount_host_roots()
+    before = runtime.observe_reader_namespace(closure, 'before_installation', image_root=tree.image_root)
+    path = tree.image_link('/usr/bin/python3', closure['reader_installation']['target'])
+    after = runtime.observe_reader_namespace(closure, 'after_installation', image_root=tree.image_root)
+    info = path.lstat()
+    custody = dict(path='/usr/bin/python3', existed_before=False, created_symlink=True,
+        target=os.readlink(path), uid=info.st_uid, gid=info.st_gid, mode=info.st_mode & 0o7777)
+    return before, after, custody
+
+
+def graph_retained_root_custody_claim(before, after, custody):
+    """Pure replay inputs assert root custody; real fixture owners are logged."""
+    print('reader-transition actual fixture custody:', dict(
+        before_parent_uid=before['parent_uid'], after_parent_uid=after['parent_uid'],
+        reader_uid=after['uid'], reader_gid=after['gid']))
+    claimed_before, claimed_after, claimed_custody = map(copy.deepcopy, (before, after, custody))
+    for observation in (claimed_before, claimed_after):
+        observation['parent_uid'] = observation['parent_gid'] = 0
+        if observation['entry'] is not None:
+            observation['uid'] = observation['gid'] = 0
+    claimed_custody['uid'] = claimed_custody['gid'] = 0
+    return claimed_before, claimed_after, claimed_custody
+
+
+@pytest.mark.parametrize('change', ['target', 'extra_name', 'removed_name'])
+def test_reader_transition_replay_rejects_actual_link_or_name_delta(required_graph_tree, change):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    tree.image_file('/usr/bin/preserved-name', b'existing complete parent name')
+    closure = tree.complete()
+    before, after, custody = graph_observed_reader_transition(tree, closure)
+    baseline = graph_retained_root_custody_claim(before, after, custody)
+    runtime.verify_reader_namespace_transition(closure, *baseline)
+    if change == 'target':
+        path = tree.physical('image', '/usr/bin/python3')
+        path.unlink()
+        tree.image_link('/usr/bin/python3', tree.host_executable)
+        custody['target'] = os.readlink(path)
+        assert custody['target'] != closure['reader_installation']['target']
+    elif change == 'extra_name':
+        tree.image_file('/usr/bin/unplanned', b'not part of the single-reader insertion')
+    else:
+        tree.physical('image', '/usr/bin/preserved-name').unlink()
+    altered = runtime.observe_reader_namespace(closure, 'after_installation', image_root=tree.image_root)
+    claimed = graph_retained_root_custody_claim(before, altered, custody)
+    with pytest.raises(ValueError, match='reader|target|names|delta|transition'):
+        runtime.verify_reader_namespace_transition(closure, *claimed)
+
+
+def test_reader_transition_replay_rejects_unstable_parent_claim(required_graph_tree):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    closure = tree.complete()
+    physical = graph_observed_reader_transition(tree, closure)
+    before, after, custody = graph_retained_root_custody_claim(*physical)
+    runtime.verify_reader_namespace_transition(closure, before, after, custody)
+    changed = copy.deepcopy(after)
+    changed['after'][1] += 1
+    assert changed['before'] != changed['after']
+    with pytest.raises(ValueError, match='stable|changed|parent|observation'):
+        runtime.verify_reader_namespace_transition(closure, before, changed, custody)
+
+
+def test_reader_transition_rejects_actual_nonroot_link_custody(required_graph_tree):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    closure = tree.complete()
+    before, after, custody = graph_observed_reader_transition(tree, closure)
+    path = tree.physical('image', '/usr/bin/python3')
+    if os.geteuid() == 0:
+        os.chown(path, 1, 1, follow_symlinks=False)
+        after = runtime.observe_reader_namespace(closure, 'after_installation', image_root=tree.image_root)
+        info = path.lstat()
+        custody.update(uid=info.st_uid, gid=info.st_gid)
+    assert after['uid'] != 0 or after['gid'] != 0
+    assert custody['uid'] == after['uid'] and custody['gid'] == after['gid']
+    claimed_before = copy.deepcopy(before)
+    claimed_after = copy.deepcopy(after)
+    for observation in (claimed_before, claimed_after):
+        observation['parent_uid'] = observation['parent_gid'] = 0
+    with pytest.raises(ValueError, match='custody|root|uid|gid|owner'):
+        runtime.verify_reader_namespace_transition(closure, claimed_before, claimed_after, custody)
+
+
+@pytest.mark.parametrize('tamper', ['state', 'after_maps', 'target', 'custody'])
+def test_retained_capture_auditor_checks_reader_transition_records(required_graph_tree, tamper):
+    tree = graph_reader_transition_fixture(required_graph_tree)
+    closure = tree.complete()
+    assert tree.audit(closure, tree.retained_members(closure))
+    physical = graph_observed_reader_transition(tree, closure)
+    before_observed, after_observed, custody = graph_retained_root_custody_claim(*physical)
+    before = runtime.runtime_namespace_state(closure, 'before_installation')
+    after = runtime.runtime_namespace_state(closure, 'after_installation')
+    verification = dict(runtime.runtime_closure_verification(before),
+        namespace_states=dict(before_installation=before_observed, after_installation=after_observed),
+        after_verification=runtime.runtime_closure_verification(after))
+    auditor = runpy.run_path(str(Path(__file__).resolve().parents[1]
+        / 'tools/maintenance/verify_proof_runtime_capture.py'))
+    verify = auditor['verify_capture_reader_states']
+    verify(closure, verification, custody, runtime.__dict__)
+    forged, forged_custody = copy.deepcopy(verification), copy.deepcopy(custody)
+    if tamper == 'state':
+        forged['namespace_states']['after_installation']['state'] = 'before_installation'
+    elif tamper == 'after_maps':
+        maps = forged['after_verification']['member_maps']
+        maps[next(iter(maps))]['members'] += 1
+        forged['after_verification']['member_maps_sha256'] = runtime.digest(runtime.canonical(maps))
+    elif tamper == 'target':
+        forged['namespace_states']['after_installation']['entry']['target'] = HOST_EXECUTABLE
+        forged_custody['target'] = HOST_EXECUTABLE
+    else:
+        forged['namespace_states']['after_installation']['uid'] = 1
+        forged_custody['uid'] = 1
+    with pytest.raises(ValueError, match='capture mounted|reader|namespace|post-installation|custody'):
+        verify(closure, forged, forged_custody, runtime.__dict__)
+
+
+@pytest.mark.parametrize('reader', ['absent', 'existing'])
+def test_profile_loader_accepts_and_binds_reader_namespace_states(required_graph_tree, reader):
+    tree = required_graph_tree
+    if reader == 'absent':
+        tree = graph_reader_transition_fixture(tree)
+    closure = tree.complete()
+    closure['audit'] = tree.audit(closure, tree.retained_members(closure))
+    closure['sha256'] = runtime.digest(runtime.canonical(closure))
+    profile = dict(schema=runtime.PROFILE_SCHEMA, image='sha256:' + '0' * 64,
+        primary={name: copy.deepcopy(tree.host_checkpoint['observation'][name])
+                 for name in ('version', 'executable', 'elf_machine')},
+        installed_reader=dict(copy.deepcopy(closure['plan']['reader_identity']),
+            uid=65534, gid=65534, link_target=closure['plan']['reader_target']),
+        closure=closure)
+    root = tree.host_root.parent
+    path = root / 'sealed-reader-profile.json'
+    path.write_bytes(runtime.canonical(profile))
+    loaded = runtime.load_profile(path, root)
+    assert set(loaded.closure['namespace_states']) == {'before_installation', 'after_installation'}
+    assert loaded.installed_reader == profile['installed_reader']
+    assert (loaded.closure['reader_installation'] is None) == (reader == 'existing')
+    forged = copy.deepcopy(profile)
+    forged['installed_reader']['link_target'] = '/not-the-derived-reader'
+    path.write_bytes(runtime.canonical(forged))
+    with pytest.raises(ValueError, match='reader.*derived|reader.*completion identity'):
+        runtime.load_profile(path, root)
+
+
+def test_reader_absence_parent_names_include_host_file_mount_destination(tmp_path):
+    tree = graph_reader_transition_fixture(RequiredGraphFilesystem(
+        tmp_path / 'reader-parent-host-mount', host_executable='/usr/bin/python3.14'))
+    assert not tree.physical('image', '/usr/bin/python3.14').exists()
+    closure = tree.complete()
+    installation = closure['reader_installation']
+    raw_witness = closure['directory_witnesses'][installation['absent_before']['witness']]
+    assert raw_witness['parent'] == '/usr/bin' and raw_witness['authority'] == 'image'
+    assert 'python3' not in raw_witness['names']
+    assert 'python3.14' not in raw_witness['names']
+    before = runtime.runtime_namespace_state(closure, 'before_installation')
+    after = runtime.runtime_namespace_state(closure, 'after_installation')
+    tree.mount_host_roots()
+    mounted_primary = tree.physical('image', '/usr/bin/python3.14')
+    assert mounted_primary.is_file()
+    assert runtime.digest(mounted_primary.read_bytes()) == tree.entry(closure, '/usr/bin/python3.14')['sha256']
+    runtime.verify_runtime_negatives(before, image_root=tree.image_root)
+    observed_before = runtime.observe_reader_namespace(closure, 'before_installation', image_root=tree.image_root)
+    assert observed_before['names'] == sorted([*raw_witness['names'], 'python3.14'])
+    tree.image_link('/usr/bin/python3', installation['target'])
+    runtime.verify_runtime_negatives(after, image_root=tree.image_root)
+    observed_after = runtime.observe_reader_namespace(closure, 'after_installation', image_root=tree.image_root)
+    assert observed_after['names'] == sorted([*observed_before['names'], 'python3'])
+    custody = dict(path='/usr/bin/python3', existed_before=False, created_symlink=True,
+        target=observed_after['entry']['target'], uid=observed_after['uid'], gid=observed_after['gid'],
+        mode=observed_after['entry']['mode'])
+    claimed_before, claimed_after, claimed_custody = graph_retained_root_custody_claim(
+        observed_before, observed_after, custody)
+    runtime.verify_reader_namespace_transition(closure, claimed_before, claimed_after, claimed_custody)
+    verification = dict(runtime.runtime_closure_verification(before),
+        namespace_states=dict(before_installation=claimed_before, after_installation=claimed_after),
+        after_verification=runtime.runtime_closure_verification(after))
+    auditor = runpy.run_path(str(Path(__file__).resolve().parents[1]
+        / 'tools/maintenance/verify_proof_runtime_capture.py'))
+    auditor['verify_capture_reader_states'](closure, verification, claimed_custody, runtime.__dict__)
