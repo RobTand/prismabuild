@@ -1369,3 +1369,30 @@ def test_customization_unjustified_extra_host_file_root_refuses(tmp_path):
     tree.checkpoint_agreement(closure)
     with pytest.raises(ValueError, match='host root.*selection|unjustified host|host.*root.*deriv'):
         tree.audit(closure, retained)
+
+
+@pytest.mark.parametrize('tamper', ['derivation', 'custody', 'component'])
+def test_customization_semantic_replay_rejects_coherent_tampering(tmp_path, tamper):
+    tree = graph_customization_tree(tmp_path)
+    closure = tree.complete()
+    retained = tree.retained_members(closure)
+    assert tree.audit(closure, retained)
+    forged = copy.deepcopy(closure)
+    completion = forged['completion']
+    if tamper == 'derivation':
+        completion['host_customization_roots'][0]['target'] = '/etc/unjustified.py'
+    else:
+        for probe in completion['host_customization_probes']:
+            if tamper == 'custody' and probe['path'] == CUSTOMIZATION_TARGET:
+                probe['uid'] = 1234
+            elif tamper == 'component' and probe['path'] == '/h/stdlib/sitecustomize.py':
+                probe['entry']['target'] = '/etc/unjustified.py'
+    for name in ('customization_roots', 'customization_probes'):
+        tree.host_checkpoint[name] = copy.deepcopy(completion['host_' + name])
+    raw = runtime.canonical(dict(phase='host_inventory', units=1, value=tree.host_checkpoint))
+    tree.host_descriptor = dict(sha256=runtime.digest(raw), bytes=len(raw))
+    completion['host_checkpoint'] = copy.deepcopy(tree.host_descriptor)
+    graph_sync_namespace(tree, forged)
+    tree.checkpoint_agreement(forged)
+    with pytest.raises(ValueError, match='customization.*(selection|inventory)|customization roots'):
+        tree.audit(forged, retained)

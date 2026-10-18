@@ -165,16 +165,23 @@ def test_host_customization_file_root_selection(tmp_path, monkeypatch, name, sta
     for path in (stdlib, native / 'fixture-native', venv / 'bin'):
         path.mkdir(parents=True)
     executable = tmp_path / 'python'
-    executable.write_bytes(b'fixture interpreter')
+    if state == 'selected':
+        executable = Path('/proc/self/exe').resolve(strict=True)
+        assert executable.is_file() and executable.stat().st_uid == 0
+    else:
+        executable.write_bytes(b'fixture interpreter')
     (venv / 'bin' / 'python').symlink_to(executable)
     (venv / 'pyvenv.cfg').write_bytes(b'home = fixture\n')
     # This real root-owned file is read only. No privilege or compiler is needed.
     target = Path('/etc/hostname')
     assert target.is_file() and target.stat().st_uid == 0
-    if state in ('missing', 'nonroot', 'selected'):
-        target = (stdlib if state == 'selected' else tmp_path) / 'customization-target'
-        if state != 'missing':
+    if state == 'selected':
+        target = executable
+    elif state in ('missing', 'nonroot'):
+        target = tmp_path / 'customization-target'
+        if state == 'nonroot':
             target.write_bytes(b'CUSTOMIZATION = True\n')
+            assert target.stat().st_uid != 0
     (stdlib / name).symlink_to(target)
     observation = dict(executable=dict(path=str(venv / 'bin' / 'python'),
         resolved_path=str(executable)), prefix=str(venv), sys_path=[],
@@ -195,5 +202,8 @@ def test_host_customization_file_root_selection(tmp_path, monkeypatch, name, sta
         assert actual['customization_roots'] == [dict(link=str(stdlib / name), target=str(target))]
         assert actual['inventory_budget'] == runtime.runtime_capture_work(actual)
     else:
-        assert str(target) not in roots
+        if state == 'selected':
+            assert roots[str(target)]['entries']['.'] == runtime.inventory(target)['.']
+        else:
+            assert str(target) not in roots
         assert actual.get('customization_roots', []) == []
