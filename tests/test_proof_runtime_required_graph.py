@@ -876,9 +876,12 @@ def test_mount_created_missing_sibling_requires_plan_witness(required_graph_tree
     assert tree.audit(closure, retained)
     if state == 'tampered':
         forged = copy.deepcopy(closure)
-        forged['components']['/h/venv']['names'].append('invented')
+        forged['components']['/h/venv']['names'].append('zz-invented')
         changed = copy.deepcopy(witness)
-        changed['names'].append('invented')
+        changed['names'].append('zz-invented')
+        assert changed['names'] == sorted(set(changed['names']))
+        assert changed['name'] not in changed['names']
+        assert forged['components']['/h/venv']['names'] == changed['names']
         graph_replace_witness(forged, outcome['witness'], changed)
         graph_sync_namespace(tree, forged)
         tree.checkpoint_agreement(forged)
