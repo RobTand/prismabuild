@@ -19203,7 +19203,12 @@ major/minor must be at least 2.37. Missing, unparsable, non-release or older
 versions refuse. Every PT_INTERP in the runtime graph, including the primary,
 installed reader and every ELF candidate, must resolve in each namespace state
 to this single diagnosed loader terminal. A distinct terminal refuses with
-"distinct runtime loader is not admitted". Distinct loaders and legacy hwcap,
+"distinct runtime loader is not admitted". The mounted primary and selected
+reader target must each have exactly one PT_INTERP in every namespace state.
+A PT-free or multi-PT executable in either role refuses with "reader loading
+implementation cannot be bound to the diagnosed loader". Ordinary shared-library
+candidates may lack PT_INTERP; static embedded loaders are not modeled.
+Distinct loaders and legacy hwcap,
 AT_PLATFORM and tls subdirectory searches are not modeled. Supported dynamic string expansion has one parser: `$ORIGIN` must
 end at a non-identifier boundary or end of string, and `${ORIGIN}` may precede a
 suffix. `$LIB`, `$PLATFORM`, longer identifiers and other dollar tokens refuse.

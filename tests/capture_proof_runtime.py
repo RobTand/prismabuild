@@ -603,6 +603,8 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
             or diagnostics['command'] != [loader['path'], '--list-diagnostics']
             or any(lookup(diagnosed_loader)[name] != loader[name] for name in ('bytes', 'sha256'))):
         raise ValueError('loader observation command differs from its sealed executable')
+    executed_paths = {retain_candidate(host['observation']['executable']['path']),
+                      retain_candidate(plan['reader_target'])}
     for _ in range(64):
         before = (len(observer.roots), len(observer.components), len(observer.witnesses),
                   len(outcomes), len(aliases), len(metadata_by_path))
@@ -676,7 +678,7 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
 
         _, _, unresolved = runtime_loader_edges(metadata_by_path, aliases, cache, defaults,
             directory_candidates=directory_candidates, resolve_candidate=retain_candidate,
-            diagnosed_loader=diagnosed_loader)
+            diagnosed_loader=diagnosed_loader, executed_paths=executed_paths)
         after = (len(observer.roots), len(observer.components), len(observer.witnesses),
                  len(outcomes), len(aliases), len(metadata_by_path))
         if before == after:

@@ -1838,6 +1838,7 @@ def test_distinct_runtime_loader_refuses_modern_ldd_and_primary(tmp_path, monkey
     # the independent byte-parsing replay to reject the actual ELF interpreter.
     original = capture.runtime_loader_edges
     def omit_producer_pt(metadata, *args, **kwargs):
+        kwargs['executed_paths'] = set()
         metadata = {path: dict(value, interpreters=[]) for path, value in metadata.items()}
         return original(metadata, *args, **kwargs)
     with monkeypatch.context() as patch:

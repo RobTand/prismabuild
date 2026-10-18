@@ -1127,7 +1127,7 @@ def runtime_elf_search_directories(metadata_by_path, resolved):
 
 
 def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
-                         directory_candidates, resolve_candidate, diagnosed_loader):
+                         directory_candidates, resolve_candidate, diagnosed_loader, executed_paths):
     """Exhaust the evidence union; provider existence can never skip a query."""
     directories, _ = runtime_elf_search_directories(metadata_by_path, resolved)
     origins = {}
@@ -1148,6 +1148,8 @@ def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
         return queries[key]
     edges, unresolved = {}, []
     for path, metadata in list(metadata_by_path.items()):
+        if path in executed_paths and len(metadata['interpreters']) != 1:
+            raise ValueError('reader loading implementation cannot be bound to the diagnosed loader: ' + path)
         if metadata['nodeflib']:
             raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
         targets = set()
@@ -1286,8 +1288,11 @@ def audit_native_closure(closure, byte_path):
         path = resolve(executable['path'])
         if path != executable['resolved_path'] or any(entries[path][name] != executable[name] for name in ('bytes', 'sha256')):
             raise ValueError('loader observation command differs from its sealed executable')
+    executed_paths = {resolve(closure['completion']['host_observation']['executable']['path']),
+                      resolve(closure['plan']['reader_target'])}
+    pending = sorted(set(pending) | executed_paths)
     metadata_by_path = {}
-    required = set()
+    required = set(executed_paths)
     candidates_by_name = runtime_candidate_name_index(entries)
 
     def directory_names(spelling, *, required):
@@ -1369,7 +1374,7 @@ def audit_native_closure(closure, byte_path):
         origins_before = len(resolved)
         edges, directories, unresolved = runtime_loader_edges(metadata_by_path, resolved, cache, defaults,
             directory_candidates=directory_candidates, resolve_candidate=sealed_candidate,
-            diagnosed_loader=loader['diagnostics']['executable']['resolved_path'])
+            diagnosed_loader=loader['diagnostics']['executable']['resolved_path'], executed_paths=executed_paths)
         required = {target for targets in edges.values() for target in targets}
         pending = sorted(required - metadata_by_path.keys())
         if not pending and len(resolved) == origins_before:
