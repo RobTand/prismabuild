@@ -101,7 +101,7 @@ def cost_read_json(path, sha):
     return json.loads(raw)
 
 
-def cost_prepare(private):
+def cost_profile_data():
     cas = Path('/mnt/shared/prismabuild-fleet/cas/blobs')
     image = cost_read_json(cas/COST_IMAGE_SHA[:2]/COST_IMAGE_SHA, COST_IMAGE_SHA)['value']
     historical = cost_read_json(COST_RAW/'checkpoints/mounted_runtime.json', COST_MOUNTED_SHA)['value']
@@ -119,6 +119,11 @@ def cost_prepare(private):
     del historical, old_closure, image
     roots=closure['roots']+closure['completion']['base_host_roots']+closure['completion']['base_image_roots']
     wanted={entry['sha256']:entry['bytes'] for root in roots for entry in root['entries'].values() if entry['kind']=='file'}
+    return profile,wanted
+
+
+def cost_prepare(private):
+    profile,wanted=cost_profile_data()
     members=private/'members';members.mkdir()
     archive=COST_RAW/'closure-archive.tar.gz'
     hasher=new_sha256()
@@ -162,18 +167,84 @@ def cost_replay(owner, profile, members, label):
     return result,record
 
 
+def cost_mounted_replay(profile_path, owner_paths):
+    results=[]
+    for label,path in owner_paths:
+        owner=cost_owner(label, Path(path).read_bytes())
+        totals=cost_instrument(owner)
+        wall,cpu=time.perf_counter(),time.process_time()
+        with CostMemorySampler() as sample:
+            profile=owner.load_profile(profile_path,Path(profile_path).parent)
+            states={state:owner.verify_closure(profile,state=state) for state in owner.NAMESPACE_STATES}
+        cost_emit(dict(event='mounted_finished',label=label,wall_s=time.perf_counter()-wall,
+            cpu_s=time.process_time()-cpu,functions=dict(totals),peaks=dict(sample.peaks),
+            verification_sha256=raw_sha256(compact_ascii_json_bytes(states))))
+        results.append(states)
+    if any(compact_ascii_json_bytes(result)!=compact_ascii_json_bytes(results[0]) for result in results):
+        raise ValueError('old/new mounted verification bytes differ')
+    cost_emit(dict(event='mounted_complete',equal=True))
+
+
+def cost_run_mounted(profile, private, before, current, compare):
+    private.chmod(0o755)
+    (private/'old-runtime.py').write_bytes(before)
+    (private/'new-runtime.py').write_bytes(current)
+    (private/'profile.json').write_bytes(compact_ascii_json_bytes(profile))
+    root=Path(__file__).resolve().parents[2]
+    affinity=','.join(map(str,sorted(os.sched_getaffinity(0))))
+    command=['docker','run','--rm','--network','none','--user','0:0',
+        '--cpuset-cpus',affinity,'--pids-limit','128',
+        '--mount','type=bind,src='+str(root)+',dst=/source,readonly',
+        '--mount','type=bind,src='+str(private)+',dst=/cost-input,readonly',
+        '--env','PYTHONDONTWRITEBYTECODE=1','--env','TMPDIR=/home/rob/pbt17']
+    for name in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS'):
+        command.extend(['--env',name+'=1'])
+    for captured in profile['closure']['roots']:
+        if captured['origin']=='host':
+            if not Path(captured['path']).exists():
+                raise ValueError('mounted profiling source is absent: '+captured['path'])
+            command.extend(['--mount','type=bind,src='+captured['path']+',dst='+captured['path']+',readonly'])
+    command.extend(['--entrypoint',profile['primary']['executable']['path'],profile['image'],
+        '-B','-S','/source/tools/maintenance/profile_proof_runtime_cost.py',
+        '--container-profile','/cost-input/profile.json'])
+    if compare:
+        command.append('--compare')
+    subprocess.run(command,check=True,timeout=450)
+
+
 def profile_runtime_cost_main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare',action='store_true')
+    parser.add_argument('--mounted-only',action='store_true')
+    parser.add_argument('--container-profile')
     args=parser.parse_args()
+    if args.container_profile:
+        owners=[('old','/cost-input/old-runtime.py')]
+        if args.compare:
+            owners.append(('new','/cost-input/new-runtime.py'))
+        cost_mounted_replay(args.container_profile,owners)
+        return
     root=Path(__file__).resolve().parents[2]
     before=subprocess.check_output(['git','show',COST_BASE+':tests/proof_container_runtime.py'],cwd=root)
     current=(root/'tests/proof_container_runtime.py').read_bytes()
     executable=Path('/proc/self/exe').read_bytes()
-    cost_emit(dict(event='start',version=list(sys.version_info[:3]),executable=dict(path=sys.executable,
+    cost_emit(dict(event='start',version=list(sys.version_info[:3]),full_version=sys.version,executable=dict(path=sys.executable,resolved_path=str(Path(sys.executable).resolve()),
         bytes=len(executable),sha256=raw_sha256(executable)),affinity=sorted(os.sched_getaffinity(0)),
         old_source_sha256=raw_sha256(before),new_source_sha256=raw_sha256(current)))
     with tempfile.TemporaryDirectory(prefix='proof-runtime-cost-',dir='/home/rob/pbt17') as work:
+        if args.mounted_only:
+            profile,_=cost_profile_data()
+            result_sha='8ba038ffa0decb56bed4a5ef2316e69bca96f8a33dc630d37126154f4e65254d'
+            raw=(Path('/mnt/shared/prismabuild-fleet/cas/blobs')/result_sha[:2]/result_sha).read_bytes()
+            if raw_sha256(raw)!=result_sha:
+                raise ValueError('baseline result differs')
+            record=next(json.loads(line.split(': ',1)[1]) for line in raw.decode().splitlines()
+                        if line.startswith('proof-runtime-cost: ') and json.loads(line.split(': ',1)[1]).get('event')=='audit_finished')
+            profile['closure']['audit']=record['audit']
+            profile['closure']['sha256']=raw_sha256(compact_ascii_json_bytes(profile['closure']))
+            cost_run_mounted(profile,Path(work),before,current,args.compare)
+            cost_emit(dict(event='complete',ok=True,max_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024))
+            return
         wall=time.perf_counter()
         with CostMemorySampler() as sample:
             profile,members=cost_prepare(Path(work))
@@ -186,6 +257,9 @@ def profile_runtime_cost_main():
                 raise ValueError('old/new retained audit bytes differ')
             cost_emit(dict(event='identity',equal=True,sha256=raw_sha256(compact_ascii_json_bytes(new)),
                 old_wall_s=old_record['wall_s'],new_wall_s=new_record['wall_s']))
+            profile['closure']['audit']=new
+            profile['closure']['sha256']=raw_sha256(compact_ascii_json_bytes(profile['closure']))
+            cost_run_mounted(profile,Path(work),before,current,True)
     cost_emit(dict(event='complete',ok=True,max_rss_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024))
 
 
