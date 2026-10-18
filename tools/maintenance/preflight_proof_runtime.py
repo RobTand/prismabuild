@@ -1,6 +1,7 @@
 """Read-only, admitted proof-runtime graph diagnosis using real retained inputs."""
 import argparse
 import ast
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -44,11 +45,12 @@ def preflight_image(payload):
     budget = dict(host['consumed_budget'], deadline=time.monotonic() + runtime.CAPTURE_BOUNDS['runtime_seconds'])
     image = capture.runtime_capture('image', budget)
     states, current, edges, calls = {}, ['before_installation'], [], [0]
+    stage = ['completion']
     refusals = {}
     def record(error, context):
         selected = {key:value for key,value in context.items()
                     if key in ('path','spelling','needed','interpreter','directory') and isinstance(value,str)}
-        value = dict(type=type(error).__name__, message=str(error), state=current[0], context=selected)
+        value = dict(type=type(error).__name__, message=str(error), stage=stage[0], state=current[0], context=selected)
         refusals[json.dumps(value)] = value
         if isinstance(error, TimeoutError) or 'capture geometry exceeds' in str(error):
             raise error
@@ -93,9 +95,9 @@ def preflight_image(payload):
     capture.discover_image_runtime_graph = discovery
     capture.runtime_elf_search_directories = search
     capture.walk_runtime_path = walk
-    refusal = None
+    refusal, completed = None, None
     try:
-        capture.complete_image_closure(host, image, budget, host_checkpoint=payload['host_descriptor'])
+        completed = capture.complete_image_closure(host, image, budget, host_checkpoint=payload['host_descriptor'])
     except (ValueError,OSError,KeyError,RuntimeError) as error:
         refusal = dict(type=type(error).__name__, message=str(error), state=current[0])
         record(error,{})
@@ -110,9 +112,42 @@ def preflight_image(payload):
         budget = dict(image['consumed_budget'],deadline=budget['deadline'])
         calls[0] = 0
         try:
-            capture.complete_image_closure(host,image,budget,host_checkpoint=payload['host_descriptor'])
+            completed = capture.complete_image_closure(host,image,budget,host_checkpoint=payload['host_descriptor'])
         except (ValueError,OSError,KeyError,RuntimeError) as remaining:
             record(remaining,{})
+    native_audits, audit_metadata = {}, {}
+    if completed is not None:
+        closure = asdict(completed)
+        closure.update(schema=runtime.CLOSURE_SCHEMA,graph_policy='required-runtime-graph-v1',
+            elf_machine=host['observation']['elf_machine'],elf_roots=closure['plan']['elf_roots'],
+            loader=dict(schema='prismabuild.proof_loader_search.v1',cache=image['loader_cache'],
+                diagnostics=payload['loader_diagnostics']))
+        original_elf = runtime.elf_requirements
+        prefix = payload['host_bytes_prefix']
+        def observed_elf(path):
+            result = original_elf(path)
+            logical = str(path).removeprefix(prefix)
+            audit_metadata[logical] = result
+            return result
+        runtime.elf_requirements = observed_elf
+        def byte_path(path):
+            if any(Path(path).is_relative_to(root['path']) for root in host['roots']):
+                return Path(prefix + path)
+            return Path(path)
+        original_audit = runtime.audit_native_closure
+        for state in runtime.NAMESPACE_STATES:
+            current[0],stage[0] = state,'native_audit'
+            try:
+                view = runtime.runtime_namespace_state(closure,state)
+                native_audits[state] = original_audit(view,byte_path)
+            except (ValueError,OSError,KeyError,RuntimeError) as error:
+                record(error,{})
+                preflight_collect_loops(runtime,sources['proof_container_runtime'],{'audit_native_closure'},record)
+                try:
+                    runtime.audit_native_closure(view,byte_path)
+                except (ValueError,OSError,KeyError,RuntimeError) as remaining:
+                    record(remaining,{})
+                runtime.audit_native_closure = original_audit
     return dict(schema='prismabuild.proof_runtime_preflight.v1',
         source_ref=payload['source_ref'], source_sha256={key:runtime.digest(value.encode()) for key,value in sources.items()},
         host_checkpoint=payload['host_descriptor'], host_observation=host['observation'],
@@ -121,7 +156,7 @@ def preflight_image(payload):
         image_executable_inventory=next(root['entries']['.'] for root in image['roots']
             if root['path'] == image['observation']['executable']['resolved_path']),
         states=states, candidate_edges=edges, refusal=refusal, refusals=list(refusals.values()),
-        diagnostic_continuation=refusal is not None,
+        diagnostic_continuation=bool(refusals),native_audits=native_audits,audit_metadata=audit_metadata,
         zero_refusals_requires_unmodified_production_success=True,
         image_credentials=dict(uid=os.getuid(),gid=os.getgid()),
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
@@ -131,6 +166,7 @@ def preflight_image(payload):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image-child', action='store_true')
+    parser.add_argument('--require-clean', action='store_true')
     parser.add_argument('--image')
     parser.add_argument('--image-python')
     parser.add_argument('--host-checkpoint', type=Path)
@@ -140,25 +176,39 @@ def main():
         print(json.dumps(preflight_image(json.load(sys.stdin))), flush=True)
         return 0
     root = Path(__file__).resolve().parents[2]
-    sources = {name:subprocess.check_output(['git','show',args.source_ref + ':tests/' + name + '.py'],cwd=root).decode()
+    source_ref = subprocess.check_output(['git','rev-parse',args.source_ref],cwd=root,text=True).strip()
+    sources = {name:subprocess.check_output(['git','show',source_ref + ':tests/' + name + '.py'],cwd=root).decode()
                for name in ('proof_container_runtime','capture_proof_runtime','proof_capture_capacity')}
     runtime = preflight_module('proof_container_runtime', sources['proof_container_runtime'])
     raw = args.host_checkpoint.read_bytes()
     host = json.loads(raw)['value']
     descriptor = dict(bytes=len(raw),sha256=runtime.digest(raw))
-    payload = dict(sources=sources,host=host,host_descriptor=descriptor,source_ref=args.source_ref)
-    command = ['docker','run','--rm','--read-only','--network','none','--cap-drop','ALL',
+    payload = dict(sources=sources,host=host,host_descriptor=descriptor,source_ref=source_ref)
+    options = ['docker','run','--rm','--read-only','--network','none','--cap-drop','ALL',
         '--security-opt','no-new-privileges','--user',str(os.getuid()) + ':' + str(os.getgid()),
         '--cpuset-cpus',','.join(map(str,sorted(os.sched_getaffinity(0)))),
         '-e','PYTHONDONTWRITEBYTECODE=1',
-        '-e','OMP_NUM_THREADS=1','-e','MKL_NUM_THREADS=1','-e','OPENBLAS_NUM_THREADS=1','-v',str(root) + ':/source:ro','-i',
-        '--entrypoint',args.image_python,args.image,'-B',
+        '-e','OMP_NUM_THREADS=1','-e','MKL_NUM_THREADS=1','-e','OPENBLAS_NUM_THREADS=1','-v',str(root) + ':/source:ro']
+    mounts = [part for item in host['roots'] for part in
+              ('--mount','type=bind,src=' + item['path'] + ',dst=' + item['path'] + ',readonly')]
+    pt, = host['elf_index'][host['observation']['executable']['resolved_path']]['interpreters']
+    diagnostic_command = options + mounts + ['--entrypoint',pt,args.image,'--list-diagnostics']
+    diagnostic_raw = subprocess.check_output(diagnostic_command,text=True,timeout=60)
+    resolved_pt = str(Path(pt).resolve(strict=True))
+    pt_entry = runtime.runtime_namespace_entries(host)[resolved_pt]
+    payload['loader_diagnostics'] = dict(raw=diagnostic_raw,executable=dict(path=pt,
+        resolved_path=resolved_pt,bytes=pt_entry['bytes'],sha256=pt_entry['sha256']))
+    prefix = '/tmp/pb-preflight-host'
+    payload['host_bytes_prefix'] = prefix
+    byte_mounts = [part for item in host['roots'] for part in
+              ('--mount','type=bind,src=' + item['path'] + ',dst=' + prefix + item['path'] + ',readonly')]
+    command = options + byte_mounts + ['-i','--entrypoint',args.image_python,args.image,'-B',
         '/source/tools/maintenance/preflight_proof_runtime.py','--image-child']
     result = subprocess.run(command,input=json.dumps(payload),capture_output=True,text=True,timeout=600)
     if result.returncode:
         raise ValueError('read-only image preflight failed: ' + result.stderr[-4000:])
     report = json.loads(result.stdout)
-    selected = {path for state in report['states'].values() for path in state['metadata']}
+    selected = {path for state in report['states'].values() for path in state['metadata']} | set(report['audit_metadata'])
     suspects = {path for path in host['elf_index'] if any(name in path for name in ('libLLVM','libclang','libhivex','libguestfs'))}
     verified = {}
     entries = runtime.runtime_namespace_entries(host)
@@ -180,7 +230,7 @@ def main():
         native_threads={key:os.environ.get(key) for key in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS')},
         host_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     print('proof-runtime-preflight: ' + json.dumps(report,separators=(',',':')),flush=True)
-    return 0
+    return 1 if args.require_clean and report['refusals'] else 0
 
 
 if __name__ == '__main__':
