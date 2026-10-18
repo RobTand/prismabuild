@@ -52,6 +52,8 @@ def preflight_image(payload):
     host = payload['host']
     budget = dict(host['consumed_budget'], deadline=time.monotonic() + runtime.CAPTURE_BOUNDS['runtime_seconds'])
     image = capture.runtime_capture('image', budget)
+    image['pre_completion_diagnostics'] = payload['loader_diagnostics']
+    completion_started = time.monotonic()
     states, current, edges, calls = {}, ['before_installation'], [], [0]
     stage = ['completion']
     refusals = {}
@@ -123,7 +125,8 @@ def preflight_image(payload):
             completed = capture.complete_image_closure(host,image,budget,host_checkpoint=payload['host_descriptor'])
         except (ValueError,OSError,KeyError,RuntimeError) as remaining:
             record(remaining,{})
-    native_audits, audit_metadata = {}, {}
+    completion_seconds = time.monotonic() - completion_started
+    native_audits, audit_metadata, native_seconds = {}, {}, {}
     if completed is not None:
         closure = asdict(completed)
         closure.update(schema=runtime.CLOSURE_SCHEMA,graph_policy='required-runtime-graph-v1',
@@ -145,6 +148,7 @@ def preflight_image(payload):
         original_audit = runtime.audit_native_closure
         for state in runtime.NAMESPACE_STATES:
             current[0],stage[0] = state,'native_audit'
+            native_started = time.monotonic()
             try:
                 view = runtime.runtime_namespace_state(closure,state)
                 native_audits[state] = original_audit(view,byte_path)
@@ -156,6 +160,7 @@ def preflight_image(payload):
                 except (ValueError,OSError,KeyError,RuntimeError) as remaining:
                     record(remaining,{})
                 runtime.audit_native_closure = original_audit
+            native_seconds[state] = time.monotonic() - native_started
     return dict(schema='prismabuild.proof_runtime_preflight.v1',
         source_ref=payload['source_ref'], source_sha256={key:runtime.digest(value.encode()) for key,value in sources.items()},
         host_checkpoint=payload['host_descriptor'], host_observation=host['observation'],
@@ -167,6 +172,8 @@ def preflight_image(payload):
         retained_absence_paths=[] if completed is None else sorted(
             str(Path(witness['parent']) / witness['name']) for witness in completed.directory_witnesses.values()),
         host_bytes_prefix=payload['host_bytes_prefix'],
+        operation_seconds=dict(completion=completion_seconds, native=native_seconds),
+        consumed_budget=None if completed is None else completed.consumed_budget,
         states=states, candidate_edges=edges, refusal=refusal, refusals=list(refusals.values()),
         diagnostic_continuation=bool(refusals),native_audits=native_audits,audit_metadata=audit_metadata,
         zero_refusals_requires_unmodified_production_success=True,
@@ -208,7 +215,7 @@ def main():
     diagnostic_raw = subprocess.check_output(diagnostic_command,text=True,timeout=60)
     resolved_pt = str(Path(pt).resolve(strict=True))
     pt_entry = runtime.runtime_namespace_entries(host)[resolved_pt]
-    payload['loader_diagnostics'] = dict(raw=diagnostic_raw,executable=dict(path=pt,
+    payload['loader_diagnostics'] = dict(raw=diagnostic_raw,command=[pt,'--list-diagnostics'],executable=dict(path=pt,
         resolved_path=resolved_pt,bytes=pt_entry['bytes'],sha256=pt_entry['sha256']))
     prefix = '/tmp/pb-preflight-host'
     payload['host_bytes_prefix'] = prefix
@@ -220,6 +227,12 @@ def main():
     if result.returncode:
         raise ValueError('read-only image preflight failed: ' + result.stderr[-4000:])
     report = json.loads(result.stdout)
+    post_raw = subprocess.check_output(diagnostic_command,text=True,timeout=30)
+    report['post_completion_diagnostics'] = dict(raw=post_raw)
+    try:
+        runtime.require_runtime_loader_observations(payload['loader_diagnostics'], dict(raw=post_raw))
+    except ValueError as error:
+        report['refusals'].append(dict(type=type(error).__name__,message=str(error),stage='post_diagnostics',state=None,context={}))
     selected = {path for state in report['states'].values() for path in state['metadata']} | set(report['audit_metadata'])
     suspects = {path for path in host['elf_index'] if any(name in path for name in ('libLLVM','libclang','libhivex','libguestfs'))}
     verified = {}

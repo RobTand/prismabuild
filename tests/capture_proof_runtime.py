@@ -31,7 +31,8 @@ from proof_container_runtime import (
     runtime_directory_candidate_spellings, runtime_elf_observation, runtime_capture_work,
     runtime_mount_ancestor, runtime_mount_component, runtime_reader_installation,
     runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
-    runtime_customization_selection, runtime_search_directory_mode,
+    runtime_customization_selection, runtime_search_directory_mode, runtime_loader_edges,
+    require_runtime_loader_observations,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -541,6 +542,7 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
         if metadata is None:
             raise ValueError('runtime dependency is not a loadable ELF: ' + spelling)
         metadata_by_path[outcome.terminal] = metadata
+        return outcome.terminal
 
     def candidate_metadata(path):
         for captured, origin in ((host, 'host'), (image, 'image')):
@@ -556,6 +558,7 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
         return metadata
 
     cache = loader_cache_entries(image['loader_cache']['raw_listing']) if 'loader_cache' in image else []
+    defaults = loader_default_directories(image['pre_completion_diagnostics']['raw'])
     for _ in range(64):
         before = (len(observer.roots), len(observer.components), len(observer.witnesses),
                   len(outcomes), len(aliases), len(metadata_by_path))
@@ -577,32 +580,26 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
             resolve_observation(spelling, required=True, search=True)
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}
-        for metadata in list(metadata_by_path.values()):
-            for interpreter in metadata['interpreters']:
-                retain_candidate(interpreter)
-            for needed in metadata['needed']:
-                if '$' in needed or ('/' in needed and not needed.startswith('/')):
-                    raise ValueError('runtime ELF uses an unsupported dependency path')
-                if needed.startswith('/'):
-                    retain_candidate(needed)
-                    continue
-                for spelling in sorted(directories):
-                    directory = aliases[spelling]
-                    direct_search = runtime_search_directory_mode(observer.roots, directory) == 'direct'
-                    for candidate in runtime_directory_candidate_spellings(entries, directory, needed, direct=direct_search):
-                        retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
-                    direct = str(Path(directory) / needed)
-                    if direct not in entries:
-                        probe = walk_runtime_path(str(Path(spelling) / needed), lookup)
-                        if direct_search:
-                            if (not isinstance(probe, RuntimeWitnessedAbsent)
-                                    or probe.missing != direct or probe.remaining):
-                                retain_candidate(str(Path(spelling) / needed))
-                        elif not isinstance(probe, RuntimeWitnessedAbsent):
-                            raise ValueError('complete search inventory omitted a present direct candidate')
-                for row in cache:
-                    if row['name'] == needed:
-                        retain_candidate(row['path'])
+        def directory_candidates(spelling, needed):
+            directory = resolve_observation(spelling, required=True, search=True).terminal
+            direct_search = runtime_search_directory_mode(observer.roots, directory) == 'direct'
+            found = {retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
+                for candidate in runtime_directory_candidate_spellings(
+                    entries, directory, needed, direct=direct_search)}
+            direct = str(Path(directory) / needed)
+            probe = walk_runtime_path(str(Path(spelling) / needed), lookup)
+            if isinstance(probe, RuntimeWitnessedAbsent):
+                if probe.missing != direct or probe.remaining:
+                    raise ValueError('loader search miss is not an exact child: ' + str(Path(spelling) / needed))
+                return found, None
+            if lookup(probe.terminal)['kind'] != 'file':
+                return found, None
+            target = retain_candidate(str(Path(spelling) / needed))
+            found.add(target)
+            return found, target
+
+        runtime_loader_edges(metadata_by_path, aliases, cache, defaults,
+            directory_candidates=directory_candidates, resolve_candidate=retain_candidate)
         after = (len(observer.roots), len(observer.components), len(observer.witnesses),
                  len(outcomes), len(aliases), len(metadata_by_path))
         if before == after:
@@ -654,6 +651,7 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
         host_elf_roots=host['elf_roots'], image_elf_roots=image['elf_roots'],
         host_elf_index=host['elf_index'], image_elf_index=image['elf_index'],
         image_loader_cache=image['loader_cache'],
+        pre_completion_diagnostics=image['pre_completion_diagnostics'],
         base_host_roots=host['roots'], base_image_roots=image['roots'],
         host_pre_inventory_probes=host.get('pre_inventory_probes', []),
         image_pre_inventory_probes=image.get('pre_inventory_probes', []),
@@ -727,6 +725,7 @@ def main(argv=None):
     parser.add_argument('--host-checkpoint-sha256')
     parser.add_argument('--host-checkpoint-bytes', type=int)
     parser.add_argument('--primary-interpreter')
+    parser.add_argument('--pre-completion-diagnostics', type=Path)
     parser.add_argument('--remaining-s', type=float)
     args = parser.parse_args(argv)
     if args.capture_image:
@@ -748,6 +747,13 @@ def main(argv=None):
         budget = dict(host['consumed_budget'], deadline=deadline)
         os.makedirs('/home/rob/pbt17', exist_ok=True)
         captured = runtime_capture('image', budget)
+        if args.pre_completion_diagnostics is None:
+            parser.error('image capture requires mounted pre-completion loader diagnostics')
+        captured['pre_completion_diagnostics'] = json.loads(
+            args.pre_completion_diagnostics.read_text())
+        loader_default_directories(captured['pre_completion_diagnostics']['raw'])
+        if loader_kernel(captured['pre_completion_diagnostics']['raw'])[0] != host['observation']['kernel']['release']:
+            raise ValueError('pre-completion loader diagnostics belong to a different actual kernel')
         completed = complete_image_closure(host, captured, budget, host_checkpoint=host_descriptor)
         captured['completed_namespace'] = asdict(completed)
         captured['consumed_budget'] = dict(completed.consumed_budget)
@@ -823,6 +829,26 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
                     '--host-checkpoint-sha256', host_descriptor['sha256'],
                     '--host-checkpoint-bytes', str(host_descriptor['bytes']),
                     '--primary-interpreter', interpreter, '--remaining-s', str(remaining())])
+    diagnostics = command[:command.index(args.image)]
+    diagnostics[diagnostics.index('--entrypoint') + 1] = interpreter
+    for captured in host['roots']:
+        path = captured['path']
+        diagnostics.extend(['--mount', f'type=bind,src={path},dst={path},readonly'])
+    diagnostics.extend([args.image, '--list-diagnostics'])
+    pre_raw = subprocess.check_output(diagnostics, text=True, timeout=min(30, remaining()))
+    loader_default_directories(pre_raw)
+    if loader_kernel(pre_raw)[0] != host['observation']['kernel']['release']:
+        raise ValueError('pre-completion loader diagnostics belong to a different actual kernel')
+    pre_diagnostics = dict(raw=pre_raw, command=[interpreter, '--list-diagnostics'],
+        executable=dict(path=interpreter, resolved_path=str(Path(interpreter).resolve()),
+                        **file_descriptor(Path(interpreter).resolve())))
+    pre_path = private / 'pre-completion-diagnostics.json'
+    with pre_path.open('xb') as handle:
+        handle.write(bounded_capture_json(pre_diagnostics))
+    command[command.index(args.image):command.index(args.image)] = [
+        '--mount', f'type=bind,src={pre_path},dst=/capture-loader-diagnostics.json,readonly']
+    command.extend(['--pre-completion-diagnostics', '/capture-loader-diagnostics.json'])
+    command[command.index('--remaining-s') + 1] = str(remaining())
     result = subprocess.run(command, capture_output=True, text=True, timeout=remaining(), check=False)
     if result.returncode:
         raise ValueError('existing image capture failed: ' + result.stderr[-2000:])
@@ -847,15 +873,10 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
     entries = {str(Path(root['path']) / name):entry for root in roots for name,entry in root['entries'].items()}
     if resolve_runtime_path(entries, interpreter, namespace['components']) != str(Path(interpreter).resolve()):
         raise ValueError('image loader alias does not select the captured host loader')
-    diagnostics = command[:command.index(args.image)]
-    diagnostics[diagnostics.index('--entrypoint') + 1] = interpreter
-    for captured in roots:
-        if captured['origin'] == 'host':
-            path = captured['path']
-            diagnostics.extend(['--mount', f'type=bind,src={path},dst={path},readonly'])
-    diagnostics.extend([args.image, '--list-diagnostics'])
     raw_diagnostics = subprocess.check_output(diagnostics, text=True, timeout=min(30, remaining()))
-    loader_default_directories(raw_diagnostics)
+    require_runtime_loader_observations(pre_diagnostics, dict(raw=raw_diagnostics))
+    if image['pre_completion_diagnostics'] != pre_diagnostics:
+        raise ValueError('image completion changed its mounted loader input')
     if loader_kernel(raw_diagnostics)[0] != host['observation']['kernel']['release']:
         raise ValueError('loader diagnostics belong to a different actual kernel')
     target = namespace['plan']['reader_target']

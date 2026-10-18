@@ -1060,21 +1060,102 @@ def require_runtime_candidate_absence(closure, directory, needed, *, lookup=None
         raise ValueError('missing candidate absence evidence: ' + path)
 
 
+def runtime_expand_search_paths(values, origin):
+    result = []
+    for value in values:
+        for directory in value.split(':'):
+            expanded = directory.replace('${ORIGIN}', origin).replace('$ORIGIN', origin)
+            if not expanded.startswith('/') or '$' in expanded:
+                raise ValueError('runtime ELF uses an unsupported library search token')
+            result.append(expanded)
+    return result
+
+
 def runtime_elf_search_directories(metadata_by_path, resolved):
     directories, own_directories = set(), {}
+    origins = {}
+    for alias, target in resolved.items():
+        origins.setdefault(target, set()).add(str(Path(alias).parent))
     for path, metadata in metadata_by_path.items():
         own_directories[path] = set()
-        for value in metadata['runpath'] + metadata['rpath']:
-            for directory in value.split(':'):
-                origins = {str(Path(path).parent), *(str(Path(alias).parent)
-                            for alias, target in resolved.items() if target == path)}
-                for origin in origins:
-                    expanded = directory.replace('${ORIGIN}', origin).replace('$ORIGIN', origin)
-                    if not expanded.startswith('/') or '$' in expanded:
-                        raise ValueError('runtime ELF uses an unsupported library search token')
-                    directories.add(expanded)
-                    own_directories[path].add(expanded)
+        for origin in {str(Path(path).parent), *origins.get(path, ())}:
+            own_directories[path].update(runtime_expand_search_paths(
+                metadata['runpath'] + metadata['rpath'], origin))
+        directories.update(own_directories[path])
     return directories, own_directories
+
+
+def runtime_loader_edges(metadata_by_path, resolved, cache, defaults, *,
+                         directory_candidates, resolve_candidate):
+    """One conservative candidate graph and ordered provider rule for both owners.
+
+    Callbacks retain real observations during capture and demand those same facts
+    during replay. Global contexts include possible inherited RPATHs; RUNPATH is
+    used for the owning object's provider lookup only, never inherited.
+    """
+    directories, _ = runtime_elf_search_directories(metadata_by_path, resolved)
+    origins = {}
+    for alias, target in resolved.items():
+        origins.setdefault(target, set()).add(str(Path(alias).parent))
+    inherited = []
+    for path, metadata in sorted(metadata_by_path.items()):
+        if not metadata['runpath']:
+            for origin in sorted({str(Path(path).parent), *origins.get(path, ())}):
+                inherited.extend(runtime_expand_search_paths(metadata['rpath'], origin))
+    cache_by_name = {}
+    for row in cache:
+        cache_by_name.setdefault(row['name'], []).append(row['path'])
+    queries = {}
+    def search(directory, needed):
+        key = (directory, needed)
+        if key not in queries:
+            queries[key] = directory_candidates(directory, needed)
+        return queries[key]
+    edges = {}
+    for path, metadata in list(metadata_by_path.items()):
+        if metadata['nodeflib']:
+            raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
+        targets = {resolve_candidate(interpreter) for interpreter in metadata['interpreters']}
+        for needed in metadata['needed']:
+            if '$' in needed or ('/' in needed and not needed.startswith('/')):
+                raise ValueError('runtime ELF uses an unsupported dependency path')
+            if needed.startswith('/'):
+                targets.add(resolve_candidate(needed))
+                continue
+            for directory in sorted(directories):
+                targets.update(search(directory, needed)[0])
+            cached = [resolve_candidate(candidate) for candidate in cache_by_name.get(needed, ())]
+            targets.update(cached)
+            for origin in sorted({str(Path(path).parent), *origins.get(path, ())}):
+                ordered = []
+                if not metadata['runpath']:
+                    ordered.extend(runtime_expand_search_paths(metadata['rpath'], origin))
+                    ordered.extend(inherited)
+                ordered.extend(runtime_expand_search_paths(metadata['runpath'], origin))
+                provider = None
+                for directory in dict.fromkeys(ordered):
+                    candidates, provider = search(directory, needed)
+                    targets.update(candidates)
+                    if provider is not None:
+                        break
+                if provider is None and cached:
+                    provider = cached[0]
+                if provider is None:
+                    for directory in defaults:
+                        candidates, provider = search(directory, needed)
+                        targets.update(candidates)
+                        if provider is not None:
+                            break
+                if provider is None:
+                    raise ValueError('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
+        edges[path] = sorted(targets)
+    return edges, directories
+
+
+def require_runtime_loader_observations(before, after):
+    if (loader_default_directories(before['raw']) != loader_default_directories(after['raw'])
+            or loader_kernel(before['raw']) != loader_kernel(after['raw'])):
+        raise ValueError('pre-completion mounted loader diagnostics changed after completion')
 
 
 def runtime_search_directory_mode(roots, directory):
@@ -1113,6 +1194,11 @@ def audit_native_closure(closure, byte_path):
     loader = closure['loader']
     if loader['schema'] != 'prismabuild.proof_loader_search.v1':
         raise ValueError('unsupported runtime loader search contract')
+    pre_diagnostics = closure['completion']['pre_completion_diagnostics']
+    require_runtime_loader_observations(pre_diagnostics, loader['diagnostics'])
+    if (pre_diagnostics['executable'] != loader['diagnostics']['executable']
+            or pre_diagnostics['command'] != [loader['diagnostics']['executable']['path'], '--list-diagnostics']):
+        raise ValueError('pre-completion loader command differs from the captured host loader')
     defaults = loader_default_directories(loader['diagnostics']['raw'])
     _, kernel = loader_kernel(loader['diagnostics']['raw'])
     cache = loader_cache_entries(loader['cache']['raw_listing'])
@@ -1126,11 +1212,11 @@ def audit_native_closure(closure, byte_path):
     metadata_by_path = {}
     required = set()
 
-    def directory_candidates(directory, needed, *, allow_ancestor=False):
+    def directory_candidates(directory, needed):
         spelling = directory
         directory = resolve(directory)
         mode = runtime_search_directory_mode(closure['roots'], directory)
-        if mode is None or mode == 'direct' and not allow_ancestor:
+        if mode is None:
             raise ValueError('loader search directory is not completely inventoried: ' + directory)
         for prefix in (Path(directory), *Path(directory).parents):
             entry = entries.get(str(prefix), closure['components'].get(str(prefix), {}).get('entry'))
@@ -1140,12 +1226,21 @@ def audit_native_closure(closure, byte_path):
         found = {resolve(str(Path(spelling) / Path(path).relative_to(directory)))
                  for path in runtime_directory_candidate_spellings(entries, directory, needed, direct=mode == 'direct')}
         direct = str(Path(directory) / needed)
-        if direct in entries:
-            base = entries.get(resolve(str(Path(spelling) / needed)), {}).get('kind') == 'file'
+        entry = entries.get(direct, closure['components'].get(direct, {}).get('entry'))
+        base = None
+        if entry is not None:
+            target = resolve(str(Path(spelling) / needed))
+            if entries.get(target, {}).get('kind') == 'file':
+                base = target
         else:
             require_runtime_candidate_absence(closure, directory, needed, lookup=lookup)
-            base = False
         return found, base
+
+    def sealed_candidate(path):
+        target = resolve(path)
+        if entries.get(target, {}).get('kind') != 'file':
+            raise ValueError('runtime ELF candidate is not a sealed regular file')
+        return target
 
     for _ in range(64):
         for path in pending:
@@ -1162,32 +1257,8 @@ def audit_native_closure(closure, byte_path):
                 raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
             metadata_by_path[path] = metadata
         origins_before = len(resolved)
-        directories, own_directories = runtime_elf_search_directories(metadata_by_path, resolved)
-        edges = {}
-        for path,metadata in metadata_by_path.items():
-            targets = {resolve(interpreter) for interpreter in metadata['interpreters']}
-            for needed in metadata['needed']:
-                if '$' in needed or ('/' in needed and not needed.startswith('/')):
-                    raise ValueError('runtime ELF uses an unsupported dependency path')
-                if needed.startswith('/'):
-                    targets.add(resolve(needed))
-                    continue
-                for directory in directories:
-                    targets.update(directory_candidates(directory, needed, allow_ancestor=True)[0])
-                cached = [row for row in cache if row['name'] == needed]
-                targets.update(resolve(row['path']) for row in cached)
-                own = own_directories[path]
-                if not own or not all(directory_candidates(directory, needed, allow_ancestor=True)[1] for directory in own):
-                    for directory in defaults:
-                        candidates, base = directory_candidates(directory, needed)
-                        targets.update(candidates)
-                        if base:
-                            break
-                    else:
-                        raise ValueError('unresolved runtime ELF dependency: ' + path + ' -> ' + needed)
-            if any(entries.get(target, {}).get('kind') != 'file' for target in targets):
-                raise ValueError('runtime ELF candidate is not a sealed regular file')
-            edges[path] = sorted(targets)
+        edges, directories = runtime_loader_edges(metadata_by_path, resolved, cache, defaults,
+            directory_candidates=directory_candidates, resolve_candidate=sealed_candidate)
         required = {target for targets in edges.values() for target in targets}
         pending = sorted(required - metadata_by_path.keys())
         if not pending and len(resolved) == origins_before:
