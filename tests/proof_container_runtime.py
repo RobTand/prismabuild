@@ -613,6 +613,11 @@ def runtime_absence_witness(closure, key):
     elif (witness.get('operation') != 'complete_host_directory_enumeration'
             or witness.get('checkpoint_sha256') != closure['completion']['host_checkpoint']['sha256']):
         raise ValueError('host runtime absence differs from its durable checkpoint')
+    if authority == 'host':
+        observed = closure['completion']['host_directory_observations'].get(parent)
+        if observed is None or any(list(witness[field]) != observed[field]
+                                   for field in ('before', 'after', 'names')):
+            raise ValueError('host runtime absence differs from its checkpoint directory observation')
     entries = runtime_namespace_entries(closure)
     parent_entry = entries.get(parent, closure.get('components', {}).get(parent, {}).get('entry'))
     if parent_entry is None or parent_entry['kind'] != 'directory':
