@@ -1,6 +1,7 @@
 """Audit retained root capture bytes through the published PB entrypoints."""
 import argparse
 import base64
+import io
 from pathlib import Path
 import subprocess
 import tarfile
@@ -128,7 +129,7 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
     if completion['host_checkpoint'] != {name: host_descriptor[name] for name in ('sha256', 'bytes')}:
         raise ValueError('runtime completion belongs to another durable host checkpoint')
     fields = dict(observation='observation', multiarch='multiarch', elf_roots='elf_roots',
-                  executable_binary='executable_binary', elf_index='elf_index',
+                  elf_index='elf_index',
                   directory_observations='directory_observations')
     for origin, checkpoint in (('host', host), ('image', image)):
         if completion['base_' + origin + '_roots'] != checkpoint['roots']:
@@ -136,6 +137,13 @@ def verify_capture_completion_checkpoints(closure, host, image, host_descriptor,
         for retained, source in fields.items():
             if completion[origin + '_' + retained] != checkpoint[source]:
                 raise ValueError('runtime completion observation differs from its durable checkpoint: ' + origin + ' ' + retained)
+        executable = checkpoint['observation']['executable']
+        raw = base64.b64decode(checkpoint['executable_binary'], validate=True)
+        if len(raw) != executable['bytes'] or raw_sha256(raw) != executable['sha256']:
+            raise ValueError('durable runtime executable bytes differ from their observation: ' + origin)
+        if (owner['read_runtime_elf'](io.BytesIO(raw))
+                != completion[origin + '_elf_index'][executable['resolved_path']]):
+            raise ValueError('durable runtime executable metadata differs from the completed original index: ' + origin)
         for name in ('pre_inventory_probes', 'cache_observations'):
             if completion.get(origin + '_' + name, []) != checkpoint.get(name, []):
                 raise ValueError('runtime completion work observations differ from their durable checkpoint: ' + origin + ' ' + name)

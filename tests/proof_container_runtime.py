@@ -698,12 +698,20 @@ def runtime_completion_plan(host, image):
     pt_seeds = set()
     for origin, captured in (('host', host), ('image', image)):
         executable = captured['observation']['executable']
-        raw = base64.b64decode(captured['executable_binary'], validate=True)
-        if len(raw) != executable['bytes'] or digest(raw) != executable['sha256']:
-            raise ValueError('runtime completion executable bytes differ from their observation')
-        metadata = read_runtime_elf(io.BytesIO(raw))
-        if metadata is None or metadata['machine'] != captured['observation']['elf_machine']:
+        entry = runtime_namespace_entries(captured).get(executable['resolved_path'])
+        if (entry is None or entry['kind'] != 'file'
+                or any(entry[name] != executable[name] for name in ('bytes', 'sha256'))):
+            raise ValueError('runtime completion executable differs from its original inventory')
+        metadata = captured['elf_index'][executable['resolved_path']]
+        if (metadata is None or 'parse_refusal' in metadata
+                or metadata['machine'] != captured['observation']['elf_machine']):
             raise ValueError('runtime completion executable is not its observed native ELF')
+        if 'executable_binary' in captured:
+            raw = base64.b64decode(captured['executable_binary'], validate=True)
+            if len(raw) != executable['bytes'] or digest(raw) != executable['sha256']:
+                raise ValueError('runtime completion executable bytes differ from their observation')
+            if read_runtime_elf(io.BytesIO(raw)) != metadata:
+                raise ValueError('runtime completion executable metadata differs from its observed bytes')
         pt_seeds.update((origin, path) for path in metadata['interpreters'])
         for path, metadata in captured['elf_index'].items():
             if (metadata is not None and 'parse_refusal' not in metadata
@@ -898,7 +906,6 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
                      roots=completion['base_' + origin + '_roots'],
                      elf_roots=completion[origin + '_elf_roots'],
                      elf_index=completion[origin + '_elf_index'],
-                     executable_binary=completion[origin + '_executable_binary'],
                      pre_inventory_probes=completion.get(origin + '_pre_inventory_probes', []),
                      cache_observations=completion.get(origin + '_cache_observations', []))
         validate_runtime_roots(facts['roots'])
@@ -1019,8 +1026,8 @@ def audit_runtime_closure(closure, byte_path, *, content_path=None):
         raise ValueError('unsupported runtime closure graph contract')
     audit_runtime_completion(closure, byte_path, content_path)
     audit_link_outcomes(closure)
-    primary = read_runtime_elf(io.BytesIO(base64.b64decode(
-        closure['completion']['host_executable_binary'], validate=True)))
+    executable = closure['completion']['host_observation']['executable']
+    primary = closure['completion']['host_elf_index'][executable['resolved_path']]
     if len(primary['interpreters']) != 1:
         raise ValueError('runtime primary requires one independently captured PT interpreter')
     interpreter, = primary['interpreters']

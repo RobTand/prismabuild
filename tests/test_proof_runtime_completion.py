@@ -209,3 +209,14 @@ def test_image_cache_listing_follows_inventory_admission(monkeypatch, image_path
     with pytest.raises(ValueError, match='capture geometry exceeds'):
         capture.runtime_capture('image')
     assert calls == []
+
+
+def test_completion_profile_keeps_executable_bytes_in_archive(required_graph_tree):
+    tree = required_graph_tree
+    tree.host_file(HOST_EXECUTABLE, graph_fixture_elf(interpreter='/lib/ld-fixture.so',
+        marker=b'H' * (8 * 1024**2)))
+    tree.image_file(HOST_EXECUTABLE, graph_fixture_elf(interpreter='/lib/ld-fixture.so',
+        marker=b'I' * (8 * 1024**2)))
+    closure = tree.complete()
+    assert len(runtime.canonical(closure)) < runtime.CAPTURE_BOUNDS['profile_bytes']
+    tree.audit(closure)
