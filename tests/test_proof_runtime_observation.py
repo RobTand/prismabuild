@@ -40,7 +40,7 @@ def preload_path(monkeypatch, path):
 
 
 def test_preload_unknown_lookup_refuses_complete_observation(monkeypatch):
-    with unknown_lookup(monkeypatch, '/etc/ld.so.preload', ('stat',)):
+    with unknown_lookup(monkeypatch, '/etc/ld.so.preload', ('lstat', 'stat')):
         with pytest.raises(OSError, match='scoped runtime observation lookup failure') as caught:
             runtime.observe_runtime()
         assert caught.value.errno == errno.ELOOP
