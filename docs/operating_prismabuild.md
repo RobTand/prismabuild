@@ -1668,6 +1668,14 @@ existing work, follows the successor, or releases capacity on its own.
     python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py --checkout /home/rob/prismabuild \
         --python /home/rob/venvs/pb-cpu/bin/python --shards 20 tests
 
+Root proof runtime capture uses `CAPTURE_DEMAND` in
+`tests/proof_container_runtime.py`: one CPU, four GiB and zero GPUs. Submit it
+with that exact demand, native threads 1, priority -10 and the existing
+480-second hard deadline. Preserve the assigned CPU affinity and all four
+120-second phase stall allowances. The independent retained-data auditor keeps
+its separate two-CPU, four-GiB demand. See the
+[root proof runtime contract](design.md#root-proof-runtime-qualification).
+
 Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is an absolute `python*` executable on eligible target workers.
 Portable CPU fanout has no default class tag (#1263, #1462): pbrun seals the

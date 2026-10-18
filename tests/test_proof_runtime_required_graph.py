@@ -1801,8 +1801,8 @@ def test_capture_terminal_requires_exact_capture_demand(resources, accepted):
     producer = dict(worker_id='fixture-worker', evidence=dict(hostname='fixture-worker'))
     if accepted:
         assert auditor['capture_assigned_affinity'](
-            request, terminal, producer, runtime.CAPTURE_BOUNDS) == [5]
+            request, terminal, producer, runtime.CAPTURE_BOUNDS, runtime.CAPTURE_DEMAND) == [5]
     else:
         with pytest.raises(ValueError, match='one-CPU demand'):
             auditor['capture_assigned_affinity'](
-                request, terminal, producer, runtime.CAPTURE_BOUNDS)
+                request, terminal, producer, runtime.CAPTURE_BOUNDS, runtime.CAPTURE_DEMAND)

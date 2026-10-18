@@ -87,7 +87,7 @@ def capture_git_read(directory, *args):
         '--git-dir=' + str(directory), *args], stderr=subprocess.PIPE)
 
 
-def capture_assigned_affinity(request, terminal, producer, bounds):
+def capture_assigned_affinity(request, terminal, producer, bounds, demand):
     allocation = terminal['cpu_allocation']
     if not isinstance(allocation, dict) or set(allocation) != {'preferred', 'fallback'}:
         raise ValueError('capture terminal lacks its exact CPU allocation')
@@ -97,7 +97,7 @@ def capture_assigned_affinity(request, terminal, producer, bounds):
     if any(type(cpu) is not int or cpu < 0 for cpu in assigned) or len(assigned) != len(set(assigned)):
         raise ValueError('capture CPU allocation contains invalid or duplicate IDs')
     resources = terminal['resources']
-    if (resources != dict(cpu=1, mem_gb=2, gpu=0) or type(resources['cpu']) is not int
+    if (resources != demand or type(resources['cpu']) is not int
             or type(resources['gpu']) is not int or type(resources['mem_gb']) not in (int, float)
             or len(assigned) != resources['cpu']):
         raise ValueError('capture allocation does not match its one-CPU demand')
@@ -320,7 +320,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     sys.path.insert(0, str(expected_source / 'tests'))
     owner = runpy.run_path(str(expected_source / 'tests/proof_container_runtime.py'))
     capacity_owner = runpy.run_path(str(expected_source / 'tests/proof_capture_capacity.py'))
-    affinity = capture_assigned_affinity(request, terminal, producer, owner['CAPTURE_BOUNDS'])
+    affinity = capture_assigned_affinity(
+        request, terminal, producer, owner['CAPTURE_BOUNDS'], owner['CAPTURE_DEMAND'])
     runtime = producer['runtime']
     if runtime['runtime_sha256'] != canonical_sha256({k:v for k,v in runtime.items() if k != 'runtime_sha256'}):
         raise ValueError('capture worker runtime attestation differs')

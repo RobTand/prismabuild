@@ -19244,7 +19244,8 @@ receipt, logs, result and source bundle to every profile byte and archived
 member, including the actual PB producer/runtime files. No prewritten profile
 or successful older image runtime grants current standard-runtime credit.
 
-Capture requires one CPU, two GiB, native1, priority-10 and a sealed
+Capture requires `CAPTURE_DEMAND` from `tests/proof_container_runtime.py`,
+one CPU, four GiB and zero GPUs, with native1, priority-10 and a sealed
 480-second hard deadline. These are cost limits, not timing measurements. Four
 ordered 120-second stall allowances use the actual environment-named published
 progress helper. Cumulative units1..4 follow verified CAS publication of host

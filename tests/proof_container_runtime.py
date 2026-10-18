@@ -33,6 +33,7 @@ CAPTURE_PUBLISHED_SOURCES = tuple('src/prismabuild/' + name + '.py' for name in 
     'publication_canary', 'reader_lease', 'residency_map', 'residency_plan',
     'resident_sets', 'resource_scope', 'runtime_publication', 'storage_tiers',
     'window_credit')) + ('tools/prismabuild_worker.py',)
+CAPTURE_DEMAND = dict(cpu=1, mem_gb=4, gpu=0)
 CAPTURE_BOUNDS = dict(runtime_seconds=480, members=20000, regular_bytes=8 * 1024**3,
                       archive_members=20000 + len(CAPTURE_PUBLISHED_SOURCES) + 2,
                       supplemental_bytes=64 * 1024**2, metadata_bytes=64 * 1024**2,
