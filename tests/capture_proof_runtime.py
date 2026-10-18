@@ -467,15 +467,13 @@ class ImageClosureObserver:
                 raise ValueError('image navigation directory changed before completion: ' + logical)
 
 
-def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=Path('/')):
-    observer = ImageClosureObserver(host, image, budget, host_checkpoint, image_root)
-    plan = runtime_completion_plan(host, image)
+def discover_image_runtime_graph(observer, host, image, plan, lookup):
     outcomes = {}
     aliases = {}
     metadata_by_path = {}
 
     def resolve_observation(spelling, *, required=False, search=False):
-        outcome = walk_runtime_path(spelling, observer.lookup)
+        outcome = walk_runtime_path(spelling, lookup)
         if isinstance(outcome, RuntimeWitnessedAbsent):
             native = any(Path(spelling).is_relative_to(root)
                          for root in host['native_library_roots'] + image['native_library_roots'])
@@ -483,7 +481,7 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
                 raise ValueError('required runtime alias is absent outside the permitted native graph: ' + spelling)
         else:
             aliases[spelling] = outcome.terminal
-            if observer.lookup(outcome.terminal)['kind'] == 'directory':
+            if lookup(outcome.terminal)['kind'] == 'directory':
                 observer.complete_directory(outcome.terminal, search=search)
             elif search:
                 raise ValueError('loader search component is not a directory: ' + spelling)
@@ -492,7 +490,7 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
 
     def retain_candidate(spelling):
         outcome = resolve_observation(spelling, required=True)
-        if observer.lookup(outcome.terminal)['kind'] != 'file':
+        if lookup(outcome.terminal)['kind'] != 'file':
             raise ValueError('runtime ELF candidate is not a sealed regular file')
         metadata = candidate_metadata(outcome.terminal)
         if metadata is None:
@@ -549,7 +547,7 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
                         retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
                     direct = str(Path(directory) / needed)
                     if direct not in entries:
-                        probe = walk_runtime_path(str(Path(spelling) / needed), observer.lookup)
+                        probe = walk_runtime_path(str(Path(spelling) / needed), lookup)
                         if not isinstance(probe, RuntimeWitnessedAbsent):
                             raise ValueError('complete search inventory omitted a present direct candidate')
                 for row in cache:
@@ -561,6 +559,13 @@ def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=P
             break
     else:
         raise ValueError('runtime image completion did not converge inside its finite bound')
+    return outcomes
+
+
+def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=Path('/')):
+    observer = ImageClosureObserver(host, image, budget, host_checkpoint, image_root)
+    plan = runtime_completion_plan(host, image)
+    outcomes = discover_image_runtime_graph(observer, host, image, plan, observer.lookup)
     observer.finish()
     links = {str(Path(root['path']) / relative) for root in observer.roots
              for relative, entry in root['entries'].items() if entry['kind'] == 'symlink'}
