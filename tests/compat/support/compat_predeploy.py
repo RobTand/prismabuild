@@ -100,9 +100,24 @@ def validate(args):
             raise WindowError("live generation identity changed or became ambiguous; recapture and rerun")
     target = args.generations / rollback["generation"]
     require_generation(target, rollback)
-    facts = require_reachable(args.candidate, target)
-    require_receipt_participants(facts, None, hosts)
-    if designation.get("requires_no_proof_member") and "park_proof.py" in facts["candidate"]["present"]:
+    bootstrap = getattr(args, "installed_bootstrap", None)
+    if bootstrap is not None:
+        from prismabuild.installed_bootstrap import read_assessment, assess
+        assessment = read_assessment(bootstrap)
+        if assessment["rollback_designation"] != designation:
+            raise WindowError("bootstrap rollback designation differs")
+        candidate = Path(args.candidate).resolve(strict=True)
+        if str(candidate) != assessment["plan"]["target"]["directory"]:
+            raise WindowError("bootstrap candidate is not the qualified sealed target")
+        facts, _ = assess(assessment, checkout=root, fleet_root=args.generations.parent,
+                          source=target, target=candidate, roster=assessment["plan"]["roster"])
+        if set(hosts) != {alias for aliases in assessment["plan"]["roster"].values()
+                         for alias in aliases if alias in hosts} or len(hosts) != len(assessment["plan"]["roster"]):
+            raise WindowError("bootstrap census does not cover its exact enrolled roster")
+    else:
+        facts = require_reachable(args.candidate, target)
+        require_receipt_participants(facts, None, hosts)
+    if bootstrap is None and designation.get("requires_no_proof_member") and "park_proof.py" in facts["candidate"]["present"]:
         raise WindowError("a174 designation does not authorize a B09 proof-member deployment")
     immutable(args.out, {"hosts": hosts, "rollback": rollback, "protocols": facts,
                          "target_directory": str(target.resolve()),
@@ -123,6 +138,7 @@ def main():
     check.add_argument("--census", type=Path, required=True)
     fresh.add_argument("--census-dir", type=Path, required=True)
     for command in (check, fresh):
+        command.add_argument("--installed-bootstrap", type=Path)
         for name in ("window", "designation", "generations", "candidate", "out"):
             command.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()

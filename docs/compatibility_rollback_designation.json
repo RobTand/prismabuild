@@ -13,7 +13,7 @@
       "rerun fresh live-window corpus including bridge",
       "qualify actual G-to-bridge physical rollback"
     ],
-    "state": "prepared source control only; not published or designated"
+    "state": "automatic bridge remains undesignated; explicit installed bootstrap uses operator restoration with retained leaves"
   },
   "candidate_source_base": "416a1eccebaea4ef224e0ddef8f6a1fe424756b4",
   "gc_precondition": "every live reader and designated rollback target must understand movers-retired before receipt retirement; retained directories alone confer no support",
@@ -27,5 +27,12 @@
     "generation": "a17477b2b206-1791745175-65dffa700dfb",
     "receipt_sha256": "5cef73692997fbd9f3d8d187c9f7aad15ee6b699912ceb1cf88fe9444082c9dd"
   },
-  "support_is_permanent": false
+  "support_is_permanent": false,
+  "mode": "operator-restoration",
+  "automatic_reachability": false,
+  "retained_leaves": [
+    "digest_primitives.py",
+    "generation_receipt.py",
+    "park_proof.py"
+  ]
 }

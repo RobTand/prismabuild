@@ -141,3 +141,28 @@ Installed layouts always validate the installed directory and each bounded,
 nofollow regular leaf. Both captured sources compile before either executes.
 Recovery runs before this loader, including when installed leaves are missing.
 No alternate package, bytecode cache or legacy reader supplies a missing leaf.
+
+## Explicit installed bootstrap and operator restoration
+
+The amended P tool is a separate root operation for the exact a174 designation.
+It installs the three final leaves before the inactive final updater, using the
+existing copy operation in private same-filesystem staging. It writes only those
+four live paths and keeps an independent journal and recovery closure. The
+upgrader timer and service remain persistently fenced until acceptance. The
+broker and serving processes keep running.
+
+The publisher's explicit `--installed-bootstrap ASSESSMENT` activates an already
+sealed generation against fresh authenticated root observations of a complete
+final installed reader. It verifies PB qualification and source identities under
+the publication lock. The pending marker excludes ordinary publication, survives
+coordinator loss and retains the original a174 intent after a pointer move.
+In-band process convergence and the existing mandatory canary run under the lock.
+The default automatic direction checks and barrier guard remain unchanged.
+
+The persistent designation retains a174's exact directory, commit, receipt and
+content pins. `mode: operator-restoration` and `automatic_reachability: false`
+mean rollback restores the journaled standalone updater before pointer reversal
+while retaining `digest_primitives.py`, `generation_receipt.py` and
+`park_proof.py`. This does not authorize automatic rollback, leaf removal or an
+unpublished bridge. Actual root, crash/reverse and final record-window receipts
+remain release gates. See the operating guide's installed bootstrap procedure.

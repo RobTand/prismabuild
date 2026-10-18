@@ -188,7 +188,7 @@ FLEET_SCRIPTS = (
     # needs that proof is the box whose running broker cannot be disturbed by
     # materializing a checkout.
     "qualify_needrestart_broker_deferral.py",
-    "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
+    "upgrade_client.py", "bootstrap_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
     # The one-time root enrollment of a host in automatic movement publication
     # (#1659).  An administrator copies it out of the live generation, as the
     # client upgrader's installer; a generation without it leaves no host able
@@ -1436,7 +1436,141 @@ def _assert_coordinator_identity(view, *, agent=None):
     return agent
 
 
+def _bootstrap_pending_path():
+    return MIRROR.parent / "rollout" / "pending-bootstrap.json"
+
+
+def _require_no_pending_bootstrap():
+    path = _bootstrap_pending_path()
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise SystemExit("pending installed bootstrap excludes ordinary publication; resume its exact assessment")
+
+
+def _bootstrap_roster(source, target):
+    groups = []
+    for root in (source, target):
+        captured = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_bytes())
+        roster = fleet_roster.Roster.qualified(root, captured.files)
+        active, _ = _active_roster_boxes(roster)
+        groups.append({host: sorted(names) for host, names in active})
+    if groups[0] != groups[1]:
+        raise WindowError("bootstrap source/target enrolled rosters differ")
+    return groups[0]
+
+
+def _write_bootstrap_pending(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / (".bootstrap-" + uuid.uuid4().hex)
+    try:
+        _write_receipt(temporary, value)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _reserve_installed_bootstrap(assessment_path):
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    assessment = installed_bootstrap.read_assessment(assessment_path)
+    plan = assessment["plan"]
+    with _publication_lock():
+        _require_no_epoch()
+        source, _ = _sealed_generation(plan["source"]["generation"])
+        target, _ = _sealed_generation(plan["target"]["generation"])
+        expected_pointer = target if plan.get("direction") == "restore" else source
+        if MIRROR.resolve(strict=True) != expected_pointer or _bootstrap_roster(source, target) != plan["roster"]:
+            raise SystemExit("bootstrap reservation source or roster changed")
+        installed_bootstrap.verify_qualification(assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent)
+        if plan.get("direction") == "restore":
+            accepted = _bootstrap_pending_path().parent / ("bootstrap-" + plan["id"] + "-forward.accepted.json")
+            prior = json.loads(accepted.read_bytes())
+            if prior.get("forward_plan_sha256") != canonical_sha256({**plan, "direction": "forward"}):
+                raise SystemExit("rollback differs from the accepted original bootstrap intent")
+        _write_bootstrap_pending(_bootstrap_pending_path(), {
+            "schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
+            "source": plan["source"], "target": plan["target"],
+            "forward_plan_sha256": canonical_sha256({**plan, "direction": "forward"}), "state": "reserved"})
+        return 0
+
+
+def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollout="rolling"):
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    if rollout != "rolling":
+        raise SystemExit("installed bootstrap requires explicit rolling activation")
+    _require_external_coordinator()
+    assessment = installed_bootstrap.read_assessment(assessment_path)
+    plan = assessment["plan"]
+    direction = plan.get("direction", "forward")
+    selected = plan["target" if direction == "forward" else "source"]["generation"]
+    if name != selected:
+        raise SystemExit("installed bootstrap activation target differs from its original intent")
+    with _publication_lock():
+        # Check epochs without mistaking our own pending bootstrap for one.
+        directory = MIRROR.parent / "rollout/epochs"
+        if directory.exists() and _rollout_view() is not None:
+            raise SystemExit("active rollout epoch excludes installed bootstrap")
+        source, _ = _sealed_generation(plan["source"]["generation"])
+        target, receipt = _sealed_generation(plan["target"]["generation"])
+        roster = _bootstrap_roster(source, target)
+        pending = _bootstrap_pending_path()
+        intent = {"schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
+                  "source": plan["source"], "target": plan["target"],
+                  "forward_plan_sha256": canonical_sha256({**plan, "direction": "forward"})}
+        if pending.is_symlink():
+            raise SystemExit("unsafe pending bootstrap marker")
+        prior = json.loads(pending.read_bytes()) if pending.exists() else None
+        if prior and any(prior.get(key) != value for key, value in intent.items()):
+            raise SystemExit("another pending bootstrap owns publication")
+        live = MIRROR.resolve(strict=True)
+        if live not in (source, target) or (prior is None and live != source):
+            raise SystemExit("bootstrap source pointer differs from original a174 intent")
+        if not dry_run and socket.gethostname().split('.')[0] not in ("sparky", "sparklina", "gx10-6b77"):
+            raise SystemExit("bootstrap coordinator must run on sparky or sparklina for the GPU canary")
+        # Receipt verification may read substantial evidence. Fresh challenges
+        # follow it, while the same publication lock still excludes mutation.
+        result, observations = installed_bootstrap.assess(
+            assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent,
+            source=source, target=target, roster=roster)
+        if dry_run:
+            return 0
+        _write_bootstrap_pending(pending, {**intent, "state": "activation-intent",
+                                         "direction": direction, "assessment": result})
+        # Recheck both sealed identities after all external reads. Responses
+        # carry their own maximum age and exact captured/compiled identities.
+        _sealed_generation(source.name)
+        _sealed_generation(target.name)
+        from prismabuild.compatibility_window import require_installed_bootstrap
+        from prismabuild.compatibility_window import BootstrapQualification
+        require_installed_bootstrap(source, target, observations, roster=roster,
+            qualification=BootstrapQualification(plan, action_keys=result["actions"]),
+            rollback_designation=assessment["rollback_designation"])
+        _activate(target if direction == "forward" else source, migrate_directory=False)
+        _write_bootstrap_pending(pending, {**intent, "state": "awaiting-convergence", "direction": direction})
+        # Root observes real generation-pinned serving processes and fresh
+        # worker offers after the pointer move. No process is stopped here.
+        installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
+        selected_root = target if direction == "forward" else source
+        selected_receipt = receipt if direction == "forward" else json.loads((source / "RUNTIME_VERSION.json").read_bytes())
+        code = _run_rollout_canary(store=target.parent, generation_name=selected_root.name,
+                    commit=selected_receipt["commit"], enabled=True,
+                    shape_gate=selected_receipt.get("shape_gate", {}))
+        if code:
+            return code
+        installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
+        _write_bootstrap_pending(pending, {**intent, "state": "accepted", "direction": direction})
+        archive = pending.parent / ("bootstrap-" + plan["id"] + "-" + direction + ".accepted.json")
+        os.replace(pending, archive)
+        _fsync_directory(archive.parent)
+        return 0
+
+
 def _require_no_epoch():
+    _require_no_pending_bootstrap()
     # Retain rolling/bootstrap use from minimal source trees before epochs
     # existed. An unavailable directory is never the same as an absent one.
     directory = MIRROR.parent / "rollout" / "epochs"
@@ -2126,6 +2260,10 @@ def main() -> int:
              "rolling requires a stated mixed-generation-safety reason. "
              "Barrier --dry-run checks bootstrap history only.",
     )
+    ap.add_argument("--reserve-installed-bootstrap", type=Path, metavar="ASSESSMENT",
+                    help="reserve publication before the first root bootstrap preparation")
+    ap.add_argument("--installed-bootstrap", type=Path, metavar="ASSESSMENT",
+                    help="activate an already sealed generation after authenticated installed bootstrap assessment")
     ap.add_argument("--stage-only", action="store_true",
                     help="seal and import-probe a generation without arming or activating it; "
                          "use inside PB, then activate with the external control-plane coordinator")
@@ -2194,6 +2332,12 @@ def main() -> int:
     if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:
         ap.error("--barrier-wait-s must be finite and nonnegative")
     recovery = args.resume_barrier or args.rollback_barrier
+    if args.reserve_installed_bootstrap and (args.installed_bootstrap or args.activate_generation
+            or recovery or args.stage_only or args.dry_run or args.rollout != "rolling"):
+        ap.error("bootstrap reservation requires rolling and excludes activation/publication")
+    if args.installed_bootstrap and (not args.activate_generation or args.rollout != "rolling"
+                                    or recovery or args.stage_only or args.no_canary or args.canary):
+        ap.error("--installed-bootstrap requires rolling --activate-generation and its mandatory canary")
     if args.resume_barrier and args.rollback_barrier:
         ap.error("choose one of --resume-barrier and --rollback-barrier")
     if recovery and (args.activate_generation or args.stage_only or args.allow_dirty
@@ -2239,6 +2383,8 @@ def main() -> int:
 def _run_publication(args) -> int:
     rollout_reason = _rollout_reason(args.rollout, args.rollout_reason)
     recovery = args.resume_barrier or args.rollback_barrier
+    if getattr(args, "reserve_installed_bootstrap", None) is not None:
+        return _reserve_installed_bootstrap(args.reserve_installed_bootstrap)
     # Refuse before reading/staging a candidate generation.  The recovery
     # branch would otherwise reach `_wait_barrier`, which can call the pointer
     # mutation through `_barrier_step`.
@@ -2252,6 +2398,9 @@ def _run_publication(args) -> int:
         return _wait_barrier(recovery, wait_s=args.barrier_wait_s,
                              rollback_reason=args.rollback_reason)
 
+    if getattr(args, "installed_bootstrap", None) is not None:
+        return _activate_installed_bootstrap(args.activate_generation, args.installed_bootstrap,
+                                            dry_run=args.dry_run, rollout=args.rollout)
     _require_no_epoch()
 
     if args.activate_generation is not None:

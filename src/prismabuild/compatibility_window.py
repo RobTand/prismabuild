@@ -141,3 +141,145 @@ def require_generation(directory, designation):
         if not captured.matches_bytes(relative, path.read_bytes()):
             raise WindowError(f"rollback source content changed: {relative}")
     return value
+
+
+# This designation is deliberately narrower than the automatic transition API.
+BOOTSTRAP_SOURCE = {
+    "generation": "a17477b2b206-1791745175-65dffa700dfb",
+    "commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34",
+    "receipt_sha256": "5cef73692997fbd9f3d8d187c9f7aad15ee6b699912ceb1cf88fe9444082c9dd",
+    "content_sha256": "dd694fdb23b193f46ab82349c81067b6a9fd68eeaaba3ec24e24bf4176767ff3",
+}
+BOOTSTRAP_SERVICE_MEMBERS = ("resource_broker.py", "resource_payload.py", "gpu_memory.py", "gpu_capacity.py")
+BOOTSTRAP_LEAVES = ("digest_primitives.py", "generation_receipt.py", "park_proof.py")
+BOOTSTRAP_MEMBERS = (*BOOTSTRAP_SERVICE_MEMBERS, *BOOTSTRAP_LEAVES, "upgrade_client.py")
+
+
+class RootBootstrapResponses:
+    """In-memory collector result, never deserialized from a shared JSON claim.
+
+    The trusted coordinator constructs this only from completed authenticated
+    root subprocess responses to its own fresh challenge.
+    """
+    def __init__(self, rows, *, nonce, started_unix):
+        self.rows = rows
+        self.nonce = nonce
+        self.started_unix = started_unix
+
+
+class BootstrapQualification:
+    """Receipt verifier result, distinct from the operator's unverified index."""
+    def __init__(self, plan, *, action_keys):
+        self.plan = plan
+        self.action_keys = tuple(action_keys)
+
+
+def require_installed_bootstrap(source, target, observations, *, roster,
+                                qualification, rollback_designation):
+    """Assess an already installed closure; never authorize automatic transport."""
+    import math
+    import time
+
+    if not isinstance(qualification, BootstrapQualification) or not qualification.action_keys:
+        raise WindowError("bootstrap requires verified PB corpus and crash/reverse qualification receipts")
+    plan = qualification.plan
+    if any(plan["source"].get(key) != value for key, value in BOOTSTRAP_SOURCE.items()):
+        raise WindowError("bootstrap source must be the exact designated a174 generation")
+    if (rollback_designation.get("mode") != "operator-restoration"
+            or rollback_designation.get("automatic_reachability") is not False
+            or rollback_designation.get("retained_leaves") != list(BOOTSTRAP_LEAVES)
+            or any(rollback_designation["rollback"].get(key) != value
+                   for key, value in BOOTSTRAP_SOURCE.items())):
+        raise WindowError("bootstrap requires operator restoration with retained leaves, never automatic a174 reachability")
+    for root, identity in ((source, plan["source"]), (target, plan["target"])):
+        receipt = require_generation(root, identity)
+        if root.stat().st_mode & 0o222:
+            raise WindowError("bootstrap generation is not sealed")
+        for member in receipt["files"]:
+            if (Path(root) / member).stat().st_mode & 0o222:
+                raise WindowError("bootstrap generation member is not sealed")
+    if plan["source"] == plan["target"]:
+        raise WindowError("bootstrap target must be a distinct qualified generation")
+    members = plan["members"]
+    if set(members) != set(BOOTSTRAP_MEMBERS):
+        raise WindowError("bootstrap requires exactly eight target members")
+    for root, field in ((source, "source_files"), (target, "target_files")):
+        captured = GenerationReceipt.capture((Path(root) / "RUNTIME_VERSION.json").read_bytes())
+        for name, relative in members.items():
+            expected = plan[field].get(name)
+            actual = captured.files.get(relative)
+            if expected != actual:
+                raise WindowError("bootstrap member map differs from sealed receipt: " + name)
+    if (set(plan["source_files"]) != set((*BOOTSTRAP_SERVICE_MEMBERS, "upgrade_client.py"))
+            or set(plan["target_files"]) != set(BOOTSTRAP_MEMBERS)):
+        raise WindowError("bootstrap source/target closure differs")
+    service = {name: plan["source_files"][name] for name in BOOTSTRAP_SERVICE_MEMBERS}
+    if any(plan["target_files"][name] != digest for name, digest in service.items()):
+        raise WindowError("bootstrap changes a broker service member")
+    if roster != plan["roster"] or not roster:
+        raise WindowError("bootstrap enrollment roster changed")
+    aliases = [alias for names in roster.values() for alias in names]
+    if len(set(aliases)) != len(aliases) or any(host not in names for host, names in roster.items()):
+        raise WindowError("bootstrap aliases are ambiguous")
+    if not isinstance(observations, RootBootstrapResponses):
+        raise WindowError("shared evidence is not a fresh authenticated root response")
+    rows = observations.rows
+    if set(rows) != set(roster):
+        raise WindowError("bootstrap requires every enrolled host")
+    now = time.time()
+    if not 0 <= now - observations.started_unix <= 60:
+        raise WindowError("bootstrap collector challenge is stale")
+    direction = plan.get("direction", "forward")
+    if direction not in ("forward", "restore"):
+        raise WindowError("unknown bootstrap direction")
+    expected = dict(plan["target_files"])
+    if direction == "restore":
+        expected["upgrade_client.py"] = plan["source_files"]["upgrade_client.py"]
+    agent = expected["upgrade_client.py"]
+    for host, row in rows.items():
+        stamp = row.get("observed_unix")
+        if (row.get("schema") != "prismabuild.client_bootstrap.observation.v1"
+                or row.get("nonce") != observations.nonce
+                or not isinstance(stamp, (int, float)) or not math.isfinite(stamp)
+                or not observations.started_unix <= stamp <= now
+                or row.get("host") not in roster[host]
+                or row.get("boot_id") != plan["boots"].get(host)
+                or row.get("broker_process") != plan["brokers"].get(host)
+                or row.get("plan_sha256") != canonical_sha256(plan)
+                or row.get("source") != plan["source"] or row.get("target") != plan["target"]):
+            raise WindowError("stale, replayed or substituted bootstrap response for " + host)
+        if (row.get("files") != expected or row.get("executing_sha256") != agent
+                or row.get("captured_sha256") != agent
+                or row.get("reader_loaded") is not True or row.get("proof_loaded") is not True):
+            raise WindowError("installed bootstrap reader/leaf closure differs for " + host)
+        metadata = row.get("metadata", {})
+        if set(metadata) != set(expected) or any(
+                item.get("uid") != 0 or item.get("gid") != 0
+                or type(item.get("mode")) is not int or not 0 <= item["mode"] <= 0o7777 or item["mode"] & 0o022
+                for item in metadata.values()):
+            raise WindowError("unsafe root custody for " + host)
+        if (row.get("fenced") is not True or row.get("oneshot_exited") is not True
+                or row.get("automatic_journal") is not False or row.get("epoch") is not None
+                or row.get("enrollment_sha256") != plan["enrollments"].get(host)
+                or not isinstance(row.get("journal_sha256"), str)
+                or len(row["journal_sha256"]) != 64
+                or row.get("upgrade_lock", {}).get("held") is not True
+                or row["upgrade_lock"].get("inode") != plan["locks"].get(host)):
+            raise WindowError("bootstrap fence, journal or enrollment differs for " + host)
+        broker = row.get("broker", {})
+        if (broker.get("health") is not True or broker.get("installed_sha256") != service
+                or broker.get("maintenance_durable_protocol") != 1):
+            raise WindowError("bootstrap broker health/loaded identity differs for " + host)
+        gate = row.get("gate")
+        if not isinstance(gate, dict) or type(gate.get("draining")) is not bool:
+            raise WindowError("bootstrap gate is unknown for " + host)
+        if (broker.get("draining") is not gate["draining"]
+                or broker.get("maintenance_owner") != gate.get("owner")):
+            raise WindowError("bootstrap gate/broker owner differs for " + host)
+    protocol = client_protocol(target)
+    final_direction = require_client_transition(protocol, protocol)
+    if direction == "forward":
+        require_receipt_participants(final_direction, {host: agent for host in rows}, roster)
+    return {"mode": "operator-restoration", "automatic_reachability": False,
+            "direction": direction, "hosts": sorted(rows), "actions": list(qualification.action_keys),
+            "source": plan["source"], "target": plan["target"]}

@@ -4941,3 +4941,199 @@ that worker/core/pool/storage/reader SDK bytes are unchanged. The staged generat
 must be complete, sealed and sourced from reviewed merged code. Do not move the
 live `repo` pointer or restart roles for this client selection; runtime activation
 still requires its ordinary idle-queue checks.
+
+## Cut over a174 with the installed bootstrap
+
+This procedure implements amended P. It needs verified final-source corpus and
+root crash/reverse receipts before host mutation. The implementation worker's
+non-root gate does not supply those root receipts. Keep ordinary producers and
+all publication automation paused, including old publishers. Use an idle queue
+boundary for publication. Existing actions finish normally. Keep both sealed
+generations, host journals, lock inodes, initialized markers and all leaves.
+
+Run the coordinator as rob on **sparky or sparklina**, where the qualified GPU
+canary image is available. Enroll exactly sparky, gx10-6b77 with alias sparklina,
+and dl380g10. The broker, supervisor and storage roles continue running. Do not
+use the old a174 publisher to bypass a pending-bootstrap refusal. Do not execute
+Python from NFS as root.
+
+Set these operator-selected paths to the reviewed release checkout, staged sealed
+generation, evidence directory and reviewed operation ID. `qualification-actions.json`
+is a JSON array of full successful PB keys covering all eight native record
+compatibility files and both registered bootstrap root files on the final source.
+The verifier reads their CAS requests, snapshots, actual outcomes and root runtime
+attestations. A supplied `passed` field is not accepted.
+
+```bash
+R=/home/rob/wt/reviewed-release
+G=/mnt/shared/prismabuild-fleet/runtime-generations/REVIEWED_FINAL_GENERATION
+OLD=/mnt/shared/prismabuild-fleet/runtime-generations/a17477b2b206-1791745175-65dffa700dfb
+E=/mnt/shared/prismabuild-cutover/REVIEWED_OPERATION_ID
+ID=REVIEWED_OPERATION_ID
+export PYTHONPATH="$R/src"
+mkdir -p "$E"
+python3 -m prismabuild.installed_bootstrap inventory --out "$E/inventory"
+python3 -m prismabuild.installed_bootstrap plan --id "$ID" \
+	--source "$OLD" --target "$G" --inventory "$E/inventory/inventory.json" \
+	--actions "$E/qualification-actions.json" \
+	--designation "$R/docs/compatibility_rollback_designation.json" --out "$E/forward"
+PLAN_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/forward/plan.json")
+python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
+	--rollout-reason 'reviewed amended P, unchanged broker and two-way record corpus' \
+	--reserve-installed-bootstrap "$E/forward/assessment.json"
+```
+
+Inventory uses fixed read-only SSH/sudo commands. Review the generated plan,
+exact sealed receipts, all four service equalities, boot IDs, broker PID/start
+identities, enrollment digests and upgrade.lock inodes. A changed boot or broker
+requires new observation and qualification assessment; do not edit a pending
+intent to make a changed fact match. The reservation precedes the first root
+preparation. If interrupted, retain the pending marker and resume the same plan.
+
+Install the independently retained code and local plan with fixed file-install
+commands. The unprivileged shell opens NFS inputs. Root's `install` reads the
+pipe and root later executes only `/opt/prismabuild-bootstrap`. Both config
+files preserve the enrollment except for selecting the pinned sealed directory.
+The final reader's local leaves are separate from the four live paths.
+
+```bash
+for host in sparky sparklina dl380g10; do
+	key=$host
+	if [ "$host" = sparklina ]; then key=gx10-6b77; fi
+	B=/opt/prismabuild-bootstrap/$ID
+	ssh -oBatchMode=yes -oStrictHostKeyChecking=yes "$host" \
+		sudo -n /usr/bin/install -d -o root -g root -m 0755 "$B" "$B/reader"
+	cat "$G/tools/bootstrap_client.py" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/bootstrap_client.py"
+	cat "$G/tools/upgrade_client.py" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/reader/upgrade_client.py"
+	for leaf in digest_primitives.py generation_receipt.py park_proof.py; do
+		cat "$G/src/prismabuild/$leaf" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/reader/$leaf"
+	done
+	cat "$E/forward/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
+	for file in source-config.json target-config.json source-receipt.json target-receipt.json; do
+		cat "$E/forward/$key/$file" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/$file"
+	done
+	ssh "$host" sudo -n /usr/bin/sha256sum "$B/bootstrap_client.py" "$B/reader/upgrade_client.py" \
+		"$B/reader/digest_primitives.py" "$B/reader/generation_receipt.py" "$B/reader/park_proof.py"
+done
+```
+
+Compare every reported hash with the reviewed plan before executing root code.
+Do not overwrite a preexisting operation directory with different bytes. The
+helper checks the tool, private reader, receipt and enrollment identities again.
+Then prepare each host. It creates persistent conditions for both upgrader units,
+stops the timer, waits for the oneshot's natural exit and acquires the existing
+upgrade.lock. Its independent journal and backup precede all live replacement.
+It uses the existing full-map copy in private staging, then renames only the
+three leaves and updater, fsyncing both directories at each boundary.
+
+```bash
+for host in sparky sparklina dl380g10; do
+	ssh -oBatchMode=yes -oStrictHostKeyChecking=yes "$host" sudo -n /usr/bin/python3 -I \
+		"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" prepare --id "$ID" --plan-sha256 "$PLAN_SHA"
+done
+```
+
+Rerunning `prepare` reconciles a partial installation with its original backup.
+An automatic journal, unresolved epoch, changed service byte, unsafe custody or
+unavailable shared reservation refuses. Leave fences in place. Never run the
+final `Upgrader.run()` against the still-old pointer.
+
+Run fresh window/predeploy validation through published PB using the final
+checkout's normal qualification route and `compat_predeploy.py qualify
+--installed-bootstrap "$E/forward/assessment.json"`, with a new census directory,
+the exact current live-plus-a174 window, designation, generation store, sealed
+candidate and output path. This is test/qualification work and remains admitted.
+It verifies the exact rollback bytes and default 300-second census age. Default
+predeploy without the explicit assessment still refuses the automatic transition.
+Saved census freshness never replaces the publisher's new authenticated round.
+
+Activate externally from the GPU coordinator. This is control-plane work outside
+an admitted action. The pointer move does not require a broker restart. Existing
+actions finish under their claiming generation; roles rotate at their boundaries.
+
+```bash
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${G##*/}" \
+	--rollout rolling --rollout-reason 'qualified installed final reader; unchanged broker; amended P' \
+	--installed-bootstrap "$E/forward/assessment.json"
+```
+
+The publisher holds the publication lock while obtaining new root responses,
+activating, observing real process convergence and running the mandatory canary.
+A convergence wait, missing host, failed canary or typed `not_run` leaves the
+pending intent intact. Rerun the same activation command after resolving the
+observation; it keeps the original a174 source. Do not publish a new generation
+to obtain another canary grant. Inspect every canary leg's full keys, immutable
+logs, terminal physical flags and verified CAS receipts. A spent grant is not
+renewable by this procedure.
+
+Acceptance requires exactly one selected-generation supervisor, selected worker
+loops and every observed serving role, fresh matching worker offers, unchanged
+healthy broker, safe installed reader/leaf custody and no automatic journal.
+dl380g10 must show selected tier, prewarm and metrics roles. A stale or blocked
+old role keeps the operation pending. Open admission is required for the canary;
+a foreign maintenance holder must be resolved through its existing owner/CAS
+protocol. This tool never releases a hold.
+
+After the publisher archives `bootstrap-$ID-forward.accepted.json`, install its
+matching root-local release decision and remove only this operation's fences.
+The helper restores the timer only if originally active. Existing masks and
+unit enablement remain unchanged.
+
+```bash
+python3 -c 'import json,sys; print(json.dumps({"plan_sha256":sys.argv[1],"direction":"forward"}))' "$PLAN_SHA" > "$E/forward/accepted.json"
+for host in sparky sparklina dl380g10; do
+	B=/opt/prismabuild-bootstrap/$ID
+	cat "$E/forward/accepted.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/accepted.json"
+	ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" unfence --id "$ID" --plan-sha256 "$PLAN_SHA"
+	ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
+done
+```
+
+Observe an actual subsequent updater tick reporting `current` on every host.
+Resume producers only after that readback and the recorded fleet acceptance.
+Retain every artifact and journal. Celestia adopts the final submitter clients
+separately; it is not a broker/upgrader participant.
+
+### Restore the operator-designated a174 updater
+
+The designation says `mode: operator-restoration` and
+`automatic_reachability: false`. Its a174 directory, commit, raw receipt and
+content-map pins remain exact. An ordinary rolling reverse command is still
+refused. No bridge was invented. Keep all three final leaves installed.
+
+Pause producers and publication automation again. Let outstanding actions and
+canary lineages finish normally. Reserve the reverse of the original accepted
+intent, install that direction's local plan, and restore the standalone updater
+on all three hosts before reversing the pointer. The broker and serving roles
+continue running with their unchanged service bytes.
+
+```bash
+python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
+REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
+python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
+	--rollout-reason 'qualified operator restoration; retain all leaves' \
+	--reserve-installed-bootstrap "$E/reverse/assessment.json"
+for host in sparky sparklina dl380g10; do
+	B=/opt/prismabuild-bootstrap/$ID
+	cat "$E/reverse/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
+	ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" restore --id "$ID" --plan-sha256 "$REVERSE_SHA"
+done
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${OLD##*/}" \
+	--rollout rolling --rollout-reason 'operator-restored journaled a174 updater with retained leaves' \
+	--installed-bootstrap "$E/reverse/assessment.json"
+```
+
+A reverse selected before forward acceptance retains the existing pending intent;
+use the same reverse assessment directly after restoring each host. Do not erase
+that pending marker or require a nonexistent forward acceptance archive. If a
+root operation was interrupted before every leaf was installed, resume `prepare`
+with the original forward plan first. That produces the fixed retained-leaf
+closure before updater restoration. A reboot or changed identity blocks the old
+assessment and requires operator reconciliation, never a copied freshness field.
+
+After reverse acceptance, create `accepted.json` with `direction: restore` and
+`plan_sha256: "$REVERSE_SHA"`, install it on each host and run `unfence` with the
+reverse hash as above. Observe actual a174 `current` ticks and source-generation
+roles/offers. Keep receipt and proof leaves, independent recovery code, failed
+canary evidence and both generation directories. This procedure removes no
+broker authority, automatic journal, initialized marker or permanent lock.

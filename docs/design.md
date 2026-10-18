@@ -19513,3 +19513,85 @@ patch and causal evidence remain retained as future-proposal material.
 Zero-credit behavior, corrupt/mismatched/unknown-holdings diagnostics,
 positive existing-intent recovery and publication cleanup order are unchanged.
 No writer exclusion, drain, deployment or workload fact is established.
+
+### Installed client bootstrap with operator restoration
+
+`bootstrap_client.py` implements the amended P path for the exact designated
+`a17477b2b206-1791745175-65dffa700dfb` source. Its four broker service members
+must equal the target, installed files and healthy running broker's loaded map.
+It replaces only `digest_primitives.py`, `generation_receipt.py`,
+`park_proof.py`, then `upgrade_client.py`. It never stops the broker, changes
+admission or controls a supervisor, worker or storage role. Active actions keep
+running. This path makes no whole-host physical drain claim.
+
+Before the first host preparation, the operator freezes other publisher and
+producer automation, including historical publishers that cannot see the new
+exclusion, and reserves the operation with `--reserve-installed-bootstrap`.
+The durable `rollout/pending-bootstrap.json` excludes ordinary publication,
+staging, activation and epoch operations. The publisher owns its permanent
+publication lock when creating, advancing or archiving that record. Root host
+operations require its exact source, target and original forward plan digest
+through a credential-dropped local export program. A missing participant or an
+unreadable marker leaves the operation pending. Neither a lock nor a timer is
+unlinked to recover it.
+
+Each host retains an independent reviewed tool and final reader closure under
+`/opt/prismabuild-bootstrap/<id>/`. Root executes only that root-local closure.
+The enrolled reader UID opens shared generation inputs after a permanent drop.
+The independent journal under `/var/lib/prismabuild-client-upgrade/bootstrap/`
+records the prior updater bytes and the presence and metadata of all three
+leaves. It is distinct from the automatic `transaction.json`. Existing automatic
+journals or unresolved local/shared epochs refuse entry. An independent permanent
+bootstrap lock serializes helper invocations. The existing `upgrade.lock` inode
+is retained and acquired for every copy or observation.
+
+The helper journals the original unit states, creates a persistent block and
+operation-specific `[Unit] ConditionPathExists=!<block>` drop-ins, reloads the
+system manager and stops only the upgrade timer. It waits for an executing
+oneshot to exit naturally. Existing units, drop-ins, enablement and masks remain
+operator-owned. Loaded conditions and the absent service PID/job are checked.
+Private staging directories live inside the installed filesystem. The frozen
+updater's existing full-map `copy_files` validates and materializes all members
+there. Only the fixed four files reach live rename, in dependency order. Both
+stage and installed directories are fsynced at each boundary. Replay reads the
+independent journal and repeats the fixed install; it never replaces the saved
+old updater with bytes from a partial installation.
+
+`require_installed_bootstrap(source, target, observations, *, roster,
+qualification, rollback_designation)` is separate from automatic transition
+policy. The collector verifies successful CAS qualification requests, final
+source snapshots, whole-file outcomes without skips, both native record reader
+directions and the qualified root runtime attestation. Its fresh authenticated
+SSH/sudo round binds a new nonce, host aliases, boot and unchanged broker process,
+enrollment, original lock inode, independent journal, file metadata, captured and
+executed updater code, real receipt/proof loads, gate owner and healthy loaded
+broker. Shared JSON and historical attestations cannot supply root authority.
+Source and target raw receipts and complete content maps are pinned and rechecked.
+Target participants satisfy the target's own capable-reader contract. The default
+`require_client_transition`, receipt participant semantics and public barrier
+guard are unchanged.
+
+`--installed-bootstrap ASSESSMENT --activate-generation NAME --rollout rolling`
+activates an already sealed generation only. Under the publication lock it
+verifies the qualification and fresh root responses immediately before
+`_activate`. A pending operation retains its original a174 source even after a
+pointer move. After activation, fresh root process censuses and selected-generation
+worker offers must establish in-band convergence. The coordinator runs on sparky
+or sparklina and calls the mandatory existing canary under the same lock. A failed
+or unobserved canary leaves the operation pending. Acceptance checks convergence
+again and archives the marker with its original identities. The operator then
+installs the matching root-local accepted decision and restores only this
+operation's fences and the timer's original activity. Source support does not
+establish root qualification, live convergence or deployment readiness.
+
+Rollback in this mode is operator restoration with `automatic_reachability:
+false`. The exact a174 pins remain unchanged. Reserve the reverse direction,
+fence and lock each host, restore only the journaled standalone a174 updater,
+then reverse the shared pointer under the publication lock. Retain all three
+final leaves. The old updater ignores them and can read its five-member source
+closure. No automatic five/eight-member journal or optional-member removal is
+created. No bridge generation is designated by this mode. The automatic bridge
+requirements above still apply to automatic transports and dependency removal.
+The explicit predeploy assessment retains a fresh complete live-plus-rollback
+census and exact immutable rollback bytes; it records operator restoration and
+never claims automatic a174 reachability.
