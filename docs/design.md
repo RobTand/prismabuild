@@ -18953,8 +18953,8 @@ source-declaration owners. Updater parsing and its digest use one captured
 read. Retained record inspection qualifies each captured generation's own
 closure; it grants no candidate installation or rollback direction.
 
-Fresh publication and existing-generation activation apply the source direction
-policy before writes. A receipt-pair rolling transition refuses because
+Automatic fresh publication and ordinary existing-generation activation apply
+the source direction policy before writes. A receipt-pair rolling transition refuses because
 historical attestations cannot prove the current installed updater. Stage-only
 preparation activates nothing and remains available. Existing epoch activation,
 reversion and resume require exact enrolled identities and the current drained

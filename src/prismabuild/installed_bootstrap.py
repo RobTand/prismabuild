@@ -30,7 +30,7 @@ def read_assessment(path):
             or not value.get('qualification_actions')):
         raise WindowError('invalid installed bootstrap plan/qualification')
     admission = value.get('canary_admission', 'publication-slot')
-    if admission not in ('ordinary', 'publication-slot') or (admission == 'ordinary' and not str(value.get('ordinary_canary_reason', '')).strip()):
+    if admission not in ('ordinary', 'publication-slot') or (admission == 'ordinary' and (not isinstance(value.get('ordinary_canary_reason'), str) or not value['ordinary_canary_reason'].strip())):
         raise WindowError('ordinary bootstrap canary needs an explicit operator reason')
     return value
 

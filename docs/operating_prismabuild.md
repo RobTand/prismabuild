@@ -5047,6 +5047,33 @@ It verifies the exact rollback bytes and default 300-second census age. Default
 predeploy without the explicit assessment still refuses the automatic transition.
 Saved census freshness never replaces the publisher's new authenticated round.
 
+For predeploy, capture the window and run qualification with these admitted
+commands after preparing the hosts. `pbrun` supplies ordinary CPU admission;
+its child executes the named script directly.
+
+```bash
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py \
+	capture --out "$E/window-census"
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_sources.py capture \
+	--status "$E/window-census/status.json" --generations "${G%/*}" \
+	--rollback-generation "${OLD##*/}" --rollback-commit a17477b2b206adf79d89e65c7b9d09584f0bfa34 \
+	--git-root "$R" --out "$E/window"
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py qualify \
+	--census-dir "$E/predeploy-census" --window "$E/window/window.json" \
+	--designation "$R/docs/compatibility_rollback_designation.json" --generations "${G%/*}" \
+	--candidate "$G" --out "$E/predeploy.json" --installed-bootstrap "$E/forward/assessment.json"
+```
+
+
 Activate externally from the GPU coordinator. This is control-plane work outside
 an admitted action. The pointer move does not require a broker restart. Existing
 actions finish under their claiming generation; roles rotate at their boundaries.
@@ -5137,32 +5164,6 @@ reverse hash as above. Observe actual a174 `current` ticks and source-generation
 roles/offers. Keep receipt and proof leaves, independent recovery code, failed
 canary evidence and both generation directories. This procedure removes no
 broker authority, automatic journal, initialized marker or permanent lock.
-
-For predeploy, capture the window and run qualification with these admitted
-commands after preparing the hosts. `pbrun` supplies ordinary CPU admission;
-its child executes the named script directly.
-
-```bash
-python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
-	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
-	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py \
-	capture --out "$E/window-census"
-python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
-	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
-	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_sources.py capture \
-	--status "$E/window-census/status.json" --generations "${G%/*}" \
-	--rollback-generation "${OLD##*/}" --rollback-commit a17477b2b206adf79d89e65c7b9d09584f0bfa34 \
-	--git-root "$R" --out "$E/window"
-python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
-	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
-	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
-	-- /home/rob/venvs/pb-cpu/bin/python3.12 tests/compat/support/compat_predeploy.py qualify \
-	--census-dir "$E/predeploy-census" --window "$E/window/window.json" \
-	--designation "$R/docs/compatibility_rollback_designation.json" --generations "${G%/*}" \
-	--candidate "$G" --out "$E/predeploy.json" --installed-bootstrap "$E/forward/assessment.json"
-```
 
 The publication lock protects a new live-window census and new authenticated root
 challenges immediately before activation. Unknown live writers, ambiguous

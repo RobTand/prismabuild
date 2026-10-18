@@ -97,7 +97,7 @@ for `generation_receipt.py` and `digest_primitives.py`. An explicit receipt-memb
 recovery declaration fences transactions that can add or remove those leaves.
 The final production updater has no inline receipt fallback.
 
-The intended forward sequence is old updater to prepared standalone bridge,
+The automatic forward sequence is old updater to prepared standalone bridge,
 bridge with no leaves to bridge with the exact leaf pair, then final updater.
 The reverse sequence first restores the bridge while retaining the leaf pair,
 then removes leaves under the bridge. The immutable old updater does not know
