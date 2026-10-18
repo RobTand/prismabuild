@@ -195,7 +195,7 @@ def main():
     args = parser.parse_args()
     if args.versions_only:
         host = subprocess.check_output(['ldd','--version'],text=True,timeout=30)
-        image = subprocess.check_output(['docker','run','--rm','--read-only','--network','none',
+        image = None if args.image is None else subprocess.check_output(['docker','run','--rm','--read-only','--network','none',
             '--cap-drop','ALL','--user',str(os.getuid())+':'+str(os.getgid()),
             '--cpuset-cpus',','.join(map(str,sorted(os.sched_getaffinity(0)))),
             '--entrypoint','ldd',args.image,'--version'],text=True,timeout=30)
