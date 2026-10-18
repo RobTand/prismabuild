@@ -93,7 +93,8 @@ def image_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(capture.sysconfig, 'get_config_var', lambda name: 'fixture-native')
     monkeypatch.setattr(capture.site, 'getsitepackages', lambda: [])
     monkeypatch.setattr(capture.subprocess, 'check_output',
-        lambda *args, **kwargs: '0 libs found in cache fixture:\n')
+        lambda *args, **kwargs: ('ldd (GNU libc) 2.39\n' if args[0] == ['ldd', '--version']
+                                 else '0 libs found in cache fixture:\n'))
     return observation, translated
 
 

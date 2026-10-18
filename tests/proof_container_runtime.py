@@ -623,6 +623,11 @@ class RuntimeNamespaceIndex:
         image_roots = [root for root in closure['roots'] if root['origin'] == 'image']
         image_roots += closure.get('completion', {}).get('base_image_roots', [])
         self.image_children = self.immediate_names(runtime_namespace_entries(dict(roots=image_roots)))
+        for path, component in closure.get('components', {}).items():
+            parent, _, name = path.rpartition('/')
+            self.children.setdefault(parent or '/', set()).add(name)
+            if component['origin'] == 'image':
+                self.image_children.setdefault(parent or '/', set()).add(name)
         self._before = None
         for witness in closure.get('directory_witnesses', {}).values():
             if witness.get('authority') in ('host', 'image') and witness.get('operation') != 'namespace_directory_expectation':
@@ -635,7 +640,7 @@ class RuntimeNamespaceIndex:
         if (not isinstance(before, (tuple, list)) or len(before) != 6
                 or any(type(value) is not int for value in before) or before != after
                 or not stat.S_ISDIR(before[2]) or not isinstance(names, (tuple, list))
-                or any(not isinstance(value, str) or value in ('', '.', '..') or '/' in value for value in names)
+                or any(not isinstance(value, str) or value in ('', '.', '..') or '/' in value or '\0' in value for value in names)
                 or list(names) != sorted(set(names))):
             raise ValueError('runtime directory listing lacks stable complete observations')
         if authority == 'image' and not self.image_children.get(parent, set()).issubset(names):
@@ -1225,6 +1230,14 @@ def runtime_directory_candidate_spellings(entries, directory, needed, *, direct=
     candidates = (runtime_candidate_name_index(entries) if by_name is None else by_name).get(needed, ())
     return sorted(path for path in candidates if Path(path).is_relative_to(directory))
 
+def require_runtime_search_visibility(entries, components, directory):
+    for prefix in (Path(directory), *Path(directory).parents):
+        entry = entries.get(str(prefix), components.get(str(prefix), {}).get('entry'))
+        if (entry is not None and entry['kind'] == 'directory'
+                and 'mode' in entry and not entry['mode'] & 0o001):
+            raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
+
+
 def audit_native_closure(closure, byte_path):
     entries = runtime_namespace_entries(closure)
     resolved = audit_link_outcomes(closure)
@@ -1277,6 +1290,7 @@ def audit_native_closure(closure, byte_path):
         entry = entries.get(directory, closure['components'].get(directory, {}).get('entry'))
         if entry is None or entry['kind'] != 'directory':
             raise ValueError('hwcaps component is not a directory: ' + spelling)
+        require_runtime_search_visibility(entries, closure['components'], directory)
         if runtime_search_directory_mode(closure['roots'], directory) == 'complete':
             if entries.get(directory, {}).get('kind') != 'directory':
                 raise ValueError('complete hwcaps inventory omits its directory')
@@ -1296,17 +1310,16 @@ def audit_native_closure(closure, byte_path):
         mode = runtime_search_directory_mode(closure['roots'], directory)
         if mode is None:
             raise ValueError('loader search directory is not completely inventoried: ' + directory)
-        for prefix in (Path(directory), *Path(directory).parents):
-            entry = entries.get(str(prefix), closure['components'].get(str(prefix), {}).get('entry'))
-            if (entry is not None and entry['kind'] == 'directory'
-                    and 'mode' in entry and not entry['mode'] & 0o001):
-                raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
+        require_runtime_search_visibility(entries, closure['components'], directory)
         found = {sealed_candidate(str(Path(spelling) / Path(path).relative_to(directory)))
                  for path in runtime_directory_candidate_spellings(entries, directory, needed,
                      direct=mode == 'direct', by_name=candidates_by_name)}
         base = None
         for candidate in runtime_hwcaps_spellings(spelling, needed, directory_names):
-            outcome = walk_runtime_path(candidate, lookup)
+            try:
+                outcome = walk_runtime_path(candidate, lookup)
+            except ValueError as error:
+                raise ValueError('missing candidate absence evidence: ' + candidate) from error
             if isinstance(outcome, RuntimeWitnessedAbsent):
                 parent = resolve(str(Path(candidate).parent))
                 expected = str(Path(parent) / needed)
@@ -1599,7 +1612,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
                 or ('mode' in component['entry'] and stat.S_IMODE(before.st_mode) != component['entry']['mode'])
                 or runtime_stamp(before) != runtime_stamp(location.lstat())):
             raise ValueError('mounted runtime navigation component differs: ' + path)
-    for parent, observation in closure['completion']['search_directory_observations'].items():
+    for parent, observation in closure.get('completion', {}).get('search_directory_observations', {}).items():
         if runtime_path_authority(closure, parent) not in origins:
             continue
         descriptor = os.open(image_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

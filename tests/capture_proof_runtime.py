@@ -190,8 +190,6 @@ def capture_host_customizations(stdlib, selected_paths, budget, *, physical=Path
 
 
 def runtime_capture(origin, budget=None):
-    glibc = subprocess.check_output(['ldd', '--version'], text=True, timeout=30)
-    require_modern_glibc(glibc)
     if budget is None:
         budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
     before_budget = {key: budget[key] for key in ('members', 'regular_bytes')}
@@ -275,6 +273,10 @@ def runtime_capture(origin, budget=None):
             if list(runtime_stamp(info)) != observed['after'] or info.st_uid != observed['uid']:
                 raise ValueError('host customization target changed during inventory: ' + item['target'])
             customization_probes.append(dict(observed))
+    runtime_charge(budget)
+    glibc = subprocess.check_output(['ldd', '--version'], text=True,
+        timeout=min(30, budget['deadline'] - time.monotonic()))
+    require_modern_glibc(glibc)
     result = dict(glibc=glibc, observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
                   executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode(),

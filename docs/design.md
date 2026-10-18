@@ -19162,36 +19162,57 @@ The authoritative post-completion diagnostics must report exactly the same
 ordered system directories and actual kernel release; capture and retained audit
 both refuse a difference. No host-side tentative loader planning is introduced.
 
-Producer and auditor use one loader-order owner. For each ELF's actual path and
-each positive alias origin, a needed basename searches DT_RPATH, including the
-existing conservative inherited contexts, only without DT_RUNPATH; then the
-object's own DT_RUNPATH; matching cache rows in order; and mounted-loader default
-directories in order. Each origin variant must find a regular-file provider.
-Every candidate under every global RPATH/RUNPATH context and every matching cache
-row remains required when present, independently of the first hit. A missing or
-non-regular cache candidate refuses even if a later default would provide it.
-Default candidates are retained or witnessed through each variant's first hit.
-The installed reader starts with an explicit environment containing only PATH,
+Producer and auditor use one exhaustive evidence owner. For each ELF and needed
+basename, it visits every conservative global RPATH context, the object's own
+RUNPATH under all actual-path and positive-alias origins, every matching cache
+row regardless of eligibility, and every mounted-loader default directory.
+Evidence collection never stops at a present provider. Possible inherited
+contexts and cache rows cannot suppress default evidence. Resolution only
+refuses a dependency with no present regular-file candidate anywhere in that
+union; it does not authorize skipping observations or claim the loader chose
+a particular member. Missing or non-regular matching cache targets, required
+dangling links, unsupported architecture/ABI/visibility, and NODEFLIB still
+refuse. Main-executable alias origins remain an over-approximation for inclusion.
+The installed reader uses a fresh explicit environment containing only PATH,
 TMPDIR and bounded native thread variables, excluding LD_LIBRARY_PATH and
-LD_PRELOAD; actual primary and reader observations refuse loader overrides.
+LD_PRELOAD; actual role observations refuse loader overrides.
 
 A RUNPATH, RPATH or default directory that is a proper ancestor of captured
-roots uses direct-child search evidence instead of a recursive inventory.
-This includes default `/lib` resolved through its positive alias to `/usr/lib`.
-Complete-mode directories retain complete inventories. Existing conservative
-global search contexts, including inherited RPATH candidates, remain in force.
-For each visited needed-basename query, a present child becomes a required
-candidate with complete retained bytes; a missing child requires an actual
-no-follow ENOENT, equal parent stamps and the complete sorted immediate child-name
-listing. The listing spends the existing member budget. The auditor rederives
-the ancestor rule and replays those probes; mounted verification re-observes each
-search miss. These search misses do not exempt declared links under A1, and add
-no broad roots. An empty RUNPATH element remains an unsupported search token;
-cwd is not modeled. Unknown directories or candidates, required dangling
-candidates, loader overrides, secure mode, unsupported tokens and NODEFLIB refuse
-capture. If completion cannot retain the facts required by the authoritative
-mounted-loader audit within the existing budgets and phase allowance, capture
-refuses. The supported candidate format is native ELF64 Linux
+roots uses narrow search evidence instead of a recursive inventory. Default
+`/lib` is walked through its positive alias to `/usr/lib` first. Each directory
+query includes its base child and `glibc-hwcaps/<sub>/<needed>` for every existing
+child `<sub>`, regardless of CPU eligibility. A missing `glibc-hwcaps` component
+requires exact witnessed absence. Otherwise its complete sorted stable listing,
+and a complete sorted stable listing of each child directory, are retained.
+Every candidate is retained if present or probed with no-follow ENOENT and a
+stable complete parent-name witness if absent. Complete-mode roots already
+inventory these directories recursively; replay asserts that coverage. Unknown
+or non-directory capability components and required dangling capability aliases
+refuse. Positive shallow listings spend one observation member plus every name,
+with the existing component/file charges; replay reconstructs the totals.
+Mounted verification re-observes their kind, mode and complete composed names,
+using fresh stable observations rather than asserting image syscall stamps.
+No broad roots, root widening or declared-link exception under A1 are added.
+
+Image and host capture observe `ldd --version`; image output is retained with
+the completion facts. The mounted host loader's version is also bound by its
+actual diagnostics. GNU glibc before 2.37, which still supports legacy hwcap,
+AT_PLATFORM and tls subdirectory searches, refuses. Those older mechanisms are
+not modeled. Supported dynamic string expansion has one parser: `$ORIGIN` must
+end at a non-identifier boundary or end of string, and `${ORIGIN}` may precede a
+suffix. `$LIB`, `$PLATFORM`, longer identifiers and other dollar tokens refuse.
+Empty search elements remain unsupported; cwd is not modeled. Supported search
+directory paths are resolved only when a DT_NEEDED query visits them, so an
+unused absolute RUNPATH requires no directory evidence. Token validation and
+other ELF refusals still apply to seeds without dependencies.
+
+Absence and positive listing records for the same parent and stable stamp must
+agree exactly, including unretained child names. Their stamps and names must
+also agree with retained parent observations where available. Changed parents,
+contradictory listings and incomplete evidence refuse. All probes, retained
+bytes, listing names and rechecks use the existing member/byte budgets and
+monotonic allowance. If complete evidence cannot fit those bounds or the
+120-second phase allowance, capture refuses. The supported candidate format is native ELF64 Linux
 with ordinary ABI headers and world-readable files. GNU ABI kernel requirements
 must fit the actual diagnostic kernel release. ELF audit, filter, and
 configuration loading and system-wide preloads refuse capture. Later outer,

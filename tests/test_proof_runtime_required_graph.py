@@ -1627,9 +1627,26 @@ def test_ancestor_hwcaps_candidates_are_sealed(tmp_path, context, base_present):
     if context == 'default':
         tree.host_file('/h/stdlib/ancestor-extension.so', graph_fixture_elf(needed=('libancestor.so',)))
         tree.diagnostic_raw = 'version.version=\"2.39\"\npath.system_dirs[0]="/usr/lib/"\npath.system_dirs[1]="' + NATIVE + '/"\nuname.release="6.8.0"\n'
+    tree.host_file('/h/stdlib/hwcap-miss.so', graph_fixture_elf(needed=('libother.so',), runpath=('/usr/lib',)))
+    tree.host_file(NATIVE + '/libother.so', graph_fixture_elf())
     closure = tree.complete()
     assert tree.entry(closure, optimized)['sha256'] == runtime.digest(tree.physical('image', optimized).read_bytes())
     assert tree.audit(closure, tree.retained_members(closure))
+
+    observations = closure['completion']['search_directory_observations']
+    assert observations['/usr/lib/glibc-hwcaps']['names'] == ['x86-64-v3']
+    sub = '/usr/lib/glibc-hwcaps/x86-64-v3'
+    assert observations[sub]['names'] == ['libancestor.so']
+    assert any(value['parent'] == sub and value['name'] == 'libother.so'
+               for value in closure['directory_witnesses'].values())
+    assert all(any(charge['kind'] == 'listing' and charge['path'] == path
+                   and charge['members'] == 1 + len(observed['names'])
+                   for charge in closure['completion']['charges']) for path,observed in observations.items())
+    tree.mount_host_roots()
+    runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
+    tree.image_file(sub + '/unexpected-name', b'changed listing')
+    with pytest.raises(ValueError, match='listing changed'):
+        runtime.verify_runtime_negatives(closure, image_root=tree.image_root)
 
 
 def test_unrelated_rpath_does_not_suppress_default_evidence(tmp_path):

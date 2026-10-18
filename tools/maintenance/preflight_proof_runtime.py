@@ -170,6 +170,8 @@ def preflight_image(payload):
         image_executable_inventory=next(root['entries']['.'] for root in image['roots']
             if root['path'] == image['observation']['executable']['resolved_path']),
         loader_diagnostics=payload['loader_diagnostics'], image_loader_cache=image['loader_cache'],
+        image_glibc=image['glibc'],
+        search_directory_observations={} if completed is None else completed.completion['search_directory_observations'],
         retained_absence_paths=[] if completed is None else sorted(
             str(Path(witness['parent']) / witness['name']) for witness in completed.directory_witnesses.values()),
         host_bytes_prefix=payload['host_bytes_prefix'],
