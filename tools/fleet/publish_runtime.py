@@ -1463,13 +1463,39 @@ def _bootstrap_roster(source, target):
     return groups[0]
 
 
+def _bootstrap_fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _durable_bootstrap_directory(path):
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        directory.mkdir()
+        _bootstrap_fsync_directory(directory)
+        _bootstrap_fsync_directory(directory.parent)
+        if not directory.is_dir() or directory.is_symlink():
+            raise WindowError("bootstrap directory readback differs")
+    for directory in (path, *path.parents):
+        _bootstrap_fsync_directory(directory)
+
+
 def _write_bootstrap_pending(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _durable_bootstrap_directory(path.parent)
     temporary = path.parent / (".bootstrap-" + uuid.uuid4().hex)
     try:
         _write_receipt(temporary, value)
         os.replace(temporary, path)
-        _fsync_directory(path.parent)
+        _bootstrap_fsync_directory(path.parent)
+        if json.loads(path.read_bytes()) != value:
+            raise WindowError("bootstrap intent readback differs")
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -1477,12 +1503,14 @@ def _write_bootstrap_pending(path, value):
 def _record_bootstrap_root_responses(plan, observations, phase):
     from prismabuild.digest_primitives import canonical_sha256
     directory = MIRROR.parent / "rollout/bootstrap" / plan["id"]
-    directory.mkdir(parents=True, exist_ok=True)
+    _durable_bootstrap_directory(directory)
     path = directory / (phase + "-" + observations.nonce + ".json")
     digest = _write_receipt(path, {"schema": "prismabuild.bootstrap_root_transcript.v1",
         "plan_sha256": canonical_sha256(plan), "nonce": observations.nonce,
         "started_unix": observations.started_unix, "responses": observations.rows})
-    _fsync_directory(directory)
+    _bootstrap_fsync_directory(directory)
+    if raw_sha256(path.read_bytes()) != digest:
+        raise WindowError("bootstrap transcript readback differs")
     return {"path": str(path), "sha256": digest}
 
 
@@ -1621,7 +1649,7 @@ def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollo
             "canary_sha256": raw_sha256(canary_record.read_bytes())})
         archive = pending.parent / ("bootstrap-" + plan["id"] + "-" + direction + ".accepted.json")
         os.replace(pending, archive)
-        _fsync_directory(archive.parent)
+        _bootstrap_fsync_directory(archive.parent)
         return 0
 
 

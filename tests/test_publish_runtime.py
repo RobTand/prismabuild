@@ -1198,3 +1198,24 @@ def test_bootstrap_unreadable_queue_cannot_authorize_activation(tmp_path, monkey
     with pytest.raises((PermissionError, WindowError), match='queue'):
         publish_runtime._activate_installed_bootstrap('final', path)
     assert mirror.resolve() == source
+
+
+def test_bootstrap_intent_and_transcript_link_every_new_directory(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    writer = publish_runtime._write_bootstrap_pending
+    monkeypatch.setattr(publish_runtime, 'MIRROR', tmp_path / 'fleet/repo')
+    fsync = os.fsync
+    observed = []
+    def syncing(fd):
+        observed.append(str(Path('/proc/self/fd', str(fd)).resolve()))
+        fsync(fd)
+    monkeypatch.setattr(os, 'fsync', syncing)
+    path = tmp_path / 'fleet/rollout/pending-bootstrap.json'
+    writer(path, {'id': 'durable'})
+    assert all(str(p) in observed for p in (tmp_path, tmp_path / 'fleet', path.parent))
+    observed.clear()
+    recorder = writer.__globals__['_record_bootstrap_root_responses']
+    result = recorder({'id': 'durable'}, SimpleNamespace(nonce='a' * 64, started_unix=1, rows={}), 'before')
+    target = Path(result['path'])
+    assert all(str(p) in observed for p in (path.parent, target.parent.parent, target.parent))

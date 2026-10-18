@@ -18,6 +18,82 @@ from .digest_primitives import canonical_sha256, raw_sha256
 CORPUS_FILES = tuple('tests/test_record_compatibility_' + name + '.py' for name in (
     'queue', 'storage', 'ownership', 'outputs', 'host', 'decomposition', 'core', 'controller'))
 ROOT_FILES = ('tests/test_client_bootstrap_root.py', 'tests/test_receipt_reader_root.py')
+QUALIFICATION_SOURCES = (*CORPUS_FILES, *ROOT_FILES, 'tests/run_proof_container.py',
+    'tests/proof_container_runtime.py', 'tests/proof_execution.json', 'tests/receipt_execution.json',
+    'tools/fleet/bootstrap_client.py', 'tools/fleet/upgrade_client.py')
+
+
+def _qualification_source(checkout, commit, name):
+    path = Path(name)
+    if path.is_absolute() or '..' in path.parts or not path.parts:
+        raise WindowError('invalid qualification source path')
+    return subprocess.check_output(['git', '-C', str(checkout), 'show', commit + ':' + name])
+
+
+def _qualification_index(assessment, checkout):
+    """Required nodes come from the separately sealed release index, never runs."""
+    pin = assessment.get('qualification_index', {})
+    path = Path(pin.get('path', ''))
+    if not path.is_file() or path.stat().st_mode & 0o222:
+        raise WindowError('bootstrap requires a sealed qualification index')
+    raw = path.read_bytes()
+    if (len(raw) > 16 * 1024 * 1024 or raw_sha256(raw) != pin.get('sha256')
+            or assessment['plan'].get('qualification_index_sha256') != pin.get('sha256')):
+        raise WindowError('bootstrap qualification index pin differs')
+    index = json.loads(raw)
+    commit = assessment['plan']['target']['commit']
+    if (index.get('schema') != 'prismabuild.bootstrap_qualification_index.v1'
+            or index.get('target_commit') != commit
+            or set(index.get('root_routes', {})) != {'aarch64', 'x86_64'}):
+        raise WindowError('bootstrap qualification index source/routes differ')
+    for kind, files in (('root', ROOT_FILES), ('corpus', CORPUS_FILES)):
+        population = index.get('populations', {}).get(kind, {})
+        nodes = population.get('nodes', [])
+        if (set(population.get('files', [])) != set(files)
+                or len(population['files']) != len(files) or not nodes
+                or any(not isinstance(node, str) or '::' not in node for node in nodes)
+                or len(nodes) != len(set(nodes))
+                or {node.split('::')[0] for node in nodes} != set(files)):
+            raise WindowError('bootstrap qualification index must declare the exact required files and nodes')
+    sources = index.get('source_sha256', {})
+    if not set(QUALIFICATION_SOURCES) <= sources.keys():
+        raise WindowError('bootstrap qualification index lacks required source pins')
+    for name, expected in sources.items():
+        if raw_sha256(_qualification_source(checkout, commit, name)) != expected:
+            raise WindowError('bootstrap qualification index source hash differs: ' + name)
+    return index
+
+
+def _require_root_route(action, attestation, files, machine, index, checkout):
+    route = index['root_routes'].get(machine)
+    if route is None:
+        raise WindowError('root qualification architecture is outside the sealed index')
+    raw = _qualification_source(checkout, index['target_commit'], route['profile'])
+    if (raw_sha256(raw) != route['profile_sha256']
+            or index['source_sha256'].get(route['profile']) != route['profile_sha256']):
+        raise WindowError('root qualification profile differs from the sealed index')
+    profile = json.loads(raw)
+    primary = profile['primary']
+    command = [primary['executable']['path'], 'tests/run_proof_container.py',
+               '--runtime-profile', route['profile'], *files]
+    if (action['params'].get('command') != command
+            or action['params'].get('interpreter') != command[0]
+            or attestation.get('profile_sha256') != route['profile_sha256']
+            or primary['elf_machine'] != {'aarch64': 183, 'x86_64': 62}[machine]):
+        raise WindowError('root qualification did not use the approved runner/profile route')
+    for name, expected in (('outer', primary), ('inner', primary), ('installed_reader', profile['installed_reader'])):
+        observed = attestation.get(name, {})
+        if any(observed.get(key) != expected[key] for key in ('version', 'executable', 'elf_machine')):
+            raise WindowError('root qualification attested runtime differs from its profile')
+    if attestation.get('image', {}).get('actual') != profile['image']:
+        raise WindowError('root qualification image differs')
+    sources = attestation.get('source_sha256', {})
+    required = {*files, 'tests/run_proof_container.py', 'tests/proof_container_runtime.py', route['profile']}
+    if not required <= sources.keys():
+        raise WindowError('root qualification attestation lacks source pins')
+    for name, expected in sources.items():
+        if raw_sha256(_qualification_source(checkout, index['target_commit'], name)) != expected:
+            raise WindowError('root qualification attested source hash differs: ' + name)
 
 
 def read_assessment(path):
@@ -44,6 +120,7 @@ def verify_qualification(assessment, *, checkout, fleet_root):
     from . import core as pb
     from . import pool
     plan = assessment['plan']
+    index = _qualification_index(assessment, checkout)
     tools = Path(checkout) / 'tools'
     if (tools / 'fleet').is_dir():
         tools /= 'fleet'
@@ -99,6 +176,7 @@ def verify_qualification(assessment, *, checkout, fleet_root):
         machine = receipt['producer']['evidence']['machine']
         runtime_key = ''
         if kind == 'root':
+            _require_root_route(action, records[0], files, machine, index, checkout)
             runtime = {key: records[0]['installed_reader'][key] for key in ('version', 'executable', 'elf_machine')}
             if runtime not in runtimes:
                 runtimes.append(runtime)
@@ -111,9 +189,8 @@ def verify_qualification(assessment, *, checkout, fleet_root):
             or not any(kind == 'corpus' for kind, _, _ in lanes)):
         raise WindowError('bootstrap needs native ARM and x86 root qualification plus the exact record corpus')
     for (kind, _, _), rows in lanes.items():
-        population = ROOT_FILES if kind == 'root' else CORPUS_FILES
-        nodes = [node for row in rows for node in outcomes.parse(row['output'])['collected']]
-        verdict = outcomes.judge_shards(rows, requested_files=population, required_nodes=nodes)
+        population = index['populations'][kind]
+        verdict = outcomes.judge_shards(rows, requested_files=population['files'], required_nodes=population['nodes'])
         if not verdict['green']:
             raise WindowError('bootstrap qualification is incomplete or contains skips/failures')
     return BootstrapQualification(plan, action_keys=keys, runtimes=runtimes)
@@ -213,7 +290,10 @@ def require_convergence(plan, *, fleet_root):
                 or not observations.started_unix <= row.get('observed_unix', 0) <= now
                 or now - observations.started_unix > 60
                 or row.get('convergence', {}).get('complete') is not True):
-            raise WindowError('bootstrap awaits actual in-band convergence on ' + host)
+            pending = row.get('convergence', {}).get('pending', [])
+            raise WindowError('bootstrap pending actual in-band convergence on ' + host
+                + '; process observations=' + json.dumps(pending, sort_keys=True)
+                + '; observation refusal grants no permission to terminate processes')
         offers = []
         for alias in plan['roster'][host]:
             path = Path(fleet_root) / 'pb-queue/workers' / (alias + '.json')
@@ -255,7 +335,7 @@ def capture_inventory(out):
     (out / 'inventory.json').write_text(json.dumps(result, indent=2) + '\n')
 
 
-def write_plan(*, source, target, inventory, actions, designation, out, operation_id):
+def write_plan(*, source, target, inventory, actions, qualification_index, designation, out, operation_id):
     from .compatibility_window import (
         BOOTSTRAP_SOURCE, BOOTSTRAP_MEMBERS, BOOTSTRAP_SERVICE_MEMBERS, require_generation,
     )
@@ -303,7 +383,10 @@ def write_plan(*, source, target, inventory, actions, designation, out, operatio
     if any(plan['source_files'][name] != plan['target_files'][name] for name in BOOTSTRAP_SERVICE_MEMBERS):
         raise WindowError('bootstrap cannot change a broker service member')
     assessment = {'schema': 'prismabuild.installed_bootstrap.assessment.v1', 'plan': plan,
-        'rollback_designation': declared, 'qualification_actions': json.loads(Path(actions).read_bytes())}
+        'rollback_designation': declared, 'qualification_actions': json.loads(Path(actions).read_bytes()),
+        'qualification_index': {'path': str(Path(qualification_index).resolve(strict=True)),
+                                'sha256': raw_sha256(Path(qualification_index).read_bytes())}}
+    plan['qualification_index_sha256'] = assessment['qualification_index']['sha256']
     qualification = verify_qualification(assessment, checkout=Path(__file__).resolve().parents[2], fleet_root=target.parent.parent)
     plan['qualified_runtimes'] = list(qualification.runtimes)
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -328,7 +411,7 @@ def main():
     inventory = commands.add_parser('inventory')
     inventory.add_argument('--out', required=True, type=Path)
     plan = commands.add_parser('plan')
-    for name in ('source', 'target', 'inventory', 'actions', 'designation', 'out'):
+    for name in ('source', 'target', 'inventory', 'actions', 'qualification-index', 'designation', 'out'):
         plan.add_argument('--' + name, required=True, type=Path)
     plan.add_argument('--id', required=True)
     args = parser.parse_args()
@@ -345,7 +428,7 @@ def main():
         capture_inventory(args.out)
     else:
         write_plan(source=args.source, target=args.target, inventory=args.inventory, actions=args.actions,
-                   designation=args.designation, out=args.out, operation_id=args.id)
+                   qualification_index=args.qualification_index, designation=args.designation, out=args.out, operation_id=args.id)
 
 
 if __name__ == '__main__':

@@ -69,7 +69,7 @@ def private_bootstrap(publication, monkeypatch):
             yield 'private', base, config, reader, os.fstat(stream.fileno()).st_ino
     monkeypatch.setattr(helper, 'INSTALL', install)
     monkeypatch.setattr(helper, 'STATE', state)
-    monkeypatch.setattr(helper, 'local_context', lambda plan: ('private', base, config))
+    monkeypatch.setattr(helper, 'local_context', lambda plan, **kw: ('private', base, config))
     monkeypatch.setattr(helper, '_bootstrap_upgrade_lock', locked)
     monkeypatch.setattr(helper, 'ensure_fence', lambda *a: None)
     monkeypatch.setattr(helper, 'verify_services', lambda *a: ({'health': True}, {'draining': False}))
@@ -109,6 +109,10 @@ def test_every_four_member_boundary_resumes_independently_and_restores_only_upda
     with pytest.raises(OSError, match='power-loss'):
         helper.prepare_bootstrap(plan)
     assert not (state / 'transaction.json').exists()
+    # Simulate a reboot at every live rename/fsync interruption boundary.
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'new-boot')
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 234, 'starttime': '789'})
+    helper.reconcile_boot(plan)
     # The frozen recovery tool survives every live replacement boundary.
     assert helper.prepare_bootstrap(plan)['phase'] == 'installed'
     assert {member: (install / member).stat().st_ino for member in helper.SERVICE_MEMBERS} == before
@@ -197,3 +201,110 @@ def test_root_reconciles_boot_without_replacing_intent_or_backup(private_bootstr
     assert after['previous'] == before['previous']
     assert after['plan_sha256'] == before['plan_sha256']
     assert (state / 'bootstrap/root-case/previous/upgrade_client.py').read_bytes() == old
+
+
+@pytest.mark.parametrize('entry', ['reserved-no-journal', 'fencing', 'prepared', 'installed', 'accepted-forward'])
+def test_root_reboot_entry_retains_original_backup(private_bootstrap, monkeypatch, entry):
+    helper, plan, install, state, _, _, old = private_bootstrap
+    if entry != 'reserved-no-journal':
+        helper.prepare_bootstrap(plan)
+        path = helper.journal_for(plan)
+        journal = helper.read_journal(plan, path)
+        journal['phase'] = entry
+        helper._bootstrap_save(path, journal)
+        before = (path.parent / 'previous/upgrade_client.py').read_bytes()
+    if entry == 'accepted-forward':
+        plan = {**plan, 'direction': 'restore'}
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'next-boot')
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 44, 'starttime': '555'})
+    result = helper.reconcile_boot(plan)
+    assert result['boot_reconciliation']['initialized_without_journal'] == (entry == 'reserved-no-journal')
+    if entry != 'reserved-no-journal':
+        assert (path.parent / 'previous/upgrade_client.py').read_bytes() == before == old
+    if entry != 'accepted-forward':
+        helper.prepare_bootstrap(plan)
+    assert helper.restore_updater({**plan, 'direction': 'restore'})['phase'] == 'restored-leaves-retained'
+    assert (install / 'upgrade_client.py').read_bytes() == old
+
+
+@pytest.mark.parametrize('boundary', ['before-rename', 'after-rename', 'stage-fsync', 'installed-fsync'])
+def test_root_reverse_interruption_reboots_and_restores(private_bootstrap, monkeypatch, boundary):
+    helper, plan, install, state, _, _, old = private_bootstrap
+    helper.prepare_bootstrap(plan)
+    plan = {**plan, 'direction': 'restore'}
+    original_commit, original_sync = helper.commit_member, helper._bootstrap_sync
+    armed = [True]
+    live = [False]
+    def commit(stage, name):
+        live[0] = True
+        if boundary == 'before-rename' and armed[0]:
+            armed[0] = False
+            raise OSError('interrupted reverse')
+        original_commit(stage, name)
+        if boundary == 'after-rename' and armed[0]:
+            armed[0] = False
+            raise OSError('interrupted reverse')
+    def sync(directory):
+        original_sync(directory)
+        if live[0] and armed[0] and ((boundary == 'stage-fsync' and directory != install)
+                or (boundary == 'installed-fsync' and directory == install)):
+            armed[0] = False
+            raise OSError('interrupted reverse')
+    monkeypatch.setattr(helper, 'commit_member', commit)
+    monkeypatch.setattr(helper, '_bootstrap_sync', sync)
+    with pytest.raises(OSError, match='interrupted reverse'):
+        helper.restore_updater(plan)
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'reverse-reboot')
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 44, 'starttime': '555'})
+    helper.reconcile_boot(plan)
+    helper.restore_updater(plan)
+    assert (install / 'upgrade_client.py').read_bytes() == old
+    assert all((install / name).is_file() for name in helper.LEAVES)
+
+
+@pytest.mark.parametrize('direction', ['forward', 'restore'])
+@pytest.mark.parametrize('boundary', ['timer-drop', 'service-drop', 'block'])
+def test_root_unfence_interruption_reboots_and_rechecks_selected_closure(
+        private_bootstrap, monkeypatch, direction, boundary):
+    helper, plan, install, state, reader, _, old = private_bootstrap
+    helper.prepare_bootstrap(plan)
+    if direction == 'restore':
+        plan = {**plan, 'direction': 'restore'}
+        helper.restore_updater(plan)
+    _, base, config = helper.local_context(plan)
+    expected = plan['source_files'] if direction == 'restore' else plan['target_files']
+    monkeypatch.setattr(reader, 'desired_as_reader', lambda *a: ({'files': expected}, {}))
+    units = install.parent / 'private-systemd'
+    units.mkdir()
+    monkeypatch.setattr(helper, 'UNITS', units)
+    block, drops = helper.fence_paths(plan)
+    for drop in drops:
+        helper._bootstrap_write(drop, helper.fence_content(block), mode=0o644)
+    helper._bootstrap_write(block, b'blocked', mode=0o644)
+    path = helper.journal_for(plan)
+    journal = helper.read_journal(plan, path)
+    journal['units'] = {unit: {'ActiveState': 'active'} for unit in helper.UPGRADE_UNITS}
+    helper._bootstrap_save(path, journal)
+    helper._bootstrap_save(base / 'accepted.json', {'direction': direction, 'plan_sha256': canonical_sha256(plan)})
+    monkeypatch.setattr(helper, 'fenced', lambda p: block.exists() and all(d.exists() for d in drops))
+    calls = []
+    monkeypatch.setattr(helper, '_bootstrap_systemctl', lambda *a: calls.append(a))
+    original_sync = helper._bootstrap_sync
+    target = {'timer-drop': drops[0].parent, 'service-drop': drops[1].parent, 'block': block.parent}[boundary]
+    armed = [True]
+    def syncing(directory):
+        original_sync(directory)
+        removed = {'timer-drop': not drops[0].exists(), 'service-drop': not drops[1].exists(), 'block': not block.exists()}[boundary]
+        if directory == target and removed and armed[0]:
+            armed[0] = False
+            raise OSError('interrupted unfence')
+    monkeypatch.setattr(helper, '_bootstrap_sync', syncing)
+    with pytest.raises(OSError, match='interrupted unfence'):
+        helper.unfence_bootstrap(plan)
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'unfence-reboot')
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 44, 'starttime': '555'})
+    helper.reconcile_boot(plan)
+    assert helper.unfence_bootstrap(plan)['phase'] == 'accepted-' + direction
+    assert not block.exists() and not any(d.exists() for d in drops)
+    assert (install / 'upgrade_client.py').read_bytes() == (old if direction == 'restore' else (ROOT / 'tools/fleet/upgrade_client.py').read_bytes())
+    assert all(call[0] in ('daemon-reload', 'start') for call in calls)

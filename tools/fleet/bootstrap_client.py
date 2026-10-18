@@ -108,7 +108,50 @@ def _bootstrap_sync(path):
         os.close(fd)
 
 
+def _bootstrap_mkdir(path, *, mode=0o755):
+    """Make every new parent link durable before callers depend on it."""
+    path = Path(path)
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    _bootstrap_trusted(cursor)
+    for directory in reversed(missing):
+        directory.mkdir(mode=mode)
+        _bootstrap_sync(directory)
+        _bootstrap_sync(directory.parent)
+        if not stat.S_ISDIR(directory.lstat().st_mode):
+            raise ValueError('bootstrap directory readback differs')
+        _bootstrap_trusted(directory)
+    # Existing names may be remnants of a process loss between mkdir and its
+    # parent fsync. Retrying must settle that durability debt as well.
+    for directory in (path, *path.parents):
+        _bootstrap_sync(directory)
+    return _bootstrap_trusted(path)
+
+
+def _bootstrap_seal_local(base):
+    # The operator's install may have been interrupted before any journal.
+    # Sync the complete fixed recovery closure and all its ancestor links.
+    paths = [base / name for name in ('bootstrap_client.py', 'plan.json',
+        'source-config.json', 'target-config.json', 'source-receipt.json', 'target-receipt.json')]
+    paths += [base / 'reader' / name for name in REPLACE]
+    for path in paths:
+        before, metadata = _bootstrap_capture(_bootstrap_trusted(path))
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        if _bootstrap_capture(path) != (before, metadata):
+            raise ValueError('bootstrap local staging readback differs')
+    for directory in (base / 'reader', base, *base.parents):
+        _bootstrap_sync(directory)
+
+
 def _bootstrap_write(path, raw, *, mode=0o600):
+    _bootstrap_mkdir(path.parent)
     fd, name = tempfile.mkstemp(prefix='.bootstrap-', dir=path.parent)
     temporary = Path(name)
     try:
@@ -119,6 +162,9 @@ def _bootstrap_write(path, raw, *, mode=0o600):
             os.fsync(stream.fileno())
         os.replace(temporary, path)
         _bootstrap_sync(path.parent)
+        captured, metadata = _bootstrap_capture(path)
+        if captured != raw or metadata['mode'] != mode:
+            raise ValueError('bootstrap durable file readback differs')
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -174,6 +220,7 @@ def local_context(plan, *, allow_boot_change=False):
         raise ValueError('host is not enrolled in bootstrap')
     key = hosts[0]
     base = _bootstrap_trusted(CONTROL / plan['id'])
+    _bootstrap_seal_local(base)
     if _bootstrap_sha(_bootstrap_capture(_bootstrap_trusted(base / 'bootstrap_client.py'))[0]) != plan['tool_sha256']:
         raise ValueError('bootstrap recovery tool differs')
     config = _bootstrap_read_json(_bootstrap_trusted(CONFIG))
@@ -184,7 +231,10 @@ def local_context(plan, *, allow_boot_change=False):
             or Path(config['generation_store']) != Path(plan['target']['directory']).parent):
         raise ValueError('bootstrap enrollment changed')
     if bootstrap_boot_id() != plan['boots'][key] and not allow_boot_change:
-        journal = _bootstrap_read_json(_bootstrap_trusted(STATE / 'bootstrap' / plan['id'] / 'journal.json'))
+        path = STATE / 'bootstrap' / plan['id'] / 'journal.json'
+        if not path.exists():
+            raise ValueError('bootstrap boot changed; run explicit reconcile-boot while fenced')
+        journal = read_journal(plan, path)
         record = journal.get('boot_reconciliation', {})
         if (record.get('boot_id') != bootstrap_boot_id()
                 or record.get('original_boot_id') != plan['boots'][key]
@@ -300,8 +350,7 @@ def ensure_fence(plan, journal, journal_path):
         _bootstrap_save(journal_path, journal)
     _bootstrap_write(block, b'blocked\n', mode=0o644)
     for path in drops:
-        path.parent.mkdir(mode=0o755, exist_ok=True)
-        _bootstrap_trusted(path.parent)
+        _bootstrap_mkdir(path.parent)
         if path.exists() and _bootstrap_capture(_bootstrap_trusted(path))[0] != fence_content(block):
             raise ValueError('bootstrap drop-in already has different contents')
         _bootstrap_write(path, fence_content(block), mode=0o644)
@@ -316,8 +365,7 @@ def ensure_fence(plan, journal, journal_path):
 
 def journal_for(plan):
     directory = STATE / 'bootstrap' / plan['id']
-    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
-    _bootstrap_trusted(directory)
+    _bootstrap_mkdir(directory)
     return directory / 'journal.json'
 
 
@@ -334,11 +382,13 @@ def read_journal(plan, path):
 
 def private_stage(base, reader, files):
     directory = INSTALL / ('.bootstrap-' + uuid.uuid4().hex)
-    directory.mkdir(mode=0o700)
-    _bootstrap_sync(INSTALL)
+    _bootstrap_mkdir(directory, mode=0o700)
     actor = SimpleNamespace(install=directory, validate_files=reader.Upgrader.validate_files)
     reader.Upgrader.copy_files(actor, base, files)
     _bootstrap_sync(directory)
+    for name, expected in files.items():
+        if _bootstrap_sha(_bootstrap_capture(_bootstrap_trusted(directory / name))[0]) != expected:
+            raise ValueError('bootstrap private stage readback differs')
     return directory
 
 
@@ -347,9 +397,12 @@ def commit_member(stage, name):
     # reach this operation. Interrupted renames are reconciled from live bytes.
     if name not in REPLACE:
         raise ValueError('bootstrap cannot commit a broker service file')
+    captured = _bootstrap_capture(_bootstrap_trusted(stage / name))
     os.replace(stage / name, INSTALL / name)
     _bootstrap_sync(stage)
     _bootstrap_sync(INSTALL)
+    if _bootstrap_capture(_bootstrap_trusted(INSTALL / name)) != captured:
+        raise ValueError('bootstrap committed member readback differs')
 
 
 def verify_services(plan, reader, config):
@@ -386,7 +439,7 @@ def prepare_bootstrap(plan):
         if 'previous' not in journal:
             previous = {}
             backup = path.parent / 'previous'
-            backup.mkdir(mode=0o700, exist_ok=True)
+            _bootstrap_mkdir(backup, mode=0o700)
             for name in REPLACE:
                 try:
                     raw, metadata = _bootstrap_capture(_bootstrap_trusted(INSTALL / name))
@@ -409,7 +462,7 @@ def prepare_bootstrap(plan):
         if version['files'] != plan['target_files'] or version['generation'] != plan['target']['generation']:
             raise ValueError('candidate runtime intake differs from plan')
         payload = path.parent / 'payload'
-        payload.mkdir(mode=0o700, exist_ok=True)
+        _bootstrap_mkdir(payload, mode=0o700)
         for name, raw in blobs.items():
             _bootstrap_write(payload / name, raw)
         stage = private_stage(payload, reader, plan['target_files'])
@@ -437,7 +490,7 @@ def restore_updater(plan):
         # Reuse full-map validation/copy privately; only the old updater is
         # renamed into the live directory. All three target leaves remain.
         payload = path.parent / 'reverse'
-        payload.mkdir(mode=0o700, exist_ok=True)
+        _bootstrap_mkdir(payload, mode=0o700)
         files = dict(plan['target_files'])
         for name in MEMBERS:
             raw, _ = _bootstrap_capture(_bootstrap_trusted(backup / name if name == 'upgrade_client.py' else INSTALL / name))
@@ -525,12 +578,28 @@ def bootstrap_boot_id():
 
 def reconcile_boot(plan):
     """Approve a reboot using fresh root facts; retain the immutable intent."""
+    host, _, _ = local_context(plan, allow_boot_change=True)
+    if bootstrap_boot_id() == plan['boots'][host]:
+        raise ValueError('reconcile-boot requires a changed boot')
+    path = journal_for(plan)
+    existed = path.exists()
+    journal = read_journal(plan, path) if existed else {
+        'plan_sha256': original_plan_hash(plan), 'phase': 'fencing'}
+    if not existed:
+        # No live rename is legal before this journal. A missing journal with
+        # a final updater is lost recovery state, never a new backup authority.
+        raw, _ = _bootstrap_capture(_bootstrap_trusted(INSTALL / 'upgrade_client.py'))
+        if _bootstrap_sha(raw) != plan['source_files']['upgrade_client.py']:
+            raise ValueError('pre-journal reconciliation requires the original updater')
+        _bootstrap_save(path, journal)
+    if journal['phase'].startswith('accepted-') and not (
+            journal['phase'] == 'accepted-forward' and plan.get('direction') == 'restore'):
+        raise ValueError('accepted operation reconciliation requires explicit reverse of accepted forward')
+    # Stop future timer activation and wait for a natural oneshot exit before
+    # acquiring its permanent lock, including after accepted-forward reboot.
+    ensure_fence(plan, journal, path)
     with _bootstrap_upgrade_lock(plan, allow_boot_change=True) as (host, _, config, reader, _):
-        path = journal_for(plan)
         journal = read_journal(plan, path)
-        if journal['phase'].startswith('accepted-') or bootstrap_boot_id() == plan['boots'][host]:
-            raise ValueError('reconcile-boot requires an interrupted operation and a changed boot')
-        ensure_fence(plan, journal, path)
         verify_services(plan, reader, config)
         for name in REPLACE:
             try:
@@ -545,12 +614,18 @@ def reconcile_boot(plan):
             if _bootstrap_sha(raw) not in permitted:
                 raise ValueError('reboot found an unknown installed bootstrap member')
         previous = journal.get('previous', {}).get('upgrade_client.py')
-        if previous is not None and _bootstrap_sha(_bootstrap_capture(
-                _bootstrap_trusted(path.parent / 'previous/upgrade_client.py'))[0]) != previous['sha256']:
+        if journal['phase'] != 'fencing' and previous is None:
+            raise ValueError('reboot recovery requires the original updater backup')
+        if previous is not None and (previous['sha256'] != plan['source_files']['upgrade_client.py']
+                or _bootstrap_sha(_bootstrap_capture(
+                    _bootstrap_trusted(path.parent / 'previous/upgrade_client.py'))[0]) != previous['sha256']):
             raise ValueError('reboot found a changed previous updater backup')
         record = {'original_boot_id': plan['boots'][host], 'boot_id': bootstrap_boot_id(),
                   'broker_process': observe_broker_process(plan, allow_boot_change=True),
-                  'plan_sha256': original_plan_hash(plan), 'approved_unix': time.time()}
+                  'plan_sha256': original_plan_hash(plan), 'approved_unix': time.time(),
+                  'direction': plan.get('direction', 'forward'), 'previous_phase': journal['phase'],
+                  'initialized_without_journal': not existed,
+                  'previous_journal_sha256': _bootstrap_sha(_bootstrap_capture(path)[0])}
         journal.setdefault('boot_reconciliations', []).append(record)
         journal['boot_reconciliation'] = record
         _bootstrap_save(path, journal)
@@ -565,7 +640,7 @@ def observe_broker_process(plan, *, allow_boot_change=False):
     start = Path('/proc', pid, 'stat').read_text().rpartition(')')[2].split()[19]
     observed = {'pid': int(pid), 'starttime': start}
     expected = plan['brokers'][host]
-    if bootstrap_boot_id() != plan['boots'][host]:
+    if bootstrap_boot_id() != plan['boots'][host] and not allow_boot_change:
         journal = read_journal(plan, journal_for(plan))
         expected = journal.get('boot_reconciliation', {}).get('broker_process')
     if not allow_boot_change and observed != expected:
@@ -582,16 +657,24 @@ def observe_processes(plan, reader, gate):
     for pid, start, argv in census:
         scripts = [arg for arg in argv if Path(arg).name in names]
         for script in scripts:
-            resolved = Path(script).resolve(strict=True)
-            processes.append({'pid': pid, 'starttime': start, 'script': Path(script).name,
-                              'path': str(resolved), 'selected': (Path(script).is_absolute() and Path(script) == resolved
-                                                               and resolved.is_relative_to(selected))})
+            row = {'pid': pid, 'starttime': start, 'argv': list(argv), 'script': Path(script).name,
+                   'argument': script, 'selected': False}
+            try:
+                resolved = Path(script).resolve(strict=True)
+                row.update(path=str(resolved), selected=(Path(script).is_absolute() and Path(script) == resolved
+                                                        and resolved.is_relative_to(selected)))
+                if not row['selected']:
+                    row['reason'] = 'matching script basename outside selected generation'
+            except OSError as exc:
+                row['reason'] = 'matching script basename cannot be resolved: ' + str(exc)
+            processes.append(row)
     kinds = [row['script'] for row in processes]
     required = ('tier_loop.py', 'prewarm_loop.py', 'pbmetrics.py') if socket.gethostname() == 'dl380g10' else ()
     complete = (gate.get('draining') is False and kinds.count('supervise.py') == 1
                 and 'worker_loop.py' in kinds and all(row['selected'] for row in processes)
                 and all(role in kinds for role in required))
-    return {'complete': complete, 'processes': processes}
+    return {'complete': complete, 'processes': processes,
+            'pending': [row for row in processes if not row['selected']]}
 
 
 @contextmanager
@@ -604,9 +687,45 @@ def bootstrap_operation_lock(plan, *, allow_boot_change=False):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise ValueError('unsafe independent bootstrap lock')
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.fsync(fd)
+        _bootstrap_sync(STATE)
         yield
     finally:
         os.close(fd)
+
+
+def unfence_bootstrap(plan):
+    with _bootstrap_upgrade_lock(plan) as (_, base, config, reader, _):
+        decision = _bootstrap_read_json(_bootstrap_trusted(base / 'accepted.json'))
+        if decision != {'plan_sha256': _bootstrap_sha(_bootstrap_canonical(plan)), 'direction': plan.get('direction', 'forward')}:
+            raise ValueError('root-local acceptance decision differs')
+        path = journal_for(plan)
+        journal = read_journal(plan, path)
+        expected = plan['source_files'] if plan.get('direction') == 'restore' else plan['target_files']
+        selected, _ = reader.desired_as_reader(CONFIG, config)
+        if selected['files'] != expected:
+            raise ValueError('selected runtime differs before unfencing')
+        for name, digest in expected.items():
+            if _bootstrap_sha(_bootstrap_capture(_bootstrap_trusted(INSTALL / name))[0]) != digest:
+                raise ValueError('installed bytes differ before unfencing')
+        if journal['phase'] == 'accepted-' + plan.get('direction', 'forward'):
+            return {'phase': journal['phase']}
+        if journal['phase'] != 'unfencing' and not fenced(plan):
+            raise ValueError('bootstrap fence changed before release')
+        journal['phase'] = 'unfencing'
+        _bootstrap_save(path, journal)
+        block, drops = fence_paths(plan)
+        for drop in drops:
+            drop.unlink(missing_ok=True)
+            _bootstrap_sync(drop.parent)
+        block.unlink(missing_ok=True)
+        _bootstrap_sync(block.parent)
+        _bootstrap_systemctl('daemon-reload')
+        if journal['units'][UPGRADE_UNITS[0]].get('ActiveState') == 'active':
+            _bootstrap_systemctl('start', UPGRADE_UNITS[0])
+        journal['phase'] = 'accepted-' + plan.get('direction', 'forward')
+        _bootstrap_save(path, journal)
+        return {'phase': journal['phase']}
 
 
 def main():
@@ -654,38 +773,7 @@ def main():
         else:
             # The operator installs a root-owned terminal decision after the
             # publisher has accepted the exact direction. No shared file releases.
-            with _bootstrap_upgrade_lock(plan) as (_, _, config, reader, _):
-                decision = _bootstrap_read_json(_bootstrap_trusted(base / 'accepted.json'))
-                if decision != {'plan_sha256': _bootstrap_sha(_bootstrap_canonical(plan)), 'direction': plan.get('direction', 'forward')}:
-                    raise ValueError('root-local acceptance decision differs')
-                path = journal_for(plan)
-                journal = read_journal(plan, path)
-                expected = plan['source_files'] if plan.get('direction') == 'restore' else plan['target_files']
-                selected, _ = reader.desired_as_reader(CONFIG, config)
-                if selected['files'] != expected:
-                    raise ValueError('selected runtime differs before unfencing')
-                for name, digest in expected.items():
-                    if _bootstrap_sha(_bootstrap_capture(_bootstrap_trusted(INSTALL / name))[0]) != digest:
-                        raise ValueError('installed bytes differ before unfencing')
-                if journal['phase'] == 'accepted-' + plan.get('direction', 'forward'):
-                    print(json.dumps({'phase': journal['phase']}))
-                    return 0
-                if journal['phase'] != 'unfencing' and not fenced(plan):
-                    raise ValueError('bootstrap fence changed before release')
-                journal['phase'] = 'unfencing'
-                _bootstrap_save(path, journal)
-                block, drops = fence_paths(plan)
-                for drop in drops:
-                    drop.unlink(missing_ok=True)
-                    _bootstrap_sync(drop.parent)
-                block.unlink(missing_ok=True)
-                _bootstrap_sync(block.parent)
-                _bootstrap_systemctl('daemon-reload')
-                if journal['units'][UPGRADE_UNITS[0]].get('ActiveState') == 'active':
-                    _bootstrap_systemctl('start', UPGRADE_UNITS[0])
-                journal['phase'] = 'accepted-' + plan.get('direction', 'forward')
-                _bootstrap_save(path, journal)
-                result = {'phase': journal['phase']}
+            result = unfence_bootstrap(plan)
     print(json.dumps(result))
     return 0
 

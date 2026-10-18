@@ -19589,7 +19589,9 @@ operation's fences and the timer's original activity. Source support does not
 establish root qualification, live convergence or deployment readiness.
 
 Rollback in this mode is operator restoration with `automatic_reachability:
-false`. The exact a174 pins remain unchanged. Reserve the reverse direction,
+false`. The exact a174 pins remain unchanged. After accepted forward, verify its
+archive and reserve reverse. An interrupted forward instead verifies and retains
+the existing pending intent; it must never attempt a new reservation. Then
 fence and lock each host, restore only the journaled standalone a174 updater,
 then reverse the shared pointer under the publication lock. Retain all three
 final leaves. The old updater ignores them and can read its five-member source
@@ -19640,3 +19642,57 @@ still selects only five installed members. Bootstrap source facts therefore name
 those five selected members, independently of package-file presence. The target's
 installed closure remains eight members, and both complete raw receipts remain
 pinned. An unselected package leaf is never relabeled as an installed dependency.
+
+
+Bootstrap recovery durability requires every newly created ancestor link to be
+fsynced before a live member replacement. Directory creation syncs each new
+directory and its parent, then settles all existing ancestor links too, so a
+retry after interruption during mkdir cannot skip an unsynced name. Every file
+write syncs its bytes and metadata, renames, syncs its parent and verifies actual
+readback. The root-local recovery tool, reader, receipts and plan are likewise
+synced with their full ancestor chain before entry. Independent lock creation,
+backup/payload/reverse directories, systemd drop-ins, private installed staging,
+pending intents, root transcripts and accepted archives follow this contract.
+Bootstrap publication uses strict directory fsync: unsupported/failed durability
+refuses this branch rather than treating file fsync as namespace durability.
+
+Explicit reboot reconciliation handles a reserved operation with no journal,
+every unfinished phase, and a reverse operation following accepted forward.
+Without a journal, root must observe the original updater before initializing
+its independent fencing journal; a final updater with lost recovery state
+refuses. Reconciliation fences and waits for natural oneshot exit before taking
+the permanent upgrade lock. It validates every present leaf, the original backup
+when required, unchanged broker files/loaded health and the new boot/process.
+The appended reconciliation binds original plan hash, direction, previous phase,
+previous journal hash and whether it initialized a missing journal. It preserves
+the original plan and backup. An accepted forward journal can reenter only with
+the explicit reverse plan. Fresh collector responses bind that new boot record.
+
+The explicit assessment now requires a separately sealed qualification index,
+`prismabuild.bootstrap_qualification_index.v1`, pinned by raw SHA-256 in both
+assessment and immutable plan. Its `target_commit` names the final source;
+`populations.root` and `.corpus` declare exact required whole-file lists and
+complete node-ID lists from qualified final-source collection. The required
+files are the two bootstrap root files and all eight record-compatibility files.
+Every native root lane and every corpus lane must cover its complete declared
+population; valid successful subset receipts refuse. The expected nodes are
+never derived from execution logs. `source_sha256` pins required tests, root
+runner/runtime owner, execution registrations, helper/updater and each native
+profile against exact final Git blobs. `root_routes.aarch64` and `.x86_64` pin
+source-relative profile paths and raw profile hashes. Root actions must execute
+exactly the profile's primary interpreter, `tests/run_proof_container.py`,
+`--runtime-profile`, the pinned path, and the assigned whole files in sorted
+order. Attested primary/inner/installed-reader identities and actual image must
+match that profile; all attested source hash values must match final source.
+The master supplies/reviews/seals this independent collection index during final
+qualification. This worker supplies no invented index or root execution credit.
+
+A process argument matching a runtime script basename outside the selected
+generation, or one whose path cannot be resolved, is an explicit pending
+convergence observation. Root returns exact PID, process starttime, full argv,
+argument, resolved path when available and refusal reason. Publisher diagnostics
+retain those identities. This conservative refusal can include unrelated users'
+jobs; it grants no authority to terminate or signal them. Operator command
+blocks stop at the first error, verify pending/accepted intent before choosing
+rollback, and verify the direction-specific accepted archive before producing a
+root-local release decision.

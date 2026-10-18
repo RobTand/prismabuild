@@ -81,3 +81,11 @@ def test_predeploy_refuses_without_complete_fresh_bound_inputs(tmp_path, bootstr
     with pytest.raises(WindowError):
         validate(args)
     assert not args.out.exists()
+
+
+def test_predeploy_keeps_real_qualification_index_refusal(tmp_path, bootstrap):
+    args = inputs(tmp_path, bootstrap)
+    validate = runpy.run_path(str(ROOT / 'tests/compat/support/compat_predeploy.py'))['validate']
+    with pytest.raises(WindowError, match='sealed qualification index'):
+        validate(args)
+    assert not args.out.exists()

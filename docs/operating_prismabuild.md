@@ -4961,10 +4961,14 @@ Set these operator-selected paths to the reviewed release checkout, staged seale
 generation, evidence directory and reviewed operation ID. `qualification-actions.json`
 is a JSON array of full successful PB keys covering all eight native record
 compatibility files and both registered bootstrap root files on the final source.
-The verifier reads their CAS requests, snapshots, actual outcomes and root runtime
-attestations. A supplied `passed` field is not accepted.
+The separately sealed `qualification-index.json` declares the exact required files
+and node IDs, final source hashes, and approved native root profiles. Copy its
+reviewed bytes to `$E/qualification-index.json` and keep it read-only. The verifier
+compares CAS outcomes to that independent population, checks the fixed root runner
+and profile, and checks attested source hash values against final source. A supplied `passed` field is not accepted.
 
 ```bash
+set -euo pipefail
 R=/home/rob/wt/reviewed-release
 G=/mnt/shared/prismabuild-fleet/runtime-generations/REVIEWED_FINAL_GENERATION
 OLD=/mnt/shared/prismabuild-fleet/runtime-generations/a17477b2b206-1791745175-65dffa700dfb
@@ -4975,7 +4979,7 @@ mkdir -p "$E"
 python3 -m prismabuild.installed_bootstrap inventory --out "$E/inventory"
 python3 -m prismabuild.installed_bootstrap plan --id "$ID" \
 	--source "$OLD" --target "$G" --inventory "$E/inventory/inventory.json" \
-	--actions "$E/qualification-actions.json" \
+	--actions "$E/qualification-actions.json" --qualification-index "$E/qualification-index.json" \
 	--designation "$R/docs/compatibility_rollback_designation.json" --out "$E/forward"
 PLAN_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/forward/plan.json")
 python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
@@ -4997,7 +5001,9 @@ files preserve the enrollment except for selecting the pinned sealed directory.
 The final reader's local leaves are separate from the four live paths.
 
 ```bash
-for host in sparky sparklina dl380g10; do
+set -euo pipefail
+stage_host() {
+	local host=$1
 	key=$host
 	if [ "$host" = sparklina ]; then key=gx10-6b77; fi
 	B=/opt/prismabuild-bootstrap/$ID
@@ -5014,7 +5020,10 @@ for host in sparky sparklina dl380g10; do
 	done
 	ssh "$host" sudo -n /usr/bin/sha256sum "$B/bootstrap_client.py" "$B/reader/upgrade_client.py" \
 		"$B/reader/digest_primitives.py" "$B/reader/generation_receipt.py" "$B/reader/park_proof.py"
-done
+}
+stage_host sparky
+stage_host sparklina
+stage_host dl380g10
 ```
 
 Compare every reported hash with the reviewed plan before executing root code.
@@ -5027,10 +5036,15 @@ It uses the existing full-map copy in private staging, then renames only the
 three leaves and updater, fsyncing both directories at each boundary.
 
 ```bash
-for host in sparky sparklina dl380g10; do
+set -euo pipefail
+prepare_host() {
+	local host=$1
 	ssh -oBatchMode=yes -oStrictHostKeyChecking=yes "$host" sudo -n /usr/bin/python3 -I \
 		"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" prepare --id "$ID" --plan-sha256 "$PLAN_SHA"
-done
+}
+prepare_host sparky
+prepare_host sparklina
+prepare_host dl380g10
 ```
 
 Rerunning `prepare` reconciles a partial installation with its original backup.
@@ -5052,6 +5066,7 @@ commands after preparing the hosts. `pbrun` supplies ordinary CPU admission;
 its child executes the named script directly.
 
 ```bash
+set -euo pipefail
 python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
 	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
 	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
@@ -5079,6 +5094,7 @@ an admitted action. The pointer move does not require a broker restart. Existing
 actions finish under their claiming generation; roles rotate at their boundaries.
 
 ```bash
+set -euo pipefail
 python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${G##*/}" \
 	--rollout rolling --rollout-reason 'qualified installed final reader; unchanged broker; amended P' \
 	--installed-bootstrap "$E/forward/assessment.json"
@@ -5097,7 +5113,9 @@ Acceptance requires exactly one selected-generation supervisor, selected worker
 loops and every observed serving role, fresh matching worker offers, unchanged
 healthy broker, safe installed reader/leaf custody and no automatic journal.
 dl380g10 must show selected tier, prewarm and metrics roles. A stale or blocked
-old role keeps the operation pending. Open admission is required for the canary;
+old role keeps the operation pending. An unrelated matching script basename also
+keeps it pending: diagnostics include exact PID, starttime, argv and path/error.
+Treat that as an observation issue; it grants no permission to terminate a job. Open admission is required for the canary;
 a foreign maintenance holder must be resolved through its existing owner/CAS
 protocol. This tool never releases a hold.
 
@@ -5107,13 +5125,27 @@ The helper restores the timer only if originally active. Existing masks and
 unit enablement remain unchanged.
 
 ```bash
+set -euo pipefail
+python3 - "$E/forward/plan.json" "${G%/*/*}/rollout/bootstrap-$ID-forward.accepted.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, pathlib, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); accepted = json.load(open(sys.argv[2]))
+assert not pathlib.Path(sys.argv[3]).exists()
+assert accepted['state'] == 'accepted' and accepted['direction'] == 'forward'
+assert accepted['id'] == plan['id'] and accepted['source'] == plan['source'] and accepted['target'] == plan['target']
+assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
 python3 -c 'import json,sys; print(json.dumps({"plan_sha256":sys.argv[1],"direction":"forward"}))' "$PLAN_SHA" > "$E/forward/accepted.json"
-for host in sparky sparklina dl380g10; do
+release_forward_host() {
+	local host=$1
 	B=/opt/prismabuild-bootstrap/$ID
 	cat "$E/forward/accepted.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/accepted.json"
 	ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" unfence --id "$ID" --plan-sha256 "$PLAN_SHA"
 	ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
-done
+}
+release_forward_host sparky
+release_forward_host sparklina
+release_forward_host dl380g10
 ```
 
 Observe an actual subsequent updater tick reporting `current` on every host.
@@ -5129,41 +5161,106 @@ content-map pins remain exact. An ordinary rolling reverse command is still
 refused. No bridge was invented. Keep all three final leaves installed.
 
 Pause producers and publication automation again. Let outstanding actions and
-canary lineages finish normally. Reserve the reverse of the original accepted
-intent, install that direction's local plan, and restore the standalone updater
-on all three hosts before reversing the pointer. The broker and serving roles
-continue running with their unchanged service bytes.
+canary lineages finish normally. Select exactly one entry branch below. Both
+preserve the original intent, plan identity, backups and all three leaves.
+
+**After accepted forward:** require the matching accepted archive and no pending
+intent before reserving reverse. A host reboot since forward acceptance is a
+normal rollback entry: install its reverse plan, run `reconcile-boot` on that
+host, then restore. Reconciliation fences again and retains the prior backup.
 
 ```bash
+set -euo pipefail
+python3 - "$E/forward/plan.json" "${G%/*/*}/rollout/bootstrap-$ID-forward.accepted.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, pathlib, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); accepted = json.load(open(sys.argv[2]))
+assert not pathlib.Path(sys.argv[3]).exists()
+assert accepted['state'] == 'accepted' and accepted['direction'] == 'forward'
+assert accepted['id'] == plan['id'] and accepted['source'] == plan['source'] and accepted['target'] == plan['target']
+assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
 python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
 REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
 python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
-	--rollout-reason 'qualified operator restoration; retain all leaves' \
-	--reserve-installed-bootstrap "$E/reverse/assessment.json"
-for host in sparky sparklina dl380g10; do
-	B=/opt/prismabuild-bootstrap/$ID
-	cat "$E/reverse/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
-	ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" restore --id "$ID" --plan-sha256 "$REVERSE_SHA"
-done
-python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${OLD##*/}" \
-	--rollout rolling --rollout-reason 'operator-restored journaled a174 updater with retained leaves' \
-	--installed-bootstrap "$E/reverse/assessment.json"
+    --rollout-reason 'qualified operator restoration; retain all leaves' \
+    --reserve-installed-bootstrap "$E/reverse/assessment.json"
 ```
 
-A reverse selected before forward acceptance retains the existing pending intent;
-use the same reverse assessment directly after restoring each host. Do not erase
-that pending marker or require a nonexistent forward acceptance archive. If a
-root operation was interrupted before every leaf was installed, resume `prepare`
-with the original forward plan first. That produces the fixed retained-leaf
-closure before updater restoration. A reboot or changed identity blocks the old
-assessment and requires operator reconciliation, never a copied freshness field.
+**Interrupted forward:** verify the existing pending intent. This branch makes
+no reservation and needs no forward acceptance archive. If any host has an
+incomplete installation, reinstall its original forward plan, reconcile a
+changed boot as below, and finish `prepare` there before this branch. That
+establishes the complete retained-leaf closure needed for restoration.
 
-After reverse acceptance, create `accepted.json` with `direction: restore` and
-`plan_sha256: "$REVERSE_SHA"`, install it on each host and run `unfence` with the
-reverse hash as above. Observe actual a174 `current` ticks and source-generation
-roles/offers. Keep receipt and proof leaves, independent recovery code, failed
-canary evidence and both generation directories. This procedure removes no
-broker authority, automatic journal, initialized marker or permanent lock.
+```bash
+set -euo pipefail
+python3 - "$E/forward/plan.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); pending = json.load(open(sys.argv[2]))
+assert pending['id'] == plan['id'] and pending['source'] == plan['source'] and pending['target'] == plan['target']
+assert pending.get('direction', 'forward') == 'forward' and pending['state'] != 'accepted'
+assert pending['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
+python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
+REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
+```
+
+**Continue either branch:** install the reverse plan and restore one host at a
+time. Each command must succeed before the next host. When a boot changed,
+execute its explicit reconciliation command after copying its reverse plan and
+before `restore`; retain the output. Do not edit the original boot IDs.
+
+```bash
+set -euo pipefail
+restore_host() {
+    local host=$1
+    local B=/opt/prismabuild-bootstrap/$ID
+    cat "$E/reverse/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
+    # If this host rebooted, run reconcile-boot with REVERSE_SHA here first.
+    ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" restore --id "$ID" --plan-sha256 "$REVERSE_SHA"
+    ssh "$host" sudo -n /usr/bin/sha256sum /opt/prismabuild-resource-broker/upgrade_client.py
+}
+restore_host sparky
+restore_host sparklina
+restore_host dl380g10
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${OLD##*/}" \
+    --rollout rolling --rollout-reason 'operator-restored journaled a174 updater with retained leaves' \
+    --installed-bootstrap "$E/reverse/assessment.json"
+```
+
+After reverse acceptance, verify the archive before generating its root-local
+release decision. The helper checks selected and installed bytes before release.
+
+```bash
+set -euo pipefail
+python3 - "$E/reverse/plan.json" "${G%/*/*}/rollout/bootstrap-$ID-restore.accepted.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, pathlib, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); accepted = json.load(open(sys.argv[2]))
+assert not pathlib.Path(sys.argv[3]).exists()
+assert accepted['state'] == 'accepted' and accepted['direction'] == 'restore'
+assert accepted['id'] == plan['id'] and accepted['source'] == plan['source'] and accepted['target'] == plan['target']
+assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
+python3 -c 'import json,sys; print(json.dumps({"plan_sha256":sys.argv[1],"direction":"restore"}))' "$REVERSE_SHA" > "$E/reverse/accepted.json"
+release_reverse_host() {
+    local host=$1
+    local B=/opt/prismabuild-bootstrap/$ID
+    cat "$E/reverse/accepted.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/accepted.json"
+    ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" unfence --id "$ID" --plan-sha256 "$REVERSE_SHA"
+    ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
+}
+release_reverse_host sparky
+release_reverse_host sparklina
+release_reverse_host dl380g10
+```
+
+Observe actual a174 `current` ticks and source-generation roles/offers. Keep
+receipt and proof leaves, independent recovery code, failed canary evidence and
+both generation directories. This procedure removes no broker authority,
+automatic journal, initialized marker or permanent lock.
 
 The publication lock protects a new live-window census and new authenticated root
 challenges immediately before activation. Unknown live writers, ambiguous
@@ -5179,6 +5276,7 @@ For a spent forward grant, explicitly record the ordinary mode and reason in a
 new assessment copy, preserving the original plan and qualification keys:
 
 ```bash
+set -euo pipefail
 python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); v["canary_admission"]="ordinary"; v["ordinary_canary_reason"]=sys.argv[3]; json.dump(v,open(sys.argv[2],"x"),indent=2)' \
 	"$E/forward/assessment.json" "$E/forward/ordinary-assessment.json" \
 	'operator-reviewed continuation of the retained spent canary; normal admission'
@@ -5197,6 +5295,7 @@ have restarted during boot; the helper records its new identity after health
 and loaded-hash checks. It performs no broker start or admission operation.
 
 ```bash
+set -euo pipefail
 # Use PLAN_SHA for forward, REVERSE_SHA after installing the reverse plan.
 ssh sparky sudo -n /usr/bin/python3 -I \
 	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$PLAN_SHA"
@@ -5219,11 +5318,16 @@ current-client handshake. Keep its timer/service fences installed. It must repor
 command against a mismatched pointer.
 
 ```bash
-for host in sparky sparklina dl380g10; do
+set -euo pipefail
+current_host() {
+	local host=$1
 	ssh "$host" sudo -n /usr/bin/python3 -I /opt/prismabuild-resource-broker/upgrade_client.py \
 		--config /etc/prismabuild/client-upgrade.json
 	ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
-done
+}
+current_host sparky
+current_host sparklina
+current_host dl380g10
 ```
 
 Then resume the pending publisher command for convergence and canary verification.

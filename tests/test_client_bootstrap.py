@@ -267,7 +267,7 @@ def test_plan_selects_five_old_installed_members_despite_packaged_digest(bootstr
     monkeypatch.setattr(collector, 'verify_qualification', lambda *a, **kw: SimpleNamespace(runtimes=qualification.runtimes))
     out = tmp_path / 'operator-plan'
     collector.write_plan(source=source, target=target, inventory=inventory, actions=actions,
-                         designation=selected, out=out, operation_id='source-selection')
+                         qualification_index=actions, designation=selected, out=out, operation_id='source-selection')
     generated = json.loads((out / 'plan.json').read_bytes())
     assert set(generated['source_files']) == {'resource_broker.py', 'resource_payload.py', 'gpu_memory.py',
                                              'gpu_capacity.py', 'upgrade_client.py'}
@@ -287,3 +287,148 @@ def test_actual_a174_package_digest_does_not_enter_its_installed_selector():
         receipt = json.loads((old / 'RUNTIME_VERSION.json').read_bytes())
         assert 'src/prismabuild/digest_primitives.py' in receipt['files']
         assert window.client_protocol(old)['present'] == ['gpu_capacity.py']
+
+
+def test_new_journal_ancestry_is_synced_before_first_file(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(helper, 'STATE', tmp_path)
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda path: Path(path))
+    events = []
+    fsync = os.fsync
+    def sync(fd):
+        events.append(str(Path('/proc/self/fd', str(fd)).resolve()))
+        fsync(fd)
+    monkeypatch.setattr(os, 'fsync', sync)
+    path = helper.journal_for({'id': 'durable'})
+    helper._bootstrap_save(path, {'phase': 'fencing'})
+    assert str(tmp_path) in events
+    assert str(tmp_path / 'bootstrap') in events
+    assert str(path.parent) in events
+    assert events.index(str(tmp_path)) < next(i for i, p in enumerate(events) if '.bootstrap-' in p)
+
+
+@pytest.mark.parametrize('phase', [None, 'accepted-forward', 'installed', 'restore:upgrade_client.py', 'unfencing'])
+def test_reconcile_new_boot_including_prejournal_and_accepted_forward(tmp_path, monkeypatch, phase):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from prismabuild.digest_primitives import raw_sha256
+    monkeypatch.setattr(helper, 'STATE', tmp_path / 'state')
+    monkeypatch.setattr(helper, 'INSTALL', tmp_path / 'installed')
+    helper.INSTALL.mkdir()
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda p: Path(p))
+    old = b'old updater'
+    plan = {'id': 'reboot', 'direction': 'restore' if phase == 'accepted-forward' else 'forward',
+            'boots': {'one': 'original'}, 'source_files': {'upgrade_client.py': raw_sha256(old)},
+            'target_files': {name: raw_sha256(b'final') for name in helper.REPLACE}}
+    (helper.INSTALL / 'upgrade_client.py').write_bytes(old)
+    path = helper.journal_for(plan)
+    if phase is not None:
+        helper._bootstrap_write(path.parent / 'previous/upgrade_client.py', old)
+        helper._bootstrap_save(path, {'plan_sha256': helper.original_plan_hash(plan), 'phase': phase,
+            'previous': {'upgrade_client.py': {'sha256': raw_sha256(old)}}})
+    @contextmanager
+    def locked(*a, **kw):
+        yield 'one', tmp_path, {}, SimpleNamespace(), 1
+    monkeypatch.setattr(helper, '_bootstrap_upgrade_lock', locked)
+    monkeypatch.setattr(helper, 'local_context', lambda *a, **kw: ('one', tmp_path, {}))
+    monkeypatch.setattr(helper, 'ensure_fence', lambda *a: None)
+    monkeypatch.setattr(helper, 'verify_services', lambda *a: None)
+    monkeypatch.setattr(helper, 'bootstrap_boot_id', lambda: 'fresh')
+    monkeypatch.setattr(helper, 'observe_broker_process', lambda *a, **kw: {'pid': 2, 'starttime': '3'})
+    result = helper.reconcile_boot(plan)
+    assert result['boot_reconciliation']['boot_id'] == 'fresh'
+    assert helper.read_journal(plan, path)['plan_sha256'] == helper.original_plan_hash(plan)
+
+
+def test_unrelated_script_basename_is_pending_with_exact_process_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(helper, 'socket', SimpleNamespace(gethostname=lambda: 'private'))
+    reader = SimpleNamespace(load_installed_park_proof=lambda _: SimpleNamespace(module=SimpleNamespace(
+        proc_census=lambda: [(23, '456', ['python', '/unrelated/worker.py', '--other-user'])])))
+    result = helper.observe_processes({'target': {'directory': str(tmp_path)}}, reader, {'draining': False})
+    assert result['complete'] is False
+    assert result['pending'][0]['pid'] == 23
+    assert result['pending'][0]['starttime'] == '456'
+    assert result['pending'][0]['argv'] == ['python', '/unrelated/worker.py', '--other-user']
+    assert result['pending'][0]['reason']
+
+
+@pytest.mark.parametrize('child', ['previous', 'payload', 'reverse', 'timer.service.d', 'reader'])
+def test_durable_write_syncs_each_new_parent_and_file_before_readback(tmp_path, monkeypatch, child):
+    import os
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda p: Path(p))
+    events = []
+    real = os.fsync
+    def sync(fd):
+        events.append(str(Path('/proc/self/fd', str(fd)).resolve()))
+        real(fd)
+    monkeypatch.setattr(os, 'fsync', sync)
+    path = tmp_path / 'new' / child / 'record'
+    helper._bootstrap_write(path, b'readback')
+    assert path.read_bytes() == b'readback'
+    assert all(str(p) in events for p in (tmp_path, path.parent.parent, path.parent))
+    file_sync = next(i for i, p in enumerate(events) if '.bootstrap-' in p)
+    assert events.index(str(tmp_path)) < file_sync
+    assert events[-1] == str(path.parent)
+
+
+def test_actual_fence_writes_preserve_main_units_and_sync_unit_parent(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(helper, 'STATE', tmp_path / 'state')
+    monkeypatch.setattr(helper, 'UNITS', tmp_path / 'units')
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda p: Path(p))
+    helper.UNITS.mkdir()
+    main = {}
+    for unit in helper.UPGRADE_UNITS:
+        path = helper.UNITS / unit; path.write_bytes(b'locally defined main unit')
+        main[unit] = path.stat().st_ino
+    events = []
+    fsync = os.fsync
+    def sync(fd):
+        events.append(str(Path('/proc/self/fd', str(fd)).resolve())); fsync(fd)
+    monkeypatch.setattr(os, 'fsync', sync)
+    monkeypatch.setattr(helper, '_bootstrap_unit_state', lambda _: {'MainPID': '0', 'Job': '0', 'ActiveState': 'inactive'})
+    calls = []
+    monkeypatch.setattr(helper, '_bootstrap_systemctl', lambda *a: calls.append(a))
+    monkeypatch.setattr(helper, 'fenced', lambda _: True)
+    path = helper.journal_for({'id': 'fence'})
+    helper.ensure_fence({'id': 'fence'}, {}, path)
+    assert str(helper.UNITS) in events
+    assert all(str(drop.parent) in events and drop.read_bytes() == helper.fence_content(helper.fence_paths({'id': 'fence'})[0])
+               for drop in helper.fence_paths({'id': 'fence'})[1])
+    assert calls == [('daemon-reload',), ('stop', helper.UPGRADE_UNITS[0])]
+    assert {u: (helper.UNITS / u).stat().st_ino for u in main} == main
+
+
+def test_local_recovery_staging_syncs_all_files_and_ancestor_links(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda p: Path(p))
+    base = tmp_path / 'control/operation'
+    (base / 'reader').mkdir(parents=True)
+    paths = [base / n for n in ('bootstrap_client.py', 'plan.json', 'source-config.json',
+        'target-config.json', 'source-receipt.json', 'target-receipt.json')]
+    paths += [base / 'reader' / n for n in helper.REPLACE]
+    for path in paths:
+        path.write_bytes(b'root-local staging bytes')
+    observed = []
+    fsync = os.fsync
+    def syncing(fd):
+        observed.append(Path('/proc/self/fd', str(fd)).resolve()); fsync(fd)
+    monkeypatch.setattr(os, 'fsync', syncing)
+    helper._bootstrap_seal_local(base)
+    assert set(paths) | {base / 'reader', base, *base.parents} <= set(observed)
+    assert max(observed.index(p) for p in paths) < observed.index(base / 'reader')
+
+
+def test_retry_settles_links_left_by_interrupted_mkdir(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr(helper, '_bootstrap_trusted', lambda p: Path(p))
+    path = tmp_path / 'interrupted/ancestor'
+    path.mkdir(parents=True)
+    observed = []
+    fsync = os.fsync
+    def syncing(fd):
+        observed.append(Path('/proc/self/fd', str(fd)).resolve()); fsync(fd)
+    monkeypatch.setattr(os, 'fsync', syncing)
+    helper._bootstrap_mkdir(path)
+    assert {tmp_path, path.parent, path} <= set(observed)
