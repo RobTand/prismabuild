@@ -19156,8 +19156,17 @@ The existing image cache, its read-only `ldconfig` listing and the captured host
 loader's actual mounted diagnostics bind the conservative provider candidate
 graph. It includes both RPATH and RUNPATH contexts, all positive alias origins,
 matching cache entries, and variants below fully inventoried search directories,
-with the existing ordered default-directory rules. It never substitutes a found
-fallback for the real loader's choice. Unknown directories or candidates,
+with the existing ordered default-directory rules. A RUNPATH or RPATH directory
+that is a proper ancestor of captured roots uses direct-child search evidence
+instead of a recursive inventory. For each needed basename of an ELF with that
+search context, a present child becomes a required candidate with complete
+retained bytes; a missing child requires an actual no-follow ENOENT, equal
+parent stamps and the complete sorted immediate child-name listing. The listing
+spends the existing member budget. The auditor rederives the ancestor rule and
+replays those probes; mounted verification re-observes each search miss. These
+search misses do not exempt declared links under A1, and add no broad roots.
+An empty RUNPATH element remains an unsupported search token; cwd is not
+modeled. It never substitutes a found fallback for the real loader's choice. Unknown directories or candidates,
 required dangling candidates, loader overrides, secure mode, unsupported tokens,
 and NODEFLIB refuse capture. No tentative loader diagnostics are placed in the
 host checkpoint. If the authoritative mounted-loader audit needs uncaptured
