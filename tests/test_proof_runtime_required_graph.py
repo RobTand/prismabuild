@@ -31,7 +31,7 @@ PRIMARY = '/h/venv/bin/python'
 LOADER = '/lib/ld-fixture.so'
 
 
-def graph_fixture_elf(*, interpreter=None, needed=(), runpath=(), rpath=(), machine=183,
+def graph_fixture_elf(*, interpreter=None, interpreters=(), needed=(), runpath=(), rpath=(), machine=183,
                       marker=b'fixture'):
     """Build ELF64 metadata that the real parser reads, without a compiler."""
     strings = bytearray(b'\0')
@@ -40,8 +40,10 @@ def graph_fixture_elf(*, interpreter=None, needed=(), runpath=(), rpath=(), mach
         for value in values:
             tagged.append((tag, len(strings)))
             strings.extend(value.encode() + b'\0')
-    interpreter_bytes = interpreter.encode() + b'\0' if interpreter else b''
-    count = 2 + bool(interpreter)
+    interpreter_values = (interpreter,) if interpreter else interpreters
+    interpreter_payloads = [value.encode() + b'\0' for value in interpreter_values]
+    interpreter_bytes = b''.join(interpreter_payloads)
+    count = 2 + len(interpreter_values)
     payload_offset = 64 + 56 * count
     dynamic_offset = payload_offset + len(interpreter_bytes)
     string_offset = dynamic_offset + (len(tagged) + 3) * 16
@@ -54,10 +56,12 @@ def graph_fixture_elf(*, interpreter=None, needed=(), runpath=(), rpath=(), mach
     segments = [struct.pack('<IIQQQQQQ', 1, 4, 0, 0x400000, 0, length, length, 4096),
                 struct.pack('<IIQQQQQQ', 2, 4, dynamic_offset,
                             0x400000 + dynamic_offset, 0, len(dynamic), len(dynamic), 8)]
-    if interpreter:
-        segments.append(struct.pack('<IIQQQQQQ', 3, 4, payload_offset,
-                                    0x400000 + payload_offset, 0,
-                                    len(interpreter_bytes), len(interpreter_bytes), 1))
+    interpreter_offset = payload_offset
+    for payload in interpreter_payloads:
+        segments.append(struct.pack('<IIQQQQQQ', 3, 4, interpreter_offset,
+                                    0x400000 + interpreter_offset, 0,
+                                    len(payload), len(payload), 1))
+        interpreter_offset += len(payload)
     return header + b''.join(segments) + interpreter_bytes + dynamic + strings + marker
 
 
@@ -1891,3 +1895,44 @@ def test_ldd_version_is_information_only(tmp_path):
     image['glibc'] = 'ldd (GNU libc) 2.36\n'
     closure = tree.complete((host, image, checkpoint, budget))
     tree.audit(closure)
+
+
+@pytest.mark.parametrize('installation', ['existing', 'created'])
+@pytest.mark.parametrize('pt_count', [0, 1, 2])
+@pytest.mark.parametrize('stage', ['completion', 'before_installation', 'after_installation'])
+def test_executed_reader_requires_one_diagnosed_loader(tmp_path, monkeypatch, installation, pt_count, stage):
+    tree = RequiredGraphFilesystem(tmp_path)
+    tree.physical('host', '/h/venv/bin/python3').unlink()
+    tree.host_link('/h/venv/bin/python3', HOST_EXECUTABLE)
+    tree.image_executable = '/i/reader'
+    tree.image_file(tree.image_executable,
+        graph_fixture_elf(interpreters=(LOADER,) * pt_count, marker=b'reader'))
+    tree.image_paths.append(tree.image_executable)
+    tree.physical('image', '/usr/bin/python3').unlink()
+    if installation == 'existing':
+        tree.image_link('/usr/bin/python3', tree.image_executable)
+    message = 'reader loading implementation cannot be bound to the diagnosed loader'
+    if stage == 'completion':
+        if pt_count != 1:
+            with pytest.raises(ValueError, match=message):
+                tree.complete()
+        else:
+            tree.audit(tree.complete())
+        return
+    # Suppress only producer executable-role admission when making the packet.
+    # Replay must independently parse the real retained PT headers and refuse.
+    original = capture.runtime_loader_edges
+    def omit_executable_admission(*args, **kwargs):
+        if 'executed_paths' in kwargs:
+            kwargs['executed_paths'] = set()
+        return original(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(capture, 'runtime_loader_edges', omit_executable_admission)
+        closure = tree.complete()
+    view = runtime.runtime_namespace_state(closure, stage)
+    operation = lambda: runtime.audit_native_closure(view, lambda path: tree.bytes_path(closure, path))
+    if pt_count != 1:
+        with pytest.raises(ValueError, match=message):
+            operation()
+    else:
+        operation()
