@@ -20,7 +20,7 @@ from prismabuild.immutable_files import file_identity_nofollow
 SCHEMA = 'prismabuild.proof_runtime_capture_binding.v1'
 PREFIX = 'prismabuild-root-capture: '
 HELPERS = ('tests/capture_proof_runtime.py', 'tests/proof_container_runtime.py',
-           'tests/run_proof_container.py')
+           'tests/run_proof_container.py', 'tests/proof_capture_capacity.py')
 
 
 
@@ -86,7 +86,7 @@ def capture_git_read(directory, *args):
         '--git-dir=' + str(directory), *args], stderr=subprocess.PIPE)
 
 
-def capture_assigned_affinity(request, terminal, producer):
+def capture_assigned_affinity(request, terminal, producer, bounds):
     allocation = terminal['cpu_allocation']
     if not isinstance(allocation, dict) or set(allocation) != {'preferred', 'fallback'}:
         raise ValueError('capture terminal lacks its exact CPU allocation')
@@ -100,13 +100,112 @@ def capture_assigned_affinity(request, terminal, producer):
             or type(resources['gpu']) is not int or type(resources['mem_gb']) not in (int, float)
             or len(assigned) != resources['cpu']):
         raise ValueError('capture allocation does not match its one-CPU demand')
-    if terminal['priority'] != -10 or request['params']['execution_timeout_s'] != 120:
+    if terminal['priority'] != -10 or request['params']['execution_timeout_s'] != bounds['runtime_seconds']:
         raise ValueError('capture lacks its exact priority or finite hard deadline')
     if request['params']['demand'] != resources or terminal['detail']['cpu_allocation'] != allocation:
         raise ValueError('capture demand or terminal CPU allocation differs')
     if terminal['finished_host'] != terminal['claimed_host'] or terminal['finished_host'] != producer['worker_id'] or producer['evidence']['hostname'] != producer['worker_id']:
         raise ValueError('capture terminal and producer host identities differ')
     return sorted(assigned)
+
+
+def verify_capture_storage_record(capture, request, terminal, producer, policy, capacity_policy):
+    capacity = capture['capacity']
+    if set(capacity) != {'schema', 'private', 'publication', 'published_sources'} or capacity['schema'] != capacity_policy['CAPACITY_SCHEMA']:
+        raise ValueError('capture storage record has an unsupported schema or field set')
+    private = capacity['private']
+    expected_private = Path(capture['outer']['sys_path'][0]).parent / (capture['profile_path'] + '.members')
+    if (set(private) != {'path', 'minimum_free_bytes', 'statvfs', 'available_bytes', 'observation_only'}
+            or private['path'] != str(expected_private) or not expected_private.is_absolute()
+            or private['minimum_free_bytes'] != capacity_policy['PRIVATE_FREE_BYTES']
+            or private['observation_only'] is not True):
+        raise ValueError('capture private capacity is not its declared snapshot-local observation')
+    sample = private['statvfs']
+    if (set(sample) != set(capacity_policy['STATVFS_FIELDS'])
+            or any(type(value) is not int or value < 0 for value in sample.values())
+            or sample['f_frsize'] <= 0 or type(private['available_bytes']) is not int
+            or private['available_bytes'] != sample['f_bavail'] * sample['f_frsize']
+            or private['available_bytes'] < private['minimum_free_bytes']):
+        raise ValueError('capture private current-capacity threshold was not observed')
+    publication = capacity['publication']
+    if set(publication) != {'queue_root', 'action_key', 'cas_root', 'mode_before', 'mode_inside', 'mode_after',
+            'growth_gib', 'lease_s', 'verdicts', 'operation_owners', 'owner_observation_error',
+            'held_allowance_observed', 'owner_paths_absent_after'}:
+        raise ValueError('capture publication capacity field set differs')
+    queue = Path(publication['queue_root'])
+    environment = request['environment']['variables']
+    marker = queue / 'container-owners' / (environment['PRISMABUILD_CONTAINER_OWNER'] + '.used')
+    if (not queue.is_absolute() or str(queue) != publication['queue_root'] or '..' in queue.parts
+            or environment['PRISMABUILD_CONTAINER_MARKER'] != str(marker)
+            or publication['action_key'] != request['action_key']
+            or publication['cas_root'] != terminal['cas_root'] or publication['cas_root'] != capture['cas_root']
+            or type(publication['growth_gib']) is not int or publication['growth_gib'] != capacity_policy['PUBLICATION_GROWTH_GIB']
+            or type(publication['lease_s']) is not int or publication['lease_s'] != capacity_policy['PUBLICATION_LEASE_S']):
+        raise ValueError('capture publication is not bound to the actual queue/action/CAS identities')
+    mode = publication['mode_inside']
+    if mode not in ('off', 'observe', 'enforce') or publication['mode_before'] != mode or publication['mode_after'] != mode:
+        raise ValueError('capture floor mode is unsupported or changed during publication')
+    verdicts, owners = publication['verdicts'], publication['operation_owners']
+    if (not isinstance(verdicts, list) or not isinstance(owners, list) or len(owners) > 1
+            or any(not isinstance(value, dict) or type(value.get('allowed')) is not bool for value in verdicts)
+            or publication['owner_observation_error'] is not None and not isinstance(publication['owner_observation_error'], str)):
+        raise ValueError('capture floor verdict or actual owner observations are malformed')
+    if mode == 'off' and (verdicts or owners or publication['owner_observation_error'] is not None):
+        raise ValueError('off mode cannot imply floor checks or an operation owner')
+    if mode != 'off' and (bool(owners) == (publication['owner_observation_error'] is not None)):
+        raise ValueError('capture owner presence and observation error contradict each other')
+    for descriptor in owners:
+        if set(descriptor) != {'path', 'bytes', 'sha256', 'raw_json'}:
+            raise ValueError('capture operation owner lacks exact retained raw bytes')
+        raw = descriptor['raw_json'].encode()
+        if len(raw) != descriptor['bytes'] or raw_sha256(raw) != descriptor['sha256'] or len(raw) > policy['CAPTURE_BOUNDS']['metadata_bytes']:
+            raise ValueError('capture operation owner raw bytes differ')
+        value = decode_strict_json(raw, where='actual capture growth operation owner')
+        path = Path(descriptor['path'])
+        if (set(value) != capacity_policy['OWNER_FIELDS']
+                or value['schema'] != 'prismabuild.filesystem_floor.operation_owner.v1'
+                or not path.is_absolute() or '..' in path.parts or str(path) != descriptor['path']
+                or not path.is_relative_to(queue / 'filesystem-reservations')
+                or path.parent.name != 'operations' or path.name != value['holder'] + '.json'
+                or not value['holder'].startswith('operation-' + producer['worker_id'] + '-' + str(value['pid']) + '-')
+                or value['label'] != request['action_key'] or value['host'] != producer['worker_id']
+                or value['boot_id'] != terminal['resource_scope']['boot_id']
+                or not isinstance(value['machine_id'], str) or len(value['machine_id']) != 32
+                or any(char not in '0123456789abcdef' for char in value['machine_id'])
+                or type(value['pid']) is not int or value['pid'] <= 0
+                or not isinstance(value['pid_start'], str) or not value['pid_start'].isdigit()
+                or type(value['lease_until']) not in (int, float)
+                or not terminal['claimed_unix'] < value['lease_until'] <= terminal['finished_unix'] + publication['lease_s']):
+            raise ValueError('capture actual operation owner does not bind its host/action/process/lease')
+    if publication['owner_paths_absent_after'] != [value['path'] for value in owners]:
+        raise ValueError('capture did not observe every retained owner path absent after publication')
+    held = mode == 'enforce' and len(owners) == 1 and publication['owner_observation_error'] is None and all(value['allowed'] for value in verdicts)
+    if publication['held_allowance_observed'] is not held or mode == 'enforce' and not held:
+        raise ValueError('capture held-allowance claim is not supported by actual enforced acquisition')
+    sources = capacity['published_sources']
+    generation = Path(producer['runtime']['core']['resolved_path']).parents[2]
+    if set(sources) != set(policy['CAPTURE_PUBLISHED_SOURCES']):
+        raise ValueError('capture published source identity set differs')
+    required = {value['path']:value['sha256'] for value in request['params']['requires_files']}
+    expected_required = {capture['outer']['executable'][name]:capture['outer']['executable']['sha256']
+                         for name in ('path', 'resolved_path')}
+    for name, descriptor in sources.items():
+        path = str(generation / name)
+        if (set(descriptor) != {'path', 'resolved_path', 'bytes', 'sha256'}
+                or descriptor['path'] != path or descriptor['resolved_path'] != path
+                or type(descriptor['bytes']) is not int or descriptor['bytes'] < 0):
+            raise ValueError('capture source is not a named physical published-generation member')
+        expected_required[path] = descriptor['sha256']
+    if (len(required) != len(request['params']['requires_files']) or required != expected_required
+            or request['params']['requires_files'] != terminal['requires_files']):
+        raise ValueError('capture did not fence every exact published source and primary executable')
+    for field, name in [('core','src/prismabuild/core.py'), ('digest_primitives','src/prismabuild/digest_primitives.py'),
+                        ('launcher','tools/prismabuild_worker.py')]:
+        if producer['runtime'][field] != sources[name]:
+            raise ValueError('capture floor sources and actual admitting runtime generation differ')
+    if capture['progress']['helper'] != sources['src/prismabuild/progress.py']:
+        raise ValueError('capture progress helper is not aligned with its physical published owners')
+    return list(sources.values())
 
 
 def bind_proof_runtime_capture(raw_root, output, expected_source):
@@ -132,7 +231,10 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         raise ValueError('capture producer or inputs differ')
     if producer['attestation_sha256'] != canonical_sha256({k:v for k,v in producer.items() if k != 'attestation_sha256'}):
         raise ValueError('capture producer attestation differs')
-    affinity = capture_assigned_affinity(request, terminal, producer)
+    sys.path.insert(0, str(expected_source / 'tests'))
+    owner = runpy.run_path(str(expected_source / 'tests/proof_container_runtime.py'))
+    capacity_owner = runpy.run_path(str(expected_source / 'tests/proof_capture_capacity.py'))
+    affinity = capture_assigned_affinity(request, terminal, producer, owner['CAPTURE_BOUNDS'])
     runtime = producer['runtime']
     if runtime['runtime_sha256'] != canonical_sha256({k:v for k,v in runtime.items() if k != 'runtime_sha256'}):
         raise ValueError('capture worker runtime attestation differs')
@@ -147,6 +249,12 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         raise ValueError('capture record is incomplete or unsupported')
     if set(capture['source_sha256']) != set(HELPERS):
         raise ValueError('capture helper source set differs')
+    if (capture['bounds'] != owner['CAPTURE_BOUNDS']
+            or capture['closure_archive']['bytes'] > owner['CAPTURE_BOUNDS']['archive_bytes']
+            or capture['profile_bytes'] > owner['CAPTURE_BOUNDS']['profile_bytes']
+            or len(PREFIX.encode()) + len(lines[0].encode()) + 1 > owner['CAPTURE_BOUNDS']['metadata_bytes']):
+        raise ValueError('capture exceeds its reviewed source-owned bounds')
+    published_sources = verify_capture_storage_record(capture, request, terminal, producer, owner, capacity_owner)
     raw_profile = capture['profile_json'].encode()
     if len(raw_profile) != capture['profile_bytes'] or raw_sha256(raw_profile) != capture['profile_sha256']:
         raise ValueError('capture profile bytes differ')
@@ -166,6 +274,9 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
                if entry['kind'] == 'file'}
     if capture['closure_members'] != members:
         raise ValueError('capture member map differs from the full sealed profile')
+    if (sum(len(root['entries']) for root in closure['roots']) > owner['CAPTURE_BOUNDS']['members']
+            or sum(entry['bytes'] for entry in members.values()) > owner['CAPTURE_BOUNDS']['regular_bytes']):
+        raise ValueError('capture closure exceeds its full-byte member budget')
     verification = capture['closure_verification']
     maps = {root['path']:dict(origin=root['origin'], members=len(root['entries']),
             entries_sha256=raw_sha256(compact_ascii_json_bytes(root['entries']))) for root in closure['roots']}
@@ -248,12 +359,13 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         if raw_sha256(actual) != capture['source_sha256'][name] or actual != (expected_source / name).read_bytes():
             raise ValueError(f'capture helper is not the reviewed source: {name}')
     expected_members = {entry['sha256']:entry['bytes'] for entry in members.values()}
-    attested = [producer['executable'], *(value for value in runtime.values()
-        if isinstance(value, dict) and {'path','resolved_path','bytes','sha256'} <= value.keys())]
+    attested = [producer['executable'], *published_sources]
     helper = capture['progress']['helper']
     if helper['path'] != helper['resolved_path'] or Path(helper['resolved_path']) != Path(runtime['core']['resolved_path']).with_name('progress.py'):
         raise ValueError('capture did not use the actual worker generation progress helper')
-    attested.append(helper)
+    supplemental_bytes = sum(value['bytes'] for value in attested) + capture['image_runtime']['executable']['bytes']
+    if supplemental_bytes > owner['CAPTURE_BOUNDS']['supplemental_bytes']:
+        raise ValueError('capture named supplemental identities exceed their full-byte budget')
     for expected in attested:
         if expected['sha256'] in expected_members and expected_members[expected['sha256']] != expected['bytes']:
             raise ValueError('capture has conflicting content sizes')
@@ -266,7 +378,6 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     byte_root = output / 'closure-by-sha256'
     archive = raw_root / 'closure-archive.tar.gz'
     executables = retain_capture_archive(archive, capture['closure_archive'], expected_members, byte_root)
-    owner = runpy.run_path(str(expected_source / 'tests/proof_container_runtime.py'))
     if owner['loader_kernel'](closure['loader']['diagnostics']['raw'])[0] != capture['outer']['kernel']['release']:
         raise ValueError('retained loader diagnostics belong to a different actual kernel')
     if capture['bounds'] != owner['CAPTURE_BOUNDS'] or capture['progress']['phases'] != list(owner['CAPTURE_PHASES']):
@@ -291,6 +402,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     checkpoints = {}
     for index,phase in enumerate(owner['CAPTURE_PHASES'], 1):
         path = raw_root / 'checkpoints' / (phase + '.json')
+        if capture['progress']['checkpoints'][phase]['bytes'] > owner['CAPTURE_BOUNDS']['metadata_bytes']:
+            raise ValueError('capture checkpoint exceeds its reviewed metadata bound')
         value = decode_strict_json(read_capture_pin(path, capture['progress']['checkpoints'][phase]), where='capture checkpoint')
         if value['phase'] != phase or type(value['units']) is not int or value['units'] != index:
             raise ValueError('capture durable checkpoint order or cumulative units differ')
@@ -333,7 +446,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         capture=dict(action_key=key, source_pin=snapshot['parent'], snapshot_commit=snapshot['commit'],
                      raw={name:capture_file_descriptor(path) for name,path in paths.items()},
                      helper_source_sha256=capture['source_sha256'], assigned_affinity=affinity,
-                     progress=dict(helper=executables[helper['sha256']], checkpoints=checkpoints)), executables=executables,
+                     progress=dict(helper=executables[helper['sha256']], checkpoints=checkpoints),
+                     capacity=capture['capacity']), executables=executables,
         closure_archive=capture_file_descriptor(archive), closure_members=members, closure_byte_root=str(byte_root))
     target = output / 'capture-binding.json'
     target.write_bytes(compact_ascii_json_bytes(binding) + b'\n')

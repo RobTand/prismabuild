@@ -1,4 +1,4 @@
-"""Explicit helper regressions, outside the configured test_*.py population."""
+"""Capture inventory bounds before reading or enqueueing over-budget members."""
 from contextlib import contextmanager
 from pathlib import Path
 import time
@@ -6,6 +6,7 @@ import time
 import pytest
 
 import capture_proof_runtime as capture
+import proof_capture_capacity as capacity
 import proof_container_runtime as runtime
 
 
@@ -73,11 +74,34 @@ def test_inventory_bounds_scandir_frontier_before_complete_directory_enqueue(tmp
 def test_inventory_rejects_regular_byte_limit_before_opening_contents(tmp_path, monkeypatch):
     path = tmp_path / 'unreadable'
     path.write_bytes(b'not read before the byte guard')
-    path.chmod(0)
+    target_opens = []
+    real_open = Path.open
+    def observed_open(current, *args, **kwargs):
+        if current == path:
+            target_opens.append(str(current))
+        return real_open(current, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', observed_open)
     monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'regular_bytes', 0)
     budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + 30)
-    try:
-        with pytest.raises(ValueError, match='capture geometry exceeds'):
-            runtime.inventory(path, budget=budget)
-    finally:
-        path.chmod(0o600)
+    with pytest.raises(ValueError, match='capture geometry exceeds'):
+        runtime.inventory(path, budget=budget)
+    assert target_opens == [], 'over-budget file was opened before refusal'
+
+
+def test_checkpoint_metadata_refuses_before_file_or_cas_publication(tmp_path, monkeypatch):
+    monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'metadata_bytes', 1)
+    with pytest.raises(ValueError, match='capture metadata exceeds'):
+        capture.publish_capture_checkpoint(None, tmp_path, 'host_inventory', 1, {}, None)
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'metadata_bytes', len(runtime.canonical({})) + 1)
+    with pytest.raises(ValueError, match='capture metadata exceeds'):
+        capacity.bounded_capture_json({}, prefix='prismabuild-root-capture: ')
+
+
+def test_capture_refuses_preloaded_product_outside_the_published_generation(tmp_path, monkeypatch):
+    import types
+    alien = types.ModuleType('prismabuild.unsealed_capture_fixture')
+    alien.__file__ = str(tmp_path / 'candidate.py')
+    monkeypatch.setitem(capacity.sys.modules, alien.__name__, alien)
+    with pytest.raises(ValueError, match='capture imported an unsealed product module'):
+        capacity.load_published_capture_floor(tmp_path / 'published-generation', {})

@@ -15,11 +15,13 @@ import tarfile
 import time
 
 from proof_container_runtime import (
-    CAPTURE_BOUNDS, CAPTURE_PHASES, CLOSURE_SCHEMA, PROFILE_SCHEMA,
+    CAPTURE_BOUNDS, CAPTURE_PHASES, CAPTURE_PUBLISHED_SOURCES, CLOSURE_SCHEMA, PROFILE_SCHEMA,
     audit_native_closure, canonical, digest, elf_requirements,
     inventory, loader_cache_entries, loader_default_directories, loader_kernel, native_providers, observe_runtime,
     resolve_runtime_path,
 )
+
+from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
 
 
 CAPTURE_SCHEMA = 'prismabuild.proof_runtime_capture.v1'
@@ -50,7 +52,7 @@ class BoundedArchiveWriter:
 
 
 def publish_capture_checkpoint(cas, private, phase, units, value, commit):
-    raw = canonical(dict(phase=phase, units=units, value=value)) + b'\n'
+    raw = bounded_capture_json(dict(phase=phase, units=units, value=value))
     path = private / (phase + '.json')
     with path.open('xb') as handle:
         handle.write(raw)
@@ -60,7 +62,8 @@ def publish_capture_checkpoint(cas, private, phase, units, value, commit):
                               expected_sha256=digest(raw), expected_bytes=len(raw))
     if not commit(units, phase, unit=phase):
         raise ValueError('the actual PB progress helper did not publish the durable commitment')
-    print('prismabuild-root-capture-checkpoint: ' + canonical(dict(phase=phase, units=units, blob=blob)).decode(), flush=True)
+    prefix = 'prismabuild-root-capture-checkpoint: '
+    print(prefix + bounded_capture_json(dict(phase=phase, units=units, blob=blob), prefix=prefix).decode().rstrip('\n'), flush=True)
     return blob
 
 
@@ -203,7 +206,7 @@ def main(argv=None):
         os.makedirs('/home/rob/pbt17', exist_ok=True)
         captured = runtime_capture('image')
         captured['archive'] = archive_members(args.output, regular_members(captured['roots']))
-        print(canonical(captured).decode(), flush=True)
+        print(bounded_capture_json(captured).decode().rstrip('\n'), flush=True)
         return 0
     if not args.image or not args.image_python or not args.profile_path or args.output is None or args.cas_root is None:
         parser.error('host capture requires image, image-python, profile-path, output and cas-root')
@@ -226,6 +229,16 @@ def main(argv=None):
             or progress['declared_allowances']() != {name:120.0 for name in CAPTURE_PHASES}):
         raise ValueError('capture requires its exact finite ordered progress policy')
     published = Path('/mnt/shared/prismabuild-fleet/repo').resolve()
+    if progress_helper != published / 'src/prismabuild/progress.py':
+        raise ValueError('capture requires aligned producer and progress-helper generations')
+    with capture_publication_capacity(private, args.cas_root, published) as capacity:
+        record = capture_host(args, root, private, relative, progress_helper, progress, published, remaining, capacity)
+    prefix = 'prismabuild-root-capture: '
+    print(prefix + bounded_capture_json(record, prefix=prefix).decode().rstrip('\n'), flush=True)
+    return 0
+
+
+def capture_host(args, root, private, relative, progress_helper, progress, published, remaining, capacity):
     owner = runpy.run_path(str(published / 'src/prismabuild/core.py'))
     cas = owner['PrismaBuildCAS'](args.cas_root)
     checkpoints = {}
@@ -344,8 +357,10 @@ def main(argv=None):
     image_executable = image['observation']['executable']
     members['image-executable:' + image_executable['sha256']] = dict(kind='file',
         bytes=image_executable['bytes'], sha256=image_executable['sha256'])
-    attested = [Path('/bin/bash').resolve(), *(published / name for name in (
-        'tools/prismabuild_worker.py', 'src/prismabuild/core.py', 'src/prismabuild/digest_primitives.py')), progress_helper]
+    attested = [Path('/bin/bash').resolve(), *(published / name for name in CAPTURE_PUBLISHED_SOURCES)]
+    if (image_executable['bytes'] + sum(path.stat().st_size for path in attested)
+            > CAPTURE_BOUNDS['supplemental_bytes']):
+        raise ValueError('capture supplemental producer bytes exceed their sealed limit before reading')
     for path in attested:
         members[str(path)] = inventory(path)['.']
     if sum(entry['bytes'] for path,entry in members.items() if path not in closure_members) > CAPTURE_BOUNDS['supplemental_bytes']:
@@ -358,9 +373,10 @@ def main(argv=None):
     checkpoints[CAPTURE_PHASES[3]] = publish_capture_checkpoint(cas, private, CAPTURE_PHASES[3], 4,
         dict(archive=blob, geometry=geometry), progress['commit'])
     source = {name: digest((root / name).read_bytes()) for name in (
-        'tests/capture_proof_runtime.py', 'tests/proof_container_runtime.py', 'tests/run_proof_container.py')}
+        'tests/capture_proof_runtime.py', 'tests/proof_container_runtime.py',
+        'tests/run_proof_container.py', 'tests/proof_capture_capacity.py')}
     remaining()
-    record = dict(schema=CAPTURE_SCHEMA, complete=True, profile_path=args.profile_path,
+    record = dict(schema=CAPTURE_SCHEMA, complete=True, profile_path=args.profile_path, capacity=capacity,
         profile_bytes=len(raw), profile_sha256=digest(raw), profile_json=raw.decode(),
         closure_sha256=closure['sha256'], source_sha256=source,
         closure_archive=dict(bytes=blob['bytes'], sha256=blob['sha256']),
@@ -376,8 +392,7 @@ def main(argv=None):
         mapped_native_providers=roles['mapped_native_providers'],
         executable_binaries={host['observation']['executable']['sha256']:host['executable_binary'],
                              image['observation']['executable']['sha256']:image['executable_binary']})
-    print('prismabuild-root-capture: ' + canonical(record).decode(), flush=True)
-    return 0
+    return record
 
 
 if __name__ == '__main__':

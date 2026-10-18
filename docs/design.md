@@ -19084,19 +19084,42 @@ receipt, logs, result and source bundle to every profile byte and archived
 member, including the actual PB producer/runtime files. No prewritten profile
 or successful older image runtime grants current standard-runtime credit.
 
-Initial capture requires one CPU, two GiB, native1, priority-10 and a sealed
-120-second hard deadline. These are cost limits, not timing measurements. Four
+Capture requires one CPU, two GiB, native1, priority-10 and a sealed
+480-second hard deadline. These are cost limits, not timing measurements. Four
 ordered 120-second stall allowances use the actual environment-named published
 progress helper. Cumulative units1..4 follow verified CAS publication of host
 inventory, image inventory, mounted-runtime/profile observations and the closure
 archive. Reads, logs and entering a phase never advance units. The retained
 auditor separately requires the terminal worker observation to
 have accepted cumulative units4 in the final closure_archive phase.
-Source caps refuse more than20,000 profile members,4GiB regular bytes,20,006 archived files,
-2GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
-JSON. File/archive I/O streams bounded chunks. A cap failure is retained actual
+One cumulative pre-read member/byte/deadline budget covers every selected root,
+including the image loader aliases. Directory enumeration bounds the pending
+frontier before it can enqueue a complete over-budget directory.
+Source caps refuse more than20,000 profile members,8GiB regular bytes,
+9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
+JSON. Checkpoint, image and final record metadata each refuse above64MiB before
+publication. The archive allowance is20,000 plus the exact41 named published
+owner/dependency source files and the actual producer shell and image executable,
+at most20,043 unique content members. File/archive I/O streams bounded chunks.
+The named published sources and standard executable are exact PB file-digest
+dependencies. A cap failure is retained actual
 evidence; changing limits needs a new reviewed immutable request after the old
 action terminates. The source caps do not promise that either candidate fits.
+
+Before host inventory, capture observes at least27GiB currently available on its
+private filesystem. This is a statvfs threshold, not a reservation or a promise
+about later storage use. Capture-owned CAS publications use the existing
+published `filesystem_floor.operation` with the action's actual queue identity,
+private and CAS used paths,10GiB CAS growth and a600-second lease. The physical
+published package, its complete named dependency source set and the actual
+admitting-worker progress helper must align; other preloaded generations refuse.
+The source preserves off, observe and enforce modes. Only stable enforce mode
+with actual matching operation-owner bytes and successful acquisition evidence
+can report an observed held allowance. After the context exits, only strict
+lstat FileNotFoundError records owner-path absence; this is no assertion that
+the growth ledger settled or released. The final complete record follows the
+context exit and preserves actual mode, verdict and raw owner observations.
+Raw-retention copies and later auditor extraction have separate storage needs.
 
 The `prismabuild-root-runtime:` footer records actual outer, inner primary and
 credential-drop reader observations separately. It carries real IDs, full

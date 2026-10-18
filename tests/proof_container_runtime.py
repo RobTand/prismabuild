@@ -20,9 +20,21 @@ CLOSURE_SCHEMA = 'prismabuild.proof_runtime_closure.v1'
 ATTESTATION_SCHEMA = 'prismabuild.root_test_runtime.v1'
 THREADS = ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS')
 BROAD_ROOTS = {'/', '/usr', '/usr/bin', '/usr/lib', '/home', '/home/rob', '/etc', '/var', '/mnt'}
-CAPTURE_BOUNDS = dict(runtime_seconds=120, members=20000, regular_bytes=4 * 1024**3,
-                      archive_members=20006, supplemental_bytes=64 * 1024**2,
-                      archive_bytes=2 * 1024**3, profile_bytes=16 * 1024**2, chunk_bytes=1024**2)
+CAPTURE_PUBLISHED_SOURCES = tuple('src/prismabuild/' + name + '.py' for name in (
+    '__init__', '_bounded_reader', '_gang', '_measurement_reservation',
+    'action_edges', 'adaptive_cpu', 'adaptive_gpu', 'adaptive_snapshot',
+    'box_capacity', 'box_window', 'container_images', 'control_cpu', 'core',
+    'cpu_topology', 'decomposition', 'dependency_digest', 'digest_primitives',
+    'filesystem_capacity', 'filesystem_floor', 'gpu_capacity', 'local_dependencies',
+    'local_resident', 'local_scratch', 'local_tier', 'materialize', 'movement_actions',
+    'pool', 'posix_lock', 'produced_output', 'produced_spool', 'progress',
+    'publication_canary', 'reader_lease', 'residency_map', 'residency_plan',
+    'resident_sets', 'resource_scope', 'runtime_publication', 'storage_tiers',
+    'window_credit')) + ('tools/prismabuild_worker.py',)
+CAPTURE_BOUNDS = dict(runtime_seconds=480, members=20000, regular_bytes=8 * 1024**3,
+                      archive_members=20000 + len(CAPTURE_PUBLISHED_SOURCES) + 2,
+                      supplemental_bytes=64 * 1024**2, metadata_bytes=64 * 1024**2,
+                      archive_bytes=9 * 1024**3, profile_bytes=16 * 1024**2, chunk_bytes=1024**2)
 CAPTURE_PHASES = ('host_inventory', 'image_inventory', 'mounted_runtime', 'closure_archive')
 
 
@@ -592,7 +604,8 @@ def observe_reader(profile):
 
 def source_digests(root, tests, profile):
     names = {*tests, 'tests/run_proof_container.py', 'tests/proof_container_runtime.py',
-        'tests/capture_proof_runtime.py', 'tests/conftest.py', 'tools/fleet/pbtest_outcomes.py',
+        'tests/capture_proof_runtime.py', 'tests/proof_capture_capacity.py',
+        'tests/conftest.py', 'tools/fleet/pbtest_outcomes.py',
         'src/prismabuild/pbtest_collection.py', 'tests/proof_execution.json',
         'tests/receipt_execution.json', 'qualification_dependencies.json',
         str(profile.path.relative_to(root))}
