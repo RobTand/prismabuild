@@ -1272,3 +1272,26 @@ def test_reader_absence_parent_names_include_host_file_mount_destination(tmp_pat
     auditor = runpy.run_path(str(Path(__file__).resolve().parents[1]
         / 'tools/maintenance/verify_proof_runtime_capture.py'))
     auditor['verify_capture_reader_states'](closure, verification, claimed_custody, runtime.__dict__)
+
+
+@pytest.mark.parametrize('missing_count', [4, 32])
+def test_runtime_replay_indexes_inventory_once_per_lookup(required_graph_tree, monkeypatch, missing_count):
+    tree = required_graph_tree
+    for number in range(missing_count):
+        tree.host_link(NATIVE + '/unused-' + str(number), '/etc/alternatives/unused-' + str(number))
+    tree.directory('image', '/etc/alternatives')
+    for number in range(48):
+        tree.image_file('/etc/alternatives/present-' + str(number), b'not an alias target')
+    closure = tree.complete()
+    calls = []
+    original = runtime.runtime_namespace_entries
+    def observe_flattening(facts):
+        calls.append(sum(len(root['entries']) for root in facts['roots']))
+        return original(facts)
+    monkeypatch.setattr(runtime, 'runtime_namespace_entries', observe_flattening)
+    lookup = runtime.runtime_replay_lookup(closure)
+    for number in range(missing_count):
+        outcome = runtime.walk_runtime_path(NATIVE + '/unused-' + str(number), lookup)
+        assert isinstance(outcome, runtime.RuntimeWitnessedAbsent)
+        assert outcome.missing == '/etc/alternatives/unused-' + str(number)
+    assert len(calls) <= 3, 'one namespace index per lookup, independent of witness count'
