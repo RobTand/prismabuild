@@ -155,6 +155,10 @@ def preflight_image(payload):
         image_executable_metadata=image['elf_index'][image['observation']['executable']['resolved_path']],
         image_executable_inventory=next(root['entries']['.'] for root in image['roots']
             if root['path'] == image['observation']['executable']['resolved_path']),
+        loader_diagnostics=payload['loader_diagnostics'], image_loader_cache=image['loader_cache'],
+        retained_absence_paths=[] if completed is None else sorted(
+            str(Path(witness['parent']) / witness['name']) for witness in completed.directory_witnesses.values()),
+        host_bytes_prefix=payload['host_bytes_prefix'],
         states=states, candidate_edges=edges, refusal=refusal, refusals=list(refusals.values()),
         diagnostic_continuation=bool(refusals),native_audits=native_audits,audit_metadata=audit_metadata,
         zero_refusals_requires_unmodified_production_success=True,
