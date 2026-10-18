@@ -235,7 +235,8 @@ def runtime_capture(origin, budget=None):
                   consumed_budget={key: budget[key] for key in before_budget})
     if origin == 'image':
         result['loader_cache'] = dict(path=str(cache), **before, raw_listing=listing,
-            tool=dict(path=str(tool), resolved_path=str(tool), **file_descriptor(tool)))
+            tool=dict(path=str(tool), resolved_path=str(tool),
+                **{key: selected[str(tool)][key] for key in ('bytes', 'sha256')}))
     return result
 
 
