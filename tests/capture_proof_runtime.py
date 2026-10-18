@@ -32,7 +32,7 @@ from proof_container_runtime import (
     runtime_mount_ancestor, runtime_mount_component, runtime_reader_installation,
     runtime_namespace_state, runtime_namespace_state_record, runtime_host_root_selection,
     runtime_customization_selection, runtime_search_directory_mode, runtime_loader_edges,
-    runtime_candidate_name_index,
+    runtime_candidate_name_index, runtime_elf_seed_spellings,
     require_runtime_loader_observations, require_modern_loader_diagnostics,
     runtime_hwcaps_spellings,
 )
@@ -615,12 +615,14 @@ def discover_image_runtime_graph(observer, host, image, plan, lookup, *, additio
             resolve_observation(spelling, required=spelling in plan['required_spellings'])
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}
-        for path, entry in entries.items():
-            if (entry['kind'] == 'file' and path not in metadata_by_path
-                    and any(Path(path).is_relative_to(seed) for seed in plan['elf_roots'])):
-                metadata = candidate_metadata(path)
-                if metadata is not None:
-                    metadata_by_path[path] = metadata
+        seeds = runtime_elf_seed_spellings(observer.roots, entries, observer.components,
+                                           plan['elf_roots'], aliases)
+        for path in sorted(set(seeds.values()) - metadata_by_path.keys()):
+            metadata = candidate_metadata(path)
+            if metadata is not None:
+                metadata_by_path[path] = metadata
+        aliases.update({logical: target for logical, target in seeds.items()
+                        if target in metadata_by_path and logical != target})
         runtime_elf_search_directories(metadata_by_path, aliases)
         entries = {str(Path(root['path']) / relative): entry
                    for root in observer.roots for relative, entry in root['entries'].items()}

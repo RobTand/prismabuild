@@ -19152,6 +19152,18 @@ PT chain is required and refuses even when another provider works. Requiredness
 and positive alias origins converge together and are independently replayed;
 a serialized off-graph label grants no exemption.
 
+ELF seed reachability follows the sealed logical Python/ELF roots. A positive
+file alias inside such a root promotes its regular-file terminal; a positive
+directory alias promotes every regular-file descendant, including nested aliases.
+Producer and replay derive this traversal with one shared owner. Each seed keeps
+its logical spelling alongside its terminal, so alias-derived `$ORIGIN` contexts
+join the existing conservative union. A directory alias requires a complete
+retained target inventory; a partial navigation/listing cannot substitute for it.
+If that inventory exceeds the existing capture budget, capture refuses. Cyclic
+logical directory expansions and derived traversals exceeding the existing member
+bound also refuse. This does not widen selected roots or seed unrelated native
+library aliases. Ordinary file seeds retain their existing ELF parsing rules.
+
 The existing image cache, its read-only `ldconfig` listing and the captured host
 loader's actual mounted diagnostics bind the conservative provider candidate
 graph. After the host checkpoint and before image completion, the host PT_INTERP

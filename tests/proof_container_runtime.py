@@ -1112,6 +1112,54 @@ def runtime_expand_search_paths(values, origin):
     return result
 
 
+def runtime_elf_seed_spellings(roots, entries, components, elf_roots, aliases):
+    """Derive regular-file seeds through complete logical Python-root trees."""
+    namespace = {path: value['entry'] for path, value in components.items()}
+    namespace.update(entries)
+    children = {}
+    for path in namespace:
+        if path != '/':
+            parent, name = path.rsplit('/', 1)
+            children.setdefault(parent or '/', []).append(name)
+    complete = [root['path'] for root in roots if root['entries']['.']['kind'] == 'directory']
+    pending = [(root, root, ()) for root in sorted(set(elf_roots), reverse=True)]
+    seeds, seen = {}, set()
+    while pending:
+        logical, physical, ancestors = pending.pop()
+        if logical in seen:
+            continue
+        seen.add(logical)
+        if len(seen) > CAPTURE_BOUNDS['members']:
+            raise ValueError('Python-root alias seed traversal exceeds the capture member budget')
+        entry = namespace.get(physical)
+        if entry is None:
+            raise ValueError('Python-root seed is not retained: ' + physical)
+        alias = entry['kind'] == 'symlink'
+        if alias:
+            physical = aliases.get(physical)
+            if physical is None:
+                continue
+            entry = namespace.get(physical)
+            if entry is None:
+                raise ValueError('Python-root alias terminal is not retained: ' + logical)
+        if entry['kind'] == 'file':
+            if physical not in entries:
+                raise ValueError('Python-root alias file is not completely inventoried: ' + logical)
+            seeds[logical] = physical
+        elif entry['kind'] == 'directory':
+            if ((alias or not ancestors)
+                    and not any(physical == root or physical.startswith(root.rstrip('/') + '/') for root in complete)):
+                raise ValueError('Python-root alias directory is not completely inventoried: ' + logical)
+            if physical in ancestors:
+                raise ValueError('Python-root alias directory cycle: ' + logical)
+            branch = (*ancestors, physical)
+            for name in sorted(children.get(physical, ()), reverse=True):
+                pending.append((logical.rstrip('/') + '/' + name, physical.rstrip('/') + '/' + name, branch))
+        else:
+            raise ValueError('unsupported Python-root alias seed entry: ' + logical)
+    return seeds
+
+
 def runtime_elf_search_directories(metadata_by_path, resolved):
     directories, own_directories = set(), {}
     origins = {}
@@ -1267,8 +1315,9 @@ def audit_native_closure(closure, byte_path):
         return resolved[path]
 
     links = closure['link_outcomes']
-    pending = [path for path,entry in entries.items() if entry['kind'] == 'file'
-               and any(Path(path).is_relative_to(seed) for seed in closure['elf_roots'])]
+    seeds = runtime_elf_seed_spellings(closure['roots'], entries, closure['components'],
+                                       closure['elf_roots'], resolved)
+    pending = list(set(seeds.values()))
     loader = closure['loader']
     if loader['schema'] != 'prismabuild.proof_loader_search.v1':
         raise ValueError('unsupported runtime loader search contract')
@@ -1371,6 +1420,8 @@ def audit_native_closure(closure, byte_path):
                     or not entries[path]['mode'] & 0o004):
                 raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
             metadata_by_path[path] = metadata
+        resolved.update({logical: target for logical, target in seeds.items()
+                         if target in metadata_by_path and logical != target})
         origins_before = len(resolved)
         edges, directories, unresolved = runtime_loader_edges(metadata_by_path, resolved, cache, defaults,
             directory_candidates=directory_candidates, resolve_candidate=sealed_candidate,

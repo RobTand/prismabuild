@@ -162,6 +162,25 @@ def preflight_image(payload):
                     record(remaining,{})
                 runtime.audit_native_closure = original_audit
             native_seconds[state] = time.monotonic() - native_started
+    logical_seeds = {}
+    if completed is not None:
+        for state in runtime.NAMESPACE_STATES:
+            view = runtime.runtime_namespace_state(closure, state)
+            entries = runtime.runtime_namespace_entries(view)
+            seeds = runtime.runtime_elf_seed_spellings(view['roots'], entries, view['components'],
+                view['elf_roots'], runtime.audit_link_outcomes(view))
+            physical = {path for path, entry in entries.items() if entry['kind'] == 'file'
+                        and any(Path(path).is_relative_to(root) for root in view['elf_roots'])
+                        and audit_metadata.get(path) is not None}
+            alias_files = [dict(logical=logical, terminal=target,
+                               sha256=entries[target]['sha256'], elf=audit_metadata.get(target) is not None)
+                           for logical, target in sorted(seeds.items()) if logical != target]
+            alias_elfs = [item for item in alias_files if item['elf']]
+            added = sorted({item['terminal'] for item in alias_elfs} - physical)
+            logical_seeds[state] = dict(physical_elf_seeds=len(physical),
+                alias_regular_file_spellings=alias_files,
+                alias_derived_elf_spellings=alias_elfs, alias_derived_elf_spelling_count=len(alias_elfs),
+                added_elf_terminal_seeds=added, added_elf_terminal_seed_count=len(added))
     return dict(schema='prismabuild.proof_runtime_preflight.v1',
         source_ref=payload['source_ref'], source_sha256={key:runtime.digest(value.encode()) for key,value in sources.items()},
         host_checkpoint=payload['host_descriptor'], host_observation=host['observation'],
@@ -170,7 +189,7 @@ def preflight_image(payload):
         image_executable_inventory=next(root['entries']['.'] for root in image['roots']
             if root['path'] == image['observation']['executable']['resolved_path']),
         loader_diagnostics=payload['loader_diagnostics'], image_loader_cache=image['loader_cache'],
-        image_glibc=image['glibc'],
+        image_glibc=image['glibc'], logical_elf_seeds=logical_seeds,
         search_directory_observations={} if completed is None else completed.completion['search_directory_observations'],
         retained_absence_paths=[] if completed is None else sorted(
             str(Path(witness['parent']) / witness['name']) for witness in completed.directory_witnesses.values()),
