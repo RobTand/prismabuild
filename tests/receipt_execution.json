@@ -1,7 +1,7 @@
 {
   "schema": "prismabuild.receipt_test_execution.v1",
   "root_files": {
-    "tests/test_receipt_reader_root.py": 27
+    "tests/test_receipt_reader_root.py": 34
   },
   "image": "sha256:a7c262743b2fff76c3cf4710ba07b1bef26be0dc1568a777b120388bcae1e8e9",
   "base": "a962ed3fb2767ce6805110a18124f3cf01a166a3",

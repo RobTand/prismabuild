@@ -11,7 +11,9 @@
       "tests/test_client_proof_current_trust.py": 3,
       "tests/test_installed_park_proof_loader.py": 2,
       "tests/test_host_drain_evidence.py": 11,
-      "tests/test_rollout_participant.py": 35
+      "tests/test_rollout_participant.py": 35,
+      "tests/test_client_bootstrap_root.py": 18,
+      "tests/test_receipt_reader_root.py": 34
     },
     "cpus": 1,
     "memory_gib": 4,

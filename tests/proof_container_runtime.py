@@ -1654,6 +1654,9 @@ def source_digests(root, tests, profile):
         'tests/conftest.py', 'tools/fleet/pbtest_outcomes.py',
         'src/prismabuild/pbtest_collection.py', 'tests/proof_execution.json',
         'tests/receipt_execution.json', 'qualification_dependencies.json',
+        'tools/fleet/bootstrap_client.py', 'tests/bootstrap_fixture.py',
+        'tools/fleet/upgrade_client.py', 'src/prismabuild/digest_primitives.py',
+        'src/prismabuild/generation_receipt.py', 'src/prismabuild/park_proof.py',
         str(profile.path.relative_to(root))}
     return {name: digest((root / name).read_bytes()) for name in sorted(names)}
 

@@ -271,3 +271,40 @@ def test_enrollment_copies_the_exact_leaf_pair_before_the_installed_consumer(tmp
         assert (installed / name).read_bytes() == (stage / name).read_bytes()
         info = (installed / name).stat()
         assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (0, 0, 0o644)
+
+
+@pytest.mark.parametrize('cut', ['journal-durable', 'restore-updater-before-replace', 'restore-updater-after-replace',
+                                  'updater-before-replace', 'updater-after-replace',
+                                  'install-after-sync', 'journal-before-clear'])
+def test_exact_a174_preseeded_five_member_journal_recovers_with_leaves_retained(publication, cut):
+    from test_client_bootstrap_root import a174_updater
+    from prismabuild.digest_primitives import raw_sha256
+    generation, install, state, _, backend, _ = publication
+    old = a174_updater()
+    # a174's five-member selector cannot journal these independently seeded leaves.
+    for name, member in {**RECEIPT_LEAVES, 'park_proof.py': 'src/prismabuild/park_proof.py'}.items():
+        (install / name).write_bytes((ROOT / member).read_bytes())
+    (install / 'upgrade_client.py').write_bytes(old)
+    publish_receipt_closure(publication)
+    publish_updater(publication, CURRENT.read_bytes())
+    effective = 'updater-after-replace' if cut.startswith('restore-') else cut
+    with reader_process(publication, cut=effective) as child:
+        assert child.message()['bridge_cut'] == effective
+        journal = json.loads((state / 'transaction.json').read_bytes())
+        assert set(journal['previous']) == {'resource_broker.py', 'resource_payload.py', 'gpu_memory.py',
+                                           'gpu_capacity.py', 'upgrade_client.py'}
+        assert 'previous_proof_file' not in journal
+        assert 'park_proof.py' not in journal['desired']['files']
+        child.kill()
+    if cut.startswith('restore-'):
+        with reader_process(publication, cut=cut) as child:
+            assert child.message()['bridge_cut'] == cut
+            child.kill()
+    result = _fresh(publication)
+    assert result['exception'] is None, result
+    assert result['result']['state'] == 'rolled_back'
+    assert not (state / 'transaction.json').exists()
+    assert (install / 'upgrade_client.py').read_bytes() == old
+    for name, member in RECEIPT_LEAVES.items():
+        assert (install / name).read_bytes() == (ROOT / member).read_bytes()
+    assert (install / 'park_proof.py').read_bytes() == (ROOT / 'src/prismabuild/park_proof.py').read_bytes()

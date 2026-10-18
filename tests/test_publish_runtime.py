@@ -1084,3 +1084,71 @@ def test_the_automatic_signer_does_not_approve_a_replaced_generation(
     assert result["state"] == "error", result
     assert "no valid publisher approval" in result["error"]
     assert not (publication_store / generation.name).exists()
+
+
+def test_pending_bootstrap_excludes_ordinary_publication(tmp_path, monkeypatch):
+    mirror = tmp_path / 'repo'
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    pending = tmp_path / 'rollout/pending-bootstrap.json'
+    pending.parent.mkdir()
+    pending.write_text('{"state":"reserved"}')
+    with pytest.raises(SystemExit, match='pending installed bootstrap'):
+        publish_runtime._require_no_epoch()
+
+
+@pytest.mark.parametrize('canary_code', [0, 2, 1])
+def test_installed_bootstrap_activates_and_runs_canary_under_lock(tmp_path, monkeypatch, canary_code):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, observations, _, designation = case
+    mirror = tmp_path / 'repo'
+    source, target = (Path(plan[name]['directory']) for name in ('source', 'target'))
+    mirror.symlink_to(source)
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    assessment = tmp_path / 'assessment.json'
+    assessment.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    events = []
+    def assess(*a, **kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        events.append('fresh-root-assessment')
+        return assess_case(case), observations
+    def convergence(*a, **kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        assert mirror.resolve() == target
+        events.append('convergence')
+    def canary(**kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        assert kw['enabled'] is True
+        events.append('canary')
+        return canary_code
+    monkeypatch.setattr(installed_bootstrap, 'assess', assess)
+    monkeypatch.setattr(installed_bootstrap, 'require_convergence', convergence)
+    monkeypatch.setattr(publish_runtime, '_run_rollout_canary', canary)
+    result = publish_runtime._activate_installed_bootstrap('final', assessment)
+    assert result == canary_code
+    assert events[:3] == ['fresh-root-assessment', 'convergence', 'canary']
+    assert mirror.resolve() == target
+    pending = publish_runtime._bootstrap_pending_path()
+    if canary_code:
+        assert pending.exists()
+        # Resumption keeps the original source, even with a final pointer.
+        assert json.loads(pending.read_bytes())['source'] == plan['source']
+    else:
+        assert not pending.exists()
+        assert events[-1] == 'convergence'
+
+
+def test_installed_bootstrap_refuses_substituted_activation_name(tmp_path, monkeypatch):
+    from bootstrap_fixture import bootstrap_case
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, _, _, designation = case
+    path = tmp_path / 'assessment.json'
+    path.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    with pytest.raises(SystemExit, match='target differs'):
+        publish_runtime._activate_installed_bootstrap('old', path)

@@ -215,3 +215,14 @@ def test_predeploy_refuses_the_actual_a174_direction_before_issuing_approval(tmp
         with pytest.raises(WindowError, match="receipt-member"):
             require_reachable(ROOT, old)
         assert not out.exists()
+
+
+def test_installed_bootstrap_does_not_change_automatic_transport(tmp_path, monkeypatch):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    case = bootstrap_case(tmp_path, monkeypatch)
+    assert assess_case(case)['automatic_reachability'] is False
+    with pytest.raises(WindowError, match='receipt-member'):
+        require_reachable(Path(case[0]['target']['directory']), Path(case[0]['source']['directory']))
+    case[1].rows['one']['executing_sha256'] = case[0]['source_files']['upgrade_client.py']
+    with pytest.raises(WindowError, match='reader/leaf closure'):
+        assess_case(case)

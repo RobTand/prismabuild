@@ -137,3 +137,23 @@ def test_window_capture_does_not_promote_retained_directories_or_offline_hosts(t
     status.write_text(json.dumps(live))
     with pytest.raises(ValueError, match="incomplete"):
         capture_window(status, root.parent, root.name, designation["commit"], tmp_path / "refused", ROOT)
+
+
+def test_installed_bootstrap_keeps_the_exact_operator_designation():
+    from prismabuild.compatibility_window import BOOTSTRAP_SOURCE
+    designation = json.loads((ROOT / 'docs/compatibility_rollback_designation.json').read_bytes())
+    assert {key: designation['rollback'][key] for key in BOOTSTRAP_SOURCE} == BOOTSTRAP_SOURCE
+    assert designation['automatic_reachability'] is False
+    assert designation['mode'] == 'operator-restoration'
+
+
+def test_installed_bootstrap_requires_receipts_and_rejects_target_substitution(tmp_path, monkeypatch):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    case = bootstrap_case(tmp_path, monkeypatch)
+    case[2].action_keys = ()
+    with pytest.raises(WindowError, match='verified PB'):
+        assess_case(case)
+    case[2].action_keys = ('1' * 64,)
+    case[0]['target']['receipt_sha256'] = '0' * 64
+    with pytest.raises(WindowError, match='receipt digest changed'):
+        assess_case(case)

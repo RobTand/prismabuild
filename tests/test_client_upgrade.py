@@ -569,3 +569,30 @@ def test_optional_transaction_requires_recoverable_previous_updater(setup):
         updater.run()
     assert not backend.operations
     assert not updater.journal.exists()
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_final_eight_member_matching_tick_never_replaces_or_stops_services(setup, monkeypatch, held):
+    updater, backend, generation = setup
+    # The ordinary matching branch only needs the captured bytes and metadata;
+    # strict actual installed loaders have their own root population.
+    version, blobs = upgrade.desired(updater.config)
+    for name in upgrade.OPTIONAL_MEMBERS:
+        if name not in blobs:
+            blobs[name] = ('matching:' + name).encode()
+    version['files'] = {name: upgrade.digest(raw) for name, raw in blobs.items()}
+    for name, raw in blobs.items():
+        (updater.install / name).write_bytes(raw)
+    snapshot = upgrade.InstalledClientSnapshot(blobs, upgrade.ProofFileSnapshot(
+        blobs['park_proof.py'], upgrade.ProofFileMetadata(0, 0, 0o644)))
+    updater.reader = lambda config: (version, blobs)
+    monkeypatch.setattr(updater, 'read_installed_snapshot', lambda names=None: snapshot)
+    monkeypatch.setattr(updater, 'installed', lambda names=None: version['files'])
+    monkeypatch.setattr(updater, 'loaded_matches', lambda status: True)
+    monkeypatch.setattr(updater, 'copy_files', lambda *a, **kw: pytest.fail('matching tick copied files'))
+    backend.holder = 'deploy:bootstrap' if held else None
+    backend.active = 3
+    result = updater.run()
+    assert result['state'] == ('held' if held else 'current')
+    assert backend.operations == ['maintenance_status']
+    assert not updater.journal.exists()
