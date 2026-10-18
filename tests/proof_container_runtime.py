@@ -612,6 +612,31 @@ def runtime_namespace_entries(closure):
             for name, entry in root['entries'].items()}
 
 
+class RuntimeNamespaceIndex:
+    """Indexes valid only for one operation over its unchanged namespace facts."""
+    def __init__(self, closure, *, entries=None):
+        self.closure = closure
+        self.entries = runtime_namespace_entries(closure) if entries is None else entries
+        self.children = self.immediate_names(self.entries)
+        image_roots = [root for root in closure['roots'] if root['origin'] == 'image']
+        image_roots += closure.get('completion', {}).get('base_image_roots', [])
+        self.image_children = self.immediate_names(runtime_namespace_entries(dict(roots=image_roots)))
+        self._before = None
+
+    @staticmethod
+    def immediate_names(entries):
+        children = {}
+        for path in entries:
+            parent, _, name = path.rpartition('/')
+            children.setdefault(parent or '/', set()).add(name)
+        return children
+
+    def before_index(self):
+        if self._before is None:
+            self._before = RuntimeNamespaceIndex(self.closure['_before_namespace'])
+        return self._before
+
+
 def runtime_mount_ancestor(closure, path, entry=None):
     target = Path(path)
     roots = [Path(root['path']) for root in closure['roots'] if root['origin'] == 'host']
@@ -666,7 +691,7 @@ def runtime_directory_expectation(closure, key, state):
     return expected
 
 
-def runtime_absence_witness(closure, key):
+def runtime_absence_witness(closure, key, *, index=None):
     witness = closure['directory_witnesses'][key]
     if digest(canonical(witness)) != key:
         raise ValueError('runtime absence witness digest differs')
@@ -678,7 +703,9 @@ def runtime_absence_witness(closure, key):
         state = closure.get('_namespace_state')
         if state not in NAMESPACE_STATES or witness['state'] != state:
             raise ValueError('derived runtime absence belongs to another namespace state')
-        runtime_absence_witness(closure['_before_namespace'], witness['basis'])
+        if index is None:
+            index = RuntimeNamespaceIndex(closure)
+        runtime_absence_witness(closure['_before_namespace'], witness['basis'], index=index.before_index())
         expected = runtime_directory_expectation(closure['_before_namespace'], witness['basis'], state)
         if canonical(witness) != canonical(expected) or name in expected['names']:
             raise ValueError('derived runtime absence differs from its composed namespace directory')
@@ -715,35 +742,32 @@ def runtime_absence_witness(closure, key):
         if observed is None or any(list(witness[field]) != observed[field]
                                    for field in ('before', 'after', 'names')):
             raise ValueError('host runtime absence differs from its checkpoint directory observation')
-    entries = runtime_namespace_entries(closure)
+    if index is None:
+        index = RuntimeNamespaceIndex(closure)
+    entries = index.entries
     parent_entry = entries.get(parent, closure.get('components', {}).get(parent, {}).get('entry'))
     if parent_entry is None or parent_entry['kind'] != 'directory':
         raise ValueError('runtime absence parent is not a retained directory')
     if parent_entry['mode'] != stat.S_IMODE(before[2]):
         raise ValueError('runtime absence parent mode differs from its retained directory')
-    child_entries = entries
-    if authority == 'image':
-        image_roots = [root for root in closure['roots'] if root['origin'] == 'image']
-        image_roots += closure.get('completion', {}).get('base_image_roots', [])
-        child_entries = runtime_namespace_entries(dict(roots=image_roots))
-    for path in child_entries:
-        if str(Path(path).parent) == parent and Path(path).name not in names:
-            raise ValueError('runtime absence listing omits a retained child')
-    if authority == 'host':
-        actual_names = sorted(Path(path).name for path in entries if str(Path(path).parent) == parent)
-        if list(names) != actual_names:
-            raise ValueError('host runtime absence listing differs from its complete inventory')
+    children = index.image_children if authority == 'image' else index.children
+    if not children.get(parent, set()).issubset(names):
+        raise ValueError('runtime absence listing omits a retained child')
+    if authority == 'host' and list(names) != sorted(index.children.get(parent, ())):
+        raise ValueError('host runtime absence listing differs from its complete inventory')
     return witness
 
 
-def runtime_replay_lookup(closure):
-    entries = runtime_namespace_entries(closure)
+def runtime_replay_lookup(closure, *, index=None):
+    if index is None:
+        index = RuntimeNamespaceIndex(closure)
+    entries = index.entries
     for path, component in closure['components'].items():
         if component['origin'] == 'mount' and component != runtime_mount_component(closure, path):
             raise ValueError('mount-created component listing differs from its derived children: ' + path)
     witnesses = {}
     for key in closure['directory_witnesses']:
-        witness = runtime_absence_witness(closure, key)
+        witness = runtime_absence_witness(closure, key, index=index)
         missing = str(Path(witness['parent']) / witness['name'])
         if missing in witnesses:
             raise ValueError('runtime absence has duplicate witnesses')
@@ -843,9 +867,10 @@ def runtime_namespace_state(closure, state):
 
 
 def runtime_namespace_state_record(view):
-    lookup = runtime_replay_lookup(view)
+    index = RuntimeNamespaceIndex(view)
+    lookup = runtime_replay_lookup(view, index=index)
     outcomes = {path: runtime_outcome_record(walk_runtime_path(path, lookup))
-                for path, entry in runtime_namespace_entries(view).items() if entry['kind'] == 'symlink'}
+                for path, entry in index.entries.items() if entry['kind'] == 'symlink'}
     return dict(link_outcomes=dict(sorted(outcomes.items())),
                 required_spellings=view['plan']['required_spellings'],
                 directory_witnesses_sha256=digest(canonical(view['directory_witnesses'])))
@@ -859,12 +884,13 @@ def audit_observed_runtime_links(closure):
 
 
 def audit_link_outcomes(closure):
-    entries = runtime_namespace_entries(closure)
+    index = RuntimeNamespaceIndex(closure)
+    entries = index.entries
     links = {path for path, entry in entries.items() if entry['kind'] == 'symlink'}
     if set(closure['link_outcomes']) != links:
         raise ValueError('runtime link outcome roster differs from its declared symlinks')
     aliases = {}
-    lookup = runtime_replay_lookup(closure)
+    lookup = runtime_replay_lookup(closure, index=index)
     for path in sorted(links):
         outcome = walk_runtime_path(path, lookup)
         if runtime_outcome_record(outcome) != closure['link_outcomes'][path]:
@@ -1078,6 +1104,7 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
     completion = closure['completion']
     captured = {}
     entries = runtime_namespace_entries(closure)
+    index = RuntimeNamespaceIndex(closure, entries=entries)
     content = {}
     def retained_file(path, entry):
         if entry['sha256'] not in content:
@@ -1187,7 +1214,7 @@ def audit_runtime_completion(closure, byte_path, content_path=None):
             expected_members = 1
             expected_bytes = entry['bytes'] if entry['kind'] == 'file' else 0
         else:
-            witness = runtime_absence_witness(closure, charge['witness'])
+            witness = runtime_absence_witness(closure, charge['witness'], index=index)
             if (str(Path(witness['parent']) / witness['name']) != charge['path']
                     or charge['kind'] != {'host': 'host_absence', 'image': 'absence',
                                           'mount': 'mount_absence'}[witness['authority']]):
@@ -1285,7 +1312,8 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
     origins = set(origins) | ({'mount'} if 'image' in origins else set())
     verify_runtime_components(closure, image_root=image_root, origins=origins)
     entries = runtime_namespace_entries(closure)
-    lookup = runtime_replay_lookup(closure)
+    index = RuntimeNamespaceIndex(closure, entries=entries)
+    lookup = runtime_replay_lookup(closure, index=index)
     for path, component in sorted(closure['components'].items(), key=lambda item: len(Path(item[0]).parts)):
         if component['origin'] not in origins:
             continue
@@ -1296,7 +1324,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
                 or runtime_stamp(before) != runtime_stamp(location.lstat())):
             raise ValueError('mounted runtime navigation component differs: ' + path)
     for key in closure['directory_witnesses']:
-        witness = runtime_absence_witness(closure, key)
+        witness = runtime_absence_witness(closure, key, index=index)
         if witness['authority'] not in origins:
             continue
         descriptor = os.open(image_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -1311,7 +1339,7 @@ def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 
             raise
         try:
             before = os.fstat(descriptor)
-            recorded = (runtime_absence_witness(closure['_before_namespace'], witness['basis'])
+            recorded = (runtime_absence_witness(closure['_before_namespace'], witness['basis'], index=index.before_index())
                         if witness.get('operation') == 'namespace_directory_expectation' else witness)
             if (witness['authority'] != 'mount'
                     and stat.S_IMODE(before.st_mode) != stat.S_IMODE(recorded['before'][2])):
