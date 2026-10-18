@@ -1781,3 +1781,28 @@ def test_root_navigation_is_not_its_own_directory_child(tmp_path):
     assert any(value['parent'] == '/' and value['name'] == 'off-graph-absent-leaf'
                for value in closure['directory_witnesses'].values())
     assert tree.audit(closure, tree.retained_members(closure))
+
+
+@pytest.mark.parametrize('resources,accepted', [
+    pytest.param(dict(cpu=1, mem_gb=4, gpu=0), True, id='four-gib'),
+    pytest.param(dict(cpu=1, mem_gb=2, gpu=0), False, id='old-two-gib'),
+    pytest.param(dict(cpu=1, mem_gb=3, gpu=0), False, id='three-gib'),
+    pytest.param(dict(cpu=2, mem_gb=4, gpu=0), False, id='two-cpus'),
+])
+def test_capture_terminal_requires_exact_capture_demand(resources, accepted):
+    auditor = runpy.run_path(str(Path(__file__).resolve().parents[1]
+        / 'tools/maintenance/verify_proof_runtime_capture.py'))
+    allocation = dict(preferred=list(range(5, 5 + resources['cpu'])), fallback=[])
+    terminal = dict(cpu_allocation=allocation, resources=resources, priority=-10,
+                    detail=dict(cpu_allocation=allocation),
+                    finished_host='fixture-worker', claimed_host='fixture-worker')
+    request = dict(params=dict(demand=resources,
+                               execution_timeout_s=runtime.CAPTURE_BOUNDS['runtime_seconds']))
+    producer = dict(worker_id='fixture-worker', evidence=dict(hostname='fixture-worker'))
+    if accepted:
+        assert auditor['capture_assigned_affinity'](
+            request, terminal, producer, runtime.CAPTURE_BOUNDS) == [5]
+    else:
+        with pytest.raises(ValueError, match='one-CPU demand'):
+            auditor['capture_assigned_affinity'](
+                request, terminal, producer, runtime.CAPTURE_BOUNDS)
