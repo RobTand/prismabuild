@@ -89,10 +89,12 @@ def test_inventory_rejects_regular_byte_limit_before_opening_contents(tmp_path, 
 
 
 def test_checkpoint_metadata_refuses_before_file_or_cas_publication(tmp_path, monkeypatch):
+    private = tmp_path / 'capture-metadata'
+    private.mkdir()
     monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'metadata_bytes', 1)
     with pytest.raises(ValueError, match='capture metadata exceeds'):
-        capture.publish_capture_checkpoint(None, tmp_path, 'host_inventory', 1, {}, None)
-    assert list(tmp_path.iterdir()) == []
+        capture.publish_capture_checkpoint(None, private, 'host_inventory', 1, {}, None)
+    assert list(private.iterdir()) == []
     monkeypatch.setitem(runtime.CAPTURE_BOUNDS, 'metadata_bytes', len(runtime.canonical({})) + 1)
     with pytest.raises(ValueError, match='capture metadata exceeds'):
         capacity.bounded_capture_json({}, prefix='prismabuild-root-capture: ')
