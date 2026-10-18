@@ -749,10 +749,11 @@ def unfence_bootstrap(plan):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('prepare', 'observe', 'restore', 'unfence', 'export-reservation', 'reconcile-boot'))
-    parser.add_argument('--id', required=True)
-    parser.add_argument('--plan-sha256', required=True)
-    parser.add_argument('--nonce')
+    parser.add_argument('operation', choices=('prepare', 'observe', 'restore', 'unfence', 'export-reservation', 'reconcile-boot'),
+                        help='bootstrap operation to perform using the root-local approved plan')
+    parser.add_argument('--id', required=True, help='bootstrap identity naming the root-local plan directory')
+    parser.add_argument('--plan-sha256', required=True, help='SHA256 of the canonical approved plan to require before execution')
+    parser.add_argument('--nonce', help='observe: fresh 64-hex coordinator nonce to bind into the observation')
     parser.add_argument('--if-needed', action='store_true', help='reconcile-boot: verify an unchanged/already reconciled boot without rewriting')
     args = parser.parse_args()
     if args.if_needed and args.operation != 'reconcile-boot':
