@@ -1,11 +1,12 @@
 """Interpret a sealed root-test runtime profile inside its admitted container."""
 from dataclasses import dataclass
+import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
-import posixpath
 import re
 import runpy
 import stat
@@ -116,6 +117,12 @@ class RuntimeWitnessedAbsent:
     witness: str
 
 
+class RuntimeLookupAbsent(Exception):
+    def __init__(self, witness):
+        self.witness = witness
+        super().__init__(witness)
+
+
 @dataclass(frozen=True)
 class ImageRuntimeAbsence:
     parent: str
@@ -183,14 +190,39 @@ def load_profile(path, source_root):
         raise ValueError('runtime closure requires explicit native architecture and stdlib seeds')
     for seed in closure['elf_roots']:
         _absolute(seed)
-    audit = closure['native_audit']
-    if audit['schema'] != 'prismabuild.proof_native_closure_audit.v2' or any(type(audit[name]) is not int or audit[name] < 0 for name in ('elf_files', 'symlinks')):
+    combined = closure['audit']
+    if (combined['schema'] != 'prismabuild.proof_runtime_closure_audit.v1'
+            or closure['graph_policy'] != 'required-runtime-graph-v1'
+            or combined['link_outcomes_sha256'] != digest(canonical(closure['link_outcomes']))
+            or combined['completion_sha256'] != digest(canonical(closure['completion']))):
+        raise ValueError('runtime closure requires its retained graph and completion audit')
+    audit = combined['native_audit']
+    if audit['schema'] != 'prismabuild.proof_native_closure_audit.v3' or any(type(audit[name]) is not int or audit[name] < 0 for name in ('elf_files', 'symlinks')):
         raise ValueError('runtime closure requires its retained native dependency audit')
     _sha(audit['edges_sha256'])
     _sha(audit['symlinks_sha256'])
     for name in ('search_directories_sha256', 'default_directories_sha256', 'cache_sha256'):
         _sha(audit[name])
     roots = closure['roots']
+    validate_runtime_roots(roots)
+    for path_value in value['primary']['executable']['path'], value['primary']['executable']['resolved_path']:
+        if not any(root['origin'] == 'host' and Path(path_value).is_relative_to(root['path']) for root in roots):
+            raise ValueError('primary interpreter must come from the declared host mounts')
+    expected_native = sorted({'/usr/lib/' + closure['completion'][origin + '_multiarch']
+                              for origin in ('host', 'image')})
+    if closure['native_library_roots'] != expected_native or any(
+            not any(root['path'] == native and root['entries']['.']['kind'] == 'directory'
+                    for root in roots) for native in expected_native):
+        raise ValueError('runtime native library roots differ from selected MULTIARCH')
+    if ({name: reader[name] for name in ('version', 'executable', 'elf_machine')}
+            != closure['plan']['reader_identity']
+            or reader.get('link_target') != closure['plan']['reader_target']):
+        raise ValueError('runtime installed reader differs from the derived completion identity')
+    audit_link_outcomes(closure)
+    return RuntimeProfile(path, digest(raw), image, value['primary'], reader, closure)
+
+
+def validate_runtime_roots(roots):
     if not isinstance(roots, list) or not roots:
         raise ValueError('runtime closure requires complete captured roots')
     paths = []
@@ -220,36 +252,43 @@ def load_profile(path, source_root):
                     raise ValueError('invalid runtime member byte length')
             if entry['kind'] == 'symlink' and not isinstance(entry['target'], str):
                 raise ValueError('runtime symlink requires its exact target')
-    for path_value in value['primary']['executable']['path'], value['primary']['executable']['resolved_path']:
-        if not any(root['origin'] == 'host' and Path(path_value).is_relative_to(root['path']) for root in roots):
-            raise ValueError('primary interpreter must come from the declared host mounts')
-    return RuntimeProfile(path, digest(raw), image, value['primary'], reader, closure)
 
 
-def inventory(path, *, budget=None):
+def runtime_stamp(info):
+    return tuple(getattr(info, key) for key in (
+        'st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))
+
+
+def runtime_charge(budget, *, members=0, regular_bytes=0):
+    if budget is None:
+        return
+    budget['members'] += members
+    budget['regular_bytes'] += regular_bytes
+    if (budget['members'] > CAPTURE_BOUNDS['members']
+            or budget['regular_bytes'] > CAPTURE_BOUNDS['regular_bytes']):
+        raise ValueError(f'capture geometry exceeds its sealed limits: {budget}')
+    if time.monotonic() > budget['deadline']:
+        raise TimeoutError('capture inventory exceeded its finite deadline')
+
+
+def inventory(path, *, budget=None, directory_observations=None):
     path = Path(path)
     members = {}
     pending = [path]
     directories = []
-    fields = ('st_dev', 'st_ino', 'st_mode', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
     while pending:
         current = pending.pop()
         before = current.lstat()
-        if budget is not None:
-            budget['members'] += 1
-            budget['regular_bytes'] += before.st_size if stat.S_ISREG(before.st_mode) else 0
-            if (budget['members'] > CAPTURE_BOUNDS['members']
-                    or budget['regular_bytes'] > CAPTURE_BOUNDS['regular_bytes']):
-                raise ValueError(f'capture geometry exceeds its sealed limits: {budget}')
-            if time.monotonic() > budget['deadline']:
-                raise TimeoutError('capture inventory exceeded its finite deadline')
+        runtime_charge(budget, members=1,
+                       regular_bytes=before.st_size if stat.S_ISREG(before.st_mode) else 0)
         mode = stat.S_IMODE(before.st_mode)
         relative = str(current.relative_to(path))
         if stat.S_ISLNK(before.st_mode):
             entry = dict(kind='symlink', mode=mode, target=os.readlink(current))
         elif stat.S_ISDIR(before.st_mode):
             entry = dict(kind='directory', mode=mode)
-            directories.append((current, before))
+            names = []
+            directories.append((current, before, names))
             with os.scandir(current) as children:
                 for child in children:
                     if budget is not None:
@@ -258,6 +297,7 @@ def inventory(path, *, budget=None):
                         if budget['members'] + len(pending) >= CAPTURE_BOUNDS['members']:
                             raise ValueError('capture geometry exceeds its sealed limits during directory enumeration')
                     pending.append(Path(child.path))
+                    names.append(child.name)
         elif stat.S_ISREG(before.st_mode):
             hasher = hashlib.sha256()
             with current.open('rb') as handle:
@@ -269,19 +309,29 @@ def inventory(path, *, budget=None):
         else:
             raise ValueError(f'unsupported runtime member: {current}')
         after = current.lstat()
-        if any(getattr(before, key) != getattr(after, key) for key in fields):
+        if runtime_stamp(before) != runtime_stamp(after):
             raise ValueError(f'runtime member changed during capture: {current}')
         members[relative] = entry
-    for current,before in directories:
+    for current,before,names in directories:
         after = current.lstat()
-        if any(getattr(before, key) != getattr(after, key) for key in fields):
+        if runtime_stamp(before) != runtime_stamp(after):
             raise ValueError(f'runtime directory changed during capture: {current}')
+        if directory_observations is not None:
+            directory_observations[str(current)] = dict(
+                before=list(runtime_stamp(before)), after=list(runtime_stamp(after)), names=sorted(names))
     return dict(sorted(members.items()))
 
 
 def elf_requirements(path):
     with Path(path).open('rb') as handle:
         return read_runtime_elf(handle)
+
+
+def runtime_elf_observation(path):
+    try:
+        return elf_requirements(path)
+    except (ValueError, KeyError, struct.error, UnicodeError) as error:
+        return dict(parse_refusal=str(error))
 
 
 def read_runtime_elf(handle):
@@ -422,38 +472,276 @@ def merge_runtime_roots(host_roots, image_roots):
     return roots
 
 
-def resolve_runtime_path(entries, path):
-    path = posixpath.normpath(path)
-    for _ in range(64):
-        parts = PurePosixPath(path).parts
-        for index in range(1, len(parts)):
-            prefix = str(PurePosixPath(*parts[:index + 1]))
-            entry = entries.get(prefix)
-            if entry is not None and entry['kind'] == 'symlink':
-                target = posixpath.join(posixpath.dirname(prefix), entry['target'])
-                path = posixpath.normpath(posixpath.join(target, *parts[index + 1:]))
-                break
-        else:
-            if path not in entries and not any(name.startswith(path + '/') for name in entries):
-                raise ValueError('runtime symlink or ELF path escapes the sealed closure: ' + path)
-            return path
-    raise ValueError('runtime closure has a symlink cycle')
+def walk_runtime_path(spelling, lookup):
+    if (not isinstance(spelling, str) or not spelling.startswith('/')
+            or spelling.startswith('//') or any(char in spelling for char in '\0\n\r')):
+        raise ValueError('unsupported runtime lookup spelling: ' + repr(spelling))
+    remaining = spelling.split('/')[1:]
+    current = []
+    chain = []
+    root = lookup('/')
+    if root['kind'] != 'directory':
+        raise ValueError('runtime namespace root is not a directory')
+    while remaining:
+        component, *remaining = remaining
+        if component in ('', '.'):
+            continue
+        if component == '..':
+            if current:
+                current.pop()
+            continue
+        path = '/' + '/'.join((*current, component))
+        try:
+            entry = lookup(path)
+        except RuntimeLookupAbsent as absent:
+            return RuntimeWitnessedAbsent(spelling, path, tuple(remaining), tuple(chain), absent.witness)
+        if entry['kind'] == 'symlink':
+            if len(chain) >= 64:
+                raise ValueError('runtime closure has a symlink cycle')
+            target = entry['target']
+            if (not isinstance(target, str) or not target or target.startswith('//')
+                    or any(char in target for char in '\0\n\r')):
+                raise ValueError('unsupported runtime symlink target: ' + repr(target))
+            chain.append(RuntimeExpansion(path, target, tuple(remaining)))
+            if target.startswith('/'):
+                current = []
+            remaining = target.split('/') + remaining
+            continue
+        if remaining and entry['kind'] != 'directory':
+            raise ValueError('runtime lookup traverses a non-directory component: ' + path)
+        if entry['kind'] not in ('file', 'directory'):
+            raise ValueError('runtime lookup contains an unsupported member: ' + path)
+        current.append(component)
+    return RuntimeResolved(spelling, '/' + '/'.join(current), tuple(chain))
+
+
+def runtime_outcome_record(outcome):
+    chain = [dict(path=step.path, target=step.target, remaining=list(step.remaining))
+             for step in outcome.chain]
+    if isinstance(outcome, RuntimeResolved):
+        return dict(status='resolved', spelling=outcome.spelling, terminal=outcome.terminal, chain=chain)
+    if isinstance(outcome, RuntimeWitnessedAbsent):
+        return dict(status='witnessed_absent', spelling=outcome.spelling,
+                    missing=outcome.missing, remaining=list(outcome.remaining), chain=chain,
+                    witness=outcome.witness)
+    raise ValueError('unsupported runtime path outcome')
+
+
+def resolve_runtime_path(entries, path, components=None):
+    def lookup(component):
+        entry = entries.get(component)
+        if entry is None and components is not None and component in components:
+            entry = components[component]['entry']
+            if entry['kind'] != 'directory':
+                raise ValueError('runtime navigation component is not a directory: ' + component)
+        if entry is None:
+            raise ValueError('runtime symlink or ELF path escapes the sealed closure: ' + component)
+        return entry
+    return walk_runtime_path(path, lookup).terminal
+
+
+def runtime_namespace_entries(closure):
+    return {str(Path(root['path']) / name): entry for root in closure['roots']
+            for name, entry in root['entries'].items()}
+
+
+def runtime_path_authority(closure, path):
+    return 'host' if any(root['origin'] == 'host' and Path(path).is_relative_to(root['path'])
+                         for root in closure['roots']) else 'image'
+
+
+def runtime_absence_witness(closure, key):
+    witness = closure['directory_witnesses'][key]
+    if digest(canonical(witness)) != key:
+        raise ValueError('runtime absence witness digest differs')
+    parent = str(_absolute(witness['parent']))
+    name = witness['name']
+    if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or '\0' in name:
+        raise ValueError('runtime absence witness has an invalid child name')
+    before, after, names = witness['before'], witness['after'], witness['names']
+    if (not isinstance(before, (list, tuple)) or len(before) != 6
+            or any(type(value) is not int for value in before)
+            or list(before) != list(after) or not stat.S_ISDIR(before[2])
+            or not isinstance(names, (list, tuple)) or list(names) != sorted(set(names))
+            or any(not isinstance(value, str) or value in ('', '.', '..')
+                   or '/' in value or '\0' in value for value in names)
+            or name in names):
+        raise ValueError('runtime absence lacks a stable complete parent enumeration')
+    missing = str(Path(parent) / name)
+    authority = runtime_path_authority(closure, missing)
+    if witness.get('authority') != authority:
+        raise ValueError('runtime absence witness has the wrong mount authority')
+    if authority == 'image':
+        if witness.get('operation') != 'lstat_at_nofollow' or witness.get('errno') != 'ENOENT':
+            raise ValueError('image runtime absence lacks its exact no-follow ENOENT observation')
+    elif (witness.get('operation') != 'complete_host_directory_enumeration'
+            or witness.get('checkpoint_sha256') != closure['completion']['host_checkpoint']['sha256']):
+        raise ValueError('host runtime absence differs from its durable checkpoint')
+    entries = runtime_namespace_entries(closure)
+    parent_entry = entries.get(parent, closure.get('components', {}).get(parent, {}).get('entry'))
+    if parent_entry is None or parent_entry['kind'] != 'directory':
+        raise ValueError('runtime absence parent is not a retained directory')
+    if parent_entry['mode'] != stat.S_IMODE(before[2]):
+        raise ValueError('runtime absence parent mode differs from its retained directory')
+    for path in entries:
+        if str(Path(path).parent) == parent and Path(path).name not in names:
+            raise ValueError('runtime absence listing omits a retained child')
+    if authority == 'host':
+        actual_names = sorted(Path(path).name for path in entries if str(Path(path).parent) == parent)
+        if list(names) != actual_names:
+            raise ValueError('host runtime absence listing differs from its complete inventory')
+    return witness
+
+
+def runtime_replay_lookup(closure):
+    entries = runtime_namespace_entries(closure)
+    witnesses = {}
+    for key in closure['directory_witnesses']:
+        witness = runtime_absence_witness(closure, key)
+        missing = str(Path(witness['parent']) / witness['name'])
+        if missing in witnesses:
+            raise ValueError('runtime absence has duplicate witnesses')
+        witnesses[missing] = key
+    def lookup(component):
+        entry = entries.get(component)
+        if entry is not None:
+            return entry
+        navigation = closure['components'].get(component)
+        if navigation is not None:
+            if (navigation['origin'] != runtime_path_authority(closure, component)
+                    or navigation['entry']['kind'] != 'directory'):
+                raise ValueError('runtime navigation component has invalid authority or kind')
+            if 'stamp' in navigation:
+                stamp = navigation['stamp']
+                if (len(stamp) != 6 or any(type(value) is not int for value in stamp)
+                        or not stat.S_ISDIR(stamp[2])
+                        or stat.S_IMODE(stamp[2]) != navigation['entry']['mode']):
+                    raise ValueError('runtime navigation component has an invalid stable stamp')
+            return navigation['entry']
+        if component in witnesses:
+            raise RuntimeLookupAbsent(witnesses[component])
+        raise ValueError('runtime symlink or ELF path escapes the sealed closure: ' + component)
+    return lookup
+
+
+def replay_runtime_path(closure, path):
+    return walk_runtime_path(path, runtime_replay_lookup(closure))
+
+
+def audit_link_outcomes(closure):
+    entries = runtime_namespace_entries(closure)
+    links = {path for path, entry in entries.items() if entry['kind'] == 'symlink'}
+    if set(closure['link_outcomes']) != links:
+        raise ValueError('runtime link outcome roster differs from its declared symlinks')
+    aliases = {}
+    lookup = runtime_replay_lookup(closure)
+    for path in sorted(links):
+        outcome = walk_runtime_path(path, lookup)
+        if runtime_outcome_record(outcome) != closure['link_outcomes'][path]:
+            raise ValueError('runtime link outcome differs from retained replay: ' + path)
+        if isinstance(outcome, RuntimeResolved):
+            aliases[path] = outcome.terminal
+        elif not any(Path(path).is_relative_to(root) for root in closure['native_library_roots']):
+            raise ValueError('witnessed runtime absence is outside the native library root: ' + path)
+    for path in closure['plan']['required_spellings']:
+        outcome = walk_runtime_path(path, lookup)
+        if not isinstance(outcome, RuntimeResolved):
+            raise ValueError('required runtime path is witnessed absent: ' + path)
+        aliases[path] = outcome.terminal
+    return aliases
+
+
+def runtime_completion_plan(host, image):
+    primary = host['observation']['executable']
+    primary_spellings = {primary['path'], primary['resolved_path']}
+    for root in host['roots']:
+        if root['path'] == str(Path(primary['path']).parent):
+            primary_spellings.update(str(Path(root['path']) / relative)
+                                     for relative, entry in root['entries'].items()
+                                     if entry['kind'] == 'symlink')
+    pt_seeds = set()
+    for origin, captured in (('host', host), ('image', image)):
+        executable = captured['observation']['executable']
+        raw = base64.b64decode(captured['executable_binary'], validate=True)
+        if len(raw) != executable['bytes'] or digest(raw) != executable['sha256']:
+            raise ValueError('runtime completion executable bytes differ from their observation')
+        metadata = read_runtime_elf(io.BytesIO(raw))
+        if metadata is None or metadata['machine'] != captured['observation']['elf_machine']:
+            raise ValueError('runtime completion executable is not its observed native ELF')
+        pt_seeds.update((origin, path) for path in metadata['interpreters'])
+        for path, metadata in captured['elf_index'].items():
+            if (metadata is not None and 'parse_refusal' not in metadata
+                    and any(Path(path).is_relative_to(root) for root in captured['elf_roots'])):
+                pt_seeds.update((origin, path) for path in metadata['interpreters'])
+    required = {*primary_spellings, '/usr/bin/python3', image['observation']['executable']['path'],
+                image['observation']['executable']['resolved_path'], *(path for origin, path in pt_seeds)}
+    reader_target = image['observation']['executable']['resolved_path']
+    actual_reader = host['observation'] if reader_target == primary['resolved_path'] else image['observation']
+    reader_identity = {name: actual_reader[name] for name in ('version', 'executable', 'elf_machine')}
+    reader_identity['executable'] = dict(reader_identity['executable'], path='/usr/bin/python3')
+    return dict(primary_spellings=sorted(primary_spellings),
+                reader_spelling='/usr/bin/python3', reader_target=reader_target,
+                reader_identity=reader_identity,
+                pt_seeds=[dict(origin=origin, path=path) for origin, path in sorted(pt_seeds)],
+                required_spellings=sorted(required),
+                elf_roots=sorted(set(host['elf_roots'] + image['elf_roots'])))
+
+
+def require_runtime_candidate_absence(closure, directory, needed, *, lookup=None):
+    path = str(Path(directory) / needed)
+    authority = runtime_path_authority(closure, path)
+    if authority == 'host':
+        observation = closure['completion']['host_directory_observations'].get(directory)
+        entries = runtime_namespace_entries(closure)
+        expected = sorted(Path(value).name for value in entries if str(Path(value).parent) == directory)
+        if (observation is None or observation['before'] != observation['after']
+                or len(observation['before']) != 6 or not stat.S_ISDIR(observation['before'][2])
+                or observation['names'] != expected or needed in observation['names']):
+            raise ValueError('missing candidate absence evidence: ' + path)
+        return
+    try:
+        outcome = walk_runtime_path(path, lookup or runtime_replay_lookup(closure))
+    except (KeyError, ValueError) as error:
+        raise ValueError('missing candidate absence evidence: ' + path) from error
+    if not isinstance(outcome, RuntimeWitnessedAbsent) or outcome.missing != path or outcome.remaining:
+        raise ValueError('missing candidate absence evidence: ' + path)
+
+
+def runtime_elf_search_directories(metadata_by_path, resolved):
+    directories, own_directories = set(), {}
+    for path, metadata in metadata_by_path.items():
+        own_directories[path] = set()
+        for value in metadata['runpath'] + metadata['rpath']:
+            for directory in value.split(':'):
+                origins = {str(Path(path).parent), *(str(Path(alias).parent)
+                            for alias, target in resolved.items() if target == path)}
+                for origin in origins:
+                    expanded = directory.replace('${ORIGIN}', origin).replace('$ORIGIN', origin)
+                    if not expanded.startswith('/') or '$' in expanded:
+                        raise ValueError('runtime ELF uses an unsupported library search token')
+                    directories.add(expanded)
+                    own_directories[path].add(expanded)
+    return directories, own_directories
+
+
+def runtime_directory_candidate_spellings(entries, directory, needed):
+    return sorted(path for path, entry in entries.items()
+                  if entry['kind'] in ('file', 'symlink') and Path(path).name == needed
+                  and Path(path).is_relative_to(directory))
 
 def audit_native_closure(closure, byte_path):
-    entries = {str(Path(root['path']) / name):entry for root in closure['roots']
-               for name,entry in root['entries'].items()}
-
-    resolved = {}
+    entries = runtime_namespace_entries(closure)
+    resolved = audit_link_outcomes(closure)
+    lookup = runtime_replay_lookup(closure)
     def resolve(path):
         if path not in resolved:
-            resolved[path] = resolve_runtime_path(entries, path)
+            outcome = walk_runtime_path(path, lookup)
+            if not isinstance(outcome, RuntimeResolved):
+                raise ValueError('required native candidate is witnessed absent: ' + path)
+            resolved[path] = outcome.terminal
         return resolved[path]
-    by_name = {}
-    for path,entry in entries.items():
-        if entry['kind'] in ('file', 'symlink'):
-            by_name.setdefault(Path(path).name, []).append(path)
 
-    links = {path:resolve(path) for path,entry in entries.items() if entry['kind'] == 'symlink'}
+    links = closure['link_outcomes']
     pending = [path for path,entry in entries.items() if entry['kind'] == 'file'
                and any(Path(path).is_relative_to(seed) for seed in closure['elf_roots'])]
     loader = closure['loader']
@@ -479,13 +767,18 @@ def audit_native_closure(closure, byte_path):
                    for root in closure['roots']):
             raise ValueError('loader search directory is not completely inventoried: ' + directory)
         for prefix in (Path(directory), *Path(directory).parents):
-            entry = entries.get(str(prefix))
+            entry = entries.get(str(prefix), closure['components'].get(str(prefix), {}).get('entry'))
             if entry is not None and entry['kind'] == 'directory' and not entry['mode'] & 0o001:
                 raise ValueError('loader search directory is not public to the installed reader: ' + str(prefix))
         found = {resolve(str(Path(spelling) / Path(path).relative_to(directory)))
-                 for path in by_name.get(needed, ()) if Path(path).is_relative_to(directory)}
+                 for path in runtime_directory_candidate_spellings(entries, directory, needed)}
         direct = str(Path(directory) / needed)
-        return found, direct in entries and entries.get(resolve(direct), {}).get('kind') == 'file'
+        if direct in entries:
+            base = entries.get(resolve(str(Path(spelling) / needed)), {}).get('kind') == 'file'
+        else:
+            require_runtime_candidate_absence(closure, directory, needed, lookup=lookup)
+            base = False
+        return found, base
 
     for _ in range(64):
         for path in pending:
@@ -501,20 +794,8 @@ def audit_native_closure(closure, byte_path):
                     or not entries[path]['mode'] & 0o004):
                 raise ValueError('runtime ELF candidate has an unsupported architecture, kernel ABI, visibility or NODEFLIB flag')
             metadata_by_path[path] = metadata
-        directories = set()
-        own_directories = {}
         origins_before = len(resolved)
-        for path,metadata in metadata_by_path.items():
-            own_directories[path] = set()
-            for value in metadata['runpath'] + metadata['rpath']:
-                for directory in value.split(':'):
-                    origins = {str(Path(path).parent), *(str(Path(alias).parent) for alias,target in resolved.items() if target == path)}
-                    for origin in origins:
-                        expanded = directory.replace('${ORIGIN}', origin).replace('$ORIGIN', origin)
-                        if not expanded.startswith('/') or '$' in expanded:
-                            raise ValueError('runtime ELF uses an unsupported library search token')
-                        directories.add(posixpath.normpath(expanded))
-                        own_directories[path].add(posixpath.normpath(expanded))
+        directories, own_directories = runtime_elf_search_directories(metadata_by_path, resolved)
         edges = {}
         for path,metadata in metadata_by_path.items():
             targets = {resolve(interpreter) for interpreter in metadata['interpreters']}
@@ -546,11 +827,249 @@ def audit_native_closure(closure, byte_path):
             break
     else:
         raise ValueError('loader candidate graph did not converge inside its finite bound')
-    return dict(schema='prismabuild.proof_native_closure_audit.v2',
+    return dict(schema='prismabuild.proof_native_closure_audit.v3',
                 elf_files=len(edges), edges_sha256=digest(canonical(edges)),
                 symlinks=len(links), symlinks_sha256=digest(canonical(links)),
                 search_directories_sha256=digest(canonical(sorted(directories))),
                 default_directories_sha256=digest(canonical(defaults)), cache_sha256=cache_file['sha256'])
+
+
+def audit_runtime_completion(closure, byte_path, content_path=None):
+    completion = closure['completion']
+    captured = {}
+    entries = runtime_namespace_entries(closure)
+    content = {}
+    def retained_file(path, entry):
+        if entry['sha256'] not in content:
+            if content_path is not None:
+                source = content_path(entry['sha256'])
+            elif entries.get(path) == entry:
+                source = byte_path(path)
+            else:
+                raise ValueError('shadowed runtime bytes require the retained content accessor: ' + path)
+            actual = inventory(source)['.']
+            if actual['kind'] != 'file' or any(actual[name] != entry[name] for name in ('bytes', 'sha256')):
+                raise ValueError('retained runtime file bytes differ: ' + path)
+            content[entry['sha256']] = (actual['bytes'], runtime_elf_observation(source))
+        size, metadata = content[entry['sha256']]
+        if size != entry['bytes']:
+            raise ValueError('retained runtime file size differs: ' + path)
+        return metadata
+    validate_runtime_roots(closure['roots'])
+    for origin in ('host', 'image'):
+        facts = dict(observation=completion[origin + '_observation'],
+                     roots=completion['base_' + origin + '_roots'],
+                     elf_roots=completion[origin + '_elf_roots'],
+                     elf_index=completion[origin + '_elf_index'],
+                     executable_binary=completion[origin + '_executable_binary'])
+        validate_runtime_roots(facts['roots'])
+        parsed = {}
+        for root in facts['roots']:
+            if root['origin'] != origin:
+                raise ValueError('runtime completion base inventory has the wrong origin')
+            for relative, entry in root['entries'].items():
+                path = str(Path(root['path']) / relative)
+                if entry['kind'] != 'file':
+                    continue
+                parsed[path] = retained_file(path, entry)
+        if parsed != facts['elf_index']:
+            raise ValueError('runtime completion ELF index differs from retained bytes: ' + origin)
+        multiarch = completion[origin + '_multiarch']
+        if not isinstance(multiarch, str) or not multiarch or '/' in multiarch:
+            raise ValueError('runtime completion has an unsupported MULTIARCH')
+        native = '/usr/lib/' + multiarch
+        if not any(root['path'] == native and root['entries']['.']['kind'] == 'directory'
+                   for root in facts['roots']):
+            raise ValueError('runtime completion lacks its selected native library inventory')
+        captured[origin] = facts
+    if ({root['path']: root for root in closure['roots'] if root['origin'] == 'host'}
+            != {root['path']: root for root in captured['host']['roots']}):
+        raise ValueError('runtime completion changed its durable host inventory')
+    base_roots = merge_runtime_roots(captured['host']['roots'], captured['image']['roots'])
+    if any(root not in closure['roots'] for root in base_roots):
+        raise ValueError('runtime completion changed a selected base inventory')
+    for path, entry in entries.items():
+        if entry['kind'] == 'file':
+            retained_file(path, entry)
+    expected_native = sorted({'/usr/lib/' + completion[origin + '_multiarch']
+                              for origin in ('host', 'image')})
+    if closure['native_library_roots'] != expected_native:
+        raise ValueError('runtime native library roots differ from selected MULTIARCH')
+    if any(not any(root['path'] == path and root['entries']['.']['kind'] == 'directory'
+                       for root in closure['roots']) for path in expected_native):
+        raise ValueError('runtime native library root is not completely inventoried')
+    expected_plan = runtime_completion_plan(captured['host'], captured['image'])
+    if closure['plan'] != expected_plan or closure['elf_roots'] != expected_plan['elf_roots']:
+        raise ValueError('runtime completion plan differs from independently derived seeds')
+    base = completion['base_consumed_budget']
+    charges = completion['charges']
+    if (set(base) != {'members', 'regular_bytes'}
+            or any(type(base[name]) is not int or base[name] < 0 for name in base)):
+        raise ValueError('runtime completion lacks its consumed base budget')
+    totals = dict(base)
+    witnessed = set()
+    observed = {}
+    for charge in charges:
+        if charge['kind'] not in ('inventory', 'component', 'absence', 'host_absence', 'recheck'):
+            raise ValueError('runtime completion has an unsupported observation charge')
+        _absolute(charge['path'])
+        if charge['kind'] == 'inventory':
+            facts = charge['entries']
+            if '.' not in facts:
+                raise ValueError('runtime completion inventory charge lacks its root')
+            for relative, entry in facts.items():
+                path = str(Path(charge['path']) / relative)
+                if entries.get(path) != entry:
+                    raise ValueError('runtime completion inventory charge differs from retained facts')
+                observed[path] = entry
+            expected_members = len(facts)
+            expected_bytes = sum(entry['bytes'] for entry in facts.values() if entry['kind'] == 'file')
+        elif charge['kind'] in ('component', 'recheck'):
+            entry = charge['entry']
+            if entry != entries.get(charge['path'], closure['components'].get(charge['path'], {}).get('entry')):
+                raise ValueError('runtime completion component charge differs from retained facts')
+            observed[charge['path']] = entry
+            expected_members = 1
+            expected_bytes = entry['bytes'] if entry['kind'] == 'file' else 0
+        else:
+            witness = runtime_absence_witness(closure, charge['witness'])
+            if (str(Path(witness['parent']) / witness['name']) != charge['path']
+                    or (charge['kind'] == 'host_absence') != (witness['authority'] == 'host')):
+                raise ValueError('runtime completion absence charge differs from its witness')
+            witnessed.add(charge['witness'])
+            expected_members = 1 if witness['authority'] == 'host' else 1 + len(witness['names'])
+            expected_bytes = 0
+        if charge['members'] != expected_members or charge['regular_bytes'] != expected_bytes:
+            raise ValueError('runtime completion charge counters differ from observed work')
+        for name in totals:
+            if type(charge[name]) is not int or charge[name] < 0:
+                raise ValueError('runtime completion has an invalid observation charge')
+            totals[name] += charge[name]
+    if witnessed != set(closure['directory_witnesses']):
+        raise ValueError('runtime completion budget omits an absence observation')
+    if any(path not in observed for path in closure['components']):
+        raise ValueError('runtime completion budget omits a navigation component')
+    base_entries = runtime_namespace_entries(dict(roots=base_roots))
+    if any(path not in base_entries and path not in observed for path in entries):
+        raise ValueError('runtime completion budget omits a new inventory member')
+    if (totals != closure['consumed_budget'] or totals['members'] > CAPTURE_BOUNDS['members']
+            or totals['regular_bytes'] > CAPTURE_BOUNDS['regular_bytes']):
+        raise ValueError('runtime completion consumed budget differs from its retained work')
+    minimum_members = sum(len(root['entries']) for facts in captured.values() for root in facts['roots'])
+    minimum_bytes = sum(entry['bytes'] for facts in captured.values() for root in facts['roots']
+                        for entry in root['entries'].values() if entry['kind'] == 'file')
+    if base != dict(members=minimum_members, regular_bytes=minimum_bytes):
+        raise ValueError('runtime completion base budget omits shadowed observation work')
+    return expected_plan
+
+
+def audit_runtime_closure(closure, byte_path, *, content_path=None):
+    if closure['schema'] != CLOSURE_SCHEMA or closure['graph_policy'] != 'required-runtime-graph-v1':
+        raise ValueError('unsupported runtime closure graph contract')
+    audit_runtime_completion(closure, byte_path, content_path)
+    audit_link_outcomes(closure)
+    primary = read_runtime_elf(io.BytesIO(base64.b64decode(
+        closure['completion']['host_executable_binary'], validate=True)))
+    if len(primary['interpreters']) != 1:
+        raise ValueError('runtime primary requires one independently captured PT interpreter')
+    interpreter, = primary['interpreters']
+    outcome = replay_runtime_path(closure, interpreter)
+    if (not isinstance(outcome, RuntimeResolved)
+            or runtime_path_authority(closure, outcome.terminal) != 'host'
+            or closure['loader']['diagnostics']['executable']['path'] != interpreter
+            or closure['loader']['diagnostics']['executable']['resolved_path'] != outcome.terminal):
+        raise ValueError('runtime primary PT chain differs from the captured host loader')
+    native = audit_native_closure(closure, byte_path)
+    return dict(schema='prismabuild.proof_runtime_closure_audit.v1', native_audit=native,
+                link_outcomes_sha256=digest(canonical(closure['link_outcomes'])),
+                completion_sha256=digest(canonical(closure['completion'])))
+
+
+def verify_runtime_negatives(closure, *, image_root=Path('/'), origins=('host', 'image')):
+    image_root = Path(image_root)
+    entries = runtime_namespace_entries(closure)
+    lookup = runtime_replay_lookup(closure)
+    for path, component in sorted(closure['components'].items(), key=lambda item: len(Path(item[0]).parts)):
+        if component['origin'] not in origins:
+            continue
+        location = image_root / path.lstrip('/')
+        before = location.lstat()
+        if (not stat.S_ISDIR(before.st_mode)
+                or stat.S_IMODE(before.st_mode) != component['entry']['mode']
+                or runtime_stamp(before) != runtime_stamp(location.lstat())):
+            raise ValueError('mounted runtime navigation component differs: ' + path)
+    for key in closure['directory_witnesses']:
+        witness = runtime_absence_witness(closure, key)
+        if witness['authority'] not in origins:
+            continue
+        descriptor = os.open(image_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for component in PurePosixPath(witness['parent']).parts[1:]:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+        except BaseException:
+            os.close(descriptor)
+            raise
+        try:
+            before = os.fstat(descriptor)
+            if stat.S_IMODE(before.st_mode) != stat.S_IMODE(witness['before'][2]):
+                raise ValueError('mounted runtime absence parent mode differs: ' + witness['parent'])
+            try:
+                os.stat(witness['name'], dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError as error:
+                if error.errno != 2:
+                    raise
+            else:
+                raise ValueError('mounted runtime absent target appeared: ' + witness['parent'] + '/' + witness['name'])
+            with os.scandir(descriptor) as children:
+                names = sorted(child.name for child in children)
+            try:
+                os.stat(witness['name'], dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError as error:
+                if error.errno != 2:
+                    raise
+            else:
+                raise ValueError('mounted runtime absent target appeared during verification')
+            after = os.fstat(descriptor)
+            if runtime_stamp(before) != runtime_stamp(after) or names != list(witness['names']):
+                raise ValueError('mounted runtime absence directory changed: ' + witness['parent'])
+        finally:
+            os.close(descriptor)
+    if set(origins) != {'host', 'image'}:
+        return
+    for spelling, record in closure['link_outcomes'].items():
+        if record['status'] != 'witnessed_absent':
+            continue
+        expected = walk_runtime_path(spelling, lookup)
+        if runtime_path_authority(closure, expected.missing) not in origins:
+            continue
+        def mounted_lookup(path):
+            location = image_root / path.lstrip('/')
+            try:
+                info = location.lstat()
+            except FileNotFoundError as error:
+                if error.errno != 2 or path != expected.missing:
+                    raise
+                raise RuntimeLookupAbsent(expected.witness) from error
+            before = runtime_stamp(info)
+            if stat.S_ISLNK(info.st_mode):
+                actual = dict(kind='symlink', mode=stat.S_IMODE(info.st_mode), target=os.readlink(location))
+            elif stat.S_ISDIR(info.st_mode):
+                actual = dict(kind='directory', mode=stat.S_IMODE(info.st_mode))
+            elif stat.S_ISREG(info.st_mode):
+                actual = dict(kind='file', mode=stat.S_IMODE(info.st_mode))
+            else:
+                raise ValueError('mounted runtime lookup has an unsupported member: ' + path)
+            if runtime_stamp(location.lstat()) != before:
+                raise ValueError('mounted runtime lookup changed during verification: ' + path)
+            retained = entries.get(path, closure['components'].get(path, {}).get('entry'))
+            if retained is None or any(actual[name] != retained.get(name) for name in actual):
+                raise ValueError('mounted runtime negative expansion differs: ' + path)
+            return actual
+        if runtime_outcome_record(walk_runtime_path(spelling, mounted_lookup)) != record:
+            raise ValueError('mounted runtime negative lookup differs: ' + spelling)
 
 
 def verify_closure(profile, origins=('host', 'image')):
@@ -563,6 +1082,7 @@ def verify_closure(profile, origins=('host', 'image')):
             raise ValueError(f'runtime root inventory differs: {root["path"]}')
         maps[root['path']] = dict(origin=root['origin'], members=len(actual),
                                   entries_sha256=digest(canonical(actual)))
+    verify_runtime_negatives(profile.closure, origins=origins)
     return dict(verified=True, member_maps=maps, member_maps_sha256=digest(canonical(maps)))
 
 

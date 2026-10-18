@@ -1,10 +1,15 @@
 """Capture only the selected CPython runtime and an existing native image."""
 import argparse
+from contextlib import contextmanager
+from dataclasses import asdict
+import errno
+import io
 import base64
 import hashlib
 import json
+import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import runpy
 import shutil
 import site
@@ -17,9 +22,13 @@ import time
 
 from proof_container_runtime import (
     CAPTURE_BOUNDS, CAPTURE_PHASES, CAPTURE_PUBLISHED_SOURCES, CLOSURE_SCHEMA, PROFILE_SCHEMA,
-    audit_native_closure, canonical, digest, elf_requirements,
+    canonical, digest, elf_requirements,
     inventory, loader_cache_entries, loader_default_directories, loader_kernel, merge_runtime_roots, native_providers, observe_runtime,
-    resolve_runtime_path,
+    resolve_runtime_path, BROAD_ROOTS, CompletedRuntimeNamespace, ImageRuntimeAbsence,
+    HostRuntimeAbsence, RuntimeLookupAbsent, RuntimeResolved, RuntimeWitnessedAbsent,
+    audit_link_outcomes, audit_runtime_closure, read_runtime_elf, runtime_charge, runtime_completion_plan,
+    runtime_outcome_record, runtime_stamp, walk_runtime_path, runtime_elf_search_directories,
+    runtime_directory_candidate_spellings, runtime_elf_observation,
 )
 
 from proof_capture_capacity import bounded_capture_json, capture_publication_capacity
@@ -124,12 +133,13 @@ def retain_image_members(archive_path, destination):
     return {path.name: str(path) for path in destination.iterdir()}
 
 
-def captured_roots(origin, paths, budget):
+def captured_roots(origin, paths, budget, directory_observations=None):
     roots = []
     for path in sorted(set(Path(value).resolve() for value in paths), key=lambda p: (len(p.parts), str(p))):
         if any(path.is_relative_to(root['path']) for root in roots):
             continue
-        roots.append(dict(origin=origin, path=str(path), entries=inventory(path, budget=budget)))
+        roots.append(dict(origin=origin, path=str(path), entries=inventory(path, budget=budget,
+            directory_observations=directory_observations)))
     return roots
 
 
@@ -144,7 +154,7 @@ def capture_optional_runtime_aliases(origin, roots, budget):
             roots.append(dict(origin=origin, path=name, entries=inventory(path, budget=budget)))
 
 
-def runtime_capture(origin):
+def runtime_capture(origin, budget=None):
     observation = observe_runtime()
     if observation['loader_environment'] or observation['at_secure'] != 0:
         raise ValueError('capture refuses ambient dynamic-loader overrides')
@@ -188,17 +198,367 @@ def runtime_capture(origin):
         if file_descriptor(cache) != before:
             raise ValueError('image loader cache changed while reading its listing')
         paths.extend([cache, tool])
-    budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
-    roots = captured_roots(origin, paths, budget)
+    if budget is None:
+        budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + CAPTURE_BOUNDS['runtime_seconds'])
+    before_budget = {key: budget[key] for key in ('members', 'regular_bytes')}
+    directory_observations = {}
+    roots = captured_roots(origin, paths, budget, directory_observations)
     if origin == 'image':
         capture_optional_runtime_aliases(origin, roots, budget)
+    elf_index = {}
+    for captured in roots:
+        for relative, entry in captured['entries'].items():
+            if entry['kind'] != 'file':
+                continue
+            runtime_charge(budget)
+            name = str(Path(captured['path']) / relative)
+            elf_index[name] = runtime_elf_observation(name)
     result = dict(observation=observation, roots=roots, stdlib=str(stdlib), providers=providers,
                   elf_roots=sorted(elf_roots),
-                  executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode())
+                  executable_binary=base64.b64encode(Path('/proc/self/exe').read_bytes()).decode(),
+                  multiarch=multiarch, native_library_roots=[str(native)], elf_index=elf_index,
+                  directory_observations=directory_observations,
+                  inventory_budget={key: budget[key] - before_budget[key] for key in before_budget},
+                  consumed_budget={key: budget[key] for key in before_budget})
     if origin == 'image':
         result['loader_cache'] = dict(path=str(cache), **before, raw_listing=listing,
             tool=dict(path=str(tool), resolved_path=str(tool), **file_descriptor(tool)))
     return result
+
+
+class ImageClosureObserver:
+    def __init__(self, host, image, budget, checkpoint, image_root):
+        self.host = host
+        self.image = image
+        self.budget = budget
+        self.checkpoint = checkpoint
+        self.image_root = Path(image_root)
+        self.host_roots = host['roots']
+        self.image_roots = list(image['roots'])
+        self.roots = merge_runtime_roots(self.host_roots, self.image_roots)
+        self.components = {}
+        self.witnesses = {}
+        self.negative = {}
+        self.observed = {}
+        self.charges = []
+        self.image_directories = {}
+        self.initial_budget = {name: budget[name] for name in ('members', 'regular_bytes')}
+
+    def record_work(self, before, kind, path, **facts):
+        self.charges.append(dict(kind=kind, path=path,
+            members=self.budget['members'] - before['members'],
+            regular_bytes=self.budget['regular_bytes'] - before['regular_bytes'], **facts))
+
+    def image_physical(self, logical):
+        return self.image_root / logical.lstrip('/')
+
+    @contextmanager
+    def image_parent(self, logical):
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        current = os.open(self.image_root, flags)
+        try:
+            for name in PurePosixPath(logical).parent.parts[1:]:
+                following = os.open(name, flags, dir_fd=current)
+                os.close(current)
+                current = following
+            yield current
+        finally:
+            os.close(current)
+
+    def host_absence(self, logical):
+        parent = str(PurePosixPath(logical).parent)
+        name = PurePosixPath(logical).name
+        observed = self.host['directory_observations'].get(parent)
+        if observed is None or observed['before'] != observed['after'] or name in observed['names']:
+            raise ValueError('host absence lacks its complete stable checkpoint enumeration: ' + logical)
+        entries = {str(Path(root['path']) / relative): entry
+                   for root in self.host_roots for relative, entry in root['entries'].items()}
+        expected = sorted(PurePosixPath(path).name for path in entries
+                          if path != parent and str(PurePosixPath(path).parent) == parent)
+        if observed['names'] != expected or entries.get(parent, {}).get('kind') != 'directory':
+            raise ValueError('host absence enumeration differs from its complete root')
+        before = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+        runtime_charge(self.budget, members=1)
+        witness = asdict(HostRuntimeAbsence(parent, name, tuple(observed['before']),
+            tuple(observed['after']), tuple(observed['names']), self.checkpoint['sha256']))
+        key = digest(canonical(witness))
+        self.witnesses[key] = witness
+        self.negative[logical] = key
+        self.record_work(before, 'host_absence', logical, witness=key)
+        raise RuntimeLookupAbsent(key)
+
+    def image_absence(self, descriptor, logical):
+        before_budget = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+        runtime_charge(self.budget, members=1)
+        parent = str(PurePosixPath(logical).parent)
+        name = PurePosixPath(logical).name
+        before = runtime_stamp(os.fstat(descriptor))
+        names = []
+        with os.scandir(descriptor) as children:
+            for child in children:
+                runtime_charge(self.budget, members=1)
+                names.append(child.name)
+        try:
+            os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            if exc.errno != errno.ENOENT:
+                raise
+        else:
+            raise ValueError('absent image target appeared during observation: ' + logical)
+        after = runtime_stamp(os.fstat(descriptor))
+        if before != after or name in names:
+            raise ValueError('image absence parent changed during observation: ' + parent)
+        witness = asdict(ImageRuntimeAbsence(parent, name, before, after, tuple(sorted(names))))
+        key = digest(canonical(witness))
+        self.witnesses[key] = witness
+        self.negative[logical] = key
+        self.record_work(before_budget, 'absence', logical, witness=key)
+        raise RuntimeLookupAbsent(key)
+
+    def retain_image_entry(self, logical, entry):
+        if any(Path(logical).is_relative_to(root['path']) for root in self.roots):
+            return
+        candidate = dict(origin='image', path=logical, entries={'.': entry})
+        self.image_roots.append(candidate)
+        self.roots = merge_runtime_roots(self.host_roots, self.image_roots)
+
+    def lookup(self, logical):
+        runtime_charge(self.budget)
+        if logical in self.negative:
+            raise RuntimeLookupAbsent(self.negative[logical])
+        if logical in self.observed:
+            return self.observed[logical]
+        for root in self.host_roots:
+            if Path(logical).is_relative_to(root['path']):
+                relative = str(Path(logical).relative_to(root['path']))
+                entry = root['entries'].get(relative)
+                if entry is None:
+                    return self.host_absence(logical)
+                self.observed[logical] = entry
+                return entry
+        existing = None
+        for root in self.roots:
+            if Path(logical).is_relative_to(root['path']):
+                existing = root['entries'].get(str(Path(logical).relative_to(root['path'])))
+                break
+        before_budget = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+        if logical == '/':
+            info = self.image_root.lstat()
+            runtime_charge(self.budget, members=1)
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError('image observation anchor is not a directory')
+            entry = dict(kind='directory', mode=stat.S_IMODE(info.st_mode))
+            stamp = runtime_stamp(info)
+        else:
+            with self.image_parent(logical) as descriptor:
+                parent_before = runtime_stamp(os.fstat(descriptor))
+                name = PurePosixPath(logical).name
+                try:
+                    info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError as exc:
+                    if exc.errno != errno.ENOENT:
+                        raise
+                    return self.image_absence(descriptor, logical)
+                stamp = runtime_stamp(info)
+                if stat.S_ISDIR(info.st_mode):
+                    runtime_charge(self.budget, members=1)
+                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=descriptor)
+                    try:
+                        if runtime_stamp(os.fstat(child)) != stamp:
+                            raise ValueError('image navigation directory changed before open: ' + logical)
+                    finally:
+                        os.close(child)
+                    entry = dict(kind='directory', mode=stat.S_IMODE(info.st_mode))
+                else:
+                    anchored = Path('/proc/self/fd') / str(descriptor) / name
+                    entry = inventory(anchored, budget=self.budget)['.']
+                if (runtime_stamp(os.stat(name, dir_fd=descriptor, follow_symlinks=False)) != stamp
+                        or runtime_stamp(os.fstat(descriptor)) != parent_before):
+                    raise ValueError('image component changed during observation: ' + logical)
+        if existing is not None and entry != existing:
+            raise ValueError('covered image runtime member changed: ' + logical)
+        if entry['kind'] == 'directory':
+            self.image_directories[logical] = stamp
+            if existing is None:
+                self.components[logical] = dict(origin='image', entry=entry, stamp=list(stamp))
+        else:
+            self.retain_image_entry(logical, entry)
+        self.observed[logical] = entry
+        self.record_work(before_budget, 'recheck' if existing is not None else 'component', logical,
+                         entry=entry)
+        return entry
+
+    def complete_directory(self, logical, *, search=False):
+        if any(Path(logical).is_relative_to(root['path']) for root in self.roots):
+            return
+        if any(Path(root['path']).is_relative_to(logical) for root in self.roots):
+            if search:
+                raise ValueError('loader search directory is not completely inventoried: ' + logical)
+            return
+        if logical in BROAD_ROOTS:
+            raise ValueError('required directory is too broad for runtime capture: ' + logical)
+        before = {key: self.budget[key] for key in ('members', 'regular_bytes')}
+        with self.image_parent(logical) as descriptor:
+            anchored = Path('/proc/self/fd') / str(descriptor) / PurePosixPath(logical).name
+            observations = {}
+            entries = inventory(anchored, budget=self.budget, directory_observations=observations)
+        captured = dict(origin='image', path=logical, entries=entries)
+        self.image_roots.append(captured)
+        self.roots = merge_runtime_roots(self.host_roots, self.image_roots)
+        self.components.pop(logical, None)
+        self.record_work(before, 'inventory', logical, entries=entries)
+
+    def finish(self):
+        for logical, stamp in self.image_directories.items():
+            runtime_charge(self.budget)
+            if logical == '/':
+                actual = self.image_root.lstat()
+            else:
+                with self.image_parent(logical) as descriptor:
+                    actual = os.stat(PurePosixPath(logical).name, dir_fd=descriptor, follow_symlinks=False)
+            if runtime_stamp(actual) != stamp:
+                raise ValueError('image navigation directory changed before completion: ' + logical)
+
+
+def complete_image_closure(host, image, budget, *, host_checkpoint, image_root=Path('/')):
+    observer = ImageClosureObserver(host, image, budget, host_checkpoint, image_root)
+    plan = runtime_completion_plan(host, image)
+    outcomes = {}
+    aliases = {}
+    metadata_by_path = {}
+
+    def resolve_observation(spelling, *, required=False, search=False):
+        outcome = walk_runtime_path(spelling, observer.lookup)
+        if isinstance(outcome, RuntimeWitnessedAbsent):
+            native = any(Path(spelling).is_relative_to(root)
+                         for root in host['native_library_roots'] + image['native_library_roots'])
+            if required or spelling in plan['required_spellings'] or not native:
+                raise ValueError('required runtime alias is absent outside the permitted native graph: ' + spelling)
+        else:
+            aliases[spelling] = outcome.terminal
+            if observer.lookup(outcome.terminal)['kind'] == 'directory':
+                observer.complete_directory(outcome.terminal, search=search)
+            elif search:
+                raise ValueError('loader search component is not a directory: ' + spelling)
+        outcomes[spelling] = runtime_outcome_record(outcome)
+        return outcome
+
+    def retain_candidate(spelling):
+        outcome = resolve_observation(spelling, required=True)
+        if observer.lookup(outcome.terminal)['kind'] != 'file':
+            raise ValueError('runtime ELF candidate is not a sealed regular file')
+        metadata = candidate_metadata(outcome.terminal)
+        if metadata is None:
+            raise ValueError('runtime dependency is not a loadable ELF: ' + spelling)
+        metadata_by_path[outcome.terminal] = metadata
+
+    def candidate_metadata(path):
+        for captured, origin in ((host, 'host'), (image, 'image')):
+            if origin == 'image' and any(Path(path).is_relative_to(root['path']) for root in host['roots']):
+                continue
+            if path in captured['elf_index']:
+                metadata = captured['elf_index'][path]
+                break
+        else:
+            metadata = runtime_elf_observation(observer.image_physical(path))
+        if isinstance(metadata, dict) and 'parse_refusal' in metadata:
+            raise ValueError('runtime ELF candidate metadata refuses: ' + metadata['parse_refusal'])
+        return metadata
+
+    cache = loader_cache_entries(image['loader_cache']['raw_listing']) if 'loader_cache' in image else []
+    for _ in range(64):
+        before = (len(observer.roots), len(observer.components), len(observer.witnesses),
+                  len(outcomes), len(aliases), len(metadata_by_path))
+        links = {str(Path(root['path']) / relative): entry
+                 for root in observer.roots for relative, entry in root['entries'].items()
+                 if entry['kind'] == 'symlink'}
+        for spelling in sorted((set(links) | set(plan['required_spellings'])) - outcomes.keys()):
+            resolve_observation(spelling, required=spelling in plan['required_spellings'])
+        entries = {str(Path(root['path']) / relative): entry
+                   for root in observer.roots for relative, entry in root['entries'].items()}
+        for path, entry in entries.items():
+            if (entry['kind'] == 'file' and path not in metadata_by_path
+                    and any(Path(path).is_relative_to(seed) for seed in plan['elf_roots'])):
+                metadata = candidate_metadata(path)
+                if metadata is not None:
+                    metadata_by_path[path] = metadata
+        directories, _ = runtime_elf_search_directories(metadata_by_path, aliases)
+        for spelling in sorted(directories):
+            resolve_observation(spelling, required=True, search=True)
+        entries = {str(Path(root['path']) / relative): entry
+                   for root in observer.roots for relative, entry in root['entries'].items()}
+        for metadata in list(metadata_by_path.values()):
+            for interpreter in metadata['interpreters']:
+                retain_candidate(interpreter)
+            for needed in metadata['needed']:
+                if '$' in needed or ('/' in needed and not needed.startswith('/')):
+                    raise ValueError('runtime ELF uses an unsupported dependency path')
+                if needed.startswith('/'):
+                    retain_candidate(needed)
+                    continue
+                for spelling in sorted(directories):
+                    directory = aliases[spelling]
+                    for candidate in runtime_directory_candidate_spellings(entries, directory, needed):
+                        retain_candidate(str(Path(spelling) / Path(candidate).relative_to(directory)))
+                    direct = str(Path(directory) / needed)
+                    if direct not in entries:
+                        probe = walk_runtime_path(str(Path(spelling) / needed), observer.lookup)
+                        if not isinstance(probe, RuntimeWitnessedAbsent):
+                            raise ValueError('complete search inventory omitted a present direct candidate')
+                for row in cache:
+                    if row['name'] == needed:
+                        retain_candidate(row['path'])
+        after = (len(observer.roots), len(observer.components), len(observer.witnesses),
+                 len(outcomes), len(aliases), len(metadata_by_path))
+        if before == after:
+            break
+    else:
+        raise ValueError('runtime image completion did not converge inside its finite bound')
+    observer.finish()
+    links = {str(Path(root['path']) / relative) for root in observer.roots
+             for relative, entry in root['entries'].items() if entry['kind'] == 'symlink'}
+    completion = dict(host_checkpoint=host_checkpoint,
+        host_observation=host['observation'], image_observation=image['observation'],
+        host_multiarch=host['multiarch'], image_multiarch=image['multiarch'],
+        host_elf_roots=host['elf_roots'], image_elf_roots=image['elf_roots'],
+        host_executable_binary=host['executable_binary'], image_executable_binary=image['executable_binary'],
+        host_elf_index=host['elf_index'], image_elf_index=image['elf_index'],
+        base_host_roots=host['roots'], base_image_roots=image['roots'],
+        host_directory_observations=host['directory_observations'],
+        image_directory_observations=image['directory_observations'],
+        base_consumed_budget=observer.initial_budget, charges=observer.charges)
+    result = CompletedRuntimeNamespace(tuple(observer.roots),
+        tuple(sorted(set(host['native_library_roots'] + image['native_library_roots']))),
+        observer.components, observer.witnesses, {key: outcomes[key] for key in sorted(links)}, plan,
+        {key: budget[key] for key in ('members', 'regular_bytes')}, completion)
+    audit_link_outcomes(asdict(result))
+    return result
+
+
+def read_host_capture_checkpoint(path, expected, primary_interpreter):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > CAPTURE_BOUNDS['metadata_bytes']:
+        raise ValueError('host checkpoint must be a bounded regular private input')
+    raw = path.read_bytes()
+    if (len(raw) != expected['bytes'] or digest(raw) != expected['sha256']
+            or runtime_stamp(path.lstat()) != runtime_stamp(info)):
+        raise ValueError('host checkpoint differs from its durable descriptor')
+    value = json.loads(raw)
+    if value['phase'] != 'host_inventory' or value['units'] != 1:
+        raise ValueError('host checkpoint has a different durable phase or units')
+    host = value['value']
+    metadata = read_runtime_elf(io.BytesIO(base64.b64decode(host['executable_binary'], validate=True)))
+    if metadata['interpreters'] != [primary_interpreter]:
+        raise ValueError('host checkpoint PT seed differs from its explicit private input')
+    if host['native_library_roots'] != ['/usr/lib/' + host['multiarch']]:
+        raise ValueError('host checkpoint native library root differs from its selected MULTIARCH')
+    counters = {name: host['consumed_budget'][name] for name in ('members', 'regular_bytes')}
+    if (counters['members'] != sum(len(root['entries']) for root in host['roots'])
+            or counters['regular_bytes'] != sum(entry['bytes'] for root in host['roots']
+                for entry in root['entries'].values() if entry['kind'] == 'file')):
+        raise ValueError('host checkpoint consumed inventory counters cannot be replayed')
+    return host
 
 
 def capture_private_directory(output):
@@ -224,13 +584,39 @@ def main(argv=None):
     parser.add_argument('--cas-root', type=Path)
     parser.add_argument('--reader-uid', type=int, default=65534)
     parser.add_argument('--reader-gid', type=int, default=65534)
+    parser.add_argument('--host-checkpoint', type=Path)
+    parser.add_argument('--host-checkpoint-sha256')
+    parser.add_argument('--host-checkpoint-bytes', type=int)
+    parser.add_argument('--primary-interpreter')
+    parser.add_argument('--remaining-s', type=float)
     args = parser.parse_args(argv)
     if args.capture_image:
         if args.output is None:
             parser.error('image capture requires a private archive output')
+        if not args.primary_interpreter or not args.primary_interpreter.startswith('/'):
+            parser.error('image capture requires an explicit absolute primary interpreter')
+        if (args.host_checkpoint is None or not args.host_checkpoint.is_absolute()
+                or args.host_checkpoint_bytes is None or args.host_checkpoint_bytes <= 0
+                or args.host_checkpoint_bytes > CAPTURE_BOUNDS['metadata_bytes']
+                or args.host_checkpoint_sha256 is None or len(args.host_checkpoint_sha256) != 64
+                or any(char not in '0123456789abcdef' for char in args.host_checkpoint_sha256)
+                or args.remaining_s is None or not math.isfinite(args.remaining_s)
+                or not 0 < args.remaining_s <= CAPTURE_BOUNDS['runtime_seconds']):
+            parser.error('image capture requires its exact bounded host checkpoint and remaining allowance')
+        deadline = min(deadline, time.monotonic() + args.remaining_s)
+        host_descriptor = dict(bytes=args.host_checkpoint_bytes, sha256=args.host_checkpoint_sha256)
+        host = read_host_capture_checkpoint(args.host_checkpoint, host_descriptor, args.primary_interpreter)
+        budget = dict(host['consumed_budget'], deadline=deadline)
         os.makedirs('/home/rob/pbt17', exist_ok=True)
-        captured = runtime_capture('image')
-        captured['archive'] = archive_members(args.output, regular_members(captured['roots']))
+        captured = runtime_capture('image', budget)
+        completed = complete_image_closure(host, captured, budget, host_checkpoint=host_descriptor)
+        captured['completed_namespace'] = asdict(completed)
+        captured['consumed_budget'] = dict(completed.consumed_budget)
+        archive_roots = list(captured['roots'])
+        archive_roots.extend(root for root in completed.roots
+                             if root['origin'] == 'image' and root not in archive_roots)
+        captured['archive'] = archive_members(args.output, regular_members(archive_roots))
+        remaining()
         print(bounded_capture_json(captured).decode().rstrip('\n'), flush=True)
         return 0
     if not args.image or not args.image_python or not args.profile_path or args.output is None or args.cas_root is None:
@@ -265,7 +651,8 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
     owner = runpy.run_path(str(published / 'src/prismabuild/core.py'))
     cas = owner['PrismaBuildCAS'](args.cas_root)
     checkpoints = {}
-    host = runtime_capture('host')
+    budget = dict(members=0, regular_bytes=0, deadline=time.monotonic() + remaining())
+    host = runtime_capture('host', budget)
     checkpoints[CAPTURE_PHASES[0]] = publish_capture_checkpoint(cas, private, CAPTURE_PHASES[0], 1, host, progress['commit'])
     threads = dict(OMP_NUM_THREADS='1', MKL_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1')
     if host['observation']['native_threads'] != threads:
@@ -279,20 +666,33 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
     if inspected != dict(id=args.image, architecture=architecture):
         raise ValueError('existing image identity or architecture differs')
     affinity = host['observation']['affinity']
+    interpreter, = read_runtime_elf(io.BytesIO(base64.b64decode(host['executable_binary'], validate=True)))['interpreters']
+    host_descriptor = {name: checkpoints[CAPTURE_PHASES[0]][name] for name in ('bytes', 'sha256')}
+    host_checkpoint_path = private / 'host_inventory.json'
     command = ['docker', 'run', '--rm', '--network', 'none', '--user', '0:0',
         '--entrypoint', args.image_python, '--cpuset-cpus', ','.join(map(str, affinity)),
         '--memory', '1g', '--pids-limit', '128', '--mount', f'type=bind,src={root},dst=/source,readonly',
         '--mount', f'type=bind,src={private},dst=/capture-output',
+        '--mount', f'type=bind,src={host_checkpoint_path},dst=/capture-host-checkpoint.json,readonly',
         '--workdir', '/source', '--env', 'PYTHONDONTWRITEBYTECODE=1',
         '--env', 'TMPDIR=/home/rob/pbt17']
     for name in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
         command.extend(['--env', f'{name}=1'])
     command.extend([args.image, '-B', '/source/tests/capture_proof_runtime.py', '--capture-image',
-                    '--output', '/capture-output/image-members.tar.gz'])
+                    '--output', '/capture-output/image-members.tar.gz',
+                    '--host-checkpoint', '/capture-host-checkpoint.json',
+                    '--host-checkpoint-sha256', host_descriptor['sha256'],
+                    '--host-checkpoint-bytes', str(host_descriptor['bytes']),
+                    '--primary-interpreter', interpreter, '--remaining-s', str(remaining())])
     result = subprocess.run(command, capture_output=True, text=True, timeout=remaining(), check=False)
     if result.returncode:
         raise ValueError('existing image capture failed: ' + result.stderr[-2000:])
+    if len(result.stdout.encode()) > CAPTURE_BOUNDS['metadata_bytes']:
+        raise ValueError('image checkpoint metadata exceeds its sealed limit')
     image = json.loads(result.stdout)
+    namespace = image['completed_namespace']
+    if namespace['completion']['host_checkpoint'] != host_descriptor:
+        raise ValueError('image completion belongs to a different durable host checkpoint')
     image_archive = private / 'image-members.tar.gz'
     if file_descriptor(image_archive) != image['archive']:
         raise ValueError('actual image member archive differs')
@@ -304,10 +704,9 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
         raise ValueError('image capture did not use real UID/GID0')
     if image['observation']['affinity'] != affinity or image['observation']['elf_machine'] != host['observation']['elf_machine']:
         raise ValueError('image capture changed actual architecture or assigned affinity')
-    roots = merge_runtime_roots(host['roots'], image['roots'])
-    interpreter, = elf_requirements(host['observation']['executable']['resolved_path'])['interpreters']
+    roots = namespace['roots']
     entries = {str(Path(root['path']) / name):entry for root in roots for name,entry in root['entries'].items()}
-    if resolve_runtime_path(entries, interpreter) != str(Path(interpreter).resolve()):
+    if resolve_runtime_path(entries, interpreter, namespace['components']) != str(Path(interpreter).resolve()):
         raise ValueError('image loader alias does not select the captured host loader')
     diagnostics = command[:command.index(args.image)]
     diagnostics[diagnostics.index('--entrypoint') + 1] = interpreter
@@ -320,14 +719,13 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
     loader_default_directories(raw_diagnostics)
     if loader_kernel(raw_diagnostics)[0] != host['observation']['kernel']['release']:
         raise ValueError('loader diagnostics belong to a different actual kernel')
-    target = image['observation']['executable']['resolved_path']
-    actual = host['observation'] if target == host['observation']['executable']['resolved_path'] else image['observation']
-    reader = {key: actual[key] for key in ('version', 'executable', 'elf_machine')}
-    reader['executable'] = dict(reader['executable'], path='/usr/bin/python3')
+    target = namespace['plan']['reader_target']
+    reader = dict(namespace['plan']['reader_identity'])
     reader.update(uid=args.reader_uid, gid=args.reader_gid, link_target=target)
-    closure = dict(schema=CLOSURE_SCHEMA, roots=sorted(roots, key=lambda item: (item['origin'], item['path'])),
+    closure = dict(namespace, schema=CLOSURE_SCHEMA, graph_policy='required-runtime-graph-v1',
+        roots=sorted(roots, key=lambda item: (item['origin'], item['path'])),
         elf_machine=host['observation']['elf_machine'],
-        elf_roots=sorted({*host['elf_roots'], *image['elf_roots'], target}),
+        elf_roots=namespace['plan']['elf_roots'],
         loader=dict(schema='prismabuild.proof_loader_search.v1', cache=image['loader_cache'],
             diagnostics=dict(raw=raw_diagnostics, command=[interpreter, '--list-diagnostics'],
                 executable=dict(path=interpreter, resolved_path=str(Path(interpreter).resolve()),
@@ -337,8 +735,10 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
                     regular_bytes=sum(entry['bytes'] for entry in closure_members.values()))
     if any(geometry[name] > CAPTURE_BOUNDS[name] for name in geometry):
         raise ValueError('combined capture geometry exceeds its sealed limits: ' + str(geometry))
-    closure['native_audit'] = audit_native_closure(closure,
-        lambda path: image_members.get(closure_members[path]['sha256'], path))
+    host_contents = {entry['sha256']: path for path, entry in regular_members(host['roots']).items()}
+    closure['audit'] = audit_runtime_closure(closure,
+        lambda path: image_members.get(closure_members[path]['sha256'], path),
+        content_path=lambda sha: image_members[sha] if sha in image_members else host_contents[sha])
     closure['sha256'] = digest(canonical(closure))
     profile = dict(schema=PROFILE_SCHEMA, image=args.image,
         primary={key: host['observation'][key] for key in ('version', 'executable', 'elf_machine')},
@@ -370,6 +770,9 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
     checkpoints[CAPTURE_PHASES[2]] = publish_capture_checkpoint(cas, private, CAPTURE_PHASES[2], 3,
         dict(profile_sha256=digest(raw), profile_json=raw.decode(), roles=roles), progress['commit'])
     members = dict(closure_members)
+    original_image_members = regular_members(image['roots'])
+    for path, entry in original_image_members.items():
+        members['image-original:' + path] = entry
     image_executable = image['observation']['executable']
     members['image-executable:' + image_executable['sha256']] = dict(kind='file',
         bytes=image_executable['bytes'], sha256=image_executable['sha256'])
@@ -379,7 +782,8 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
         raise ValueError('capture supplemental producer bytes exceed their sealed limit before reading')
     for path in attested:
         members[str(path)] = inventory(path)['.']
-    if sum(entry['bytes'] for path,entry in members.items() if path not in closure_members) > CAPTURE_BOUNDS['supplemental_bytes']:
+    if sum(entry['bytes'] for path,entry in members.items()
+           if path not in closure_members and not path.startswith('image-original:')) > CAPTURE_BOUNDS['supplemental_bytes']:
         raise ValueError('capture supplemental producer bytes exceed their sealed limit')
     archive_path = private / 'closure-members.tar.gz'
     archive = archive_members(archive_path, members, image_members)
@@ -398,6 +802,8 @@ def capture_host(args, root, private, relative, progress_helper, progress, publi
         closure_archive=dict(bytes=blob['bytes'], sha256=blob['sha256']),
         closure_members={path:dict(bytes=entry['bytes'], sha256=entry['sha256'],
                                   archive_member='by-sha256/' + entry['sha256']) for path,entry in sorted(closure_members.items())},
+        original_image_members={path:dict(bytes=entry['bytes'], sha256=entry['sha256'],
+            archive_member='by-sha256/' + entry['sha256']) for path,entry in sorted(original_image_members.items())},
         cas_root=str(args.cas_root),
         bounds=CAPTURE_BOUNDS, geometry=dict(geometry, archive_bytes=blob['bytes'], profile_bytes=len(raw)),
         progress=dict(phases=list(CAPTURE_PHASES), checkpoints=checkpoints,

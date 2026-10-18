@@ -109,6 +109,52 @@ def capture_assigned_affinity(request, terminal, producer, bounds):
     return sorted(assigned)
 
 
+def verify_capture_completion_checkpoints(closure, host, image, host_descriptor, owner):
+    namespace = image['completed_namespace']
+    names = ('native_library_roots', 'components', 'directory_witnesses', 'link_outcomes',
+             'plan', 'consumed_budget', 'completion')
+    if set(namespace) != {'roots', *names} or any(namespace[name] != closure[name] for name in names):
+        raise ValueError('durable image completion differs from the profile namespace')
+    def root_map(roots):
+        result = {(root['origin'], root['path']): root for root in roots}
+        if len(result) != len(roots):
+            raise ValueError('completed runtime namespace repeats a root')
+        return result
+    merged = owner['merge_runtime_roots'](host['roots'],
+        [root for root in namespace['roots'] if root['origin'] == 'image'])
+    if root_map(merged) != root_map(namespace['roots']) or root_map(merged) != root_map(closure['roots']):
+        raise ValueError('durable image completion roots differ from the shared host-preferred merge')
+    completion = namespace['completion']
+    if completion['host_checkpoint'] != {name: host_descriptor[name] for name in ('sha256', 'bytes')}:
+        raise ValueError('runtime completion belongs to another durable host checkpoint')
+    fields = dict(observation='observation', multiarch='multiarch', elf_roots='elf_roots',
+                  executable_binary='executable_binary', elf_index='elf_index',
+                  directory_observations='directory_observations')
+    for origin, checkpoint in (('host', host), ('image', image)):
+        if completion['base_' + origin + '_roots'] != checkpoint['roots']:
+            raise ValueError('runtime completion base roots differ from their durable checkpoint: ' + origin)
+        for retained, source in fields.items():
+            if completion[origin + '_' + retained] != checkpoint[source]:
+                raise ValueError('runtime completion observation differs from its durable checkpoint: ' + origin + ' ' + retained)
+        expected_native = ['/usr/lib/' + checkpoint['multiarch']]
+        if checkpoint['native_library_roots'] != expected_native:
+            raise ValueError('durable runtime native roots differ from selected MULTIARCH: ' + origin)
+        expected_budget = dict(members=sum(len(root['entries']) for root in checkpoint['roots']),
+            regular_bytes=sum(entry['bytes'] for root in checkpoint['roots']
+                              for entry in root['entries'].values() if entry['kind'] == 'file'))
+        if checkpoint['inventory_budget'] != expected_budget:
+            raise ValueError('durable runtime inventory budget differs from its complete roots: ' + origin)
+    if host['consumed_budget'] != host['inventory_budget']:
+        raise ValueError('durable host consumed budget differs from its original inventory')
+    aggregate = {name: host['inventory_budget'][name] + image['inventory_budget'][name]
+                 for name in ('members', 'regular_bytes')}
+    if (image['consumed_budget'] != closure['consumed_budget']
+            or completion['base_consumed_budget'] != aggregate):
+        raise ValueError('durable image consumed budget omits earlier host observation work')
+    if closure['elf_roots'] != namespace['plan']['elf_roots']:
+        raise ValueError('captured ELF roots differ from the completion plan')
+
+
 def verify_capture_storage_record(capture, request, terminal, producer, policy, capacity_policy):
     capacity = capture['capacity']
     if set(capacity) != {'schema', 'private', 'publication', 'published_sources'} or capacity['schema'] != capacity_policy['CAPACITY_SCHEMA']:
@@ -274,6 +320,17 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
                if entry['kind'] == 'file'}
     if capture['closure_members'] != members:
         raise ValueError('capture member map differs from the full sealed profile')
+    original_image_members = {str(Path(root['path']) / relative):
+        dict(bytes=entry['bytes'], sha256=entry['sha256'], archive_member='by-sha256/' + entry['sha256'])
+        for root in closure['completion']['base_image_roots']
+        for relative, entry in root['entries'].items() if entry['kind'] == 'file'}
+    if capture['original_image_members'] != original_image_members:
+        raise ValueError('capture original image member map differs from its completed source inventory')
+    consumed = closure['consumed_budget']
+    if (set(consumed) != {'members', 'regular_bytes'}
+            or any(type(consumed[name]) is not int or consumed[name] < 0
+                   or consumed[name] > owner['CAPTURE_BOUNDS'][name] for name in consumed)):
+        raise ValueError('capture consumed observation work exceeds its sealed budget')
     if (sum(len(root['entries']) for root in closure['roots']) > owner['CAPTURE_BOUNDS']['members']
             or sum(entry['bytes'] for entry in members.values()) > owner['CAPTURE_BOUNDS']['regular_bytes']):
         raise ValueError('capture closure exceeds its full-byte member budget')
@@ -359,6 +416,12 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         if raw_sha256(actual) != capture['source_sha256'][name] or actual != (expected_source / name).read_bytes():
             raise ValueError(f'capture helper is not the reviewed source: {name}')
     expected_members = {entry['sha256']:entry['bytes'] for entry in members.values()}
+    for entry in original_image_members.values():
+        if entry['sha256'] in expected_members and expected_members[entry['sha256']] != entry['bytes']:
+            raise ValueError('capture has conflicting original image content sizes')
+        expected_members[entry['sha256']] = entry['bytes']
+    if len(expected_members) > owner['CAPTURE_BOUNDS']['archive_members']:
+        raise ValueError('capture runtime content exceeds its sealed archive member budget')
     attested = [producer['executable'], *published_sources]
     helper = capture['progress']['helper']
     if helper['path'] != helper['resolved_path'] or Path(helper['resolved_path']) != Path(runtime['core']['resolved_path']).with_name('progress.py'):
@@ -375,6 +438,10 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
         if expected['sha256'] in expected_members and expected_members[expected['sha256']] != expected['bytes']:
             raise ValueError('capture has conflicting executable sizes')
         expected_members[expected['sha256']] = expected['bytes']
+    if (len(expected_members) > owner['CAPTURE_BOUNDS']['archive_members']
+            or sum(expected_members.values()) > (owner['CAPTURE_BOUNDS']['regular_bytes']
+                                                + owner['CAPTURE_BOUNDS']['supplemental_bytes'])):
+        raise ValueError('capture retained content exceeds its sealed byte or archive member budget')
     byte_root = output / 'closure-by-sha256'
     archive = raw_root / 'closure-archive.tar.gz'
     executables = retain_capture_archive(archive, capture['closure_archive'], expected_members, byte_root)
@@ -400,6 +467,7 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     if capture['geometry'] != geometry or any(geometry[name] > capture['bounds'][name] for name in geometry):
         raise ValueError('actual captured geometry differs or exceeds its sealed refusal caps')
     checkpoints = {}
+    checkpoint_values = {}
     for index,phase in enumerate(owner['CAPTURE_PHASES'], 1):
         path = raw_root / 'checkpoints' / (phase + '.json')
         if capture['progress']['checkpoints'][phase]['bytes'] > owner['CAPTURE_BOUNDS']['metadata_bytes']:
@@ -419,10 +487,31 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
             geometry={name:geometry[name] for name in ('members','regular_bytes')}):
             raise ValueError('durable archive commitment differs')
         checkpoints[phase] = capture_file_descriptor(path)
-    observed_audit = owner['audit_native_closure'](closure,
-        lambda path: byte_root / members[path]['sha256'])
-    if observed_audit != closure['native_audit']:
-        raise ValueError('retained native dependency graph differs from the capture')
+        checkpoint_values[phase] = value['value']
+    verify_capture_completion_checkpoints(closure, checkpoint_values['host_inventory'],
+        checkpoint_values['image_inventory'], capture['progress']['checkpoints']['host_inventory'], owner)
+    observed_audit = owner['audit_runtime_closure'](closure,
+        lambda path: byte_root / members[path]['sha256'], content_path=lambda sha: byte_root / sha)
+    if observed_audit != closure['audit']:
+        raise ValueError('retained runtime dependency graph or absence replay differs from the capture')
+    expected_reader = dict(closure['plan']['reader_identity'], link_target=closure['plan']['reader_target'])
+    for name in ('uid', 'gid'):
+        flag = '--reader-' + name
+        arguments = []
+        for index, argument in enumerate(command):
+            if argument == flag:
+                if index + 1 >= len(command):
+                    raise ValueError('sealed capture reader credential option lacks its value')
+                arguments.append(command[index + 1])
+            elif argument.startswith(flag + '='):
+                arguments.append(argument.removeprefix(flag + '='))
+        if len(arguments) > 1:
+            raise ValueError('sealed capture repeats a reader credential option')
+        expected_reader[name] = int(arguments[0]) if arguments else 65534
+        if expected_reader[name] <= 0:
+            raise ValueError('sealed capture reader credentials must be unprivileged')
+    if reader != expected_reader:
+        raise ValueError('retained installed reader differs from its derived identity or sealed credentials')
     for name in ('outer','image_runtime'):
         observed = capture[name]
         expected = observed['executable']
@@ -440,6 +529,7 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
     profile_target = output / profile_path
     profile_target.parent.mkdir(parents=True, exist_ok=True)
     profile_target.write_bytes(raw_profile)
+    owner['load_profile'](profile_target, output)
     binding = dict(schema=SCHEMA,
         profile=dict(path=str(profile_path), bytes=len(raw_profile), sha256=raw_sha256(raw_profile)),
         closure_sha256=closure['sha256'],
@@ -448,7 +538,8 @@ def bind_proof_runtime_capture(raw_root, output, expected_source):
                      helper_source_sha256=capture['source_sha256'], assigned_affinity=affinity,
                      progress=dict(helper=executables[helper['sha256']], checkpoints=checkpoints),
                      capacity=capture['capacity']), executables=executables,
-        closure_archive=capture_file_descriptor(archive), closure_members=members, closure_byte_root=str(byte_root))
+        closure_archive=capture_file_descriptor(archive), closure_members=members,
+        original_image_members=original_image_members, closure_byte_root=str(byte_root))
     target = output / 'capture-binding.json'
     target.write_bytes(compact_ascii_json_bytes(binding) + b'\n')
     return capture_file_descriptor(target)

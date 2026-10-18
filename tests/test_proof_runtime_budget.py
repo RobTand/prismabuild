@@ -41,9 +41,9 @@ def test_image_extra_directory_shares_the_primary_inventory_budget(tmp_path, mon
     calls = []
     def image_fixture_path(value):
         return translated.get(str(value), real_path(value))
-    def observed_inventory(path, *, budget=None):
+    def observed_inventory(path, *, budget=None, **options):
         calls.append(dict(path=str(path), budget_present=budget is not None))
-        return real_inventory(path, budget=budget)
+        return real_inventory(path, budget=budget, **options)
     monkeypatch.setattr(capture, 'Path', image_fixture_path)
     monkeypatch.setattr(capture, 'observe_runtime', lambda: observation)
     monkeypatch.setattr(capture, 'native_providers', lambda: {})
