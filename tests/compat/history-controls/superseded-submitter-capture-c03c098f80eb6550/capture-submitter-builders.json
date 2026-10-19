@@ -1,0 +1,28 @@
+{
+  "capture_name": "submitter-builders-capture-01",
+  "capture_report_sha256": "822c0be50f6f9c8c24e124b1521559d88a69d7c1909b0cad473e64c2fb496d98",
+  "excluded_cases": [],
+  "files": {
+    "goldens-submitter-builders.jsonl": "c03c098f80eb6550b0e5c6d75c080d35ceb39e3dec4ff47dd668f428924ef2a2",
+    "historical-submitter-builders.jsonl": "46fd6e5d6bad7a9a420801092bff34b0ccdc35fc73c71e58b87c3d7166fbdc51"
+  },
+  "finished_at": "2026-10-17T00:38:58.713473+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "core-action/smoke-builder",
+    "core-action/template-builder",
+    "core-closure/stamp-builder"
+  ],
+  "source_git": {
+    "parents": [
+      "9a3fb9ee97283838f7684d336e975a01703d0eca"
+    ],
+    "snapshot": "3573560d17eb5bd6a3671eda734dea29a6f5dd96",
+    "tree": "93be98d4c0544f5dd4c2a32a16a4a34847511bf4"
+  },
+  "started_at": "2026-10-17T00:38:30.752173+00:00"
+}

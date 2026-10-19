@@ -1,16 +1,17 @@
 {
-  "capture_name": "submitter-builders-capture-01",
-  "capture_report_sha256": "822c0be50f6f9c8c24e124b1521559d88a69d7c1909b0cad473e64c2fb496d98",
+  "capture_name": "submitter-capture-s6",
+  "capture_report_sha256": "10552421d6384a7d8387b2604405de855104f4e7b0b3d2c76f4774498d3f73bc",
   "excluded_cases": [],
   "files": {
-    "goldens-submitter-builders.jsonl": "c03c098f80eb6550b0e5c6d75c080d35ceb39e3dec4ff47dd668f428924ef2a2",
+    "goldens-submitter-builders.jsonl": "bde3e350172f69beeca0184eb271f3b0a98c630bab1db3d425be693c98d705c2",
     "historical-submitter-builders.jsonl": "46fd6e5d6bad7a9a420801092bff34b0ccdc35fc73c71e58b87c3d7166fbdc51"
   },
-  "finished_at": "2026-10-17T00:38:58.713473+00:00",
+  "finished_at": "2026-10-19T05:16:06.741414+00:00",
   "generations": [
     "a17477b2b206-1791745175-65dffa700dfb",
     "unpublished-bridge-6fa9b780304d"
   ],
+  "independent_writer_reproduction_required": true,
   "retained_failures": [],
   "selected_cases": [
     "core-action/smoke-builder",
@@ -19,10 +20,17 @@
   ],
   "source_git": {
     "parents": [
-      "9a3fb9ee97283838f7684d336e975a01703d0eca"
+      "5506db22e4237816f1c8a6ed6f8938fd5e1c1200"
     ],
-    "snapshot": "3573560d17eb5bd6a3671eda734dea29a6f5dd96",
-    "tree": "93be98d4c0544f5dd4c2a32a16a4a34847511bf4"
+    "snapshot": "c0bd4c199b9272d943465a47394873fd492f76ac",
+    "tree": "3f08daa0f9c117af37773cc268ec1301d6b2bcfe"
   },
-  "started_at": "2026-10-17T00:38:30.752173+00:00"
+  "started_at": "2026-10-19T05:15:07.088931+00:00",
+  "superseded_current_archive": "tests/compat/history-controls/superseded-submitter-capture-c03c098f80eb6550",
+  "verified_producer": {
+    "action_key": "dd443df1f7d3ffdb9480fd911fc1cdb6bd0efbd30291d8cde13a04e80e847d5d",
+    "receipt_sha256": "15ca237b18dee743c7799603b2b1b86f6cd7e712c6ddb3f0370fd21e597a270a",
+    "request_sha256": "34af93d5703c20bfca5786463ee274f1143ef3293e3eba8cdb551f183c6704b7",
+    "source_parent": "5506db22e4237816f1c8a6ed6f8938fd5e1c1200"
+  }
 }
