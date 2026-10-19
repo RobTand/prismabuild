@@ -1315,3 +1315,198 @@ def test_reverse_refuses_foreign_or_unintended_pending_owner(tmp_path, monkeypat
         publish_runtime._activate_installed_bootstrap(plan['source']['generation'], path)
     assert json.loads(pending.read_bytes()) == prior
     assert mirror.resolve() == Path(plan['target']['directory'])
+
+
+# -- post-stage TrustLadder consumer gate (#1833) ---------------------------
+# The operator configuration is deliberately outside the checkout being sealed.
+# Its commit is NOT a setting: the gate must discover the clean consumer HEAD.
+# No test here submits to the live fleet, changes a live pointer, or imports the
+# unserved trustladder-deploy adapters.
+
+_CONSUMER_TEST_FILES = (
+    "bin/test_pq_release_gate.py", "bin/test_pbtest_gate.py",
+    "bin/test_computation_runner.py", "bin/test_tessera_release_gate.py",
+)
+
+
+def _consumer_release_case(tmp_path, monkeypatch, *, dirty=False):
+    import subprocess
+
+    real_run = subprocess.run
+    consumer = tmp_path / "external-consumer"
+    consumer.mkdir()
+    for name in _CONSUMER_TEST_FILES:
+        path = consumer / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("def test_adapter():\n    assert True\n")
+    # Git operations, not test execution. The real adapters are not available.
+    def git(*args):
+        return real_run(["git", "-C", str(consumer), *args], check=True,
+                        capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=Gate fixture", "-c", "user.email=gate@example.invalid",
+        "commit", "-qm", "consumer fixture")
+    commit = git("rev-parse", "HEAD")
+    if dirty:
+        dirty_path = (consumer / "untracked.py" if dirty == "untracked"
+                      else consumer / _CONSUMER_TEST_FILES[0])
+        dirty_path.write_text("# changed after commit\n")
+
+    checkout = _checkout(tmp_path / "checkout", "new")
+    mirror = tmp_path / "mirror"
+    old = tmp_path / "old-runtime"
+    old.mkdir()
+    mirror.symlink_to(old, target_is_directory=True)
+    entry = old / "tools" / "pbrun.py"
+    entry.parent.mkdir()
+    entry.write_text("# submission is intercepted by the fixture\n")
+    config = {
+        "schema": "prismabuild.consumer_gate.config.v1",
+        "repository": str(consumer),
+        "fleet_root": str(tmp_path),
+        "pbrun": str(entry),
+        "runtimes": [
+            {"id": "x86-pb-cpu", "python": str(tmp_path / "x86-env/bin/python"),
+             "python_version": "3.14", "tags": ["x86"], "cpus": 1, "mem_gb": 2},
+            {"id": "sparks-pb-cpu", "python": str(tmp_path / "arm-env/bin/python"),
+             "python_version": "3.12", "tags": ["gb10"], "cpus": 1, "mem_gb": 2},
+        ],
+        "accepted_breaks": [],
+    }
+    config_path = tmp_path / "consumer-gate.json"
+    config_path.write_text(json.dumps(config))
+    monkeypatch.setenv("PRISMABUILD_CONSUMER_GATE_CONFIG", str(config_path))
+    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
+    monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
+    monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ())
+    monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
+    pb_git_and_probe = _fake_git_and_probe("a" * 40)
+    submissions = []
+
+    def run(argv, **kwargs):
+        words = [str(part) for part in argv]
+        if any(Path(word).name == "pbrun.py" for word in words):
+            generations = [p for p in (tmp_path / "runtime-generations").iterdir()
+                           if p.is_dir() and not p.name.startswith(".")]
+            assert len(generations) == 1, "consumer action ran before G was staged"
+            generation = generations[0]
+            assert (generation / "RUNTIME_VERSION.json").is_file()
+            assert generation.stat().st_mode & 0o222 == 0
+            assert mirror.resolve() == old, "consumer action ran AFTER activation"
+            submissions.append((words, generation))
+            # A successful submitter is deliberately NOT terminal/CAS evidence.
+            key = str(len(submissions)) * 64
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "action_key": key, "status": "submitted"}) + "\n", stderr="")
+        if (words and words[0] == "git"
+                and (str(consumer) in words or str(kwargs.get("cwd")) == str(consumer))):
+            return real_run(argv, **kwargs)
+        return pb_git_and_probe(argv, **kwargs)
+
+    monkeypatch.setattr(publish_runtime.subprocess, "run", run)
+    return SimpleNamespace(config=config, config_path=config_path, consumer=consumer,
+                           commit=commit, mirror=mirror, old=old,
+                           submissions=submissions)
+
+
+def _consumer_publish(monkeypatch, *extra):
+    monkeypatch.setattr(sys, "argv", [
+        "publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
+        "consumer gate fixture", "--shape-gate-waiver", "unrelated shape fixture",
+        *([] if "--stage-only" in extra else ["--no-canary"]), *extra,
+    ])
+    try:
+        return publish_runtime.main(), ""
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            return exc.code, ""
+        return 1, str(exc.code)
+
+
+def test_consumer_gate_requires_verified_results_before_fresh_activation(
+        tmp_path, monkeypatch):
+    case = _consumer_release_case(tmp_path, monkeypatch)
+    code, _ = _consumer_publish(monkeypatch)
+    assert case.mirror.resolve() == case.old, (
+        "a configured consumer gate activated G with no terminal/CAS outcomes")
+    assert code != 0, "successful submission is not a passing consumer gate"
+
+
+def test_consumer_gate_submits_each_configured_runtime_after_staging(
+        tmp_path, monkeypatch):
+    case = _consumer_release_case(tmp_path, monkeypatch)
+    _consumer_publish(monkeypatch)
+    assert len(case.submissions) == 2, (
+        "the consumer gate must submit one action for each of the two runtimes")
+    observed = set()
+    for words, generation in case.submissions:
+        assert words[words.index("--cwd") + 1] == str(case.consumer)
+        assert f"PB_TOOLS_ROOT={generation / 'tools'}" in words
+        command = words[words.index("--") + 1:]
+        # Additional capture instrumentation is fine, but all requested files
+        # must execute together, without a test-selection filter.
+        assert all(name in command for name in _CONSUMER_TEST_FILES)
+        assert "pytest" in command and "-q" in command
+        assert not {"-k", "-m", "--collect-only"}.intersection(command[3:])
+        route = next(row for row in case.config["runtimes"] if row["python"] in command)
+        observed.add(route["id"])
+        for tag in route["tags"]:
+            assert tag in words
+    assert observed == {row["id"] for row in case.config["runtimes"]}
+
+
+@pytest.mark.parametrize("dirty", ["tracked", "untracked"])
+def test_consumer_gate_refuses_a_dirty_consumer_pin(tmp_path, monkeypatch, capsys, dirty):
+    case = _consumer_release_case(tmp_path, monkeypatch, dirty=dirty)
+    code, detail = _consumer_publish(monkeypatch)
+    assert case.mirror.resolve() == case.old, "dirty consumer source reached activation"
+    assert code != 0
+    captured = capsys.readouterr()
+    detail += captured.out + captured.err
+    assert "dirty" in detail.lower(), "refusal must identify the unpinnable consumer"
+    assert case.submissions == [], "a dirty checkout must not become a gate snapshot"
+
+
+@pytest.mark.parametrize("claim", ["blanket", "other-generation", "other-commit", "pending-port"])
+def test_consumer_gate_does_not_turn_an_accepted_break_into_a_receipt_bypass(
+        tmp_path, monkeypatch, claim):
+    case = _consumer_release_case(tmp_path, monkeypatch)
+    # None can establish the exact observed failures: no terminal or CAS
+    # outcome exists. Even a claimed approver is not a substitute for evidence.
+    record = {"accepted_by": "Rob", "generation": "another-G",
+              "consumer_commit": case.commit, "failures": {},
+              "port_commit": "b" * 40}
+    if claim == "blanket":
+        record = {"accepted_by": "Rob", "reason": "skip consumer tests"}
+    elif claim == "other-commit":
+        record["consumer_commit"] = "c" * 40
+    elif claim == "pending-port":
+        record["port_commit"] = "pending"
+    case.config["accepted_breaks"] = [record]
+    case.config_path.write_text(json.dumps(case.config))
+    code, _ = _consumer_publish(monkeypatch)
+    assert case.mirror.resolve() == case.old, f"{claim} bypassed the consumer gate"
+    assert code != 0
+
+
+def test_consumer_gate_cannot_be_bypassed_by_activating_a_staged_generation(
+        tmp_path, monkeypatch):
+    case = _consumer_release_case(tmp_path, monkeypatch)
+    # Staging is permitted to retain a candidate without activating it.
+    _consumer_publish(monkeypatch, "--stage-only")
+    generations = [p for p in (tmp_path / "runtime-generations").iterdir()
+                   if p.is_dir() and not p.name.startswith(".")]
+    assert len(generations) == 1
+    candidate = generations[0]
+    monkeypatch.setattr(sys, "argv", [
+        "publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
+        "consumer gate fixture", "--activate-generation", candidate.name,
+    ])
+    try:
+        code = publish_runtime.main()
+    except SystemExit:
+        code = 1
+    assert case.mirror.resolve() == case.old, (
+        "--activate-generation bypassed the missing consumer gate evidence")
+    assert code != 0
