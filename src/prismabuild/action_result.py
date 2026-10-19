@@ -723,16 +723,16 @@ def bind_standard_capture_command(request: object) -> list[str]:
     A generic result reader returns the sealed request honestly but does not
     claim that its ``params.command`` metadata is what the worker executed:
     Core runs ``task.argv``, and ``validate_action`` only checks the schema.
-    This helper reconstructs the one standard capture wrapper pbrun seals --
+    This helper reconstructs the current and retained S5 capture wrappers --
     from the validated request's ``environment.variables.PATH``,
     ``params.command`` and ``task.result_path`` -- and requires the sealed
-    ``task.argv`` to equal it byte for byte.  It returns the reconstructed argv
+    ``task.argv`` to equal one byte for byte. It returns the matched sealed argv
     on success.
 
     The first implementation supports the standard captured-log result only,
     where the declared ``result_path`` *is* the captured log's name.  A
     file-result recipe (a declared result other than the log), a scratch
-    recorder, a legacy or any other wrapper refuses explicitly; nothing here
+    recorder or any other wrapper refuses explicitly; nothing here
     parses a shell, imports a CLI, or clones PrismaQuant.
     """
 
@@ -760,14 +760,13 @@ def bind_standard_capture_command(request: object) -> list[str]:
     log_name = task.get("result_path")
     if not isinstance(log_name, str) or not log_name:
         raise ActionResultError("the request declares no result_path to bind")
-    expected = movement_actions.standard_capture_argv(
-        command, log_name, path_prefix=path.split(":", 1)[0])
     sealed = task.get("argv")
-    if not isinstance(sealed, list) or list(sealed) != expected:
+    if not isinstance(sealed, list) or not movement_actions.capture_argv_matches(
+        sealed, command, log_name, path_prefix=path.split(":", 1)[0]):
         raise ActionResultError(
             "the sealed task.argv is not the standard captured-log recipe; "
-            "file-result, legacy and unsupported recipes are refused")
-    return expected
+            "file-result and unsupported recipes are refused")
+    return list(sealed)
 
 
 __all__ = [

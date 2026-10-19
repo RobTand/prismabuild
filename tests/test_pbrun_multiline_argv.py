@@ -7,7 +7,6 @@ from prismabuild import submission as submit_core
 import importlib.util
 import json
 from pathlib import Path
-import shlex
 import socket
 import subprocess
 import sys
@@ -81,9 +80,8 @@ def test_a_multiline_shell_script_is_queued_verbatim(
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     action = json.loads(request.read_text(encoding="utf-8"))
-    # pbrun wraps the command in its own ``bash -lc`` line (PATH, tee of the
-    # result); the script must survive inside it, shell-quoted, byte for byte.
-    assert shlex.quote(SCRIPT) in action["task"]["argv"][-1]
+    # The inner script travels as one original argument, byte for byte.
+    assert action["task"]["argv"][5:] == ["bash", "/bin/bash", "-lc", SCRIPT]
 
 
 def test_a_refused_contract_is_a_named_refusal_not_a_traceback(

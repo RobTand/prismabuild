@@ -48,13 +48,34 @@ def _capture_pipeline(producer: str, log_name: str) -> str:
     )
 
 
+def _capture_argv(
+    command: Sequence[str], log_name: str, *, path_prefix: str | None = None,
+    legacy: bool = False,
+) -> list[str]:
+    prefix = "" if path_prefix is None else f"export PATH={shlex.quote(path_prefix)}:$PATH; "
+    producer = shlex.join(command) if legacy else '"$@"'
+    return [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+            prefix + _capture_pipeline(producer, log_name),
+            *([] if legacy else ["bash", *command])]
+
+
 def captured_command(
     command: Sequence[str], log_name: str, *, path_prefix: str | None = None
 ) -> list[str]:
-    """Build the complete capture argv, including the optional PATH prefix."""
-    prefix = "" if path_prefix is None else f"export PATH={shlex.quote(path_prefix)}:$PATH; "
-    return [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-            prefix + _capture_pipeline(shlex.join(command), log_name)]
+    """Capture separate exec arguments, with a fixed script and explicit bash $0."""
+    return _capture_argv(command, log_name, path_prefix=path_prefix)
+
+
+def capture_argv_matches(
+    argv: object, command: Sequence[str], log_name: str, *, path_prefix: str | None = None
+) -> bool:
+    """Bind only the current positional recipe or the exact S5 inline recipe.
+
+    Retained requests execute unchanged. Legacy reconstruction is verification
+    only; new producers always keep the command outside the shell script.
+    """
+    return any(argv == _capture_argv(command, log_name, path_prefix=path_prefix, legacy=legacy)
+               for legacy in (False, True))
 
 
 def standard_capture_argv(
@@ -67,9 +88,9 @@ def standard_capture_argv(
     (``task.result_path == log_name``): the first ``PATH`` component is
     exported ahead of the inherited ``PATH``, then :func:`captured_command`
     runs the command through the scoped capture.  A client that must prove the
-    sealed ``params.command`` is the one the worker actually executed
-    reconstructs this list from the validated request and compares it with
-    ``task.argv``; nothing else in the tree may spell the wrapper (#1446).
+    sealed ``params.command`` is the one the worker actually executed uses
+    :func:`capture_argv_matches`, which also accepts the exact retained S5
+    inline recipe. Nothing else in the tree may spell the wrapper (#1446).
     """
 
     return captured_command(command, log_name, path_prefix=path_prefix)
@@ -279,7 +300,7 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     script_index = 1 + len(MOVEMENT_PYTHON_ARGS)
     result_path = task.get("result_path")
     if (not isinstance(result_path, str)
-            or task.get("argv") != captured_command(command, result_path)
+            or not capture_argv_matches(task.get("argv"), command, result_path)
             or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())
             or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
             or not _movement_environment_ok(action, command)):

@@ -1992,14 +1992,17 @@ public name:
   are never exported. This is provenance, not permission to acquire a lease,
   deploy a runtime, change fixture pins or claim application acceptance.
 - `bind_standard_capture_command(request)` proves that a validated request is
-  pbrun's standard captured-log recipe, byte for byte: it reconstructs the one
-  wrapper pbrun seals from the request's `environment.variables.PATH`,
-  `params.command` and `task.result_path` and requires `task.argv` to equal it.
+  pbrun's standard captured-log recipe, byte for byte. The shared
+  `movement_actions.capture_argv_matches` reconstructs the positional recipe
+  and the retained S5 inline recipe from `environment.variables.PATH`,
+  `params.command` and `task.result_path` and requires `task.argv` to equal one.
   The generic result reader returns the sealed request honestly but does not
   claim this binding, because `validate_action` checks the schema and not the
   executed argv. The first implementation supports the standard captured-log
   result only (`result_path` is the captured log's name); a file-result,
-  scratch-recorder, legacy or other wrapper refuses explicitly. It parses no
+  scratch-recorder or other wrapper refuses explicitly. Older capture recipes
+  predating S5's scoped gnutee/tee selection remain unsupported by this binder.
+  It parses no
   shell and imports no CLI.
 
 Two read-only answers are published outside the SDK, as module-level names
@@ -17984,14 +17987,56 @@ legacy unbound reports remain ignored. No source receipt/output is edited,
 no result or skipped test is adopted, and no new cache or dispatcher is added.
 
 
-The ordinary and movement action log capture share one sealed shell generator
+The ordinary and movement action log capture share one sealed argv generator
 (#1439). Its existing action PATH chooses gnutee when available, otherwise tee;
 the resolved executable is recorded in ordinary stderr evidence. Both pipeline
 statuses are copied immediately. A failed producer retains its original code,
 and a successful producer with failed capture fails rather than publishing a
-partial log. This changes newly sealed capture argv identities; retained sealed
-requests and receipts remain immutable and can be recovered as sealed. No system
-tool, fleet runtime, active queue, placement or result-population policy changes.
+partial log.
+
+Capture passes each command argument separately to bash:
+
+```text
+/bin/bash --noprofile --norc -c '<PATH prefix and capture pipeline using "$@">' bash <command...>
+```
+
+The explicit `bash` supplies `$0`; every command argument belongs to `"$@"`,
+including an empty first or last argument. The fixed script invokes `"$@"`
+on the producer side of the same pipeline. It copies `PIPESTATUS` immediately,
+retains a nonzero producer code ahead of a capture failure, and records the
+selected capture executable and both failure codes as before. Ordinary
+submissions add the sealed PATH prefix; movement actions use their complete
+sealed PATH without exporting another prefix. `captured_command` now returns
+the complete argv list. `standard_capture_argv` delegates to that owner;
+movement sealing, capacity-role qualification and action-result binding use
+the same owner and exact recipe matcher.
+
+This fixes the TrustLadder PrismaQuant `73e8456e` launch failure. Joining the
+individually valid arguments made the bash script 133,714 to 134,248 bytes,
+exceeding Linux's 131,072-byte single-argument limit on the affected runtimes.
+The positional recipe removes that artificial combined-string limit. Each
+argument and the complete argv/environment still obey the kernel's exec limits.
+
+New submissions have different `task.argv` bytes and therefore different
+action keys, including movement actions. Requests and receipts already sealed
+with S5's inline recipe remain immutable. New workers reconstruct and accept
+that exact recipe for command binding and movement capacity-role qualification,
+and Core executes its retained argv unchanged. Already-oversized inline
+requests must be resealed under the positional recipe to launch; their original
+keys cannot acquire different execution bytes. No general shell parser or
+acceptance of arbitrary historical wrappers is added.
+
+Mixed-version rollout is worker-first. Old Core can execute a positional argv
+as an ordinary command, but old action-result binders and movement-role
+classifiers do not recognize it. Pause submitters, drain active work, publish
+the complete runtime, and wait for every eligible worker loop and every
+command-binding consumer to upgrade before resuming submissions with new
+clients. An uncoordinated mixed-version rollout is unsupported; there is no
+new capability tag that makes it safe automatically. For rollback, pause
+submitters and drain all positional-recipe work before restoring old workers
+or binding consumers. New workers can continue to accept S5 clients during
+the forward rollout. This follow-up changes source support only; it does not
+publish a runtime or modify the active release candidate.
 
 Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
 diagnostics, resident command output and merge-queue duration hints (#1386, #1547).

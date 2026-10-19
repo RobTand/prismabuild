@@ -655,13 +655,14 @@ def test_the_capture_wrapper_is_one_golden_byte_for_byte():
         'else printf "pbrun: log capture executable unavailable\\n" >&2; '
         'exit 127; fi; '
         'printf "pbrun: log capture executable=%s\\n" "$_pb_capture" >&2; '
-        '/bin/echo hi 2>&1 | "$_pb_capture" log.txt; '
+        '"$@" 2>&1 | "$_pb_capture" log.txt; '
         '_pb_status=("${PIPESTATUS[@]}"); '
         'if (( _pb_status[1] != 0 )); then '
         'printf "pbrun: capture status=%s; producer status=%s\\n" '
         '"${_pb_status[1]}" "${_pb_status[0]}" >&2; fi; '
         'if (( _pb_status[0] != 0 )); then exit "${_pb_status[0]}"; fi; '
         'exit "${_pb_status[1]}"')
+    assert argv[5:] == ["bash", "/bin/echo", "hi"]
 
 
 def test_the_binding_accepts_the_standard_recipe(tmp_path: Path):

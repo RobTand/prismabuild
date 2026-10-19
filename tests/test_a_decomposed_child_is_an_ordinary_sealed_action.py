@@ -371,7 +371,7 @@ def test_the_declared_result_is_the_manifest_and_the_log_is_still_teed(
     assert envelope["result_manifest_path"] == child["task"]["result_path"], (
         "the child is told the name the action already declared"
     )
-    assert str(decomposed.template["log_name"]) in child["task"]["argv"][-1]
+    assert str(decomposed.template["log_name"]) in child["task"]["argv"][4]
 
 
 def test_a_child_may_not_restate_what_the_template_froze(decomposed) -> None:

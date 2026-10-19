@@ -14,6 +14,8 @@ real sealed movement nodes.
 """
 from __future__ import annotations
 
+import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -121,6 +123,20 @@ def _roles(queue, key):
 
 
 # --- what publish derives, from the sealed definition alone --------------------------
+
+def test_s5_inline_movement_keeps_its_capacity_role(gang_fleet, store, tmp_path):
+    queue, clock, *_ = gang_fleet
+    command = [ma.MOVEMENT_PYTHON, *ma.MOVEMENT_PYTHON_ARGS,
+               _tool(store, "stage_release.py"), "--pool-root", str(queue.root)]
+    fixture = json.loads((Path(__file__).parent / "fixtures/capture_argv_s5.json").read_text())
+    script = fixture["argv"][4].removeprefix("export PATH=/usr/bin:$PATH; ")
+    script = script.replace(shlex.join(fixture["command"]), shlex.join(command))
+    script = script.replace(fixture["log_name"], "s5-movement.log")
+    key = _publish_sealed(queue, tmp_path, clock, "s5-movement.log",
+                          script="stage_release.py", resources=SMALL,
+                          argv=[*fixture["argv"][:4], script], generation=store)
+    assert _roles(queue, key) == ["returns_capacity"]
+
 
 @pytest.mark.parametrize("field", ["returns_capacity", "serves_residency"])
 @pytest.mark.parametrize("value", [True, False, "yes", 1])

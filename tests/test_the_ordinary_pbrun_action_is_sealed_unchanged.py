@@ -6,8 +6,8 @@ clone its hashing rules.  Every ``pbrun`` action key is a content hash of the
 body below, and every receipt in the CAS is addressed by that key. A body
 change moves newly sealed action keys; retained requests still recover their
 original receipts as sealed. This catches unintended changes during extraction.
-The approved #1439 capture behavior advances only task.argv[-1] after the
-shared-owner refactor first passes the original goldens.
+The positional capture contract advances task.argv after the shared-owner
+refactor first passes the original goldens.
 
 Two rows, because most of the body is conditional.  The plain row seals none
 of the optional ``params``; the rich row seals a data manifest, the two GPU
@@ -280,7 +280,7 @@ def test_every_masked_value_is_re_derived_from_the_body(
     assert [entry["path"] for entry in body["code_closure"]["files"]] == [
         stamp_name
     ], "the closure stamp is not the one this submission's fingerprint names"
-    assert f'| "$_pb_capture" {shlex.quote(log_name)};' in body["task"]["argv"][-1], (
+    assert f'| "$_pb_capture" {shlex.quote(log_name)};' in body["task"]["argv"][4], (
         "the action would tee its output somewhere other than its declared "
         "result path"
     )
