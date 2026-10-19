@@ -97,7 +97,8 @@ class OperationRuntimeEvidence:
                   "catalogued_operation", "consumer_boundary", "request", "imports", "stdlib_imports", "calls",
                   "executed_lines", "executing_code_sha256", "wire_identity_verified",
                   "caller_input_constructor_verified", "driver_sha256",
-                  "selected_adapter_sha256", "attestation_error", "entry_error", "error", "stdout", "stderr")
+                  "selected_adapter_sha256", "attestation_error", "entry_error", "error", "stdout", "stderr",
+                  "writer_context_producer", "writer_context", "reader_fixture_derivation", "adapters_sha256")
         observed = {key: record[key] for key in fields if key in record}
         if raw is None and isinstance(record.get("result"), dict) and "raw" in record["result"]:
             raw = base64.b64decode(record["result"]["raw"])
@@ -214,9 +215,10 @@ class RecordContract:
                           archival_runtime=archival_runtime(),
                           runtime_observe=runtime_observer("archival-writer", generation, case))
             assert prior == decoded(historical), "historical writer did not reproduce captured bytes"
-            for root, raw, direction, attestation in ((ROOT, prior, "forward", None),
-                                                      (old, current, "reverse", manifest)):
+            for root, raw, direction, attestation, source in ((ROOT, prior, "forward", None, (writer_root, writer_manifest)),
+                                                              (old, current, "reverse", manifest, None)):
                 observed = invoke(root, case, tmp_path / generation / direction, raw=raw, manifest=attestation,
+                                  writer_source=source,
                                   evidence=evidence(generation + "/" + label + "-" + direction + ".json"),
                                   runtime_observe=runtime_observer(direction + "-reader", generation, case, raw=raw))
                 accepted(observed)

@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild.record_kinds import KINDS, cases
 from prismabuild.compatibility_window import require_reachable
+from prismabuild.digest_primitives import canonical_sha256
 from compat_references import module_paths, generation_reference, absence_module_paths
 
 HERE = Path(__file__).resolve().parent
@@ -252,8 +253,23 @@ def historical_absence(root, case, manifest):
 
 
 def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter_path=None,
-           archival_runtime=None, runtime_observe=None):
+           archival_runtime=None, runtime_observe=None, writer_source=None):
+    context_producer = None
+    context_binding = None
+    reader_fixture = None
+    fixture_derivation = None
+
     def finish(result):
+        if context_producer is not None:
+            result["writer_context_producer"] = context_producer
+            result["writer_context"] = context_binding
+        if fixture_derivation is not None:
+            observed = result.get("adapters_sha256", {}).get("compat_spool_adapters.py")
+            fixture_derivation["observed_spool_adapter_sha256"] = observed
+            if observed != fixture_derivation["derived_spool_adapter_sha256"]:
+                result["returncode"] = 2
+                result["attestation_error"] = "historical spool reader fixture differs from its derivation"
+            result["reader_fixture_derivation"] = fixture_derivation
         if runtime_observe is not None:
             runtime_observe(result)
         if evidence:
@@ -269,7 +285,37 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
     request = {"case": case, "op": "write" if raw is None else "read"}
     if raw is not None:
         request["raw"] = base64.b64encode(raw).decode()
+        if case in ("spool-record/receipt", "spool-record/receipt-paced", "spool-record/retirement-intent"):
+            writer_root, writer_manifest = writer_source or (ROOT, None)
+            context_store = store / "writer-context"
+            context_producer = invoke(writer_root, case, context_store, manifest=writer_manifest)
+            accepted(context_producer)
+            exports = list((context_store / "local").rglob("export.json"))
+            assert len(exports) == 1, "writer context requires one independently produced export"
+            record = json.loads(exports[0].read_bytes())
+            action = record["action"]
+            assert record["batch_id"] == "batch"
+            assert record["export_key"] == action["action_key"] == canonical_sha256(
+                {key: value for key, value in action.items() if key != "action_key"})
+            assert record["manifest_sha256"] == action["params"]["produced_spool"]["manifest_sha256"]
+            assert record["manifest_sha256"] == sha(exports[0].with_name("manifest.json").read_bytes())
+            request["writer_context"] = record
+            context_binding = {"export_record": record, "canonical_sha256": canonical_sha256(record),
+                               "runtime_role": "independent writer fixture under the gate interpreter"}
     driver = driver_for(root) if manifest and adapter_path is None else HERE
+    if context_producer is not None and driver != HERE:
+        reader_fixture = tempfile.TemporaryDirectory(prefix="compat-spool-reader-")
+        derived = Path(reader_fixture.name) / "support"
+        shutil.copytree(driver, derived)
+        path = derived / "compat_spool_adapters.py"
+        original = path.read_bytes()
+        assert sha(original) == "9591979db4fbd81c0420cef3bc54296ad9a70b96fc9429a6e04cbcd9856fc44b"
+        boundary = b'        request["_consumer_boundary"]()\n'
+        assert original.count(boundary) == 1
+        path.write_bytes(original.replace(boundary, b'        record = request["writer_context"]\n' + boundary))
+        fixture_derivation = {"original_spool_adapter_sha256": sha(original),
+                              "derived_spool_adapter_sha256": sha(path.read_bytes())}
+        driver = derived
     adapter_path = driver / "compat_adapters.py" if adapter_path is None else adapter_path
     command = [sys.executable, "-I", "-S", str(driver / "compat_isolate.py"),
                "--root", str(root), "--adapters", str(adapter_path),
@@ -328,6 +374,9 @@ def invoke(root, case, store, *, raw=None, manifest=None, evidence=None, adapter
                                       "selected": expected, "observed": None,
                                       "error": result["attestation_error"]}
         return finish(result)
+    finally:
+        if reader_fixture is not None:
+            reader_fixture.cleanup()
     if archival_runtime is not None:
         result = archival_result(process, expected)
         result["archival_runtime"]["driver_tmpdir"] = {
@@ -540,6 +589,7 @@ def generate(output, selected=None):
                                      "expected_sha256": sha(prior), "actual_sha256": sha(repeated)})
                     continue
                 check(invoke(ROOT, case, stores / (label + "-forward"), raw=prior,
+                             writer_source=(writer_root, writer_manifest),
                              evidence=prefix / (label + "-forward.json")), case, generation, "forward")
                 check(invoke(old, case, stores / (label + "-reverse"), raw=raw, manifest=manifest,
                              evidence=prefix / (label + "-reverse.json")), case, generation, "reverse")

@@ -1,0 +1,61 @@
+{
+  "capture_name": "capture-fill-01",
+  "capture_report_sha256": "1b95a69e54b9228aba1f352a21bf2271a85beae0cadac1607b3685de1c7137f1",
+  "excluded_cases": [
+    "checkout-recovery-plan/banked"
+  ],
+  "files": {
+    "goldens-metrics-profile-spool.jsonl": "09fc8f33a6b110465cd6233c9fc81cd2ca1b3c957528bffc4699881061b40af1",
+    "historical-metrics-profile-spool.jsonl": "2e1b8e1bd053756a80b7f05318f15ef4a4ac317bde0dde99973b8e3f55b5ef13"
+  },
+  "finished_at": "2026-10-16T22:47:10.134483+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [
+    {
+      "attestation_error": null,
+      "case": "checkout-recovery-plan/banked",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "Command '['git', '-C', '/opt/prismabuild-compat/store/checkouts/ee352ee77dc1.compat00/checkout', 'rev-parse', 'HEAD']' returned non-zero exit status 128.",
+        "type": "CalledProcessError"
+      },
+      "generation": "candidate",
+      "phase": "writer",
+      "returncode": 3
+    }
+  ],
+  "selected_cases": [
+    "box-window/pqteld",
+    "canary-run/generation",
+    "canary-run/legacy",
+    "profile-exit/ended",
+    "profile-exit/launch-failed",
+    "profile-exit/launched",
+    "resource-profile/io",
+    "resource-profile/rusage",
+    "resource-profile/scope",
+    "scratch-profile/both",
+    "scratch-profile/read",
+    "scratch-profile/write",
+    "spool-record/copy",
+    "spool-record/manifest",
+    "spool-record/manifest-replay",
+    "spool-record/receipt",
+    "spool-record/receipt-paced",
+    "spool-record/reservation",
+    "spool-record/reservation-released",
+    "spool-record/reservation-replay",
+    "spool-record/retirement-intent"
+  ],
+  "source_git": {
+    "parents": [
+      "90eb35a2957648e9cbdc3c8fa0e8f568fd14bf56"
+    ],
+    "snapshot": "05154357b2252ab81cb935c20011b4882eef3f98",
+    "tree": "2d1198b0f521c1b022312e1e190d53391ce8a68c"
+  },
+  "started_at": "2026-10-16T22:42:57.265767+00:00"
+}

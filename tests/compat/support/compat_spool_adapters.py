@@ -165,6 +165,8 @@ def operate(request, store, load):
             record.update(action=action, export_key=action["action_key"], manifest_sha256=digest)
             spool._write(group / "export.json", record)
             queue.records.replace_record_at(queue.records.item_path(pool.CLAIMED, record["export_key"]), {"claimed_host": "compat-host"})
+        if variant in ("receipt", "receipt-paced", "retirement-intent"):
+            record = request["writer_context"]
         request["_consumer_boundary"]()
         if variant.startswith("reservation"):
             result = producer._reservation(group)
