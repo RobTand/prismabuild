@@ -2513,12 +2513,12 @@ pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
 
 pbtest ships `owned_tree.py` to the shard's interpreter zlib-compressed and
 base85-encoded inside the `python -c` program (`OWNED_TREE_PROGRAM`), and
-carries the 44 KB trace helper `resource_scope.py` the same way (`PACKED`).
-The program is one exec argument, which Linux caps at `MAX_ARG_STRLEN`
-(131,072 bytes with 4 KiB pages). The largest configuration measured 123,863
-bytes before this module, would measure 140,042 with it and the trace helper
-shipped as text, and measures 102,638 as shipped;
-`tests/test_pbtest_program_fits_one_argument.py` keeps 16 KiB of headroom.
+carries the outcome recorder and the 44 KB trace helper `resource_scope.py`
+the same way (`PACKED`). S7's larger outcome recorder must also be packed
+so the expiry port preserves argument headroom. The program is one exec
+argument, which Linux caps at `MAX_ARG_STRLEN` (131,072 bytes with 4 KiB
+pages). `tests/test_pbtest_program_fits_one_argument.py` exercises the largest
+configuration and keeps 16 KiB of headroom.
 The bytes are unchanged once unpacked, so the action key still names them. A
 submitter whose zlib compresses differently seals a different key for the
 same source, which costs a cache hit and nothing else.
