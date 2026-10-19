@@ -33,6 +33,9 @@ Nothing here touches the live queue, a real stage root or a real device.
 """
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import argparse
 import json
@@ -51,10 +54,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 from prismabuild import pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
 import bench_tier_cycle as bench  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import r13_1053_replay as r13  # noqa: E402
+from prismabuild import staged_path
 
 #: The bound both readers apply to the tier record's age.
 BOUND_S = pool.OFFER_TIMEOUT_S
@@ -101,9 +105,9 @@ class _Loop:
         # host, so the retirement takes the in-process egress.
         monkeypatch.setattr(bench, "HOST", socket.gethostname())
         self.clock = FakeClock()
-        monkeypatch.setattr(pool, "_now", self.clock)
+        FleetClock(source=self.clock).install(monkeypatch, scope="pool")
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.counts = bench.build_queue(self.queue, self.stage, _shape())
@@ -139,9 +143,9 @@ class _Loop:
         return bench._tier_record(self.stage)
 
     def _charge(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        output_root = po.OUTPUT_FRAGMENTS_SUBDIR
-        real_evict = stage_release.evict
-        real_prune = stage_release.prune_stale_mentions
+        output_root = oc.OUTPUT_FRAGMENTS_SUBDIR
+        real_evict = staged_path.evict
+        real_prune = staged_path.prune_stale_mentions
 
         def evict(queue, mover, *args, **kwargs):
             retiring = Path(str(kwargs.get("residency_root") or "")).name == output_root
@@ -162,11 +166,11 @@ class _Loop:
             finally:
                 self.sample()
 
-        monkeypatch.setattr(stage_release, "evict", evict)
-        monkeypatch.setattr(stage_release, "prune_stale_mentions", prune)
+        monkeypatch.setattr(staged_path, 'evict', evict)
+        monkeypatch.setattr(staged_path, 'prune_stale_mentions', prune)
 
     def age(self) -> float:
-        record = json.loads(self.queue.tier_record_path(bench.TIER).read_text())
+        record = json.loads(self.queue.records.tier_record_path(bench.TIER).read_text())
         return self.clock() - float(record["announced_unix"])
 
     def sample(self) -> None:
@@ -182,8 +186,7 @@ class _Loop:
 
     def unretired(self) -> list[str]:
         return [batch_id for batch_id in self.replay.unretired
-                if not po._batch_stage_retired(
-                    self.replay.entry(self.queue.root, batch_id))]
+                if not bl.BatchFacets(self.replay.entry(self.queue.root, batch_id)).stage_retired]
 
 
 @pytest.fixture(autouse=True)
@@ -271,13 +274,13 @@ def test_a_record_written_between_steps_carries_the_minted_content(
 def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
     loop = _Loop(tmp_path, monkeypatch)
     seen: dict[str, object] = {}
-    real_prune = stage_release.prune_stale_mentions
+    real_prune = staged_path.prune_stale_mentions
 
     def stalled(*args, **kwargs):
         # The first census unit hangs past the bound: no step completes, so
         # nothing may write the record, and a reader must see a dead loop.
         if "dead_at" not in seen:
-            stamp = json.loads(loop.queue.tier_record_path(
+            stamp = json.loads(loop.queue.records.tier_record_path(
                 bench.TIER).read_text())["announced_unix"]
             while loop.clock() - stamp <= BOUND_S:
                 assert loop.queue._tier_loop_alive(bench.TIER,
@@ -286,11 +289,11 @@ def test_a_loop_that_stops_making_progress_reads_dead(tmp_path, monkeypatch):
             seen["dead_at"] = loop.clock() - stamp
             seen["alive"] = loop.queue._tier_loop_alive(bench.TIER,
                                                         now=loop.clock())[0]
-            seen["rewritten"] = json.loads(loop.queue.tier_record_path(
+            seen["rewritten"] = json.loads(loop.queue.records.tier_record_path(
                 bench.TIER).read_text())["announced_unix"] != stamp
         return real_prune(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "prune_stale_mentions", stalled)
+    monkeypatch.setattr(staged_path, 'prune_stale_mentions', stalled)
     loop.cycle()
     print("liveness-evidence " + json.dumps({
         "test": "hung", "bound_s": BOUND_S,

@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
+from prismabuild import manifest_layout
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
 from fullstack_fixtures import corpus, manifest_entry  # noqa: E402
@@ -31,7 +33,7 @@ def _manifest(pool_root: Path) -> dict[str, object]:
     (pool_root / "model" / "shard-1.bin").write_bytes(split)
     (pool_root / "model" / "head.bin").write_bytes(head)
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "fullstack-harness"},
         "mount_prefix": str(pool_root),
         "entries": [
@@ -98,7 +100,7 @@ _PHASES = [
 def test_manifest_phases_tile_the_read_order(tmp_path: Path) -> None:
     """Production phase ranges tile the manifest contiguously (ACC-01)."""
     manifest = _manifest(tmp_path / "pool")
-    ranges = storage_tiers.manifest_phase_ranges(manifest)
+    ranges = manifest_layout.manifest_phase_ranges(manifest)
     assert [r["name"] for r in ranges] == ["head", "layer-000", "layer-001"]
     assert ranges[0]["start_bytes"] == 0
     assert ranges[-1]["end_bytes"] == manifest["total_bytes"]
@@ -109,7 +111,7 @@ def test_manifest_phases_tile_the_read_order(tmp_path: Path) -> None:
 def test_plan_freeze_is_first_writer_and_validates(tmp_path: Path) -> None:
     """Real freeze/validate: second filing verifies, conflicting body refuses."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest = _manifest(tmp_path / "pool")
     sha = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
     plan = _plan(queue, sha, int(manifest["total_bytes"]))
@@ -126,4 +128,4 @@ def test_tampered_manifest_bytes_refuse_phase_ranges(tmp_path: Path) -> None:
     """A manifest whose entries disagree with its bytes yields no ranges."""
     manifest = _manifest(tmp_path / "pool")
     manifest["entries"][1]["bytes"] = int(manifest["entries"][1]["bytes"]) + 1
-    assert storage_tiers.manifest_phase_ranges(manifest) == []
+    assert manifest_layout.manifest_phase_ranges(manifest) == []

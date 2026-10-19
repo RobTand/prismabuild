@@ -18,6 +18,7 @@ heartbeating, so an expired lease is that state's normal condition.  The lease
 check between the two reads does not close it.  Issue #215.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -39,13 +40,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
 
 
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources={"cpu": 1}, **kw,
-    )
-
-
 def _finish_pending_lands_during(q: pool.PoolQueue, *, host: str) -> dict:
     """Replace the claim with a pending finish between the two reads.
 
@@ -55,7 +49,7 @@ def _finish_pending_lands_during(q: pool.PoolQueue, *, host: str) -> dict:
     racing for it.
     """
 
-    path = q.item_path(pool.CLAIMED, KEY)
+    path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     real = pool.PoolQueue.lease_age
     landed: dict[str, object] = {}
 
@@ -69,7 +63,7 @@ def _finish_pending_lands_during(q: pool.PoolQueue, *, host: str) -> dict:
                 "status": "executed",
                 "detail": {"returncode": 0, "stdout": "", "stderr": ""},
             }
-            pool._write_json_atomic(path, record)
+            pool.immutable_files.write_json_atomic(path, record)
         return age
 
     with mock.patch.object(pool.PoolQueue, "lease_age", lease_age):
@@ -82,9 +76,17 @@ def test_a_finish_that_lands_inside_the_window_is_not_reaped(
 ) -> None:
     """A foreign reaper leaves a pending finish alone, whenever it arrives."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
-    path = queue.item_path(pool.CLAIMED, KEY)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
 
     landed = _finish_pending_lands_during(queue, host="a-foreign-box")
 
@@ -93,9 +95,9 @@ def test_a_finish_that_lands_inside_the_window_is_not_reaped(
     assert path.exists(), "a completed action's claim was reaped as lease_lost"
     assert json.loads(path.read_text()).get("finish_pending") is not None
     # Nothing was concluded on its behalf.
-    assert list(queue.dir(pool.FAILED).glob("*.json")) == []
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
-    assert list((queue.root / pool.ATTEMPTS).rglob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.FAILED).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
+    assert list((queue.root / pool.record_store.ATTEMPTS).rglob("*.json")) == []
 
 
 def test_the_owner_host_still_concludes_its_own_pending_finish(
@@ -103,17 +105,25 @@ def test_the_owner_host_still_concludes_its_own_pending_finish(
 ) -> None:
     """The guard's live path is unchanged: the owner completes the finish."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
 
     landed = _finish_pending_lands_during(queue, host=socket.gethostname())
 
     # Not this cycle -- the guard read before the replace -- but the record is
     # intact, so the next cycle's guard reads it and files the saved outcome.
-    assert queue.item_path(pool.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert landed["reaped"] == []
     assert queue.reap_stale(timeout_s=-1) == []
-    done = list(queue.dir(pool.DONE).glob("*.json"))
+    done = list(queue.records.dir(pool.record_store.DONE).glob("*.json"))
     assert [p.name for p in done] == [f"{KEY}.json"]
     assert json.loads(done[0].read_text())["status"] == "executed"
 
@@ -121,10 +131,18 @@ def test_the_owner_host_still_concludes_its_own_pending_finish(
 def test_an_ordinary_stale_claim_is_still_reaped(queue: pool.PoolQueue) -> None:
     """Nothing else changes: a claim with no pending finish still concludes."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
 
     assert queue.reap_stale(timeout_s=-1) == [KEY]
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()

@@ -24,6 +24,9 @@ receipts, so there is nothing honest to price it off, and pricing it off the
 movers' copy receipts would measure the wrong node entirely (#655's lesson).
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -31,6 +34,7 @@ from pathlib import Path
 import sys
 import time
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -38,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 HOLDER = "d" * 64
@@ -84,6 +88,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -95,7 +101,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -137,26 +143,22 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, ram=False, **overrides):
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
+    tier = residency_plan.resolve_stage_tier(queue, None)
     if ram:
         # The ram leg is exercised through the resolver, not through a second
         # discovered tier: what is under test is the row it seals, not the
         # loop that announces the mountpoint.
         monkey_target = overrides.pop("monkeypatch", None)
         if monkey_target is not None:
-            monkey_target.setattr(pbrun, "resolve_ram_tier",
-                                  lambda queue_, stage_tier: _ram_tier(tmp_path))
-    args = types.SimpleNamespace(
+            monkey_target.setattr(residency_plan, "resolve_ram_tier",
+                                  lambda queue_, stage_tier, **_context: _ram_tier(tmp_path))
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
-    for name, value in overrides.items():
-        setattr(args, name, value)
+    args = replace(args, **overrides)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     staged["cas"] = cas
     return staged
 
@@ -167,17 +169,17 @@ def _idle_two_cpu_host(monkeypatch):
     from prismabuild import adaptive_cpu
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", False))
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    return lambda: {
         "sampled_unix": time.time(), "cpu_count": 2, "interval_s": 1.,
-        "busy_cpus": 0., "psi_some": 0.})
+        "busy_cpus": 0., "psi_some": 0.}
 
 
-def _hold_one_cpu(queue: pool.PoolQueue, tiers) -> dict[str, object]:
+def _hold_one_cpu(queue: pool.PoolQueue, tiers, cpu_sampler) -> dict[str, object]:
     queue.publish(action_key=HOLDER, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root), worker_script="worker.py",
                   resources={"cpu": 1})
     claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
-                        adaptive_cpu=True)
+                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == HOLDER
     return claim
 
@@ -194,18 +196,18 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tiers = {"preferred": [0], "fallback": [1]}
     staged = _seal(tmp_path, queue)
-    _idle_two_cpu_host(monkeypatch)
-    _hold_one_cpu(queue, tiers)
+    cpu_sampler = _idle_two_cpu_host(monkeypatch)
+    _hold_one_cpu(queue, tiers, cpu_sampler=cpu_sampler)
 
     row = dict(staged["plan"]["phases"][0]["egress_row"])
     assert row["resources"]["cpu"] == 1, row["resources"]
     assert row["resources"]["mem_gb"] == 1, row["resources"]
     queue.publish(**row)
     claim = queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
-                        adaptive_cpu=True)
+                        adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claim is not None, "a bounded egress must run beside one holder"
     assert claim["action_key"] == row["action_key"]
 
@@ -216,8 +218,8 @@ def test_the_egress_row_is_admitted_beside_a_holder_and_the_old_row_is_not(
                               if key != "cpu"}
     queue.publish(**unbounded)
     assert queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=tiers,
-                       adaptive_cpu=True) is None
-    assert queue.item_path(pool.READY, unbounded["action_key"]).exists()
+                       adaptive_cpu=True, cpu_sampler=cpu_sampler) is None
+    assert queue.records.item_path(pool.record_store.READY, unbounded["action_key"]).exists()
 
 
 def test_the_egress_keeps_no_tier_demand_and_its_own_retry_policy(
@@ -232,7 +234,7 @@ def test_the_egress_keeps_no_tier_demand_and_its_own_retry_policy(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     row = staged["plan"]["phases"][0]["egress_row"]
     assert set(row["resources"]) == {"cpu", "mem_gb"}, row["resources"]
@@ -247,7 +249,7 @@ def test_the_ram_egress_declares_one_cpu_too(tmp_path, monkeypatch):
     """The ram tier's release node (#640) is an egress of the same shape."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue, ram=True, monkeypatch=monkeypatch)
     phase = staged["plan"]["phases"][0]
     assert "ram_egress_row" in phase, "the ram leg must seal for this test"
@@ -271,7 +273,7 @@ def test_the_egress_row_carries_the_cpu_on_the_sealed_body(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     row = staged["plan"]["phases"][0]["egress_row"]
     key = str(row["action_key"])

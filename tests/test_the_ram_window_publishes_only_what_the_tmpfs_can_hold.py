@@ -21,7 +21,7 @@ from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
 
 import residency_publication  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
@@ -75,14 +75,14 @@ def _plan(queue: pool.PoolQueue) -> dict[str, object]:
         start = end
     return residency_plan.build_plan(
         consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
-        stage_root="/stage/prewarm", manifest_sha256=MANIFEST,
+        stage_root=str(queue.root.parent / "stage"), manifest_sha256=MANIFEST,
         manifest_bytes=start, phases=phases, ram_tier_id=RAM_TIER)
 
 
 def _tiers(tmp_path: Path) -> dict[str, dict[str, object]]:
     return {
         STAGE_TIER: {"tier": "stage", "tier_id": STAGE_TIER,
-                     "host": "dl380g10", "mountpoint": "/stage/prewarm"},
+                     "host": "dl380g10", "mountpoint": str(tmp_path / "stage")},
         RAM_TIER: {"tier": "ram", "tier_id": RAM_TIER, "host": "dl380g10",
                    "mountpoint": str(tmp_path / "ram"), "epoch": EPOCH,
                    "capacity_bytes": 112 * GIB, "window_gib": 112},
@@ -99,26 +99,25 @@ def _fixture(tmp_path: Path, *, ram_capacity_gib: int,
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue), residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_capacity_gib})
+    queue.tier(RAM_TIER).mint({'ram_gib': ram_capacity_gib})
     # A RAM fill's host half lands in the storage host's ledger (#1258).
     mint_storage_host_ledger(queue)
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
     start = 0
     for ordinal in range(landed):
         stage_lead = _hexkey(f"mover{ordinal}")
-        assert queue.tier_ledger(STAGE_TIER).acquire(
-            stage_lead, {"stage_gib": PHASE_GIB[ordinal]})
+        assert queue.tier(STAGE_TIER).take(stage_lead, {'stage_gib': PHASE_GIB[ordinal]})
         end = start + PHASE_GIB[ordinal] * GIB
-        residency_publication.vouch_landed(
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=CONSUMER, mover_action_key=stage_lead,
-            tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+            tier_id=STAGE_TIER, stage_root=str(queue.root.parent / "stage"),
             manifest_sha256=MANIFEST, range_start_bytes=start,
             range_end_bytes=end, name=f"phase{ordinal}",
             unix=1000.0 + ordinal)
@@ -136,7 +135,7 @@ def test_the_first_phase_is_promoted_when_its_stage_range_has_landed(
                  if event["event"] == "ram-mover-published"]
     assert [event["phase"] for event in published] == ["phase-0000"]
     # In the plan's read order, and actually queued: the tokens bound it.
-    assert queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
 
 
 def test_nothing_is_promoted_onto_a_range_the_stage_does_not_hold(
@@ -149,7 +148,7 @@ def test_nothing_is_promoted_onto_a_range_the_stage_does_not_hold(
 
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
-    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
 
 
 def test_runahead_is_bounded_by_the_consumers_accepted_progress(
@@ -185,7 +184,7 @@ def test_a_window_with_no_free_tokens_publishes_nothing(tmp_path: Path) -> None:
 
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
-    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
 
 
 def test_nothing_is_promoted_against_a_root_that_refuses_admission(
@@ -207,7 +206,7 @@ def test_nothing_is_promoted_against_a_root_that_refuses_admission(
 
     assert [event for event in events
             if event["event"] == "ram-mover-published"] == []
-    assert not queue.item_path(pool.READY, _hexkey("rampromote0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("rampromote0")).exists()
     deferred = [event for event in events
                 if event["event"] == "ram-mover-publish-deferred-unregistered-root"]
     assert len(deferred) == 1

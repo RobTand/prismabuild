@@ -1,0 +1,44 @@
+{
+  "capture_name": "funding-builders-01-capture",
+  "capture_report_sha256": "8ba77db04f0d0846b9fcf950465f929c1ac26eafa28f6a4be92ef2451bb36157",
+  "excluded_cases": [
+    "q-output-funding/fund-direct",
+    "q-output-funding/stage-intent"
+  ],
+  "files": {
+    "goldens-prelaunch-builders.jsonl": "77657b6ccf795bcd3c966d3fc568a5d49b0e6c5b0030f971605d0693218929b2",
+    "historical-prelaunch-builders.jsonl": "bbe8b3113b3c8f926240ab71096675ce2758db3de750db0699d48f8fafcd3e74"
+  },
+  "finished_at": "2026-10-17T00:43:00.454516+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [
+    {
+      "attestation_error": null,
+      "case": "q-output-funding/fund-direct",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "output-funding-missing",
+        "type": "PoolContractError"
+      },
+      "generation": "candidate",
+      "phase": "writer",
+      "returncode": 3
+    }
+  ],
+  "selected_cases": [
+    "q-funding/prelaunch-binding",
+    "q-funding/prelaunch-birth",
+    "q-funding/reserve-fence"
+  ],
+  "source_git": {
+    "parents": [
+      "5e8b24ecebfcde748d620bf32ba5df9bd263fafa"
+    ],
+    "snapshot": "768314afa13e5c0232ea926a76add57c0e0845c4",
+    "tree": "91079d233989c03a9575780140274b3641a77bbe"
+  },
+  "started_at": "2026-10-17T00:42:03.610483+00:00"
+}

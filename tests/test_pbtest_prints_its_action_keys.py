@@ -18,6 +18,7 @@ Two halves:
 """
 
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import importlib.util
@@ -28,7 +29,10 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ShardProcess, shard_output_for
+from pbtest_shard_output import (
+    ShardProcess, shard_output_for, emit_client_events, execution_reply, ClientReply, submission_command,
+)
+from prismabuild import action_client as client, action_wait, client_channel, client_recovery
 from test_offer_refusal_retry import _announce_x86, _submit
 from test_pbcampaign import fleet_paths  # noqa: F401
 
@@ -42,6 +46,7 @@ pbtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import core as pb, pool  # noqa: E402
 
 
@@ -60,20 +65,24 @@ def test_pbrun_names_the_full_key_it_queued(
 
     assert _submit(monkeypatch, work, "dl380g10") == 75   # queued; nothing claims it
 
-    (record,) = list(queue.dir(pool.READY).glob("*.json"))
+    (record,) = list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     key = record.stem
     err = capsys.readouterr().err
     assert f"pbrun: queued {key} tags=" in err, err
     generation = json.loads(record.read_text())["published_unix"]
     assert f"published_unix={generation}" in err
-    command = pbtest.recovery_command(err.splitlines(), key, float("inf"))
-    assert command is not None and command[-2] == str(generation)
+    identity = client.PoolClientIdentity(key, generation, queue.root, pbrun.configured_store().root / 'cas',
+        record, client.ClientArrival.SUBMITTED)
+    events = client_channel.ClientEventResult(identity,
+        client.ClientEnding(client.ClientUnavailable(key, generation, action_wait.WaitEnd.FINAL_EMPTY)), None)
+    command = client_recovery.command(events, deadline=float('inf'))
+    assert command is not None and command[command.index('--published-unix') + 1] == str(generation)
 
 
 # --- pbtest -----------------------------------------------------------------
 
 def _key(command) -> str:
-    return hashlib.sha256(json.dumps(list(command)).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(submission_command(command)).encode()).hexdigest()
 
 
 class _Queued(ShardProcess):
@@ -116,7 +125,10 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shard_class, *, shards
     def _popen(command, **_kwargs):
         shard = shard_class(command)
         launched.append(shard)
-        return shard
+        reply = (execution_reply(shard.output, shard.returncode, key=shard.key)
+                 if isinstance(shard, _Queued) else
+                 ClientReply('', client.ClientRefused(shard.returncode)))
+        return emit_client_events(shard, _kwargs, reply)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
     report = tmp_path / "shards.json"
@@ -159,7 +171,7 @@ def test_a_shard_record_names_its_receipt_only_when_one_exists(
     """``receipt_path`` is where the CAS keeps the key's receipt; ``null`` when
     there is none there, so a path in the record is a file a reader can open."""
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     # The receipt of whichever shard is launched first; the other has none.
     receipt: list[Path] = []
 
@@ -167,7 +179,7 @@ def test_a_shard_record_names_its_receipt_only_when_one_exists(
         def __init__(self, command):
             super().__init__(command)
             if not receipt:
-                path = pb.PrismaBuildCAS(pbrun.SH / "cas").receipt_path(self.key)
+                path = pb.PrismaBuildCAS(pbrun.configured_store().root / "cas").receipt_path(self.key)
                 path.parent.mkdir(parents=True)
                 path.write_text("{}")
                 receipt.append(path)

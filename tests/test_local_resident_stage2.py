@@ -1,5 +1,4 @@
 import json
-from contextlib import contextmanager
 from pathlib import Path
 import signal
 
@@ -10,6 +9,7 @@ from test_local_resident_mover import world
 from test_resident_sets_records import publish
 
 from local_resident_space import roomy_disk  # noqa: F401
+from prismabuild import tier_holdings
 
 pytestmark = pytest.mark.usefixtures("roomy_disk")
 
@@ -18,7 +18,7 @@ def finished_attempt(tmp_path):
     from admitted_queue_fixture import AdmittedQueueFixture
     queue = AdmittedQueueFixture(pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 1, "mem_gb": 2},
                                  default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "d" * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / "cas"), checkout_root=str(tmp_path),
                   worker_script="/worker.py", max_attempts=1)
@@ -40,7 +40,7 @@ def test_phase2_local_serving_validates_in_attempt_outcomes(tmp_path):
 def test_lease_pass_skips_absent_sets_with_no_tree_and_no_tokens(tmp_path, monkeypatch):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
-    pool.PoolQueue(store.queue_root).tier_ledger("local:test-host").release(record["set_id"])
+    pool.PoolQueue(store.queue_root).tier('local:test-host').release_unspent(record['set_id'], authority=tier_holdings.Unspent.NEVER_STARTED)
     writes = []
     original = store.write_copy
 
@@ -57,15 +57,16 @@ def test_lease_pass_skips_absent_sets_with_no_tree_and_no_tokens(tmp_path, monke
 def _second_set(tmp_path, store):
     import hashlib
     from prismabuild import core as pb_core
+    from prismabuild import data_manifest as manifest_codec
     other_root = tmp_path / "canonical2"
     other_root.mkdir()
     (other_root / "weights").write_bytes(b"weights")
-    manifest = {"schema": pb_core.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
                 "mount_prefix": str(other_root),
                 "entries": [{"path": str(other_root / "weights"), "offset": 0, "bytes": 7,
                              "sha256": hashlib.sha256(b"weights").hexdigest()}],
                 "entry_count": 1, "total_bytes": 7}
-    pool.PoolQueue(store.queue_root).mint_tier_capacity("local:test-host", {"local_gib": 2})
+    pool.PoolQueue(store.queue_root).tier('local:test-host').mint({'local_gib': 2})
     return store.publish(manifest=manifest, canonical_root=str(other_root), hosts=["test-host"],
                          lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
 
@@ -108,11 +109,11 @@ def test_one_failing_set_does_not_block_the_others(tmp_path, monkeypatch, fault)
     assert rows[good["set_id"]]["state"] == "absent"
     assert rows[bad["set_id"]]["error"]
     assert store.read_copy(good["set_id"], "test-host")["state"] == "absent"
-    ledger = queue.tier_ledger("local:test-host")
-    assert ledger.holder_tokens(good["set_id"]) == {}
-    assert ledger.holder_tokens(bad["set_id"])["local_gib"] == 1
+    ledger = queue.tier('local:test-host')
+    assert ledger.holdings(good['set_id']) == {}
+    assert ledger.holdings(bad['set_id'])['local_gib'] == 1
     assert len(minted) == 1, "one failing set must not block capacity minting"
-    assert result["capacity"] == ledger.capacity()
+    assert result['capacity'] == ledger.mint_supply()
     error_path = store.set_path(bad["set_id"]).parent / "lease-errors" / "test-host.json"
     error = json.loads(error_path.read_text())
     assert error["set_id"] == bad["set_id"] and error["error"]
@@ -123,7 +124,7 @@ def test_one_failing_set_does_not_block_the_others(tmp_path, monkeypatch, fault)
         monkeypatch.setattr(local_resident.shutil, "rmtree", original_delete)
     local_tier_loop.local_tier_cycle(queue, "test-host", {"hosts": {"test-host": spec}})
     assert store.read_copy(bad["set_id"], "test-host")["state"] == "absent"
-    assert ledger.holder_tokens(bad["set_id"]) == {}
+    assert ledger.holdings(bad['set_id']) == {}
     assert not error_path.exists()
 
 
@@ -133,14 +134,15 @@ def test_role_reports_a_cycle_error_instead_of_crashing(tmp_path, monkeypatch, c
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({"schema": resident_sets.POLICY_SCHEMA, "hosts": {}}))
 
-    @contextmanager
-    def singleton(_script):
-        yield
-
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "role_singleton", singleton)
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "loaded_runtime_commit", lambda: "")
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "published_commit", lambda: "")
-    monkeypatch.setattr(local_tier_loop.runtime_gate, "read_maintenance_gate", lambda: None)
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "first"}))
+        monkeypatch.setattr(local_tier_loop.runtime_gate, attribute, receipt)
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
+    monkeypatch.setattr(local_tier_loop.runtime_gate, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(local_tier_loop.runtime_gate, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     calls = []
 
     def cycle(*args):

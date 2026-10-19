@@ -15,6 +15,7 @@ it, to name the busy key in a ``transition-lock-busy`` event, and to finish
 the work on the next pass once the holder lets go.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import hashlib
 import json
@@ -28,7 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -50,6 +51,9 @@ fcntl.lockf(fd, fcntl.LOCK_EX)
 print("held", flush=True)
 sys.stdin.read()
 """
+
+
+from fleet_world import FleetWorld
 
 
 def _hexkey(seed: str) -> str:
@@ -101,15 +105,18 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
 
 
 def _fail_consumer(queue: pool.PoolQueue, consumer: str) -> None:
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     record = json.loads(source.read_text())
     record["status"] = "failed"
-    queue.item_path(pool.FAILED, consumer).write_text(json.dumps(record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.FAILED, consumer),
+        record,
+    )
     source.unlink()
 
 
 def _lock_path(queue: pool.PoolQueue, key: str) -> Path:
-    """The file ``PoolQueue._transition_locked`` locks for ``key``."""
+    """The file ``PoolQueue.action_transition_lock`` locks for ``key``."""
 
     name = hashlib.sha256(key.encode()).hexdigest()
     return queue.root / "transition-locks" / f"{name}.lock"
@@ -160,9 +167,7 @@ class _Pass:
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path).queue
 
 
 @pytest.fixture()
@@ -210,15 +215,15 @@ def test_a_busy_consumer_lock_skips_that_consumer_and_the_next_pass_converges(
     assert busy[0]["holder_pid"] == holder.pid
     # Skipped, not half-done: nothing was withdrawn and the plan stays filed.
     for mover in movers:
-        assert queue.item_path(pool.READY, mover).exists()
-    assert queue.residency_plan_path(FIRST).exists()
+        assert queue.records.item_path(pool.record_store.READY, mover).exists()
+    assert queue.records.residency_plan_path(FIRST).exists()
 
     holder.release()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not _busy(events, FIRST)
     assert {event["mover"] for event in events if event.get("withdrawn")} == set(movers)
-    assert not queue.residency_plan_path(FIRST).exists()
+    assert not queue.records.residency_plan_path(FIRST).exists()
 
 
 def test_a_busy_mover_lock_skips_that_mover_and_keeps_the_plan_until_it_goes(
@@ -247,16 +252,16 @@ def test_a_busy_mover_lock_skips_that_mover_and_keeps_the_plan_until_it_goes(
     assert busy[0]["holder_pid"] == holder.pid
     # The other mover is withdrawn this pass; the busy one waits, and the
     # plan stays filed because the next pass needs it to find that mover.
-    assert queue.item_path(pool.WITHDRAWN, free_mover).exists()
-    assert queue.item_path(pool.READY, busy_mover).exists()
-    assert queue.residency_plan_path(FIRST).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, free_mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, busy_mover).exists()
+    assert queue.records.residency_plan_path(FIRST).exists()
 
     holder.release()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not _busy(events, busy_mover)
     assert busy_mover in {event["mover"] for event in events if event.get("withdrawn")}
-    assert not queue.residency_plan_path(FIRST).exists()
+    assert not queue.records.residency_plan_path(FIRST).exists()
 
 
 def test_a_busy_child_lock_defers_the_reap_to_the_next_pass(
@@ -283,14 +288,14 @@ def test_a_busy_child_lock_defers_the_reap_to_the_next_pass(
     assert len(busy) == 1, run.events
     assert busy[0]["consumer"] == FIRST
     assert busy[0]["holder_pid"] == holder.pid
-    assert queue.residency_plan_path(FIRST).exists()
+    assert queue.records.residency_plan_path(FIRST).exists()
 
     holder.release()
     events = tier_loop.withdraw_dead_consumer_movers(queue)
 
     assert not _busy(events, child)
     assert any(event.get("event") == "residency-plan-reaped" for event in events)
-    assert not queue.residency_plan_path(FIRST).exists()
+    assert not queue.records.residency_plan_path(FIRST).exists()
 
 
 def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited(
@@ -306,12 +311,12 @@ def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited
 
     def run() -> None:
         with pool.transition_locks_never_wait(seen.append):
-            with queue._transition_locked(mine):
+            with queue.action_transition_lock(mine):
                 # Nested re-entry of a key this thread holds is unaffected.
-                with queue._transition_locked(mine):
+                with queue.action_transition_lock(mine):
                     outcome["nested"] = True
             try:
-                with queue._transition_locked(key):
+                with queue.action_transition_lock(key):
                     outcome["entered"] = True
             except pool.TransitionLockBusy as exc:
                 outcome["refused"] = exc
@@ -333,7 +338,7 @@ def test_inside_the_cycle_a_blocking_acquire_of_a_busy_key_is_refused_not_waited
     done = threading.Event()
 
     def wait_outside() -> None:
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             done.set()
 
     waiter = threading.Thread(target=wait_outside, daemon=True)
@@ -348,7 +353,7 @@ def test_a_cycle_that_lets_a_record_age_past_the_horizon_says_it_overran(
     """A completed long cycle is marked on its ``tier-cycle`` line."""
 
     clock = [1_000_000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
     liveness = tier_loop.Liveness(interval_s=5.0)
     record = {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier_id": TIER,
               "tier": "stage", "host": "dl380g10", "sampled_unix": clock[0]}
@@ -370,7 +375,10 @@ def test_a_stuck_loop_is_visible_from_outside_as_an_aged_announcement(
         queue: pool.PoolQueue) -> None:
     """pbmcp's tier rows and pbmetrics both expose ``announced_unix``'s age."""
 
+    from prismabuild import census as fleet_census
+
     import pbmcp
+    from prismabuild import census as fleet_census
     import pbmetrics
 
     now = 2_000_000.0
@@ -389,6 +397,6 @@ def test_a_stuck_loop_is_visible_from_outside_as_an_aged_announcement(
             f'{int(stuck_for)}' in text), [
         line for line in text.splitlines() if "announce_age" in line]
 
-    row = pbmcp._tier_row(json.loads(queue.tier_record_path(TIER).read_text()))
+    row = fleet_census._tier_row(json.loads(queue.records.tier_record_path(TIER).read_text()))
     assert row["announced_age_s"] > pool.OFFER_TIMEOUT_S
     assert row["liveness_refresh"]["after"] == "sweep_orphans"

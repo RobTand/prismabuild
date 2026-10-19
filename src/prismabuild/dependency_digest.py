@@ -6,7 +6,7 @@ commissioned this (#1495).  The requirement is versioned configuration in the
 consumer checkout; this module is the one place that says what a requirement
 *is*, who may claim a row that carries one, and how the bytes are observed:
 
-* ``DEPENDENCY_DIGEST_TAG`` rides every published requirement (the #714
+* The registry's dependency-digest tag rides every published requirement (the #714
   shape), so a worker loop from before this contract never offers the tag and
   never claims a row whose requirements it cannot even see.
 * :func:`validate_requirements` is the one validator for exact-file entries --
@@ -34,12 +34,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-
-#: The capability a worker must offer before it may claim a row carrying
-#: dependency requirements.  A loop from before this contract offers neither
-#: the tag nor the claim check, so requiring the tag is what makes "claimed by
-#: a worker that ignores the digest" unreachable rather than unlikely.
-DEPENDENCY_DIGEST_TAG = "dependency-digest-v1"
 
 #: The one prefix of the evidence line a verifying shard prints.
 EVIDENCE_PREFIX = "pbtest dependency digest: "

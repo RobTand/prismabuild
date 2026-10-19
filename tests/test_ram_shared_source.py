@@ -32,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
-import stage_move  # noqa: E402
-import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -47,14 +48,11 @@ RAM_MOVER = "e" * 64
 SIZE = 16 * 1024
 
 
+from fleet_world import FleetWorld
+
+
 def _payload() -> bytes:
     return bytes([i % 251 + 1 for i in range(SIZE)])
-
-
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
 
 
 def _manifest(tmp_path: Path, *, name: str = "manifest.json",
@@ -95,7 +93,7 @@ def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -114,7 +112,7 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
 def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     fragments = residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, consumer)
+        queue.root / pool.record_store.RESIDENCY, consumer)
     composed = residency_map.compose(fragments)
     entries = composed["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
@@ -124,7 +122,7 @@ def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
 def _sidecar_identity(queue: pool.PoolQueue, consumer: str,
                       mover: str) -> dict:
     sidecar = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
     assert isinstance(sidecar, dict)
     entries = sidecar["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
@@ -132,7 +130,7 @@ def _sidecar_identity(queue: pool.PoolQueue, consumer: str,
 
 
 def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
 
@@ -140,7 +138,7 @@ def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
     first = _staged_path(queue, CONSUMER_A)
     before = os.stat(first)
     sidecar_a = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, CONSUMER_A, MOVER_A)
+        queue.root / pool.record_store.RESIDENCY, CONSUMER_A, MOVER_A)
     assert isinstance(sidecar_a, dict)
 
     # A second independent consumer stages the identical bytes.
@@ -158,7 +156,7 @@ def test_shared_stage_converges_without_replace(tmp_path: Path) -> None:
 
 
 def test_ram_promotion_survives_shared_source(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
     source = str(body["entries"][0]["path"])
@@ -196,7 +194,7 @@ def test_ram_promotion_survives_shared_source(tmp_path: Path) -> None:
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -207,7 +205,7 @@ def test_ram_promotion_survives_shared_source(tmp_path: Path) -> None:
 
 
 def test_live_pin_survives_overlapping_copy(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
     source = str(body["entries"][0]["path"])
@@ -250,7 +248,7 @@ def test_simultaneous_first_publication_converges(tmp_path: Path) -> None:
     both receipts complete and both sidecars name one incarnation.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     outcomes: dict[str, object] = {}
     barrier = threading.Barrier(2)
@@ -281,7 +279,7 @@ def test_simultaneous_first_publication_converges(tmp_path: Path) -> None:
 
 
 def test_concurrent_overlapping_copies_stay_correct(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     outcomes: dict[str, object] = {}
     barrier = threading.Barrier(2)
@@ -310,7 +308,7 @@ def test_concurrent_overlapping_copies_stay_correct(tmp_path: Path) -> None:
 
 
 def test_crash_partial_temp_recovered(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
@@ -325,7 +323,7 @@ def test_crash_partial_temp_recovered(tmp_path: Path) -> None:
 
 
 def test_different_bytes_under_shared_name_refuse(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
@@ -362,7 +360,7 @@ def test_null_digest_overlap_converges(tmp_path: Path) -> None:
     actually changed refuses instead of invalidating.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(
         tmp_path, name="manifest-null.json", null_digest=True)
     # Manifest entries carry an explicit null digest.
@@ -397,7 +395,7 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
 
     import time
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     digest = str(body["entries"][0]["sha256"])
     source = str(body["entries"][0]["path"])
@@ -409,21 +407,19 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
 
     # Hold back the proof: the bytes stay, the vouch goes away, and a
     # background thread re-files it after 4 s -- past the old interval.
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     saved_entries = dict(
         residency_map.compose(
             residency_map.read_fragments(residency, CONSUMER_A))["entries"])
     assert len(saved_entries) == 1
-    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
-    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
+    staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
 
     def _refile() -> None:
         time.sleep(4.0)
         file_id = reader_lease.stat_identity(str(staged))
         assert file_id is not None
-        residency_map.write_fragment(residency, {
+        staged_path.publish_vouch(
+            residency, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": CONSUMER_A,
             "mover_action_key": MOVER_A,
@@ -431,14 +427,9 @@ def test_delayed_fragment_adoption_never_replaces(tmp_path: Path) -> None:
             "stage_root": str(tmp_path / "stage"),
             "manifest_sha256": manifest_sha,
             "entries": saved_entries,
-        })
-        reader_lease.write_material(
-            residency, consumer_action_key=CONSUMER_A,
-            mover_action_key=MOVER_A, tier_id=STAGE_TIER,
-            stage_root=str(tmp_path / "stage"),
-            manifest_sha256=manifest_sha,
+        },
             generation=reader_lease.mint_generation(),
-            entries={key: {
+            material_entries={key: {
                 "stage_path": str(staged), "bytes": SIZE,
                 "sha256": digest, "file_id": file_id}})
 
@@ -471,20 +462,17 @@ def test_inflight_copy_defers_without_replacing(tmp_path: Path,
     unattributed live incarnation.
     """
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 1.0, raising=False)
-    queue = _queue(tmp_path)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 1.0, raising=False)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
 
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
     before = os.stat(staged)
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     # Unpublish the bytes without touching them, then fake an in-flight
     # sibling copy that never finishes.
-    (residency_map.fragment_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
-    (reader_lease.material_path(residency, CONSUMER_A, MOVER_A)
-     .unlink(missing_ok=True))
+    staged_path.withdraw_vouch(None, residency, CONSUMER_A, MOVER_A, missing_ok=True)
     sibling = staged.with_name(f".{staged.name}.{'f' * 16}.partial")
     sibling.write_bytes(b"partial-prefix")
 
@@ -506,13 +494,13 @@ def test_unreadable_proof_state_refuses(tmp_path: Path) -> None:
     refuses with a named error and keeps the published bytes.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
     staged = _staged_path(queue, CONSUMER_A)
     before = os.stat(staged)
 
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     tainted = residency / CONSUMER_C / f"{MOVER_C}.json"
     tainted.parent.mkdir(parents=True, exist_ok=True)
     tainted.write_text("{not-json")

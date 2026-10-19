@@ -17,6 +17,7 @@ meaning, so an already-sealed request, explicit ``0`` included, is never
 re-derived.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -30,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import produced_spool as ps  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from test_pbrun_detach import _checkout  # noqa: E402
 
 GIB = 1 << 30
@@ -40,17 +42,17 @@ MAX = "PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES"
 
 def _build(tmp_path, monkeypatch, *extra: str, transport: str = "pool"):
     work = _checkout(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     args = pbrun.parse_args([
         "--cwd", str(work), "--detach", "--transport", transport, *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return pbrun.prepare_submission(args)["template"]
+    return submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
 
 
 def _sealed_mentions(template) -> bool:
-    sealed = pbrun.seal_action_from_template(template)
+    sealed = submit_core.seal(template)
     body = json.dumps(sealed, default=str)
     return KIND in body
 
@@ -62,13 +64,13 @@ def test_a_declared_bound_derives_spool_gb_at_submission(
     extra = [] if switch is None else ["--env", f"{SWITCH}={switch}"]
     template = _build(tmp_path, monkeypatch, *extra, "--env", f"{MAX}={maximum}")
     assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4, KIND: gib}
-    sealed = pbrun.seal_action_from_template(template)
+    sealed = submit_core.seal(template)
     assert sealed["params"]["demand"][KIND] == gib
     assert sealed["environment"]["variables"][SWITCH] == "1"
 
 
 def test_a_declared_bound_with_an_explicit_zero_is_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(tmp_path, monkeypatch,
                "--env", f"{SWITCH}=0", "--env", f"{MAX}=256")
 
@@ -88,42 +90,42 @@ def test_a_submission_without_a_spool_bound_seals_no_spool_demand(tmp_path, monk
 
 
 def test_an_opted_in_submission_without_a_byte_bound_is_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(tmp_path, monkeypatch, "--env", f"{SWITCH}=1")
 
 
 def test_an_invalid_switch_is_refused(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="must be 0 or 1"):
+    with pytest.raises(submit_core.SubmissionRefused, match="must be 0 or 1"):
         _build(tmp_path, monkeypatch, "--env", f"{SWITCH}=yes", "--env", f"{MAX}=256")
 
 
 @pytest.mark.parametrize("env", [(), ("--env", f"{SWITCH}=1", "--env", f"{MAX}=256")])
 def test_a_typed_spool_demand_is_refused(tmp_path, monkeypatch, env):
-    with pytest.raises(SystemExit, match=KIND):
+    with pytest.raises(submit_core.SubmissionRefused, match=KIND):
         _build(tmp_path, monkeypatch, *env, "--demand", f"{KIND}=4")
 
 
 def test_the_typed_demand_vocabulary_stays_closed():
-    assert pbrun._FLEET_DEMAND_KINDS == frozenset(
+    assert submit_core._FLEET_DEMAND_KINDS == frozenset(
         {"cpu", "gpu", "mem_gb", "disk_metadata"})
-    with pytest.raises(SystemExit, match="derived"):
-        pbrun.validate_fleet_demand({KIND: 4})
+    with pytest.raises(submit_core.SubmissionRefused, match="derived"):
+        submit_core.validate_fleet_demand({KIND: 4})
 
 
 def test_slurm_refuses_the_opt_in(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="slurm|SLURM"):
+    with pytest.raises(submit_core.SubmissionRefused, match="slurm|SLURM"):
         _build(tmp_path, monkeypatch, "--env", f"{SWITCH}=1", "--env", f"{MAX}=256",
                transport="slurm")
 
 
 def test_slurm_refuses_a_declared_bound(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match="slurm|SLURM"):
+    with pytest.raises(submit_core.SubmissionRefused, match="slurm|SLURM"):
         _build(tmp_path, monkeypatch, "--env", f"{MAX}=256", transport="slurm")
 
 
 def _freeze(tmp_path, *, demand, variables, transport="pool"):
     repo = _checkout(tmp_path)
-    return pbrun.freeze_action_template(
+    return submit_core.freeze_template(
         command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin", **variables}, determinism="stochastic",
@@ -133,7 +135,7 @@ def _freeze(tmp_path, *, demand, variables, transport="pool"):
         checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
         exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
         progress=None, profile=None, container_image_refs=(),
-        wrapper_dir=tmp_path / "wrapper")
+        wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
 
 
 @pytest.mark.parametrize("demand, variables", [
@@ -147,20 +149,20 @@ def _freeze(tmp_path, *, demand, variables, transport="pool"):
 ])
 def test_freeze_refuses_a_spool_demand_that_disagrees_with_the_environment(
         tmp_path, monkeypatch, demand, variables):
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
-    with pytest.raises(SystemExit, match=KIND):
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    with pytest.raises(submit_core.SubmissionRefused, match=KIND):
         _freeze(tmp_path, demand=demand, variables=variables)
 
 
 def test_freeze_refuses_the_opt_in_off_the_pool(tmp_path, monkeypatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
-    with pytest.raises(SystemExit, match="slurm|SLURM|pool"):
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    with pytest.raises(submit_core.SubmissionRefused, match="slurm|SLURM|pool"):
         _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 1},
                 variables={SWITCH: "1", MAX: "256"}, transport="slurm")
 
 
 def test_freeze_accepts_a_declared_bound_and_normalizes_the_switch(tmp_path, monkeypatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     frozen = _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 1},
                      variables={MAX: "256"})
     assert frozen["params"]["demand"][KIND] == 1
@@ -179,11 +181,11 @@ def test_freeze_normalizes_before_the_ownership_and_stamp_fingerprints(tmp_path,
     take two action keys depending on how it was spelled.
     """
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     repo = _checkout(tmp_path)
 
     def frozen(variables):
-        return pbrun.freeze_action_template(
+        return submit_core.freeze_template(
             command=["/bin/bash", "-lc", "true"], cwd=repo, logical_cwd=".",
             demand={"cpu": 1, "mem_gb": 1, KIND: 1},
             placement={"required_tags": []},
@@ -195,18 +197,18 @@ def test_freeze_normalizes_before_the_ownership_and_stamp_fingerprints(tmp_path,
             checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
             exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
             progress=None, profile=None, container_image_refs=(),
-            wrapper_dir=tmp_path / "wrapper")
+            wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
 
     default = frozen({MAX: "256"})
     explicit = frozen({SWITCH: "1", MAX: "256"})
     assert default["log_name"] == explicit["log_name"]
     assert default["stamp_name"] == explicit["stamp_name"]
-    assert (pbrun.seal_action_from_template(default)["action_key"]
-            == pbrun.seal_action_from_template(explicit)["action_key"])
+    assert (submit_core.seal(default)["action_key"]
+            == submit_core.seal(explicit)["action_key"])
 
 
 def test_freeze_accepts_the_derived_demand(tmp_path, monkeypatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     frozen = _freeze(tmp_path, demand={"cpu": 1, "mem_gb": 1, KIND: 2},
                      variables={SWITCH: "1", MAX: str(GIB + 1)})
     assert frozen["params"]["demand"][KIND] == 2

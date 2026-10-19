@@ -19,15 +19,15 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
-import pbrun  # noqa: E402
+from prismabuild import submission  # noqa: E402
 from prismabuild import owned_tree  # noqa: E402
 
-FLEET = Path(__file__).resolve().parents[1] / "tools" / "fleet"
+SOURCE = Path(__file__).resolve().parents[1] / "src"
 HOLDER = """\
 import sys
 sys.path.insert(0, sys.argv[1])
-import pbrun
-with pbrun.owned_snapshot_directory() as workspace:
+from prismabuild import submission
+with submission.owned_snapshot_directory() as workspace:
     (workspace / "objects").mkdir()
     print(workspace, flush=True)
     sys.stdin.readline()
@@ -36,7 +36,7 @@ with pbrun.owned_snapshot_directory() as workspace:
 
 def _holder(scratch: Path) -> tuple[subprocess.Popen, Path]:
     process = subprocess.Popen(
-        [sys.executable, "-c", HOLDER, str(FLEET)], stdin=subprocess.PIPE,
+        [sys.executable, "-c", HOLDER, str(SOURCE)], stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, text=True, env={**os.environ, "TMPDIR": str(scratch)})
     line = process.stdout.readline().strip()
     assert line, f"the holder never built its workspace (rc={process.poll()})"
@@ -44,7 +44,7 @@ def _holder(scratch: Path) -> tuple[subprocess.Popen, Path]:
 
 
 def _snapshot_once() -> None:
-    with pbrun.owned_snapshot_directory() as workspace:
+    with submission.owned_snapshot_directory() as workspace:
         (workspace / "objects" / "pack").mkdir(parents=True)
 
 

@@ -29,16 +29,16 @@ def test_capacity_uses_available_not_root_free_and_counts_occupied_bytes(tmp_pat
 def test_remint_shrinks_only_free_tokens(tmp_path, monkeypatch):
     from prismabuild import local_tier
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     spec = policy(tmp_path)
     monkeypatch.setattr(local_tier.os, "statvfs", lambda _: sample(125))
     assert local_tier.mint_local_tier_capacity(queue, "test-host", spec)["capacity"]["local_gib"] == 65
-    ledger = queue.tier_ledger("local:test-host")
-    assert ledger.acquire("a" * 64, {"local_gib": 4})
+    ledger = queue.tier('local:test-host')
+    assert ledger.take('a' * 64, {'local_gib': 4})
     monkeypatch.setattr(local_tier.os, "statvfs", lambda _: sample(10))
     local_tier.mint_local_tier_capacity(queue, "test-host", spec)
-    assert ledger.held()["local_gib"] == 4
-    assert not list(ledger.free_dir.glob("local_gib-*"))
+    assert ledger.holdings()['local_gib'] == 4
+    assert not list(ledger.paths.free.glob('local_gib-*'))
 
 
 @pytest.mark.parametrize("avail,size,allowed", [(100, 40, True), (79, 40, False), (100, 60, False)])
@@ -55,12 +55,12 @@ def test_precopy_checks_both_d1_limits_and_docker_allowance(tmp_path, avail, siz
 def test_reservation_is_all_hosts_or_none(tmp_path):
     from prismabuild import local_tier
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.mint_tier_capacity("local:one", {"local_gib": 1})
-    queue.mint_tier_capacity("local:two", {"local_gib": 0})
+    queue.records.ensure_layout()
+    queue.tier('local:one').mint({'local_gib': 1})
+    queue.tier('local:two').mint({'local_gib': 0})
     with pytest.raises(ValueError, match="two"):
         local_tier.reserve(queue, "b" * 64, ["one", "two"], GIB)
-    assert queue.tier_ledger("local:one").held() == {}
+    assert queue.tier('local:one').holdings() == {}
 
 
 def test_local_role_and_policy_are_published_but_not_activated():

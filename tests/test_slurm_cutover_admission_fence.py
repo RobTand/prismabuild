@@ -27,6 +27,7 @@ and the ``chmod`` tests need no privilege because the directory is the test's
 own.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import json
 import os
@@ -45,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_install_scripts import (  # noqa: E402
     FAKE_BOX,
@@ -418,7 +420,7 @@ def test_publish_into_a_fenced_queue_raises_the_named_refusal(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     (queue.root / pool.PoolQueue.FENCE_NAME).write_text(
         json.dumps({
             "schema": "prismaquant.prismabuild.slurm_cutover_fence.v1",
@@ -428,7 +430,7 @@ def test_publish_into_a_fenced_queue_raises_the_named_refusal(
             "reason": "fleet/slurm/cutover.sh is retiring the pull queue's "
                       "execution plane",
         }), encoding="utf-8")
-    (queue.root / pool.READY).chmod(0o2555)
+    (queue.root / pool.record_store.READY).chmod(0o2555)
 
     with pytest.raises(pool.PoolContractError) as refusal:
         queue.publish(**_publication(tmp_path))   # type: ignore[arg-type]
@@ -436,7 +438,7 @@ def test_publish_into_a_fenced_queue_raises_the_named_refusal(
     assert "the pull queue is fenced" in str(refusal.value)
     assert "cutover.sh" in str(refusal.value)
     assert "sparky" in str(refusal.value)
-    assert not (queue.root / pool.READY / f"{KEY}.json").exists()
+    assert not (queue.root / pool.record_store.READY / f"{KEY}.json").exists()
 
 
 @requires_an_unprivileged_user
@@ -447,14 +449,14 @@ def test_an_unwritable_ready_with_no_marker_still_refuses_by_name(
     missing explanation is not permission to proceed."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    (queue.root / pool.READY).chmod(0o2555)
+    queue.records.ensure_layout()
+    (queue.root / pool.record_store.READY).chmod(0o2555)
 
     with pytest.raises(pool.PoolContractError) as refusal:
         queue.publish(**_publication(tmp_path))   # type: ignore[arg-type]
 
     assert "is not writable" in str(refusal.value)
-    assert str(queue.root / pool.READY) in str(refusal.value)
+    assert str(queue.root / pool.record_store.READY) in str(refusal.value)
 
 
 def test_an_open_queue_still_publishes(tmp_path: Path) -> None:
@@ -466,7 +468,7 @@ def test_an_open_queue_still_publishes(tmp_path: Path) -> None:
     path = queue.publish(**_publication(tmp_path))   # type: ignore[arg-type]
 
     assert path.exists()
-    assert path.parent.name == pool.READY
+    assert path.parent.name == pool.record_store.READY
 
 
 @requires_an_unprivileged_user
@@ -476,16 +478,16 @@ def test_pbrun_surfaces_the_refusal_as_a_line_not_a_traceback(
     """The submitter reads this, so it is a message and an exit status."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     (queue.root / pool.PoolQueue.FENCE_NAME).write_text(
         json.dumps({"reason": "fleet/slurm/cutover.sh is retiring the pull "
                               "queue's execution plane",
                     "fenced_by": "sparky", "fenced_unix": "1788600000"}),
         encoding="utf-8")
-    (queue.root / pool.READY).chmod(0o2555)
+    (queue.root / pool.record_store.READY).chmod(0o2555)
 
-    with pytest.raises(SystemExit) as exit_status:
-        pbrun.publish_or_refuse(queue, _publication(tmp_path))
+    with pytest.raises(submit_core.SubmissionRefused) as exit_status:
+        submit_core.publish_or_refuse(queue, _publication(tmp_path))
 
     message = str(exit_status.value)
     assert message.startswith("pbrun: ")

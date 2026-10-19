@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -16,6 +17,18 @@ class PrismaBuildError(RuntimeError):
 
 class ActionContractError(PrismaBuildError, ValueError):
     """An action, closure, receipt, or worker identity is not exact."""
+
+
+def unique_json_object(
+    pairs: list[tuple[str, object]], *,
+    duplicate_error: Callable[[str], ValueError],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise duplicate_error(key)
+        result[key] = value
+    return result
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -29,6 +42,11 @@ def _canonical_bytes(value: object) -> bytes:
 def sorted_json(value: object, *, allow_nan: bool = True) -> str:
     """Sorted default JSON text, including the existing non-finite spelling."""
     return json.dumps(value, sort_keys=True, allow_nan=allow_nan)
+
+
+def sorted_diagnostic_json(value: object) -> str:
+    """Sorted default JSON text, rendering diagnostic objects with str."""
+    return json.dumps(value, sort_keys=True, default=str)
 
 
 def _sorted_json_bytes(value: object, *, allow_nan: bool = True) -> bytes:
@@ -86,3 +104,32 @@ def stream_sha256(path: str | Path, *, offset: int = 0,
                   length: int | None = None) -> str:
     """Chunked SHA-256 of a file range; a short file hashes what it has."""
     return stream_digest(path, offset=offset, length=length).hex()
+
+
+def decode_strict_json(raw: bytes, *, where: str) -> object:
+
+    def reject_constant(value: str) -> object:
+        raise ActionContractError(f"{where} contains non-finite number {value}")
+
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=lambda pairs: unique_json_object(
+                pairs, duplicate_error=lambda key: ActionContractError(
+                    f"{where} contains duplicate key {key!r}")),
+            parse_constant=reject_constant,
+        )
+    except ActionContractError:
+        raise
+    except RecursionError as exc:
+        # A document nested deeper than the interpreter's stack is hostile
+        # durable input too: normalize it into the same fail-closed
+        # PrismaBuild vocabulary instead of letting an implementation-specific
+        # parser exception escape the refusal API (#1446).
+        raise ActionContractError(f"{where} nests too deeply for strict JSON") from exc
+    except (UnicodeDecodeError, ValueError) as exc:
+        # ``json.loads`` can raise a plain ValueError when an integer exceeds
+        # Python's configured digit limit.  Durable hostile input must stay in
+        # the fail-closed PrismaBuild error vocabulary instead of escaping as
+        # an implementation-specific parser exception.
+        raise ActionContractError(f"{where} is not strict UTF-8 JSON") from exc

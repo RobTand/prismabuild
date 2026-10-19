@@ -39,13 +39,11 @@ and across three container nodes built from the fleet's own `slurm.conf`
 on the fleet: the install needs root, which is Rob's, and
 `fleet/slurm/install.sh`, `verify.sh`, `cutover.sh` and `rollback.sh` are
 the operator's four steps if the migration resumes. `tools/fleet/pbcampaign.py`
-and `pbwait.py` work over either transport. `src/prismabuild/slurm.py` is the
-earlier durable-state SLURM adapter, superseded by the lane (see "Durable
-SLURM submission" below). The optional asset/DAG adapter lives in
-`src/prismabuild/dagster.py`; it constructs deterministic assets from sealed
-action keys, binds each edge to an expected CAS output digest, and materializes
-only after re-reading that receipt and payload from the CAS. Dagster and the
-proposed observability stack remain uninstalled.
+and `pbwait.py` work over either transport. The earlier durable-state SLURM
+adapter and the Dagster adapter were retired
+with Rob's authorization on 2026-10-16 (C16/B13). Their modules and optional
+extras are removed; the retained lane, job entry, CAS and pool contracts stay
+in place. The proposed observability stack remains uninstalled.
 
 Worker-offer freshness is evaluated after the complete directory and record
 scan. An offer that expires during any read is excluded, including an offer
@@ -154,11 +152,84 @@ instead of refreshing it on no evidence (#16). The snapshot is advisory, as the
 in-process scan was: an intervening claim wins at the rename. This removes
 scan stalls from the worker's wait, but shared transition, lease and token I/O
 remain synchronous and still need ownership-safe recovery qualification (#266).
+
+`pool._ClaimReservation` owns one claim frame's host handle, borrow and probe
+receipts, tier handles and verified funding names. Its named exit policies
+preserve cleanup order, uncertain spent probes and selective funding retention.
+Handled rollback returns the same resources before and after claim persistence;
+only the restoration of ready bytes and lease removal differ. Persisted reaper
+recovery remains separate and uses no reconstructed frame receipts. Admission
+facts, decisions, denial writes and lock scopes remain in `PoolQueue`.
+
 The abandonable fork/JSON/deadline/FD-isolation machinery is shared in the
 private `prismabuild._bounded_reader` boundary; `pbstatus.bounded` and
 `pbstatus.Deadline` preserve their diagnostic interfaces. Callers still own
-and fence retained readers by their exact PID/starttime identity. This
-infrastructure does not certify a complete measurement census: `ready_items`
+and fence retained readers by their exact PID/starttime identity.
+`prismabuild.action_wait` owns the action-wait error types, bounded-read result
+translation, retained-reader polling, delivered-reader scope and timing defaults.
+The synchronous and detached frontends, campaign window and canary import that
+owner directly. `pbrun` no longer exports those internal wait helpers. The
+generic reader mechanism and persistent scope-owned protocol are unchanged.
+The synchronous and detached wait loops share `action_wait.await_action`.
+The synchronous and detached profiles preserve deadline clipping, the final
+synchronous reread and immediate detached preemption handoff at expiry.
+Attachment reads remain strict outside an active synchronous await. Immutable
+verification keeps its own finite read budget. Each await owns distinct typed
+retained and delivered-reader populations; only the original absolute deadline
+is shared across detached-key threads. The ordinary reader wire shape remains
+`section`, `pid`, `starttime_ticks` and `since_unix`. Strict decoding preserves
+those values on serialization. Malformed reader identities retain their raw
+records, refuse recovery and start no second reader. The existing own-child
+waitpid and SIGCHLD behavior is preserved; ordinary waits acquire no persistent
+ownership fence or new pidfd.
+`action_client.await_pool_outcome` returns the observed ending, typed client
+verdict and whole-client reader history. Its renderer consumes those captured
+facts without reading the queue again. `report_pool_outcome` is the integer
+shell adapter; the former integer wait API and its callers are retired together.
+A direct wait owns a reader-history scope; a wait inside a client joins that
+client's existing scope. Ordinary nested client scopes remain independent.
+Only an active collector can certify a complete client history. Outside a
+collector, history is incomplete and cannot authorize read-only recovery.
+Unreadable terminal data has a distinct verdict and retains exit 1. This
+separation preserves the existing human output and exit selection. The typed
+core takes `WaitUntil` or `ProbeOnce`; its shell adapter retains `wait_s`.
+Read-only recovery passes the original absolute deadline to the core.
+The private event protocol bounds one client's identity and ending to two
+1 KiB records. Its parent launcher owns a fresh pipe for each process, drains
+events alongside human output and closes the parent's writer after `Popen`.
+After the client exits it reads only the remaining bounded bytes and stops
+without waiting for pipe EOF. A descendant retaining the writer cannot extend
+that wait. The descriptor is private client transport; it is not an action
+input. `pbrun` validates it before preparation can fork, emits the accepted
+identity once and then emits one typed ending. Client report scopes cover
+in-process campaign submissions; later waiter threads own separate scopes.
+
+`ClientExecution` records the selected client return code separately from the
+launcher return code, scheduler state and signal, action return code and signal,
+and receipt-published fact. SLURM retains its receipt precedence: a receipt
+selects client success even after a scheduler failure, while scheduler exit zero
+without a receipt selects failure. Unknown scheduler state and unknown submission
+fate remain unsettled results, not patience expiry or execution failure.
+
+`pbtest` obtains identities, offer retries, recovery and execution timeouts from
+this channel. Quoted action output cannot select those decisions. Recognizing
+SLURM `TIMEOUT` as an execution timeout is an explicit classification correction;
+the former label scan missed it. Human diagnostics and native test records remain
+output. ENOSPC text remains a display classification. The eight former prose
+questions and `runpy` CLI recovery are retired. A missing or contradictory event
+stream authorizes no retry or recovery. The test frontend reports a channel
+problem once per shard; this diagnostic does not change the process or test
+verdict. Package recovery runs once, reads the
+original pool generation, and emits an ending on a fresh pipe without submitting.
+
+Cached replay uses a typed result digest. The parent uses its configured CAS
+root, reads the sealed request, verifies the receipt, compares the announced
+result digest and asks Core for the verified result path. A foreign payload
+path, ambiguous announcement or different digest grants no replay. Replay
+failure preserves the client exit and original output and reports its reason.
+The frontend unit still needs qualification; full C06 also requires its NFS
+supplement, final C05 ports and the integrated suite.
+This infrastructure does not certify a complete measurement census: `ready_items`
 still supplies an advisory, potentially skipping snapshot. Reservation-aware
 current-census admission (#1419) is implemented in the private
 `_measurement_reservation` domain boundary for capacity-backed claims and
@@ -314,6 +385,11 @@ synchronous and can delay their own caller.
 
 CPU/GPU policy refusals and unfunded reservations record denial aging outside
 host admission, while retaining the candidate's per-key transition lock.
+`PoolQueue.claim` accepts optional CPU and GPU observation callables and passes
+them to the corresponding admission controllers. Without a supplied callable,
+the CPU controller keeps its host-local counter history and the GPU controller
+reads the trusted broker snapshot. Sampling still occurs at the existing
+decision and evidence reads, with the same per-pass caches and exclusion.
 Each host also keeps a bounded, best-effort latest claim-denial record per
 action generation in its local admission state. It names the exact branch and
 the controller decision/sample already consumed, never a diagnostic resample.
@@ -1029,22 +1105,90 @@ the mutable rows for the same reason it follows a preemption successor: the
 waiter's generation is the one it submitted, and a newer generation's ending
 is never reported as this run's.
 
+An old claim's requeue collision with a verified newer READY publication also
+has an exact ending, distinct from an execution verdict. The queue retains
+`prismabuild.publication_superseded.v1` at
+`publication-endings/<key>/<attempt_generation>.json`, with the original
+identity and the actual successor item observed under the key transition
+lock. The decision proves matching key, usable pool-item addressing and
+ordering, valid tier-key structure, positive host demand, and finite strictly
+newer generation. The host-demand rule accepts any positive host resource;
+it requires neither both CPU and memory nor a current offer or fit. Oversized
+timestamp conversion is a generation contract error, retaining the same strict
+history validation. Same-generation
+retries grant no supersession. Malformed, unreadable or uncertain successor
+evidence retains the original claim/tombstone authority and preserves READY.
+The immutable first decision wins on retries even if READY later changes.
+Existing attempt outcomes and their logs remain unchanged; the decision grants
+no execution, receipt, resource release, successor-follow or resubmission claim.
+`PoolQueue.publication_ending` reads one deterministic address, and its public
+`decode_publication_supersession` validates the same proof from bounded-reader
+IPC without queue I/O. Neither scans untyped timestamped dropped records.
+The value is `endings.PublicationSupersession`; `endings.ObservedEnding`
+distinguishes it from an execution or withdrawal record. These types have one
+package owner. The former Pool class and pbrun type alias are removed, and all
+internal callers use the package types directly.
+
+A retained finish tombstone is the recovery journal for an interrupted
+collision. Its existing cleanup still checks actual ownership and retains
+uncertainty. Under the same key lock, after cleanup, a verified newer READY
+can conclude the old publication through the same immutable decision before
+the old tombstone is filed and removed. An old exact execution or withdrawal
+ending suppresses supersession. A claimed successor's resources and lease are
+never the old tombstone's to release. No original claim is restored beside a
+newer READY merely to reconstruct an ending, and no synthetic attempt is
+created for an unstarted release. The actual validated READY read establishes
+live ownership even when an earlier existence lookup returned a cached negative.
+
+Exact pool waiters expose the publication ending as a typed value rather than
+an execution summary. It retains the watched generation; only the existing
+verified preemption lineage changes which generation a waiter follows.
+Execution/withdrawal evidence for the exact generation takes precedence, and
+an exact publication ending outranks an unstamped legacy terminal fallback.
+Bounded IPC uses the queue's public decoder for the same immutable proof.
+Unavailable or invalid publication evidence is an observation I/O failure 74;
+the existing immutable attempt-history integrity rules remain separate.
+The publication schema or `superseded` status in an execution terminal slot,
+execution IPC branch or execution renderer is unavailable evidence, not a
+publication or execution verdict. Verified exact immutable execution retains
+precedence over a malformed legacy candidate, and ordinary legacy execution
+fallback remains supported. Only the typed publication branch decoded by the
+queue may report supersession.
+`pbrun` reports original and successor identities and exits 76 without CAS
+success or attempt-log rendering. An action's own 76 is reserved and maps to
+ordinary failure 1, with its actual number retained in the record.
+`pbwait` returns `status: superseded`, original `published_unix`, exact
+`superseded_by_published_unix` and `succeeded: false`, with no execution,
+receipt or cleanup verdict. Aggregate precedence is observation error 74,
+ordinary failure 1, supersession 76, waiting 75, success 0.
+Campaigns stop publishing their suffix on supersession while preserving that
+identity and actual READY/CLAIMED/tombstone/late-finish occupancy. A publication
+ending grants no free slot; an unreadable occupancy check reports 74.
+The staged-wait canary accepts no execution evidence from a publication ending.
+
 **A mutable ending carries a bounded tail of a stream, not the stream
 (#1203).** An action that prints megabytes made the terminal row itself the
 bulk: `pbstatus` bounds an ending record at 8 MiB, so one 8.4 MB stdout
 filed a row no reader could open, and a requeued record carried the same
 stream into every discovery read. The mutable row now carries only the last
-64 KiB of each stream (`pool.TERMINAL_STREAM_TAIL_BYTES`), decoded
+64 KiB of each stream (`endings.TERMINAL_STREAM_TAIL_BYTES`), decoded
 permissively so a code point the cut split still renders, beside the stream's
 full byte count (`stdout_bytes`/`stderr_bytes`), whether it was cut
 (`stdout_truncated`/`stderr_truncated`), and the immutable attempt log that
 keeps every byte (`stdout_log`/`stderr_log`, the same first-writer-wins,
 content-addressed file `archive_attempt` already writes, with its path, byte
-count and digest). `adopted_attempt_summary` is the one writer of that shape,
+count and digest). `endings.resolve_attempt` is the one writer of that shape,
 so `finish`, the late finisher, the stale-claim reaper and preemption
 successor recovery file it identically, and receipt reconciliation accepts
 that same bounded form or, for endings filed by the pre-#1203 runtime, the
 legacy form carrying the full streams inline — and nothing else.
+`PoolQueue.attempt_ending` captures verified immutable rows through
+`attempt_outcomes`, then invokes that pure reducer. The reducer receives the
+existing contract-error constructor and self-contained output retry-stop
+validator as required pure dependencies. It reads no queue, log or current
+funding. Guard order, first-writer disposition, provenance and return-key order
+are preserved. The former `adopted_attempt_summary` method is removed and every
+internal reader and writer uses the new boundary.
 Readers that scan the last line of a stream (the canary legs, worker stderr
 tails, `pbrun`'s on-screen diagnostics) keep their answer inside the tail,
 and a reader that needs every byte follows the named log. `pbstatus` renders
@@ -1084,9 +1228,15 @@ is the one key-level rule every such reader now follows, built as one
 capture and one pure rule: `read_terminal_candidates` takes one read of the
 three mutable terminal rows (`done/`, `failed/`, the visible `withdrawn/`
 marker; immutable withdrawal decisions stay the generation-scoped waiter's
-evidence) and reports what it could not read, and `resolve_ending` orders
+evidence) and reports what it could not read. `endings.resolve_current` orders
 that capture with no further reads. The unique newest finite
 `published_unix` answers and the other readable candidates are history.
+The pure selector is a package operation. Direct capture consumers in action
+result verification, checkout recovery and MCP call it. The old
+`PoolQueue.resolve_ending` method is removed. `PoolQueue.current_ending` retains
+the fresh capture operation. `endings.publication_generation` owns the existing
+finite timestamp rule, including linked-attempt validation.
+
 `supersedes_terminal` is historical evidence the retiring writer filed, not
 current authority: it names the generation a later record retired, and a
 slot it points into may since have been replaced by a newer one, so it
@@ -1114,6 +1264,22 @@ re-deriving it inside the kept-listing cache would either read outside the
 retained versions or pin a stale answer beside a replaced slot. The
 exporter's gauges do not consume the field, and the limit is stated where
 the kept path is defined.
+
+Generation-bound selection belongs to `endings.resolve_run`, a pure query over
+`RunCapture`. It requests withdrawal, archive, publication or preemption inputs
+only when the existing selection order needs them. `pbrun.outcome_poll` fulfills
+those requests through its concrete readers and returns the answer. Each poll
+starts with a fresh capture; an uncaptured query input is separate from an
+absent file or an unreadable record. Exact evidence still outranks a legacy
+unstamped ending, and publication supersession retains its separate type.
+Run equality and legacy fallback retain their existing rules; the finite
+ordering of point-in-time status does not replace them.
+
+`endings.preemption_successor` supplies the common causal-handoff rule for
+waiters and MCP. The waiter captures and selects under the existing key
+transition lock. MCP keeps its unlocked, read-only capture and marks that
+limitation in its report. Both follow the earliest matching actual handoff,
+without following an unrelated publication or changing the queue.
 
 The synchronous pull-queue path in `pbrun` reads one terminal snapshot at a
 time in an isolated child with a five-second read budget. That snapshot covers
@@ -1545,13 +1711,12 @@ subprocess SIGKILL fault test covers death after result/blob and receipt-temp
 staging but before canonical receipt publication. This is process-fault
 coverage, not power-loss or deployed cross-host-lock evidence.
 
-`run-local` also has one qualification-only, opt-in causal hook:
-`--initial-miss-rendezvous /absolute/manifest.json`. It proves that two exact
-worker processes both observed an initial miss against the same configured CAS
-root before either can
-reach the output lock and publish. It is inert when unset, is not entered on an
-initial cache hit, and is incompatible with `--recompute`. This proves worker/
-miss contention; it makes no task-argv timing claim. The output lock serializes
+`run-local` rechecks the CAS after acquiring the output lock. Two workers
+that initially miss on the same action, CAS and output produce one task
+execution and one receipt; the second worker returns `cache_hit`. A controlled
+two-process test owns the initial-miss barrier. The former qualification-only
+`--initial-miss-rendezvous` protocol was retired by Rob's 2026-10-16 decision.
+The output lock serializes
 workers by the canonical physical path of the declared output, whatever
 checkout root and working directory the caller spelled it with, so nested
 roots naming one file share one lock. Workers whose declared outputs are
@@ -1719,6 +1884,16 @@ internal refactor that would change any of these fails that test. Changing the
 contract, including adding a name, bumps `SDK_VERSION` and updates this section
 in the same change.
 
+`PoolQueue` is exported as the queue handle used by the documented SDK calls.
+Its construction and those calls' behavior remain supported. Exporting the
+type does not version every scheduler, storage or path helper reachable as a
+Python attribute. This refactor moves those implementation operations to
+`queue.funding`, `queue.tier(...)` and `queue.records`, and migrates their
+callers. A queue method with an explicit supported client contract still
+requires a version or deprecation decision before that contract changes.
+An empty caller census does not remove that obligation. In particular,
+SDK6 retains the documented first-time allocation performed by `commit_batch`.
+
 **How a client loads it.** Inside an action, PrismaBuild injects
 `PRISMABUILD_READER_HELPER_ROOT`, the immutable root of the executing runtime
 generation. A client imports `prismabuild.client` from `<root>/src`, so the
@@ -1741,6 +1916,13 @@ names the generation root, never `src`; the client appends `src` itself.
 | Identifiers and digests | `ID_PATTERN`, `ENV_NAME_PATTERN`, `canonical_sha256` |
 | Liveness | `TIER_LOOP_LIVENESS_S`, `TIER_RECORD_SCHEMA` |
 | Capabilities | `CAPABILITIES`, `DECOMPOSITION_TAG` |
+
+`prismabuild.data_manifest` owns manifest parsing, validation, format limits and
+the declared-input identifier. The SDK keeps its existing manifest names and
+version 6. The parser uses Core's existing validation helpers; Core does not
+import the manifest module. Manifest changes therefore stay outside the
+attested run-local and profiling implementation. `manifest_layout` retains
+the pure read-order operations.
 
 Most names are the internal objects, re-exported unchanged. The SDK defines
 five functions of its own, each because the behaviour a client needed had no
@@ -1774,7 +1956,7 @@ public name:
   for each input named in `input_limits`, its owned bytes under that cap. Every
   read is bounded before it is consumed: the selected terminal row, the
   selected immutable attempt, that attempt's stdout, the sealed request and
-  the exact execution receipt each go through Core's stable, no-follow
+  the exact execution receipt each go through the native stable, no-follow
   regular-file reader. The result cap is applied before the payload is opened
   or hashed, the selected attempt's stdout is the only log read, and no
   historical attempt expansion or canonical action-winner fallback runs. The
@@ -1810,14 +1992,17 @@ public name:
   are never exported. This is provenance, not permission to acquire a lease,
   deploy a runtime, change fixture pins or claim application acceptance.
 - `bind_standard_capture_command(request)` proves that a validated request is
-  pbrun's standard captured-log recipe, byte for byte: it reconstructs the one
-  wrapper pbrun seals from the request's `environment.variables.PATH`,
-  `params.command` and `task.result_path` and requires `task.argv` to equal it.
+  pbrun's standard captured-log recipe, byte for byte. The shared
+  `movement_actions.capture_argv_matches` reconstructs the positional recipe
+  and the retained S5 inline recipe from `environment.variables.PATH`,
+  `params.command` and `task.result_path` and requires `task.argv` to equal one.
   The generic result reader returns the sealed request honestly but does not
   claim this binding, because `validate_action` checks the schema and not the
   executed argv. The first implementation supports the standard captured-log
   result only (`result_path` is the captured log's name); a file-result,
-  scratch-recorder, legacy or other wrapper refuses explicitly. It parses no
+  scratch-recorder or other wrapper refuses explicitly. Older capture recipes
+  predating S5's scoped gnutee/tee selection remain unsupported by this binder.
+  It parses no
   shell and imports no CLI.
 
 Two read-only answers are published outside the SDK, as module-level names
@@ -1841,6 +2026,40 @@ advertised without the code behind it. The SDK's scratch naming additions
 grant no deletion authority; the versioned pool input below supplies the
 opt-in lifetime contract. A naming-only client is not evidence of a deployed
 finalizer.
+
+### Complete shard verdict and invocation progress (C26)
+
+`pbtest_outcomes.judge_shards` owns shard and population judgment. Callers pass
+raw client observations and an independent `requested_files` roster. The owner
+returns failing node IDs, unobserved files, all reconciliation/completion
+problems and qualified runtime refusal. Missing or duplicated assignments,
+missing summaries, unexplained client endings and contradictory present
+completion records leave coverage unknown. A historical absent completion
+record remains readable. Collection-only and positively excluded quanta keep
+their existing rules; an entirely empty requested population cannot be green.
+`pbtest`, `pbmergeq` and the receipt shape gate consume this same judgment.
+The shape gate also supplies its exact required passing-node roster.
+An outer client exit of 1 can report ordinary shard test failures. Other
+nonzero outer exits leave the requested files unknown even when the shard
+records contain test failures; the known failing nodes remain in the verdict.
+
+The sealed recorder emits its first `prismabuild.pbtest_preflight.v1` decision
+before importing pytest. Dependency-pin refusal is typed at that boundary;
+an accepted decision prevents later test output from inventing runtime refusal.
+The coordinator records interpreter-absent refusal directly from eligibility.
+Human output is presentation and cannot control either refusal or progress.
+
+`--json PATH` retains its list report and atomically writes the companion
+`PATH.progress.json` using `prismabuild.pbtest_progress.v1`. Each invocation has
+a UUID, configured launch entrypoint and actual producer generation. Producer
+PID/path are diagnostic, so same-generation wrappers may fork or use runpy.
+Runner binds progress to its pre-launch identity and rejects stale, invalid or
+decreasing snapshots. Client completions advance as they occur, independently
+of final display order. The terminal companion carries counters/client statuses,
+refusal and report digest, without duplicating verdicts or populations. The
+report is published atomically before its terminal companion; failure to write
+requested output makes the client unsuccessful. Coordinator invocation variables
+are stripped before every submission/recovery child, preserving sealed identity.
 
 ### Generated files in a pbrun checkout
 
@@ -1889,6 +2108,14 @@ logical tasks and necessary calibration/residency boundaries; PB must not guess
 how to split an opaque command or modify a published execution unit.
 The ordinary row controller retains `--max-inflight`; logical requests refuse
 that option until bounded child publication is supported.
+
+`decomposition.DataPlans` owns the immutable `data-plans.json` path,
+first-writer publication, losing-writer read-back and strict parent/child
+identity checks. Its constructor captures the record path without I/O.
+The campaign retains residency graph preparation and per-child plan checks.
+Child record checks remain lazy so an earlier invalid residency plan still
+fails before a malformed later child identity. Existing bytes, first-writer
+authority and public campaign refusal messages remain unchanged.
 
 ## Test fanout submission
 
@@ -2241,7 +2468,10 @@ PrismaBuild makes two kinds of directory for a single owner, and takes each
 back even when the owner is killed: a pbtest attempt's base temp
 (`<tmpdir>/pb-<mkdtemp suffix>`, or a sealed `<root>/<key>/<attempt>`) and a
 pbrun snapshot workspace (`<TMPDIR>/pbrun-snapshot.<mkdtemp suffix>`).
-`src/prismabuild/owned_tree.py` is the one implementation behind both.
+`src/prismabuild/owned_tree.py` owns locking, retention and removal for both.
+`submission.owned_snapshot_directory` wraps the snapshot workspace,
+`pbtest_owned_temp` owns the carried worker programs, and
+`worker_log_retention` owns the supervisor's bounded log pruning.
 
 - **Liveness is an owner lock, never age.** The owner creates a regular file
   and holds it `flock`-ed for its whole life: `pb-owner.lock` inside the tree,
@@ -2331,7 +2561,7 @@ larger cluster.
 ## Deployed execution plane and optional target services
 
 The repository implements and tests the PrismaBuild core, the live pull-queue
-transport, the SLURM lane, and optional Dagster definitions. The shared
+transport and the SLURM lane. The shared
 CAS/pull queue and three worker hosts are live. SLURM daemons, `slurmdbd`,
 Dagster, and the listed telemetry services are not installed.
 
@@ -2353,8 +2583,10 @@ Dagster, and the listed telemetry services are not installed.
    hard requirements point at it: (a) native asset memoization keyed by
    `code_version` + upstream input versions — exactly the cache model below;
    (b) best-in-class live observability (run timelines, per-step logs, asset
-   lineage/staleness UI). Known seam we own: Dagster→sbatch run-launcher
-   glue is community-grade (~100 LoC).
+   lineage/staleness UI). This is the historical choice, not an installed
+   service or a current adapter contract. Rob retired the adapter built on
+   the superseded SLURM journal on 2026-10-16. Any future Dagster pilot needs
+   a separate implementation against retained interfaces.
 3. **CAS + pull queue on /mnt/shared** — deployed content-addressed store and
    NFS-safe dispatch plane; payload paths derive from content hashes and worker
    claims are rename-owned leases.
@@ -2663,6 +2895,17 @@ Scheduler placement is intent, not producer identity. `run-local` accepts no
 `--worker-id`, `--platform-key`, or `--host-class` arguments. Before a cache
 miss executes, `prismaquant.prismabuild.preflight_action` emits and validates a
 `prismaquant.prismabuild.worker_attestation.v2` record bound to the action key:
+
+The runtime body includes the exact `immutable_files` source identity alongside
+Core, the digest owner and any launcher. Core captures its sibling at module
+initialization, includes it in `runtime_sha256`, and rechecks it before execution
+and receipt publication. A current worker cannot publish without that member.
+Historical runtime bodies retain their original optional-member set and hash;
+readers do not invent a source identity for them. A listed retained-generation
+member must pass its sealed source check before a broker proxy can launch.
+Native-result proof reopens a listed immutable owner under the attested helper
+root on both existing proof passes. This adds no claim about historical bodies
+without the member or the ordinary package import boundary.
 
 - `platform_key` is derived from the live lower-case OS and machine plus the
   single visible NVIDIA compute capability, when present (for example,
@@ -3082,10 +3325,6 @@ regressions cover transient `2 -> 1` publication-link cleanup, transient
 `1 -> 1` link/unlink ctime churn followed by a stable pass, perpetual `1 -> 1`
 churn, and immediate content/mode/mtime/owner refusal. The focused core,
 Slurm-adapter, and Dagster-adapter suite passed `174 passed, 1 skipped`.
-The Slurm durable-state adapter now calls that same core primitive with
-read-only enforcement and a 16 MiB bound instead of maintaining a divergent
-single-pass copy. Adapter regressions separately pin transient ctime/nlink
-replay from a fresh FD and immediate substantive mode/mtime refusal.
 
 The exact-fix rerun is retained without overwrite at
 `/mnt/shared/prismaquant-prismabuild-validation/7acf3ad/run-20260831T035517Z-codex-live-nfs-fix`.
@@ -3146,18 +3385,7 @@ CAS bytes exist and match before execution, but the sealed argv/code remains
 responsible for resolving and consuming those bytes; process provenance is not
 an OS-level proof of every file read. Worker core/launcher identity is likewise
 receipt provenance, not action-key identity: a cache hit retains the producer
-revision that created its canonical result. Separately, Slurm submission intent
-v2 seals a self-hashed runtime object containing the exact loaded adapter-module
-bytes and configured worker-launcher bytes. Both are rehashed after the durable
-intent readback and immediately before `sbatch`; path or byte drift refuses
-without invoking the scheduler. This does not put transport code into the
-reusable action key or action request. The scheduler cannot retain the submit-
-host FD while a job is queued: the started wrapper therefore still records and
-rechecks its own earliest live snapshot, and that receipt provenance may
-visibly differ from the submission-time planned launcher if deployment changed
-after `sbatch`. Python does not expose the already-started script's parser input
-buffer, so even that early snapshot is not a cryptographic proof of the exact
-bytes the interpreter parsed.
+revision that created its canonical result.
 
 The attestation becomes `producer` in the self-hashed
 `prismaquant.prismabuild.cas_receipt.v3` receipt. CAS lookup replays its action,
@@ -3190,10 +3418,22 @@ close over worker result statuses need upgrading before consuming these results.
 
 Receipt publication fsyncs the candidate, runs the potentially longer
 action-closure and executable callback first, then rehashes the core and
-launcher as the final userspace check before the first-writer-wins hard link.
+its attested source owners and launcher as the final userspace check before
+the first-writer-wins hard link.
 There remains an unavoidable sequential interval between that final check
 returning and the `os.link` syscall; this design minimizes that interval rather
 than claiming a zero-gap filesystem snapshot.
+`immutable_files.publish_immutable` owns that byte-publication recipe and the
+shared no-follow directory operations. Its temporary inode is mode 0444 and
+fsynced before linking through the held parent descriptor. It fsyncs the parent,
+checks the winning inode and directory identity, and removes its temporary name.
+The native owner also holds the stable regular-read algorithms. Core
+exports the identical shared CASTamperError and CASUnavailableError classes. With no
+`where`, publication's
+body retains raw OSError; a supplied name retains its existing adaptation and
+cause. The directory-open and cleanup boundaries keep their own current errors.
+The isolated local-scratch producer seals the new sibling with recorder,
+local_scratch, Core and digest source, making five actual source files.
 Result-blob publication uses the same consumed-inode rule as input ingestion.
 The successful publisher already computed SHA-256 while copying into a
 private read-only staging inode. After the canonical hard link is durable, it
@@ -3216,9 +3456,7 @@ readback, hashing, and cleanup are relative to those held descriptors. Before
 accepting a read or completed publication, PrismaBuild reopens the configured
 parent path and canonical leaf and verifies their device/inode identities.
 Thus an ancestor rename-to-symlink race fails closed and never redirects a CAS
-read, write, or unlink outside the configured root. The Slurm worker likewise
-accepts only the canonical `requests/<prefix>/<action-key>.json` address and
-reads it through this anchored path after its restart guard. These guarantees
+read, write, or unlink outside the configured root. These guarantees
 depend on Linux `openat`/`O_NOFOLLOW` and `/proc/self/fd`; a returned payload
 `Path` is only evidence of the just-verified name, not a file descriptor held
 open for an arbitrary later consumer.
@@ -3254,67 +3492,31 @@ The proposed Slurm deployment's cgroup and sealed time limit remain required
 external containment; PrismaBuild has no durable local holder lease or
 lock-acquisition timeout today.
 
-#### Opt-in two-phase initial-miss rendezvous
+#### Controlled initial-miss concurrency qualification (B15, 2026-10-16)
 
-The qualification hook is called immediately after the ordinary first
-`PrismaBuildCAS.lookup(action)` returns `None` and before checkout/output path
-resolution or `_local_output_lock`. Its immutable, canonical, self-hashed
-`prismaquant.prismabuild.initial_miss_rendezvous_manifest.v1` file binds one
-normalized non-root absolute rendezvous namespace, the exact normalized
-non-root absolute CAS root used by both workers, a 128-bit lowercase-hex run
-nonce, the exact action key, exactly two sorted unique lowercase hostnames, and
-a positive finite local-monotonic timeout no greater than one day. The manifest
-must be a read-only regular inode with exactly one link and is read through the
-existing bounded no-follow stable-file primitive. The namespace has exactly
-the `arrivals/` and `ready/` directories; each phase admits only the two exact
-`<hostname>.json` leaves (plus a bounded transient private publication name).
+The initial-miss rendezvous API argument, CLI flag, schemas and coordination
+writers are retired. `run-local --initial-miss-rendezvous` rejects with exit 2
+before opening an action or constructing a CAS. No replacement production hook
+or port is introduced.
 
-For participant `i`, let `M_i` be its initial verified miss. It derives its
-hostname from `socket.gethostname().lower()`, and a self-hashed process identity
-from hostname, PID, Linux `/proc/<pid>/stat` start tick, a fresh invocation
-nonce, and the existing exact loaded-core plus optional launcher runtime
-identity. It no-clobber publishes an immutable
-`initial_miss_rendezvous_arrival.v1` record only after `M_i`. Both workers wait
-for and validate the exact complete arrival set while refusing a CAS receipt.
-Each then makes a fresh CAS-absence observation and publishes an immutable
-`initial_miss_rendezvous_ready.v1` record that binds its process/arrival and the
-canonical digest of that complete arrival set. The same absence/runtime check
-is the last userspace callback before the ready hard link. Only the exact
-complete ready set releases either worker to the output lock. Thus, for both
-participants, `M_i < arrival_i < ready_i < release < any in-protocol result
-publication`; no cross-host wall clock or realtime timestamp participates in
-the proof. A worker stopped after release may resume later and return the
-ordinary post-lock cache hit, carrying the same proof.
+`test_two_workers_recheck_initial_misses_under_output_lock` starts two real
+worker processes against one CAS and physical output. A test-owned lookup
+wrapper performs each worker's ordinary first lookup, reports its actual miss
+and waits at a bounded barrier. Once both misses and the absent receipt/output
+are observed, the test releases both workers into the production output lock
+and unmodified post-lock lookup. It joins both processes and checks one task
+execution effect, one canonical receipt, one execution receipt, valid payload
+bytes and `published` plus `cache_hit` results carrying that same receipt.
+Ordinary hit and miss result keys keep their exact pre-retirement shapes.
+An isolated production mutation bypassing the post-lock cache recheck makes
+this consumer proof fail on two actual task executions.
 
-Arrival, ready, manifest, process, and returned
-`initial_miss_rendezvous_receipt.v1` objects have closed schemas and canonical
-self-digests. Wrong action/run/manifest/host/runtime bindings, corrupt digests,
-duplicate/replayed participants, missing or extra entries, writable files,
-symlinks, special files, persistent hard links, source drift, and a CAS receipt
-visible during either worker's pre-release checks fail closed. The protocol
-does not claim atomic exclusion against an out-of-protocol receipt linked in
-the interval between the last ready pre-link callback and the ready link;
-workers released by that link may legitimately return proof-bearing hits.
-Polling and directory cardinality are bounded and use
-`time.monotonic()`; an unavailable peer times out without task argv. The second
-ready link is the logical release event. If the CAS receipt becomes visible
-while NFS still returns an incomplete ready-directory view, the worker keeps
-performing bounded exact scans through the original monotonic deadline; this
-does not misclassify a legitimate peer publication after release.
-
-This is an integrity protocol inside PrismaBuild's existing cooperative
-filesystem trust boundary, not authentication or a Byzantine quorum. SHA-256
-self-digests detect corruption and cross-contract mismatch but are unkeyed. A
-principal able to write arbitrary correctly formed files as another hostname,
-or to remove namespace entries, can fabricate or suppress the evidence.
-Qualification therefore requires the same isolated worker principal and
-ACL/WORM/retention controls already required for CAS and Slurm state. The hook
-has CPU-only hostile tests. Its exact V4 two-host run on `gx10-6b77` and Sparky
-also passed the configured shared-NFS causal path for source commit `452c6f6`;
-the frozen command, authority hashes and post-run verification are recorded in
-`docs/results/prismabuild_two_host_qualification_2026-08-31.md`. That does not
-qualify other mounts, host/power loss, live Slurm, daemon deployment, or a
-hostile namespace principal.
+This is local process-concurrency coverage. The historical two-host shared-NFS
+qualification at source `452c6f6` remains recorded in
+`docs/two_host_qualification_2026-08-31.md`; it is not qualification of this new
+source. Retained historical records are not migrated or deleted. No host/power
+loss, hostile namespace or new cross-host claim is made. The broader C20
+library-interface and manifest extraction work remains separate.
 
 The `preflight` CLI prints the same machine-readable record without executing
 the action. This is process/platform provenance, not a cryptographic quote. In
@@ -3347,288 +3549,42 @@ action key. A cache hit is the same recorded experiment, not a fresh measurement
 of the querying host. A SLURM measurement retains its host
 class (a gb10 KL never answers an x86 query).
 
-### Durable SLURM submission, polling, and cancellation (superseded, never live-validated)
+### Legacy adapter retirement (C16/B13, 2026-10-16)
 
-This section describes `src/prismabuild/slurm.py`, the adapter written before
-any scheduler existed on the fleet. The lane in `src/prismabuild/slurm_lane.py`
-replaced it on 2026-09-04 with a smaller contract (submit, wait, cancel, and
-the pull queue's terminal records) that has run against a real controller.
-The adapter stays in the tree until the decision record's Phase 3 removes it.
+Rob authorized removal of the superseded durable-state SLURM adapter and the
+Dagster adapter built on it. This lifts their Phase 3 retention hold without
+resuming the paused SLURM migration or retiring the pool. `slurm_lane.py`, its
+job entry and CLI callers remain the supported SLURM transport. Neither
+retired adapter was deployed as the fleet execution plane.
 
-Scheduler identity is shared CAS state, separate from result truth. For each
-action the adapter owns one immutable lineage:
+The retirement removes `prismabuild.slurm`, `prismabuild.dagster`, the `slurm`
+and `dagster` installation extras, and their dedicated tests. Only the retired
+adapter supplied `run-local --require-slurm-initial-start`, so that flag and
+its restart/request gate are removed; the CLI rejects the flag as unknown.
+The lane continues to materialize inside its job and invoke the canonical
+worker through `slurm_job.py`. Action validation, CAS publication, receipt
+verification and execution attestation retain their existing contracts.
 
-```text
-submissions/v2/<action-prefix>/<action-key>/
-  intent.json
-  job.json
-  transitions/polls/00000000-<ordinal>.json
-  mutations/<ordinal>.json
-```
+The retired adapter was also the sole caller of immutable publication's
+`create_parent=False` and named `where` error-mapping modes. The publisher
+now always creates parents through the no-follow descriptor walk and leaves
+OS errors to its callers. First-writer publication, prelink provenance
+verification, inode/parent readback, read-only bytes and cleanup remain.
 
-`intent.json` uses `prismaquant.prismabuild.slurm_submission_intent.v2` and
-contains a `prismaquant.prismabuild.slurm_submit_spec.v2`. It
-seals the action key; one cluster; CAS, log, checkout, worker, and SLURM
-executable paths; the closed submit environment; resources and placement; and
-the exact `max_polls`, `poll_interval_seconds`, and zero-`max_requeues` policy.
-It also seals the complete canonical worker argv.
-The submit spec also carries a self-hashed
-`prismaquant.prismabuild.slurm_runtime.v1` record for the load-time adapter
-source and configured worker-launcher source. The runtime launcher's declared
-path must exactly equal the sealed worker path, and both source identities and
-the runtime digest are strictly validated. Existing `submissions/v1` records
-remain immutable history: the v2 adapter neither parses nor migrates them.
-SLURM recompute is also sealed false. Its canonical submit-spec digest
-derives both the full `pqb-<digest>` job name and
-`prismabuild:<digest>` comment. The read-only first-writer object is published
-and re-read before `sbatch`; a changed resource, path, environment, or retry
-limit on replay conflicts rather than creating another lineage.
+The old submission journal and Dagster graph schemas have no current
+producer or reader. Existing historical records are not migrated or deleted.
+This is an intentional API retirement; it makes no new live-scheduler claim.
+This adapter unit does not retire prewarm `--stage`. Initial-miss rendezvous
+retirement is the separate B15 unit described above.
 
-The worker is deliberately not passed as `sbatch`'s positional batch script:
-Slurm copies such a script into its spool, so the executed launcher's
-`__file__` becomes a spool path and its checkout-relative core import fails.
-Instead the adapter supplies one `--wrap=exec <command>` option. The command is
-derived only from the sealed worker argv with `shlex.join`; tests round-trip
-spaces, quotes, dollar signs, and semicolons through `shlex.split` and assert
-there is no positional script. This is a controlled POSIX-shell encoding at
-the Slurm boundary, while the submitting process still uses `shell=False` and
-the task's own argv remains inside the immutable JSON request rather than shell
-text. A real Slurm launch of this path remains part of deployment validation.
+### Remaining core live-deployment gates
 
-Submission uses `--no-requeue`, and positive same-job retry is deliberately
-unavailable. This is not a temporary command-line combination: current Slurm
-uses the job's single Requeue eligibility flag for both explicit
-`scontrol requeue` and automatic/site/admin restart. `--no-requeue` therefore
-also makes explicit requeue ineligible; changing it to `--requeue` would admit
-restarts that have no durable PrismaBuild authorization. The adapter and
-Dagster `ActionSpec` reject `max_requeues > 0`, and `SlurmAdapter.requeue()`
-never sends `scontrol`. The batch argv adds `--require-slurm-initial-start`;
-before `run-local` can reach task argv, the worker requires a real numeric
-`SLURM_JOB_ID` and absent-or-zero `SLURM_RESTART_COUNT`. A malformed or nonzero
-count refuses even if a site administrator overrides the submission policy.
-Positive retry can return only with a new protocol that binds Slurm's actual
-restart counter/`Restarts` state to an authorized durable mutation claim.
-The v2 submit spec still seals the configured absolute `scontrol` path even
-though this zero-requeue protocol never executes it. That field is inert and
-over-broad provenance, not a hidden retry path. Removing it would change the
-canonical submit-spec digest and therefore requires an honest later schema/
-namespace boundary; D9 deliberately does not reinterpret v2.
-
-It also uses `--export=NIL`, not `NONE`: current Slurm defines `NONE` to invoke
-the implicit `--get-user-env` path, whereas `NIL` passes only scheduler/SPANK
-variables to the already-required absolute worker path.
-
-`sbatch --clusters=<sealed-cluster>` restricts submission to one cluster rather
-than creating federation siblings. After `sbatch --parsable` returns,
-`job.json` binds that intent to its exact cluster-qualified job id; clusterless
-output is normalized only because the submission already selected exactly that
-one cluster, and a different returned cluster refuses. A restart first reuses a
-valid binding. If the process died after scheduler acceptance but before
-binding, recovery queries `sacct --clusters=<sealed-cluster>` from the Unix
-epoch by the sealed name, requests widths large enough not to truncate the
-name/comment, and binds only one allocation row whose name, comment, and
-cluster all match. Both adoption and bound accounting queries request
-`--duplicates`: Slurm documents duplicate records after requeue, federation,
-resize, or JobID rollover, so hiding all but the newest row could hide an
-ambiguous allocation lineage. Zero rows are ambiguous between a pre-`sbatch`
-death, accounting lag, or retention loss; multiple rows, malformed rows,
-identity drift, and unknown states also refuse without another `sbatch`.
-Bound state queries are cluster-qualified; the helper's only clusterless query
-form forces `--local`, preventing federation display defaults from silently
-widening it.
-
-The poll budget and cadence survive process loss. Each canonical self-digested
-poll record includes its append wall-clock nanoseconds. Ordinals must be a
-contiguous prefix, the count may not exceed sealed `max_polls`, and a restarted
-adapter waits out the remaining sealed interval before winning the next
-first-writer claim. The interval is positive, finite, and capped at one day;
-the poll and filename counters are bounded to their eight-digit durable
-representation. Clock rollback refuses. A crash after a poll claim
-conservatively consumes it. This wall-clock protocol still requires deployed
-hosts to have bounded synchronized time; that is a live gate below.
-
-Poll replay is accelerated only by a process-local, non-authoritative snapshot.
-The first access in an adapter process (and therefore every adapter restart)
-replays and validates the complete append-only retry journal. An uncontended
-subsequent claim revalidates the exact canonical durable tail, preserves its
-timestamp for pacing, and attempts the next first-writer publication in O(1)
-journal work. A read-only progress query also probes the one expected successor;
-if another writer advanced it, the adapter invalidates the snapshot and derives
-a new one by full replay. A lost publication race follows the same invalidation
-and full-replay path before it refuses the loser. Striped process-local `RLock`s
-serialize threads sharing one adapter for the same action without globally
-serializing distinct actions, but are not—and are not presented as—cross-host
-filesystem locks. Cross-host serialization remains the no-clobber append
-itself. No durable record is compacted, rewritten, or deleted.
-
-That optimization is deliberately unavailable as terminal authority. Poll
-budget exhaustion, scheduler terminal resolution, cancellation, and success
-of an action with a durable Slurm intent all discard the cached view and audit
-the complete prefix before returning. Thus deletion/corruption hidden behind a
-still-valid tail can allow another nonterminal observation, but cannot license
-success, failure, cancellation, or budget exhaustion. Latest-step deletion or
-replacement refuses immediately in the hot loop. Complete replay remains the
-crash/restart recovery mechanism; the cache contains no state that must survive
-a process loss.
-
-The Slurm module contains no bare Python `assert` invariants. Durable-schema,
-runtime-identity, retry-policy, attempt-bound, cache-reconstruction, placement,
-worker-argv, and anchored-path assumptions all raise explicit contract,
-tamper, protocol, or local-action exceptions. An AST regression pins that
-property, so `python -O` cannot erase a refusal check.
-
-`SlurmAdapter.resolve()` itself remains an unbudgeted scheduler-observation API:
-it does **not** consume a poll claim. The native `DagsterActionRunner` enforces
-the intended pairing by calling `claim_poll()` immediately before each
-`resolve()`. A caller that invokes `resolve()` directly can issue scheduler RPCs
-without consuming the sealed `max_polls`; PrismaBuild does not yet implement a
-claim token or exact claim-to-observation consumption contract for that API.
-Accordingly the current bound applies to the native orchestrated loop, not to
-arbitrary direct `resolve()` calls. This is an explicit remaining contract gap,
-not a throughput claim.
-
-The exact merged-source CPU profile at 4,000 retained poll records is immutable
-under `/home/rob/dq-runs/prismabuild-d9-poll-cache-merged-20260831` (manifest
-SHA-256
-`189e7ddc8d9c56ff546954c5ab7a09312c5b492137ce5a10c1706cdeee416037`,
-comparison SHA-256
-`265db8e2e3871b5d274ba009ed39c447fdd31c93d1ce1b27b54770e47766a65d`).
-Against exact pre-change commit `a71680c`, eight claims after one warm replay
-on merged commit `825120c` fell from 13.003521138 s to 0.053521276 s
-(242.96x), `/proc/self/io` read syscalls from 128,226 to 162 (791.52x fewer),
-and `rchar` from 27,068,601 to 67,465 bytes (401.22x less). First complete
-replay remained 1.597760866 s versus 1.603223845 s, as required for
-restart/audit semantics. The before/after hot cProfile artifacts have SHA-256
-`5650df4b43aa8bf0698dd35b5ce6deb4ffb4dacc37a78818a3cbe9d569ff3d76`
-and `1ce2aadc0fdbc8715d5b5141b8cda93fc784124444832f37b3dc2255bb09de6e`.
-Raw `system.cpu`, `system.io`, `system.net`, and `nfs.rpc` Netdata windows from
-both active `gx10-6b77` and Sparky are included and individually hashed by the
-manifest. This is a local-filesystem CPU microprofile with host-context
-telemetry; it used no GPU or live Slurm service and does not qualify shared-NFS
-latency, a daemon, an allocation, or deployment.
-The final core/Slurm/Dagster/docs-focused suite passed `215 passed, 1 skipped`;
-the skip is the existing optional-dependency boundary.
-
-Scheduler mutations use one append-only ordinal journal. The active protocol
-emits only `cancel`: after proving the exact bound allocation is active, the
-adapter first-writer-claims the next mutation ordinal, rechecks receipt and
-scheduler identity/state, and issues at most one cluster-qualified `scancel`.
-Cancel must be the unique final mutation. Concurrent contenders have one
-winner. A crash, timeout, or command error after the claim is deliberately
-ambiguous; a restarted caller sees the final claim and never replays the RPC.
-The schema admits a future `requeue` kind so cancel and retry cannot race in
-separate journals, but the current zero-requeue policy rejects any such record.
-SLURM state directories are created component-by-component relative to held
-directory descriptors (`mkdirat` semantics), and reads, listings, and
-first-writer publication use `O_NOFOLLOW`-anchored directory descriptors.
-New directory entries and final read-only file modes are fsynced before use.
-Symlinked directory hops, noncanonical/writable files, gaps, wrong ordinals,
-excess counters, wrong identities, and self-digest mismatches refuse. This is
-a Linux/procfs implementation contract: atomic temporary publication uses the
-held parent through `/proc/self/fd` rather than reopening its pathname.
-
-This remains one allocation lineage per action. `recompute=True` is de-menued
-in the SLURM adapter: launching a second allocation after the canonical receipt
-exists would make resolve/cancel short-circuit on that old receipt and strand
-the new allocation. The adapter never silently creates a fresh job or retries
-a terminal one. Repair after an irrecoverably ambiguous or exhausted lineage
-is an explicit operator/schema action. The verified CAS receipt remains the
-sole result authority throughout.
-
-### Optional Dagster orchestration (implemented, not deployed)
-
-`prismaquant.prismabuild_dagster` is an optional-import adapter over the core
-and SLURM resource layer; importing PrismaQuant still does not import or require
-Dagster. `ActionSpec` binds the sealed action, checkout, exact SLURM resources
-and placement, zero-requeue/durable-poll policy, and content-addressed upstream
-dependencies. An edge is the tuple `(upstream action key, downstream input id,
-result sha256, result bytes)`. Graph construction refuses an edge unless that
-tuple is also present exactly in the downstream action's sealed `inputs`, and
-uses a key-sorted topological order.
-
-Native definitions use one asset key per action key and set `code_version` to
-that full key. The resource requires the single cluster name in addition to
-CAS/log/worker paths. Dagster-level retries and same-job requeues are disabled.
-`DagsterActionRunner` passes the action's poll maximum and interval into the
-sealed pre-submit identity, accepts either a new submission or adoption, loads
-durable progress, and lets the adapter pace and atomically claim every poll. A
-fresh runner therefore continues the remaining limit instead of resetting a
-Python counter. On poll exhaustion it cancels only the bound allocation and
-then re-reads the CAS, so a receipt published concurrently with a no-op or
-completed cancellation wins the race. A cache hit, upstream
-dependency, or successful SLURM resolution is accepted only after an independent
-`PrismaBuildCAS.lookup()` verifies the exact receipt, producer scope, and blob
-bytes. Dagster run and materialization state are views of CAS truth, never
-certification themselves. The optional package extra is
-`prismaquant[prismabuild]` (supported `>=1.13,<2`, checked against 1.13.20); no
-daemon, webserver, workspace, or scheduler installation is performed by the
-repository. A native-import package-level run against Dagster 1.13.20 passed
-all 18 adapter tests on 2026-08-31 (14 Torch deprecation warnings):
-
-```bash
-PYTHONPATH=/home/rob/venvs/pq-cu130/lib/python3.12/site-packages /tmp/pq-prismabuild-dagster-1.13.20/bin/python -m pytest -q tests/test_prismabuild_dagster.py
-```
-
-This is adapter compatibility evidence, not a daemon, workspace,
-materialization, or restart pilot.
-
-### Remaining live-deployment gates
-
-The state machine above is covered by mocked crash/restart/corruption tests and
-the scheduler-free two-host NFS race above; it has not submitted, adopted,
-polled, or cancelled a live SLURM job.
-Deployment still requires all of the following evidence:
-
-- The fake-command race above covers shared-CAS `intent.json`, `job.json`, poll
-  claims, and the unified mutation journal. Host/power-loss injection around
-  every file, link, directory, and scheduler-RPC boundary remains required.
-- Live `slurmctld`/`slurmd`/`slurmdbd` behavior with accounting configured to
-  retain job comments (`AccountingStoreFlags=job_comment`) for longer than the
-  adoption horizon. Exact `JobName`, `Comment`, `Cluster`, allocation-only
-  filtering, state widths, single-cluster selection, and permissions must be
-  verified on the deployed version. Purged accounting leaves an
-  intent-without-binding deliberately ambiguous; mutable/absent comments fail
-  adoption. Slurm permits an authorized user to mutate stored job comments,
-  including after completion, so the deployment must isolate the submission
-  principal or independently audit `Comment`/`JobName` mutations; these
-  scheduler fields are discovery evidence, not a cryptographic identity.
-- Crash injection immediately before/after `sbatch`, binding publication,
-  cancel-journal publication, and `scancel`, including accounting lag, stale
-  terminal jobs, numeric job-id reuse, command timeout, and concurrent
-  orchestrators. No live SLURM validation is claimed.
-- A live forced/admin restart must demonstrate that `SLURM_RESTART_COUNT` is
-  present and nonzero before the worker reaches task argv and that
-  `--no-requeue` blocks ordinary restart. Positive same-job retry remains
-  unavailable; a future implementation additionally needs trustworthy
-  scheduler `Restarts` reconciliation and exact claim-to-worker binding.
-- NTP/chrony monitoring must bound wall-clock offset between orchestrator hosts
-  because durable poll pacing uses append timestamps and refuses rollback.
-- A real Dagster daemon/webserver restart and concurrent-run pilot proving that
-  Dagster-level retry settings cannot escape through a second submission and
-  that the durable poll budget and pacing interval are preserved.
-- Storage retention and access control for the active submission namespace.
-  Read-only hard-linked files plus strict semantic/canonical validation reject
-  malformed, conflicting, writable, symlinked, and gapped state, but this is
-  not a keyed or WORM log. Individual Slurm state records are capped at 16 MiB,
-  and history/temp entry counts are bounded before loading their contents. An
-  authorized directory owner can still unlink the final member of an
-  append-only prefix; preventing or auditing that tail deletion requires the
-  deployed filesystem/ACL/backup policy.
-- The orchestrator hosts must expose Linux `openat`/`O_NOFOLLOW` semantics and
-  `/proc/self/fd`, and the worker/Slurm executable path ancestors must be
-  immutable to the submitting principal. The adapter seals and rehashes the
-  worker leaf immediately before submit, but a later scheduler launch cannot
-  retain that submit-host file descriptor across the allocation boundary.
-- Production-scale large-result NFS publication, host-loss directory
-  durability, munge/cgroup worker attestation, launcher deployment, and the
-  production-run Netdata/Prometheus evidence on both boxes remain separate
-  gates. The D9 CPU microprofile's two-host context windows are not that live
-  scheduler/production telemetry qualification.
-- The local SIGKILL test proves deterministic cleanup while `flock` exclusion
-  is available in one filesystem/process environment. Deployment must still
-  prove that the shared checkout mount enforces that lock across hosts and
-  inject host/power loss at the claim, unlink, staging-reap, and recompute
-  fsync boundaries.
+Production-scale large-result NFS publication, host-loss directory durability,
+munge/cgroup worker attestation, launcher deployment, and production-run
+Netdata/Prometheus evidence remain separate gates. Local SIGKILL tests do not
+prove cross-host lock visibility or host/power-loss behavior at claim, unlink,
+staging-reap and recompute fsync boundaries. Those core requirements survive
+the adapter retirement.
 
 ## Proposed speculative tier (not implemented)
 
@@ -3650,7 +3606,7 @@ and governed by a disk budget (≥10 % free is non-negotiable). The spelling
 
 ## Memory-pressure hypothesis (not live-validated; Rob, 2026-08-26)
 
-The adapter emits SLURM `--mem`, but this repository has not validated a live
+The lane emits SLURM `--mem`, but this repository has not validated a live
 controller/cgroup configuration or GB10 unified-memory accounting. With
 correctly requested limits and a correctly configured cluster, cgroups should
 isolate an over-budget job instead of letting the kernel OOM-kill an unrelated
@@ -3711,8 +3667,8 @@ keep streaming regardless.
 1. (May precede GLM v1, CPU-side only) Minimal SLURM: controller on dl380,
    slurmd on both Sparks, `interactive` reservation on sparky; drive
    existing scripts via sbatch unchanged.
-2. After GLM v1: observability stack; Dagster pilot on the speculative tier
-   (GLM RTN render sweep = shakedown asset); family nodes join as
+2. After GLM v1: observability stack; any Dagster pilot needs a separate
+   implementation after the C16/B13 adapter retirement. Family nodes join as
    `rocm-16g`/`strix-32g`.
 3. Then: shard heavy stages; GLM/Qwen validation fan-outs as the first
    production campaign on the full stack.
@@ -4464,6 +4420,45 @@ prewarm processes parked on the current drain. Its executing and installed updat
 hashes must match the intent. Existing actions finish naturally; this protocol
 does not interrupt or requeue them.
 
+The host's physical proof rules are loaded lazily from its root-trusted installed
+`park_proof.py` sibling. A single no-follow regular FD supplies bounded coherent
+bytes and uid/gid/mode; the updater hashes and compiles those exact bytes in a
+fresh temporary module. Its actual strict API owns `HOST_QUIESCENT`, finite
+injective drain identity, process identity and acknowledgements. No package,
+shared-runtime, bytecode or module-cache fallback can authorize a drain. Missing
+or unsafe code and unknown gates cannot certify even an empty selected census.
+Gate observations bracket the census and regular marker reads; a rollout checks
+the same captured owner's exact key again after epoch refresh before posting.
+The positive rollout wire timestamp restriction remains separate from the
+finite physical identity domain. Rotation keeps its additional generation-path,
+versioned-supervisor and worker requirements; resign keeps its distinct checks.
+Ordinary owned zero-scope client repair remains independent of physical proof or
+receipt MATCH, including when the installed proof leaf itself requires repair.
+This is source contract work, not deployment or whole-fleet qualification.
+
+The private `qualify_rollout.py` adapter runs each admitted actor inside a
+native Python container. Its updater, proof sibling, enrollment, state and fake
+gate live under container-private `/var/lib` with real root ownership. The
+participant imports that installed updater and uses its actual permanent-drop
+runtime reader, rollout reader and marker writer subprocesses. Fixture creation
+and coordinator operations use the admitted worker's effective UID and GID.
+Only installation and participant ticks restore container root. These credential
+scopes require a single-threaded process and restore credentials after errors.
+
+Each actor checks the real host UTS identity, exact PB job slice, native machine,
+source hashes and admitted CPU affinity across the container boundary. The
+ordinary Docker shim supplies containment and ownership. The container has no
+network or live broker mount. The source is read-only, and only the private
+worker-owned campaign subtree is shared writable storage. Campaign rows declare
+their already-local immutable native image, CPU1, memory3GiB, GPU0, native
+threads1 and priority -10. The container memory limit is 2GiB within that total.
+Manifest rows omit `cwd`, so admitted emission never captures a disposable worker
+checkout. Run `pbcampaign.py` from the pinned coordinator candidate checkout.
+The campaign's default working directory selects that source tree for sealing.
+The fake broker, systemctl and process census remain simulated. Source support
+does not establish ARM reader/NFS qualification or the four distinct-host
+scenario outcomes. Those gates remain required before public integration.
+
 The epoch records and `repo` pointer publish atomically but are read separately.
 If a valid pointer move falls between an updater's desired-receipt read and its
 next epoch refresh, the updater keeps its durable drain and retries with a fresh
@@ -4669,10 +4664,15 @@ an independent signature. See [client upgrades](client_upgrade.md).
 
 The storage prewarm role also checks the existing maintenance gate before each
 queue cycle. A closed, missing or unreadable gate parks the continuous process
-and records its PID/start-time marker through the worker's existing helper.
+and records its PID/start-time marker through `role_session.post_park_marker`.
 `--once` returns 75 without starting a cycle under the same conditions, including
-with `--dry-run`. An in-progress cycle finishes before the process records a
-park; disk holds and filesystem waits can therefore delay parking. At the next
+with `--dry-run`. SIGTERM and SIGINT request cooperative stop through an Event.
+Readers stop between blocks, join, abort partial stage sinks and publish the
+cycle's accounting and result before the role exits or records a park marker.
+The stop Event also interrupts both gate and post-cycle idle waits.
+An unreturned filesystem read or write can therefore delay parking. A complete
+stage entry keeps its normal publication rules; a partial entry never becomes
+a visible stage object. At the next
 boundary a changed runtime commit or generation makes the process exit for
 supervisor replacement, even while parked. One-cycle invocations return 75
 on that transition so an unperformed cycle is not reported as complete.
@@ -4719,21 +4719,23 @@ daemon:
   The same check runs at startup before the first claim, in both
   directions: a loop resurrected from a generation newer than the fleet
   retreated to refuses just as an old one does. An unreadable receipt is
-  "unknown", not "moved", and never licenses a refusal — the same rule the
-  reload fence has always kept.
+  "unknown", not "moved". The worker's typed observation boundary pauses
+  admission on unknown evidence without filing a drift incident.
 * **`--ensure` ensures the declared role, not a process's existence.** A
   running role whose argv differs from the current `fleet_boxes.json`
   declaration, or whose executable resolves outside the active generation,
   is stopped when idle and respawned from the active generation once the
   census reports it gone (since #709; a SIGTERM request is not an exit, and
   an old generation's role holds no singleton lock that could keep the
-  replacement from serving beside it). The idle rule is every restart path's:
-  SIGTERM only, never a role mid-cycle, so a stale role finishes the service
-  cycle it is inside and cycles on a later tick.
-* **Every refusal is stamped.** One `generation-drift/` record namespace
+  replacement from serving beside it). Restart paths send SIGTERM only.
+  Workers drain their current action and tiers finish their composite cycle.
+  Prewarm cooperatively stops its readers, aborts partial sinks and publishes
+  accounting before it exits. A role's childless process census cannot prove
+  that its reader threads have finished.
+* **Worker refusals and supervisor restarts are stamped.** One `generation-drift/` record namespace
   under the queue root, written by the one shared helper in
-  `worker_loop.py` (the module the roles already import as `runtime_gate`
-  and the supervisor now imports too), following the queue's immutable
+  `prismabuild.role_session` (the module the roles and supervisor import as
+  `runtime_gate`), following the queue's immutable
   record conventions: canonical JSON, atomic first-writer link, mode 0444,
   naming both generations, the actor's pid and host, a timestamp, and — for
   a supervisor restart — the role, the argv it was running, the argv the
@@ -4745,8 +4747,8 @@ daemon:
   mode relies on loops cycling at their own boundaries; the handshake sits
   at claim boundaries only, an executing action is atomic to the loop and
   finishes under the generation that claimed it, and a worker that refuses
-  leaves the ready record for a successor to claim. Nothing interrupts
-  work in flight, so the handshake cannot fight a converge.
+  leaves the ready record for a successor to claim. Prewarm's cooperative
+  cancellation settles its readers and accounting before replacement.
 
 ### The role singleton and stopped-role health (2026-09-19, #709)
 
@@ -4761,7 +4763,7 @@ no per-role lock, so a direct invocation, a legacy loop or a stale
 generation's supervisor could serve a second role beside the current one.
 The guard exists because a role cannot depend on its launcher being single.
 
-* **A service role owns a host-local singleton lock.**  ``worker_loop``'s
+* **A service role owns a host-local singleton lock.**  ``role_session``'s
   ``take_role_singleton`` takes a nonblocking ``flock`` on
   ``/tmp/prismabuild-roles-<uid>/<script-stem>.lock``: a private per-uid
   directory under the admission lock's discipline, the script name rather
@@ -4771,8 +4773,8 @@ The guard exists because a role cannot depend on its launcher being single.
   from the serving block -- a service rotation, a one-shot return, an
   exception -- never by an unlock or an unlink, so a lock taken by a
   one-shot invocation cannot leak into a hosting interpreter.  A loser exits
-  ``3``; the holder pid is a diagnostic from the admission lock's own
-  ``/proc/locks`` rule, read only when a refusal needs decorating, and an
+  ``3``; the holder pid comes from ``flock_owner.holder_pid``, shared with
+  host admission and read only when a refusal needs decorating, and an
   unreadable holder is "unknown", never "nobody", and never changes the
   refusal.  The one-cycle operator form is not exempt: a ``--once``
   invocation can mint, announce, warm and publish against the real queue, so
@@ -4823,6 +4825,165 @@ The updater includes this storage reader in its drain observation using that
 same marker. These checks establish no cross-host quorum and do not enable
 barrier activation. The #458 protocol still needs fresh epoch participation
 and a generation-uniform rotation proof that includes this reader.
+
+`prismabuild.role_session` supplies operations rather than a serving loop.
+Each role owns its work, idle waits, error handling, one-shot exit policy and
+completion boundary. `stop_requests` supplies a sticky `StopRequest` and restores the exact
+signal handlers each caller chose. The worker installs SIGTERM only. Tier,
+local tier, prewarm and metrics install SIGTERM and SIGINT. Prewarm passes
+that same stop request to its readers. Worker loops remain multi-instance. Storage,
+tiers and local tier keep their script-stem singleton locks. The
+metrics snapshot form `--once` keeps its existing singleton exemption.
+The kit names the shared deferral exit as `ROLE_DEFERRED_EXIT = 75`; each role
+chooses when to return it. Worker `--once` generation drift still exits 0.
+Worker idle paths that use `time.sleep` finish that interval after a stop
+request. Their timing remains role policy under D05.
+The stop context owns the process's native signal wakeup descriptor for its
+lifetime and restores the previous registration before closing its pipe. A
+competing `signal.set_wakeup_fd` user, including an asyncio event loop, must not
+run inside that context. Native notifications wake the wait before deferred
+Python signal dispatch; only the selected Python handlers request a stop.
+Unrelated notifications are drained without shortening the monotonic timeout.
+Each `StopRequest` supports one waiter, the role's main loop. Other threads may
+observe or request its stop. Forked readers detach the inherited native wakeup
+registration, and the inherited request cannot write to or close its parent's
+descriptors. This also protects a child that reuses either descriptor number.
+`generation_receipt` owns receipt parsing and identity comparison, while the
+stdlib-only `park_proof` owns gate parsing, marker bytes and physical park
+acceptance. A known drain requires an explicitly closed gate and finite
+numeric `changed_unix`, excluding booleans. Its exact filename key is the
+identity, so integer `1` and float `1.0` remain distinct. Ordinary decimal
+bytes remain unchanged, including the leading-minus underscore and `-0.0`.
+Scientific exponent minus and plus encode as `m` and `p`; ambiguous legacy
+exponent keys never acknowledge a drain. Process proof requires a positive
+integer PID and ASCII decimal start ticks, including zero. Unknown or changed
+required facts never certify an empty census. Receipt availability is not a
+physical proof input. Unknown receipt authorization remains a separate change.
+The named profiles `HOST_QUIESCENT` and `MEMBER_LOOPS` share the work/storage
+set Rob selected on 2026-10-16: `worker_loop.py`, `worker.py`,
+`prewarm_loop.py`, `tier_loop.py` and `local_tier_loop.py`. Metrics may continue;
+supervisor and broker enforce the drain. The stdlib owner also supplies the
+native process census and basename selector. Both proof readers include
+operator-run one-shot workers and refuse incomplete process observations.
+Membership retains its terminal, handoff, reader, supervisor and two-round
+census requirements.
+
+Each privileged proof observation captures and loads its root-trusted installed
+`park_proof.py`, including the census and selector entrypoints. Construction,
+ordinary owned-zero-scope repair and recovery do not require that leaf. An older
+installed leaf without those entrypoints cannot establish drain or rotation
+proof; the rollout keeps waiting. Rotation derives its observed work/storage
+roles from the same loaded profile and requires their chosen generation and
+current marker. It still requires one supervisor and at least one worker loop;
+optional storage roles need not exist.
+The public `park_proof.gate_key` and `park_proof.process_starttime` operations
+are imported directly from that owner. `role_session` does not re-export them.
+Worker, tier, local tier and prewarm admission use typed receipt observations.
+The privileged client can transport `park_proof.py` as an optional installed
+sibling under a non-consuming bridge. Its separate proof-member protocol 2
+requires both captured previous and verified candidate updater capability;
+the main GPU/optional-member protocol 2 alone is insufficient. The unpublished
+proof-member protocol 1 intermediate is not a capable rollback reader.
+One bounded previous byte map supplies all
+capability checks, digests and backups. The leaf remains updater-owned and is
+excluded from exact broker loaded-member equality. This transport bridge does
+not establish strict root proof acceptance or change ordinary repair gates.
+The proof leaf's bytes and uid/gid/mode come from the same no-follow regular
+file descriptor. Its required `previous_proof_file` journal field distinguishes
+known absence from metadata, and missing legacy facts refuse recovery before
+service I/O. Rollback restores ownership then permission mode on a fresh
+exclusive temporary file before fsync and replacement, preserving prior trust
+at interruption cuts. Unavailable, oversized or nonregular installed proof
+files refuse before journal/service mutation. Bounded worker-controlled regular
+files retain ordinary owned-zero-scope repair without receipt or physical proof.
+Equal byte digests do not make unsafe captured proof ownership/write mode current;
+those files take the same repair path. Trusted equal-byte clients retain the
+current fast path without staging or service restart.
+Production callers read generation identities through `loaded_generation()`
+and `published_generation_name()`, alongside the commit readers.
+Tier, prewarm and local tier retain their runtime-moved diagnostics without
+adding a drift-record writer. Worker refusals and supervisor role restarts own
+the immutable incident records.
+
+Local tier requires a complete matching commit and generation before each
+queue/layout/cycle pass. Known drift returns 75 from a one-shot and 0 from a
+continuous role for supervisor replacement. UNKNOWN returns 75 from a one-shot
+or waits interruptibly on the role's stop Event. An initially unavailable
+loaded receipt is retried until known; that first known identity stays attached
+to the imported code. A closed maintenance gate can still write the role's
+actual idle park marker while receipt identity is unavailable. No new queue work
+starts in UNKNOWN, and local tier does not write drift incidents. Its current
+pass finishes before the next receipt boundary. The worker loop keeps its
+existing generation-drift exit 0, including `--once`.
+
+Prewarm requires matching complete receipts before queue and topology setup,
+then observes publication again before each storage cycle. Known drift keeps
+its runtime-moved diagnostic and exits 75 from a one-shot or 0 from a continuous
+role. UNKNOWN returns 75 from a one-shot or waits on the existing stop Event.
+Only an unavailable loaded observation is retried; the first known identity
+stays attached to imported code. Receipt availability does not interrupt reader
+cleanup, final cycle accounting or the role's actual closed-gate park writer.
+Prewarm does not write drift incidents.
+
+Tier requires complete matching receipts before layout, adoption and cycle
+entry. UNKNOWN returns 75 from a one-shot or waits on the role's stop Event.
+It retries an unavailable loaded observation until known, then keeps that
+identity with imported code. Known drift retains its runtime-moved diagnostic
+and exits 75 from a one-shot or 0 from a continuous role. A completed idle tier
+can prove its actual stable maintenance epoch while receipts are unavailable.
+A failed cycle followed by stop returns 75 and never writes a park marker.
+Current cycles, final accounting and filesystem-floor work finish before the
+next receipt boundary. Tier writes no drift incidents.
+
+The one-shot worker adapter checks maintenance first and keeps that refusal's
+exit 0. Its typed preflight returns 75 for UNKNOWN without calling the loop or
+writing an incident. Complete generation drift keeps its declined message,
+exit 0 and no incident. Complete same-generation commit drift reaches the
+worker loop's existing incident writer. MATCH reaches the same loop admission,
+containment and outcome callback, with the adapter's existing CLI defaults.
+
+`generation_receipt.observe` reads both runtime identities from one receipt
+read. A complete pair of nonempty strings becomes `RuntimeIdentity`. Missing,
+unreadable, malformed and incomplete receipts remain distinct
+`ReceiptUnavailable` observations. Values are not trimmed or coerced, and this
+boundary imposes no commit grammar or additional receipt schema.
+`compare` returns `Match(identity)`, `Drift(loaded, published)` or
+`Unknown(loaded, published)`. Drift requires two complete identities; an
+unavailable observation proves neither agreement nor movement. Each decision
+carries its evidence. Roles retain their own refusal, wait and retirement
+policies. Roles consume typed observations and decisions at work boundaries.
+Scalar receipt getters and comparison APIs are absent. `role_session` uses
+`digest_primitives` for canonical bytes, `immutable_files` for drift publication
+and `flock_owner` for lock-holder diagnostics, without importing `core`, `pool`
+or `adaptive_cpu`.
+
+An ordinary package import loads the stdlib-only progress helper and exports
+its exact `commit` and `report_action_progress` functions. The advertised
+`core` and `residency_map` module attributes load on first request through
+Python's normal import machinery and cache the real module objects.
+The ordered package `__all__`, version and documented imports remain unchanged.
+The advertised names remain discoverable through `dir`. Import-star requests
+every export and therefore loads both broad modules. Before first request,
+those modules are absent from
+the package's raw dictionary and `sys.modules`. Receipt, park and role imports
+can run with those broad modules unavailable. This boundary adds no receipt
+strictness or serving-loop policy.
+
+The worker observes the loaded receipt beside its imported source and the
+published receipt through `role_session.loaded_runtime` and `published_runtime`.
+It requires `Match` at both poll top and claim boundary. Known `Drift` keeps the
+existing immutable worker incident and exit 0, including `--once`. `Unknown`
+claims no work and files no drift incident. A one-shot returns 75; a continuous
+worker waits at its poll interval, interruptibly by its SIGTERM stop Event,
+before observing again. At either idle receipt boundary, a closed maintenance
+gate can still record the worker's actual idle park marker before that return
+or wait. After observing UNKNOWN, the worker performs no queue housekeeping,
+reconciliation, saved-finish retry or offer publication.
+While loaded identity is unavailable, retries can
+recover its complete receipt. Once known, that loaded identity stays attached
+to the imported code even if the receipt path changes. Offers use the captured
+known commit and generation. Existing admitted actions finish before these
+checks run again.
 
 ### The pre-publish shape gate (#987)
 
@@ -5642,6 +5803,12 @@ its normal poll cadence. Output is limited to one line per 60 monotonic seconds
 per queue instance, including across holder changes and successful acquisitions.
 This is an observed refusal at the enclosing gate, not process ownership for
 recovery or evidence about any candidate's placement, CPU or GPU decision.
+`flock_owner.holder_pid` reads the existing descriptor and `/proc/locks` to
+name a holder after an admission or role singleton refusal. It matches the
+inode first so btrfs subvolume device differences cannot hide a sole holder; when several
+rows share that inode, the device tuple must identify exactly one. Waiting
+and OFD rows never enter the FLOCK candidate set. An unknown holder preserves
+the refusal. This diagnostic neither acquires nor releases the lock.
 The diagnostic adds no shared-filesystem reads or writes. A holder can still
 block on shared I/O inside the narrowed critical section, which reads holder
 token metadata and renames under `begin_acquire`; the diagnostic does not bound
@@ -5820,8 +5987,18 @@ records `drain_resolves: false` in the denial evidence; foreign GPU processes
 (including exempt vLLM serving), invalid/stale GPU samples and device-state
 refusals therefore do not starve CPU work. A gang member elected elsewhere
 or a measurement reserved on another host likewise has no CPU veto here.
-Missing or unrelated verdicts leave the original protection in place, and a
-pool-holder drain still protects the GPU row. This exception shares the
+All residency refusal states in `candidate_policy.RESIDENCY_REFUSAL_STATES`
+also release the CPU veto, consistently with the room rule in #1169. The
+persisted host-denial evidence must be a mapping with a known refusal state
+and, for the lead family, a nonempty pending list of lead keys and nonempty
+status strings. The recorded reason must equal `candidate_policy.residency_denial`
+of that evidence, including its terminal-lead classification. Missing, malformed,
+unknown or mismatched evidence keeps protection. Ordinary GPU admission keeps
+checking residency and replaces the denial on reevaluation. While a lead is in
+flight, admitted CPU work may occupy the box's memory. Once residency lands,
+a GPU row reserving the full 104 GiB Spark budget then waits for CPU work to
+drain. This is the accepted #1169 behavior.
+A pool-holder drain still protects the GPU row. This exception shares the
 existing lock-free host-denial snapshot used for carried withholds, adds no
 lock or timeout, and grants no GPU or CPU admission credit.
 
@@ -5853,6 +6030,39 @@ other. Tags excluding every host without a GPU bypass only this CPU-host
 deferral, not the READY-GPU rule. Remote reads are made once per host per claim
 pass and each yield
 charges that view, so a pass never leaves a host more rows than it fits.
+
+Peer placement now owns one lazy offer snapshot and one advisory ledger
+observation per peer per claim pass in `_peer_placement.PlacementPass`.
+Each observation owns the capacity remaining after CPU-host or scratch
+yields, initialized from copied ledger and offer dictionaries. These yields
+use one charge operation. CPU-host, cross-resource and
+scratch fits require measured capacity for every demanded kind;
+preferred-CPU fits retain their ledger fallback for an unmeasured kind.
+Freshness, eligibility, pass-on and timer rules remain separate.
+
+Each queue keeps one `_peer_placement.PlacementHistory` across claim passes.
+The pass view owns both 20-second monotonic grace questions and the separate
+Unix-time CPU-host diagnostic age. A new pass refreshes peer observations
+without restarting grace. Empty adaptive discovery, absent ready generations
+and a successful claim retire history through its owner. CPU-host age never
+becomes an expiry condition. Clock reads retain their original conditional
+positions and the Unix clock resolves the current pool clock on each read.
+
+Both timer rules consult capacity remaining after earlier CPU-host or scratch
+yields in the pass. They do not charge capacity for their own yields.
+This avoids a second timer wait after another rule has already left a peer
+as much work as it fits; timer-only yields can still name more rows than the
+peer fits. These are advisory placement decisions, not peer reservations.
+
+Reusing the first advisory observation deliberately changes observation
+timing: a peer ledger or offer replacement after that read is ordinarily observed on the
+next claim pass, rather than on a later timer-rule read in this pass. The
+retained-base replay compares fixed observations and an explicit scratch
+replacement history, not arbitrary concurrent updates. Scratch still rereads
+eligible peer offers after ledger/isolation I/O and rechecks their original
+profiles, root identities, eligibility and measured fit. Authoritative local
+admission reads and transition/measurement/host lock ordering are unchanged;
+peer scans hold no host admission lock.
 
 It is not a thermal control and nothing here measures temperature or
 throughput. The GPU side reads drawn power against a reference, because
@@ -6679,6 +6889,40 @@ under SLURM before any row is submitted.
 
 ## Storage prewarm pacing
 
+The experimental prewarm `--stage` writer is retired under Rob's 2026-10-16
+decision. `prewarm_loop.py` rejects `--stage`, `--stage-pool-prefix` and
+`--stage-free-floor-bytes` during argument parsing, before role admission or
+queue, CAS and output I/O. Pool and ARC prewarm keep their existing receipt
+fields, pacing and window behavior.
+
+Retirement follows admitted process and temporary-file censuses on dl380g10,
+sparky and sparklina, including the gx10-6b77 alias. The corrected observations
+span 2026-10-16 13:39:41Z through 13:44:20Z and report no experimental writer
+or matching temporary. WSL is explicitly offline in the roster and outside
+this active-host coverage. The census is a point-in-time observation, not a
+launch fence or a runtime deployment. Evidence and the failed initial census
+are retained under
+`/home/rob/tmp/prismabuild-resume-20261016/retire-prewarm-stage/`.
+
+The admitted dl380g10 final-object census on 2026-10-16 14:38:37Z through
+14:38:42Z found zero names matching `\.pbstage@\d+\+\d+$`, zero bytes and
+zero source or mover xattr observations in `/stage` and `/stage/prewarm`.
+Both roots were readable, with no scan errors, writers or temporaries.
+The census also discovers pool prefixes from roster storage arguments, so a
+configured but stopped writer's custom prefix participates in discovery.
+Any prewarm-stage finals stay in place. No retained role releases them;
+deletion is separate destructive operator work outside B14. This observation
+does not authorize removal. Action
+`f67ec90d7f5c12a508c11d68c7d0bb039688241831619c26b5bbcefe8dbfcb28`
+and its source, per-root identities, times and xattr distributions are retained
+under `/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/retire-prewarm-stage-r2/`.
+
+Both reclamation roles now apply their ordinary ownership and source-proof
+rules to names formerly reserved for prewarm temporaries. Established
+`stage_move`, `stage_release`, `stage_reclaim`, tier discovery, residency and
+RAM promotion remain. `stage_marks` retains the source and mover xattrs and
+the source identity spelling needed by those consumers and older files.
+
 READY diagnostics expose recorded prewarm input errors, including missing
 files, with the receipt's finish time and `permanence unproven` (#1184).
 Unreadable prewarm evidence makes the diagnostic census incomplete, never a
@@ -6806,7 +7050,7 @@ It still returns `None` when there are no live offers. Rows without a nonempty s
 read no resident metadata and retain ordinary ordering and claim behavior.
 Preference requires a 64-character lowercase hexadecimal set ID and a JSON-object body
 with matching `SET_SCHEMA`, ID and literal `immutable: true`. Its manifest must pass
-`core.validate_data_manifest` and its normalized form must hash to the ID using the
+`data_manifest.validate_data_manifest` and its normalized form must hash to the ID using the
 existing digest serialization. The canonical root must be normalized, absolute and
 non-root, including alternate root spellings such as `//`. Entries must lie under it,
 have zero offsets and real SHA-256 digests, and have unique paths. `hosts` must be a
@@ -6999,6 +7243,64 @@ that role is not in `fleet_boxes.json`. With no tier ledger and no residency
 block, admission takes the path it took before: no ledger is scanned, no token
 moves, and a claim record gains no field.
 
+`tier_holdings.TierLedger` owns one tier's holdings and RAM host mirror.
+`PoolQueue.tier(tier_id)` binds the existing `RecordStore` and host reservation
+owner to it. Consumers use named take, handover, unspent, egress and rate
+operations. The generic `ResourceLedger` remains the token mechanism inside
+the owner. Its persisted paths and token names are unchanged.
+
+Holdings counts, strict holder names, optional names, directory presence and
+mint supply remain separate lazy observations. Each consumer keeps its
+existing conditional reads and unknown-evidence policy. Metrics still fence
+free and held directories before listing the holders. A mint callback receives
+the tier owner, under the same mint lock as its supply observations and apply.
+Every tier rename uses that guard; host reservations retain their different
+mutation lock. Neither side acquires the other side's mutation lock while held.
+
+`take` and `take_advance` charge RAM host memory before taking tier occupancy.
+A failed additional take returns only that take's host charge. Rate-only
+takes never become host GiB. Handover moves the tier first and the host mirror
+second; count handover mirrors the actual moved count, and named handover
+mirrors only the RAM occupancy names it actually moved. Host handover failures
+retain their named diagnostics and reconcile by holder name.
+
+The tier owner composes private begin and commit under the existing mutation
+exclusion. `ResourceLedger.commit_acquire` can collect the names it actually
+moved in an optional `moved_tokens` list, without another directory scan.
+An incomplete tier-domain take abandons its private remainder, then returns
+only those moved names. Previously held names remain charged. The generic
+ledger's default callers and integer commit result are unchanged.
+`transfer_tokens` offers the same optional collector for actual renames;
+already-moved names still count in its integer result, without moving the RAM
+mirror a second time. Both collectors use the existing per-token walk.
+
+`release_unspent` requires an `Unspent` authority from the consumer's existing
+proof. Funding and batch decisions remain with their owners. Whole physical
+egress uses `egress`; `settle_egress`
+destroys duplicate charges before returning counts backed by physical egress.
+Operator-confirmed clears and retired produced-output leftovers use egress
+after their existing pin, retirement and containment checks.
+A failed or partial return retains the RAM mirror for its still-held
+occupancy. An unreadable remainder releases no host memory. Idle-rate
+reclamation enumerates `RATE_KINDS`; new and unknown kinds stay held.
+
+The private claim begin/commit/abandon lifecycle keeps its existing token
+grammar and observations. Two-way RAM reconciliation remains necessary for
+private claim takes and interrupted or old-generation operations. Its sync
+half runs before discovery, so admission uses one current-cycle verdict.
+Failed top-ups keep existing host holds, and orphan cleanup waits for the
+complete in-cycle consumer census.
+
+Mirror reconciliation requires error-visible tier and host holder populations,
+including directory-type observations, before treating a name as an orphan.
+It reads each tier holder through `holder_state` and each host mirror through
+the required token-name reader. A failed scan is unknown, retains that mirror,
+and makes the pass unconverged. Tolerant `ResourceLedger` count queries retain
+their separate lower-bound contract. Trim and orphan returns compare actual
+returned tokens with the observed delta or orphan count; a partial return is
+unconverged and the next cycle retries the remainder. These owner-local rules
+correct inherited mirror behavior without a ledger schema or transaction change.
+
 ### The resource PB could not see
 
 `cpu`, `gpu` and `mem_gb` are reserved on the box that executes the action.
@@ -7039,7 +7341,7 @@ far: the role's own host-local singleton refuses the second minter at
 startup (exit 3), so stop the role first or run the cycle on another box.
 
 Since #733 R6 the same per-tier mint lock is the cache-tier mutation
-exclusion, attached by the explicit `PoolQueue.tier_ledger` factory.
+exclusion, attached by the explicit `PoolQueue.tier` factory.
 Every token rename through a tier ledger -- claim
 begin (non-blocking, declining as `tier_reservation_unavailable`),
 commit/abandon/transfer/release (blocking, completing under the lock),
@@ -7350,7 +7652,7 @@ Known limits:
 
 A movement node declares the half-open byte range of its consumer's read order
 it makes resident. The range comes out of the manifest the action already
-sealed — `storage_tiers.manifest_phase_ranges` reads the same running byte sum
+sealed — `manifest_layout.manifest_phase_ranges` reads the same running byte sum
 for v1 `annotations.phases` and v2 `read_plan.phases` that the prewarm role
 reads, through one shared refusal rule for both tables (#594): a missing,
 empty, repeated or non-string name, a non-integer cumulative, a step back, an
@@ -7789,7 +8091,7 @@ there is no current epoch, so every ram fragment is a prior one. Until
 fresh ranges land, nothing reads as ram-resident, and `residency_verdict`
 denies `ram_epoch_stale` whenever a composed map's ram epoch is not the one
 the tier announces now — the same one-cycle wait as `map_not_composed`.
-`ram_epoch_stale` is a member of the shared `RESIDENCY_REFUSAL_STATES` the
+`ram_epoch_stale` is a member of `candidate_policy.RESIDENCY_REFUSAL_STATES` the
 claim pass and the ready GPU row's kept room read, so admission refuses on
 it exactly as on `map_not_composed`: no host token is taken, no pass is
 aged, the row stays `READY`, and the denial is filed as
@@ -7808,7 +8110,7 @@ and mover transition locks are acquired nonblocking beneath it, so a
 contending normal mover→mint path makes cleanup defer rather than deadlock.
 Only the swept tier is released under that guard, reentrantly on the mint it
 already holds; any other tier is swept after the guard drops, the same leaf
-ordering `stage_release._evict_owned` uses after its own mint section. A tier
+ordering `staged_path._evict_owned` uses after its own mint section. A tier
 ledger's mutation guard is that tier's mint lock, so releasing every tier
 inside the guard would wait on a second tier's mint while holding the first,
 which is the one order the "mint is a leaf" analysis does not cover.
@@ -7893,7 +8195,7 @@ entries land and a running copy's receipt belongs to a previous run; a
 receipt's `entries_declared == entries_staged` equals the current fragment's
 entry count, which is what stops a historical complete receipt from speaking
 for a new partial copy after a crash or a requeue. Adoption passes unchanged
-— `tier_loop.adopt` re-issues the donor's fragment under the successor and
+— `staged_path.adopt` re-issues the donor's fragment under the successor and
 files a receipt carrying that fragment's own counts, with the tokens
 transferred rather than released. Cost is one fragment-directory listing per
 plan plus one small receipt read per fragment-backed key; no payload is read
@@ -7943,14 +8245,94 @@ claimed movers -- claims first, then fragments, because a claim exists before it
 copy starts (each mover passes a start gate before its first rename, holding
 nothing during the copy) and a fragment exists before its claim is gone. Shared
 paths are kept with `entries_shared`/`shared_with` on the receipt while the
-mover's own tokens come back and its own fragment is dropped; the last owner to
-leave deletes the file. Anything unreadable fails the pass closed with the reason
+mover's duplicate occupancy is decharged and its own fragment is dropped; the
+last owner to leave deletes the file. Anything unreadable fails the pass closed with the reason
 on the receipt. Limits, stated: the ownership scan parses every consumer's
 fragments once per egress (measured 2.9 s over 50 consumers / 140 fragments on the
 live corpus -- JSON parsing, linear in corpus size, no global map by design;
 since #988 that parse runs before the lock, and the census under it parses
 again only the fragments whose file version changed); a
 worker killed between rename and fragment publication leaves a recovery interval.
+
+`prismabuild.staged_path` owns staged-copy publication, vouch pair operations,
+ownership censuses and the acts that use them. `stage_move` and `ram_promote`
+retain copying and command orchestration. `stage_release` retains the sweep
+orchestration, including produced-batch retirement, and calls the concrete
+staged-path owner. No retired helper is re-exported from those modules.
+
+The pair operations keep these orders:
+
+* `publish_vouch` dates new coverage in its material sidecar before publishing
+  its fragment. Reissue preserves the source generation and uses the same
+  material-before-fragment order. A date without a fragment is inert.
+* `shrink_vouch` writes the surviving fragment before trimming its material.
+  Its result distinguishes a failed fragment write from a material failure
+  after the fragment committed. A partial prune keeps its whole charge and
+  remains `complete=False`, even when its document pair completed.
+* `withdraw_vouch` removes fragment, material, then retiring mark. A committed
+  withdrawal keeps the existing best-effort material removal. An overrun
+  mover discards its own unpublished pair with strict material errors and
+  touches no retiring mark. Neither operation deletes payload bytes.
+
+Adoption takes the donor and successor's existing mover transition locks
+without waiting. A live or unreadable mover state declines. It reads the
+donor pair again under the existing stage ownership lock before mutation,
+compares every dated file identity there, and retains an unknown or distinct
+successor pair. A successor miss is confirmed through the existing strict
+metadata-absence reader, including its NFS parent revalidation. Same-pair
+reissue after an interrupted adoption remains valid. After the full token
+handover, adoption files its existing complete successor receipt before donor
+withdrawal, under the same ownership lock. If interrupted before that receipt,
+both pairs must still agree. If interrupted after donor fragment removal, a
+fresh owner verifies the receipt's exact donor/consumer/range binding, the
+successor pair, live file identities and its whole-range occupancy charge.
+Only then may it finish donor material and retiring-mark cleanup. An unknown
+or different receipt or pair retains authority. Repeating completed adoption
+preserves receipt bytes and moves no token again. No receiptless donorless
+legacy state is guessed into a completed adoption. These process-interruption
+controls establish filesystem effects visible to a fresh owner; they do not
+simulate power loss, stable-storage persistence or NFS durability. There is no
+adoption journal or new durable state.
+
+The egress still reads claims, fragments, pins and promotion sources in its
+existing order. Source-mark reclamation asks the same owner for one
+`RetainedPaths` verdict. Its hint primes the existing memo. The owner then
+takes the existing ownership lock, repeats the conditional census and holds
+the lock through the act. Each refusal keeps its previous short circuit and
+error precedence. Neither a hint nor an incomplete census grants authority.
+The parse counters and timing include that locked re-census.
+
+The census entry points answer different questions. Their read budgets and
+conditional error precedence remain part of each pass:
+
+| Pass | Question and census | Hint | Lock, re-census and act | Read and unknown policy |
+| --- | --- | --- | --- | --- |
+| Held or uncharged-owner sweep | Which candidate namespaces name this mover? `fragment_census` | Captured listings and validated fragments select candidates only. | `evict` or `prune_stale_mentions` takes actual stage ownership and repeats its authority census. | Strict fragment reader and existing byte cap; malformed files, symlinks, unknown directories and incomplete listings taint. A selection never authorizes unlink. |
+| Ordinary/shared egress | Who can still write or read these exact paths? `ownership_census` composes claimed destinations, `fragment_owners`, pins, then promotion sources. | Same ordered census plus own material and path fences fills the memo before ownership. | `_evict_owned` repeats the ordered census under ownership and holds it through containment, payload unlink and vouch withdrawal. | Claim records are read each time; immutable manifest-derived paths may be memoized. Any taint retains bytes and charge. Own claimed paths differ from foreign co-owners. Empty-entry branches keep their short circuits. |
+| Stale-mention prune | Which mentions can be removed while preserving surviving owners? `ownership_census` | Census and containment fences run only for nonempty observed entries. | Under ownership, donor documents are read again and must equal the observation; the census then repeats before classification, unlink and fragment-then-material shrink. | Document versions are captured before reads and compared after classification. Same-tick or untrusted stamps cannot authorize a skip checkpoint. Trim/shrink preserve the material's own epoch, including empty non-RAM epochs. |
+| Source-mark reclaim | Is any known publisher or reader retaining these paths? `source_mark_census` returns one `RetainedPaths` verdict. | Attribution, pins, claims and promotion-source reads prime the memo; hints never authorize an act. | `source_mark_authority` takes ownership, checks in-flight movers first, then repeats each conditional census and yields the verdict while retaining the lock through unlink. | First failing question retains with its original reason. Attribution uses its bounded taint report; later reads do not run after an earlier authority refusal. |
+| Unattributed reconciliation | Which paths are wanted, which are named by any fragment, and which copies are residue? `_named_census` returns both sets from one fragment walk. | The same sets, pins and conditional promotion sources prime the memo. | Reconciliation repeats under ownership, then checks current writer state and containment before deletion. | Wanted attribution and any-name attribution are distinct policies. Unknown ownership, pin state, writer state or promotion sources retain. |
+| Bounded orphan recovery | Does anything retain the exact paths derived from the sealed range? `fragment_owners`, pins, claims and promotion sources. | Scope verification and the same readers run before ownership. | Under ownership it rechecks head/consumer readiness, in-flight movers and the scope's retention questions in order before unlink. | Every fragment retains, wanted or not. This bounded scope must not use the wanted-only view or tolerant map composition. Each refusal keeps its original short circuit. |
+| Staged-copy publication | Can this destination incarnation be reused or replaced? `StagedPublisher` reads current material, claim and live-state evidence. | Copy preparation has no mutation authority. | Existing mover/root ownership locks cover the fresh arbitration, identity comparison, rename and material-before-fragment publication. | Action reads are untrusted by default. Unknown competing writers and dates retain; a hint never proves absence. |
+| Adoption | Can this exact completed range and charge change namespace? Donor/successor pairs, complete receipts and live file identities. | Descriptor matching selects a candidate only. | Both existing mover transition locks and actual stage ownership cover fresh pair/receipt checks, handover, complete receipt and donor withdrawal. | Exact whole-range accounting; live or unknown movers, documents and receipts retain. Retry uses no version cache or second handover. |
+
+`attributed_census` is the strict wanted-path view over `_named_census`;
+`attributed_stage_paths` is a paths-only observation for callers that cannot
+use its taint as deletion authority. `claimed_paths_attributed` distinguishes
+an evicted mover's own live writer from foreign co-owners. These are projections
+with distinct questions, not independent caches. Combining them into one
+unconditional global scan would change conditional reads, budgets and refusal
+precedence. The literal four-to-one verdict applies to source-mark reclaim;
+ordinary egress already composes its four questions in `ownership_census`.
+
+These readers continue to use `kept_reads.CensusMemo`, `CensusIndex`, captured
+directory listings and their filesystem-trust rules. Adoption's action-side
+reads keep no trusted version cache. `RecordStore.accepted_progress_phase`
+owns the existing bounded strict lease observation used to determine shared
+interest. Physical produced-output namespace constants live in the lower
+`output_vocabulary` module. Batch lifecycle and its intent-specific path
+policies remain with the batch owner. Fragment, material, lease and lock path
+grammars, schema bytes, generations and epochs are unchanged.
 
 Stage and RAM movers also use this ownership lock when publishing a copied
 file (#751/#752). Copying stays outside the lock. Publication adopts an
@@ -7995,7 +8377,7 @@ collects every other consumer and mover whose fragment names the divergent
 path, and judges each owner under its transition locks. The locks are taken
 without blocking, in the usual order: consumer, then mover, then the stage
 ownership lock. An owner has ended when its consumer is neither queued nor
-claimed and has exactly one outcome record (`stage_release._unended_owner`,
+claimed and has exactly one outcome record (`staged_path.unended_owner`,
 the dead-owner sweep's proof), and its mover is neither queued nor claimed. A
 consumer whose queue record is in `ready/` or `claimed/` is live. A sibling,
 another mover of the copy's own consumer, is judged by its mover alone. Anything
@@ -8056,8 +8438,8 @@ they are a layout migration; this settles it on the current layout.
 
 The publication gate's range-directory hint (#1028): the in-flight-partial
 census a re-decision passes lists its range directory once per
-`_trusted_directory_stamp` -- the stamp taken before the scan, the listing
-remembered only while a fresh directory version (`_current_directory_version`,
+`FilesystemTrust.directory_before` -- the stamp taken before the scan, the listing
+remembered only while a fresh directory version (`FilesystemTrust.directory_current`,
 the #1004/#1208 fence) still equals it -- and every name revalidates with
 that one directory version, re-listing only a directory that moved. A
 version the directory's own clock tick refuses, and a scan the directory
@@ -8084,7 +8466,7 @@ lock keeps its stamp fence (#1004), and `ownership_lock_held` accounting
 is untouched.
 
 The egress holds the lock for its act, not its census (#988). Before this
-change `stage_release.evict` took the stage root's ownership lock and then
+change `staged_path.evict` took the stage root's ownership lock and then
 ran the fragment, claim, source and pin censuses, judged every entry with two
 `resolve` calls each, unlinked, and pruned empty directories, all in one
 hold. Every publication, pin and start gate on that root waited for the
@@ -8154,7 +8536,7 @@ sidecars reused because their version had not changed. An egress whose
 state did not change between the two censuses parses nothing under the
 lock. `reconcile` and `recover_orphaned_range` record the same two counts.
 The `beyond-horizon-evicted` and `beyond-horizon-eviction-declined` events
-copy these fields (`stage_release.lock_scope`), and the tier loop files
+copy these fields (`staged_path.lock_scope`), and the tier loop files
 those events in the consumer's event file, which a kill's ending record
 reads (#990). Stage and RAM mover receipts record `start_gate_wait_s`; the
 stage mover also records `resume_lock_wait_s`, the first lock it waits
@@ -8326,12 +8708,11 @@ recorded the loop at about 99% of one core.
 The loop now keeps what it read from one cycle to the next, on its
 `ReceiptCache`, in two readers that share one rule:
 
-- `stage_release.DirectoryRecords` holds the queue records: the receipt
-  directories, `ready/`, `claimed/`, the `withdrawn/` names and the RAM tier's
-  fragment records. Every step of a cycle that reads `ready/` or `claimed/`
-  reads through it (`stage_release.queue_records`, served for the cycle by
-  `queue_records_from`), so the three reads per cycle are one.
-- `stage_release.CensusIndex` holds the residency census: each namespace's
+- `kept_reads.DirectoryRecords` supplies retained evidence to the cycle's
+  explicit `RecordStore.kept` questions for receipts, state records and
+  withdrawal names. Helpers receive that Store directly. Residency's
+  `EpochRecords` uses the same C11 reader for fragment headers.
+- `kept_reads.CensusIndex` holds the residency census: each namespace's
   fragments and each level's classified children. The dead-owner sweep, the
   orphan sweep's `reconcile` and the held-mover census read through it.
 - `ReceiptCache.ledger_records` reuses the existing `DirectoryRecords` reader
@@ -8387,7 +8768,7 @@ mount namespace and until the kernel signals a mount or unmount (`POLLPRI`
 on `/proc/self/mountinfo`), because anonymous device numbers are shared by
 ZFS, tmpfs, NFS, overlay and FUSE mounts and handed out again after an
 unmount. The trust is re-checked on
-every reuse, not only when the stamp is taken: `_current_directory_version`
+every reuse, not only when the stamp is taken: `FilesystemTrust.directory_current`
 returns the four fields only on a filesystem that is still one of those
 (#1208), so a mount change under a kept listing makes the comparison miss.
 `DirectoryRecords` then drops what that listing parsed as well -- the trust
@@ -8396,7 +8777,7 @@ of the directory again, as a plain read on the new filesystem reads it. On
 the NFS export every directory is listed every time, as before. Two things
 are outside the argument. A file rewritten in place does not touch its
 directory. Every
-writer of these records files by rename (`pool._write_json_atomic`,
+writer of these records files by rename (`RecordStore.replace_record_at`,
 `residency_map.write_fragment`), and the two readers differ in what they
 rely on:
 
@@ -8530,7 +8911,8 @@ rename-only writer assumptions above remain unchanged.
 
 **A changed directory is read by record version.** When a directory's stamp
 moved, it is listed and every entry is `stat`-ed. A record whose #761 version
-(device, inode, size, `mtime_ns`, `ctime_ns`) is unchanged is not parsed
+(`FileVersion`: device, inode, size, `mtime_ns`, `ctime_ns`, mode) is unchanged is not
+parsed
 again. Every entry is `stat`-ed, not only names the reader has not seen,
 because a receipt is replaced under its own name (a mover re-run under the
 same key files its receipt again, and a prewarm receipt is pruned and filed
@@ -8540,8 +8922,8 @@ name nor the inode number says a record is unchanged; the full version does.
 **A file version is kept only once its tick has passed (#1045).** The full
 version is not enough on its own: a file unlinked and another created under
 its name in one clock tick can be given the freed inode number, and with the
-same size all five fields match. So each kept file version carries the
-directory stamp's rule (`stage_move._keepable_version`): the coarse realtime
+same size every version field can match. So each kept file version carries the
+directory stamp's rule (`FilesystemTrust.file_version`): the coarse realtime
 clock is read before the listing (or before the open, for the census's
 `fstat` reads), and a version whose `ctime_ns` is not strictly before that
 read is not kept. The record is still returned; it is read again on the next
@@ -8572,7 +8954,7 @@ every body to learn no marker covered it (2.48 s in
 `residency_plan.superseded` plus 1.46 s in `read_filed` in one 10 s cycle).
 One names-only snapshot of the supersession marker directory is now taken
 per pass, through `DirectoryRecords.names` when a cycle is running
-(`stage_release.queue_records_reader`). A `done/` consumer whose key no
+(`RecordStore.residency_supersession_keys`). A `done/` consumer whose key no
 marker name carries is refused before its plan is read; a marker written
 after the snapshot is seen on the next pass. A key the snapshot names runs
 the existing locked checks unchanged, as does an unreadable listing or a
@@ -8587,8 +8969,8 @@ absence.
 `/stage/prewarm` held 50,303 prewarm-marked files (302 GB) that the
 reconcile re-walked and re-probed every cycle, deleting none (2.81 s of the
 same cycle). `CensusIndex` now keeps each stage directory under
-`_trusted_directory_stamp` and each file's `(version, kind, mover)` under
-`_keepable_version` (#1045): a directory whose stamp holds is not listed
+`FilesystemTrust.directory_before` and each file's `(version, kind, mover)` under
+`FilesystemTrust.file_version` (#1045): a directory whose stamp holds is not listed
 again, and a file whose version holds is not probed again. Every entry is
 still `lstat`-ed -- a `setxattr` or an in-place write moves a file's ctime
 without moving its parent -- and the caller's `attributed`/`named` sets and
@@ -8617,7 +8999,7 @@ lock, against a census of the residency forest that began after the
 owners' judgment. That census listed the whole forest once per name under the
 lock every mover and egress on the stage root waits for: 38 to 66 ms for 429
 namespaces on dl380g10, about 100 s for a 2,048-name range whose names all
-diverge from one dead owner. `_StagedPublisher._forest_census` keeps each
+diverge from one dead owner. `StagedPublisher._forest_census` keeps each
 directory's fragment names under the same stamp, so the census under the lock
 is one `lstat` per directory and one `stat` and index lookup per fragment,
 with no listing. Records are still looked up through the #761 index on every
@@ -8786,7 +9168,7 @@ read was one stretch. On 2026-09-25 one cycle on dl380g10 took 153.6 s,
 `pb-queue` lives on. The stage record reached 121 s, and a Stage B row died
 with `StagedRangeNotLanded`. `ReceiptCache.read` now takes the loop's
 `Liveness` and hands `Liveness.checkpoint` to
-`stage_release.DirectoryRecords.read`, which calls it after each entry the
+`kept_reads.DirectoryRecords.read`, which calls it after each entry the
 listing yields, once the listing is complete, and before each entry is
 stat-ed and parsed. `ReceiptCache.read` also checkpoints after each
 directory. The label is `receipts:<directory>`, so a refresh made there
@@ -8863,7 +9245,7 @@ measured, as `prewarm_loop.MAX_READERS` is for bulk reads. The cold read
 now costs (receipts / readers) × latency.
 
 Only the `stat` and the parse run on a reader. A reader takes a run of
-consecutive entries, at most `stage_release.READ_RUN_MAX` (16) and fewer
+consecutive entries, at most `kept_reads.READ_RUN_MAX` (16) and fewer
 when there are too few entries to give every reader two runs, and at most
 `2 × readers` runs are in flight. Handing an entry to a thread and taking
 its result back costs about as much as a warm `stat`, so one entry per
@@ -8995,7 +9377,7 @@ timeout would need a constant nothing measures.
   of that window. `mark_superseded` from the loop runs under the consumer's
   lock taken the same way, and an unmarked plan is marked by the next cycle
   that meets the withdrawn mover. The ram-promotion release and the
-  beyond-horizon eviction take the mover's lock before `stage_release.evict`,
+  beyond-horizon eviction take the mover's lock before `staged_path.evict`,
   and a busy mover is retained or declined.
 * **Everything else in the cycle runs under
   `pool.transition_locks_never_wait`.** Inside it, an acquire that asks to
@@ -9048,6 +9430,31 @@ loop there.
 
 ### The metrics exporter: one per fleet, on the queue's host (#1020)
 
+The continuous exporter keeps serving under a closed or missing maintenance
+gate and posts no marker while serving. Metrics is the sole observer role.
+It does not read runtime receipts or retire itself on generation drift. The
+supervisor owns its generation retirement and drift record, then respawns an
+exporter from the active generation. A direct exporter whose loaded receipt is
+unknown keeps serving until explicitly stopped, as it did before this change.
+
+SIGTERM and SIGINT request stop through the shared Event. At a stop boundary
+the listener closes before any park proof, and the exporter joins every request
+thread it started. `ThreadingHTTPServer` uses daemon request threads, so
+`handle_request()` returning does not establish request completion.
+
+The shutdown grace is 10 seconds in total, starting when accepts stop. This is
+a new stop-only bound, using the same operational patience as pbstatus's default
+read timeout. Ordinary metrics collection remains unbounded. After an explicit
+stop, if every request joins, the exporter posts the current closed gate's
+marker only when its identity is a finite numeric `changed_unix`, using the
+existing gate-identity validation. An open or missing gate produces no marker;
+the shared admission parser still treats a missing gate as draining. If the grace
+expires, it exits 0 without a marker or a request-completion claim; the process
+census must observe its exit before treating it as gone. The grace does not
+change the drain observer's required role set. If a future profile includes
+metrics, gate handling must park in place rather than retire the exporter.
+`--once` retains its snapshot behavior and singleton exemption.
+
 `tools/fleet/pbmetrics.py` reports the whole fleet's queue. Until #1020 it ran
 as an installed unit on three boxes, sparky, sparklina and dl380g10, and every
 refresh (every 10 s) read the queue as if for the first time: it listed every
@@ -9073,9 +9480,9 @@ local filesystem, and `/mnt/shared` is a local ZFS dataset on dl380g10.
 The role is supervised like `storage` and `tiers`. The supervisor spawns it
 from the active generation, and `ensure_roles` stops and respawns it when its
 argv drifts from the declaration or when a publish retires its generation. The
-role holds no work, so it is always idle for that purpose, and SIGTERM ends
-`serve_forever`. The server takes the role's singleton lock
-(`worker_loop.role_singleton`) before it binds the port, so a second exporter
+role holds no admitted work and is idle for that purpose. SIGTERM requests the
+bounded request-thread shutdown described above. The server takes the role's singleton lock
+(`role_session.role_singleton`) before it binds the port, so a second exporter
 on the box exits `3`. If the port is already bound -- by an installed unit
 beside the role, whose lock the role cannot see -- the server also exits `3`
 and writes one JSON record naming the port and, where `/proc` lets it, the
@@ -9092,15 +9499,16 @@ the life of the server; `--once` and `collect_metrics` without a reader use a
 fresh one, which reads everything. The reader keeps listings under the #992
 stamp argument above and, where it helps, a value computed from a directory
 under a fence taken before the computation and checked after it. It keeps
-only what the gauges read, never whole records:
+history metadata and derived values under those fences. Active record
+snapshots stay under C11 and yield independent records to their consumers:
 
 - **Terminal history.** `done/`, `failed/`, `withdrawn/`, each withdrawal
-  decision directory and `movers/` are kept by `KeptReads.history`, not by
+  decision directory and `movers/` use Store's fixed history questions, not
   `DirectoryRecords`. A changed one is walked as the plain reader walks it:
   one `scandir`, one `stat` per name, and nothing else per name. An entry
-  whose #761 version held is the same object as before, carrying what was
-  derived from it. The window's 500 rows are projected by
-  `pbstatus.ending_row` and kept on their entries. The selection is the plain
+  whose #761 version held is the same immutable object as before. The exporter
+  keeps its derived values under that entry's identity. The window's 500 rows are projected by
+  `pbstatus.ending_row` and kept by the exporter under their entry identities. The selection is the plain
   reader's, `heapq.nlargest` over the same sequence the plain reader sorts,
   so ties fall in the same order. The selection itself is kept, fenced on
   `done/`, `failed/`, `withdrawn/`, `withdrawn/decisions/` and each decision
@@ -9162,7 +9570,7 @@ raises leaves nothing behind.
   census of every such plan once.
 
 Over NFS no stamp is trusted, so every refresh reads everything, as before.
-Every queue writer files by rename (`pool._write_json_atomic`,
+Every queue writer files by rename (`RecordStore.replace_record_at`,
 `residency_map.write_fragment`), which is what the kept listings rely on, as
 the tier loop's do: a record rewritten in place does not change its directory
 and is not seen until the directory next changes.
@@ -9214,7 +9622,8 @@ A changed refresh first cost 0.354 s against the previous exporter's
 0.186 s. The cost was not the `stat`s, which matched the plain walk's, but
 what was done per name in Python: `DirectoryRecords` built a `Path` for each
 of the 30,000 names, sorted them by name, and called the parse for each.
-`KeptReads.history` does none of that: its per-name work is the `scandir`
+The historical `KeptReads.history` walk, now Store-owned, does none of that: its
+per-name work is the `scandir`
 entry, the `stat` and one version compare. The cProfile of a new-ending
 refresh shows the rest: 0.24 s of 0.32 s (instrumented) in the endings
 selection, of which the `stat`s are 0.06 s and the probe's own wrappers most
@@ -9760,7 +10169,7 @@ and fragments together: `leases/` (pins and retiring marks), `material/`
 directories are bookkeeping, and are never parsed as namespaces, while the
 produced fragments are real ownership evidence one level deeper at
 `produced-output-fragments/<batch namespace>/<mover>.json` (reached through
-`produced_output.output_fragment_root`). `stage_release._fragment_census`
+`produced_output.output_fragment_root`). `staged_path.fragment_census`
 walks both layouts — legacy flat `<consumer>/<mover>.json` and the nested
 produced namespaces — and is strict on purpose: a directory that is neither
 reserved bookkeeping nor a 64-character namespace, a `.json` document
@@ -10001,8 +10410,13 @@ mover has a filed `done`, `failed` or `withdrawn` record with no `ready` or
 `claimed` row, no lease, and no token on the record's tier, re-read under the
 mover's transition lock. Per-mover reads (`read_output_funding`,
 `output_funding_file_state`, `_output_funding_unretired`) fall back to the
-retired copy, so every decision about one mover reads what it read before, and
-writers refuse to file beside a retired record. Only the directory scans stop
+retired copy only when opening the live path reports ENOENT. A present live
+record suppresses that fallback even when empty, malformed, invalid or
+unreadable. Both readers share the actual-open byte selection; their existing
+byte limits and JSON decoding policies remain distinct. The tolerant reader
+returns no record for corrupt data, while the strict reader reports corrupt
+and retains unknown funding authority. Writers refuse to file beside a retired
+record. Only the directory scans stop
 reading it. Measured on the 2026-09-22 queue (973 records, 972 terminal):
 concluding an action that holds no tier token went from 2,919 record reads and
 0.80 s to none and 0.0007 s; a holder's conclusion went from 2,919 reads to one
@@ -10012,18 +10426,24 @@ census over the live records only.
 
 `produced_output.publish_prepaid_batch` is the one production call per
 finished batch: sealed reference -> real CAS request for the stage mover
-(params carry the reference) -> `stage_output_intent` -> `publish` ->
-`fund_output_batch` (exact transfer of the owner's existing window) ->
+(params carry the reference) -> `FundingLedger.stage_output` -> `publish` ->
+`FundingLedger.fund_output` (exact transfer of the owner's existing window) ->
 `commit_batch`. `commit_batch` reconciles the pool record (drives a
-`reserved` remainder through `drive_output_funding`, requires
+`reserved` remainder through `FundingLedger.drive_output`, requires
 `transferring` with the mover holding the full token set) and files the
-batch with no second acquisition; the legacy per-batch
-`{batch_id}.funding.json` path survives only as in-flight recovery for
-batches that already filed it. Liveness, closed with the integration:
-`release_output_funding` refuses once `_output_batch_authority` holds
+batch with no second acquisition in this prepaid path. The public SDK6
+`commit_batch` also retains its documented direct first-commit path: when
+pool funding and a legacy intent are both absent, it acquires exact tokens
+from free under the batch holder, files the per-batch
+`{batch_id}.funding.json` intent, and transfers whole to the mover. An
+existing intent recovers already allocated tokens without another acquire.
+Production writers continue using `publish_prepaid_batch`. Retiring direct
+acquisition needs a separate SDK contract/version decision.
+Liveness, closed with the integration:
+`FundingLedger.release_output` refuses once `_output_batch_authority` holds
 (committed batches are recovery, not cancellation); `abort_prewrite`
 refuses while an owner intent cites the prewrite (`prepaid-intent-exists-
-retain`; retire the intent first); `stage_output_intent`/`fund_output_batch`
+retain`; retire the intent first); `FundingLedger.stage_output`/`FundingLedger.fund_output`
 never select a token name already promised to another outstanding intent
 of the same owner (`tier-reservation-unavailable` instead of a wedged
 transfer-short). `admit_funded_window` reports the delivered binding
@@ -10990,13 +11410,12 @@ committed, and seals and publishes the consumer.
 
 **Why the consumer is sealed at release, not at submission.** A key covers
 the action's data manifest, and a manifest entry names a path and a positive
-byte count (`core.validate_data_manifest`). A handoff's paths and sizes exist
+byte count (`data_manifest.validate_data_manifest`). A handoff's paths and sizes exist
 only after the producer commits. A consumer keyed at submission would have a
 key that does not cover the bytes it reads, and it could have no residency
-plan, because its mover ranges index into that manifest. `dagster.py`'s
-`CASDependency` has the same shape: an edge carries the upstream key and the
-digest it produced, so the downstream action is keyed after the upstream
-finishes. PB therefore keeps the frozen submission and seals it later,
+plan, because its mover ranges index into that manifest. An edge carries
+the upstream key and the digest it produced, so the downstream action is keyed
+after the upstream finishes. PB keeps the frozen submission and seals it later,
 instead of adding a second kind of key.
 
 **Submission.** `--after PRODUCER:TEMPLATE_ID` is repeatable and needs the
@@ -11239,7 +11658,7 @@ the manifest summary, as a v2 submission does.
 **Residency.** The placed manifest is an ordinary v2 plan, so the window
 stages its phases in plan order: the head, then the batch, then each replay
 window, whose own mover stages the head's entries again
-(`prewarm_loop.manifest_read_entries`, `entries_between`).
+(`manifest_layout.read_entries`, `manifest_layout.entries_between`).
 
 Limits:
 
@@ -11305,8 +11724,8 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   26.3 s to 26.6 s after a 4 s copy, on every staged group; with the parent
   opened first the same read saw the receipt in 0.04 s to 0.25 s
   (`tools/fleet/qualify_record_visibility.py`, both arms run on the real
-  mount). `PoolQueue.move_record` and every leg of `_mover_live_state`
-  therefore go through `pool._read_json_fresh`: a miss opens and closes the
+  mount). `PoolQueue.move_record` and every leg of `RecordStore.mover`
+  therefore use Store's best-effort miss refresh: a miss opens and closes the
   parent, then reads once more. The live legs matter as much as the terminal
   ones, because `_publish_output_mover_row` republishes on "absent" and
   `_tier_host_egress` republishes an egress whose row it does not read as
@@ -11314,8 +11733,8 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   misses republished each egress three times with `recompute`, so each ran
   four times (three no-op re-runs) and each retirement took more than 20 s.
   Opening
-  is used rather than the listing `slurm_lane._read_json_object` and
-  `pbrun.terminal_record` use, because these reads are polled several times a
+  is used rather than the listing `RecordStore.polled_object_at` and
+  `RecordStore.wait_terminal_at` use, because these reads are polled several times a
   second and a listing costs what the directory holds (`done` held 17,117
   names on 2026-09-21). A hit costs nothing extra, and the revalidation is
   best effort: a parent that cannot be opened leaves the first answer.
@@ -11336,7 +11755,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   its `FileNotFoundError`, so a missing record is never read as a pass. A
   name that is listed and still cannot be opened raises
   `pool.StaleAbsenceError`; `pbrun` reports it as `OutcomeNotYetVisible`,
-  a kind of reaped timeout, so `await_outcome` and `pbwait` go back to
+  a kind of reaped timeout, so `report_pool_outcome` and `pbwait` go back to
   observation and read again inside their deadline, and a zero-patience
   read stays exit 74. Only a miss pays for the listings.
 * **Origin reachability is typed at the mover (#804).** A produced-output
@@ -11418,7 +11837,7 @@ their refusal. Refill adds no retry loop and changes no retirement authority.
   `stage_output_intent`/`fund_output_batch` (owner -> mover transition locks)
   and never across the reconcile's drive. `retire_batch` was changed the same
   way: it selects and captures under the lock, releases it, runs
-  `stage_release.evict` (mover transition lock, then the STAGE ROOT's
+  `staged_path.evict` (mover transition lock, then the STAGE ROOT's
   ownership lock, then containment reclamation below that) with no lock of
   this lane held, then reacquires and revalidates the exact
   manifest/mover/generation before filing `retired`. Holding an output-prefix
@@ -11481,7 +11900,7 @@ funding record that is not `released`. A mover outside this lane has no such
 record and is swept exactly as before.
 
 Retention is safe here only because the leftovers have a named owner:
-`produced_output.retire_batch` runs `stage_release.evict` for that mover key,
+`produced_output.retire_batch` runs `staged_path.evict` for that mover key,
 which deletes the files and returns the holder's tokens in the same call --
 exactly once, with a re-drive answering `duplicate` and returning nothing
 further. The consumer window's twin (#627: a failed mover's partials, held by
@@ -11490,7 +11909,7 @@ instead; nothing in this contract changes it.
 
 Where that egress runs follows the tier record (#801). Only the tier host
 mounts the stage read-write -- the GPU hosts mount it read-only -- so
-`retire_batch` runs `stage_release.evict` in its own process only when the
+`retire_batch` runs `staged_path.evict` in its own process only when the
 announced tier `host` is the box it is on. Anywhere else it seals the egress
 node `pbrun` seals for a consumer's staged range (`stage_release.py` off the
 tier record, one CPU and one GiB, no tier demand, no residency block, no data
@@ -11514,14 +11933,12 @@ the new one. A process inside a container reads the container's name as its
 hostname unless it was given the host's, and then takes this route, which is
 the safe direction: the route works from any box, the tier host included.
 
-`stage_release` is a fleet tool, not part of the `prismabuild` package, and a
-production owner imports the package from `<generation>/src` with the
-generation's `tools/` off its import path. `retire_batch` therefore imports
-the tool only on the in-process route, and an owner that cannot import it takes
-the tier-host route even on the tier host. The package imports no other fleet
-tool by bare name; a test fixture that puts `tools/fleet` on `sys.path` hides
-such an import, so the tier-host tests make the owner's calls with
-`stage_release` unimportable.
+`produced_output` calls the package owner `staged_path.evict` directly on the
+in-process route. Staged-copy containment has no fleet-tool import or
+`ImportError` fallback. Produced-output physical namespace constants live in
+`output_vocabulary`, below both owners; the staged-path owner does not import
+produced-output orchestration. The existing tier-host route and its
+missing-announcement refusal keep their original policy.
 
 Four behaviours differ from the in-process route, all deliberate. The staged
 paths are filed on the still-live copy before the action is published, because
@@ -12233,7 +12650,7 @@ it gives back landed ranges past their readers' horizons:
 * Not at all when every candidate together could not make the room (#632:
   no futile eviction). The event is `beyond-horizon-eviction-futile`.
 
-Each eviction is all or nothing: `stage_release.evict(..., whole=True)`
+Each eviction is all or nothing: `staged_path.evict(..., whole=True)`
 judges every entry under the ownership lock before the first unlink. A range
 a reader has pinned, that a promotion is reading, or whose ownership the
 pass cannot prove is declined whole — nothing unlinked, no retiring mark,
@@ -12329,7 +12746,7 @@ tmpfs, which is the case where another consumer's promotion needs the room.
 ram tiers as well as stage tiers, on the same pressure (`window_pressure`'s
 ram leg) and the same rules: farthest-needed first, whole or not at all,
 never inside a horizon or the advance, and not when the room cannot be made.
-The eviction is `stage_release.evict` against the announced ram root. The
+The eviction is `staged_path.evict` against the announced ram root. The
 newcomer and claim relief terms count these ranges on the ram tier as they
 do on the stage.
 
@@ -13618,7 +14035,7 @@ record. A claimed mover with no usable report keeps the claim-time price.
 
 An egress (`stage_release.py`) holds the stage's ownership lock from the
 census it takes under the lock to the fragment drop
-(`stage_release._evict_locked`, #988), and every mover takes the same lock
+(`staged_path._evict_locked`, #988), and every mover takes the same lock
 at its start gate (`PoolQueue.ownership_start_gate`). Since #1010 the worker
 credits a mover's wait while the lock is held, so the mover is not killed.
 The egress itself was sealed with no progress policy and no execution
@@ -13750,7 +14167,7 @@ goes ahead without the record.
 A mover's other holds file no record, and need none. Its start gate
 (`PoolQueue.ownership_start_gate`) takes the lock and releases it at once,
 holding nothing; a record would only lengthen it. Its publisher's per-entry
-holds (`_StagedPublisher._ownership`) come after the gate, once the mover has
+holds (`StagedPublisher._ownership`) come after the gate, once the mover has
 reported entering `copy`, so the worker has stopped looking; a record per
 entry would add a write and an unlink on the queue mount to every
 publication under the lock (#981). A mover sealed without the `start` phase
@@ -13934,7 +14351,7 @@ a second time.
 The head's reading phase, and the reading phase of any consumer ranked
 before it, a leg whose copy or egress is queued or running, and a leg whose
 promotion holds the ram tier (#640) are never candidates. Each eviction is
-whole (`stage_release.evict`, `whole`), and a pass whose candidates together
+whole (`staged_path.evict`, `whole`), and a pass whose candidates together
 cannot reach the target evicts nothing (`claim-order-eviction-futile`, the
 #632 rule). The events are `claim-order-evicted`,
 `claim-order-eviction-declined`, `claim-order-eviction-futile` and
@@ -14034,7 +14451,7 @@ in one place:
   when blocked).
 * I2. An eviction is whole or declined, and only of a complete, unpinned
   copy whose copy and egress are not queued or running
-  (`stage_release.evict` with `whole`; `_claim_order_candidates`'s
+  (`staged_path.evict` with `whole`; `_claim_order_candidates`'s
   `held`, `busy`, `_landing_rate` and ram-copy checks).
 * I3. A consumer's blocked-since time does not move while it stays blocked
   on one range (`tier_loop._blocked_since` reads the reader's own
@@ -14175,13 +14592,13 @@ and at most one candidate walk a cycle, and at most two censuses.
 
 **A range several claimed consumers read is charged to each.** Two
 consumers of one manifest name the same bytes (`tier_loop._descriptor`),
-and the staged name is content-addressed (`stage_move.stage_relative`), so
+and the staged name is content-addressed (`staged_path.stage_relative`), so
 the second copy adopts the first's file. The ledger is not told. Each
 consumer's mover is its own action key, because the key hashes
 `--consumer-action-key` (`tools/fleet/pbrun.py`), and each claim takes the
 range's full tokens from free (`PoolQueue._begin_tier_acquire`). Adoption
 takes over only a range that no live item names
-(`tier_loop.adoptable_ranges`). So the commitment counts the range once per
+(`staged_path.adoptable_ranges`). So the commitment counts the range once per
 consumer. Charging it once in the census alone would make the census
 disagree with the ledger it reads, and the fix belongs in the mover's
 identity and the tier ledger's claim, which this change does not touch.
@@ -14430,7 +14847,7 @@ before any path state is classified, so a by-path, first-mention or
 partially-known sidecar can never authorize a deletion; extra material keys
 are the crash superset and are never ownership. Positive staleness for an
 existing regular file is **inode difference**, the same rule
-`_StagedPublisher._proof_candidate` reads (#755); a same-inode size/time
+`StagedPublisher._proof_candidate` reads (#755); a same-inode size/time
 change is divergence, not permission -- this prune path does not take
 `_proof_candidate`'s #1078 content tie-break for a same-inode, same-size
 timestamp drift, since a stale-mention prune must not cost a rehash on its
@@ -14527,11 +14944,11 @@ carry the same rule (#1045, #1070). Every writer of a fragment or material
 sidecar replaces it by rename (`residency_map._write_atomic`,
 `reader_lease.write_material`), so the first change after the census read
 normally installs a new inode, but two rename cycles in one clock tick can be
-given the freed inode number the census read, and at the same size all five
-fields of the version match. So the owner's own fragment and material are
+given the freed inode number the census read, and at the same size every
+field of the version can match. So the owner's own fragment and material are
 installed only at a version whose ctime is strictly before a clock read taken
-before their `lstat` (`stage_release._fenced_path_version`, applying
-`stage_move._keepable_version`), and a co-owner fragment only at the version
+before their `lstat` (`staged_path._fenced_path_version`, applying
+`FilesystemTrust.file_version`), and a co-owner fragment only at the version
 the census memo kept, which the memo keeps under the same rule (#1045). Every
 later change to a file, a new file under its name included, is stamped at or
 after that clock read and so moves the ctime. A document changed in the tick
@@ -14619,7 +15036,7 @@ budget (#1077) leaves for a later cycle marks its tiers the same way.
 
 A partially pruned owner is a **per-path cache, never a whole-range donor**.
 Its historical move receipt stays factual -- nothing rewrites it to hide the
-prune -- so whole-range adoption notices the disagreement: `tier_loop.adopt`
+prune -- so whole-range adoption notices the disagreement: `staged_path.adopt`
 refuses unless the current donor fragment still agrees with the complete
 receipt's `entries_declared`/`entries_staged`, **covers its staged bytes
 exactly**, and matches the requested leg's range. Coverage is equality, not a
@@ -14912,7 +15329,7 @@ payload bytes copied for two blocked entries on one worker. The policy is
 therefore to bound the wasted work and surface the obstruction, not to
 conclude anything about the remaining names.
 
-The gate signals that refusal with `stage_move._PublicationRefused`, an
+The gate signals that refusal with `staged_path.PublicationRefused`, an
 `OSError` subclass, so every caller that already catches `OSError` keeps
 catching it and no existing behavior breaks on the type; the copier
 deliberately changes its range handling for it. On receiving it a copier
@@ -14956,7 +15373,7 @@ refill rate #1081 measured on the live RAM tier after a role restart (16
 threads parked in the publish poll).
 
 Under positive absence the gate now proves the name by its own bytes
-(`_StagedPublisher._content_proof`): the file is opened without following a
+(`StagedPublisher._content_proof`): the file is opened without following a
 symlink, hashed, and adopted if it is a regular file of the declared length
 whose SHA-256 is the trusted digest and whose identity (inode, size, mtime,
 ctime) is the same after the read as before it. The trusted digest is the
@@ -15007,7 +15424,7 @@ over all of it.
 
 **Dates land before the vouches they date, and go after them.** The stage
 mover (`stage_move.move`'s `publish`), the RAM promotion
-(`ram_promote.promote`) and range adoption (`tier_loop.adopt`) now write the
+(`ram_promote.promote`) and range adoption (`staged_path.adopt`) now write the
 sidecar first and the fragment second, as the #1026 fan-out already did. A
 kill between the two leaves a date that no vouch cites, and that is inert:
 
@@ -15063,7 +15480,7 @@ fragment's keys for fleets that do.
 ### A publish wait is recorded and named by verdict (#994)
 
 Before this, a publication that waited for another publisher left no trace of
-having waited at all. `_StagedPublisher.publish` polls the ownership gate's
+having waited at all. `StagedPublisher.publish` polls the ownership gate's
 four wait verdicts -- a fragment names the destination without a usable date
 (`owned`), a live mover claim covers it (`live_publisher`), a sibling copy is
 in flight (`in_flight`), or nothing names it and it has not been re-verified
@@ -15102,7 +15519,7 @@ the recorded error both name the verdict.
 ### A killed mover's copies that no fragment names are reclaimed, and sized (#1088)
 
 Both movers set the prewarm loop's `user.pbstage.source` on every copy before
-its rename, and `stage_release.reconcile` read that mark as a prewarm object:
+its rename, and `staged_path.reconcile` read that mark as a prewarm object:
 counted in `unowned_left`, never deleted. A copy a mover renamed after its
 last fragment is named by nothing: at most one `FRAGMENT_PUBLISH_S` interval
 of a stage mover's range per kill, and every copy of a RAM promotion's range,
@@ -15198,7 +15615,7 @@ Before #1026, every consumer sealed its own mover for every range it reads. A
 mover's action key is the digest of its whole sealed body, and that body
 carries `--consumer-action-key`, so two consumers of one manifest named two
 movers for the same bytes. Both copied into the same content-addressed staged
-names (`stage_move.stage_relative`). Both claims took the range's tokens from
+names (`staged_path.stage_relative`). Both claims took the range's tokens from
 free (`PoolQueue._begin_tier_acquire`), and the joint commitment charged the
 range once per consumer.
 
@@ -15208,9 +15625,10 @@ checkout snapshot, the pricing read off receipts, and the log name. So the
 first submitter of a range registers its mover, and every later submitter of
 the same range names that mover
 (`residency_plan.register_shared_range`). The range is identified by the
-four fields `core.residency_descriptor` binds: manifest, tier, start, and
-end. Their digest is the range's *share namespace*
-(`residency_plan.share_namespace`). The records live under
+four fields `manifest_sha256`, `tier_id`, `range_start_bytes` and
+`range_end_bytes`. `tier_loop._descriptor` compares them, and
+`residency_plan.share_namespace` hashes them to form the range's *share
+namespace*. The records live under
 `residency-plans/shared/`:
 
 - `ranges/<namespace>.json` names the mover and holds its sealed row. The
@@ -15272,7 +15690,7 @@ one more copy of the vouch and one more egress. Within a cycle each mover's
 index is read once (`residency_plan.share_namespace_of`).
 
 **Interest is derived, not filed.** A consumer is interested in a shared
-range while all of these hold (`stage_release.shared_interest`):
+range while all of these hold (`staged_path.shared_interest`):
 
 - it is in `ready/` or `claimed/` and declares residency leads;
 - its frozen plan names the mover as a stage leg;
@@ -15284,7 +15702,7 @@ would need a reaper of its own. Derived this way, a consumer requeued from its
 first phase regains its interest by construction.
 
 **An egress drops one interest.** Each consumer keeps its own egress row. For
-a shared range, `stage_release.evict` runs under the mover's transition lock
+a shared range, `staged_path.evict` runs under the mover's transition lock
 and reads the mover index. While another consumer is interested, the egress
 removes only the egressing consumer's fragment, material, and retiring mark,
 and returns a complete receipt with `interest_dropped` and no tokens moved.
@@ -15334,7 +15752,7 @@ now treats one mover named by several plans as one holder:
 withdrawn (#620), but a mover is not withdrawn while another consumer that is
 not dead has a filed plan naming it, or while that does not read
 (`residency_plan.plan_interest`, #1114). The witness is the filed plan rather
-than `stage_release.shared_interest`'s live rows and progress, because a
+than `staged_path.shared_interest`'s live rows and progress, because a
 sealed consumer's plan is filed before its row is visible. The dead consumer's
 plan then stays filed, because `reap` does not archive a plan under a live
 child, and a later pass reaps it once the mover has ended.
@@ -15459,7 +15877,7 @@ fragment names (and, since #1088, a mover's copy no fragment names whose
 writer has ended). None of them asked *whose* stage was being walked. On
 2026-09-18 at 16:05Z a test on the storage box announced `/stage/prewarm` to a
 queue under `tmp_path` and ran one tier cycle; that queue's fragments attributed
-nothing, the prewarm xattr marked nothing, and `stage_release.reconcile` deleted
+nothing, the prewarm xattr marked nothing, and `staged_path.reconcile` deleted
 671 GB of staged shards in one walk while the run they were staged for was
 reading them. The bytes came back by the #624 recompute movers over the next
 two hours. The mechanism was working exactly as specified; the specification
@@ -15467,7 +15885,7 @@ had no owner.
 
 **The tier loop marks its own stage before it announces it.** For every stage
 tier discovered on the loop's own host, `cycle` calls
-`stage_release.register_stage_root`, which writes
+`staged_path.register_stage_root`, which writes
 `<mountpoint>/.prismabuild-stage.json` naming the queue by the real path of its
 root, the tier id, the host and the time (schema
 `prismabuild.stage-root.v1`), by temporary and `os.replace`. A marker that
@@ -15569,7 +15987,7 @@ reclaims it once no fragment names it and that writer has ended; see
 #1088 above) -- and every later head pays the
 publisher's 30 s grace once per orphaned entry (measured on the incident
 that motivated this: 36439 entries, 10895318814 bytes, ~0.53 files/s).
-`stage_release.recover_orphaned_range` is the operator-scoped repair for
+`staged_path.recover_orphaned_range` is the operator-scoped repair for
 exactly that history, and nothing else: it changes no lifecycle the loop
 owns, takes no scope from its caller, and defaults to a dry run.
 
@@ -15752,7 +16170,7 @@ block when it names leads (`residency_source: row`), else, for a pool item
 action key) with a filed plan, the block that plan implies, in the shape
 `pbcampaign` writes (`residency_source: filed_plan`). `tier_loop.live_consumers`,
 the RAM credit, the claimed staged-wait attribution, `_uncensused_tier`,
-`stage_release.shared_interest` and the orphan sweep's `live_claims` all
+`staged_path.shared_interest` and the orphan sweep's `live_claims` all
 read through it, so a planner row's first phase stages while the row is
 READY, before its claim, exactly as a `--residency stage` submission's does.
 Its receipt's `tier` block then records the outcome the loop observed:
@@ -15825,7 +16243,7 @@ so a mover keeps that token from `finish` until an egress deletes them, which
 is what the paragraph above about released-but-resident capacity is defending.
 `fill_mb_s_pool_side` prices the pool-side bandwidth a copy *draws*, and
 nothing draws it once the copy stops. `keep_tier` kept both, so every finished
-mover held its full rate for the life of the fleet and `tier_loop.adopt`
+mover held its full rate for the life of the fleet and `staged_path.adopt`
 carried one range's rate on to each successive consumer although adoption
 copies no bytes. Measured on `prismabuild-stage:dl380g10` on 2026-09-18: 506 of
 635 fill units held by seven terminal or never-published keys, 129 free against
@@ -16065,6 +16483,67 @@ the remaining deadline plus cleanup grace. Failure retains unknown values and
 `abandoned_children`. Explicit `--timeout-s 0` disables the bound. The helper
 loader creates no bytecode, and runtime publication installs no host unit.
 
+### Census ownership, C27
+
+`prismabuild.census` owns the fixed questions `offers`, `action_rows`, `denials`,
+`tiers`, `movers`, `plans`, `waits` and `blocked_origins`. Each returns a
+`Section` with its value, declared inputs, selection bounds and independent
+`complete`, `partial` or `unavailable` coverage. Known observations survive
+beside failed inputs. A partial census grants no absence or idle-capacity proof.
+The CLI and protocol compositions preserve their read order and caller-owned
+deadlines. They do not eagerly request other sections.
+
+Plain reads and `census.KeptReads` use the same fact derivation. `RecordStore`
+owns records, paths and captures. Retained values keep their directory/file
+evidence and explicit per-scrape lifetime. C06 owns ending selection and
+generation authority; a kept terminal projection never answers a fresh
+current-key claim. Tier, lifecycle and residency owners retain their decisions.
+Census observes their facts without admitting, publishing, locking or resolving
+lifecycle transitions.
+
+Tier observation uses Store's strict directory capture. `Queue.tier_ids` retains
+its release/reaper policy of tolerating failed scans; that fallback cannot prove
+an empty observed tier population. A failed census scan retains partial coverage
+and marks the existing starvation/scrape completeness false.
+
+Partial active populations and unreadable holdings remain unknown in plan
+state, reservation and publication facts. Known positive observations survive.
+The mover protocol keeps readable rows, reports incomplete coverage through its
+existing envelope and leaves full depth null. Prometheus count maps receive
+zero defaults only from complete sections; incomplete population counts are
+withheld. Raw observed counts remain available inside their independent section.
+Holder presence uses the ledger owner's strict `holder_state` observation;
+the legacy tolerant token-count query is insufficient evidence of absence.
+Plan state coverage is independent of C21's phase-residency facts. The receipt
+cap bounds a selected observation; its existing window-completeness flag still
+states whether that selection covered the whole requested time window.
+Selected denial-read errors and unreadable filed receipts retain partial
+coverage. An unreadable fragment population yields null fragment presence.
+Optional offer-sample errors make the section partial while the legacy queue
+population count keeps its own, narrower completeness meaning.
+Fragment error coverage follows C21's declared mover names: invalid foreign
+files remain tolerated, while a failed directory or named mover stays unknown.
+Negative residency projections require known holder input. A cursor gap with
+unknown phases withholds that leg's full metric counts; known positive facts
+and other legs remain available.
+Stage and RAM residency coverage are independent: a later RAM failure retains
+the stage result already captured, without starting any read previously skipped.
+
+The denial profiles deliberately differ. Active rows select each host's latest
+denial for the exact publication generation, excluding future observations.
+Starvation uses retained latest observations without a time gate and joins them
+to live mover shape. MCP hours exclude future samples; zero hours mean all
+history. Prometheus uses nonnegative age within its configured seconds; zero
+seconds mean age zero and a future age fails its observation. These are
+explicit inputs, not a policy change.
+
+`pbstatus`, `pbmcp` and `pbmetrics` render these facts with their existing schemas,
+ordering and metric labels. Rollout observation stays with `upgrade_client`;
+HTTP lifecycle, scheduler discovery and protocol envelopes stay in the tools.
+`tools/maintenance/census_audit.py` reproduces the source, assertion and embedded
+program inventory. `census_migrate.py` replays a pinned final patch and verifies
+its exact tree on an idempotent rerun.
+
 ### Structured status for agent consumers
 
 `pbmcp` serves the same census to a program instead of a person, over MCP's
@@ -16083,8 +16562,7 @@ arguments are checked against the advertised types, required fields, property
 names, array items, minima and enums before any tool read. Invalid arguments
 return JSON-RPC `-32602`; operational tool refusals retain `isError` results.
 
-`pb_starvation` serves the starvation census through `pbstatus`'s own reader
-rather than a second one, so the tool, the `--starvation` command and the
+`pb_starvation` serves the package census, so the tool, the `--starvation` command and the
 pbmetrics gauges cannot disagree about who is waiting; `pb_cursors` serves
 the per-plan cursor join from the same census, adding the full consumer key
 and the progress record's own timestamp for the accepted phase. Both keep
@@ -16161,8 +16639,10 @@ read. An inaccessible checkout is unavailable, rather than a digest based on
 an unresolved spelling. The existing claim format and producer identity are
 unchanged.
 
-MCP's record and terminal-entry readers use the public read-only
-`pool.read_queue_record` and `pbstatus.recent_ending_paths` interfaces. Receipt
+MCP's queue record and terminal-entry intake uses RecordStore's fixed
+inspection questions. `pbstatus.recent_ending_paths` remains its public
+adapter over actual native directory entries. An invalid current live slot
+reports a bounded unavailable section before an older ending can answer. Receipt
 self-consistency uses core's immutable `CAS_RECEIPT_BODY_KEYS`,
 `CAS_RECEIPT_KEYS` and `LOCAL_RESULT_CLAIM_BODY_KEYS`, shared with the producer.
 These interfaces do not acquire locks, verify full worker attestations or add
@@ -17349,7 +17829,7 @@ this is not evidence of a deployed runtime generation or PQ workload acceptance.
 The approved SDK6 adds the capability tag and the selection builder.
 Other exports, signatures and legacy arrays remain unchanged.
 
-`PoolQueue._record_scratch_lifetimes` uses the existing transition lock and
+`scratch_lifetime.register_attempt` uses the existing transition lock and
 contained prelaunch owner. It files `prismabuild.scratch_lifetime_record.v1` in
 the claim and existing lease before filesystem mutation or payload launch.
 Each ephemeral path retains the existing host/key/publication-generation/nonce
@@ -17579,14 +18059,55 @@ legacy unbound reports remain ignored. No source receipt/output is edited,
 no result or skipped test is adopted, and no new cache or dispatcher is added.
 
 
-The ordinary and movement action log capture share one sealed shell generator
+The ordinary and movement action log capture share one sealed argv generator
 (#1439). Its existing action PATH chooses gnutee when available, otherwise tee;
 the resolved executable is recorded in ordinary stderr evidence. Both pipeline
 statuses are copied immediately. A failed producer retains its original code,
 and a successful producer with failed capture fails rather than publishing a
-partial log. This changes newly sealed capture argv identities; retained sealed
-requests and receipts remain immutable and can be recovered as sealed. No system
-tool, fleet runtime, active queue, placement or result-population policy changes.
+partial log.
+
+Capture passes each command argument separately to bash:
+
+```text
+/bin/bash --noprofile --norc -c '<PATH prefix and capture pipeline using "$@">' bash <command...>
+```
+
+The explicit `bash` supplies `$0`; every command argument belongs to `"$@"`,
+including an empty first or last argument. The fixed script invokes `"$@"`
+on the producer side of the same pipeline. It copies `PIPESTATUS` immediately,
+retains a nonzero producer code ahead of a capture failure, and records the
+selected capture executable and both failure codes as before. Ordinary
+submissions add the sealed PATH prefix; movement actions use their complete
+sealed PATH without exporting another prefix. `captured_command` now returns
+the complete argv list. `standard_capture_argv` delegates to that owner;
+movement sealing, capacity-role qualification and action-result binding use
+the same owner and exact recipe matcher.
+
+This fixes the TrustLadder PrismaQuant `73e8456e` launch failure. Joining the
+individually valid arguments made the bash script 133,714 to 134,248 bytes,
+exceeding Linux's 131,072-byte single-argument limit on the affected runtimes.
+The positional recipe removes that artificial combined-string limit. Each
+argument and the complete argv/environment still obey the kernel's exec limits.
+
+New submissions have different `task.argv` bytes and therefore different
+action keys, including movement actions. Requests and receipts already sealed
+with S5's inline recipe remain immutable. New workers reconstruct and accept
+that exact recipe for command binding and movement capacity-role qualification,
+and Core executes its retained argv unchanged. Already-oversized inline
+requests must be resealed under the positional recipe to launch; their original
+keys cannot acquire different execution bytes. No general shell parser or
+acceptance of arbitrary historical wrappers is added.
+
+Mixed-version rollout is worker-first. Old Core can execute a positional argv
+as an ordinary command, but old action-result binders and movement-role
+classifiers do not recognize it. Pause submitters, drain active work, publish
+the complete runtime, and wait for every eligible worker loop and every
+command-binding consumer to upgrade before resuming submissions with new
+clients. An uncoordinated mixed-version rollout is unsupported; there is no
+new capability tag that makes it safe automatically. For rollback, pause
+submitters and drain all positional-recipe work before restoring old workers
+or binding consumers. New workers can continue to accept S5 clients during
+the forward rollout.
 
 Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
 diagnostics, resident command output and merge-queue duration hints (#1386, #1547).
@@ -17749,3 +18270,1695 @@ registry, preflight producers, action keys and evidence schemas are unchanged by
 claim that a runtime generation carrying the change is deployed or that
 enforcement has been activated. Delivery is source only, with coordinator
 verification and runtime activation recorded separately.
+
+
+## Source ownership after the 2026-10-14 simplification
+
+`contracts.py` owns the worker code-capability tag strings and pure contract
+rows. Normalized publication facts declare requirements; worker facts enable
+offers and their companion tags. Gang enablement and a known loaded generation
+remain prerequisites for gang and canary offers. Image and scratch support are
+code capabilities even when their current availability is unknown. Class,
+hostname and `cpu` remain placement or host facts outside the rows.
+
+The registry imports only the standard library. Core retains the execution
+schema and parameter names, but no longer exports placement-only capability
+tags or imports their owner. The isolated scratch recorder and pbtest's
+embedded dependency verifier also retain their existing import closures.
+The public SDK's capability values remain unchanged.
+
+Pool publication derives progress-family tags from the validated sealed request
+and refuses code tags without their declarations before READY exposure.
+Missing sealed authority is unknown and cannot authorize a progress tag;
+unreadable authority retains its existing refusal. Legacy direct API projections
+for images, interpreters and dependencies retain their existing rules.
+The egress requirement uses the existing executed movement identity and the
+exact stage-release tool. A different capacity-returning tool does not acquire
+egress semantics by its role alone. Canary and scratch-I/O envelope and funding
+checks remain prerequisites, ahead of the new progress fence.
+
+Worker `--tag` accepts placement tags and the `cpu` host fact. It refuses
+registry-owned code tags and `runtime-generation:` companions before announcing.
+The loaded code and its enablement own those offers. The source and published
+fleet rosters contained no such manual tags when inspected for this change.
+Submission retains its existing refusal details and appends the registry's
+remedies for missing code contracts. Progress advice removes the requirements
+derived from its validated policy when asking which otherwise eligible workers
+support that policy; its required tags and remedies come from the same rows.
+Availability eligibility and the complete shared submission owner also remain
+separate work. Source changes establish no new deployed capability or
+staged-read workload proof.
+
+`src/prismabuild/kept_reads.py` owns filesystem trust through the injected
+`FilesystemTrust` port. `LinuxFilesystemTrust` preserves the namespace/watch,
+mount-table and exact-object descriptor qualification rules. `DirectoryCaptures`
+owns complete listing proofs separately from untrusted per-file candidates.
+Acquisition detaches old state before filesystem or clock work; context exit
+aborts unfinished reads. Only the newest acquisition may publish, and forget or
+retain revokes in-flight ownership. Publication compares fresh trust outside the
+short state lock. No filesystem or descriptor I/O runs under that lock.
+DirectoryRecords discards candidates on actual directory trust loss while
+retaining individually qualified older records when only the directory tick
+refuses a listing. History requalifies detached entries independently and never
+adds candidate-only persistence. Census stage classifications remain hints.
+Mover names captures retain names and paths; fragment and partial candidate
+observations stay fresh on every decision.
+Capture keys and trust observations use the same path spelling as the listing.
+Lexically normalizing a path containing a symlink and `..` can select a different
+directory, so it cannot supply the listing's proof.
+
+Exporter derived values use opaque `DirectoryEvidence` and `EvidenceSet`.
+A scrape view observes each directory once; post-computation checks use fresh
+trust. Skip-checkpoint classification uses opaque directory observations that
+preserve its trusted-before, fallback-before and bare-after order. Only trusted
+evidence survives in a skip checkpoint; action identity and authority remain
+with the action reader. Produced-output per-tick memos requalify current trust
+before a warm hit, and retain versions only inside `file_version_scope`. The
+tier cycle and blocked-origin observation entrypoints establish that scope.
+Action-side callers default to fresh reads, and the scope resets after exceptions.
+Directory and file retention still require metadata older than the coarse fence.
+
+
+`manifest_layout.py` owns manifest timelines, phase frontiers, ranges and
+entry-aligned chunk cuts. Movement uses `read_entries`, which preserves v1
+entry order without phase annotations. The public SDK's `manifest_read_entries`
+retains the existing phased refusal contract through the package owner. The
+v2 source/deployed compatibility check verifies core, `manifest_layout.py` and
+the prewarm entrypoint. A generation must carry the actual implementation bytes.
+
+`fleet_roster.py` owns roster source lookup, strict UTF-8 JSON decoding,
+presence, class and name facts. `Roster` captures the source path, exact bytes,
+SHA-256 and document together. `Box` binds one canonical declaration to that
+capture, including its loop arguments, count, role arguments and disk floor.
+The owner depends only on the standard library and `digest_primitives`, whose
+imports are also standard library. It has a private roster decoder because the
+pinned digest owner has no strict decoding API. It does not import Core or the
+native immutable-file owner.
+
+The digest owner's `unique_json_object` constructs ordered objects and rejects
+duplicate keys for the roster, Core's strict decoder and the RAM mount installer.
+Each boundary supplies its existing exception class and message. UTF-8,
+nonfinite-number and overflow policies remain with the corresponding decoder.
+
+`Roster.at` prefers the nested checkout layout, then the flat export.
+Supervisor and recorder lookups explicitly prefer the flat current generation.
+Supervisor retains `CONFIG` as its checkout/test fallback. Membership prefers
+its repository root, then its module's roster. D38 reads beside its resolved
+module and permits documents containing only policy fields. Missing
+`d38_enforce` means false; a present value must be a boolean. Missing
+`gpu_interpreters` means no configured interpreters; a present value must be an
+array of absolute paths. The hook retains repair access on unreadable or invalid
+configuration and continues to refuse the lock wrappers.
+
+Supervisor and membership prefer an explicit canonical entry, then require one
+alias match. Recorder evidence instead rejects overlapping name groups and
+invalid recorder aliases. The installer checks every matching declaration for a
+conflicting metrics role. These are distinct named questions. Generation
+membership uses `generation_aliases`, refusing distinct declarations that claim
+the same name within one generation. Each historical generation is checked
+separately before the publisher joins old and new rename groups. Historical
+rename unions are not treated as one conflicting generation. Publication keeps
+its existing permissive alias-shape boundary; the barrier and recorder retain
+their stricter named checks. Liveness, absence handling, quorum and role-log
+migration authority remain with their existing domain owners.
+
+Publication validates candidate JSON and named fields before staging. Duplicate
+keys at any depth, nonfinite constants, overflowed JSON numbers and malformed
+policy types refuse. Missing disk floor means no declared floor; a present
+fleet default or per-box override must be an integer from 0 through 99. The
+supervisor still drops only the disk offer when it cannot measure a valid
+budget. It now uses one capture for both box shape and fleet defaults.
+
+Fresh publication hashes candidate bytes against the initial manifest before
+decoding. Option preservation and historical-attestation preflight use that
+same capture. Historical barrier membership, rollback preflight and role-log
+migration use `Roster.qualified`, binding actual roster bytes to the qualified
+generation's manifest before parsing. An invalid or absent digest refuses.
+Role-log migration still requires the exact canonical host and its three roles;
+an alias does not grant extra authority. Bootstrap publication without a roster
+retains its existing behavior. Staged hashes, manifest rechecks and commit
+checks remain in force. No record format or deployed runtime changes here.
+
+`decomposition.py` owns decomposition addressing, membership capture and durable
+child verification. It also owns plan freezing and child-index publication through
+`freeze_plan` and `publish_children`. Recovery reads before deriving and adopts
+the valid first writer, including a plan from an older partition algorithm.
+Index collisions compare canonical document values, preserving accepted retained
+formatting. Campaign adapts record read and collision errors to its existing
+`ManifestError` boundary. The direct immutable-file owner publishes both records.
+Reporter capture stops after an invalid plan; queue capture
+retains both document diagnostics. `complete_group` owns the publication-only
+read against the already frozen plan, exact sealed-batch checks, child receipts
+and results, exact-cover proof, and first-writer group receipt publication.
+Campaign closure renders the result and keeps its missing-child, ordinal and
+collision diagnostics. It fully validates the publication schema and its binding
+to the frozen plan before reading child results. Campaign, queue and reporter
+share one native receipt-and-document read. That read validates the action and
+canonical receipt without opening the result blob, then uses the native CAS
+`read_declared_blob` operation with a 1,048,576-byte bound. The bound applies
+before the first blob open and throughout the stable read, whose size and digest
+must match the receipt. Child manifests use strict UTF-8 JSON with duplicate-key
+rejection. The shared read returns the receipt and decoded JSON value; a decoded
+value is not yet a validated manifest. Campaign closure checks JSON null before
+manifest validation and retains its exact MissingChildResult/no-receipt line.
+The bound query validates the decoded value, so receipted null retains its native
+ActionContractError. Reporter and queue still map that refusal to zero credit or
+no durable result. Native receipt and blob integrity errors retain their types;
+strict JSON failures use the native action-contract refusal.
+The 1,048,576-byte limit applies to every producer, including resumed
+campaigns. A larger child manifest receives no queue or reporter credit and
+cannot close its campaign group, even when its receipt and schema are valid.
+
+Queue request membership and key-based reporter result queries live in
+`decomposition`. Bound child queries require the child identity, plan and
+publication; no unbound verification mode remains. Reporter request checks still
+precede membership I/O, and invalid-plan capture stops before publication reads.
+Queue capture retains both diagnostics. Record validators and the index
+constructor are private. Stored paths, schemas, canonical document bytes, native
+receipt-document digests and freeze-before-publication ordering retain their
+existing contracts. Equivalent retained JSON formatting remains accepted.
+
+Execution passes one `ExecutionClock` to the loop and `ProgressWatch`. Monotonic
+time prices elapsed work; Unix time records observations. The watch owns the
+complete stall check: due comparison, final report sample and refund, then
+staged, export, reader and queued-child wait guards in that order. Concrete
+queue adapters supply observations; the watch owns credits and probe-time
+refunds. The loop applies the returned checkpoint adjustment and keeps the
+execution ending and containment decisions. The default clock uses the existing
+real clock functions.
+
+`gpu_sample_facts.py` owns GPU sample decoding for controller, measurement,
+room, offer and framebuffer consumers. Each consumer retains its existing
+freshness and attribution requirements. Offer numbers permit their existing
+float coercions; framebuffer counters require exact integers. Framebuffer
+reporting does not authorize admission from incomplete global attribution.
+Samplers and guarded clocks stay at their existing caller points.
+
+`denial_records.py` prepares detached bounded denial values and merges latest,
+transition and diagnostic records without I/O or clocks. Queue adapters retain
+the ring-before-latest order, conditional reads, writes, memo updates and flush
+boundaries. Candidate room selection and drain-note ownership remain separate
+unfinished work.
+
+Funding record persistence has one internal writer with an explicit window or
+output binding and a separate rotation flag. Each binding keeps its validator,
+wire fields, retired-record policy and public lock boundary. The state table and
+error ordering are unchanged. The reserve path alone rotates generations.
+
+The branch's [review and PR dispositions](refactor_review_2026-10-14.md) and
+[verification evidence](refactor_evidence_2026-10-14.json) describe the source
+change. Runtime publication remains a separate operation.
+
+### Requeue publication preserves a replacement generation
+
+Ordinary publication may queue a new generation while an older claim still
+owns the key's claim slot. A retry or unstarted release of that older claim
+must preserve an existing READY publication. Finish, stale-lease recovery,
+unstarted-claim recovery and broker deferral share one publication owner. It
+stages the shaped item beside the original claim tombstone, then hard-links
+it into READY without replacement. A collision files the old generation under
+`withdrawn/superseded/`. Charged retries retain their immutable attempt links;
+unstarted releases keep their uncharged accounting and release evidence.
+Maintenance deferral keeps its existing drop reason. Finish returns the
+superseded evidence path on collision, and recovery does not report that drop
+as a requeue of the old generation.
+The generic superseded record keeps `status="dropped"`; its filename kind
+`retry-superseded` names a concluded charged retry, while `unstarted-requeue`
+names a released uncharged claim displaced by an existing READY publication.
+
+The original tombstone retains the exact claim and prior attempt count until
+publication or collision filing succeeds. Recovery can therefore adopt the
+same immutable attempt after an interrupted publication without charging the
+next slot. Failed links or collision filings retain that recovery authority.
+The temporary shaped copy carries no claim authority; the publication helper
+removes it in its `finally` block.
+After a process crash, the tombstone sweep also removes an aged regular staging
+sibling whose exact original tombstone is absent from a fresh directory listing
+under the key's nonblocking transition lock. The filename must match the writer's
+key, integer timestamp, verbatim hostname, positive PID and eight-hex UUID suffix
+recipe. File mtime governs staging freshness independently of the earlier
+entomb timestamp. Fresh sources, present tombstones, malformed names and
+nonregular entries remain untouched; unknown file or owner observations retain
+the source. This unlink removes only the staging directory entry, preserving
+any READY hardlink, successor claim, lease, tokens and immutable history. It
+does not add a key to the tombstone sweep's recovered-claim result.
+At this phase ordinary finish did not hold the key transition lock across
+outcome filing. The resumed-finisher correction below adds an ownership check
+and a lock over only the publication tail. The historical qualification here
+does not cover that later correction.
+
+Generic superseded drops and intermediate `requeued` attempts do not supply an
+execution verdict. A validated newer READY publication can instead end G1 with
+an immutable `PublicationSupersession` under its exact publication identity.
+Exact-generation readers consult that ending after exact execution, withdrawal
+and archive evidence cannot answer. The wait reports `superseded` and exits 76;
+it grants no execution verdict, resource release or authority to follow G2.
+Same-generation retries do not create that ending. G2's exact waiter reads G2's
+own evidence, and the older generation's evidence remains retained.
+
+The test-only source parent reproduced three READY-generation losses in PB
+action `c28bdd67aea92a51224aaa57d295f080b588e6d95d6d235062eca3226065b5ea`.
+The integrated generation-preservation cohort passed 195 tests at
+`7be48621c2eb8519666f777ec622570ba20d8c0d`. The later typed publication-ending
+and caller cohort passed 677 at `961290a01b4d351a7b7d0b4886830ddd1cfd6c45`.
+Their source, terminal, retained logs and CAS receipt/payload evidence is
+verified in `requeue-generation/integrated-evidence.json` and
+`integration/publication-assembled-evidence.json` in the refactor evidence
+directory. These component qualifications do not promote staged-read
+deployment or workload-proof axes.
+
+### Queue-key standing read owner
+
+`record_store.RecordStore(root).standing(key)` owns the queue-key observation
+used by produced-output retirement, attempt checks, action edges, deferred
+release, and produced-holder classification. It returns `Present[QueueRow]`,
+`Present[Moving]`, `Absent`, or `Unknown` with a reason. Produced-output keeps
+its consumer-success, attempt-identity, containment, and write-authorization
+policy. The retirement tick and dead-input claim pass retain their existing
+per-owner memo lifetimes.
+
+Standing makes two plain observations and requires the state and record
+contents to agree. Each observation reads claimed before ready, then checks
+claimed sidecar names for tombstones or late finishes. Intent and lease names
+alone do not establish a transition. Without a live row or transition, the
+latest `published_unix` among done, failed, and withdrawn answers for the key.
+A missing, boolean, nonnumeric, non-finite or overflowing stamp, an equal
+newest stamp, an unreadable record, or an unreadable sidecar listing leaves
+the answer unknown. An unavailable generation never authorizes retention
+cleanup.
+
+These reads acquire no lock, impose no deadline, and do not refresh cached
+missing names. They use RecordStore's plain intake, whose missing/empty and direct I/O
+behavior is unchanged. `pool.read_queue_record` remains its documented public
+adapter. Queue names and record bytes are
+unchanged.
+
+`RecordStore(root).mover(key)` owns the separate polling question. It reads
+claimed, ready, done, failed, and withdrawn in fixed order and returns the
+first readable row as `Present[QueueRow]`. It preserves the live legs' non-None
+predicate and the terminal legs' Mapping predicate. Every leg uses the
+Store-owned best-effort miss-refresh profile: a missing or empty record gets a
+best-effort parent open and one retry, while a hit needs no parent open. A
+parent-open failure preserves the missing answer. Any other Exception leaves
+the poll `Unknown`, retaining the failing path and original exception object.
+Five missing answers produce `Absent`. Polling reads no sidecars, compares no
+publication stamps, and makes no second complete observation. Each caller
+keeps its existing publication, receipt, recovery, or retention policy and
+observation lifetime, including separate repeated polls within recovery.
+
+`RecordStore(root).claimed(key)` reads one plain claimed record, while
+`queued(key)` reads ready only when the claimed read is absent. Missing and
+empty records are absent under the existing plain transport. Neither question
+refreshes missing names, adds identity validation, or retains a memo. Read
+exceptions become `Unknown` with the original exception and path. The
+produced-output declaration, binding, live-owner, nonce, launch-context, and
+safe-release operations keep their original capture positions and domain
+policies. Operations that previously raised a read error re-raise that exact
+object inside their original error boundary. The public SDK claimed-record
+read retains its distinct empty-record policy.
+
+RecordStore also owns claim, liveness, prefix, inspection, history and
+publication intake. PoolQueue and the SDK retain their documented domain
+adapters. Pool captures terminal candidates once and passes the typed
+`TerminalCapture` to its pure ending resolver; observation and ending policy
+have separate owners.
+
+Named questions fix their directory selection, serial read order and error
+profile. Plain historical JSON stays permissive. Strict bounded intake keeps
+its existing UTF-8, duplicate-key, non-finite, nesting and byte limits. A
+confirmed read still lists before either conclusion. Immutable attempt
+recovery still refreshes every canonical parent only after the first missing
+read, retries once when that exact name was listed, and preserves its
+`StaleAbsenceError` distinction.
+
+Queue writers share `replace_record_at` when their contracts agree. Its path
+must be a canonical Store address or the exact address held by a domain
+transition. Distinct first-writer, immutable-conflict, sorted-LF, fsync,
+PID-temporary and missing-parent retry profiles remain distinct operations.
+Store owns names and framing. The caller still owns its transition lock,
+validated generation, publication order, ring limits and retention decision.
+
+`immutable_files.write_json_atomic` and `write_bytes_atomic` own the shared
+rename recipes below Store and checkout materialization. Store selects fixed
+profiles; materialization and lane callers use the same implementations. JSON
+text and temporary-name options are checked before any parent is created.
+The original materialization error classes remain the same exported class
+objects. Bytes retain their distinct failed-rename cleanup policy.
+
+The reader-release diagnostic keeps stderr before path creation, append
+before readback, and the original domain-selected tail replacement.
+
+`RecordStore.kept(root, records=...)` explicitly uses an existing C11
+`DirectoryRecords`. Its fixed queue, receipt, diagnostic and history questions
+use the same intake as the plain path. State bulk reads preserve their
+existing immutable-byte capture followed by fresh permissive decoding per
+result. Receipt and diagnostic readers retain their separate callback error
+profiles. Native callback failures abort capture; no exception response is
+kept. Retained values are bytes or private frozen values, and every returned
+record has independent nested mutable containers. There is no ambient queue-reader
+context or caller parsing
+callback. Tier-cycle helpers receive the Store explicitly. Residency fragment
+and material grammar remains in its domain owner.
+
+C11 `DirectoryCaptures` and `FilesystemTrust` own retained evidence. A supplied
+trust owner follows the receipt, census, ledger, fragment and publisher
+readers. LinuxFilesystemTrust is the single production adapter. Failed
+acquisition, lost hit proof, aborted capture and failed commit cannot restore
+an older capture. By-key claims, standing, confirmed terminals and attempt
+recovery always use fresh native reads, including when invoked on a kept
+Store. Status and metrics pass their census reader explicitly. A private
+metrics helper's own reader remains separate from that former context role,
+so its standalone plain reporter defaults keep their original behavior.
+Existing domain projection and timing policy stays with its owner.
+
+C11's in-memory `FileVersion` names device, inode, size, mtime, ctime and mode.
+Observed mode prevents an unreadable publication from keeping its earlier
+proof when coarse ctime repeats. Consumers use the named fields instead of
+duplicating a tuple length. This does not change a persisted record format.
+RecordStore imports only the native, digest and C11 owners, with no reverse
+dependency on Pool, Core or Materialize. Source ownership does not establish
+runtime deployment or staged workload acceptance.
+
+
+### Staged drain policy and counted-note ownership
+
+`drain_policy` reduces the observations captured by `PoolQueue._observe_drain`.
+Preparation preserves the original history coercions. The adapter reads
+available capacity, then only the holders the policy still needs, reducing
+each bound before reading the next holder. The policy returns a verdict and
+explicit ordinary or host/generation-scoped measurement note changes.
+
+The claim driver stages nonempty changes in `_DrainAccounting` before
+canonical measurement election. Pending changes survive election contention.
+Each production `record_pass` receives its key's receipt explicitly. It consumes
+ordinary notes after initial history coercion, then measurement notes after
+ordinary merge and prior episode conversion, preserving the original failure
+and write order. Absent changes carry earlier values, None clears a field,
+and finite numeric changes update it. The current measurement reservation is
+preserved through the counted write.
+
+The existing unreadable-error classes, same-instance uncaught errors,
+unmeasured finalization, clocks, holder-release observations and preemption
+order are retained. Fairness limits and admission authority keep their existing
+owners and defaults. The protocols below complete candidate composition and
+claim-driver reduction without changing those boundaries.
+
+
+### Candidate qualification and pre-host preparation
+
+`candidate_policy` owns the residency refusal vocabulary and the pure
+`residency_denial`, `admission_denial`, `never_fits` and `funded_remainder`
+decisions. Queue observation, parsing, publication and resource ownership stay
+with their existing owners.
+`RESIDENCY_REFUSAL_STATES` and `RESIDENCY_LEAD_UNFINISHED` have one definition
+in `candidate_policy`; pool consumers use that owner directly.
+
+`PoolQueue._qualify_claim` runs under candidate T, before the existing UNCERTAIN
+guard. It keeps the lazy claimed-name hint, release and placement checks,
+canary and live capability checks, withdrawal, residency, demand parsing,
+reservation construction, sealed scratch intent and empty-demand branch in
+that order. The result carries the exact demand dictionaries, canonical proofs,
+unread dependent-owner sentinel and existing `_ClaimReservation`. It adds no
+resource lifetime. Handler diagnostics remain inside their original except
+blocks so a diagnostic-write failure retains the original active exception.
+An unreadable-residency carry returns the updated scan order to later rows.
+
+`PoolQueue._prepare_host_claim` runs inside that same UNCERTAIN guard and its
+ledger/nonempty-demand branch, still under T and before host admission. Total
+fit precedes the two soft placement preferences. Sealed CPU identity precedes
+producer allowance and dependent-owner reads that reuse its request cache;
+conditional GPU contract follows them. The export loop updates the original
+host demand and reservation demand, in that order for each kind. Scratch
+placement and the fresh scratch boundary use the resulting full reservation
+demand. Their shared offer, profile, root and generation reads stay outside H.
+
+Both protocols return their typed success, an ordinary `CandidateDenial`, or
+the existing `ScanOrder` after completing a handled path. The driver publishes
+ordinary denials with the original two-argument call when evidence is None and
+three arguments otherwise. Scratch yielding publication stays inside its
+original narrow try, and both profile-invalid diagnostics stay in their except
+handlers. They preserve the caught types and active exception contexts. Any
+uncaught preparation error still reaches the original UNCERTAIN abandonment
+and re-raise. Literal H-result seeds initialize after successful preparation.
+
+The frozen records preserve references rather than copying or freezing their
+maps. `_HostClaimRequest` describes pre-funding preparation. Later H funding
+replaces the host result's demand and its separate reservation copy.
+No hint, capability result, scratch price or peer observation grants local
+capacity. Canonical census and admission still decide against current host
+state, and `_ClaimReservation` still owns every token, probe, borrow, funded
+transfer and abandon policy.
+
+`PoolQueue._prepare_claim_gang` owns sealed gang preparation under candidate T,
+inside the existing UNCERTAIN guard and before census admission. Its gang import,
+group/member/sibling observations, teardown and diagnostics retain their original
+conditional and exception scopes. Backfill reclaim keeps its own preemption/H
+lock lifetime there. A handled refusal is distinct from a pending CandidateDenial.
+
+`PoolQueue._arbitrate_claim_census` runs inside the driver's canonical census
+context. `_measurement_reservation` owns pure candidate priority, measurement
+suppression, incumbent position and canonical-verdict amendments. `_gang` owns
+pure standing/member/rank position. These functions consume observed values and
+preserve mapping references. They read no queue, ledger, clock or controller.
+
+The queue adapter keeps fresh movement proof, conditional held capacity and
+holder keys, protected-role authorization, ordered backfill proofs, resident
+preference, prelaunch and election at their original boundaries. It folds one
+backfill blocker before observing the next proof, retaining list/election
+equality. Resident shared reads remain inside successful census admission.
+Denials there are published before leaving that context. An unavailable census
+does not imply that M/H were acquired. Canonical PassCensus acquisition, reuse,
+refresh and setup-only catches are unchanged.
+
+### Claim reservation, commit and publication driver
+
+`_claim_pass` owns the candidate T context and directly names the canonical
+`measurement_reservation.pass_admission_census` context. The canonical provider
+still acquires its reader guard, sorted local elected M keys and H. Successful
+census acquisition, conservative reuse, refresh and setup-only exceptions keep
+their existing implementation. An unavailable census can answer without owning
+M/H; its denial is still published inside the context that yielded it.
+
+`_reserve_claim_host` consumes `_CensusArbitration` directly under that context.
+It owns the two scratch freshness checks, CPU decision, funded remainder,
+withheld-room check, GPU decision, token acquisition, GPU probe and CPU borrow.
+The probe and borrow follow successful `begin_acquire`. Its optional refusal
+availability read remains under the same H. `_account_host_refusal` runs after
+the context releases M/H. Scratch generation change precedes expiry. Staged
+notes, canonical election, counting, preemption, conditional age and diagnostic
+publication retain their original order and exception boundaries.
+
+`_take_claim_tiers` owns allocation preference, reader-plan decisions, tier
+acquisition, reset and family fill borrowing. `_rename_and_commit_claim` owns
+fresh resign, claimed-name, image and gang checks, intent, rename, cache
+invalidation and moved-byte validation. `_commit_claim_reservations` commits
+tiers before the host and checks completeness. These protocols stay inside the
+original UNCERTAIN catch. Its only cleanup remains the existing reservation's
+`abandon(UNCERTAIN)` followed by a bare re-raise. An uncertain GPU probe remains
+spent. No second owner holds tokens, probes, borrow metadata or tier funding.
+
+Publication remains under T and outside UNCERTAIN. `_build_claim_record` owns
+the complete ordered projection from moved bytes. `_verify_claim_funding`
+checks tiers and kinds in insertion order, including exact token names and the
+conditional output request binding. `_persist_committed_claim` keeps terminal
+and withdrawal cleanup distinct, writes the claim before the lease, then calls
+`_seal_claim_funding`. A successful consumed mark skips readback; a failed mark
+uses the original generation-aware idempotent readback. Canonical election
+sidecars survive unstarted retries. Persistence failures retain the original
+fence-first recovery and never replace a newer READY publication.
+
+`_ClaimScan` is passive pass-lived data: the ordered rows, worker inputs,
+ledger totals, placement/capability views, existing read memo and canonical
+census. It captures no new per-candidate host sample, availability or holder
+state. `_opening_claim_row` and `_refuse_busy_row` keep pre-T precedence,
+dead-input handling, carried room and the existing ready-GPU policy in their
+original positions. A winning rename invalidates claimed names, reader plans
+and census even when the moved record later refuses.
+
+`_HostAccepted`, `_HostRefusal`, `_TakenClaimTiers` and `_CommittedClaim` retain
+original mapping references across these boundaries. They own no resources or
+future observations. `CandidateDenial` is pending publication; `_ClaimHandled`
+means the protocol already filed that row's refusal or terminal ending, so the
+driver only continues. Cached census refusals
+retain their original evidence mapping. Ordinary gang paths retain `None` for
+the unread module, and `_gang.elected_elsewhere` retains the existing missing
+or foreign-election predicate. These are the wave4 names accepted at review.
+
+Pure candidate, reservation, gang and scratch owners decide policy from values.
+The denial codec remains `denial_records` through `record_denial`; the sole
+resource lifetime owner remains `_ClaimReservation`. The driver contains only
+typed dispatch and phase control. It is 104 ordinary physical lines and 65 AST
+statements after this extraction, against the accepted limits of 240 and fewer
+than 100. Counts do not replace inspection of the reachable protocols.
+
+`tools/maintenance/claim_driver_audit.py` records source blobs, callers,
+conditional calls, helper sizes, protected owners and driver scope checks
+without importing project code. Native histories and exact-source PB evidence
+are required separately. The diagnostic tests exercise real claims and failure
+ports rather than patching `_claim_pass`. The extraction changes no queue
+schema, lock scope, fairness limit, ready-GPU rule or default.
+
+
+### Ending queries and client wait ownership
+
+`endings` owns the pure current-key, exact-generation and immutable-attempt
+questions. Exact-run queries request their existing conditional inputs through
+`NeedsRunInputs`; observing current status does not inherit exact-run fallback
+rules or authorize queue mutation. Publication supersession remains distinct
+from execution.
+
+The current-key query consumes one `RecordStore.TerminalCapture` and preserves
+the original read errors. It performs no further I/O. Waiters keep their
+separate per-path intake and request withdrawal, archive and publication reads
+only at the existing conditional points.
+
+`action_wait` owns one await loop and its per-call reader state. The synchronous
+profile preserves zero-patience final rereads, remaining-budget observations,
+separate verification budgets and delivered-snapshot acceptance. The detached
+profile always makes its first bounded read and follows exact preemption
+handoffs at expiry. Both use the owner clock at call time. Its `await_ending`
+adapter now clamps a positive wait's last sleep to the deadline; the only
+production caller requests zero patience. Own-child waitpid remains the reap
+authority. Persistent scoped readers retain their separate durable protocol.
+
+`action_client` owns synchronous outcome intake, immutable verification, expanded
+attempt output, human reporting and the existing client exit constants. Both
+waiters and inspection consumers call that package owner directly. `submission`
+owns request preparation, sealing, publication and transport orchestration;
+`pbrun` parses arguments and renders display events. The package imports no CLI. `pbwait` keeps SLURM resume in its durable
+parent, after bounded observation, and checks receipts before scheduler state.
+This ownership change does not change queue records or the reserved-exit clamp.
+The private client channel and package recovery follow the bounded protocol
+above. C05 read-port reconciliation and integrated qualification remain required.
+
+Role stop requests use a sticky flag and a nonblocking wake pipe. The signal
+handler takes no wait lock, so a request delivered during wait setup wakes the
+same wait. The role context restores its prior handlers before closing both
+pipe descriptors. Idle waits retain their existing deadlines and completion
+boundaries.
+
+
+
+### Capability evidence and live qualification (C03)
+
+`capability_eligibility` owns host presence, declaration pairing, availability
+observations, offer projection and availability denials. `contracts.CONTRACTS`
+continues to own code support tags and publication/worker enablement. A support
+tag states that the worker implements a check. It cannot prove a local path,
+interpreter, dependency byte string or image is present.
+
+`DeclaredCapabilities.parse` validates direct publication declarations before
+action publication and retains the existing normalized wire values.
+`validate_tags` checks their code tag pairing. The leaf format owners remain
+`normalize_interpreter`, `local_dependencies.normalize`,
+`dependency_digest.validate_requirements` and `container_images.normalize_refs`.
+Submission clients use these same format rules. No new wire field or sealed
+action parameter is introduced.
+
+Only `None` supplies the default empty local-path or query mapping; false-valued
+non-mappings are rejected before publication changes action state. Worker
+observation ignores non-list file queries without repairing their queued
+declaration. The live predicate still denies that declaration, including a
+false-valued malformed image field that would otherwise resemble no requirement.
+
+| Capability | Observation and advertisement | Unknown and denial rule |
+|---|---|---|
+| Placement tags and GPU presence | `HostPresence` parses observations and emits the existing worker tags and `has_gpu`; `placement_matches` asks the same question for offers and claims | Every required tag must be present. Either `needs_gpu` or positive GPU demand requires a GPU host. An omitted or malformed GPU flag is unknown; only explicit false proves a CPU-only peer. Invalid resource demand remains the later demand owner's refusal. |
+| Named interpreter | `observe_interpreters`, `InterpreterAnswers`, and pass-scoped `LiveInterpreters` | An omitted answer is unknown; a named executable must be positively present. Submission refuses unanimous absence and permits discovery of an unknown path. Live refusals name `malformed_interpreter`, `interpreter_requirement_missing` or `interpreter_not_present`. |
+| Local dependency path or executable | `observe_dependencies`, `DependencyAnswers`, and `LiveDependencies.local_answers` | Unknown and absent both fail the declared kind requirement. Declaration or source availability never supplies host evidence. Live refusals retain `local_dependencies_unavailable` and `local_dependency_not_present`. |
+| Digest-pinned file | Worker presence observations and per-pass live presence/digest caches | Offers prove path presence only. `DigestEvidence.UNOBSERVED` never claims byte verification. The live adapter supplies a current digest or unreadability; one predicate owns missing, unreadable and mismatch denials. First-use submission discovery and unanimous absence retain their existing rules. |
+| Declared image and optional class gate | `ImageAnswers`, shared inventory and `LiveImages` | Unknown inventory differs from an empty inventory. A supplied malformed, stale or negative offer class report cannot authorize placement. Live policy evaluation remains authoritative, with existing unknown, absent and class refusal diagnostics. |
+
+`CapabilityRequirements` parses queue declarations into typed family values or
+stage-specific malformed refusals. Parsing reads no host state. The common
+`_check_capabilities` predicate checks interpreter, local paths, file presence,
+file bytes and images in that order for both `OfferCapabilities.check` and
+`LiveCapabilities.check`. Later malformed input never outranks an earlier live
+refusal. Foreign file order remains the order of digest diagnostics. Offer
+queries reject malformed declarations at ingress, so the census still counts
+corrupt rows as unreadable rather than unplaceable. Malformed presence lists
+are unknown even when they also contain a requested string. Advisory
+queries omit the queried declaration and its declaration tag from the local
+otherwise-eligible query, then explicitly require the advertised support tag
+through `HostPresence`. The concrete predicate has no adapter-mode bypass for
+declaration pairing. An interpreter support tag without a named path is refused as
+`interpreter_requirement_missing`; untagged native work requires no interpreter.
+
+Submission diagnostics retain full sealed file declarations, including SHA
+values, even though offers only answer path presence. The unknown-path branch
+removes both the file declaration and its support tag from its local discovery
+query. `PoolQueue.image_placement_census` similarly projects three host cohorts:
+otherwise eligible, image-capable and reporting the concrete requirement. It
+uses the common matcher and `HostPresence`, and its image, capacity and refusal
+callers supply their existing resource scope. No observed offers remains unknown.
+Export-room sizing asks only placement tags and declared memory totals through
+`HostPresence`; it does not invent an action containing unpaired capability tags.
+
+Live adapters retain existing observation timing and cache lifetimes. Initial
+qualification remains under candidate T, before withdrawal and resource work.
+Image class checks before rename and after rename still evaluate the actual
+inventory and clock. Offers never replace those checks. Busy GPU row room uses
+the same image predicate, so malformed image declarations cannot withhold room.
+
+The ready-GPU CPU preference first checks placement, splits host/storage demand,
+normalizes the reservation and tests total room. Only then does it capture the
+first actual local offer's typed interpreter/dependency/class answers and the
+current image observation. It asks the common predicate directly, without
+fabricating an offer record or rewriting the candidate resources. It retains
+lazy offers and denial reads, reservation sizing, priority and refusal rules.
+It deliberately does not probe live dependencies before candidate T.
+
+Declared resource capacity, observed headroom, GPU telemetry, free tokens,
+contention, reservation normalization, gang/canary authority and scratch trust
+remain with their current owners. Unknown advertised capacity is still distinct
+from zero. These answer fit, authority and admission questions beyond host
+capability. No C01 reservation, census, lock or commit owner changes.
+
+### Scratch lifetime ownership (C24)
+
+`scratch_lifetime` owns versioned selection, record validation, registration,
+monotone audit persistence, exact durable-owner validation, and descriptor-bound
+cleanup. `PoolQueue` supplies its existing transition lock, holder resolution,
+naming binder, and exact-scope adapter. Registration and finalization reread the
+concrete `RecordStore`; no per-attempt object caches claim, lease, or scope proof.
+The store owns live, late, tombstone and widowed-lease locations and atomic audit
+writes. These ports preserve the original read order and owner-before-lease
+write order. They do not renew heartbeat or change reservation release.
+
+`local_scratch` retains pair accounting, legacy naming, shared parsers and
+profiles. It imports and reexports no lifetime implementation. The public SDK
+builder now comes directly from `scratch_lifetime`. The isolated recorder still
+loads only its attested producer members. Extraction changes `local_scratch.py`
+bytes once, so old physical profile receipts do not qualify this producer.
+Subsequent lifetime-only edits leave `PRODUCER_FILES` bytes unchanged. The source
+controls use a tiny real recorder receipt and preserve source-mismatch refusal;
+they provide no new physical profile, broker deployment, or live cleanup proof.
+
+Run `python3 tests/lifecycle_source_audit.py --out DIRECTORY` for the current
+source-only boundary, owner, caller, assertion and decorator audit. The original
+C24 extraction audit remains a historical source artifact. Runtime qualification
+and native scope evidence are separate PB artifacts.
+
+Sealed gang preparation, its conditional import and group state remain in the
+claim driver. Backfill reclaim retains its own preemption/H lock lifetime under
+T. Measurement census M/H, host admission, acquisition, funding, commit and
+publication also retain their original positions and error boundaries. These
+later protocols and the final claim-driver reduction remain unfinished C01
+work. This extraction adds no compatibility phase and changes no queue schema,
+lock scope, fairness limit or default.
+
+### Native regular-file custody
+
+`immutable_files` owns regular-file opens, stable and replace-only reads,
+streaming identity checks, leaf-only reads and descriptor-relative unlink.
+The named `read_stable_file`, `read_replaced_record`, `read_immutable_file`
+profiles keep their existing custody requirements.
+The native owner retains six would-block open attempts, three fresh stable
+reads and eight replaced-record passes. It preserves the existing errno
+causes, opening and streamed byte caps, final leaf then parent identity checks,
+read-only checks and ext4 unlink-before-name-move acceptance rule.
+Leaf-only reads retain their narrower ancestor and ActionContractError policy.
+
+Core exposes `write_new_json` for create-only JSON output. The CLI and
+publication canary use the same implementation. It retains pretty sorted UTF-8
+JSON, one final LF, refusal of non-finite values and the existing output and
+concurrent-publication errors. No private forwarding alias remains.
+
+Strict JSON decoding lives in `digest_primitives.decode_strict_json`.
+Only existing strict intake boundaries use it; plain queue reads keep their
+permissive JSON and missing/empty behavior. Core has no private forwarding
+reader or decoder aliases. Its public `ReplacedRecordError` is the exact
+native class object, alongside its existing canonical CAS error bindings.
+Dynamic tools and the standalone-capable `local_scratch` recorder use their
+loaded Core's native/digest module objects. Other package modules import the
+native owner directly. Strict decoder callers use either their loaded Core's
+digest member or the direct digest owner; each module uses one native-owner
+access form,
+so isolated, installed and retained source bundles keep their own dependency
+and exception identity. The attested member set is unchanged, and current,
+historical optional-member and retained receipt-listed proof rules remain in
+force. The wider queue questions, plain/kept adapters and publication
+profiles are owned by RecordStore as described above.
+
+The current variable-mode native producers are `action_result` and
+`checkout_recovery`. They select their immutable or stable reader at the
+original call position. Historical native wave N2 also had `pool_reconcile`
+as a third variable producer. Its current reconciliation questions use fixed
+immutable/stable profiles in RecordStore, with the same custody and strict
+decoding boundaries. Three native reader profiles remain after retirement
+of the single-link reader.
+
+### Packaged movement library, C29
+
+Movement retention, registration, eviction, copying, prewarm helpers and RAM
+promotion are owned by `prismabuild.stage_release`, `stage_move`,
+`prewarm_loop` and `ram_promote`; `prismabuild.stage_rounding` owns the existing
+byte/token report arithmetic. Their executable fleet scripts keep their names,
+flags and generation bootstrap and call the packaged `main`. The accounting
+library ships with package sources and has no fleet script row.
+
+Produced-output retirement lazily imports the package owner on the tier host.
+Remote retirement still uses the tier-host action. Import availability no
+longer selects a different route. Storage formats, stage marker refusal,
+claim identity, retention rules, lock order and C05 record/trust ownership are
+unchanged. [The movement ownership note](c29_movement_package.md) records the
+boundary comparison and the completed remaining library move.
+
+The tier-role implementation is `prismabuild.tier_cycle`; the physical
+`tools/fleet/tier_loop.py` entry passes its own path to the package owner.
+That binding preserves its role stem, singleton, mover directory, policy
+search, argv and exits. Ten remaining fleet libraries now have package source
+owners and no `FLEET_SCRIPTS` rows. The stdlib `runtime_paths` source also
+supplies its two existing standalone published leaf paths through an explicit
+publisher source map. Retained proxy receipts prove the same helper identity
+at its current package path or original tool path. Installed client members,
+C15 receipt dependencies and protocols remain unchanged.
+
+## Captured generation receipts (C15, 2026-10-17)
+
+`generation_receipt.GenerationReceipt` owns one decoded receipt and named
+generation, commit, selected-member and source-declaration questions. Its
+constructor performs no I/O. Callers capture at their original receipt read;
+selected-member operations never scan unrelated files. The publisher explicitly
+checks the whole manifest. `digest_primitives` remains the digest owner.
+
+Identity observation, member integrity and root authority remain distinct.
+`observe`/`compare` preserve minimal legacy identities and typed unknowns.
+The retained wrapper does not acquire a commit requirement. Existing coercion,
+ordinary versus strict JSON, read budgets, conditional reads and error policies
+remain with their concrete callers. `runtime_publication` retains nonempty
+canonical manifests, custody, HMAC approval, protected copying, locks and stamp
+caches. A matching receipt grants no root authority. Core's attested single-file
+contract and SDK version 6 remain unchanged.
+
+Updater capability discovery uses captured source and unique module-level
+integer literals through `SourceDeclarations`, without executing target code.
+This deliberately replaces regex acceptance of embedded or ambiguous markers.
+The publisher rechecks the selected updater bytes against its captured receipt
+before parsing those declarations. Fixed old-source negatives distinguish that
+correction from the structural extraction.
+
+The standalone root updater loads the exact local `generation_receipt.py` and
+`digest_primitives.py` pair lazily after journal recovery. Both sources are
+captured and compiled before either executes; installed leaves retain bounded
+nofollow reads and root custody. Source layouts are explicit, and installed
+layouts have no missing-leaf fallback. Publication ships each owner in the
+package and beside standalone tools. Root installers copy dependencies before
+their importing consumers.
+
+Two literal declarations describe source transport:
+`CLIENT_UPGRADE_RECEIPT_MEMBER_PROTOCOL = 1` means the updater can journal,
+copy and recover the pair; `CLIENT_UPGRADE_RECEIPT_READER_PROTOCOL = 1` means
+the updater requires the pair. A candidate contains neither leaf or both.
+A reader requiring the pair cannot activate without both. Any transaction
+adding or removing the pair requires member protocol 1 in both updater sources.
+Present dependencies copy first, then the present updater, then absent optionals.
+C18's captured installed proof and previous proof metadata remain authoritative.
+
+A separately named, unpublished standalone bridge implements transport without
+using either new leaf. Forward transport is old to bridge without leaves, bridge
+to bridge with the pair, then final. Reverse transport restores the bridge while
+retaining the pair before removing it. The unaware old updater cannot refuse an
+unknown closure retroactively; the retained unsafe-direct-transition negative
+proves that limitation. Root's C31 preparation/deployment gates own refusing that
+source transition. Record readability alone does not establish transport safety.
+Prepared bridge source grants no live activation or rollback designation. The
+live and designated rollback generation remains a17477b2b206adf79d89e65c7b9d09584f0bfa34.
+Current compatibility-window questions use the same captured receipt and
+source-declaration owners. Updater parsing and its digest use one captured
+read. Retained record inspection qualifies each captured generation's own
+closure; it grants no candidate installation or rollback direction.
+
+Automatic fresh publication and ordinary existing-generation activation apply
+the source direction policy before writes. A receipt-pair rolling transition refuses because
+historical attestations cannot prove the current installed updater. Stage-only
+preparation activates nothing and remains available. Existing epoch activation,
+reversion and resume require exact enrolled identities and the current drained
+quorum. The participant checks its executing and installed updater against the
+intent before posting that epoch-bound proof. Sealed source alone supplies no
+installed proof, and completed epochs cannot authorize another transition.
+
+The existing same-updater and same-coordinator barrier prerequisites remain.
+A bridge's pair addition or removal can satisfy them. Changing from that bridge
+to the final importing updater cannot use a rolling history claim or relax those
+prerequisites. It requires a separately authorized installed-reader bootstrap
+and activation assessment. The default predeploy census exposes no such
+installed proof and refuses receipt-pair deployment. The explicit installed bootstrap
+assessment described below obtains that authority through fresh root responses. No bootstrap or live
+rollout is authorized or qualified by the source/corpus checks.
+See [the receipt architecture](c15_receipt_architecture.md) and the rerunnable
+source and evidence tools under `docs/evidence` for exact caller and ship maps.
+
+## Supported-generation record compatibility (C31/B11, 2026-10-16)
+
+The local compatibility implementation uses `prismabuild.record_kinds` as pure
+wire ownership metadata. It records location, field policy, accepted historical
+shapes and concrete reader/writer references without eagerly importing their
+modules. The selected production adapters and native protocol populations use
+that catalogue. Validators remain with their domain owners. IDs never change;
+residency-map and lease constants use the catalogue's semantic ID lookup.
+Source inventory accounts separately for retired APIs, identities, operator
+reports, qualification fixtures and actual records. It pins closed field sets
+and leaves unresolved symbolic expressions and uncovered constructors visible.
+
+The supported window is the union of live worker generations and an explicitly
+designated rollback target. Retained directories alone grant no support. The
+persistent local designation in `compatibility_rollback_designation.json` pins
+a17477b2b206-1791745175-65dffa700dfb by directory, commit, raw receipt digest and
+complete content-map digest. Automatic reachability applies only to candidates
+without B09's proof member. The explicit operator-restoration mode below retains
+the final leaves and has automatic_reachability false.
+A fresh complete status capture and every actual rollback byte must be checked
+again before rollout. A changed live generation expands the observed window;
+it never silently replaces the designated rollback target. Offline WSL is not
+live. GC's every-reader preconditions include the designated target.
+
+Once either installed or candidate source contains optional `park_proof.py`,
+both updaters require optional-member protocol 2 and proof-member protocol 2.
+a174 is then unreachable through automatic rollback. The independent operator
+restoration below keeps all three final leaves while restoring the old updater. The unpublished 6fa9b780304d bridge has a
+capable updater, the deployed broker/behavior and no proof source. Its captured
+reader closure is a prepared source control. Publication, fleet convergence,
+actual immutable generation designation and physical G-to-bridge rollback
+remain root deployment gates. This local designation changes no deployed
+pointer or setting and promises no permanent support for a pinned snapshot.
+
+Retained operations run in fresh `python -I -S` processes with closure/stdlib-only
+paths. Complete source closures, raw receipts, imported module paths/hashes and
+executing source/code are attested. Current and historical production writers
+must each reproduce golden bytes in two independent isolated processes before
+both reader directions pass. Corpus adoption requires the verified successful
+PB producer chain, exact request/source binding and reproduction flag. Absent old
+participants are source-bound absence observations, never codec passes.
+Coordinator writer sources not shipped with a deployed reader have separate
+provenance and separate processes. Private fixture facts confer no physical
+custody, drain, performance or RootGO credit.
+
+Native historical byte reproduction selects an explicit qualified archival
+replay runtime from the `archival-replay` test capability. That source
+declaration is the sole executable path and SHA-256 authority. The test
+descriptor adds the full Python version, resolved path, executable size and ELF
+identity. The archival child verifies `/proc/self/exe`, its isolated flags,
+assigned affinity and inherited environment before running the unchanged
+retained driver. Complete inherited environment values are bound by a canonical
+digest. The parent captures one environment dictionary, hashes it and passes
+that same dictionary explicitly to the archival subprocess. Native library
+changes to the C environment cannot alter the selected launch environment.
+The environment observation logs only native thread variables, TMPDIR
+and TZ values. The driver then changes TMPDIR to its private store as its
+retained source requires.
+That private value is labelled source-derived unless observed.
+
+The current writer and both forward and reverse readers use the main declared
+gate interpreter. Historical replay still compares every byte with the immutable
+historical row. Direct retained shape writers also run under the gate interpreter
+in separate controls, preserving the observed 3.12 gzip discrepancy. Operation
+proofs distinguish the main gate, archival replay and each real read direction.
+The original capture interpreter and timezone remain unknown where original
+metadata did not record them. Replay qualification supplies no original capture
+identity. Source support does not establish a deployed capability or a fresh
+runtime pass.
+
+Core's closed `worker_runtime.v1` cannot grow an `immutable_files` field while
+retained readers reject additions. Instead attested Core source pins the helper
+SHA-256, checks the loaded helper and rechecks its bytes before receipt
+publication. `action_result` reads that pin from the attested Core and verifies
+the helper; old Core without the pin retains its actual historical contract.
+Helper changes require regenerating the source pin and current runtime goldens.
+See `compatibility_corpus_2026-10-16.md` and the C31 requirement-status record for
+source pins, actual qualification and remaining integration/deployment gates.
+
+
+### Root proof runtime qualification
+
+The root proof population retains its real UID/GID0 fixtures, assertions and
+node IDs. Ordinary portable execution records their real prerequisite failures.
+An explicit `tests/run_proof_container.py --runtime-profile <sealed.json>`
+route adds separate qualification in an already admitted action. Omitting the
+profile preserves the existing image runner. `--collect-only` uses the same
+whole files, source, profile and closure as execution.
+
+A profile binds the existing native image, exact primary interpreter, separate
+installed-reader interpreter, and complete inventories of selected read-only
+host mounts and required image paths. Every declared inventory member remains
+an exact retained fact. Each symlink retains its raw target and an ordered,
+replayable component-resolution outcome. Every declared link outside the selected
+native library root must resolve inside the sealed closure. The closure records
+that root explicitly as `native_library_roots`, derived from each selected
+runtime's `/usr/lib/<MULTIARCH>` inventory. Only a link declared inside that
+root and outside the derived required native graph may terminate at witnessed
+absence. The profile retains the exact expanded lookup, stable parent
+observations, and complete immediate child-name evidence. Image-owned absence
+also requires an actual no-follow ENOENT result. Host-owned absence instead
+requires a complete stable host-directory enumeration bound to the durable host
+checkpoint. A missing member-map key is not absence evidence. Unknown outcomes,
+cycles, mutation, unsupported lookups, and missing witnesses refuse capture.
+Components are looked up in order; a missing or non-directory component cannot
+be cancelled by a later `..`. Namespace authority is host-preferred at and below
+the explicit host mounts. A proper ancestor of a host mount is a mount-plan
+ancestor. A present image directory supplies its observed entry; an image
+symlink or other non-directory there refuses ambiguous mount authority. An
+absent image ancestor becomes an explicit mount-created directory whose exact
+children are derived only from the paths toward host mounts. It is navigation
+evidence, not a complete image inventory, and claims no image stamp or mode.
+A missing sibling under it has a mount-plan absence witness, independently
+rederived by the auditor. Existing native-only off-graph absence and strict
+required-path rules still apply. Each synthetic component or absence record
+consumes one member before enqueue. Mounted verification checks the actual
+directories' kind and complete child names against that derived expectation,
+without comparing image stamps. All other expanded paths outside host mounts
+belong to the existing image.
+
+The primary starts with `-S` and the existing pinned qualification dependency
+path, excluding unsealed host venv site-packages. The installed reader retains
+its production spelling, isolated startup, root custody, and real unprivileged
+credentials. Executable, venv, stdlib, site, cache/tool, and library-alias roots
+retain the strict every-link rule and existing Python startup semantics. This
+contract adds no Python startup model or customization restriction. Host root
+selection also inspects `sitecustomize.py` and `usercustomize.py` in the selected
+stdlib. A symlink whose strict host resolution is a root-owned regular file
+outside every already selected root adds exactly that terminal as a host file
+root. Missing host targets add nothing and retain the strict link rule. The
+closure records each `{link, target}` derivation and stable host component and
+custody observations. The auditor independently replays that selection against
+the host inventory and rejects any host root not justified by the stdlib,
+interpreter, venv, observed native-provider, or customization rules. Selection
+probes consume the existing member budget; retained target bytes consume the
+ordinary inventory budget. Host file roots shadow image copies, and missing
+image ancestors use the mount-plan rule above. Mounted inventory verification
+checks the bound file's complete bytes. Completion captures other present
+external startup-link targets as narrow exact image roots with complete bytes;
+it cannot excuse a missing stdlib or venv alias as an unused native link.
+
+Reader installation has separately sealed `before_installation` and
+`after_installation` namespace states. Only an exact image-owned absence witness
+for `/usr/bin/python3`, with stable complete `/usr/bin` child names and no-follow
+ENOENT at that leaf, authorizes the existing fixed creation of
+`/usr/bin/python3 -> reader_target`. The target remains the image executable's
+observed resolved path, with host precedence applied to its identity. The
+primary and every required primary spelling must resolve before creation;
+an alias through the absent reader refuses. The reader spelling is required
+in the post-installation graph. That state adds exactly the authorized link,
+removes its historical absence witness from active negatives, and independently
+recomputes aliases, positive origins and native requirements. Other negatives
+below the modified parent use explicit name expectations derived from the
+original observation and this one insertion, never invented post-installation
+syscall stamps. The auditor rederives both state graphs and the transition.
+The pre-installation mounted name expectation combines the image listing with
+immediate child names required by the host mount plan, including newly created
+file bind destinations. These derived expectations keep the original image
+observation as their basis and claim no mounted syscall stamps. Mounted
+verification records fresh stable before and after observations, requires the
+precise one-name `/usr/bin` delta, checks the exact raw link and
+root custody, and re-observes each state's active negatives. An existing image
+reader causes no namespace mutation and retains the existing ARM behavior.
+
+Each state has its own required graph. Both include primary executable spellings,
+independently extracted host and image PT_INTERP chains, and PT_INTERP
+and DT_NEEDED from all selected stdlib ELFs, interpreters, and recursively
+required native candidates. The installed-reader spelling is required in both
+states when it already exists, and after creation when insertion is authorized.
+Completion derives these seeds from the verified host checkpoint and separately
+observed image identity. Every positive inventory
+alias and successful generated candidate spelling contributes its applicable
+`$ORIGIN` context, including positive aliases never observed in process mappings.
+A witnessed dangling alias contributes no positive origin. A dangling link
+selected by a conservative basename query, cache row, absolute dependency, or
+PT chain is required and refuses even when another provider works. Requiredness
+and positive alias origins converge together and are independently replayed;
+a serialized off-graph label grants no exemption.
+
+ELF seed reachability follows the sealed logical Python/ELF roots. A positive
+file alias inside such a root promotes its regular-file terminal; a positive
+directory alias promotes every regular-file descendant, including nested aliases.
+Producer and replay derive this traversal with one shared owner. Each seed keeps
+its logical spelling alongside its terminal, so alias-derived `$ORIGIN` contexts
+join the existing conservative union. A directory alias requires a complete
+retained target inventory; a partial navigation/listing cannot substitute for it.
+If that inventory exceeds the existing capture budget, capture refuses. Cyclic
+logical directory expansions and derived traversals exceeding the existing member
+bound also refuse. This does not widen selected roots or seed unrelated native
+library aliases. Ordinary file seeds retain their existing ELF parsing rules.
+
+The existing image cache, its read-only `ldconfig` listing and the captured host
+loader's actual mounted diagnostics bind the conservative provider candidate
+graph. After the host checkpoint and before image completion, the host PT_INTERP
+runs `--list-diagnostics` in the image with the selected host roots bound read-only,
+using the same entrypoint and finite timeout as the post-completion observation.
+Its raw output is an explicit completion input retained in the image checkpoint.
+The authoritative post-completion diagnostics must report exactly the same
+ordered system directories and actual kernel release; capture and retained audit
+both refuse a difference. No host-side tentative loader planning is introduced.
+
+Producer and auditor use one exhaustive evidence owner. For each ELF and needed
+basename, it visits every conservative global RPATH context, the object's own
+RUNPATH under all actual-path and positive-alias origins, every matching cache
+row regardless of eligibility, and every mounted-loader default directory.
+Evidence collection never stops at a present provider. Possible inherited
+contexts and cache rows cannot suppress default evidence. Resolution only
+refuses a dependency with no present regular-file candidate anywhere in that
+union; it does not authorize skipping observations or claim the loader chose
+a particular member. Missing or non-regular matching cache targets, required
+dangling links, unsupported architecture/ABI/visibility, and NODEFLIB still
+refuse. Main-executable alias origins remain an over-approximation for inclusion.
+The installed reader uses a fresh explicit environment containing only PATH,
+TMPDIR and bounded native thread variables, excluding LD_LIBRARY_PATH and
+LD_PRELOAD; actual role observations refuse loader overrides.
+
+A RUNPATH, RPATH or default directory that is a proper ancestor of captured
+roots uses narrow search evidence instead of a recursive inventory. Default
+`/lib` is walked through its positive alias to `/usr/lib` first. Each directory
+query includes its base child and `glibc-hwcaps/<sub>/<needed>` for every existing
+child `<sub>`, regardless of CPU eligibility. A missing `glibc-hwcaps` component
+requires exact witnessed absence. Otherwise its complete sorted stable listing,
+and a complete sorted stable listing of each child directory, are retained.
+Every candidate is retained if present or probed with no-follow ENOENT and a
+stable complete parent-name witness if absent. Complete-mode roots already
+inventory these directories recursively; replay asserts that coverage. Unknown
+or non-directory capability components and required dangling capability aliases
+refuse. Positive shallow listings spend one observation member plus every name,
+with the existing component/file charges; replay reconstructs the totals.
+Mounted verification re-observes their kind, mode and complete composed names,
+using fresh stable observations rather than asserting image syscall stamps.
+No broad roots, root widening or declared-link exception under A1 are added.
+
+Image and host capture retain `ldd --version` as information only. Admission
+uses the diagnosed loader's own retained `--list-diagnostics` output, bound to
+its sealed executable identity before and after completion. Both observations
+must report exactly one `version.version` and `version.release="stable"`. The
+complete version token must match `^(\d+)\.(\d+)(?:\.(\d+))?$`; its leading
+major/minor must be at least 2.37. Missing, unparsable, non-release or older
+versions refuse. Every PT_INTERP in the runtime graph, including the primary,
+installed reader and every ELF candidate, must resolve in each namespace state
+to this single diagnosed loader terminal. A distinct terminal refuses with
+"distinct runtime loader is not admitted". The mounted primary and selected
+reader target must each have exactly one PT_INTERP in every namespace state.
+A PT-free or multi-PT executable in either role refuses with "reader loading
+implementation cannot be bound to the diagnosed loader". Ordinary shared-library
+candidates may lack PT_INTERP; static embedded loaders are not modeled.
+Distinct loaders and legacy hwcap,
+AT_PLATFORM and tls subdirectory searches are not modeled. Supported dynamic string expansion has one parser: `$ORIGIN` must
+end at a non-identifier boundary or end of string, and `${ORIGIN}` may precede a
+suffix. `$LIB`, `$PLATFORM`, longer identifiers and other dollar tokens refuse.
+Empty search elements remain unsupported; cwd is not modeled. Supported search
+directory paths are resolved only when a DT_NEEDED query visits them, so an
+unused absolute RUNPATH requires no directory evidence. Token validation and
+other ELF refusals still apply to seeds without dependencies.
+
+Absence and positive listing records for the same parent and stable stamp must
+agree exactly, including unretained child names. Their stamps and names must
+also agree with retained parent observations where available. Changed parents,
+contradictory listings and incomplete evidence refuse. All probes, retained
+bytes, listing names and rechecks use the existing member/byte budgets and
+monotonic allowance. If complete evidence cannot fit those bounds or the
+120-second phase allowance, capture refuses. The supported candidate format is native ELF64 Linux
+with ordinary ABI headers and world-readable files. GNU ABI kernel requirements
+must fit the actual diagnostic kernel release. ELF audit, filter, and
+configuration loading and system-wide preloads refuse capture. Later outer,
+inner, and reader kernels must be at least that captured kernel version. This
+eligibility fence uses actual observations and does not direct fleet placement.
+
+All regular inventory members and selected runtime files retain complete
+archived bytes, including original image observations hidden by host mounts.
+Shallow directory-navigation and child-name witnesses make no file-content
+claim and cannot stand in for complete search inventories. The image child
+receives the durable host checkpoint, explicit host PT seed, consumed member
+and regular-byte counters, and remaining outer allowance. Original base-image
+work remains charged even when host mounts shadow it. Newly retained entries
+and witness names consume the existing budget before content reads or enqueue;
+rechecks spend the same monotonic deadline and their recorded observation work.
+No completion iteration or graph discovery publishes progress. Mounted
+verification rechecks inventories and re-observes negative witnesses, including
+a negative target that becomes present. The retained auditor reconstructs path
+outcomes, required seeds, budgets, and the native graph from the full
+source-bound evidence and archived bytes. Profile, closure, capture, and binding
+schemas are explicitly versioned; historical profiles retain their original
+pinned contract. Observed process mappings supply separate evidence for
+providers actually used during qualification.
+
+Capture runs through published PB with the exact interpreter and existing image
+as placement dependencies. It publishes an archive through the published CAS
+ingester. The independent retained-data auditor binds the raw request, terminal,
+receipt, logs, result and source bundle to every profile byte and archived
+member, including the actual PB producer/runtime files. No prewritten profile
+or successful older image runtime grants current standard-runtime credit.
+
+Capture requires `CAPTURE_DEMAND` from `tests/proof_container_runtime.py`,
+one CPU, four GiB and zero GPUs, with native1, priority-10 and a sealed
+480-second hard deadline. These are cost limits, not timing measurements. Four
+ordered 120-second stall allowances use the actual environment-named published
+progress helper. Cumulative units1..4 follow verified CAS publication of host
+inventory, image inventory, mounted-runtime/profile observations and the closure
+archive. Reads, logs and entering a phase never advance units. The retained
+auditor separately requires the terminal worker observation to
+have accepted cumulative units4 in the final closure_archive phase.
+One cumulative pre-read member/byte/deadline budget covers every selected root,
+including the image loader aliases. Directory enumeration bounds the pending
+frontier before it can enqueue a complete over-budget directory.
+Optional startup directories and loader aliases use strict stat/lstat observations;
+only FileNotFoundError establishes absence. A preload path must be a regular file
+with bounded empty contents; other lookup and read errors refuse observation.
+Source caps refuse more than20,000 profile members,8GiB regular bytes,
+9GiB compressed archive bytes,64MiB supplemental producer bytes or16MiB profile
+JSON. Checkpoint, image and final record metadata each refuse above64MiB before
+publication. The archive allowance is20,000 plus the exact41 named published
+owner/dependency source files and the actual producer shell and image executable,
+at most20,043 unique content members. File/archive I/O streams bounded chunks.
+The named published sources and standard executable are exact PB file-digest
+dependencies. A cap failure is retained actual
+evidence; changing limits needs a new reviewed immutable request after the old
+action terminates. The source caps do not promise that either candidate fits.
+
+Before host inventory, capture observes at least27GiB currently available on its
+private filesystem. This is a statvfs threshold, not a reservation or a promise
+about later storage use. Capture-owned CAS publications use the existing
+published `filesystem_floor.operation` with the action's actual queue identity,
+private and CAS used paths,10GiB CAS growth and a600-second lease. The physical
+published package, its complete named dependency source set and the actual
+admitting-worker progress helper must align; other preloaded generations refuse.
+The source preserves off, observe and enforce modes. Only stable enforce mode
+with actual matching operation-owner bytes and successful acquisition evidence
+can report an observed held allowance. After the context exits, only strict
+lstat FileNotFoundError records owner-path absence; this is no assertion that
+the growth ledger settled or released. The final complete record follows the
+context exit and preserves actual mode, verdict and raw owner observations.
+Raw-retention copies and later auditor extraction have separate storage needs.
+
+The `prismabuild-root-runtime:` footer records actual outer, inner primary and
+credential-drop reader observations separately. It carries real IDs, full
+patch version, executable SHA256/ELF, affinity, native bounds, source digests,
+mount checks and exit status. The raw root-owned inner attestation is preserved
+verbatim; the outer launcher writes its own distinct final envelope. Existing
+pytest runtime, completion and outcome footers remain unchanged.
+
+This is source support only. Real profile capture and measured geometry,
+fresh collection/execution rosters, actual CAS chains and
+physical scope release remain qualification gates. It changes no deployment,
+installed trust guard, live service or interpreter support claim.
+
+### Shared submission ownership (C14)
+
+`submission_types.SubmissionRequest` is the submission vocabulary. Campaign,
+gang and decomposition field sets derive from its options. Campaign rows
+normalize numeric values to the same types as CLI parsing, so
+`gpu_memory_gb=32`, `32.0` and the accepted row string `"32"` seal identically.
+CLI private descriptors remain outside the request and sealed action.
+
+`submission` owns checkout snapshots, template freezing, action sealing,
+capability advice and the publication tail. Callers pass `FleetStore` with
+explicit queue, CAS, runtime, roster and D38 configuration paths. The package
+uses the qualified C03 predicates and C06 `ClientReport`, identities and
+verdicts. Checked refusals carry a client status and diagnostic text; interruptions
+outside that model propagate without inventing an ending.
+`ArgumentRefused` identifies invalid submission options, including profile and
+residency choices on both CLI and mapping paths. The CLI renders those refusals
+with its parser's usage. D38 domain refusals also use exit 2, retain their full
+diagnostic for nondisplaying callers, and render once without argument usage.
+
+`_publish_sealed` serves ordinary requests, direct decomposed children, deferred
+releases, compiled producers and resident movement rows. Ordinary detached
+cache and live-attachment checks precede runnable publication. Consistent floor
+and D38 gates on every publication path are part of C14. Compiled GPU producers
+now evaluate and audit D38 in record-only mode and refuse missing evidence under
+enforcement. They also take the filesystem growth allowance. This changes their
+earlier direct-publication behavior. `fleet_submit` maps checked package refusals
+to `SubmitRefused` with the original reason, including a queue contract refusal.
+Resident movements use the same gates. Deferred releases still file a new
+generation. D38 precedes new work on both transports.
+Deferred release retains its gate-before-CAS order; ordinary submission retains
+its CAS-before-gate order. Supersession remains immediately before publication,
+after other refusals. Origin-consumer declarations and staged plan installation
+retain the consumer transition lock and existing cancellation renewal rules.
+Pre-frozen decomposed plans use that same transaction. Child queue rows retain
+the preparation's tested-repository annotation.
+The package deferred-release entry derives the queue path from its actual queue
+and the CAS path from its immutable record before acquiring the floor allowance.
+D38 and runnable publication use that queue, and the row advertises the CAS
+holding its sealed request. Runtime, roster and D38 settings stay explicit in
+`FleetStore`.
+
+`write_window` holds the filesystem growth allowance during preparation and
+publication. Resident copy and adoption accept a checkout and freeze inside
+their single package allowance before writing descriptors or publishing rows.
+They acquire one growth holder. Pool and deferred waits run after release; SLURM retains its
+existing no-growth wait behavior. Batch preparation has its own package reader
+and write scope. Each client invocation owns its complete C06 reader history,
+with no history shared between wait threads. Display callbacks and store
+objects do not enter template records, action identity or queue schemas.
+
+`pbrun` parses argv into a request and renders display events. `pbtest` and
+`pbgang` construct typed requests and render ordinary flags at their process
+boundary; the C06 private event channel retains its descriptor lifetime and
+bounds.
+`pbcampaign` calls the package directly. Resident, manifest-promotion, shape,
+snapshot, wait, canary and producer adapters call their package owners without
+importing execution from the CLI. The rollout changes source only; it does not
+activate a runtime generation or D38 enforcement.
+
+The D38 receipt fixtures use portable worker evidence and carry no x86
+capability marker. `pbtest` adds `--anywhere` only when neither requested tags
+nor capability tags constrain the shard. Removing the obsolete markers lets
+the published client collect these portable files without its older
+`--anywhere` and capability-tag conflict. No host pin is required.
+
+### Exact claim facts and scratch action boundaries
+
+`claim_identity` owns the unchanged exact-claim field tuple, equality predicate
+and lease consistency check. It imports only the standard library. The lease
+check receives the existing error constructor. `AmbiguousClaimHolder` lives
+beside its unchanged `PoolContractError` base in RecordStore; Pool imports that
+same object. RecordStore never imports Pool or lifecycle. Scratch registration
+and persistence check supplied facts without importing the queue implementation.
+
+`PoolQueue.action_transition_lock` and `scope_for_record` are the actual action
+lock and fresh scope reconstruction implementations. Current callers and
+fixtures use those names. The retired private APIs have no aliases. Lock paths,
+blocking defaults, conditional reads, exception identity, late-finish names,
+scratch owner-before-lease writes and containment-before-delete order retain
+their existing contracts.
+
+### Lifecycle capture and conclusion ownership (C07)
+
+`lifecycle.classify_action(ActionCapture)` classifies supplied observations.
+Publication, exact claim, lease, reservation phase and terminal evidence stay
+separate, with their generation and record identity. Uncaptured, absent and
+unknown inputs are different answers. C06 `endings.resolve_current` remains
+the terminal interpreter. Classification reads no files and grants no release.
+
+`lifecycle.conclude(queue, policy)` owns worker finish, expired claim, cancelled
+attempt, late result, tombstone recovery, READY quarantine, READY recovery,
+widowed lease, broker deferral and verified terminal-reservation repair.
+The owner uses the queue's single `records` handle and existing containment and
+ledger operations. Named legal destinations apply to each transition. No
+journal, directory enum for a whole key, callback executor or new record schema
+is introduced. Withdrawal remains a durable decision and never concludes a live
+claim.
+
+Worker and reaper policies share exact claim retirement. They retain their
+conditional cleanup, first-writer attempt adoption, entomb comparison, lease
+removal, material-retention rules and publication failure behavior. Ordinary
+finish takes no lock over execution, containment cleanup, immutable attempt
+publication or reservation return. Cancellation retains its existing
+lock through fresh claim and decision reads, proof filing and release. Reaping
+retains its original lock and both pending-finish checks, including the
+acted-from read. Late results control only their saved exact scope.
+
+For worker result publication, including a READY retry, and terminal reaping,
+conclusion captures the exact ordinary finishing mark's device and inode
+immediately after entomb. After returning the reservation, it takes the action
+transition lock and rechecks that same
+regular mark. An absent, replaced or unreadable mark grants no publication or
+historical unlink. A worker whose mark recovery already restored returns its
+existing immutable attempt address, as a lost entomb does. Unknown metadata
+retains recovery authority and is reported.
+
+The lock then covers prior-terminal archive, outcome replacement or retry
+publication, prior-terminal unlink, mark removal and residency-plan retirement.
+Recovery cannot restore the mark or retire a terminal between those operations. This prevents an old
+finisher resumed after restoration and reaper adoption from replacing or
+unlinking a newer generation's terminal, or resetting a later same-generation
+retry's attempt counter. Broker-deferred and never-started requeues retain
+their existing outer key exclusion. READY publication keeps its existing
+non-clobbering link protocol. No record schema, filename, host admission lock,
+scope cleanup rule or attempt identity changes.
+
+Interrupted cancellation recovery adopts an already archived, verified withdrawn
+worker attempt before releasing its owner. A decision alone does not invent an
+execution result or occupy a late worker's attempt slot. Unknown attempt
+presence or invalid history retains the claim and reservation. The reaper now
+archives the prior terminal before publishing an adopted terminal, as worker
+finish does. Recovery of an interrupted terminal publication completes only
+its recorded historical unlink after checking the verified attempt, the archived
+record and the still-matching prior terminal. The archive must be bound to the
+winning attempt's generation and disposition. A legacy prior terminal without a
+generation stamp requires the same complete archived-byte match; its missing
+stamp supplies no absence or ordering proof. Live successors and unknown proof
+retain their authority.
+
+For a withdrawal-covered expired claim whose immutable next attempt is already
+verified as an ending other than withdrawn, recovery uses cancellation release.
+It preserves that attempt's bytes and slot and the operator's decision, then
+compare-entombs the exact claim and returns its reservation after containment.
+It neither republishes the archived ending nor creates a withdrawn attempt.
+The existing withdrawn-attempt adoption path and its reader contract remain.
+Source/component evidence for this repair is scoped to SM-01, ID-02, INV-01,
+ACC-02 and ACC-04 in the staged-read ledger and acceptance record; it grants
+no deployment, campaign or whole-requirement satisfaction.
+
+### Residency filing and cycle decisions (C21)
+
+`residency_plan` owns preparation, the filed-plan registry, supersession
+observations, shared ranges, prelaunch legs and window decisions.
+`FilingOptions` carries residency choices and mover/reader facts. C14 projects
+publication policy and paths into `queue_publication.RowPublication`; residency
+never imports submission or reconstructs a `SubmissionRequest` or `FleetStore`.
+The common row projection keeps the sealed action authoritative.
+
+`consumer_filing` holds the consumer's existing action-transition lock while it
+resolves the tier, reuses or reseals, freezes, renews and yields the filing to
+C14. C14 constructs and publishes or attaches its consumer row before leaving
+that context. The supersession hook retains its position immediately before
+publication. No wait or floor allowance moves into this lock. A deliberate
+submission renews a reused plan. A deferred attachment suppresses renewal only
+when it reuses its own frozen plan. An immutable decomposed plan refuses
+supersession and installs only inside this transaction. `file_manifest_row`
+files for an already-published bare consumer and renews only a newly prepared
+plan. Decomposition prepares every movement graph before publishing any child,
+without installing ownerless plans in the registry.
+
+`ConsumerWindow` holds one captured plan, accepted phase, `LegObservation` and
+`WindowBudget`. Its decision and advance facts are computed once for that
+observation. Stage and RAM observations stay at their original positions;
+pressure probes and publication still take their independent budget and
+freshness observations. Adoption, eviction, RAM publication and stage
+publication keep their order. No cycle-wide I/O cache merges these boundaries.
+Unknown evidence stays unknown, and accepted-phase, horizon, eligibility,
+prelaunch, alignment and run-ahead algebra are unchanged.
+
+RecordStore captures registry names, paths and records. Residency interprets
+those captures through concrete observations. `active_supersessions` retains
+the strict marker-name grammar and unknown result; `retired_consumers` retains
+the bare-row planner's broader retirement-history rule. Census keeps its
+independent section completeness, selected reads and denial windows, and uses
+public residency observations. Public fragment validation and mover keys remain
+tolerant of foreign files; strict diagnostic fragment capture remains
+`RecordStore.inspection_fragment_records_at`.
+
+Plan and registry schemas, filenames, JSON bytes, hashing recipes, seal order,
+filing incarnation, generation authority, renewal and cancellation boundaries
+are unchanged. Historical readers continue to find the same files.
+
+
+The cycle-local residency question requires an explicit `WindowBudget.free_gib`
+for `ConsumerWindow.decision`. An absent budget raises `TypeError`; it grants
+no zero-capacity observation. `ConsumerWindow.advance` and the geometric
+`pre_progress_stage_reach` need no free-capacity probe. The stage and RAM,
+publication and pressure captures remain independent. Manifest promotion
+constructs `FilingOptions` and `RowPublication` directly. Its separate standard
+submission request serves only the unchanged C14 filesystem-floor context.
+Physical residency directory names belong to RecordStore; RP keeps the domain
+registry questions and interpretation above its captures.
+
+The pure `residency_plan.pre_progress_stage_reach` question takes only its
+plan and accepted phase. It supplies no invented staging observation. Manifest
+promotion captures its filesystem-floor request before checking the movement
+template, preserving the original current-directory read and refusal order.
+Qualification shards use explicit interpreter paths. The test conftest records
+the running executable bytes, actual Python version, assigned affinity, native
+thread bounds and selected files in each shard's real log. The retained-data
+qualifier checks those facts against the sealed plan. A generic interpreter
+pathname alone establishes no version claim.
+
+### Produced-batch ownership after C13
+
+`output_contract` owns the produced-output schemas, validators, identity recipes
+and `ProducedOutputError`. `batch_ledger.BatchLedger` owns commitments intake
+and filing, immutable batch validation and publication, prewrites, origin charge,
+and sequential materialization bookkeeping. `BatchFacets` derives kind,
+lifetime, copy history and origin reclamation from one captured entry. These
+facts are independent. No derived phase is filed in `commitments.json`.
+
+`BatchLedger(path)` and `at_scope(scope)` perform no I/O. `entries()` captures
+one generation at the existing conditional read point; `BatchCapture` answers
+entry, history and charge questions and owns batch-id transitions. `BatchFacets`
+and `StageCopy` are named observations, with unknown history retained until a
+question validates it. A typed origin delete intent is distinct from the
+truthiness guard used by declarations, preserving legacy empty-object intent
+behavior. Callers keep their prefix locks. A `RetirementEntry`
+keeps the selected private entry copy and invalidates the tick before each
+canonical file attempt. There is no implicit refresh or eager history scan.
+
+The canonical `capture()`/`file()` codec remains the exact wire boundary, also
+used by deliberate corruption and captured replay fixtures. Production batch
+callers use the captured owner rather than mutable commitment maps. Prewrite
+addresses and validated `PrewriteFacts` come from the same ledger. Consumer
+release preparation stays before its queue index; release publication stays
+after it. The owner retains origin-proof cache observations and attempt-index
+bookkeeping. `produced_output` orchestrates funding, sealing, movement work and
+physical retirement. C12 owns the separately handed-off legacy funding seams.
+
+The documented module-level exceptions from #955 remain permanent object
+bindings: `produced_output.batch_record`, `batch_records`, their three batch
+state constants and `ProducedOutputError`. Their implementation lives in the
+ledger and contract owners. The client SDK remains version 6 with its full
+surface and signatures.
+
+Path capture and addressing live in `batch_ledger`, with four named policies.
+`own_write_owner` considers the active staged copy, unreclaimed origin-only
+batches and other prewrites. `foreign_write_owner` first checks foreign claims
+and skips dead or superseded attempts before reading their records.
+`LedgerReads.path_owners` retains all committed supersessions, counts succeeded
+prewrites as commitments, retains live or unknown pending writes and their
+unknown fingerprints, and ignores dead prewrites. `spool_claims` captures
+foreign export claims only when the spool meets an existing file. The spool
+still checks byte identity and proves failed groups' exports have ended before
+adopting or retiring their files. These policies share captured path facts and
+the legacy immutable-record fallback without sharing one authority boolean.
+
+The schemas, JSON byte recipes, namespace grammar, immutable writer,
+materialization generations, locks and origin-retirement protocol are unchanged.
+The observability adapter reads the same batch questions through these owners;
+a retained historical source closure keeps its own original module APIs.
+
+### Funding ownership after C12
+
+`funding.FundingLedger` owns the existing window/output record validators,
+generation CAS, state table, bind, named handoff repair, cover and release.
+`PoolQueue.funding` is lazy and performs no read at construction. Claims retain
+their existing verification and consumed-mark publication order.
+Prelaunch chunk funding and tier-loop settlement use this owner directly.
+`AdvanceProtection` captures independent stage/RAM pass facts with named fields;
+only an explicit permitted entry outside every unknown/gated set can publish.
+`commit_batch` retains its prefix locks and batch validation; funding completes
+inside those locks before `BatchLedger.publish_stage` publishes and cleans up.
+Wire schemas, token names, publication bindings, native observations and the
+legacy in-flight recovery lane retain their existing contracts.
+
+C12 preserves SDK6 first-commit acquisition as well as prepaid publication.
+The proposed `c12.r04` new-acquire refusal is disagreed with for this refactor
+and deferred pending a separate SDK version/deprecation decision. An empty
+live-file census cannot exclude future valid public SDK6 calls. The proposed
+patch and causal evidence remain retained as future-proposal material.
+Zero-credit behavior, corrupt/mismatched/unknown-holdings diagnostics,
+positive existing-intent recovery and publication cleanup order are unchanged.
+No writer exclusion, drain, deployment or workload fact is established.
+
+### Installed client bootstrap with operator restoration
+
+`bootstrap_client.py` implements the amended P path for the exact designated
+`a17477b2b206-1791745175-65dffa700dfb` source. Its four broker service members
+must equal the target, installed files and healthy running broker's loaded map.
+It replaces only `digest_primitives.py`, `generation_receipt.py`,
+`park_proof.py`, then `upgrade_client.py`. It never stops the broker, changes
+admission or controls a supervisor, worker or storage role. Active actions keep
+running. This path makes no whole-host physical drain claim.
+
+Before the first host preparation, the operator freezes other publisher and
+producer automation, including historical publishers that cannot see the new
+exclusion, and reserves the operation with `--reserve-installed-bootstrap`.
+The durable `rollout/pending-bootstrap.json` excludes ordinary publication,
+staging, activation and epoch operations. The publisher owns its permanent
+publication lock when creating, advancing or archiving that record. Root host
+operations require its exact source, target and original forward plan digest
+through a credential-dropped local export program. A missing participant or an
+unreadable marker leaves the operation pending. Neither a lock nor a timer is
+unlinked to recover it.
+
+Each host retains an independent reviewed tool and final reader closure under
+`/opt/prismabuild-bootstrap/<id>/`. Root executes only that root-local closure.
+The enrolled reader UID opens shared generation inputs after a permanent drop.
+The independent journal under `/var/lib/prismabuild-client-upgrade/bootstrap/`
+records the prior updater bytes and the presence and metadata of all three
+leaves. It is distinct from the automatic `transaction.json`. Existing automatic
+journals or unresolved local/shared epochs refuse entry. An independent permanent
+bootstrap lock serializes helper invocations. The existing `upgrade.lock` inode
+is retained and acquired for every copy or observation.
+
+The helper journals the original unit states, creates a persistent block and
+operation-specific `[Unit] ConditionPathExists=!<block>` drop-ins, reloads the
+system manager and stops only the upgrade timer. It waits for an executing
+oneshot to exit naturally. Existing units, drop-ins, enablement and masks remain
+operator-owned. Loaded conditions and the absent service PID/job are checked.
+Private staging directories live inside the installed filesystem. The frozen
+updater's existing full-map `copy_files` validates and materializes all members
+there. Only the fixed four files reach live rename, in dependency order. Both
+stage and installed directories are fsynced at each boundary. Replay reads the
+independent journal and repeats the fixed install; it never replaces the saved
+old updater with bytes from a partial installation.
+
+`require_installed_bootstrap(source, target, observations, *, roster,
+qualification, rollback_designation)` is separate from automatic transition
+policy. The collector verifies successful CAS qualification requests, final
+source snapshots, whole-file outcomes without skips, both native record reader
+directions and the qualified root runtime attestation. Its fresh authenticated
+SSH/sudo round binds a new nonce, host aliases, boot and unchanged broker process,
+enrollment, original lock inode, independent journal, file metadata, captured and
+executed updater code, real receipt/proof loads, gate owner and healthy loaded
+broker. Shared JSON and historical attestations cannot supply root authority.
+Source and target raw receipts and complete content maps are pinned and rechecked.
+Target participants satisfy the target's own capable-reader contract. The default
+`require_client_transition`, receipt participant semantics and public barrier
+guard are unchanged.
+
+`--installed-bootstrap ASSESSMENT --activate-generation NAME --rollout rolling`
+activates an already sealed generation only. Under the publication lock it
+verifies the qualification and fresh root responses immediately before
+`_activate`. A pending operation retains its original a174 source even after a
+pointer move. After activation, fresh root process censuses and selected-generation
+worker offers must establish in-band convergence. The coordinator runs on sparky
+or sparklina and calls the mandatory existing canary under the same lock. A failed
+or unobserved canary leaves the operation pending. Acceptance checks convergence
+again and archives the marker with its original identities. The operator then
+installs the matching root-local accepted decision and restores only this
+operation's fences and the timer's original activity. Source support does not
+establish root qualification, live convergence or deployment readiness.
+
+Rollback in this mode is operator restoration with `automatic_reachability:
+false`. The exact a174 pins remain unchanged. After accepted forward, verify its
+archive and reserve reverse. An interrupted forward instead verifies and retains
+the existing pending intent; it must never attempt a new reservation. Then
+fence and lock each host, restore only the journaled standalone a174 updater,
+then reverse the shared pointer under the publication lock. Retain all three
+final leaves. The old updater ignores them and can read its five-member source
+closure. No automatic five/eight-member journal or optional-member removal is
+created. No bridge generation is designated by this mode. The automatic bridge
+requirements above still apply to automatic transports and dependency removal.
+The explicit predeploy assessment retains a fresh complete live-plus-rollback
+census and exact immutable rollback bytes; it records operator restoration and
+never claims automatic a174 reachability.
+
+Activation rechecks a fresh complete live record-window census after receipt
+qualification and before issuing root challenges. Unknown writers, missing or
+ambiguous enrolled generations refuse. Immediately before the pointer move,
+every broker must report integer zero active scopes and the ready/claimed queue
+must be observed empty. This enforces publication's existing idle boundary;
+preparation can still run while actions finish.
+
+The publisher retains each authenticated root transcript as a write-once audit
+record and hashes it into the pending/accepted decision. Reading that saved
+record later grants no authority. Acceptance also binds the verified canary
+sidecar bytes and a fresh post-canary root transcript. Operator restoration
+selects explicitly recorded ordinary canary admission so the old generation's
+one-use publication grant stays spent. An operator may select the same ordinary
+mode with a nonblank reason when resuming a spent forward canary. The driver
+receives no publication authorizer in this mode, all normal PB admission applies,
+and a separate operation/nonce sidecar preserves the original canary evidence.
+No automatic retry mints a replacement grant.
+
+The bootstrap plan binds the installed-reader executable path, resolved path,
+byte count, SHA-256, full Python patch version and native ELF machine from
+verified root runtime receipts. The host helper checks its own running
+`/proc/self/exe` and invocation path against those identities before preparation.
+Fresh root observations carry the same identity. Both native ARM and x86 root
+populations are required; a declaration or image name alone cannot qualify one.
+
+A host reboot requires explicit `reconcile-boot` while the persistent fences
+remain installed. The root helper retains the original plan hash, previous
+updater and leaf history, verifies unchanged service bytes and loaded health,
+then journals the new boot and broker PID/start identity. Fresh authenticated
+responses must carry that root-local reconciliation. A shared-file edit, changed
+lock inode, unknown file, new interpreter or unresolved automatic epoch/journal
+cannot rebind it. The helper never starts the broker or releases its boot gate.
+Fresh draining offers remain members of the explicit bootstrap record window;
+that observation grants no admission. The default predeploy rules are unchanged.
+
+The a174 generation already ships a package digest module. Its standalone updater
+still selects only five installed members. Bootstrap source facts therefore name
+those five selected members, independently of package-file presence. The target's
+installed closure remains eight members, and both complete raw receipts remain
+pinned. An unselected package leaf is never relabeled as an installed dependency.
+
+
+Bootstrap recovery durability requires every newly created ancestor link to be
+fsynced before a live member replacement. Directory creation syncs each new
+directory and its parent, then settles all existing ancestor links too, so a
+retry after interruption during mkdir cannot skip an unsynced name. Every file
+write syncs its bytes and metadata, renames, syncs its parent and verifies actual
+readback. The root-local recovery tool, reader, receipts and plan are likewise
+synced with their full ancestor chain before entry. Independent lock creation,
+backup/payload/reverse directories, systemd drop-ins, private installed staging,
+pending intents, root transcripts and accepted archives follow this contract.
+Bootstrap publication uses strict directory fsync: unsupported/failed durability
+refuses this branch rather than treating file fsync as namespace durability.
+
+Explicit reboot reconciliation handles a reserved operation with no journal,
+every unfinished phase, and a reverse operation following accepted forward.
+Without a journal, root must observe the original updater before initializing
+its independent fencing journal; a final updater with lost recovery state
+refuses. Reconciliation fences and waits for natural oneshot exit before taking
+the permanent upgrade lock. It validates every present leaf, the original backup
+when required, unchanged broker files/loaded health and the new boot/process.
+The appended reconciliation binds original plan hash, direction, previous phase,
+previous journal hash and whether it initialized a missing journal. It preserves
+the original plan and backup. An accepted forward journal can reenter only with
+the explicit reverse plan. Fresh collector responses bind that new boot record.
+
+The explicit assessment now requires a separately sealed qualification index,
+`prismabuild.bootstrap_qualification_index.v1`, pinned by raw SHA-256 in both
+assessment and immutable plan. Its `target_commit` names the final source;
+`populations.root` and `.corpus` declare exact required whole-file lists and
+complete node-ID lists from qualified final-source collection. The required
+files are the two bootstrap root files and all eight record-compatibility files.
+Every native root lane and every corpus lane must cover its complete declared
+population; valid successful subset receipts refuse. The expected nodes are
+never derived from execution logs. `source_sha256` pins required tests, root
+runner/runtime owner, execution registrations, helper/updater and each native
+profile against exact final Git blobs. `root_routes.aarch64` and `.x86_64` pin
+source-relative profile paths and raw profile hashes. Root actions must execute
+exactly the profile's primary interpreter, `tests/run_proof_container.py`,
+`--runtime-profile`, the pinned path, and the assigned whole files in sorted
+order. Attested primary/inner/installed-reader identities and actual image must
+match that profile; all attested source hash values must match final source.
+The master supplies/reviews/seals this independent collection index during final
+qualification. This worker supplies no invented index or root execution credit.
+
+A process argument matching a runtime script basename outside the selected
+generation, or one whose path cannot be resolved, is an explicit pending
+convergence observation. Root returns exact PID, process starttime, full argv,
+argument, resolved path when available and refusal reason. Publisher diagnostics
+retain those identities. This conservative refusal can include unrelated users'
+jobs; it grants no authority to terminate or signal them. Operator command
+blocks stop at the first error, verify pending/accepted intent before choosing
+rollback, and verify the direction-specific accepted archive before producing a
+root-local release decision.
+
+The root receipt-reader population is registered once, in
+`tests/proof_execution.json`, alongside the bootstrap root population. The receipt
+execution document retains its image/history metadata and no duplicate file
+entry. This preserves all node IDs and gives the shared source inspector/runner
+one owner per root file. New reservations explicitly record their direction,
+including the initial `reserved` phase; interrupted-forward operator checks
+require that literal direction before using the retained intent.
+
+Installed-bootstrap activation also strictly fsyncs the actual pointer parent
+after `_activate()` returns and before recording activation progress. A namespace
+sync failure leaves the pending operation for explicit reconciliation. The
+independent bootstrap lock's directory entry is read back against the locked FD
+before work proceeds.
+
+
+Installed-bootstrap qualification binds every verified CAS request's executed
+`task.argv` byte for byte to the standard captured-log recipe reconstructed by
+`action_result.bind_standard_capture_command` from the approved command, result
+path and sealed PATH. Neither metadata nor emitted attestation/outcome JSON alone
+establishes execution. The task must name `fleet/pbrun`, run at `.`, bind
+`params.cwd` and snapshot subdirectory to `.`, and carry that exact snapshot
+input in `action.inputs`. Native root commands remain fixed by their indexed
+profiles. `corpus_routes.<machine>.commands` in the independently sealed index
+approves the exact corpus command argv lists, including recorder source when
+used. A changed executable recipe, cwd/input route or unapproved corpus command
+refuses even with otherwise complete successful indexed outcomes. The master
+commits all attested source names, including native profiles and
+`qualification_dependencies.json`, to the final Git tree before freezing it;
+generated-only snapshot artifacts do not satisfy source identity.
+
+Publication ownership consists of schema, operation ID, original forward-plan
+hash and exact source/target identities. Direction is a recovery decision.
+Under the same publication lock, an explicit restore assessment may change an
+unfinished forward pending marker from `reserved`, `activation-intent`,
+`awaiting-convergence` or `ordinary-canary` to `restore-selected` at either
+pointer position. Before fresh external reads, the durable `direction_decision`
+binds the reverse plan hash, selection time and complete previous intent.
+Every later progress record and accepted archive preserves it. Restore retries
+must retain that decision; restore-to-forward and foreign ownership refuse.
+An accepted forward marker must complete its archive before the separate
+accepted-forward rollback reservation. Dry-run never selects a direction.
+
+The reverse runbook copies each host's reverse plan and explicitly executes
+`reconcile-boot --if-needed` before `restore`. This option is valid only for
+`reconcile-boot`. For an unchanged or already reconciled boot it verifies the
+normal root context and bound broker process without rewriting the record.
+Otherwise it executes full reconciliation, retaining original intent and backup.
+The root operation lock admits this explicit reconciliation entry across boot;
+restore itself still refuses an unrecorded changed boot.
+
+Root responses are bounded samples, not continuous leases. A post-response
+reboot may precede pointer movement; persistent fences and durable installed
+closure contain that interval, and new post-move convergence detects it before
+acceptance. The pending marker remains selected in its direction until fresh
+observations and the mandatory canary succeed. Physical reboot timing and
+production root/systemd evidence remain release qualification, not worker
+non-root test credit. Staging's existing reader-direction exemption authorizes
+sealing only; shape input, PB admission and later installed assessment remain
+required. The bootstrap canary overrides the ordinary existing-generation
+no-canary/new-publication retry advice without issuing a replacement grant.

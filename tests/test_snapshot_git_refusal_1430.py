@@ -1,4 +1,5 @@
 """#1430: missing seal verbs and the distinct binary-streaming pack boundary."""
+from submission_support import refusal_value
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,7 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 import pytest  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import core as pb  # noqa: E402
 
 
@@ -30,8 +32,8 @@ def test_remaining_snapshot_verbs_identify_operation(monkeypatch, tmp_path, argv
         return subprocess.CompletedProcess(args, 17, stdout="", stderr="controlled fault\n")
 
     monkeypatch.setattr(pb, "_git_run", failed)
-    with pytest.raises(SystemExit) as caught:
-        pbrun._snapshot_git(tmp_path, argv)
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
+        submit_core._snapshot_git(tmp_path, argv)
     assert str(caught.value) == f"pbrun: cannot snapshot checkout: Git {' '.join(argv)} failed: controlled fault"
 
 
@@ -50,14 +52,14 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
     bundle = tmp_path / "checkout.bundle"
     environment = {"GIT_OBJECT_DIRECTORY": "private-objects"}
     refs = (("refs/heads/prismabuild-snapshot", "a" * 40), ("refs/heads/extra", "b" * 40))
-    argv = pbrun.deterministic_bundle_argv(git_dir)
+    argv = submit_core.deterministic_bundle_argv(git_dir)
     header = ("# v2 git bundle\n" if object_format == "sha1" else
               f"# v3 git bundle\n@object-format={object_format}\n")
     header += "".join(f"{oid} {name}\n" for name, oid in refs) + "\n"
     pack = b"PACK\x00\xff\x80\x00binary\n"
     transport_error = (
         OSError(detail) if failure == "transport" else
-        subprocess.TimeoutExpired(argv, pbrun.BUNDLE_PACK_TIMEOUT_S)
+        subprocess.TimeoutExpired(argv, submit_core.BUNDLE_PACK_TIMEOUT_S)
         if failure == "timeout" else None
     )
 
@@ -73,7 +75,7 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
         assert kwargs["env"] == environment
         assert kwargs["input"] == b"a" * 40 + b"\n" + b"b" * 40 + b"\n"
         assert kwargs["stderr"] == subprocess.PIPE
-        assert kwargs["timeout"] == pbrun.BUNDLE_PACK_TIMEOUT_S == 1800
+        assert kwargs["timeout"] == submit_core.BUNDLE_PACK_TIMEOUT_S == 1800
         assert bundle.read_bytes() == header.encode("utf-8")  # header flushed first
         kwargs["stdout"].write(pack)  # never text-capture the binary pack
         if transport_error is not None:
@@ -84,10 +86,10 @@ def test_deterministic_bundle_streams_bytes_and_names_pack_failure(
     monkeypatch.setattr(pb, "_git_run", format_read)
     monkeypatch.setattr(subprocess, "run", run_pack)
     if failure == "success":
-        pbrun.write_deterministic_bundle(tmp_path, bundle, refs, git_dir=git_dir, environment=environment)
+        submit_core.write_deterministic_bundle(tmp_path, bundle, refs, git_dir=git_dir, environment=environment)
     else:
-        with pytest.raises(SystemExit) as caught:
-            pbrun.write_deterministic_bundle(tmp_path, bundle, refs, git_dir=git_dir, environment=environment)
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
+            submit_core.write_deterministic_bundle(tmp_path, bundle, refs, git_dir=git_dir, environment=environment)
         assert caught.value.__cause__ is transport_error
         assert caught.value.__suppress_context__ is (transport_error is not None)
         message = str(caught.value)
@@ -111,8 +113,8 @@ def test_snapshot_text_transport_preserves_explicit_cause(
         raise transport_error
 
     def invoke():
-        with pytest.raises(SystemExit) as caught:
-            pbrun._snapshot_git(tmp_path, argv)
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
+            submit_core._snapshot_git(tmp_path, argv)
         return caught.value
 
     monkeypatch.setattr(pb, "_git_run", failed)
@@ -140,8 +142,8 @@ def test_snapshot_nonzero_does_not_promote_callers_exception_to_cause(monkeypatc
     try:
         raise caller_error
     except OSError:
-        with pytest.raises(SystemExit) as caught:
-            pbrun._snapshot_git(tmp_path, ["rev-parse", "HEAD"])
+        with pytest.raises(submit_core.SubmissionRefused) as caught:
+            submit_core._snapshot_git(tmp_path, ["rev-parse", "HEAD"])
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is caller_error
     assert caught.value.__suppress_context__ is False

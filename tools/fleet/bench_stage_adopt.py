@@ -62,9 +62,11 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 ENTRY_BYTES = 4096
@@ -91,7 +93,7 @@ def build_forest(queue: pool.PoolQueue, stage: Path, *, empty_dirs: int,
     anyway.
     """
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     root.mkdir(parents=True, exist_ok=True)
     counts = collections.Counter()
     for index in range(empty_dirs):
@@ -107,7 +109,7 @@ def build_forest(queue: pool.PoolQueue, stage: Path, *, empty_dirs: int,
             named[residency_map.residency_map_key(declared, 0)] = {
                 "stage_path": str(stage / "noise" / tag / f"part-{number}.bin"),
                 "bytes": ENTRY_BYTES, "offset": 0, "sha256": "e" * 64}
-        residency_map.write_fragment(root, {
+        staged_path.publish_vouch(root, {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": consumer, "mover_action_key": mover,
             "tier_id": TIER, "stage_root": str(stage),
@@ -170,11 +172,11 @@ def make_window(work: Path, name: str, entries: int,
                            "bytes": ENTRY_BYTES,
                            "sha256": hashlib.sha256(chunk).hexdigest()})
         made += ranges
-    body = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    body = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
             "annotations": {}, "mount_prefix": str(mount),
             "entries": listed, "entry_count": len(listed),
             "total_bytes": len(listed) * ENTRY_BYTES}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(body))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(body))
     path = work / f"manifest-{name}.json"
     path.write_bytes(raw)
     return {"name": name, "path": path, "sha256": hashlib.sha256(raw).hexdigest(),
@@ -182,7 +184,7 @@ def make_window(work: Path, name: str, entries: int,
 
 
 def destinations(stage: Path, window: dict[str, object]) -> list[Path]:
-    return [stage / stage_move.stage_relative(
+    return [stage / staged_path.stage_relative(
         str(entry["path"]), int(entry["offset"]), int(entry["bytes"]),
         mount_prefix=str(window["mount"]))
         for entry in window["entries"]]  # type: ignore[union-attr]
@@ -476,10 +478,10 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     forest = build_forest(

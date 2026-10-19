@@ -11,6 +11,7 @@ live capacity, observation, bounded discovery/publication, full-demand claims,
 token acquisition and finish all run normally against one private host ledger.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import importlib.util
 import json
@@ -34,6 +35,9 @@ ORDINARY = "c" * 64
 WAIT_S = 30.0
 
 
+from prismabuild import role_session
+
+
 def _read(path):
     return json.loads(path.read_text())
 
@@ -45,15 +49,6 @@ def _denial(queue, key):
                if record["action_key"] == key]
     assert len(matches) == 1, records
     return matches[0]
-
-
-def _publish(queue, key, *, resources, priority):
-    queue.publish(
-        action_key=key, cas_root=queue.root.parent / "cas",
-        worker_script=REPO / "tools" / "prismabuild_worker.py",
-        checkout_root=queue.root.parent / "checkout", resources=resources,
-        priority=priority, max_attempts=1, retry_safe=False,
-    )
 
 
 def _kernel_counters(cpus, *, now=None):
@@ -78,15 +73,15 @@ def _fixture_worker(monkeypatch, tmp_path, *, assume_idle, metadata_capacity=1):
     monkeypatch.setattr(worker, "SH", tmp_path)
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False}))
-    monkeypatch.setattr(worker, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
     for attr, name in (("GENERATION_VERSION", "loaded-runtime.json"),
                        ("RUNTIME_VERSION", "published-runtime.json")):
         path = tmp_path / name
         path.write_text(json.dumps({"commit": "d" * 40,
                                     "generation": "metadata-fixture"}))
-        monkeypatch.setattr(worker, attr, path)
+        monkeypatch.setattr(role_session, attr, path)
     monkeypatch.setattr(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "publication")
-    monkeypatch.setattr(worker, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
     monkeypatch.setattr(pool.cpu_admission, "BOX_STATE_ROOT", tmp_path / "box-state")
 
     # No affinity is widened or changed. Two IDs inside the inherited mask are
@@ -122,7 +117,7 @@ def _fixture_worker(monkeypatch, tmp_path, *, assume_idle, metadata_capacity=1):
     monkeypatch.setattr(worker, "build_parser", lambda: parser)
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     if not assume_idle:
         # Seed the sampler's prior kernel counters, not a fabricated admission
         # verdict. Controller.sample computes and persists its own fresh delta;
@@ -144,8 +139,26 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
     ledger = queue.ledger(host)
     sibling = pool.PoolQueue(queue.root)
     assert sibling.ledger().base == ledger.base
-    _publish(queue, FIRST, resources=DEMAND, priority=20)
-    _publish(queue, SECOND, resources=DEMAND, priority=10)
+    ActionRows(queue).publish(
+        FIRST,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=20,
+        max_attempts=1,
+        retry_safe=False,
+    )
+    ActionRows(queue).publish(
+        SECOND,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=10,
+        max_attempts=1,
+        retry_safe=False,
+    )
 
     entered = threading.Event()
     release = threading.Event()
@@ -170,7 +183,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
                 assert release.wait(WAIT_S), "sibling checks did not release execution"
             else:
                 assert key == SECOND
-                assert not queue.item_path(pool.CLAIMED, FIRST).exists()
+                assert not queue.records.item_path(pool.record_store.CLAIMED, FIRST).exists()
                 assert not (ledger.held_dir / FIRST).exists()
             # No payload, scope or Docker marker was created. This is admission
             # component evidence, not a broker waiver or containment proof.
@@ -205,7 +218,7 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert ledger.held_keys() == [FIRST]
             assert ledger.held() == DEMAND
             assert ledger.available() == {"cpu": 1, "mem_gb": 7}
-            claimed = _read(queue.item_path(pool.CLAIMED, FIRST))
+            claimed = _read(queue.records.item_path(pool.record_store.CLAIMED, FIRST))
             assert claimed["resources"] == DEMAND
             assert claimed["claimed_host"] == host
             claim_args = {"tags": offer["tags"],
@@ -218,14 +231,23 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert denial["evidence"]["demand"] == DEMAND
             assert denial["evidence"]["token_shortage"] == {
                 "resource": KIND, "requested": 1, "available": 0}
-            assert queue.item_path(pool.READY, SECOND).exists()
-            assert not queue.item_path(pool.CLAIMED, SECOND).exists()
+            assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
+            assert not queue.records.item_path(pool.record_store.CLAIMED, SECOND).exists()
             assert ledger.holder_tokens(FIRST) == DEMAND
 
             # A new, higher-priority ordinary row is scanned normally before
             # the denied tagged row. It takes only spare CPU/memory: cooperation
             # among declarers is NOT isolation from ordinary same-host work.
-            _publish(sibling, ORDINARY, resources={"cpu": 1, "mem_gb": 1}, priority=30)
+            ActionRows(sibling).publish(
+                ORDINARY,
+                cas_root=sibling.root.parent / 'cas',
+                worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+                checkout_root=sibling.root.parent / 'checkout',
+                resources={'cpu': 1, 'mem_gb': 1},
+                priority=30,
+                max_attempts=1,
+                retry_safe=False,
+            )
             ordinary = sibling.claim(owner="ordinary-sibling", **claim_args)
             assert ordinary is not None and ordinary["action_key"] == ORDINARY
             assert ledger.holder_tokens(ORDINARY) == {"cpu": 1, "mem_gb": 1}
@@ -233,7 +255,9 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
             assert ledger.available().get("cpu", 0) == 0
             sibling.finish(ORDINARY, status="executed", claim_snapshot=ordinary)
             ordinary = None
-            assert _read(queue.item_path(pool.DONE, ORDINARY))["status"] == "executed"
+            assert _read(
+                queue.records.item_path(pool.record_store.DONE, ORDINARY),
+            )["status"] == "executed"
             assert ledger.holder_tokens(FIRST) == DEMAND
             assert ledger.available() == {"cpu": 1, "mem_gb": 7}
         except BaseException as exc:
@@ -276,7 +300,10 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
         assert KIND not in offer["observed_capacity"]
         assert executions == []
         assert ledger.held_keys() == []
-        assert all(queue.item_path(pool.READY, key).exists() for key in (FIRST, SECOND))
+        assert all(
+            (queue.records.item_path(pool.record_store.READY, key).exists(
+            ) for key in (FIRST, SECOND)),
+        )
         pytest.fail(
             "worker.main never entered execution: both real claims denied "
             "never_fits_capacity for disk_metadata=1; persisted declared/live "
@@ -286,11 +313,11 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
     # serve_once must actually finish FIRST before the other queue reacquires
     # the SAME metadata token for SECOND; no raw release or acquire helper.
     assert executions == [FIRST]
-    terminal = _read(queue.item_path(pool.DONE, FIRST))
+    terminal = _read(queue.records.item_path(pool.record_store.DONE, FIRST))
     assert terminal["status"] == "executed"
     assert terminal["claimed_host"] == host
     assert terminal["claimed_unix"] == first_claim[0]["claimed_unix"]
-    assert not queue.lease_path(FIRST).exists()
+    assert not queue.records.lease_path(FIRST).exists()
     assert ledger.held_keys() == []
     assert ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
 
@@ -300,9 +327,9 @@ def test_worker_disk_metadata_offer_serializes_tagged_actions_only(
     if failures:
         raise failures[0]
     assert executions == [FIRST, SECOND]
-    assert _read(queue.item_path(pool.DONE, SECOND))["status"] == "executed"
-    assert not queue.item_path(pool.CLAIMED, SECOND).exists()
-    assert not queue.lease_path(SECOND).exists()
+    assert _read(queue.records.item_path(pool.record_store.DONE, SECOND))["status"] == "executed"
+    assert not queue.records.item_path(pool.record_store.CLAIMED, SECOND).exists()
+    assert not queue.records.lease_path(SECOND).exists()
     assert ledger.held_keys() == []
     assert ledger.capacity() == {"cpu": 2, "mem_gb": 8, KIND: 1}
     assert ledger.available() == ledger.capacity()
@@ -361,8 +388,26 @@ def test_disabled_worker_admits_ordinary_and_refuses_tagged_work(
         monkeypatch, tmp_path, assume_idle=False, metadata_capacity=capacity)
     ledger = queue.ledger()
     executions, failures = [], []
-    _publish(queue, ORDINARY, resources={"cpu": 1, "mem_gb": 1}, priority=20)
-    _publish(queue, SECOND, resources=DEMAND, priority=10)
+    ActionRows(queue).publish(
+        ORDINARY,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources={'cpu': 1, 'mem_gb': 1},
+        priority=20,
+        max_attempts=1,
+        retry_safe=False,
+    )
+    ActionRows(queue).publish(
+        SECOND,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=10,
+        max_attempts=1,
+        retry_safe=False,
+    )
 
     def execute(actual_queue, item, *, python, timeout_s, containment=False):
         try:
@@ -382,14 +427,14 @@ def test_disabled_worker_admits_ordinary_and_refuses_tagged_work(
     if failures:
         raise failures[0]
     assert executions == [ORDINARY]
-    assert _read(queue.item_path(pool.DONE, ORDINARY))["status"] == "executed"
+    assert _read(queue.records.item_path(pool.record_store.DONE, ORDINARY))["status"] == "executed"
     assert worker.main() == 0
     _assert_disabled_offer(queue)
     assert _denial(queue, SECOND)["reason"] == "never_fits_capacity"
-    assert queue.item_path(pool.READY, SECOND).exists()
+    assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
     assert ledger.held_keys() == []
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8}
-    assert not queue.lease_path(ORDINARY).exists()
+    assert not queue.records.lease_path(ORDINARY).exists()
 
 
 @pytest.mark.parametrize("held_on_disable", [False, True],
@@ -400,7 +445,16 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     worker, queue, args = _fixture_worker(monkeypatch, tmp_path, assume_idle=False)
     ledger = queue.ledger()
     executions, failures = [], []
-    _publish(queue, FIRST, resources=DEMAND, priority=20)
+    ActionRows(queue).publish(
+        FIRST,
+        cas_root=queue.root.parent / 'cas',
+        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+        checkout_root=queue.root.parent / 'checkout',
+        resources=DEMAND,
+        priority=20,
+        max_attempts=1,
+        retry_safe=False,
+    )
 
     def execute(actual_queue, item, *, python, timeout_s, containment=False):
         try:
@@ -425,9 +479,26 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
                     # signal handling is real) offers zero while FIRST runs.
                     # It may retire only FREE tokens, then admit ordinary work.
                     args.disk_metadata_capacity = 0
-                    _publish(queue, ORDINARY, resources={"cpu": 1, "mem_gb": 1},
-                             priority=30)
-                    _publish(queue, SECOND, resources=DEMAND, priority=10)
+                    ActionRows(queue).publish(
+                        ORDINARY,
+                        cas_root=queue.root.parent / 'cas',
+                        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+                        checkout_root=queue.root.parent / 'checkout',
+                        resources={'cpu': 1, 'mem_gb': 1},
+                        priority=30,
+                        max_attempts=1,
+                        retry_safe=False,
+                    )
+                    ActionRows(queue).publish(
+                        SECOND,
+                        cas_root=queue.root.parent / 'cas',
+                        worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+                        checkout_root=queue.root.parent / 'checkout',
+                        resources=DEMAND,
+                        priority=10,
+                        max_attempts=1,
+                        retry_safe=False,
+                    )
                     assert worker.main() == 0
                     assert worker.main() == 0  # actual tagged sibling denial
                     _assert_disabled_offer(queue)
@@ -447,21 +518,39 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     if failures:
         raise failures[0]
     assert ledger.held_keys() == []
-    assert _read(queue.item_path(pool.DONE, FIRST))["status"] == "executed"
+    assert _read(queue.records.item_path(pool.record_store.DONE, FIRST))["status"] == "executed"
     # Real finish returned the token even if a sibling offered zero while it
     # was held. The next disabled poll, not a raw release/resize helper, removes it.
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
     args.disk_metadata_capacity = 0
     if not held_on_disable:
-        _publish(queue, ORDINARY, resources={"cpu": 1, "mem_gb": 1}, priority=30)
-        _publish(queue, SECOND, resources=DEMAND, priority=10)
+        ActionRows(queue).publish(
+            ORDINARY,
+            cas_root=queue.root.parent / 'cas',
+            worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+            checkout_root=queue.root.parent / 'checkout',
+            resources={'cpu': 1, 'mem_gb': 1},
+            priority=30,
+            max_attempts=1,
+            retry_safe=False,
+        )
+        ActionRows(queue).publish(
+            SECOND,
+            cas_root=queue.root.parent / 'cas',
+            worker_script=REPO / 'tools' / 'prismabuild_worker.py',
+            checkout_root=queue.root.parent / 'checkout',
+            resources=DEMAND,
+            priority=10,
+            max_attempts=1,
+            retry_safe=False,
+        )
         assert worker.main() == 0
         if failures:
             raise failures[0]
     assert worker.main() == 0
     _assert_disabled_offer(queue)
     assert _denial(queue, SECOND)["reason"] == "never_fits_capacity"
-    assert queue.item_path(pool.READY, SECOND).exists()
+    assert queue.records.item_path(pool.record_store.READY, SECOND).exists()
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8}
     assert ledger.held_keys() == []
 
@@ -470,8 +559,8 @@ def test_worker_metadata_opt_out_retires_free_not_held_and_can_reenable(
     if failures:
         raise failures[0]
     assert executions == [FIRST, ORDINARY, SECOND]
-    assert _read(queue.item_path(pool.DONE, SECOND))["status"] == "executed"
-    assert not queue.item_path(pool.READY, SECOND).exists()
+    assert _read(queue.records.item_path(pool.record_store.DONE, SECOND))["status"] == "executed"
+    assert not queue.records.item_path(pool.record_store.READY, SECOND).exists()
     assert ledger.held_keys() == []
     assert ledger.capacity() == ledger.available() == {"cpu": 2, "mem_gb": 8, KIND: 1}
-    assert all(not queue.lease_path(key).exists() for key in (FIRST, ORDINARY, SECOND))
+    assert all(not queue.records.lease_path(key).exists() for key in (FIRST, ORDINARY, SECOND))

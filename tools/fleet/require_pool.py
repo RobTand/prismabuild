@@ -51,6 +51,7 @@ turning it on is one ``touch`` and does not edit config under running agents.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 import os
 import re
 import sys
@@ -59,9 +60,14 @@ from pathlib import Path
 
 FLAG = Path(os.environ.get("REQUIRE_POOL_FLAG", "/home/rob/tmp/arb/require_pool.on"))
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import fleet_tool, generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import fleet_tool, generation_root  # noqa: E402
 
 _RUNTIME_ROOT = generation_root(__file__)
+sys.path.insert(0, str(_RUNTIME_ROOT / "src"))
+from prismabuild.fleet_roster import Roster  # noqa: E402
 #: The submitter the refusals below tell an operator to run.  Resolved under
 #: both layouts, because a hook running from a checkout would otherwise print
 #: the published runtime's flat path, which a checkout does not have.
@@ -87,8 +93,6 @@ PBRUN = str(
 # A loop's own ``--python`` is not that list -- sparky's loops name none, and
 # a box's worker launcher may be the system interpreter -- so the list is
 # declared rather than inferred.
-FLEET_BOXES = fleet_tool("fleet_boxes.json", root=_RUNTIME_ROOT)
-INTERPRETERS_FIELD = "gpu_interpreters"
 LOCK_WRAPPERS = (
     r"/gpuslot\.sh"
     r"|/gpulock\.sh"
@@ -109,7 +113,7 @@ def interpreter_signature(path: str) -> str:
     return "/".join(parts[-4:]) if len(parts) > 4 else path
 
 
-def contends_pattern(boxes: dict) -> re.Pattern[str]:
+def contends_pattern(declared: tuple[str, ...]) -> re.Pattern[str]:
     """The refusal pattern: the configured GPU interpreters and the wrappers.
 
     With no interpreter configured, only the wrappers are refused: this hook
@@ -117,7 +121,6 @@ def contends_pattern(boxes: dict) -> re.Pattern[str]:
     absent would lock out the edit that restores it.
     """
 
-    declared = boxes.get(INTERPRETERS_FIELD) or ()
     interpreters = "|".join(sorted(
         re.escape(interpreter_signature(path))
         for path in declared if isinstance(path, str) and path
@@ -125,15 +128,13 @@ def contends_pattern(boxes: dict) -> re.Pattern[str]:
     return re.compile(f"{interpreters}|{LOCK_WRAPPERS}" if interpreters else LOCK_WRAPPERS)
 
 
-def _configured_boxes() -> dict:
+@lru_cache(maxsize=1)
+def configured_contends_pattern() -> re.Pattern[str]:
     try:
-        document = json.loads(FLEET_BOXES.read_text()) if FLEET_BOXES else {}
+        interpreters = Roster.at(_RUNTIME_ROOT).gpu_interpreters
     except (OSError, ValueError):
-        return {}
-    return document if isinstance(document, dict) else {}
-
-
-CONTENDS = contends_pattern(_configured_boxes())
+        interpreters = ()
+    return contends_pattern(interpreters)
 
 
 #: Commands that never start GPU work, whatever their text contains.  A commit
@@ -1222,8 +1223,9 @@ def _segments(command: str) -> list[str]:
 def contends(command: str) -> bool:
     """True when any segment of this command starts GPU work off-pool."""
 
+    pattern = configured_contends_pattern()
     for segment in _segments(command):
-        if not CONTENDS.search(_mentions_elided(segment)):
+        if not pattern.search(_mentions_elided(segment)):
             continue
         if _inspects_only(segment):
             continue

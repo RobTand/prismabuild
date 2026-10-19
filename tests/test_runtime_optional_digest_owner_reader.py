@@ -63,6 +63,7 @@ def test_a_retained_runtime_without_the_digest_owner_keeps_validating(tmp_path):
     # must hold before and after that.
     retained = copy.deepcopy(attestation)
     retained["runtime"].pop("digest_primitives", None)
+    retained["runtime"].pop("immutable_files", None)
     _seal_runtime(retained)
     assert "digest_primitives" not in retained["runtime"]
     assert pb.validate_worker_attestation(retained, action=action) == retained
@@ -97,4 +98,44 @@ def test_any_other_unrecognized_runtime_key_is_still_refused(tmp_path):
     new["runtime"]["unrecognized"] = True
     _seal_runtime(new)
     with pytest.raises(pb.ActionContractError, match="runtime fields differ"):
+        pb.validate_worker_attestation(new, action=action)
+
+
+def test_a_runtime_that_attests_the_immutable_owner_validates(tmp_path):
+    action, attestation = _attested(tmp_path)
+    new = copy.deepcopy(attestation)
+    source = tmp_path / "immutable_files.py"
+    source.write_bytes(b"# recorded immutable owner\n")
+    new["runtime"]["immutable_files"] = pb._identify_runtime_source(
+        source, where="test immutable owner")
+    _seal_runtime(new)
+    assert pb.validate_worker_attestation(new, action=action) == new
+
+
+def test_a_retained_digest_only_runtime_keeps_its_recorded_body(tmp_path):
+    action, attestation = _attested(tmp_path)
+    retained = copy.deepcopy(attestation)
+    retained["runtime"].pop("immutable_files", None)
+    _seal_runtime(retained)
+    assert pb.validate_worker_attestation(retained, action=action) == retained
+    assert "immutable_files" not in pb._validate_worker_runtime(retained["runtime"])
+
+
+def test_a_malformed_immutable_owner_identity_is_refused(tmp_path):
+    action, attestation = _attested(tmp_path)
+    new = copy.deepcopy(attestation)
+    identity = dict(new["runtime"]["digest_primitives"], sha256="not-a-digest")
+    new["runtime"]["immutable_files"] = identity
+    _seal_runtime(new)
+    with pytest.raises(pb.ActionContractError, match="runtime.immutable_files"):
+        pb.validate_worker_attestation(new, action=action)
+
+
+def test_the_runtime_digest_binds_the_immutable_owner(tmp_path):
+    action, attestation = _attested(tmp_path)
+    new = copy.deepcopy(attestation)
+    identity = dict(new["runtime"]["digest_primitives"])
+    new["runtime"]["immutable_files"] = identity
+    _seal_attestation(new)
+    with pytest.raises(pb.ActionContractError, match="digest does not match"):
         pb.validate_worker_attestation(new, action=action)

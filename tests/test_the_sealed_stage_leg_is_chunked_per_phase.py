@@ -10,6 +10,9 @@ no new node kind.  A phase that fits in one chunk seals today's whole-phase
 pair, and a tier that announces no sizing seals it too.
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -21,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -74,6 +77,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -85,7 +90,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -130,18 +135,15 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
+    tier = residency_plan.resolve_stage_tier(queue, None)
     if tier_override is not None:
         tier = tier_override(dict(tier))
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     staged["cas"] = cas
     staged["tier"] = tier
     return staged
@@ -204,8 +206,8 @@ def test_a_chunk_mover_carries_todays_argv_over_its_own_range(
     assert body["params"]["command"] == [
         str(tier["mover_python"]),
         str(Path(str(tier["mover_tools_root"])) / "stage_move.py"),
-        "--pool-root", str(pbrun.SH / "pb-queue"),
-        "--cas-root", str(pbrun.SH / "cas"),
+        "--pool-root", str(pbrun.configured_store().root / "pb-queue"),
+        "--cas-root", str(pbrun.configured_store().root / "cas"),
         "--consumer-action-key", residency_plan.share_namespace(
             digest, STAGE_TIER, 40 * GIB, 80 * GIB),
         "--tier-id", STAGE_TIER,
@@ -221,7 +223,7 @@ def test_a_chunk_mover_carries_todays_argv_over_its_own_range(
     assert egress["params"]["command"][:6] == [
         str(tier["mover_python"]),
         str(Path(str(tier["mover_tools_root"])) / "stage_release.py"),
-        "--pool-root", str(pbrun.SH / "pb-queue"),
+        "--pool-root", str(pbrun.configured_store().root / "pb-queue"),
         "--mover-action-key", chunk["mover_row"]["action_key"]]
 
 
@@ -278,7 +280,7 @@ def test_a_window_gib_without_a_chunk_derives_the_quarter(tmp_path) -> None:
 def test_the_sealed_plan_freezes_and_leads_with_the_first_chunk(
         tmp_path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     plan = staged["plan"]
     assert isinstance(plan, dict)

@@ -36,7 +36,8 @@ import test_a_restarted_promotion_adopts_its_own_copies as ram  # noqa: E402
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_plan  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 
 def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
@@ -54,7 +55,7 @@ def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
         "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(ram.TOTAL),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096", "--readers", "1", "--max-readers", "1",
         "--unpaced"])
     receipt = queue.move_record(mover)
@@ -65,10 +66,10 @@ def _main(queue: pool.PoolQueue, tmp_path: Path, manifest: Path, digest: str,
 def test_a_second_pass_of_one_consumer_replaces_its_siblings_changed_copy(
         tmp_path: Path, monkeypatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", ram.GRACE)
+    queue.records.ensure_layout()
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', ram.GRACE)
     manifest, digest, body = ram._manifest(tmp_path, null_digest=True)
-    paths = [tmp_path / "stage" / stage_move.stage_relative(
+    paths = [tmp_path / "stage" / staged_path.stage_relative(
                  str(entry["path"]), 0, ram.SIZE,
                  mount_prefix=str(body["mount_prefix"]))
              for entry in body["entries"]]
@@ -126,7 +127,7 @@ def test_a_held_owner_lock_past_the_grace_is_a_retryable_refusal(
     acquired: list[bool] = []
 
     def hold() -> None:
-        with queue._transition_locked(consumer, blocking=False) as got:
+        with queue.action_transition_lock(consumer, blocking=False) as got:
             acquired.append(bool(got))
             taken.set()
             release.wait(timeout=60)

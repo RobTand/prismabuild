@@ -74,6 +74,7 @@ if verb in ("run", "create"):
     mode = os.environ.get("FAKE_MODE", "honor")
     delay = float(os.environ.get("FAKE_DELAY_START", "0"))
     record(verb=verb, argv=argv)
+    state_path.with_suffix(".client-requested").write_text("1")
     late = os.environ.get("FAKE_LATE_CREATE")
     if late:
         # The client has sent its create request; an independent process (the
@@ -89,8 +90,8 @@ if verb in ("run", "create"):
         subprocess.Popen([sys.executable, "-c", code, late, str(state_path),
                           os.environ.get("FAKE_CID", "c" * 64), json.dumps(labels)],
                          start_new_session=True)
-        pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(143))
+        pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
         time.sleep(60)
         sys.exit(0)
     if delay:
@@ -114,13 +115,12 @@ if verb in ("run", "create"):
             "data = json.loads(path.read_text())\n"
             "if not data.get('removed'):\n"
             "    data.update(running=True, status='running')\n"
-            "    tmp = path.with_suffix('.start'); tmp.write_text(json.dumps(data)); tmp.replace(path)\n")
+            "    tmp = path.with_suffix('.start'); tmp.write_text(json.dumps(data)); tmp.replace(path)\n"
+            "path.with_suffix('.start-checked').write_text('1')\n")
         subprocess.Popen([sys.executable, "-c", code, start_later, str(state_path)],
                          start_new_session=True)
     if cidfile and os.environ.get("FAKE_NO_CIDFILE") != "1":
         pathlib.Path(cidfile).write_text(data["cid"])
-    pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
-
     def on_signal(signum, frame):
         record(event="signal-seen", signal=signum)
         if mode == "honor":
@@ -131,6 +131,7 @@ if verb in ("run", "create"):
 
     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(number, on_signal)
+    pathlib.Path(os.environ["FAKE_STARTED"]).write_text("1")
     started = time.monotonic()
     exit_after = float(os.environ.get("FAKE_EXIT_AFTER", "0"))
     while True:
@@ -158,6 +159,8 @@ if verb == "rm":
 
 if verb == "kill":
     record(verb="kill", argv=argv)
+    if "KILL" in argv:
+        state_path.with_suffix(".kill-requested").write_text("1")
     if os.environ.get("FAKE_KILL_REJECTS") == "1":
         sys.stderr.write("Error response from daemon: permission denied\\n")
         sys.exit(1)
@@ -249,13 +252,13 @@ def _start(tmp_path: Path, *, mode: str = "honor", grace: str | None = "1",
     return process
 
 
-def _wait_started(tmp_path: Path, timeout: float = 10.0) -> None:
+def _wait_started(tmp_path: Path, timeout: float = 10.0, *, marker="started") -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if (tmp_path / "started").exists():
+        if (tmp_path / marker).exists():
             return
         time.sleep(0.02)
-    raise AssertionError("the fake client never started: "
+    raise AssertionError(f"the fake client never wrote {marker}: "
                          + (tmp_path / "err").read_text())
 
 
@@ -366,7 +369,7 @@ def test_a_signal_before_the_container_exists_is_unresolved_and_not_a_stop(tmp_p
     """An empty answer is not proof that no container will appear (a delayed create)."""
     process = _start(tmp_path, mode="slow", grace="1",
                      extra={"FAKE_DELAY_START": "30"})
-    time.sleep(0.5)
+    _wait_started(tmp_path, marker="state.client-requested")
     process.send_signal(signal.SIGTERM)
     assert process.wait(timeout=20) == 125
     assert _calls(tmp_path, "kill") == []
@@ -401,7 +404,7 @@ def test_a_created_container_is_removed_so_a_late_start_cannot_land(tmp_path):
     _wait_started(tmp_path)
     process.send_signal(signal.SIGTERM)
     code = process.wait(timeout=20)
-    time.sleep(3.0)                       # past the moment the late start would land
+    _wait_started(tmp_path, marker="state.start-checked")
     receipt = _receipts(tmp_path)[0]
     assert receipt["stop_proved"] is True and code == 128 + signal.SIGTERM
     assert receipt["escalation"]["container_removed"] is True
@@ -553,11 +556,14 @@ def test_the_relay_handlers_stay_armed_through_the_stop(tmp_path):
                      extra={"FAKE_KILL_REJECTS": "1"})
     _wait_started(tmp_path)
     process.send_signal(signal.SIGTERM)
-    time.sleep(1.4)                      # past the grace: the stop path is running
+    _wait_started(tmp_path, marker="state.kill-requested")
     process.send_signal(signal.SIGTERM)
     code = process.wait(timeout=20)
     assert code == 125, code             # not -15: the handler was still armed
-    assert _receipts(tmp_path)[0]["outcome"] == "still_running"
+    receipt = _receipts(tmp_path)[0]
+    assert receipt["outcome"] == "still_running"
+    assert [entry["signal"] for entry in receipt["signals"]] == [
+        int(signal.SIGTERM), int(signal.SIGTERM)]
 
 
 def test_a_hung_daemon_cannot_stretch_the_stop_past_the_guard_interval(tmp_path):

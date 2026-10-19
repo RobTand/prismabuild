@@ -5,7 +5,6 @@ listing succeeds, then opening the named record blocks.  These tests exercise
 the actual forked reader boundary; they never point at a fleet queue.
 """
 from __future__ import annotations
-
 import fcntl
 import json
 import os
@@ -18,8 +17,10 @@ import time
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import pbrun  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
+import pbstatus
+from prismabuild import action_client, action_wait, record_store  # noqa: E402
 
 
 KEY = "b" * 64
@@ -28,14 +29,9 @@ KEY = "b" * 64
 class Queue:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.records = record_store.RecordStore(root)
         for state in ("done", "failed", "withdrawn"):
             (root / state).mkdir(parents=True)
-
-    def item_path(self, state: str, key: str) -> Path:
-        return self.root / state / f"{key}.json"
-
-    def withdrawal_decisions(self, key: str, **_kwargs) -> list:
-        return []
 
 
 def _ending(status: str, returncode: int) -> dict:
@@ -53,7 +49,7 @@ def _ending(status: str, returncode: int) -> dict:
     [
         ("done", "executed", 0, 0),
         ("failed", "failed", 9, 9),
-        ("withdrawn", "withdrawn", 143, pbrun.WITHDRAWN_EXIT),
+        ("withdrawn", "withdrawn", 143, action_client.WITHDRAWN_EXIT),
     ],
 )
 def test_bounded_wait_keeps_healthy_terminal_verdicts(
@@ -61,16 +57,18 @@ def test_bounded_wait_keeps_healthy_terminal_verdicts(
     status: str, returncode: int, expected: int,
 ) -> None:
     queue = Queue(tmp_path / "queue")
-    queue.item_path(state, KEY).write_text(
-        json.dumps(_ending(status, returncode)), encoding="utf-8")
+    queue.records.replace_record_at(
+        queue.records.item_path(state, KEY),
+        _ending(status, returncode),
+    )
 
-    assert pbrun.await_outcome(queue, KEY, wait_s=0) == expected
+    assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == expected
     assert "unavailable pool outcome" not in capsys.readouterr().err
 
 
 def _blocked_fifo_queue(tmp_path: Path) -> Queue:
     queue = Queue(tmp_path / "queue")
-    os.mkfifo(queue.item_path("done", KEY))
+    os.mkfifo(queue.records.item_path("done", KEY))
     return queue
 
 
@@ -80,7 +78,7 @@ def test_fifo_terminal_read_is_bounded_and_is_not_a_wait_timeout(
     """A baseline times out this isolated caller; fixed source returns 74.
 
     Keeping the watchdog inside the regression turns the unchanged baseline
-    result into a pytest assertion with proof that it entered ``await_outcome``
+    result into a pytest assertion with proof that it entered ``report_pool_outcome``
     rather than letting the enclosing PrismaBuild action time out.
     """
 
@@ -89,21 +87,18 @@ def test_fifo_terminal_read_is_bounded_and_is_not_a_wait_timeout(
     code = f'''\
 import os, sys
 from pathlib import Path
-sys.path.insert(0, {str(source / "tools" / "fleet")!r})
-import pbrun
-pbrun.OUTCOME_READ_TIMEOUT_S = 0.05
+sys.path[:0] = [{str(source / "src")!r}, {str(source / "tools" / "fleet")!r}]
+from prismabuild import action_client, action_wait, record_store
+action_wait.OUTCOME_READ_TIMEOUT_S = 0.05
 root = Path({str(root)!r})
 for state in ("done", "failed", "withdrawn"):
     (root / state).mkdir(parents=True)
 class Queue:
-    def item_path(self, state, key):
-        return root / state / f"{{key}}.json"
-    def withdrawal_decisions(self, key, **kwargs):
-        return []
+    records = record_store.RecordStore(root)
 key = {KEY!r}
-os.mkfifo(Queue().item_path("done", key))
-print("entered await_outcome", flush=True)
-print(pbrun.await_outcome(Queue(), key, wait_s=0), flush=True)
+os.mkfifo(Queue().records.item_path("done", key))
+print("entered report_pool_outcome", flush=True)
+print(action_client.report_pool_outcome(Queue(), key, wait_s=0), flush=True)
 '''
     try:
         # A hang guard, not the property: 4.5 s leaves a loaded box time to
@@ -115,9 +110,9 @@ print(pbrun.await_outcome(Queue(), key, wait_s=0), flush=True)
     except subprocess.TimeoutExpired as exc:
         stdout = (exc.stdout or "").decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         pytest.fail(
-            "await_outcome exceeded its bounded caller budget; stdout=" + stdout)
+            "report_pool_outcome exceeded its bounded caller budget; stdout=" + stdout)
     assert completed.returncode == 0
-    assert completed.stdout == f"entered await_outcome\n{pbrun.RECORD_WRITE_FAILED_EXIT}\n"
+    assert completed.stdout == f"entered report_pool_outcome\n{action_client.RECORD_WRITE_FAILED_EXIT}\n"
     assert "pool outcome observation timed out" in completed.stderr
     assert "gave up waiting" not in completed.stderr
 
@@ -127,8 +122,8 @@ def test_immutable_verification_timeout_is_loud_non_success(
 ) -> None:
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
-    queue.item_path("done", KEY).write_text(json.dumps(outcome), encoding="utf-8")
-    real_read = pbrun._bounded_pool_read
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), outcome)
+    real_read = action_wait.read_observation
 
     def short_verification(section, read, *, budget_s, **kwargs):
         # Only the verification is meant to time out. The observation before
@@ -140,9 +135,9 @@ def test_immutable_verification_timeout_is_loud_non_success(
     def blocked_summary(*_args, **_kwargs):
         time.sleep(30)
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", short_verification)
-    monkeypatch.setattr(pbrun, "outcome_summary", blocked_summary)
-    assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
+    monkeypatch.setattr(action_wait, "read_observation", short_verification)
+    monkeypatch.setattr(action_client, "outcome_summary", blocked_summary)
+    assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == action_client.RECORD_WRITE_FAILED_EXIT
     assert "pool outcome verification timed out" in capsys.readouterr().err
 
 
@@ -151,20 +146,20 @@ def test_parent_carries_preemption_successor_between_bounded_observations(
 ) -> None:
     queue = Queue(tmp_path / "queue")
     outcome = _ending("executed", 0)
-    path = queue.item_path("done", KEY)
+    path = queue.records.item_path("done", KEY)
     path.write_text(json.dumps(outcome), encoding="utf-8")
     seen: list[float | None] = []
 
     def observation(_queue, _key, generation, *, budget_s,
-                    use_delivered_snapshot=False):
+                    ):
         assert budget_s > 0
         seen.append(generation)
         if len(seen) == 1:
             return None, 200.0
         return (path, outcome), generation
 
-    monkeypatch.setattr(pbrun, "bounded_outcome_observation", observation)
-    assert pbrun.await_outcome(queue, KEY, wait_s=1, generation=100.0) == 0
+    monkeypatch.setattr(action_client, "bounded_outcome_observation", observation)
+    assert action_client.report_pool_outcome(queue, KEY, wait_s=1, generation=100.0) == 0
     assert seen == [100.0, 200.0]
 
 
@@ -183,19 +178,19 @@ def test_eof_payload_with_retained_reader_uses_the_delivered_snapshot(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.item_path("done", KEY).write_text(
-        json.dumps(_ending("executed", 0)), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), _ending('executed', 0))
     retained: list[int] = []
 
     def retain(pid, _section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": "pool outcome observation",
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": pbstatus._starttime_ticks(pid),
+                          "since_unix": time.time()})
 
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
+    monkeypatch.setattr(pbstatus._reader, "_reap_within", lambda *_args: False)
+    monkeypatch.setattr(pbstatus._reader, "_stop_reader", retain)
     try:
-        assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
+        assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == 0
         assert len(retained) == 2  # observation and verification both delivered
         out, err = capsys.readouterr()
         assert "payload delivered but its reader could not be reaped" in err
@@ -218,10 +213,11 @@ def test_retained_outcome_reader_names_exact_identity_and_releases_parent_fds(
     def retain(pid, _section, _started, abandoned):
         retained.append(pid)
         abandoned.append({"pid": pid, "section": "pool outcome observation",
-                          "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)})
+                          "starttime_ticks": pbstatus._starttime_ticks(pid),
+                          "since_unix": time.time()})
 
-    monkeypatch.setattr(pbrun, "OUTCOME_READ_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
+    monkeypatch.setattr(action_wait, "OUTCOME_READ_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(pbstatus._reader, "_stop_reader", retain)
     held = (tmp_path / "parent.lock").open("w")
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
@@ -229,7 +225,7 @@ def test_retained_outcome_reader_names_exact_identity_and_releases_parent_fds(
         # terminal re-read's (#630): the wait spends one last bounded
         # snapshot before reporting unobserved, never an unbounded parent
         # diagnostic, and a FIFO that answers neither still ends 74.
-        assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
+        assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == action_client.RECORD_WRITE_FAILED_EXIT
         assert len(retained) == 2
         shown = capsys.readouterr().err
         assert '"pid": ' + str(retained[0]) in shown
@@ -256,7 +252,7 @@ def test_interrupt_reaps_the_owned_outcome_reader(
 ) -> None:
     queue = _blocked_fifo_queue(tmp_path)
     children: list[int] = []
-    fork = pbrun.pbstatus.os.fork
+    fork = pbstatus.os.fork
 
     def tracked_fork():
         pid = fork()
@@ -267,10 +263,10 @@ def test_interrupt_reaps_the_owned_outcome_reader(
     def interrupt(*_args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(pbrun.pbstatus.os, "fork", tracked_fork)
-    monkeypatch.setattr(pbrun.pbstatus._reader.select, "select", interrupt)
+    monkeypatch.setattr(pbstatus.os, "fork", tracked_fork)
+    monkeypatch.setattr(pbstatus._reader.select, "select", interrupt)
     with pytest.raises(KeyboardInterrupt):
-        pbrun.await_outcome(queue, KEY, wait_s=0)
+        action_client.report_pool_outcome(queue, KEY, wait_s=0)
     assert len(children) == 1
     with pytest.raises(ChildProcessError):
         os.waitpid(children[0], os.WNOHANG)
@@ -288,22 +284,20 @@ def test_terminal_reread_reports_a_landing_after_an_unavailable_read(
     """
 
     queue = Queue(tmp_path / "queue")
-    queue.item_path("done", KEY).write_text(
-        json.dumps(_ending("executed", 0)), encoding="utf-8")
-    real = pbrun.bounded_outcome_observation
+    queue.records.replace_record_at(queue.records.item_path('done', KEY), _ending('executed', 0))
+    real = action_client.bounded_outcome_observation
     calls: list[str] = []
 
-    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+    def flaky(q, key, generation, *, budget_s):
         calls.append("observation")
         if len(calls) == 1:
-            raise pbrun.OutcomeReadUnavailable(
+            raise action_wait.OutcomeReadUnavailable(
                 "pool outcome observation reader could not be reaped; "
                 'retained reader=[{"pid": 1}]')
-        return real(q, key, generation, budget_s=budget_s,
-                    use_delivered_snapshot=use_delivered_snapshot)
+        return real(q, key, generation, budget_s=budget_s)
 
-    monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
-    assert pbrun.await_outcome(queue, KEY, wait_s=0) == 0
+    monkeypatch.setattr(action_client, "bounded_outcome_observation", flaky)
+    assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == 0
     assert calls == ["observation", "observation"]
     out, err = capsys.readouterr()
     assert "ok" in out
@@ -317,15 +311,15 @@ def test_terminal_reread_with_no_ending_names_host_and_key(
     """#630: a genuine unobserved stays 74, and says where and what it read."""
 
     queue = Queue(tmp_path / "queue")
-    real = pbrun.bounded_outcome_observation
+    real = action_client.bounded_outcome_observation
 
-    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
-        raise pbrun.OutcomeReadUnavailable(
+    def flaky(q, key, generation, *, budget_s):
+        raise action_wait.OutcomeReadUnavailable(
             "pool outcome observation timed out after 5.0s and its reader "
             "could not be reaped")
 
-    monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
-    assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
+    monkeypatch.setattr(action_client, "bounded_outcome_observation", flaky)
+    assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert KEY[:12] in err
     assert socket.gethostname() in err
@@ -339,17 +333,16 @@ def test_terminal_reread_with_still_no_ending_says_so(
     """The re-read that finds nothing reports exactly that, still exit 74."""
 
     queue = Queue(tmp_path / "queue")
-    real = pbrun.bounded_outcome_observation
+    real = action_client.bounded_outcome_observation
     calls: list[str] = []
 
-    def flaky(q, key, generation, *, budget_s, use_delivered_snapshot=False):
+    def flaky(q, key, generation, *, budget_s):
         calls.append("observation")
         if len(calls) == 1:
-            raise pbrun.OutcomeReadUnavailable(
+            raise action_wait.OutcomeReadUnavailable(
                 "pool outcome observation reader could not be reaped")
-        return real(q, key, generation, budget_s=budget_s,
-                    use_delivered_snapshot=use_delivered_snapshot)
+        return real(q, key, generation, budget_s=budget_s)
 
-    monkeypatch.setattr(pbrun, "bounded_outcome_observation", flaky)
-    assert pbrun.await_outcome(queue, KEY, wait_s=0) == pbrun.RECORD_WRITE_FAILED_EXIT
+    monkeypatch.setattr(action_client, "bounded_outcome_observation", flaky)
+    assert action_client.report_pool_outcome(queue, KEY, wait_s=0) == action_client.RECORD_WRITE_FAILED_EXIT
     assert "terminal re-read saw no ending" in capsys.readouterr().err

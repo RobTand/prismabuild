@@ -55,7 +55,7 @@ def payload_identity_env(env, *, action_key, nonce):
         payload_env.pop('PRISMABUILD_ACTION_NONCE', None)
         payload_env.pop('PRISMABUILD_ACTION_SCOPE', None)
     try:
-        from runtime_paths import generation_root as sealed_root
+        from prismabuild.runtime_paths import generation_root as sealed_root
         payload_env['PRISMABUILD_READER_HELPER_ROOT'] = str(
             sealed_root(__file__))
     except (ImportError, OSError):

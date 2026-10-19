@@ -16,6 +16,10 @@ The landing record prices a claimed copy from the same report.
 Everything runs on ``tmp_path`` queues, stages and sources (#628).
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -24,6 +28,7 @@ import os
 from pathlib import Path
 import sys
 import textwrap
+import time
 import types
 
 import pytest
@@ -32,16 +37,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import (  # noqa: E402
     pool, progress, residency_map, residency_plan, storage_tiers)
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     STAGE_KIND, TIER, _hexkey, _row)
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
     READERS, _Cas, _manifest, _template)
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 MIB = 1 << 20
 MB = storage_tiers.MB
@@ -82,12 +90,14 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
     """
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     queue = pool.PoolQueue(tmp_path / "seal-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     announced = list(MEMBERS if members is None else members)
 
     def discover(**_kwargs):
@@ -100,9 +110,9 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = dict(pbrun.resolve_stage_tier(queue, None))
+    tier = dict(residency_plan.resolve_stage_tier(queue, None))
     tier["tokens"] = {}
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
@@ -110,10 +120,7 @@ def _seal_rows(tmp_path: Path, manifest: dict[str, object], *,
     if measured_mb_s is not None:
         records.append(_landed(digest, measured_mb_s, movers=movers))
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas, movement_receipts=records)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, movement_receipts=records, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     return staged, cas, digest
 
 
@@ -203,9 +210,9 @@ def test_a_measured_mover_is_sealed_with_its_grace_and_its_pool(
             "priced_bytes_per_s": float(116 * MB),
             "stage_root": str(tmp_path / "stage")}
         tags = params["placement"]["required_tags"]
-        assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG,
-                pb.POOL_CONTENTION_TAG} <= set(tags)
-        assert pb.PROGRESS_CYCLE_TAG not in tags
+        assert {contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG,
+                contracts.POOL_CONTENTION_TAG} <= set(tags)
+        assert contracts.PROGRESS_CYCLE_TAG not in tags
         assert "dl380g10" in tags
 
 
@@ -252,8 +259,8 @@ def test_a_contention_spec_is_refused_without_a_policy_or_out_of_form() -> None:
 #: as a real hold's does.
 MOVER = textwrap.dedent('''
     import os, sys, threading, time
-    sys.path.insert(0, {tools!r})
-    import prewarm_loop, stage_move
+    sys.path.insert(0, {source!r})
+    from prismabuild import prewarm_loop, stage_move
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     real = os.readv
@@ -306,7 +313,7 @@ def _mover_source(argv: list[str], *, read: str = "real", rate: float = 1e9,
                   hold_on: int = 0, hold: float = 0.0,
                   heartbeat: float = HEARTBEAT) -> str:
     receipt = (argv[argv.index("--receipt") + 1] if "--receipt" in argv else "")
-    return MOVER.format(tools=str(ROOT / "tools" / "fleet"), heartbeat=heartbeat,
+    return MOVER.format(source=str(ROOT / "src"), heartbeat=heartbeat,
                         argv=argv, read=read, rate=float(rate),
                         hold_on=int(hold_on), hold=float(hold), receipt=receipt)
 
@@ -324,7 +331,7 @@ def _real_window(tmp_path: Path, entries: int = 3) -> dict[str, object]:
         listed.append({"path": str(source), "offset": 0, "bytes": MIB,
                        "sha256": hashlib.sha256(payload).hexdigest()})
     total = entries * MIB
-    return {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    return {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
             "annotations": {"phases": [{"name": "layer-0", "bytes": total,
                                         "cumulative_bytes": total}]},
             "mount_prefix": str(mount), "entries": listed,
@@ -368,7 +375,7 @@ def _claimed_mover(tmp_path: Path, source: str, policy,
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, max_attempts=1,
                   worker_script=ROOT / "tools" / "prismabuild_worker.py")
-    return queue, queue.claim()
+    return queue, queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
 
 
 def _waiting_consumer(queue: pool.PoolQueue, mover: str, *, total: int,
@@ -414,7 +421,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
     and the range they belong to.
     """
 
-    import stage_release
+    from prismabuild import stage_release
 
     grace, ceiling = 4, 20.0
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
@@ -436,7 +443,7 @@ def test_a_mover_whose_copy_stops_after_its_first_entry_ends_no_progress(
             "--warm-after-copy", "never", "--unpaced"]
     source = _mover_source(argv, read="stall")
     queue, item = _claimed_mover(tmp_path, source, policy)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     mover = str(item["action_key"])
     progress_path = _waiting_consumer(queue, mover, total=total, digest=digest,
@@ -549,12 +556,12 @@ def _run_mover(base: Path, source: str, policy, *, ceiling: float,
     outcome and the receipt the mover filed as its result.  ``before`` runs
     with the queue once the action is claimed, before it executes."""
 
-    import stage_release
+    from prismabuild import stage_release
 
     base.mkdir(parents=True, exist_ok=True)
     (base / "stage").mkdir(exist_ok=True)
     queue, item = _claimed_mover(base, source, policy, contention)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=base / "stage") == "registered"
     if before is not None:
         before(queue)
@@ -601,9 +608,53 @@ def test_a_pacer_hold_three_graces_long_on_a_contended_pool_is_not_a_stall(
     argv = _mover_argv(base, digest=digest, total=total,
                        manifest=tmp_path / "manifest.json")
 
+    entered = base / "holder-writer-entered"
+    release = base / "holder-writer-released"
+    observed = base / "holder-record-observed"
+    unknown = base / "holder-before-registration.json"
+    source = _mover_source(argv, hold_on=2, hold=hold)
+    registration_window = (
+        "real_holder_writer = pool.PoolQueue.write_stage_ownership_holder\n"
+        "def wait_for_observer(path):\n"
+        "    deadline = time.monotonic() + 10.0\n"
+        "    while not os.path.exists(path):\n"
+        "        assert time.monotonic() < deadline, 'holder observer did not acknowledge'\n"
+        "        time.sleep(0.005)\n"
+        "def registered_holder_writer(self, *args, **kwargs):\n"
+        f"    open({str(entered)!r}, 'w').close()\n"
+        f"    wait_for_observer({str(release)!r})\n"
+        "    record = real_holder_writer(self, *args, **kwargs)\n"
+        f"    wait_for_observer({str(observed)!r})\n"
+        "    return record\n"
+        "pool.PoolQueue.write_stage_ownership_holder = registered_holder_writer\n")
+    source = source.replace("code = stage_move.main(", registration_window + "code = stage_move.main(", 1)
+
+    def observe_registration_window(queue):
+        read_holder = queue.stage_ownership_holder
+
+        def holder_at_registration(stage_root):
+            holder = read_holder(stage_root)
+            if not release.exists():
+                assert entered.exists(), "observed a different unregistered lock"
+                assert holder["recorded"] is False
+                unknown.write_text(json.dumps(holder))
+                release.touch()
+            deadline = time.monotonic() + 5.0
+            while not holder["recorded"]:
+                assert time.monotonic() < deadline, "mover did not record its actual lock ownership"
+                time.sleep(0.005)
+                holder = read_holder(stage_root)
+            observed.touch()
+            return holder
+
+        monkeypatch.setattr(queue, "stage_ownership_holder", holder_at_registration)
+
     outcome, receipt = _run_mover(
-        base, _mover_source(argv, hold_on=2, hold=hold), _policy(grace),
-        contention=_contention(base), ceiling=60.0)
+        base, source, _policy(grace),
+        contention=_contention(base), ceiling=60.0, before=observe_registration_window)
+
+    assert entered.exists() and release.exists() and observed.exists()
+    assert json.loads(unknown.read_text())["recorded"] is False
 
     assert outcome["status"] == "executed", _brief(outcome)
     assert outcome["elapsed_s"] > hold
@@ -824,7 +875,7 @@ def test_a_pool_the_worker_cannot_read_is_credited_and_says_so(
 def _only_key(queue: pool.PoolQueue) -> str:
     """The one action key this queue has filed an outcome for."""
 
-    names = [name for name in os.listdir(queue.root / pool.RESIDENCY_EVENTS)]
+    names = [name for name in os.listdir(queue.root / pool.record_store.RESIDENCY_EVENTS)]
     assert len(names) == 1, names
     return names[0]
 
@@ -931,8 +982,8 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
     """A whole copy under a progress channel: the last report is every byte
     it landed, and the receipt counts the reports."""
 
-    import stage_move
-    import stage_release
+    from prismabuild import stage_move
+    from prismabuild import stage_release
 
     window = _real_window(tmp_path, entries=4)
     total = int(window["total_bytes"])                   # type: ignore[arg-type]
@@ -940,10 +991,10 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
     manifest_path.write_text(json.dumps(window))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     report = tmp_path / "mover.progress"
     monkeypatch.setenv(progress.ACTION_PROGRESS_PATH_ENV, str(report))
@@ -955,7 +1006,7 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
         "--consumer-action-key", CONSUMER, "--tier-id", TIER,
         "--stage-root", str(stage), "--manifest-sha256", digest,
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--range-start-bytes", "0", "--range-end-bytes", str(total),
         "--readers", "2", "--max-readers", "2", "--warm-after-copy", "never",
         "--unpaced", "--progress-interval-s", "0.01"])
@@ -975,7 +1026,7 @@ def test_the_mover_reports_its_landed_bytes_and_says_so_on_its_receipt(
 def test_a_mover_with_no_channel_reports_nothing(tmp_path: Path, monkeypatch) -> None:
     """A mover sealed with no policy, or a direct run: nothing starts."""
 
-    import stage_move
+    from prismabuild import stage_move
 
     for name in progress.ACTION_PROGRESS_ENV:
         monkeypatch.delenv(name, raising=False)
@@ -992,7 +1043,7 @@ def test_the_read_back_is_reported_in_the_warm_phase(tmp_path: Path,
                                                      monkeypatch) -> None:
     """Entering ``warm`` is itself a report, and the count goes on growing."""
 
-    import stage_move
+    from prismabuild import stage_move
 
     report = tmp_path / "mover.progress"
     monkeypatch.setenv(progress.ACTION_PROGRESS_PATH_ENV, str(report))
@@ -1016,7 +1067,7 @@ def test_the_read_back_is_reported_in_the_warm_phase(tmp_path: Path,
 
 def test_a_phase_the_launch_did_not_declare_is_recorded_not_raised(
         tmp_path: Path, monkeypatch) -> None:
-    import stage_move
+    from prismabuild import stage_move
 
     monkeypatch.setenv(progress.ACTION_PROGRESS_PATH_ENV, str(tmp_path / "p"))
     monkeypatch.setenv(progress.ACTION_PROGRESS_TOKEN_ENV, "t" * 32)
@@ -1080,7 +1131,7 @@ def _landing_fixture(tmp_path: Path):
     claimed and reporting 11 GB landed; the tier record."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     size = 22 * 10 ** 9
     manifest = "d" * 64
     consumer = _hexkey("landing-consumer")
@@ -1107,13 +1158,13 @@ def _landing_fixture(tmp_path: Path):
     for phase in plan["phases"]:                         # type: ignore[union-attr]
         queue.publish(**dict(phase["mover_row"]))
     claimed = movers[0]
-    source = queue.item_path(pool.READY, claimed)
+    source = queue.records.item_path(pool.record_store.READY, claimed)
     record = json.loads(source.read_text())
     source.unlink()
     record.update({"claimed_unix": 1000.0, "claimed_by": "copy-fixture",
                    "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, claimed).write_text(json.dumps(record))
-    queue.action_progress_path(claimed).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, claimed).write_text(json.dumps(record))
+    queue.records.action_progress_path(claimed).write_text(json.dumps({
         "schema": pb.PROGRESS_RECORD_SCHEMA_V1, "token": "t" * 32,
         "phase": "copy", "units_completed": 11 * 10 ** 9,
         "reported_unix": 1100.0, "unit": "bytes landed"}))
@@ -1133,11 +1184,11 @@ def test_the_landing_record_carries_the_claimed_movers_live_rate(
 
     events = tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
-                                        "state": pool.CLAIMED}], now=1100.0)
+                                        "state": pool.record_store.CLAIMED}], now=1100.0)
 
     assert events == []
     doc = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), consumer))
+        queue.records.residency_fragment_root(), consumer))
     rows = {row["mover_action_key"]: row for row in doc["ranges"]}
     live = rows[claimed]
     assert live["state"] == "claimed" and live["basis"] == "reported"
@@ -1147,12 +1198,12 @@ def test_the_landing_record_carries_the_claimed_movers_live_rate(
     queued = rows[movers[1]]
     assert queued["state"] == "ready" and queued["basis"] == "queue"
     # Without its report the same copy is priced from its claim time.
-    queue.action_progress_path(claimed).unlink()
+    queue.records.action_progress_path(claimed).unlink()
     tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
-                                        "state": pool.CLAIMED}], now=1100.0)
+                                        "state": pool.record_store.CLAIMED}], now=1100.0)
     doc = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), consumer))
+        queue.records.residency_fragment_root(), consumer))
     rows = {row["mover_action_key"]: row for row in doc["ranges"]}
     assert rows[claimed]["basis"] == "claim"
     assert rows[claimed]["expected_landing_unix"] == pytest.approx(
@@ -1170,11 +1221,11 @@ def test_a_ready_range_names_the_movers_queued_ahead_of_it(tmp_path: Path) -> No
 
     events = tier_loop.publish_landing_expectations(
         queue, tiers=tiers, consumers=[{"action_key": consumer,
-                                        "state": pool.CLAIMED}], now=1100.0)
+                                        "state": pool.record_store.CLAIMED}], now=1100.0)
 
     assert events == []
     doc = residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), consumer))
+        queue.records.residency_fragment_root(), consumer))
     rows = {row["mover_action_key"]: row for row in doc["ranges"]}
     assert rows[movers[1]]["state"] == "ready"
     assert rows[movers[1]].get("movers_ahead") == [claimed], rows[movers[1]]

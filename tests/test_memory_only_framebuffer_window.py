@@ -1,5 +1,6 @@
 """Discrete-VRAM receipt telemetry is sampled from broker snapshots (#548)."""
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import time
 
@@ -171,7 +172,7 @@ def test_scope_sampler_uses_shared_broker_snapshot_without_a_finish_probe(monkey
     reads = []
     monkeypatch.setattr(pool.gpu_admission, "trusted_sample", lambda: reads.append(1) or _sample(
         sampled_unix=now - 1))
-    monkeypatch.setattr(pool, "_now", lambda: now)
+    FleetClock(source=lambda: now).install(monkeypatch, scope="pool")
     pool.PoolQueue._sample_resource_scope(scope)
     assert reads == [1]
     assert scope._framebuffer_window.group()["samples"] == 1
@@ -197,7 +198,7 @@ def test_scope_sampler_keeps_prior_framebuffer_peak_when_snapshot_read_fails(mon
     assert scope._framebuffer_window.observe(_sample(sampled_unix=now - 1), now=now)
     monkeypatch.setattr(pool.gpu_admission, "trusted_sample",
                         lambda: (_ for _ in ()).throw(OSError("read failed")))
-    monkeypatch.setattr(pool, "_now", lambda: now)
+    FleetClock(source=lambda: now).install(monkeypatch, scope="pool")
     telemetry = pool.PoolQueue._sample_resource_scope(scope)
     assert telemetry["complete"] is True
     assert "snapshot unavailable: OSError" in telemetry["gpu_framebuffer_error"]

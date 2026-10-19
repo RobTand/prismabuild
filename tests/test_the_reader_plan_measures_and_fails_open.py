@@ -14,6 +14,7 @@ end to end.  These pin the pieces those cases rest on:
 Everything runs on ``tmp_path`` queues (#628).
 """
 from __future__ import annotations
+from fleet_world import FleetWorld
 
 import json
 from pathlib import Path
@@ -24,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 FILL_KIND = f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{TIER}"
@@ -148,12 +149,11 @@ def test_seconds_a_copy_stood_aside_are_not_a_shortfall() -> None:
 
 
 def _queue(tmp_path: Path, *, fill: int) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue = FleetWorld(tmp_path).queue
     tokens = {"stage_gib": 16}
     if fill:
         tokens[storage_tiers.FILL_KIND] = fill
-    queue.mint_tier_capacity(TIER, tokens)
+    queue.tier(TIER).mint(tokens)
     return queue
 
 
@@ -205,9 +205,9 @@ def test_the_waited_copy_is_admitted_without_fill_and_holds_its_stage(
 
     assert _claim(queue) == waited
     assert _claim(queue) is None
-    claimed = json.loads(queue.item_path(pool.CLAIMED, waited).read_text())
+    claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, waited).read_text())
     assert claimed["tier_fill_waived"]["waived"] == 50
-    assert queue.tier_ledger(TIER).holder_tokens(waited) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(waited) == {'stage_gib': 2}
 
 
 def test_the_cap_admits_that_many_movers_and_no_more(tmp_path: Path) -> None:
@@ -258,7 +258,7 @@ def test_a_stale_plan_fails_open(tmp_path: Path) -> None:
 def test_a_report_from_before_the_claim_prices_nothing(tmp_path: Path) -> None:
     queue = _queue(tmp_path, fill=0)
     mover = "d" * 64
-    path = queue.mover_landing_path(mover)
+    path = queue.records.mover_landing_path(mover)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pool.MOVER_LANDING_SCHEMA_V1, "mover_action_key": mover,

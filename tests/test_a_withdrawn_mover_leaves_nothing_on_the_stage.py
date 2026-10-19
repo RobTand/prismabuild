@@ -26,8 +26,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64
@@ -62,10 +63,10 @@ def _fragment(root: Path, stage: Path, paths: dict[str, Path],
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -81,14 +82,14 @@ def test_a_withdrawn_movers_verified_shards_and_partials_are_both_evicted(fleet)
     partial = _staged_file(
         stage, "row-0076/cache/.model_layers_4_mlp_experts_42_up_proj.pt.partial",
         4096)
-    _fragment(queue.root / pool.RESIDENCY, stage, {"shard": shard})
+    _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     # Withdrawn: no item in the queue names this mover, and its tokens are back.
-    assert not queue.tier_ledger(TIER).held_keys()
+    assert not queue.tier(TIER).holders()
 
     events = _sweep(queue, stage)
     assert len(events) == 1, events
     event = events[0]
-    assert event["event"] == stage_release.UNATTRIBUTED_EVENT
+    assert event["event"] == staged_path.UNATTRIBUTED_EVENT
     assert event["entries_deleted"] == 2
     assert event["partials_deleted"] == 1
     assert event["bytes_deleted"] == 8192 + 4096
@@ -101,7 +102,7 @@ def test_a_file_a_live_plan_names_is_untouched(fleet):
 
     queue, stage = fleet
     shard = _staged_file(stage, "model-00001-of-00120.safetensors", 8192)
-    _fragment(queue.root / pool.RESIDENCY, stage, {"shard": shard})
+    _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     # The consumer is live and its residency block names this mover as a lead.
     queue.publish(action_key=CONSUMER, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root), worker_script="w.py",
@@ -130,8 +131,8 @@ def test_nothing_is_deleted_while_a_mover_could_still_be_writing(fleet):
                              "manifest_bytes": 8192, "tier_id": TIER,
                              "range_start_bytes": 0, "range_end_bytes": 8192})
 
-    assert stage_release.movers_in_flight(queue, tier_id=TIER) == {MOVER}
-    receipt = stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
+    assert staged_path.movers_in_flight(queue, tier_id=TIER) == {MOVER}
+    receipt = staged_path.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                                      wanted=set())
     assert receipt["skipped"] == "movers_in_flight"
     assert receipt["entries_deleted"] == 0
@@ -144,12 +145,12 @@ def test_a_prewarm_stage_object_is_not_a_movers_leftover(fleet):
     queue, stage = fleet
     marked = _staged_file(stage, "prewarmed.bin", 4096)
     try:
-        os.setxattr(marked, prewarm_loop.STAGE_SOURCE_XATTR, b"/mnt/shared/x@0")
+        os.setxattr(marked, stage_marks.STAGE_SOURCE_XATTR, b"/mnt/shared/x@0")
     except OSError:
         pytest.skip("this filesystem carries no user extended attributes")
     unmarked = _staged_file(stage, "nobodys.bin", 4096)
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                      stage_root=str(stage), wanted=set())
     assert marked.exists()
     assert not unmarked.exists()
@@ -169,7 +170,7 @@ def test_where_the_xattr_cannot_be_read_an_unmarked_file_is_left_alone(
         raise OSError(95, "Operation not supported")
 
     monkeypatch.setattr(stage_release.os, "getxattr", refuse)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
     assert unmarked.exists(), "an unanswerable question is not permission"
     assert not partial.exists(), "a mover's own temporary is self-identifying"
@@ -177,16 +178,13 @@ def test_where_the_xattr_cannot_be_read_an_unmarked_file_is_left_alone(
     assert receipt["partials_deleted"] == 1
 
 
-def test_a_prewarm_temporary_is_left_to_the_loop_that_owns_it(fleet):
-    """``reap_temporaries`` owns those, once per process, and a live one is in use."""
-
+def test_a_retired_prewarm_temporary_name_has_no_reconcile_exemption(fleet):
     queue, stage = fleet
     temporary = _staged_file(stage, "obj.bin.pbstage@0+4096.7.1.tmp", 4096)
-    assert prewarm_loop._STAGE_TEMPORARY.search(temporary.name)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
-    assert temporary.exists()
-    assert receipt["entries_deleted"] == 0
+    assert not temporary.exists()
+    assert receipt["entries_deleted"] == 1
 
 
 def test_a_withdrawn_movers_fragment_is_not_attribution(fleet):
@@ -194,11 +192,11 @@ def test_a_withdrawn_movers_fragment_is_not_attribution(fleet):
 
     queue, stage = fleet
     shard = _staged_file(stage, "model-00088-of-00120.safetensors", 8192)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, {"shard": shard})
     assert residency_map.fragment_path(root, CONSUMER, MOVER).exists()
-    assert stage_release.attributed_stage_paths(queue, wanted={MOVER}) == {str(shard)}
-    assert stage_release.attributed_stage_paths(queue, wanted=set()) == set()
+    assert staged_path.attributed_stage_paths(queue, wanted={MOVER}) == {str(shard)}
+    assert staged_path.attributed_stage_paths(queue, wanted=set()) == set()
 
 
 def test_the_sweep_still_evicts_a_held_orphan_by_its_fragment(fleet):
@@ -206,18 +204,18 @@ def test_the_sweep_still_evicts_a_held_orphan_by_its_fragment(fleet):
 
     queue, stage = fleet
     shard = _staged_file(stage, "model-00002-of-00120.safetensors", 8192)
-    _fragment(queue.root / pool.RESIDENCY, stage, {"shard": shard})
+    _fragment(queue.root / pool.record_store.RESIDENCY, stage, {"shard": shard})
     queue.record_move(MOVER, {
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
         "bytes_staged": 8192, "range_start_bytes": 0, "range_end_bytes": 8192,
         "stage_root": str(stage), "unix": 10.0})
-    ledger = queue.tier_ledger(TIER)
-    ledger.ensure_capacity({"stage_gib": 4})
-    assert ledger.acquire(MOVER, {"stage_gib": 1})
-    assert MOVER in ledger.held_keys()
+    ledger = queue.tier(TIER)
+    ledger.grow_supply({'stage_gib': 4})
+    assert ledger.take(MOVER, {'stage_gib': 1})
+    assert MOVER in ledger.holders()
 
     events = _sweep(queue, stage)
     reasons = [str(event.get("reason")) for event in events]
     assert "orphan-sweep" in reasons
     assert not shard.exists()
-    assert MOVER not in queue.tier_ledger(TIER).held_keys()
+    assert MOVER not in queue.tier(TIER).holders()

@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb
+from prismabuild import data_manifest as manifest_codec
 from test_a_data_manifest_names_bytes_exactly import _manifest
 
 
@@ -24,13 +25,13 @@ def test_compressed_manifest_can_exceed_the_stored_byte_ceiling(tmp_path, monkey
     raw = json.dumps(manifest).encode()
     compressed = gzip.compress(raw, mtime=0)
     assert len(compressed) < 1024 < len(raw)
-    monkeypatch.setattr(pb, "DATA_MANIFEST_MAX_BYTES", 1024)
+    monkeypatch.setattr(manifest_codec, "DATA_MANIFEST_MAX_BYTES", 1024)
     plain, packed = tmp_path / "plain.json", tmp_path / "packed"
     plain.write_bytes(raw)
     packed.write_bytes(compressed)
     with pytest.raises(pb.ActionContractError, match="exceeds"):
-        pb.load_data_manifest(plain)
-    assert pb.load_data_manifest(packed) == pb.validate_data_manifest(manifest)
+        manifest_codec.load_data_manifest(plain)
+    assert manifest_codec.load_data_manifest(packed) == manifest_codec.validate_data_manifest(manifest)
 
 
 def test_compressed_input_is_validated_after_cas_round_trip(tmp_path):
@@ -38,8 +39,8 @@ def test_compressed_input_is_validated_after_cas_round_trip(tmp_path):
     packed = tmp_path / "data.json.gz"
     packed.write_bytes(gzip.compress(json.dumps(manifest).encode(), mtime=0))
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    entry, _ = cas.ingest_input(packed, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
-    assert pb.load_data_manifest(cas.input_path(entry)) == pb.validate_data_manifest(manifest)
+    entry, _ = cas.ingest_input(packed, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+    assert manifest_codec.load_data_manifest(cas.input_path(entry)) == manifest_codec.validate_data_manifest(manifest)
 
 
 @pytest.mark.parametrize("encoding", ["identity", "gzip"])
@@ -80,7 +81,7 @@ def test_sealed_summary_describes_the_ingested_bytes_after_source_replacement(
     original_ingest = pb.PrismaBuildCAS.ingest_input
 
     def replace_then_ingest(self, path, *, input_id):
-        if input_id == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
+        if input_id == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID:
             Path(path).write_bytes(wire)
         return original_ingest(self, path, input_id=input_id)
 
@@ -98,9 +99,9 @@ def test_sealed_summary_describes_the_ingested_bytes_after_source_replacement(
 def test_decompression_ceiling_is_applied_before_json_parsing(tmp_path, monkeypatch):
     source = tmp_path / "bomb"
     source.write_bytes(gzip.compress(b" " * 100_000, mtime=0))
-    monkeypatch.setattr(pb, "DATA_MANIFEST_MAX_DECODED_BYTES", 1024)
+    monkeypatch.setattr(manifest_codec, "DATA_MANIFEST_MAX_DECODED_BYTES", 1024)
     with pytest.raises(pb.ActionContractError, match="decoded data manifest exceeds 1024"):
-        pb.load_data_manifest(source)
+        manifest_codec.load_data_manifest(source)
 
 
 @pytest.mark.parametrize("fault", ["truncated", "crc", "trailing", "concatenated", "utf8"])
@@ -120,7 +121,7 @@ def test_invalid_compressed_streams_refuse(tmp_path, fault):
     source = tmp_path / "manifest"
     source.write_bytes(wire)
     with pytest.raises(pb.ActionContractError):
-        pb.load_data_manifest(source)
+        manifest_codec.load_data_manifest(source)
 
 
 @pytest.mark.parametrize("fault", ["path", "duplicate", "totals", "count"])
@@ -134,27 +135,27 @@ def test_compression_does_not_bypass_the_manifest_contract(tmp_path, monkeypatch
     elif fault == "totals":
         manifest["total_bytes"] += 1
     else:
-        monkeypatch.setattr(pb, "DATA_MANIFEST_MAX_ENTRIES", 1)
+        monkeypatch.setattr(manifest_codec, "DATA_MANIFEST_MAX_ENTRIES", 1)
     source = tmp_path / "manifest"
     source.write_bytes(gzip.compress(json.dumps(manifest).encode(), mtime=0))
     with pytest.raises(pb.ActionContractError):
-        pb.load_data_manifest(source)
+        manifest_codec.load_data_manifest(source)
 
 
 def test_stored_compressed_bytes_are_bounded_independently(tmp_path, monkeypatch):
     source = tmp_path / "manifest"
     source.write_bytes(gzip.compress(json.dumps(_manifest()).encode(), mtime=0))
-    monkeypatch.setattr(pb, "DATA_MANIFEST_MAX_BYTES", source.stat().st_size - 1)
+    monkeypatch.setattr(manifest_codec, "DATA_MANIFEST_MAX_BYTES", source.stat().st_size - 1)
     with pytest.raises(pb.ActionContractError, match="data manifest exceeds"):
-        pb.load_data_manifest(source)
+        manifest_codec.load_data_manifest(source)
 
 
 def test_exact_decoded_limit_is_accepted(tmp_path, monkeypatch):
     raw = json.dumps(_manifest()).encode()
     source = tmp_path / "manifest"
     source.write_bytes(gzip.compress(raw, mtime=0))
-    monkeypatch.setattr(pb, "DATA_MANIFEST_MAX_DECODED_BYTES", len(raw))
-    assert pb.load_data_manifest(source)["entry_count"] == 2
+    monkeypatch.setattr(manifest_codec, "DATA_MANIFEST_MAX_DECODED_BYTES", len(raw))
+    assert manifest_codec.load_data_manifest(source)["entry_count"] == 2
 
 
 def test_storage_loop_warms_gzip_input_inside_its_first_phase(tmp_path):

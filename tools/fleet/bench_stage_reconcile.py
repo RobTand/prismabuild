@@ -46,10 +46,12 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 
+from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -101,7 +103,7 @@ def build_stage(queue: pool.PoolQueue, stage: Path, *, files: int,
             with open(path, "wb") as stream:
                 stream.truncate(FILE_BYTES)
             if index < marked:
-                os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+                os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                             f"/mnt/shared/m/{index}@0".encode())
                 counts["marked"] += 1
             else:
@@ -112,7 +114,7 @@ def build_stage(queue: pool.PoolQueue, stage: Path, *, files: int,
                 counts["attributed"] += 1
             index += 1
         slot += 1
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    staged_path.publish_vouch(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
@@ -131,13 +133,13 @@ def run_passes(args) -> int:
     work = Path(args.work)
     queue = pool.PoolQueue(work / "pb-queue")
     stage = work / "stage"
-    index = stage_release.CensusIndex()
+    index = kept_reads.CensusIndex()
 
     def one() -> dict[str, object]:
         _orphans(stage, args.orphans)
         started = time.perf_counter()
         cpu = time.process_time()
-        receipt = stage_release.reconcile(
+        receipt = staged_path.reconcile(
             queue, tier_id=TIER, stage_root=str(stage), wanted={MOVER},
             index=index)
         row: dict[str, object] = {
@@ -258,10 +260,10 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     shape = build_stage(queue, stage, files=args.files,

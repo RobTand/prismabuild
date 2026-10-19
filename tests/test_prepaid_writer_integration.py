@@ -37,6 +37,11 @@ directly rather than a fleet worker loop; `safe_release_instance` is only
 shown retaining (its full path needs the accepted reader_lease SDK).
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
+
+from prismabuild import funding
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -54,9 +59,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild.record_store import Present, RecordStore  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -86,7 +94,7 @@ def _hexkey(seed: str) -> str:
 
 def _template(prefix: str, window_gib: int = 2) -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "prepaid-integ-v1",
         "output_prefix": prefix,
@@ -100,15 +108,12 @@ def _template(prefix: str, window_gib: int = 2) -> dict:
                                    "window_gib": window_gib}},
         "permitted_tiers": [TIER],
     }
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path, gib: int = 4) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {KIND: gib})
+    q = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
+    q.tier(TIER).mint({KIND: gib})
     return q
 
 
@@ -127,17 +132,17 @@ def _broker_control(q: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = q.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = q.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    pool.immutable_files.write_json_atomic(path, live)
     return control
 
 
 def _bind(q: pool.PoolQueue, template: dict, owner: str,
           cas_root: Path | None = None):
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     q.publish(action_key=owner, cas_root=str(cas_root or "/cas"),
               worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
               checkout_root=str(Path(q.root).parent / "mover-checkout"),
@@ -152,8 +157,8 @@ def _bind(q: pool.PoolQueue, template: dict, owner: str,
     po.declare_template(q.root, template)
     inst = po.bind_instance(q, template, owner_action_key=owner,
                             claim_snapshot=claimed, env=env)
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"] is True
+    bl.declare_instance(q.root, inst)
+    assert bl.BatchLedger.admit(q, inst, template)["ok"] is True
     return inst
 
 
@@ -172,11 +177,11 @@ def _descriptors(tmp_path: Path, template: dict, inst: dict, tag: str,
         sha256 = None
     else:
         sha256 = hashlib.sha256(payload).hexdigest()
-    return [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": slot,
+    return [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": slot,
         "artifact_class": cls, "path": str(path),
         "bytes": len(payload), "sha256": sha256,
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)]
@@ -186,7 +191,7 @@ def _prewrite(q, inst, template, batch_id, tier, descs):
     classes = {"payload": 0, "checkpoint": 0, "temp": 0}
     for d in descs:
         classes[str(d["artifact_class"])] += int(d["bytes"])
-    out = po.require_prewrite(q, inst, template, batch_id=batch_id,
+    out = bl.BatchLedger.reserve(q, inst, template, batch_id=batch_id,
                               tier=tier, class_bytes=classes,
                               paths=sorted(str(d["path"]) for d in descs))
     assert out.get("ok") is True, out
@@ -204,7 +209,7 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     """
     import socket
     stage_root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         q, tier_id=TIER, stage_root=stage_root) == "registered"
     record = {
         "tier": "stage",
@@ -216,7 +221,7 @@ def _announce_tier(q: pool.PoolQueue, stage_root: Path) -> None:
     }
     path = Path(q.root) / "tiers" / f"{TIER}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    pool._write_json_atomic(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
 
 
 def _tier_host(q: pool.PoolQueue) -> str:
@@ -295,7 +300,7 @@ def _execute_mover(q: pool.PoolQueue, cas_root: Path, mover: str,
     (the bash wrapper running stage_move). No direct run_local_action
     shortcut: this is the runtime callability under test.
     """
-    row = pool._read_json(q.item_path(pool.CLAIMED, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict), "mover row must be claimed to execute"
     outcome = q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, outcome
@@ -314,7 +319,7 @@ def test_admit_funded_window_reports_delivered_binding(tmp_path: Path) -> None:
     assert out.get("mode") == "prepaid-per-batch"
     assert out.get("declaration_only") is True
     assert out.get("authority") == "per-batch-funding"
-    assert out.get("owner_demand_terms") == po.owner_demand_terms(template)
+    assert out.get("owner_demand_terms") == oc.owner_demand_terms(template)
     assert out.get("batch_ref_schema") == pool.PRODUCED_OUTPUT_BATCH_REF_SCHEMA_V1
 
 
@@ -324,7 +329,7 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     payload = bytes(range(256)) * 8  # 2048 real bytes
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -349,21 +354,21 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
     assert retry.get("ok") is True, retry
     assert str(retry["mover_key"]) == mover
     # No second acquisition: the producer's window moved, free untouched.
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 1
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
-    free_after_fund = ledger.available().get(KIND, 0)
+    assert ledger.holdings(owner).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
+    free_after_fund = ledger.free_supply().get(KIND, 0)
     assert free_after_fund == 2
 
     # Exhaust free credits: only the prepaid cover can admit the mover.
     squatter = _hexkey("integ-squatter")
-    assert ledger.acquire(squatter, {KIND: free_after_fund}) is True
-    assert ledger.available().get(KIND, 0) == 0
+    assert ledger.take(squatter, {KIND: free_after_fund}) is True
+    assert ledger.free_supply().get(KIND, 0) == 0
 
     claimed = _claim_mover(q, "w-integ-mover")
     assert claimed["action_key"] == mover
     entry = (claimed.get("tier_funding") or {}).get(TIER)
     assert isinstance(entry, dict) and entry.get("variant") == "output"
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
 
     # The REAL mover: the sealed request's own argv executes; the fleet
@@ -380,12 +385,12 @@ def test_prepaid_writer_end_to_end_with_real_mover(tmp_path: Path) -> None:
 
     retired = po.retire_batch(q, inst, template, "b1",
                               stage_root=str(stage_root),
-                              residency_root=po.output_fragment_root(
-                                  q.root / pool.RESIDENCY))
+                              residency_root=bl.output_fragment_root(
+                                  q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, json.dumps(retired, default=str)
     # The egress returned the fence: usable capacity is back.
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 0
+    assert ledger.free_supply().get(KIND, 0) == 1
 
 
 def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
@@ -394,7 +399,7 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -418,14 +423,14 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
         q.finish(mover, status="executed")
         retired = po.retire_batch(
             q, inst, template, batch_id, stage_root=str(stage_root),
-            residency_root=po.output_fragment_root(
-                q.root / pool.RESIDENCY))
+            residency_root=bl.output_fragment_root(
+                q.root / pool.record_store.RESIDENCY))
         assert retired.get("ok") is True, json.dumps(retired, default=str)
         results.append(res)
 
     # Disjoint credit names: the second batch never reused the first's.
-    first = q.read_output_funding(str(results[0]["mover_key"]), TIER)
-    second = q.read_output_funding(str(results[1]["mover_key"]), TIER)
+    first = q.funding.read_output(str(results[0]["mover_key"]), TIER)
+    second = q.funding.read_output(str(results[1]["mover_key"]), TIER)
     assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
 
     # Reclaim after producer-side disposal, then THE THIRD SEQUENTIAL
@@ -436,10 +441,10 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     for tag in ("p1", "p2"):
         (Path(template["output_prefix"]) / f"{tag}.bin").unlink()
     for batch_id in ("b1", "b2"):
-        assert po.reclaim_origin(q, inst, template,
+        assert bl.BatchLedger.reclaim(q, inst, template,
                                  batch_id=batch_id)["ok"] is True
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    free_before_third = ledger.available().get(KIND, 0)
+    assert ledger.holdings(owner).get(KIND, 0) == 0
+    free_before_third = ledger.free_supply().get(KIND, 0)
     assert free_before_third >= 1  # the retired credits are free, not held
 
     descs3 = _descriptors(tmp_path, template, inst, "p3x", b"c" * 512)
@@ -454,9 +459,8 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     # The bounded refill: back up to (never past) the admitted window.
     refill = po.refill_window(q, inst, template, tier=TIER)
     assert refill.get("ok") is True, refill
-    assert ledger.holder_tokens(owner).get(KIND, 0) >= 1
-    assert (ledger.holder_tokens(owner).get(KIND, 0)
-            + len([r for r in []])) <= 2  # aggregate window bound holds
+    assert ledger.holdings(owner).get(KIND, 0) >= 1
+    assert ledger.holdings(owner).get(KIND, 0) + len([r for r in []]) <= 2  # aggregate window bound holds
 
     res3 = po.publish_prepaid_batch(
         q, inst, template, descs3, batch_id="b3", tier=TIER,
@@ -472,22 +476,22 @@ def test_second_batch_window_reuse_and_cleanup(tmp_path: Path) -> None:
     q.finish(mover3, status="executed")
     assert po.retire_batch(q, inst, template, "b3",
                            stage_root=str(stage_root),
-                           residency_root=po.output_fragment_root(
-                               q.root / pool.RESIDENCY))["ok"] is True
+                           residency_root=bl.output_fragment_root(
+                               q.root / pool.record_store.RESIDENCY))["ok"] is True
 
     # Cleanup returns usable capacity: dispose origin, reclaim, finish.
     (Path(template["output_prefix"]) / "p3x.bin").unlink()
-    assert po.reclaim_origin(q, inst, template, batch_id="b3")["ok"] is True
+    assert bl.BatchLedger.reclaim(q, inst, template, batch_id="b3")["ok"] is True
     q.finish(owner, status="executed")
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    assert ledger.available().get(KIND, 0) == ledger.capacity().get(KIND, 0)
+    assert ledger.holdings(owner).get(KIND, 0) == 0
+    assert ledger.free_supply().get(KIND, 0) == ledger.mint_supply().get(KIND, 0)
 
 
 def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
     """Fund durable, crash before commit; restart recovers via public APIs."""
     owner = _hexkey("restart-owner")
     q = _queue(tmp_path, gib=4)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     template = _template(str(tmp_path / "outputs"))
     inst = _bind(q, template, owner)
     payload = b"c" * 512
@@ -520,7 +524,7 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
     cas_root = tmp_path / "cas-restart"
     pb.PrismaBuildCAS(cas_root).publish_action_request(action)
     mover = str(action["action_key"])
-    assert q.stage_output_intent(
+    assert q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)["ok"] is True
     q.publish(action_key=mover, cas_root=str(cas_root),
@@ -529,10 +533,10 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
               residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": manifest, "manifest_bytes": total,
                          "range_start_bytes": 0, "range_end_bytes": total})
-    assert q.fund_output_batch(
+    assert q.funding.fund_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)["ok"] is True
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.holdings(mover).get(KIND, 0) == 1
 
     # --- crash boundary: transferring + filed prewrite, no commit ---
     # Restart: the same recovery APIs a new process would call.
@@ -542,9 +546,9 @@ def test_restart_at_transfer_boundary_recovers(tmp_path: Path) -> None:
     assert committed.get("funding") == "prepaid"
     # ...and the funded claim still admits the mover.
     squatter = _hexkey("restart-squatter")
-    free = ledger.available().get(KIND, 0)
+    free = ledger.free_supply().get(KIND, 0)
     if free:
-        assert ledger.acquire(squatter, {KIND: free}) is True
+        assert ledger.take(squatter, {KIND: free}) is True
     claimed = _claim_mover(q, "w-restart")
     assert claimed["action_key"] == mover
 
@@ -567,8 +571,8 @@ def test_committed_unclaimed_funding_survives_release(tmp_path: Path) -> None:
     generation = str(res["generation"])
     # Mover READY, never claimed, no receipt/lease/terminal: every legacy
     # release precondition holds -- only the filed-commit guard protects.
-    assert q.release_output_funding(mover, TIER, generation=generation) is False
-    rec = q.read_output_funding(mover, TIER)
+    assert q.funding.release_output(mover, TIER, generation=generation).released is False
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "transferring"
     # The claim still works after the refused release.
     claimed = _claim_mover(q, "w-d1")
@@ -584,25 +588,25 @@ def test_abort_guards_the_precommit_authority(tmp_path: Path) -> None:
     descs = _descriptors(tmp_path, template, inst, "p1", b"e" * 128)
     _prewrite(q, inst, template, "b1", TIER, descs)
     mover = _hexkey("d3-mover")
-    staged = q.stage_output_intent(
+    staged = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=mover, instance=inst,
         template=template, batch_id="b1", descriptors=descs)
     assert staged.get("ok") is True, staged
     generation = str(staged["generation"])
     # Origin files exist, but the guard must refuse before file checks'
     # retain would: the intent itself is the earlier, recoverable refusal.
-    refused = po.abort_prewrite(q, inst, template, batch_id="b1")
+    refused = bl.BatchLedger.abort(q, inst, template, batch_id="b1")
     assert refused.get("ok") is False
     assert refused.get("refusal") == "prepaid-intent-exists-retain", refused
     # Retire the never-started intent first, then abort proceeds.
-    assert q.release_output_funding(mover, TIER,
-                                    generation=generation) is True
+    assert q.funding.release_output(mover, TIER,
+                                    generation=generation).released is True
     # Origin files now decide: present files retain (producer disposal).
-    again = po.abort_prewrite(q, inst, template, batch_id="b1")
+    again = bl.BatchLedger.abort(q, inst, template, batch_id="b1")
     assert again.get("ok") is False
     assert again.get("refusal") == "abort-files-present-retain", again
     (Path(template["output_prefix"]) / "p1.bin").unlink()
-    done = po.abort_prewrite(q, inst, template, batch_id="b1")
+    done = bl.BatchLedger.abort(q, inst, template, batch_id="b1")
     assert done.get("ok") is True and done.get("aborted") is True, done
 
 
@@ -616,12 +620,12 @@ def test_staged_intents_never_share_credit_names(tmp_path: Path) -> None:
     descs2 = _descriptors(tmp_path, template, inst, "p2", b"f" * 64)
     _prewrite(q, inst, template, "b1", TIER, descs1)
     _prewrite(q, inst, template, "b2", TIER, descs2)
-    first = q.stage_output_intent(
+    first = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m1"),
         instance=inst, template=template, batch_id="b1",
         descriptors=descs1)
     assert first.get("ok") is True, first
-    second = q.stage_output_intent(
+    second = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m2"),
         instance=inst, template=template, batch_id="b2",
         descriptors=descs2)
@@ -631,7 +635,7 @@ def test_staged_intents_never_share_credit_names(tmp_path: Path) -> None:
     # never a wedged third intent over an already-promised credit.
     descs3 = _descriptors(tmp_path, template, inst, "p3x", b"g" * 32)
     _prewrite(q, inst, template, "b3", TIER, descs3)
-    third = q.stage_output_intent(
+    third = q.funding.stage_output(
         tier_id=TIER, owner_key=owner, mover_key=_hexkey("d2-m3"),
         instance=inst, template=template, batch_id="b3", descriptors=descs3)
     assert third.get("ok") is False
@@ -653,23 +657,23 @@ def test_descriptor_digest_rules(tmp_path: Path) -> None:
     assert len(supplied[0]["sha256"]) == 64
 
     origin = Path(template["output_prefix"])
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
             "artifact_class": "payload",
             "path": str(origin / "bad.bin"),
             "bytes": 4, "sha256": "None",
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": inst["owner_action_key"],
             "owner_attempt": dict(inst["owner_attempt"]),
         }, template, inst)
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
             "artifact_class": "payload",
             "path": str(origin / "bad.bin"),
             "bytes": 4, "sha256": "not-hex",
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": inst["owner_action_key"],
             "owner_attempt": dict(inst["owner_attempt"]),
         }, template, inst)
@@ -692,7 +696,7 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -712,21 +716,20 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         assert res.get("ok") is True, res
         mover = str(res["mover_key"])
         # The null digest survives every transition as JSON null.
-        rec = pool._read_json(
-            Path(q.root) / "residency" / po.OUTPUT_BATCHES_SUBDIR
-            / po.instance_namespace(inst) / f"{batch_id}.json")
+        rec = pool.record_store.read_document(
+            Path(q.root) / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+            / oc.instance_namespace(inst) / f"{batch_id}.json")
         assert rec["entries"][0]["sha256"] is None
-        assert res["manifest_digest"] == po.output_manifest_sha256(descs)
+        assert res["manifest_digest"] == oc.output_manifest_sha256(descs)
 
         # Exhaust free credits once: only prepaid cover admits the movers.
-        free = ledger.available().get(KIND, 0)
+        free = ledger.free_supply().get(KIND, 0)
         if free:
-            assert ledger.acquire(_hexkey(f"null-squatter-{batch_id}"),
-                                  {KIND: free}) is True
+            assert ledger.take(_hexkey(f'null-squatter-{batch_id}'), {KIND: free}) is True
             squatted += free
         claimed = _claim_mover(q, f"w-null-{tag}")
         assert claimed["action_key"] == mover
-        funding = q.read_output_funding(mover, TIER)
+        funding = q.funding.read_output(mover, TIER)
         # The funded claim consumed the prepaid record (the mover's copy
         # runs after consumption; the fence is already fused).
         assert funding is not None and funding["state"] == "consumed"
@@ -743,29 +746,28 @@ def test_dev_null_digest_first_and_second_batch_full_lifecycle(
         q.finish(mover, status="executed")
         retired = po.retire_batch(q, inst, template, batch_id,
                                   stage_root=str(stage_root),
-                                  residency_root=po.output_fragment_root(
-                                      q.root / pool.RESIDENCY))
+                                  residency_root=bl.output_fragment_root(
+                                      q.root / pool.record_store.RESIDENCY))
         assert retired.get("ok") is True, json.dumps(retired, default=str)
         results.append(res)
 
     # Disjoint prepaid names across the two batches.
-    first = q.read_output_funding(str(results[0]["mover_key"]), TIER)
-    second = q.read_output_funding(str(results[1]["mover_key"]), TIER)
+    first = q.funding.read_output(str(results[0]["mover_key"]), TIER)
+    second = q.funding.read_output(str(results[1]["mover_key"]), TIER)
     assert set(first["tokens"]).isdisjoint(set(second["tokens"]))
 
     # Reclaim after producer-side disposal; the window returns.
     for tag in ("n1", "n2"):
         (Path(template["output_prefix"]) / f"{tag}.bin").unlink()
     for batch_id in ("b1", "b2"):
-        assert po.reclaim_origin(q, inst, template,
+        assert bl.BatchLedger.reclaim(q, inst, template,
                                  batch_id=batch_id)["ok"] is True
     q.finish(owner, status="executed")
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
+    assert ledger.holdings(owner).get(KIND, 0) == 0
     assert squatted > 0
     # Everything except the squatters' tokens is back: the retired fences
     # returned through the real egress, the window through owner finish.
-    assert (ledger.available().get(KIND, 0) + squatted
-            == ledger.capacity().get(KIND, 0))
+    assert (ledger.free_supply().get(KIND, 0) + squatted == ledger.mint_supply().get(KIND, 0))
 
 
 def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
@@ -783,7 +785,7 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     _announce_tier(q, tmp_path / "stage")
 
@@ -794,16 +796,16 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
     # Planned superset: c1.bin plus an unwritten sibling; ceiling 4096.
     ceiling = {"payload": 4096, "checkpoint": 0, "temp": 0}
     planned_paths = sorted([str(origin / "c1.bin"), str(origin / "c9.bin")])
-    out = po.require_prewrite(q, inst, template, batch_id="b1", tier=TIER,
+    out = bl.BatchLedger.reserve(q, inst, template, batch_id="b1", tier=TIER,
                               class_bytes=ceiling, paths=planned_paths)
     assert out.get("ok") is True, out
 
-    descs = [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    descs = [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(origin / "c1.bin"),
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)]
@@ -821,22 +823,22 @@ def test_bounded_prewrite_ceiling_to_actual(tmp_path: Path) -> None:
     q.finish(mover, status="executed")
     assert po.retire_batch(q, inst, template, "b1",
                            stage_root=str(tmp_path / "stage"),
-                           residency_root=po.output_fragment_root(
-                               q.root / pool.RESIDENCY))["ok"] is True
+                           residency_root=bl.output_fragment_root(
+                               q.root / pool.record_store.RESIDENCY))["ok"] is True
 
     # Above the ceiling still refuses: an actual exceeding the admitted
     # bound can never reconcile into that prewrite.
     (origin / "c2.bin").write_bytes(b"z" * 5000)
     small_ceiling = {"payload": 512, "checkpoint": 0, "temp": 0}
-    assert po.require_prewrite(
+    assert bl.BatchLedger.reserve(
         q, inst, template, batch_id="b2", tier=TIER,
         class_bytes=small_ceiling,
         paths=[str(origin / "c2.bin")])["ok"] is True
-    over = [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    over = [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(origin / "c2.bin"),
         "bytes": 5000, "sha256": hashlib.sha256(b"z" * 5000).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)]
@@ -860,7 +862,7 @@ def test_refill_respects_consumed_unretired_holdings(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=4)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -876,14 +878,14 @@ def test_refill_respects_consumed_unretired_holdings(tmp_path: Path) -> None:
     claimed = _claim_mover(q, "w-g1")
     assert claimed["action_key"] == mover
     # consumed, mover's fence still live, batch not retired.
-    rec = q.read_output_funding(mover, TIER)
+    rec = q.funding.read_output(mover, TIER)
     assert rec is not None and rec["state"] == "consumed"
-    mover_live = ledger.holder_tokens(mover).get(KIND, 0)
+    mover_live = ledger.holdings(mover).get(KIND, 0)
     assert mover_live == 1
 
     refill = po.refill_window(q, inst, template, tier=TIER)
     assert refill.get("ok") is True, refill
-    outstanding = (ledger.holder_tokens(owner).get(KIND, 0) + mover_live)
+    outstanding = (ledger.holdings(owner).get(KIND, 0) + mover_live)
     assert outstanding <= 2, (refill, outstanding)
 
 
@@ -909,15 +911,15 @@ def test_planned_omitted_temp_must_be_absent(tmp_path: Path) -> None:
     (origin / "k1.bin").write_bytes(payload)
     ceiling = {"payload": 1024, "checkpoint": 0, "temp": 512}
     planned = sorted([str(origin / "k1.bin"), str(origin / "k2.tmp")])
-    assert po.require_prewrite(q, inst, template, batch_id="b1", tier=TIER,
+    assert bl.BatchLedger.reserve(q, inst, template, batch_id="b1", tier=TIER,
                                class_bytes=ceiling,
                                paths=planned)["ok"] is True
-    descs = [po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    descs = [oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(origin / "k1.bin"),
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": inst["owner_action_key"],
         "owner_attempt": dict(inst["owner_attempt"]),
     }, template, inst)]
@@ -955,7 +957,7 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
               worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
               checkout_root=str(tmp_path / "mover-checkout"),
               resources={"cpu": 1, "mem_gb": 1,
-                         **po.owner_demand_terms(template)},
+                         **oc.owner_demand_terms(template)},
               produced_output_template=template, priority=-10,
               max_attempts=5, retry_safe=True)
     claimed = q.claim(owner="w-g3-owner")
@@ -966,8 +968,8 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
     inst = po.bind_instance(q, template, owner_action_key=owner,
                             claim_snapshot=claimed, env=env)
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"] is True
+    bl.declare_instance(q.root, inst)
+    assert bl.BatchLedger.admit(q, inst, template)["ok"] is True
     _announce_tier(q, tmp_path / "stage")
     descs = _descriptors(tmp_path, template, inst, "p1", b"g" * 64)
     _prewrite(q, inst, template, "b1", TIER, descs)
@@ -976,7 +978,9 @@ def test_mover_row_carries_parent_priority_and_retry(tmp_path: Path) -> None:
         cas_root=cas_root, producer_action_key=owner,
         command_extra=["--unpaced"])
     assert res.get("ok") is True, res
-    row = pool._read_json(q.item_path(pool.READY, str(res["mover_key"])))
+    row = pool.record_store.value_or_raise(
+        q.records.item(pool.record_store.READY, str(res["mover_key"])),
+    )
     assert isinstance(row, dict)
     assert row.get("priority") == -10
     assert row.get("retry_safe") is True
@@ -999,12 +1003,12 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
     template = _template(str(tmp_path / "outputs"), window_gib=1)
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path, gib=1)
-    ledger = q.tier_ledger(TIER)
-    assert ledger.capacity().get(KIND, 0) == 1
+    ledger = q.tier(TIER)
+    assert ledger.mint_supply().get(KIND, 0) == 1
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     free_after_each: list[int] = []
     for n in range(4):
@@ -1013,9 +1017,8 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
             # The window is empty: the previous batch's credit went to
             # FREE at retirement, never back to producer holdings.
             refill = po.refill_window(q, inst, template, tier=TIER)
-            assert refill.get("ok") is True, (
-                n, refill, dict(ledger.available()))
-            assert ledger.holder_tokens(owner).get(KIND, 0) == 1, n
+            assert refill.get("ok") is True, (n, refill, dict(ledger.free_supply()))
+            assert ledger.holdings(owner).get(KIND, 0) == 1, n
         descs = _descriptors(tmp_path, template, inst, tag,
                              bytes([65 + n]) * 512)
         _prewrite(q, inst, template, batch_id, TIER, descs)
@@ -1026,8 +1029,8 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
         assert res.get("ok") is True, (n, res)
         mover = str(res["mover_key"])
         # Funding is an exact transfer: the owner spent its whole window.
-        assert ledger.holder_tokens(owner).get(KIND, 0) == 0, n
-        assert ledger.holder_tokens(mover).get(KIND, 0) == 1, n
+        assert ledger.holdings(owner).get(KIND, 0) == 0, n
+        assert ledger.holdings(mover).get(KIND, 0) == 1, n
         claimed = _claim_mover(q, f"w-{tag}")
         assert claimed["action_key"] == mover
         receipt = _execute_mover(q, cas_root, mover,
@@ -1038,17 +1041,17 @@ def test_window_credits_recycle_in_a_window_too_small_to_hold_them(
             q, inst, template, batch_id, stage_root=str(stage_root),
             residency_root=residency)["ok"] is True, n
         (Path(template["output_prefix"]) / f"{tag}.bin").unlink()
-        assert po.reclaim_origin(
+        assert bl.BatchLedger.reclaim(
             q, inst, template, batch_id=batch_id)["ok"] is True, n
-        assert ledger.holder_tokens(mover).get(KIND, 0) == 0, n
-        free_after_each.append(ledger.available().get(KIND, 0))
+        assert ledger.holdings(mover).get(KIND, 0) == 0, n
+        free_after_each.append(ledger.free_supply().get(KIND, 0))
 
     # The counter loses nothing: every retirement returned the credit,
     # through four cycles of a one-credit window.
     assert free_after_each == [1, 1, 1, 1], free_after_each
     q.finish(owner, status="executed")
-    assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-    assert ledger.available() == ledger.capacity()
+    assert ledger.holdings(owner).get(KIND, 0) == 0
+    assert ledger.free_supply() == ledger.mint_supply()
 
 
 def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
@@ -1086,11 +1089,11 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1115,12 +1118,13 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     assert _staged(stage_root, "*.bin") == []
     assert _tier_census(ledger) == {
         "capacity": 4, "free": 3, "holders": {owner: 1}}
-    funding = q.read_output_funding(mover, TIER)
+    funding = q.funding.read_output(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
     # The row is terminal FAILED -- and cannot be claimed.
-    assert po._mover_live_state(q, mover) == "failed"
-    assert not q.item_path(pool.READY, mover).exists()
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
+    assert not q.records.item_path(pool.record_store.READY, mover).exists()
     assert q.claim(owner="probe-a", tags=[_tier_host(q)]) is None
     # The row is failed but can never be funded back into a claim, so
     # recovery must name the terminal route instead of telling the caller
@@ -1132,7 +1136,7 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
                    for e in events), events
 
     # While the batch is live it does own its path.
-    blocked = po.require_prewrite(
+    blocked = bl.BatchLedger.reserve(
         q, inst, template, batch_id="b2", tier=TIER,
         class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
         paths=[str(origin_path)])
@@ -1150,8 +1154,8 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
         command_extra=["--unpaced"])
     assert again.get("ok") is True and again.get("duplicate") is True, again
     assert str(again["mover_key"]) == mover
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
+    assert ledger.holdings(mover).get(KIND, 0) == 0
     assert q.claim(owner="probe-b", tags=[_tier_host(q)]) is None
 
     # The batch is NOT stranded, and the route is TRAVERSED from what the
@@ -1168,13 +1172,13 @@ def test_failed_mover_batch_retires_but_its_row_cannot_be_reclaimed(
     assert retired["staged_paths"] == []
     # Reclaim proves the producer disposed of the origin bytes.
     origin_path.unlink()
-    assert po.reclaim_origin(q, inst, template, batch_id=target)["ok"] is True
+    assert bl.BatchLedger.reclaim(q, inst, template, batch_id=target)["ok"] is True
     assert all(event.get("event") != "output-mover-unfundable-retire"
                for event in po.recover_batches(q, inst, template))
 
     # The working recovery: the same path is re-planned as a new batch
     # and staged for real by an ordinary mover.
-    freed = po.require_prewrite(
+    freed = bl.BatchLedger.reserve(
         q, inst, template, batch_id="b2", tier=TIER,
         class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
         paths=[str(origin_path)])
@@ -1207,7 +1211,7 @@ def _tier_census(ledger) -> dict:
     """
 
     holders: dict[str, int] = {}
-    held_dir = Path(ledger.held_dir)
+    held_dir = Path(ledger.paths.held)
     if held_dir.is_dir():
         for entry in sorted(held_dir.iterdir()):
             if not entry.is_dir():
@@ -1215,8 +1219,8 @@ def _tier_census(ledger) -> dict:
             count = sum(1 for _p in entry.glob(f"{KIND}-*"))
             if count:
                 holders[entry.name] = count
-    free = int(ledger.available().get(KIND, 0))
-    capacity = int(ledger.capacity().get(KIND, 0))
+    free = int(ledger.free_supply().get(KIND, 0))
+    capacity = int(ledger.mint_supply().get(KIND, 0))
     assert capacity == free + sum(holders.values()), (capacity, free, holders)
     return {"capacity": capacity, "free": free, "holders": holders}
 
@@ -1246,11 +1250,11 @@ def test_a_partial_mover_keeps_its_tokens_until_the_egress_frees_them(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1345,7 +1349,7 @@ def test_a_claimed_mover_holding_nothing_is_never_told_to_retire(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -1361,12 +1365,13 @@ def test_a_claimed_mover_holding_nothing_is_never_told_to_retire(
     assert _claim_mover(q, "w-live")["action_key"] == mover
     # The funding record is spent the moment the claim counts it, which is
     # exactly when the row is most alive.
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
     # Model the release-by-mover-key an egress or reaper performs: the row
     # is untouched and still claimed, only its holdings went.
-    q.release_tier_reservations(mover)
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert po._mover_live_state(q, mover) == "claimed"
+    tier_holdings.egress_all(q, mover)
+    assert ledger.holdings(mover).get(KIND, 0) == 0
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "claimed")
 
     events = po.recover_batches(q, inst, template)
     assert {"event": "output-mover-live-wait", "batch_id": "b1",
@@ -1403,9 +1408,9 @@ def test_a_ready_mover_with_an_unreadable_funding_record_stays_unknown(
     assert res.get("ok") is True, res
     mover = str(res["mover_key"])
     # The row stays READY; only the filed intent becomes unreadable.
-    q.funding_output_path(mover, TIER).write_text("{not json")
-    assert q.output_funding_file_state(mover, TIER)[1] == "corrupt"
-    assert q.read_output_funding(mover, TIER) is None
+    q.records.funding_output_path(mover, TIER).write_text("{not json")
+    assert q.funding.output_evidence(mover, TIER)[1] == "corrupt"
+    assert q.funding.read_output(mover, TIER) is None
 
     events = po.recover_batches(q, inst, template)
     unknown = [event for event in events
@@ -1439,7 +1444,7 @@ def test_the_census_verdict_does_not_turn_on_a_holding_count(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -1462,16 +1467,17 @@ def test_the_census_verdict_does_not_turn_on_a_holding_count(
     q.finish(mover, status="failed")
     # Nothing staged, so nothing retained -- and the row is filed terminal
     # FAILED with a spent record (#848).
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 0
-    assert po._mover_live_state(q, mover) == "failed"
+    assert ledger.holdings(mover).get(KIND, 0) == 0
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     verdict = {"event": "output-mover-unfundable-retire", "batch_id": "b1",
                "mover": mover, "action": "retire-reclaim-replan"}
     assert verdict in po.recover_batches(q, inst, template)
 
     # Same row, same spent record, now holding a token the way a partial
     # mover holds one. The verdict may not move.
-    assert ledger.acquire(mover, {KIND: 1}) is True
-    assert ledger.holder_tokens(mover).get(KIND, 0) == 1
+    assert ledger.take(mover, {KIND: 1}) is True
+    assert ledger.holdings(mover).get(KIND, 0) == 1
     events = po.recover_batches(q, inst, template)
     assert verdict in events, events
     assert not any(event.get("event") == "output-mover-live-wait"
@@ -1500,11 +1506,11 @@ def test_a_mover_killed_after_publishing_keeps_its_charge(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1527,7 +1533,7 @@ def test_a_mover_killed_after_publishing_keeps_its_charge(
     assert fragment.is_file(), sorted(Path(residency).rglob("*.json"))
 
     # The window: published, not yet recorded.
-    q.move_path(mover).unlink()
+    q.records.move_path(mover).unlink()
     assert q.move_record(mover) is None
     q.finish(mover, status="failed")
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
@@ -1580,11 +1586,11 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1606,8 +1612,9 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     outcome = q.execute(claimed, timeout_s=240)
     assert outcome.get("returncode") != 0, outcome
     q.finish(mover, status="failed")
-    assert po._mover_live_state(q, mover) == "failed"
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
     # Nothing was staged, so the reservation came back; the aggregate
     # ledger is where that is read, not the mover's own holdings.
     assert _staged(stage_root, "*.bin") == []
@@ -1624,8 +1631,9 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
         retry_policy={"max_attempts": 1, "retry_safe": True})
     assert again.get("ok") is True and again.get("duplicate") is True, again
     assert str(again["mover_key"]) == mover
-    assert q.read_output_funding(mover, TIER)["state"] == "consumed"
-    assert po._mover_live_state(q, mover) == "failed"
+    assert q.funding.read_output(mover, TIER)["state"] == "consumed"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
     assert q.claim(owner="probe-exhausted", tags=[_tier_host(q)]) is None
 
     # So the census must not offer it, and must offer what does work.
@@ -1638,7 +1646,7 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
     assert route[0]["mover"] == mover, route
     assert route[0]["action"] == "retire-reclaim-replan", route
     # The row form of the same promise is withdrawn too.
-    assert po.due_mover_rows(q, inst, template) == []
+    assert bl.BatchLedger.due_mover_rows(q, inst, template, residency_schema=pool.RESIDENCY_SCHEMA_V1) == []
 
     # Walk it, from the id the census emitted.
     target = str(route[0]["batch_id"])
@@ -1647,8 +1655,8 @@ def test_an_attempt_exhausted_failed_mover_names_the_terminal_route(
                               residency_root=residency)
     assert retired.get("ok") is True and retired["staged_paths"] == [], retired
     origin_path.unlink()
-    assert po.reclaim_origin(q, inst, template, batch_id=target)["ok"] is True
-    freed = po.require_prewrite(
+    assert bl.BatchLedger.reclaim(q, inst, template, batch_id=target)["ok"] is True
+    freed = bl.BatchLedger.reserve(
         q, inst, template, batch_id="b2", tier=TIER,
         class_bytes={"payload": len(payload), "checkpoint": 0, "temp": 0},
         paths=[str(origin_path)])
@@ -1697,11 +1705,11 @@ def test_a_mover_killed_before_filing_anything_keeps_its_charge(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
-    residency = po.output_fragment_root(q.root / pool.RESIDENCY)
+    residency = bl.output_fragment_root(q.root / pool.record_store.RESIDENCY)
 
     payload = b"f" * 700
     descs = _descriptors(tmp_path, template, inst, "p1", payload)
@@ -1726,7 +1734,7 @@ def test_a_mover_killed_before_filing_anything_keeps_its_charge(
     (Path(residency) / namespace / f"{mover}.json").unlink()
     for sidecar in Path(residency).rglob(f"{mover}.json"):
         sidecar.unlink()
-    q.move_path(mover).unlink()
+    q.records.move_path(mover).unlink()
     assert q.move_record(mover) is None
     assert list(Path(residency).rglob(f"{mover}.json")) == []
 
@@ -1781,7 +1789,7 @@ def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -1804,12 +1812,12 @@ def test_a_widowed_lease_does_not_free_a_funded_movers_charge(
 
     # The finisher dies: the claim is gone, the lease is stale, and no
     # terminal record was ever filed.
-    q.item_path(pool.CLAIMED, mover).unlink()
-    lease = pool._read_json(q.lease_path(mover)) or {}
+    q.records.item_path(pool.record_store.CLAIMED, mover).unlink()
+    lease = pool.record_store.read_document(q.records.lease_path(mover)) or {}
     lease["heartbeat_unix"] = pool._now() - 10_000
-    pool._write_json_atomic(q.lease_path(mover), lease)
-    assert pool._read_json(q.item_path(pool.DONE, mover)) is None
-    assert pool._read_json(q.item_path(pool.FAILED, mover)) is None
+    pool.immutable_files.write_json_atomic(q.records.lease_path(mover), lease)
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.DONE, mover)) is None
+    assert pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover)) is None
 
     assert q.sweep_widowed_leases(timeout_s=60) == [mover]
     assert [p.name for p in _staged(stage_root, "p1.bin")] == ["p1.bin"]
@@ -1842,7 +1850,7 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -1879,10 +1887,11 @@ def test_a_malformed_byte_count_is_not_a_report_of_zero(
     # FAILED -- where it still carries the tier residency block the
     # predicate reads. The override reads the filed funding record, not
     # this malformed receipt: the two judgements are independent.
-    assert po._mover_live_state(q, mover) == "failed"
-    record = pool._read_json(q.item_path(pool.FAILED, mover))
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
+    record = pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(record, dict), record
-    assert q.adopted_attempt_summary(record)["disposition"] == pool.FAILED
+    assert q.attempt_ending(record)["disposition"] == pool.record_store.FAILED
     assert int(record.get("attempts", 0)) < int(record.get("max_attempts", 3))
     assert record["residency"]["tier_id"] == TIER, record["residency"]
     assert q.output_partial_pin_holds(record, mover) is True
@@ -1941,7 +1950,7 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     template = _template(str(tmp_path / "outputs"))
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     inst = _bind(q, template, owner, cas_root)
     stage_root = tmp_path / "stage"
     _announce_tier(q, stage_root)
@@ -1970,28 +1979,30 @@ def test_an_occupied_mover_is_refused_before_the_claim_path_can_drop_it(
     # FAILED (#848) instead of requeueing it.
     occupied = {"capacity": 4, "free": 2, "holders": {owner: 1, mover: 1}}
     assert _tier_census(ledger) == occupied
-    assert po._mover_live_state(q, mover) == "failed"
-    assert not q.item_path(pool.READY, mover).exists()
-    funding = q.read_output_funding(mover, TIER)
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "failed")
+    assert not q.records.item_path(pool.record_store.READY, mover).exists()
+    funding = q.funding.read_output(mover, TIER)
     assert funding is not None and funding["state"] == "consumed"
 
     # The legacy READY row a pre-#848 ladder left behind, rebuilt from the
     # real terminal through the one production requeue shaper, so the claim
     # path the drop sites live on is still driven against the occupied
     # state those sites would have to be safe for.
-    terminal = pool._read_json(q.item_path(pool.FAILED, mover))
+    terminal = pool.record_store.value_or_raise(q.records.item(pool.record_store.FAILED, mover))
     assert isinstance(terminal, dict), terminal
     legacy = dict(terminal)
-    pool._write_json_atomic(
+    pool.immutable_files.write_json_atomic(
         q._shape_as_ready_item(legacy, action_key=mover), legacy)
-    assert po._mover_live_state(q, mover) == "ready"
+    assert (isinstance(mover_row := RecordStore(q.root).mover(mover), Present)
+            and mover_row.value.state == "ready")
     assert _tier_census(ledger) == occupied
 
     blanket: list[str] = []
-    released = pool.PoolQueue.release_tier_reservations
+    released = tier_holdings.egress_all
     monkeypatch.setattr(
-        pool.PoolQueue, "release_tier_reservations",
-        lambda self, key: (blanket.append(str(key)), released(self, key))[1])
+        tier_holdings, "egress_all",
+        lambda self, key, **kwargs: (blanket.append(str(key)), released(self, key, **kwargs))[1])
 
     refusals: list[dict] = []
     acquire = pool.PoolQueue._begin_tier_acquire
@@ -2029,16 +2040,16 @@ def test_refill_does_not_block_spending_held_credit(
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
     inst = _bind(q, template, owner, cas_root)
-    ledger = q.tier_ledger(TIER)
+    ledger = q.tier(TIER)
     _announce_tier(q, tmp_path / "stage")
-    assert ledger.release_count(owner, {KIND: 1}) == {KIND: 1}
+    assert ledger.release_unspent(owner, counts={KIND: 1}, authority=tier_holdings.Unspent.NEVER_STARTED) == {KIND: 1}
     if contended:
         # The production nonblocking mint guard makes begin_acquire return
         # None under contention, even when the availability read was >0.
         monkeypatch.setattr(pool.ResourceLedger, "begin_acquire",
                             lambda *args, **kwargs: None)
     else:
-        assert ledger.acquire(_hexkey("squatter"), {KIND: 3})
+        assert ledger.take(_hexkey('squatter'), {KIND: 3})
     before = _tier_census(ledger)
     refill = po.refill_window(q, inst, template, tier=TIER)
     assert refill["ok"] is True, refill
@@ -2060,13 +2071,13 @@ def test_refill_does_not_block_spending_held_credit(
         command_extra=["--unpaced"])
     if batch_gib == 1:
         assert result["ok"] is True, result
-        assert ledger.holder_tokens(owner).get(KIND, 0) == 0
-        assert ledger.holder_tokens(result["mover_key"])[KIND] == 1
+        assert ledger.holdings(owner).get(KIND, 0) == 0
+        assert ledger.holdings(result['mover_key'])[KIND] == 1
     else:
         assert result["ok"] is False, result
         assert result["refusal"] == "tier-reservation-unavailable", result
         assert _tier_census(ledger) == before
-    assert ledger.available().get(KIND, 0) == before["free"]
+    assert ledger.free_supply().get(KIND, 0) == before['free']
 
 
 @pytest.mark.parametrize("minimum,held", [(0, 0), (1, 0), (2, 1)])
@@ -2078,9 +2089,9 @@ def test_refill_without_held_minimum_still_refuses(
     owner = _producer_request(tmp_path, cas_root, template)
     q = _queue(tmp_path)
     inst = _bind(q, template, owner, cas_root)
-    ledger = q.tier_ledger(TIER)
-    ledger.release_count(owner, {KIND: 2 - held})
-    assert ledger.acquire(_hexkey("squatter"), {KIND: 4 - held})
+    ledger = q.tier(TIER)
+    ledger.release_unspent(owner, counts={KIND: 2 - held}, authority=tier_holdings.Unspent.NEVER_STARTED)
+    assert ledger.take(_hexkey('squatter'), {KIND: 4 - held})
     before = _tier_census(ledger)
     result = po.refill_window(q, inst, template, tier=TIER)
     assert result["ok"] is False, result

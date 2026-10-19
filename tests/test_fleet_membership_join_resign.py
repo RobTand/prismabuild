@@ -8,6 +8,7 @@ gates are the real ``worker_loop`` drain shape on tmp paths.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 import os
@@ -27,7 +28,8 @@ from prismabuild import core as pb_core  # noqa: E402
 from prismabuild import pool  # noqa: E402
 import fleet_membership as fm  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
-import worker_loop  # noqa: E402
+from prismabuild import park_proof, role_session
+from fleet_membership_fixture import finish_after_terminal_probe  # noqa: E402
 
 CPU = {"cpu": 1}
 
@@ -49,21 +51,6 @@ def authority(tmp_path: Path):
                                _Backend(), max_memory_bytes=1024**3)
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=kw.pop("resources", dict(CPU)),
-        max_attempts=kw.pop("max_attempts", 1),
-        retry_safe=kw.pop("retry_safe", True),
-        tags=kw.pop("tags", ()),
-        needs_gpu=kw.pop("needs_gpu", False),
-        **kw,
-    )
-
-
 def _offer(q: pool.PoolQueue, host: str, tags, has_gpu=False, capacity=None, **kw):
     q.announce(
         host=host, tags=list(tags), has_gpu=has_gpu,
@@ -79,7 +66,17 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 def test_two_matching_workers_either_may_claim(queue: pool.PoolQueue) -> None:
     key = "a" * 64
-    _publish(queue, key, tags=["gb10"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=True,
+        tags=['gb10'],
+        needs_gpu=False,
+    )
     _offer(queue, "sparky", ["gb10", "sparky"], capacity={"cpu": 4})
     _offer(queue, "sparklina", ["gb10", "sparklina"], capacity={"cpu": 4})
     item = queue.ready_items()[0]
@@ -91,7 +88,17 @@ def test_two_matching_workers_either_may_claim(queue: pool.PoolQueue) -> None:
 
 def test_cpu_x86_vs_cuda_class_conjunction(queue: pool.PoolQueue) -> None:
     gpu_key = "b" * 64
-    _publish(queue, gpu_key, tags=["gb10"], needs_gpu=True, resources={"gpu": 1})
+    ActionRows(queue).publish(
+        gpu_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'gpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['gb10'],
+        needs_gpu=True,
+    )
     _offer(queue, "dl380g10", ["x86", "dl380g10"], has_gpu=False)
     item = queue.ready_items()[0]
     assert queue.placeable(item) is False
@@ -105,7 +112,17 @@ def test_cpu_x86_vs_cuda_class_conjunction(queue: pool.PoolQueue) -> None:
 
 def test_discrete_and_unified_budgets_stay_separate(queue: pool.PoolQueue) -> None:
     key = "c" * 64
-    _publish(queue, key, tags=["x86"], resources={"mem_gb": 8})
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'mem_gb': 8},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     _offer(queue, "wsl-gpu", ["x86", "wsl-gpu", "gfx1201", "rocm", "rdna4"],
            capacity={"cpu": 4, "mem_gb": 16},
            observed_detail={"gpu_memory_domains": ["discrete"]})
@@ -125,20 +142,50 @@ def test_discrete_and_unified_budgets_stay_separate(queue: pool.PoolQueue) -> No
 
 def test_unsupported_backend_is_explicitly_unplaceable(queue: pool.PoolQueue) -> None:
     key = "d" * 64
-    _publish(queue, key, tags=["cuda"], resources={"gpu": 1}, needs_gpu=True)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'gpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['cuda'],
+        needs_gpu=True,
+    )
     _offer(queue, "some-amd-box", ["x86", "rocm"], has_gpu=False,
            capacity={"cpu": 4, "mem_gb": 16})
     item = queue.ready_items()[0]
     assert queue.placeable(item) is False
     # Unknown capacity kinds are unknown, not zero: absence never refuses.
-    _publish(queue, "e" * 64, tags=["x86"], resources={"cpu": 1})
+    ActionRows(queue).publish(
+        'e' * 64,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     _offer(queue, "legacy", ["x86", "legacy"], capacity={"mem_gb": 16})
     assert queue.placeable(queue.ready_items()[1]) is True
 
 
 def test_stale_offer_is_unavailable_not_zero(queue: pool.PoolQueue) -> None:
     key = "f" * 64
-    _publish(queue, key, tags=["x86"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     _offer(queue, "dl380g10", ["x86", "dl380g10"])
     assert queue.placeable(queue.ready_items()[0]) is True
     offer_path = queue.root / "workers" / "dl380g10.json"
@@ -157,15 +204,15 @@ def _tmp_gate(tmp_path: Path, draining: bool, changed: float = 1234.0) -> Path:
 
 def test_gate_shape_is_fail_closed_and_keyed(tmp_path: Path) -> None:
     gate = _tmp_gate(tmp_path, True, 1700.0)
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        assert worker_loop.read_maintenance_gate() is not None
-        assert worker_loop._gate_key(worker_loop.read_maintenance_gate()) == "1700.0"
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
+        assert role_session.read_maintenance_gate() is not None
+        assert park_proof.gate_key(role_session.read_maintenance_gate()) == "1700.0"
     gate.write_text(json.dumps({"draining": False, "changed_unix": 1700.0}))
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        assert worker_loop.read_maintenance_gate() is None
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
+        assert role_session.read_maintenance_gate() is None
     gate.write_text("not json")
-    with mock.patch.object(worker_loop, "MAINTENANCE_GATE", gate):
-        assert worker_loop.read_maintenance_gate() is not None
+    with mock.patch.object(role_session, "MAINTENANCE_GATE", gate):
+        assert role_session.read_maintenance_gate() is not None
 
 
 def _incarnation(monkeypatch, host: str) -> str:
@@ -216,7 +263,7 @@ def _shared_queue(monkeypatch, tmp_path: Path) -> Path:
     from prismabuild import pool as _pool
 
     root = tmp_path / "q"
-    _pool.PoolQueue(root).ensure_layout()
+    _pool.PoolQueue(root).records.ensure_layout()
     monkeypatch.setattr(fm, "_mount_identity", lambda path: {
         "source": "dl380g10:/storage_pool/shared", "fstype": "nfs4",
         "mountpoint": "/mnt/shared"})
@@ -237,12 +284,20 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
     withdrawn nor touched, the row drains to its natural exact terminal,
     and only then does resign complete. Destructive cancellation stays an
     explicit operator withdraw."""
-    import threading
-
     key = "1" * 64
     host = socket.gethostname()
     owner = _incarnation(monkeypatch, host)
-    _publish(queue, key, tags=["x86"], max_attempts=1, retry_safe=False)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=False,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
                            capacity={"cpu": 4})
     assert snapshot is not None
@@ -264,31 +319,11 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
                     "active_scopes": 0, "active_scope_ids": []}
         raise AssertionError(payload)
 
-    (parked / "111-s1-999.0").touch()
-    errors: list = []
-    finished = threading.Event()
-
-    def holder_concludes():
-        try:
-            time.sleep(3.0)
-            # No withdrawal may have arrived: graceful resign retains.
-            assert queue.item_path(pool.CLAIMED, key).exists()
-            assert not queue.item_path(pool.WITHDRAWN, key).exists()
-            queue.finish(key, status="executed", detail={},
-                         claim_snapshot=snapshot)
-            finished.set()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    finisher = threading.Thread(target=holder_concludes, daemon=True)
-    finisher.start()
-    try:
+    (parked / "111-1-999.0").touch()
+    with finish_after_terminal_probe(monkeypatch, queue, snapshot) as finished:
         out = fm.resign(host, reason="test resign", queue_root=queue.root,
                         gate=gate, broker_call=fake_broker,
-                        live=[(111, "s1")], wait_s=40.0)
-    finally:
-        finisher.join(timeout=10.0)
-    assert not errors, errors
+                        live=[(111, "1")], wait_s=40.0)
     assert finished.is_set()
     assert out["status"] == "resigned", (
         f"phase={out.get('phase')} reason={out.get('reason')} "
@@ -298,8 +333,8 @@ def test_resign_retains_uninterruptible_work_until_natural_terminal(
     assert out["owner"] == owner
     assert calls and calls[0]["op"] == "maintenance_begin"
     # Retained, never cancelled: no withdrawal record anywhere.
-    assert not queue.item_path(pool.WITHDRAWN, key).exists()
-    assert queue.item_path(pool.DONE, key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
+    assert queue.records.item_path(pool.record_store.DONE, key).exists()
     assert fm.terminal_of(queue, snapshot) is not None
 
 
@@ -458,7 +493,17 @@ def test_join_refuses_unknown_membership_rows(
 def test_resign_never_releases_on_heartbeat_loss(queue: pool.PoolQueue, tmp_path: Path) -> None:
     """No broker call, no gate change, no withdraw: nothing is released."""
     key = "2" * 64
-    _publish(queue, key, tags=["x86"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     assert queue.ready_items() != []
     # Resign without a reason refuses before any state changes.
     out = fm.resign("testbox", reason="  ", queue_root=queue.root,
@@ -554,7 +599,17 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
     request = queue_root / "cas" / "requests" / key[:2] / f"{key}.json"
     request.parent.mkdir(parents=True, exist_ok=True)
     request.write_text(json.dumps(action))
-    _publish(queue, key, tags=["x86"], max_attempts=3, retry_safe=True)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=dict(CPU),
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+        needs_gpu=False,
+    )
     snapshot = queue.claim(tags=["x86"], owner=f"{host}:1:q1",
                            capacity={"cpu": 4})
     assert snapshot is not None
@@ -562,10 +617,10 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
                         "owner": me})
     gate = Path(authority.maintenance_path)
     owner = queue_root.stat().st_uid
-    epoch = fm.gate_key(fm.read_gate(gate))
+    epoch = fm.gate_label(fm.read_gate(gate))
     parked = gate.parent / "rollout" / "parked"
     parked.mkdir(parents=True)
-    (parked / f"111-s1-{epoch}").touch()
+    (parked / f"111-1-{epoch}").touch()
     real_run = subprocess.run
     calls: list[tuple[int, str]] = []
 
@@ -591,7 +646,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
         try:
             deadline = time.monotonic() + 20.0
             while (time.monotonic() < deadline
-                   and not queue.item_path(pool.WITHDRAWN, key).exists()):
+                   and not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()):
                 time.sleep(0.05)
             queue.finish(key, status="withdrawn", detail={},
                          claim_snapshot=snapshot)
@@ -615,7 +670,7 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
 
     out = fm.resign(host, reason="root resign", queue_root=queue_root,
                     gate=gate, broker_call=root_broker,
-                    live=[(111, "s1")], wait_s=40.0)
+                    live=[(111, "1")], wait_s=40.0)
     finisher.join(timeout=10.0)
     assert not errors, errors
     assert finished.is_set(), "holder never saw its withdrawal"
@@ -633,8 +688,8 @@ def test_a_root_resign_reads_and_writes_the_queue_only_as_its_unprivileged_owner
     # concluded and settlement published the budget-preserving successor
     # for the same action (the withdrawn row itself is consumed by that
     # publish, leaving the revival linkage on the ready successor).
-    assert not queue.item_path(pool.CLAIMED, key).exists()
-    successor = json.loads(queue.item_path(pool.READY, key).read_text())
+    assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+    successor = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert successor["attempts"] == 1
     assert successor["retry_safe"] is True
     assert out["handled"][key]["handoff"] == "withdrawn"

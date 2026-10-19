@@ -43,6 +43,8 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from test_pool_action_timeout import _claimed  # noqa: E402
@@ -50,6 +52,9 @@ from test_pool_action_timeout import _claimed  # noqa: E402
 #: A demand every box in these fixtures can fit, so placement never becomes
 #: the reason a ceiling is or is not reported.
 FITS = {"cpu": 1, "mem_gb": 2}
+
+
+from prismabuild import role_session
 
 
 def _intent(tags):
@@ -170,7 +175,7 @@ def test_nobody_announcing_is_an_empty_answer_not_a_zero(tmp_path):
 
 def test_every_eligible_box_below_the_request_states_its_payload_budget(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 7200.0})
-    said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
+    said = submit_core.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert "lowest announced payload execution budget is 7200s" in said
     assert "every eligible worker" in said
     assert "dl380g10 7200s" in said and "sparky 7200s" in said
@@ -178,7 +183,7 @@ def test_every_eligible_box_below_the_request_states_its_payload_budget(tmp_path
 
 def test_a_mixed_fleet_is_stated_as_a_risk_not_a_certainty(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 20000.0})
-    said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
+    said = submit_core.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert "lowest announced payload execution budget is 7200s" in said
     assert "some eligible worker" in said
     assert "sparky" not in said.split("\n")[0]
@@ -190,24 +195,24 @@ def test_the_budget_named_is_the_smallest_a_claiming_box_could_impose(tmp_path):
     # Two cutting boxes distinguish min from max; the third does not clamp.
     queue = _fleet(tmp_path, {"dl380g10": 3600.0, "sparklina": 7200.0,
                               "sparky": 20000.0})
-    said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
+    said = submit_core.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert "lowest announced payload execution budget is 3600s" in said
     assert "7200s" not in said.split("; the lowest announced")[1]
 
 
 def test_a_request_every_box_can_grant_is_not_worth_a_word(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "sparky": 20000.0})
-    assert pbrun.timeout_ceiling_notice(queue, _intent([]), requested=600) == ""
+    assert submit_core.timeout_ceiling_notice(queue, _intent([]), requested=600) == ""
 
 
 def test_asking_for_no_deadline_is_not_worth_a_word(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": 7200.0})
-    assert pbrun.timeout_ceiling_notice(queue, _intent([]), requested=None) == ""
+    assert submit_core.timeout_ceiling_notice(queue, _intent([]), requested=None) == ""
 
 
 def test_a_silent_box_is_named_as_unknown_rather_than_unlimited(tmp_path):
     queue = _fleet(tmp_path, {"sparklina": None})
-    said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
+    said = submit_core.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert "sparklina" in said
     assert "unknown rather than unlimited" in said
     assert "be killed at" not in said
@@ -215,7 +220,7 @@ def test_a_silent_box_is_named_as_unknown_rather_than_unlimited(tmp_path):
 
 def test_an_unannounced_fleet_says_nothing_rather_than_guessing(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    assert pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000) == ""
+    assert submit_core.timeout_ceiling_notice(queue, _intent([]), requested=13000) == ""
 
 
 @pytest.mark.parametrize("ceilings,workers,lowest", [
@@ -227,7 +232,7 @@ def test_an_unannounced_fleet_says_nothing_rather_than_guessing(tmp_path):
 def test_notice_states_payload_budget_not_wall_stop_or_release(
         tmp_path, ceilings, workers, lowest):
     queue = _fleet(tmp_path, ceilings)
-    said = pbrun.timeout_ceiling_notice(queue, _intent([]), requested=13000)
+    said = submit_core.timeout_ceiling_notice(queue, _intent([]), requested=13000)
     assert f"{workers} eligible worker" in said
     assert f"lowest announced payload execution budget is {lowest}s" in said
     assert "not a wall-clock stop or resource-release guarantee" in said
@@ -252,7 +257,7 @@ def test_pbstatus_carries_the_ceiling_from_the_offer_it_read(tmp_path):
     # the field ever leaves the offer.
     queue = _fleet(tmp_path, {"dl380g10": 7200.0, "old": None})
     nodes = {node["node"]: node
-             for node in pbstatus.read_pool(queue.root)["nodes"]}
+             for node in fleet_census.action_rows(queue.root).value["nodes"]}
 
     assert nodes["dl380g10"]["timeout_ceiling_s"] == 7200.0
     assert nodes["old"]["timeout_ceiling_s"] is None
@@ -270,6 +275,7 @@ def _poll(tmp_path: Path, *extra: str) -> dict:
     """One real poll of a real worker loop; returns the offer it wrote."""
 
     import importlib.util
+    from functools import partial
     import json
     from unittest import mock
 
@@ -280,11 +286,20 @@ def _poll(tmp_path: Path, *extra: str) -> dict:
         "worker_loop_ceiling_test", REPOSITORY / "tools/fleet/worker_loop.py")
     worker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker)
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks"), \
+         mock.patch.object(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(worker.container_images, "InventoryCache", partial(
+             worker.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(worker.box_capacity, "worker_loops", mock.Mock(return_value=())), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample",
                            return_value=counted._sample()), \

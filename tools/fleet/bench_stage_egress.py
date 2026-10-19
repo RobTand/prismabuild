@@ -61,8 +61,9 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = bench_stage_adopt.TIER
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -84,7 +85,7 @@ LANDED_MANIFEST = _key("landed-manifest")
 def land_range(queue: pool.PoolQueue, stage: Path, entries_wanted: int) -> None:
     """A complete mover's range: files, fragment, material, and its tier token."""
 
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     entries: dict[str, dict[str, object]] = {}
     material: dict[str, dict[str, object]] = {}
     for number in range(entries_wanted):
@@ -98,17 +99,15 @@ def land_range(queue: pool.PoolQueue, stage: Path, entries_wanted: int) -> None:
         material[key] = {"stage_path": str(path), "bytes": ENTRY_BYTES,
                          "sha256": DIGEST,
                          "file_id": reader_lease.stat_identity(str(path))}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": LANDED_CONSUMER,
         "mover_action_key": LANDED_MOVER, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": LANDED_MANIFEST,
-        "entries": entries})
-    reader_lease.write_material(
-        root, consumer_action_key=LANDED_CONSUMER,
-        mover_action_key=LANDED_MOVER, tier_id=TIER, stage_root=str(stage),
-        manifest_sha256=LANDED_MANIFEST,
-        generation=reader_lease.mint_generation(), entries=material)
+        "entries": entries},
+        generation=reader_lease.mint_generation(),
+        material_entries=material)
     queue.publish(action_key=LANDED_MOVER, cas_root=queue.root / "cas",
                   checkout_root=queue.root / "co",
                   worker_script=queue.root / "worker.py",
@@ -154,9 +153,9 @@ def run_publisher(args) -> int:
 
     queue = pool.PoolQueue(Path(args.pool_root))
     stage = Path(args.stage_root)
-    publisher = stage_move._StagedPublisher(
+    publisher = staged_path.StagedPublisher(
         queue=queue, stage_root=stage,
-        residency_root=queue.root / pool.RESIDENCY,
+        residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=_key(f"publisher-{args.index}"),
         manifest_sha256=_key(f"publisher-manifest-{args.index}"), tier_id=TIER,
         cas_root=queue.root.parent / "cas",
@@ -205,7 +204,7 @@ def run_egress(args) -> int:
     began = time.monotonic()
     began_unix = time.time()
     try:
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, LANDED_MOVER, consumer_action_key=LANDED_CONSUMER,
             stage_root=args.stage_root, reason="beyond-horizon", whole=True)
     finally:
@@ -344,12 +343,12 @@ def run_bench(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.records.ensure_layout()
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = work / "stage"
     stage.mkdir()
     stage = stage.resolve()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     forest = bench_stage_adopt.build_forest(

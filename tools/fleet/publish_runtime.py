@@ -59,20 +59,27 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-import fleet_roster  # noqa: E402
 
 _SCRIPT = Path(__file__).resolve()
 CHECKOUT = _SCRIPT.parents[1] if _SCRIPT.parent.name == "tools" else _SCRIPT.parents[2]
+sys.path.insert(0, str(CHECKOUT / "src"))
+from prismabuild import fleet_roster  # noqa: E402
+from prismabuild.compatibility_window import (  # noqa: E402
+    RECEIPT_MEMBERS, WindowError, client_protocol, require_client_transition,
+    require_receipt_participants,
+)
+from prismabuild.digest_primitives import raw_sha256  # noqa: E402
+from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 MIRROR = Path("/mnt/shared/prismabuild-fleet/repo")
 _PUBLISH_MUTEX = threading.RLock()
 _PUBLISH_LOCK_DEPTH = 0
 _PUBLISH_LOCK_PID: int | None = None
 #: Published as ``tools/<name>`` *and* ``tools/fleet/<name>``.
 FLEET_SCRIPTS = (
-    "docker", "pbrun.py", "d38_gate.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_collection.py", "pbtest_pins.py", "pbtest_capabilities.py", "require_pool.py", "worker_loop.py", "worker.py",
+    "docker", "pbrun.py", "pbtest.py", "pbtest_outcomes.py", "pbtest_pins.py", "require_pool.py", "worker_loop.py", "worker.py",
     "seal_and_publish.py",
-    "publish_runtime.py", "pool_reset.py", "runtime_paths.py", "supervise.py",
-    "role_log_identity.py", "migrate_role_logs.py",
+    "publish_runtime.py", "pool_reset.py", "supervise.py",
+    "migrate_role_logs.py",
     # The supervisor spawns prewarm_loop.py on a box declaring the storage
     # role, by published path like every other child. A generation without it
     # makes that role a log line saying the script is not there (#487).
@@ -98,18 +105,6 @@ FLEET_SCRIPTS = (
     # The stage lives on dl380g10, which has no checkout, so a generation
     # without it leaves that command with no place to run.
     "stage_reclaim.py",
-    # ...and deferred_release.py, which the tier loop imports to release
-    # consumers filed with ``pbrun --after`` once their producers commit
-    # (#913).  A generation without it is a tier loop that cannot start.
-    "deferred_release.py",
-    # The tier role imports this helper for stage byte and token reports (#1555).
-    "stage_rounding.py",
-    # ...and manifest_promotion.py, which the tier loop imports to promote
-    # manifest rows' residency plans (#1252).  Generation 9098f84c872b shipped
-    # without it and the tier role crash-looped at import (#1284);
-    # ``_unshipped_imports`` now refuses any publication in which a
-    # published script imports a tools module the publication does not carry.
-    "manifest_promotion.py",
     # ...and ram_promote.py, the ram tier's movement node (#640): it copies a
     # landed stage range into the tmpfs and files the fragment that carries
     # the epoch.  A generation without it leaves the ram window publishing
@@ -119,11 +114,8 @@ FLEET_SCRIPTS = (
     "install_ram_mount_unit.py",
     # Qualified scratch profiles bind this producer's bytes in the generation.
     "local_scratch_profile.py",
-    # The SLURM lane's two halves: the shared submit every producer routes
-    # through, and the job entry it names.  A runtime published without them
-    # has producers importing a module that is not there and a batch script
-    # execing a path that does not exist.
-    "fleet_submit.py", "slurm_job.py",
+    # The retained SLURM lane job entry. Submission is a package owner.
+    "slurm_job.py",
     # The commands an operator runs on a box that has no checkout.  The
     # published pool_reset.py:582 tells them to run ``pbwait.py <key>``, and
     # neither dl380g10 nor sparklina has a checkout to run it from.
@@ -137,7 +129,7 @@ FLEET_SCRIPTS = (
     # pbmergeq.py is a client a repository's merge flow runs from a box with
     # no PB checkout; it imports pbtest.py and pbtest_outcomes.py from its own
     # directory, so it must be the same generation's copy (#1417).
-    "pbmergeq.py", "pbmergeq_runtime.py",
+    "pbmergeq.py",
     # pbmcp.py is the same case as pbstatus.py and then some: an agent
     # registers it by absolute published path so that every session starts on
     # the current generation, and the boxes it is registered from are exactly
@@ -170,10 +162,6 @@ FLEET_SCRIPTS = (
     # missing from this list is a tool no box can run, so the gang canary could
     # not start from a published generation.
     "pbgang.py",
-    # tier_loop.py imports prelaunch_tier unconditionally (#1594).  A published
-    # script that imports a tools module the publication lacks makes the
-    # publisher refuse every generation, so the module ships.
-    "prelaunch_tier.py",
     # pbrun imports pbevidence unconditionally (#1598).  A published script that
     # imports a tools module the publication lacks makes the publisher refuse
     # every generation, so the tool ships even for commands that never use
@@ -186,11 +174,6 @@ FLEET_SCRIPTS = (
     # no waiter asked for, and the operator who notices they are missing is
     # on whichever box has the shared mount rather than the checkout.
     "pbsweep.py",
-    # fleet_roster.py holds the roster presence contract (#606): which boxes
-    # count as declared absent and what provenance that needs.  The
-    # supervisor and the barrier preflight import it on boxes with no
-    # checkout, so a generation without it cannot enforce a retirement.
-    "fleet_roster.py",
     # Local JOIN/RESIGN and the worker-loop reconciliation hook must work
     # on registered hosts with only the published generation available.
     "fleet_membership.py",
@@ -205,13 +188,18 @@ FLEET_SCRIPTS = (
     # needs that proof is the box whose running broker cannot be disturbed by
     # materializing a checkout.
     "qualify_needrestart_broker_deferral.py",
-    "upgrade_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
+    "upgrade_client.py", "bootstrap_client.py", "install_client_upgrader.sh", "install_supervisor_unit.sh",
     # The one-time root enrollment of a host in automatic movement publication
     # (#1659).  An administrator copies it out of the live generation, as the
     # client upgrader's installer; a generation without it leaves no host able
     # to enroll.  ``runtime_publication.py`` it installs is a package module.
     "install_movement_publisher.sh",
 )
+# The retained proxy verifies the same stdlib layout helper beside itself.
+STANDALONE_PACKAGE_SOURCES = {
+    "runtime_paths.py": "src/prismabuild/runtime_paths.py",
+}
+
 #: Fleet tools deliberately left out of the generation, each with the reason.
 #: Runtime tools travel; qualification harnesses use submitted checkouts.
 #: The tuple exists so that leaving one out is a decision
@@ -251,11 +239,6 @@ EXCLUDED: tuple[tuple[str, str], ...] = (
      "checkout through pbrun against a private queue root; a box with no "
      "checkout has no reason to run it and it must never be pointed at the "
      "live queue"),
-    ("bench_prewarm_stage_release.py",
-     "a standalone timing of the prewarm stage's release path, run from a "
-     "checkout through pbrun over a named data manifest; it carries the "
-     "pre-#589 arithmetic as its before arm, so it is a record of one "
-     "measurement rather than an operator command"),
     ("bench_stage_adopt.py",
      "a standalone profile of the stage mover's adopt and copy paths "
      "(#981), run from a checkout through pbrun over a synthetic residency "
@@ -561,12 +544,18 @@ def _published_mode(source: Path, index_modes: dict[str, int]) -> int:
 
 
 def _source_for(name: str) -> Path:
+    parts = name.split("/")
+    if (parts[:-1] in (["tools"], ["tools", "fleet"])
+            and parts[-1] in STANDALONE_PACKAGE_SOURCES):
+        return CHECKOUT / STANDALONE_PACKAGE_SOURCES[parts[-1]]
     if name.startswith("tools/fleet/"):
         base = name.rsplit("/", 1)[1]
         source = CHECKOUT / "tools" / "fleet" / base
         return source if source.is_file() else CHECKOUT / "tools" / base
     if name in {f"tools/{script}" for script in TOP_LEVEL_SCRIPTS}:
         return CHECKOUT / name
+    if name in ("tools/generation_receipt.py", "tools/digest_primitives.py"):
+        return CHECKOUT / "src/prismabuild" / name.rsplit("/", 1)[1]
     if name.startswith("tools/"):
         base = name.rsplit("/", 1)[1]
         source = CHECKOUT / "tools" / "fleet" / base
@@ -581,8 +570,14 @@ def _imported_modules(source: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name.split(".")[0] for alias in node.names)
+            names.update(alias.name for alias in node.names
+                         if alias.name.startswith("prismabuild."))
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module.split(".")[0])
+            if node.module == "prismabuild":
+                names.update("prismabuild." + alias.name for alias in node.names)
+            elif node.module.startswith("prismabuild."):
+                names.add(node.module)
     return names
 
 
@@ -604,6 +599,11 @@ def _unshipped_imports(published: dict[str, str]) -> list[str]:
         if not source.is_file():
             continue
         for name in sorted(_imported_modules(source)):
+            if name.startswith("prismabuild."):
+                package_member = "src/" + name.replace(".", "/") + ".py"
+                if (CHECKOUT / package_member).is_file() and package_member not in published:
+                    problems.append(f"{member} imports {name}, which this "
+                                    "publication does not carry")
             local = any((CHECKOUT / base / f"{name}.py").is_file()
                         for base in ("tools/fleet", "tools"))
             if local and f"tools/{name}.py" not in published:
@@ -616,6 +616,13 @@ def _publication_manifest() -> dict[str, str]:
     published: dict[str, str] = {}
     for source in sorted((CHECKOUT / "src" / "prismabuild").glob("*.py")):
         published[f"src/prismabuild/{source.name}"] = _sha256(source)
+    for name in ("generation_receipt.py", "digest_primitives.py"):
+        published[f"tools/{name}"] = published[f"src/prismabuild/{name}"]
+    for name, owner in STANDALONE_PACKAGE_SOURCES.items():
+        if owner not in published:
+            continue
+        published[f"tools/{name}"] = published[owner]
+        published[f"tools/fleet/{name}"] = published[owner]
     for name in FLEET_SCRIPTS:
         source = CHECKOUT / "tools" / "fleet" / name
         if not source.is_file():
@@ -1036,38 +1043,29 @@ def _live_roster() -> dict | None:
         return None
     if not live.is_dir() or live.name.startswith("."):
         return None
-    for member in ("tools/fleet/fleet_boxes.json", "tools/fleet_boxes.json"):
-        try:
-            text = (live / member).read_text()
-        except OSError:
-            continue
-        try:
-            document = json.loads(text)
-        except ValueError:
-            return None
-        if isinstance(document, dict):
-            return document
-    return None
+    try:
+        return fleet_roster.Roster.at(live).document
+    except (OSError, ValueError):
+        return None
 
 
-def _candidate_roster() -> dict:
+def _candidate_roster(expected_sha256: str) -> fleet_roster.Roster:
     """The roster this publication would publish, or refuse."""
 
     try:
-        document = json.loads(
-            (CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_text())
+        roster = fleet_roster.Roster.at(CHECKOUT, expected_sha256=expected_sha256)
+        roster.validate_publication()
     except (OSError, ValueError) as exc:
-        raise SystemExit(f"cannot read the candidate roster: {exc}") from exc
-    if not isinstance(document, dict):
-        raise SystemExit("cannot read the candidate roster: not a JSON object")
-    return document
+        raise SystemExit(f"cannot publish the candidate roster: {exc}") from exc
+    return roster
 
 
-def _roster_option_record(args) -> dict[str, object] | None:
+def _roster_option_record(args, candidate: fleet_roster.Roster | None) -> dict[str, object] | None:
     """Refuse a candidate that drops a live ``--`` option name (#1664).
 
     The check runs inside the publication lock, before anything is
-    staged, and reads the sealed live generation the pointer names.
+    staged, and reads the sealed live generation the pointer names. The
+    candidate is the already captured, manifest-verified publication roster.
     An explicit override names who removes the option and why; both
     are recorded in the receipt with the dropped names.  A bootstrap
     with no live generation, or a live generation without a roster,
@@ -1077,7 +1075,9 @@ def _roster_option_record(args) -> dict[str, object] | None:
     live = _live_roster()
     if live is None:
         return None
-    dropped = _dropped_roster_options(live, _candidate_roster())
+    if candidate is None:
+        raise SystemExit("candidate roster is absent from publication manifest")
+    dropped = _dropped_roster_options(live, candidate.document)
     if not dropped:
         return None
     by = args.drop_roster_option_by
@@ -1146,7 +1146,7 @@ def _load_canary_driver():
     return entry
 
 
-def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
+def _invoke_canary_driver(generation_name: str, *, publication_slot: bool = True) -> tuple[int, str]:
     """Run the driver against the just-activated generation; return (code, detail)."""
 
     # Resolve the shared helper before the driver starts its submission budget.
@@ -1201,7 +1201,7 @@ def _invoke_canary_driver(generation_name: str) -> tuple[int, str]:
         # New drivers return their durable per-leg identities through report.
         parameters = inspect.signature(entry).parameters
         options: dict[str, object] = {"report": report} if "report" in parameters else {}
-        if "publication_canary_authorizer" in parameters:
+        if publication_slot and "publication_canary_authorizer" in parameters:
             options["publication_canary_authorizer"] = authorize
         result = entry(generation=generation_name, **options)
     except SystemExit as exc:
@@ -1265,7 +1265,8 @@ def _write_canary_record(
 
 def _run_rollout_canary(
     *, store: Path, generation_name: str, commit: str, enabled: bool,
-    shape_gate: dict[str, object],
+    shape_gate: dict[str, object], publication_slot: bool = True,
+    record_path: Path | None = None,
 ) -> int:
     """Record the canary outcome for an activated generation; return the process exit.
 
@@ -1276,7 +1277,7 @@ def _run_rollout_canary(
     and never touches admission -- campaign-primacy (issue #688 non-goals).
     """
 
-    record = _canary_record_path(store, generation_name)
+    record = record_path if record_path is not None else _canary_record_path(store, generation_name)
     # A waived gate is said on every rollout, whatever the canary does.
     print(f"{generation_name} {_shape_gate_line(shape_gate)}",
           file=sys.stderr if shape_gate.get("verdict") == "waived" else sys.stdout)
@@ -1293,7 +1294,8 @@ def _run_rollout_canary(
                          detail="canary submitted against the activated generation")
     print(f"canary pending for {generation_name}; invoking the driver", flush=True)
     try:
-        code, detail = _invoke_canary_driver(generation_name)
+        code, detail = (_invoke_canary_driver(generation_name) if publication_slot else
+                        _invoke_canary_driver(generation_name, publication_slot=False))
     except _CanaryPrecondition as exc:
         _write_canary_record(record, generation=generation_name, commit=commit,
                              shape_gate=shape_gate, status="failed", exit_code=None, detail=str(exc))
@@ -1436,7 +1438,247 @@ def _assert_coordinator_identity(view, *, agent=None):
     return agent
 
 
+def _bootstrap_pending_path():
+    return MIRROR.parent / "rollout" / "pending-bootstrap.json"
+
+
+def _require_no_pending_bootstrap():
+    path = _bootstrap_pending_path()
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise SystemExit("pending installed bootstrap excludes ordinary publication; resume its exact assessment")
+
+
+def _bootstrap_roster(source, target):
+    groups = []
+    for root in (source, target):
+        captured = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_bytes())
+        roster = fleet_roster.Roster.qualified(root, captured.files)
+        active, _ = _active_roster_boxes(roster)
+        groups.append({host: sorted(names) for host, names in active})
+    if groups[0] != groups[1]:
+        raise WindowError("bootstrap source/target enrolled rosters differ")
+    return groups[0]
+
+
+def _bootstrap_fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _durable_bootstrap_directory(path):
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        directory.mkdir()
+        _bootstrap_fsync_directory(directory)
+        _bootstrap_fsync_directory(directory.parent)
+        if not directory.is_dir() or directory.is_symlink():
+            raise WindowError("bootstrap directory readback differs")
+    for directory in (path, *path.parents):
+        _bootstrap_fsync_directory(directory)
+
+
+def _write_bootstrap_pending(path, value):
+    _durable_bootstrap_directory(path.parent)
+    temporary = path.parent / (".bootstrap-" + uuid.uuid4().hex)
+    try:
+        _write_receipt(temporary, value)
+        os.replace(temporary, path)
+        _bootstrap_fsync_directory(path.parent)
+        if json.loads(path.read_bytes()) != value:
+            raise WindowError("bootstrap intent readback differs")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _record_bootstrap_root_responses(plan, observations, phase):
+    from prismabuild.digest_primitives import canonical_sha256
+    directory = MIRROR.parent / "rollout/bootstrap" / plan["id"]
+    _durable_bootstrap_directory(directory)
+    path = directory / (phase + "-" + observations.nonce + ".json")
+    digest = _write_receipt(path, {"schema": "prismabuild.bootstrap_root_transcript.v1",
+        "plan_sha256": canonical_sha256(plan), "nonce": observations.nonce,
+        "started_unix": observations.started_unix, "responses": observations.rows})
+    _bootstrap_fsync_directory(directory)
+    if raw_sha256(path.read_bytes()) != digest:
+        raise WindowError("bootstrap transcript readback differs")
+    return {"path": str(path), "sha256": digest}
+
+
+def _reserve_installed_bootstrap(assessment_path):
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    assessment = installed_bootstrap.read_assessment(assessment_path)
+    plan = assessment["plan"]
+    with _publication_lock():
+        _require_no_epoch()
+        source, _ = _sealed_generation(plan["source"]["generation"])
+        target, _ = _sealed_generation(plan["target"]["generation"])
+        expected_pointer = target if plan.get("direction") == "restore" else source
+        if MIRROR.resolve(strict=True) != expected_pointer or _bootstrap_roster(source, target) != plan["roster"]:
+            raise SystemExit("bootstrap reservation source or roster changed")
+        qualification = installed_bootstrap.verify_qualification(assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent)
+        if plan.get("qualified_runtimes") != list(qualification.runtimes):
+            raise WindowError("bootstrap reservation native runtime bindings differ from verified receipts")
+        installed_bootstrap.require_live_window(plan, target=target)
+        if plan.get("direction") == "restore":
+            accepted = _bootstrap_pending_path().parent / ("bootstrap-" + plan["id"] + "-forward.accepted.json")
+            prior = json.loads(accepted.read_bytes())
+            if prior.get("forward_plan_sha256") != canonical_sha256({**plan, "direction": "forward"}):
+                raise SystemExit("rollback differs from the accepted original bootstrap intent")
+        _write_bootstrap_pending(_bootstrap_pending_path(), {
+            "schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
+            "direction": plan.get("direction", "forward"),
+            "source": plan["source"], "target": plan["target"],
+            "forward_plan_sha256": canonical_sha256({**plan, "direction": "forward"}), "state": "reserved"})
+        return 0
+
+
+def _activate_installed_bootstrap(name, assessment_path, *, dry_run=False, rollout="rolling"):
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    if rollout != "rolling":
+        raise SystemExit("installed bootstrap requires explicit rolling activation")
+    _require_external_coordinator()
+    assessment = installed_bootstrap.read_assessment(assessment_path)
+    plan = assessment["plan"]
+    direction = plan.get("direction", "forward")
+    selected = plan["target" if direction == "forward" else "source"]["generation"]
+    if name != selected:
+        raise SystemExit("installed bootstrap activation target differs from its original intent")
+    with _publication_lock():
+        # Check epochs without mistaking our own pending bootstrap for one.
+        directory = MIRROR.parent / "rollout/epochs"
+        if directory.exists() and _rollout_view() is not None:
+            raise SystemExit("active rollout epoch excludes installed bootstrap")
+        source, _ = _sealed_generation(plan["source"]["generation"])
+        target, receipt = _sealed_generation(plan["target"]["generation"])
+        if receipt["files"].get("tools/publish_runtime.py") != _coordinator_sha256():
+            raise WindowError("bootstrap coordinator differs from the sealed target")
+        roster = _bootstrap_roster(source, target)
+        pending = _bootstrap_pending_path()
+        intent = {"schema": "prismabuild.pending_bootstrap.v1", "id": plan["id"],
+            "direction": plan.get("direction", "forward"),
+                  "source": plan["source"], "target": plan["target"],
+                  "forward_plan_sha256": canonical_sha256({**plan, "direction": "forward"})}
+        if pending.is_symlink():
+            raise SystemExit("unsafe pending bootstrap marker")
+        prior = json.loads(pending.read_bytes()) if pending.exists() else None
+        ownership = {key: value for key, value in intent.items() if key != "direction"}
+        if prior is not None and any(prior.get(key) != value for key, value in ownership.items()):
+            raise SystemExit("another pending bootstrap owns publication")
+        select_restore = prior is not None and prior.get("direction") != direction
+        if select_restore:
+            if (prior.get("direction") != "forward" or direction != "restore"
+                    or prior.get("state") not in ("reserved", "activation-intent", "awaiting-convergence", "ordinary-canary")):
+                raise SystemExit("pending bootstrap direction cannot change through this activation")
+            intent["direction_decision"] = {
+                "from": "forward", "to": "restore", "selected_unix": time.time(),
+                "plan_sha256": canonical_sha256(plan), "previous_intent": prior}
+        elif prior is not None and "direction_decision" in prior:
+            decision = prior["direction_decision"]
+            if (direction != "restore" or decision.get("from") != "forward"
+                    or decision.get("to") != "restore" or decision.get("plan_sha256") != canonical_sha256(plan)
+                    or any(decision.get("previous_intent", {}).get(key) != value for key, value in ownership.items())
+                    or decision.get("previous_intent", {}).get("direction") != "forward"):
+                raise SystemExit("pending bootstrap reverse decision differs from original intent")
+            intent["direction_decision"] = decision
+        live = MIRROR.resolve(strict=True)
+        if live not in (source, target) or (prior is None and live != source):
+            raise SystemExit("bootstrap source pointer differs from original a174 intent")
+        if not dry_run and socket.gethostname().split('.')[0] not in ("sparky", "sparklina", "gx10-6b77"):
+            raise SystemExit("bootstrap coordinator must run on sparky or sparklina for the GPU canary")
+        if select_restore and not dry_run:
+            # Select recovery before external reads. Every subsequent progress
+            # record retains the previous intent and the irreversible direction.
+            _write_bootstrap_pending(pending, {**intent, "state": "restore-selected"})
+        # Receipt verification may read substantial evidence. Fresh challenges
+        # follow it, while the same publication lock still excludes mutation.
+        result, observations = installed_bootstrap.assess(
+            assessment, checkout=CHECKOUT, fleet_root=MIRROR.parent,
+            source=source, target=target, roster=roster, verify_live=True)
+        if dry_run:
+            return 0
+        transcript = _record_bootstrap_root_responses(plan, observations, "before-activation")
+        _write_bootstrap_pending(pending, {**intent, "state": "activation-intent",
+            "direction": direction, "assessment": result, "root_transcript": transcript})
+        # Recheck both sealed identities after all external reads. Responses
+        # carry their own maximum age and exact captured/compiled identities.
+        _sealed_generation(source.name)
+        _sealed_generation(target.name)
+        from prismabuild.compatibility_window import require_installed_bootstrap
+        from prismabuild.compatibility_window import BootstrapQualification
+        require_installed_bootstrap(source, target, observations, roster=roster,
+            qualification=BootstrapQualification(plan, action_keys=result["actions"], runtimes=result["qualified_runtimes"]),
+            rollback_designation=assessment["rollback_designation"])
+        for row in observations.rows.values():
+            scopes = row.get("broker", {}).get("active_scopes")
+            if type(scopes) is not int or scopes != 0:
+                raise WindowError("bootstrap activation waits for the ordinary idle-queue boundary")
+        for state in ("ready", "claimed"):
+            directory = MIRROR.parent / "pb-queue" / state
+            if not directory.is_dir():
+                raise WindowError("bootstrap queue directory is unavailable")
+            with os.scandir(directory) as entries:
+                if any(entry.name.endswith('.json') for entry in entries):
+                    raise WindowError("bootstrap activation requires an observed empty ready and claimed queue")
+        if not 0 <= time.time() - observations.started_unix <= 60:
+            raise WindowError("bootstrap root responses expired while checking the queue")
+        _activate(target if direction == "forward" else source, migrate_directory=False)
+        _bootstrap_fsync_directory(MIRROR.parent)
+        _write_bootstrap_pending(pending, {**intent, "state": "awaiting-convergence",
+            "direction": direction, "assessment": result, "root_transcript": transcript})
+        # Root observes real generation-pinned serving processes and fresh
+        # worker offers after the pointer move. No process is stopped here.
+        installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
+        selected_root = target if direction == "forward" else source
+        selected_receipt = receipt if direction == "forward" else json.loads((source / "RUNTIME_VERSION.json").read_bytes())
+        admission = assessment.get("canary_admission", "publication-slot")
+        if admission not in ("ordinary", "publication-slot"):
+            raise WindowError("unknown bootstrap canary admission mode")
+        options = {}
+        if admission == "ordinary":
+            reason = assessment.get("ordinary_canary_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise WindowError("ordinary bootstrap canary requires an explicit operator reason")
+            record_path = target.parent / (selected_root.name + ".bootstrap-" + plan["id"] + "-" + observations.nonce + ".canary.json")
+            options = {"publication_slot": False, "record_path": record_path}
+            _write_bootstrap_pending(pending, {**intent, "state": "ordinary-canary", "direction": direction,
+                "canary_record": str(record_path), "canary_admission": admission, "reason": reason,
+                "assessment": result, "root_transcript": transcript})
+        code = _run_rollout_canary(store=target.parent, generation_name=selected_root.name,
+                    commit=selected_receipt["commit"], enabled=True,
+                    shape_gate=selected_receipt.get("shape_gate", {}), **options)
+        if code:
+            return code
+        final_observations = installed_bootstrap.require_convergence(plan, fleet_root=MIRROR.parent)
+        final_transcript = _record_bootstrap_root_responses(plan, final_observations, "after-canary")
+        canary_record = options.get("record_path", _canary_record_path(target.parent, selected_root.name))
+        canary = json.loads(canary_record.read_bytes())
+        if (canary.get("canary_status") != "verified" or canary.get("generation") != selected_root.name
+                or canary.get("commit") != selected_receipt["commit"]):
+            raise WindowError("bootstrap canary lacks a verified bound record")
+        _write_bootstrap_pending(pending, {**intent, "state": "accepted", "direction": direction,
+            "assessment": result, "root_transcript": transcript, "final_root_transcript": final_transcript,
+            "canary_admission": admission, "canary_record": str(canary_record),
+            "canary_sha256": raw_sha256(canary_record.read_bytes())})
+        archive = pending.parent / ("bootstrap-" + plan["id"] + "-" + direction + ".accepted.json")
+        os.replace(pending, archive)
+        _bootstrap_fsync_directory(archive.parent)
+        return 0
+
+
 def _require_no_epoch():
+    _require_no_pending_bootstrap()
     # Retain rolling/bootstrap use from minimal source trees before epochs
     # existed. An unavailable directory is never the same as an absent one.
     directory = MIRROR.parent / "rollout" / "epochs"
@@ -1463,20 +1705,13 @@ def _sealed_generation(name):
     if root.resolve(strict=True) != root or root.stat().st_mode & 0o222:
         raise SystemExit(f"barrier generation is not sealed: {name}")
     try:
-        receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
-        if (not isinstance(receipt, dict)
-                or receipt.get("schema") != "prismaquant.prismabuild.runtime_version.v1"
-                or receipt.get("generation") != name
-                or re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("commit", ""))) is None
-                or not isinstance(receipt.get("files"), dict)):
-            raise ValueError("invalid generation receipt")
-        for member, expected in receipt["files"].items():
-            parts = Path(member).parts
-            if not parts or Path(member).is_absolute() or any(p in (".", "..") for p in parts):
-                raise ValueError("unsafe generation member path")
-            path = root / member
+        captured = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text())
+        receipt = captured.require_generation(name)
+        captured.require_commit()
+        for member in captured.files:
+            path = captured.member_path(root, member)
             if (path.resolve(strict=True) != path or not path.is_file()
-                    or path.stat().st_mode & 0o222 or _sha256(path) != expected):
+                    or path.stat().st_mode & 0o222 or not captured.matches_file(member, path)):
                 raise ValueError(f"unsealed or changed generation member: {member}")
         return root, receipt
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1490,12 +1725,81 @@ def _barrier_generation(name):
         agent_path = "tools/upgrade_client.py"
         if agent_path not in receipt["files"]:
             raise ValueError("no updater in generation")
-        if not re.search(rb"(?m)^CLIENT_UPGRADE_ROLLOUT_PROTOCOL[ \t]*=[ \t]*1[ \t]*$",
-                         (root / agent_path).read_bytes()):
+        source = GenerationReceipt(receipt).source_declarations(
+            agent_path, (root / agent_path).read_bytes())
+        try:
+            rollout_protocol = source.protocol("CLIENT_UPGRADE_ROLLOUT_PROTOCOL")
+        except ValueError as exc:
+            raise ValueError("generation has no rollout-aware updater; a rolling bridge is required") from exc
+        if rollout_protocol != 1:
             raise ValueError("generation has no rollout-aware updater; a rolling bridge is required")
         return root, receipt
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"cannot qualify barrier generation {name}: {exc}") from exc
+
+
+def _require_reader_direction(target, *, rollout, receipt=None, files=None):
+    """Source transport is necessary; rolling has no current installed quorum."""
+    try:
+        roots = (target, MIRROR.resolve(strict=True) if MIRROR.exists() else None)
+        observations = []
+        for index, (root, captured) in enumerate(zip(roots, (receipt, None))):
+            has_updater = root is not None and any((root / member).is_file() for member in
+                ("tools/fleet/upgrade_client.py", "tools/upgrade_client.py"))
+            if index == 0 and files is not None and "tools/upgrade_client.py" not in files:
+                has_updater = False
+            observations.append(client_protocol(root, receipt=captured) if has_updater else None)
+        if files is not None and observations[0] is not None:
+            captured = observations[0]
+            if files["tools/upgrade_client.py"] != captured["updater_sha256"]:
+                raise WindowError("candidate updater differs from the captured publication manifest")
+        for row in observations:
+            if row is not None:
+                require_client_transition(row, row)
+        if any(row is None for row in observations):
+            if any(row and set(row["present"]) & RECEIPT_MEMBERS for row in observations):
+                raise WindowError("receipt activation requires current installed updater proof; "
+                                  "a separately authorized installed-reader bootstrap is required")
+            return
+        direction = require_client_transition(*observations)
+        if rollout == "rolling":
+            require_receipt_participants(direction, None, ())
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"refusing reader-first activation: {exc}") from exc
+
+
+def _require_epoch_receipt_participants(view):
+    """Drained participants proved installed AND executing intent agent bytes."""
+    try:
+        generations = tuple(_barrier_generation(view["intent"][key])
+                            for key in ("to_generation", "from_generation"))
+        sources = tuple(client_protocol(root, receipt=GenerationReceipt(receipt))
+                        for root, receipt in generations)
+        direction = require_client_transition(*sources)
+        if not any(set(row["present"]) & RECEIPT_MEMBERS for row in sources):
+            return
+        intent = view["intent"]
+        if any(row["updater_sha256"] != intent["agent_sha256"] for row in sources):
+            raise WindowError("receipt epoch requires the same installed updater in both generations")
+        if _barrier_roster(tuple(reversed(generations))) != intent["roster"]:
+            raise WindowError("receipt epoch enrolled participant identities changed")
+        _, missing = _quorum(view, "drained")
+        if missing:
+            raise WindowError(f"current installed updater quorum is missing: {missing}")
+        agent = _assert_coordinator_identity(view)
+        for host in intent["roster"]:
+            marker = view["markers"][agent.marker_name(host, "drained")]
+            if (marker["posted_unix"] < intent["armed_unix"]
+                    or ("installed_agent_sha256" in marker
+                        and marker["installed_agent_sha256"] != intent["agent_sha256"])):
+                raise WindowError(f"current installed updater proof differs for {host}")
+        # _rollout_status checks installed and executing hashes against this
+        # intent before posting its epoch-bound drained marker. History is
+        # never consulted for this current participant proof.
+        installed = {host: intent["agent_sha256"] for host in intent["roster"]}
+        require_receipt_participants(direction, installed, intent["roster"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"refusing reader-first epoch activation: {exc}") from exc
 
 
 def _barrier_roster(generations):
@@ -1513,23 +1817,11 @@ def _barrier_roster(generations):
     groups = []
     boxes_by_generation = []
     for root, receipt in generations:
-        member = "tools/fleet/fleet_boxes.json"
-        if member not in receipt["files"]:
-            raise SystemExit(f"barrier roster is absent from {root.name}")
         try:
-            boxes = json.loads((root / member).read_text())["boxes"]
-            if not isinstance(boxes, dict) or not boxes:
-                raise ValueError("empty roster")
-            for key, value in boxes.items():
-                names = {key}
-                if isinstance(value, dict) and value.get("_alias"):
-                    names.add(value["_alias"])
-                if any(not isinstance(n, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", n) is None for n in names):
-                    raise ValueError("invalid roster name")
-                try:
-                    status, _ = fleet_roster.box_status(key, value)
-                except fleet_roster.RosterPresenceError as exc:
-                    raise ValueError(str(exc)) from exc
+            roster = fleet_roster.Roster.qualified(root, receipt["files"])
+            boxes = roster.boxes
+            for key, declared_names, value in roster.barrier_declarations():
+                names = set(declared_names)
                 overlap = [group for group in groups if group & names]
                 for group in overlap:
                     names |= group
@@ -1655,6 +1947,7 @@ def _barrier_step(epoch, *, rollback_reason=None):
         if missing:
             return {"epoch": epoch, "state": "draining", "missing": missing, "failed": failures, "complete": False}
         if "rollback.json" not in markers:
+            _require_epoch_receipt_participants(view)
             _decision(view, "rollback", direction="rollback", observed=drained,
                       reason=rollback_reason or f"member rotation failed on {', '.join(failures)}")
             return {"epoch": epoch, "state": "rollback_declared", "complete": False}
@@ -1665,6 +1958,7 @@ def _barrier_step(epoch, *, rollback_reason=None):
         if live != source:
             raise SystemExit("rollout symlink moved before the fleet drain quorum")
         return {"epoch": epoch, "state": "draining", "missing": missing, "complete": False}
+    _require_epoch_receipt_participants(view)
     activation = "reverted" if rollback else "activated"
     if activation + ".json" not in markers:
         if live not in (source, target):
@@ -1743,6 +2037,7 @@ def _arm_barrier(name, *, wait_s=300):
     if source[1]["files"][member] != sha:
         raise SystemExit("barrier requires the same rollout-aware updater in both generations; "
                          "converge a reviewed rolling bridge first")
+    _require_reader_direction(target[0], receipt=GenerationReceipt(target[1]), rollout="barrier")
     roster = _barrier_roster((source, target))
     # Historical presence is only the inexpensive bootstrap check. Fresh
     # participant markers, durable holds and quorums grant actual movement.
@@ -1823,7 +2118,7 @@ def _activate_existing_locked(
     # Rollback is the command that runs when everything else has failed, so a
     # short or damaged receipt has to be a sentence rather than a traceback.
     try:
-        receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
+        receipt = GenerationReceipt.capture((generation / "RUNTIME_VERSION.json").read_text()).document
     except (OSError, ValueError) as exc:
         raise SystemExit(
             f"{generation}: receipt is not readable ({exc}); this is not a "
@@ -1834,6 +2129,8 @@ def _activate_existing_locked(
             f"{generation}: receipt is not readable (not a JSON object); this "
             "is not a generation to point the live runtime at."
         )
+    if rollout == "rolling" or not dry_run:
+        _require_reader_direction(generation, receipt=GenerationReceipt(receipt), rollout=rollout)
     if rollout == "barrier":
         # A rollback publishes no manifest, so the value to prove the fleet
         # against is the one already recorded in the generation being restored.
@@ -1845,7 +2142,11 @@ def _activate_existing_locked(
                 f"{generation}: receipt records no sha256 for {member}, so a "
                 "barrier activation cannot be proved against it."
             )
-        _barrier_preflight(agent_sha, dry_run=dry_run)
+        try:
+            roster = fleet_roster.Roster.qualified(generation, files)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"invalid generation roster: {exc}") from exc
+        _barrier_preflight(agent_sha, dry_run=dry_run, roster=roster)
     print(
         f"activating {name}: commit {str(receipt.get('commit', ''))[:12]}, "
         f"default transport {receipt.get('default_transport') or 'pool'}"
@@ -1893,45 +2194,7 @@ def _agent_definitions(*, expected_sha=None):
     return module
 
 
-def _roster_entries() -> list[tuple[str, frozenset[str], object]]:
-    """Every box the fleet declares, with its raw roster entry.
-
-    ``_roster_boxes`` is the name-and-alias view the history check needs;
-    this is the same walk with the entry attached, so presence can be
-    validated from the same bytes rather than re-reading the file.
-    """
-
-    try:
-        roster = json.loads((CHECKOUT / "tools" / "fleet" / "fleet_boxes.json").read_text())
-        boxes = roster["boxes"]
-        if not isinstance(boxes, dict) or not boxes:
-            raise ValueError("no boxes declared")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise SystemExit(f"cannot read the fleet roster: {exc}") from exc
-    declared = []
-    for key in sorted(boxes):
-        entry = boxes[key]
-        names = {key}
-        alias = entry.get("_alias") if isinstance(entry, dict) else None
-        if isinstance(alias, str) and alias:
-            names.add(alias)
-        declared.append((key, frozenset(names), entry))
-    return declared
-
-
-def _roster_boxes() -> list[tuple[str, frozenset[str]]]:
-    """Every box the fleet declares, with the names it may report itself as.
-
-    A box is keyed here by the name its submissions use as a placement tag,
-    and that is not always what ``gethostname`` returns on it: ``gx10-6b77``
-    answers ``sparklina``.  The file records the second name as ``_alias``
-    precisely because the two are the same box, so both are accepted.
-    """
-
-    return [(key, names) for key, names, _entry in _roster_entries()]
-
-
-def _active_roster_boxes() -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
+def _active_roster_boxes(roster: fleet_roster.Roster) -> tuple[list[tuple[str, frozenset[str]]], list[str]]:
     """The roster boxes a barrier must hear from, and the absent ones it skips.
 
     A box declared ``retired`` or ``offline`` in ``fleet_boxes.json`` (#606)
@@ -1944,7 +2207,7 @@ def _active_roster_boxes() -> tuple[list[tuple[str, frozenset[str]]], list[str]]
 
     active = []
     absent = []
-    for key, names, entry in _roster_entries():
+    for key, names, entry in roster.declarations():
         try:
             status, detail = fleet_roster.box_status(key, entry)
         except fleet_roster.RosterPresenceError as exc:
@@ -2002,7 +2265,7 @@ def _attested_agents(agent) -> dict[str, set[str]]:
     return attested
 
 
-def _require_attested_fleet(agent_sha: str) -> None:
+def _require_attested_fleet(agent_sha: str, roster: fleet_roster.Roster) -> None:
     """Require historical attestations for the target agent on every live box.
 
     This is only a bootstrap prerequisite. Matching records can remain after
@@ -2017,7 +2280,10 @@ def _require_attested_fleet(agent_sha: str) -> None:
 
     agent = _agent_definitions()
     attested = _attested_agents(agent)
-    active, absent = _active_roster_boxes()
+    try:
+        active, absent = _active_roster_boxes(roster)
+    except ValueError as exc:
+        raise SystemExit(f"cannot establish historical attestation roster: {exc}") from exc
     missing = []
     for key, names in active:
         held = set().union(*(attested.get(name, set()) for name in names))
@@ -2052,7 +2318,8 @@ def _require_attested_fleet(agent_sha: str) -> None:
         print(f"barrier preflight: skipping absent box: {line}", flush=True)
 
 
-def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
+def _barrier_preflight(agent_sha: str, *, dry_run: bool,
+                       roster: fleet_roster.Roster | None) -> None:
     """Check bootstrap compatibility; epoch quorums grant activation later."""
 
     if not dry_run:
@@ -2062,7 +2329,9 @@ def _barrier_preflight(agent_sha: str, *, dry_run: bool) -> None:
         if receipt["files"]["tools/upgrade_client.py"] != agent_sha:
             raise SystemExit("barrier updater differs from the live generation; "
                              "converge a reviewed rolling bridge first")
-    _require_attested_fleet(agent_sha)
+    if roster is None:
+        raise SystemExit("barrier roster is absent from publication manifest")
+    _require_attested_fleet(agent_sha, roster)
     print(
         "barrier preflight: historical attestations match; current participation, "
         "drain and rotation have not been proved. Only epoch quorums authorize activation."
@@ -2099,6 +2368,10 @@ def main() -> int:
              "rolling requires a stated mixed-generation-safety reason. "
              "Barrier --dry-run checks bootstrap history only.",
     )
+    ap.add_argument("--reserve-installed-bootstrap", type=Path, metavar="ASSESSMENT",
+                    help="reserve publication before the first root bootstrap preparation")
+    ap.add_argument("--installed-bootstrap", type=Path, metavar="ASSESSMENT",
+                    help="activate an already sealed generation after authenticated installed bootstrap assessment")
     ap.add_argument("--stage-only", action="store_true",
                     help="seal and import-probe a generation without arming or activating it; "
                          "use inside PB, then activate with the external control-plane coordinator")
@@ -2167,6 +2440,12 @@ def main() -> int:
     if not math.isfinite(args.barrier_wait_s) or args.barrier_wait_s < 0:
         ap.error("--barrier-wait-s must be finite and nonnegative")
     recovery = args.resume_barrier or args.rollback_barrier
+    if args.reserve_installed_bootstrap and (args.installed_bootstrap or args.activate_generation
+            or recovery or args.stage_only or args.dry_run or args.rollout != "rolling"):
+        ap.error("bootstrap reservation requires rolling and excludes activation/publication")
+    if args.installed_bootstrap and (not args.activate_generation or args.rollout != "rolling"
+                                    or recovery or args.stage_only or args.no_canary or args.canary):
+        ap.error("--installed-bootstrap requires rolling --activate-generation and its mandatory canary")
     if args.resume_barrier and args.rollback_barrier:
         ap.error("choose one of --resume-barrier and --rollback-barrier")
     if recovery and (args.activate_generation or args.stage_only or args.allow_dirty
@@ -2212,6 +2491,8 @@ def main() -> int:
 def _run_publication(args) -> int:
     rollout_reason = _rollout_reason(args.rollout, args.rollout_reason)
     recovery = args.resume_barrier or args.rollback_barrier
+    if getattr(args, "reserve_installed_bootstrap", None) is not None:
+        return _reserve_installed_bootstrap(args.reserve_installed_bootstrap)
     # Refuse before reading/staging a candidate generation.  The recovery
     # branch would otherwise reach `_wait_barrier`, which can call the pointer
     # mutation through `_barrier_step`.
@@ -2225,6 +2506,9 @@ def _run_publication(args) -> int:
         return _wait_barrier(recovery, wait_s=args.barrier_wait_s,
                              rollback_reason=args.rollback_reason)
 
+    if getattr(args, "installed_bootstrap", None) is not None:
+        return _activate_installed_bootstrap(args.activate_generation, args.installed_bootstrap,
+                                            dry_run=args.dry_run, rollout=args.rollout)
     _require_no_epoch()
 
     if args.activate_generation is not None:
@@ -2250,6 +2534,9 @@ def _run_publication(args) -> int:
         )
 
     published = _publication_manifest()
+    roster_sha256 = published.get("tools/fleet/fleet_boxes.json")
+    candidate = (_candidate_roster(roster_sha256)
+                 if roster_sha256 is not None else None)
     problems = _unshipped_imports(published)
     if problems:
         raise SystemExit(
@@ -2263,6 +2550,8 @@ def _run_publication(args) -> int:
     # which of its members are programs refuses here, not halfway
     # through a tree it then has to clean up.
     index_modes = _git_index_modes()
+    if not args.stage_only and (args.rollout == "rolling" or not args.dry_run):
+        _require_reader_direction(CHECKOUT, rollout=args.rollout, files=published)
     if args.rollout == "barrier" and not args.stage_only:
         member = _agent_definitions().MEMBERS["upgrade_client.py"]
         agent_sha = published.get(member)
@@ -2271,7 +2560,7 @@ def _run_publication(args) -> int:
                 f"this publication carries no {member}, so a barrier rollout "
                 "has nothing to prove the fleet against."
             )
-        _barrier_preflight(agent_sha, dry_run=args.dry_run)
+        _barrier_preflight(agent_sha, dry_run=args.dry_run, roster=candidate)
 
     if canary_enabled and not _canary_driver_path().is_file():
         raise SystemExit(
@@ -2281,7 +2570,7 @@ def _run_publication(args) -> int:
     # The last refusals before anything is written: the gates read the
     # fleet's records, and an earlier refusal is cheaper to hear first.
     shape_gate = _shape_gate_record(args, commit=commit, dirty=dirty)
-    roster_override = _roster_option_record(args)
+    roster_override = _roster_option_record(args, candidate)
     if args.rollout == "rolling":
         print(f"rollout rolling: {rollout_reason}")
     print(_shape_gate_line(shape_gate),

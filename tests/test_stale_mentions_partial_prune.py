@@ -37,10 +37,12 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402
+from prismabuild import kept_reads
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 SIZE = red.SIZE
@@ -61,25 +63,25 @@ def _fragment_entries(material_entries: dict) -> dict:
 
 def _fragment_doc(queue, consumer: str, mover: str) -> dict:
     path = residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover)
+        queue.records.residency_fragment_root(), consumer, mover)
     return residency_map.validate_fragment(json.loads(path.read_bytes()))
 
 
 def _material_doc(queue, consumer: str, mover: str) -> dict:
     got = reader_lease.read_material(
-        queue.residency_fragment_root(), consumer, mover)
+        queue.records.residency_fragment_root(), consumer, mover)
     assert isinstance(got, dict), got
     return got
 
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
     return [entry for entry in receipts
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT
             and entry.get("action_key") == mover]
 
 
 def _tokens(queue, mover: str) -> dict:
-    return queue.tier_ledger(TIER).holder_tokens(mover)
+    return queue.tier(TIER).holdings(mover)
 
 
 def _acquire_pin(queue, consumer: str, mover: str) -> dict:
@@ -204,20 +206,20 @@ def test_the_successor_adopts_the_survivor_with_zero_recopy(
 
     # The shortened donor is a per-path cache, never a whole-range donor:
     # whole-range adoption refuses it and leaves donor and tokens untouched.
-    root = queue.residency_fragment_root()
-    holder = queue.tier_ledger(TIER).holder_tokens(mover)
-    refused = tier_loop.adopt(
+    root = queue.records.residency_fragment_root()
+    holder = queue.tier(TIER).holdings(mover)
+    refused = staged_path.adopt(
         queue, old_key=mover, new_key=base._key(),
         consumer_action_key=base._key(), tier_id=TIER, phase="head",
         range_start_bytes=0, range_end_bytes=len(NAMES) * SIZE,
         residency_root=root)
     assert not refused["adopted"] and refused["reason"] == "donor_range_shortened", (
         refused)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == holder
+    assert queue.tier(TIER).holdings(mover) == holder
     assert os.stat(coherent).st_ino == inode
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", red.GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', red.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {NAMES[0]: red.OLD_PAYLOAD, NAMES[1]: b"x" * SIZE}
     path, digest, entries, digests = red._successor_manifest(tmp_path, payloads)
     mount = tmp_path / "sources"
@@ -252,14 +254,14 @@ def test_a_fully_stale_owner_settles_its_holder_once(fleet, tmp_path, monkeypatc
                and entry.get("complete") is True]
     assert retired, receipts
     assert not residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert not reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert _tokens(queue, mover) == {}, "the whole charge settles exactly once"
     assert not any((stage / red.staged_name(name)).exists() for name in NAMES)
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", red.GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', red.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {name: b"x" * SIZE for name in NAMES}
     path, digest, entries, digests = red._successor_manifest(tmp_path, payloads)
     successor, copier = base._key(), base._key()
@@ -310,7 +312,7 @@ def test_a_live_claim_overlap_retains_the_whole_candidate(fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: ({red.staged_name(NAMES[1])}, [], set()))
 
     receipts = red._sweep(queue, stage)
@@ -327,7 +329,7 @@ def test_a_same_key_claim_retains_the_whole_candidate(fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), [], {red.staged_name(NAMES[1])}))
 
     receipts = red._sweep(queue, stage)
@@ -344,7 +346,7 @@ def test_a_promotion_handoff_retains_the_whole_candidate(
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     handoff = os.path.normpath(str((stage / red.staged_name(NAMES[1])).resolve()))
     monkeypatch.setattr(
-        stage_release, "_claimed_source_paths",
+        staged_path, 'claimed_source_paths',
         lambda *args, **kwargs: ({handoff}, []))
 
     receipts = red._sweep(queue, stage)
@@ -360,7 +362,7 @@ def test_a_co_owner_fragment_protects_its_file_and_the_rest_still_prunes(
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet)
     coowner, comover = base._key(), base._key()
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": coowner, "mover_action_key": comover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -390,7 +392,7 @@ def test_a_co_owner_cannot_make_a_nonregular_path_clean(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet)
     coowner, comover = base._key(), base._key()
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": coowner, "mover_action_key": comover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -525,7 +527,7 @@ def test_a_foreign_material_retains_the_whole_candidate(fleet):
 def test_republication_after_census_retains(fleet, monkeypatch, owner):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    original = stage_release._fragment_census
+    original = staged_path.fragment_census
     published = False
 
     def census(root, *args, **kwargs):
@@ -539,18 +541,18 @@ def test_republication_after_census_retains(fleet, monkeypatch, owner):
                           max_attempts=1, recompute=True)
         return result
 
-    monkeypatch.setattr(stage_release, "_fragment_census", census)
+    monkeypatch.setattr(staged_path, 'fragment_census', census)
     red._sweep(queue, stage)
 
     _assert_owner_intact(queue, stage, consumer, mover)
-    assert queue.item_path(
-        pool.READY, consumer if owner == "consumer" else mover).exists()
+    assert queue.records.item_path(
+        pool.record_store.READY, consumer if owner == "consumer" else mover).exists()
 
 
 def test_a_damaged_done_terminal_retains(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
-    path = queue.item_path(pool.DONE, mover)
+    path = queue.records.item_path(pool.record_store.DONE, mover)
     record = json.loads(path.read_bytes())
     record["published_unix"] += 1
     path.write_text(json.dumps(record))
@@ -711,7 +713,7 @@ def test_an_unchanged_coherent_owner_skips_and_is_invalidated(
     def run_pass():
         return stage_release.sweep_dead_owner_fragments(
             queue, stage_roots={TIER: str(stage)},
-            residency_root=queue.residency_fragment_root())
+            residency_root=queue.records.residency_fragment_root())
 
     run_pass()
     assert seen[0] >= len(destinations), "the first pass must scan every entry"
@@ -751,10 +753,10 @@ def test_replacing_the_parent_directory_invalidates_the_checkpoint(
             "stage_path": str(path), "bytes": SIZE,
             "sha256": red.OLD_DIGEST, "file_id": red._identity(path)}
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
         manifest_sha256="a" * 64, generation="a" * 32, entries=entries)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -767,7 +769,7 @@ def test_replacing_the_parent_directory_invalidates_the_checkpoint(
     def run_pass():
         return stage_release.sweep_dead_owner_fragments(
             queue, stage_roots={TIER: str(stage)},
-            residency_root=queue.residency_fragment_root())
+            residency_root=queue.records.residency_fragment_root())
 
     run_pass()
     assert seen[0] >= len(destinations), "the first pass must scan"
@@ -794,7 +796,7 @@ def test_a_claim_blocks_then_recovery_after_it_ends(
     queue, stage, cas = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: ({red.staged_name(NAMES[1])}, [], set()))
     first = red._sweep(queue, stage)
     retained = _receipts_for(first, mover)
@@ -809,8 +811,8 @@ def test_a_claim_blocks_then_recovery_after_it_ends(
     assert pruned, second
     assert not (stage / red.staged_name(NAMES[1])).exists()
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", red.GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', red.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {NAMES[0]: red.OLD_PAYLOAD, NAMES[1]: b"x" * SIZE}
     path, digest, entries, digests = red._successor_manifest(tmp_path, payloads)
     successor, copier = base._key(), base._key()
@@ -832,7 +834,7 @@ def test_a_rename_after_installation_is_seen_by_the_next_sweep(
                                       replace=False)
     destinations = [stage / red.staged_name(name) for name in NAMES]
     seen = _count_destination_lstats(monkeypatch, destinations)
-    real_install = stage_release._install_skip_checkpoint
+    real_install = staged_path._install_skip_checkpoint
     raced = []
 
     def racing_install(*args, **kwargs):
@@ -844,7 +846,7 @@ def test_a_rename_after_installation_is_seen_by_the_next_sweep(
             os.replace(replacement, stage / red.staged_name(NAMES[1]))
         return installed
 
-    monkeypatch.setattr(stage_release, "_install_skip_checkpoint",
+    monkeypatch.setattr(staged_path, '_install_skip_checkpoint',
                         racing_install)
     red._sweep(queue, stage)
     assert raced, "the fixture must install a checkpoint"
@@ -871,10 +873,10 @@ def test_a_symlinked_intermediate_directory_retains(fleet):
         "bytes": SIZE,
         "sha256": red.OLD_DIGEST, "file_id": red._identity(path)}}
     reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
+        queue.records.residency_fragment_root(), consumer_action_key=consumer,
         mover_action_key=mover, tier_id=TIER, stage_root=str(stage),
         manifest_sha256="a" * 64, generation="a" * 32, entries=entries)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -898,7 +900,7 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     forgotten, and a full cache refuses a newcomer rather than evicting.
     """
 
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     fragment = tmp_path / "fragment.json"
     fragment.write_text("{}")
     material = tmp_path / "material.json"
@@ -906,55 +908,79 @@ def test_the_skip_checkpoint_cache_is_bounded(tmp_path, monkeypatch):
     # The capacity test installs checkpoints directly, but their evidence
     # must be acquired by the same settled, trusted rule as a real sweep.
     # Bare versions captured in the write's coarse tick are not checkpoints.
-    time.sleep(0.05)
-    fence = stage_release._version_fence()
-    fragment_version = stage_release._fenced_path_version(fragment, fence)[1]
-    material_version = stage_release._fenced_path_version(material, fence)[1]
-    directory_stamp = stage_release._trusted_directory_stamp(tmp_path)
+    from kept_read_clock import after_paths
+    after_paths(monkeypatch, fragment, material, tmp_path)
+    fence = kept_reads.filesystem_trust.file_fence()
+    fragment_version = staged_path._fenced_path_version(
+        fragment,
+        fence,
+        trust=kept_reads.filesystem_trust,
+    )[1]
+    material_version = staged_path._fenced_path_version(
+        material,
+        fence,
+        trust=kept_reads.filesystem_trust,
+    )[1]
+    directory_stamp = kept_reads.filesystem_trust.directory_evidence(tmp_path)
     assert fragment_version is not None and material_version is not None
     assert directory_stamp is not None, "checkpoint fixture needs trusted local storage"
     stamps = {str(tmp_path): directory_stamp}
     one, two = ("tier", "consumer", "mover-1"), ("tier", "consumer", "mover-2")
 
     def install(key, **kwargs):
-        return stage_release._install_skip_checkpoint(
+        return staged_path._install_skip_checkpoint(
             key, fragment_version, material_version,
             kwargs.get("stamps", stamps), kwargs.get("documents", {}))
 
     assert not install(one), "no sweep has discovered this owner"
-    stage_release._retain_skip_checkpoints([one])
+    staged_path._retain_skip_checkpoints([one])
     assert install(one)
     assert not install(two), "an undiscovered owner is never cached"
-    assert stage_release._skip_checkpoint_hit(one, fragment, material)
+    assert staged_path._skip_checkpoint_hit(
+        one,
+        fragment,
+        material,
+        trust=kept_reads.filesystem_trust,
+    )
 
-    stage_release._retain_skip_checkpoints([one, two])
+    staged_path._retain_skip_checkpoints([one, two])
     assert install(two)
-    assert set(stage_release._skip_checkpoints) == {one, two}
-    stage_release._retain_skip_checkpoints([two])
-    assert set(stage_release._skip_checkpoints) == {two}, (
+    assert set(staged_path._skip_checkpoints) == {one, two}
+    staged_path._retain_skip_checkpoints([two])
+    assert set(staged_path._skip_checkpoints) == {two}, (
         "an owner the sweep no longer discovers loses its checkpoint")
-    assert not stage_release._skip_checkpoint_hit(one, fragment, material)
+    assert not staged_path._skip_checkpoint_hit(
+        one,
+        fragment,
+        material,
+        trust=kept_reads.filesystem_trust,
+    )
 
     # A full cache refuses; it never evicts the checkpoint it holds.
-    stage_release._retain_skip_checkpoints([one, two])
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_capacity",
+    staged_path._retain_skip_checkpoints([one, two])
+    monkeypatch.setattr(staged_path, '_skip_checkpoint_capacity',
                         lambda discovered: 1)
-    stage_release._retain_skip_checkpoints([one, two])
+    staged_path._retain_skip_checkpoints([one, two])
     assert not install(one)
-    assert set(stage_release._skip_checkpoints) == {two}
-    assert stage_release._skip_checkpoint_hit(two, fragment, material)
+    assert set(staged_path._skip_checkpoints) == {two}
+    assert staged_path._skip_checkpoint_hit(
+        two,
+        fragment,
+        material,
+        trust=kept_reads.filesystem_trust,
+    )
     monkeypatch.undo()
 
     # A stamp of None, or co-owner documents never read, is never installed.
-    stage_release.reset_skip_checkpoints()
-    stage_release._retain_skip_checkpoints([one])
+    staged_path.reset_skip_checkpoints()
+    staged_path._retain_skip_checkpoints([one])
     assert not install(one, stamps={str(tmp_path): None})
     assert not install(one, documents=None)
     assert not install(one, documents={str(fragment): None})
     assert install(one, documents={str(fragment): fragment_version})
-    usage = stage_release.skip_checkpoint_usage()
+    usage = staged_path.skip_checkpoint_usage()
     assert usage["checkpoints"] == 1 and usage["fences"] == 2, usage
-    stage_release.reset_skip_checkpoints()
-    assert stage_release._skip_checkpoints == {}
-    assert stage_release.skip_checkpoint_usage() == {
+    staged_path.reset_skip_checkpoints()
+    assert staged_path._skip_checkpoints == {}
+    assert staged_path.skip_checkpoint_usage() == {
         "checkpoints": 0, "capacity": 0, "fences": 0, "bytes": 0}

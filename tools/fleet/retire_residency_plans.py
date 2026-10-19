@@ -27,7 +27,10 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
@@ -35,27 +38,12 @@ sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import pool, residency_plan  # noqa: E402
 
 
-def candidates(queue: pool.PoolQueue) -> list[str]:
-    """Consumer keys with a filed plan and no ready or claimed consumer row."""
-
-    keys = []
-    for path in sorted(pool._scan(queue.root / pool.RESIDENCY_PLANS)):
-        key = path.stem
-        if path.suffix != ".json" or not path.is_file():
-            continue
-        if queue.item_path(pool.READY, key).exists():
-            continue
-        if queue.item_path(pool.CLAIMED, key).exists():
-            continue
-        keys.append(key)
-    return keys
-
 
 def retire_concluded_plans(queue: pool.PoolQueue, *, apply: bool) -> dict[str, list[str]]:
     """Reap each candidate plan (or only list it when ``apply`` is false)."""
 
     result: dict[str, list[str]] = {"retired": [], "kept": [], "would_retire": []}
-    for key in candidates(queue):
+    for key in residency_plan.concluded_consumers(queue):
         if not apply:
             result["would_retire"].append(key)
             continue

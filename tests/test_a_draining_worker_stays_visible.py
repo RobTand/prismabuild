@@ -10,7 +10,7 @@ the loop stopped.
 
 These tests drive the real ``worker_loop._run_loop`` against a ``tmp_path``
 queue and a private gate, and read the result back through ``pbstatus``' own
-census.  Nothing touches ``/run``, a live queue or a real broker; the reopened
+fleet_census.  Nothing touches ``/run``, a live queue or a real broker; the reopened
 poll only ever serves an already-empty queue.
 """
 
@@ -21,6 +21,7 @@ import json
 import socket
 from pathlib import Path
 import sys
+from threading import Event
 import time
 
 import pytest
@@ -31,11 +32,15 @@ WORKER_LOOP = REPO / "tools" / "fleet" / "worker_loop.py"
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 HOST = socket.gethostname()
 DRAIN_GATE = {"draining": True, "owner": "x", "reason": "y",
               "changed_unix": 123.0}
+
+
+from prismabuild import role_session
 
 
 def _load_loop(tmp_path: Path, monkeypatch, gate_value,
@@ -58,15 +63,16 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value,
     loop = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loop)
     monkeypatch.setattr(loop, "SH", tmp_path)
-    monkeypatch.setattr(loop, "MAINTENANCE_GATE", gate)
-    monkeypatch.setattr(loop, "PARKED_ROOT", tmp_path / "rollout" / "parked")
+    monkeypatch.setattr(role_session, "MAINTENANCE_GATE", gate)
+    monkeypatch.setattr(role_session, "PARKED_ROOT", tmp_path / "rollout" / "parked")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     monkeypatch.setattr(loop, "PUBLICATION_LOCK_ROOT",
                         tmp_path / "offer-publish")
-    monkeypatch.setattr(loop, "loaded_runtime_commit", lambda: "test")
-    monkeypatch.setattr(loop, "published_commit", lambda: "test")
-    monkeypatch.setattr(loop, "_generation_at", lambda path: "test")
-    monkeypatch.setattr(loop, "generation_drift",
-                        lambda loaded_commit=None, loaded_generation=None: None)
+    for name, attribute in (("loaded.json", "GENERATION_VERSION"),
+                            ("published.json", "RUNTIME_VERSION")):
+        receipt = tmp_path / name
+        receipt.write_text(json.dumps({"commit": "test", "generation": "test"}))
+        monkeypatch.setattr(role_session, attribute, receipt)
     monkeypatch.setattr(loop.cpu_topology, "inherited_tiers", lambda: None)
     # No Docker probe and no `ip` invocation on the offer path: both are
     # capability fields this test does not assert, and neither should make a
@@ -83,7 +89,7 @@ def _load_loop(tmp_path: Path, monkeypatch, gate_value,
 
 
 def _offer_path(queue: pool.PoolQueue) -> Path:
-    return queue.root / pool.WORKERS / f"{HOST}.json"
+    return queue.root / pool.record_store.WORKERS / f"{HOST}.json"
 
 
 def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeypatch):
@@ -97,11 +103,11 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    assert _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(lambda: False) == 0
+    queue.records.ensure_layout()
+    assert _load_loop(tmp_path, monkeypatch, DRAIN_GATE)._run_loop(Event()) == 0
 
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
-    assert list(queue.dir(pool.CLAIMED).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json")) == []
     offer = json.loads(_offer_path(queue).read_text())
     assert offer["state"] == "draining"
     assert offer["drain_owner"] == "x"
@@ -122,7 +128,7 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     # drain stays queueable instead of being refused for want of a worker.
     assert queue.placeable({"resources": {"cpu": 1}, "tags": ["x86"]}) is True
 
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.action_rows(queue.root).value
     node = next(n for n in census["nodes"] if n["node"] == HOST)
     assert node["state"] == "draining" and node["healthy"] is True
     assert node["draining"] is True
@@ -143,14 +149,14 @@ def test_a_draining_loop_keeps_a_fresh_named_offer_and_reopens(tmp_path, monkeyp
     # is the existing safety polarity this change must not touch.
     (tmp_path / "maintenance.json").write_text(
         json.dumps({"draining": False, "changed_unix": 124.0}))
-    assert _load_loop(tmp_path, monkeypatch, None)._run_loop(lambda: False) == 0
+    assert _load_loop(tmp_path, monkeypatch, None)._run_loop(Event()) == 0
 
     reopened = json.loads(_offer_path(queue).read_text())
     assert reopened.get("state") in (None, "live")
     assert "drain_owner" not in reopened and "drain_reason" not in reopened
     assert reopened["observed_capacity"] == {
         "gpu": 0, "cpu": 1, "mem_gb": 2, "disk_metadata": 0}
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"]
                 if n["node"] == HOST)
     assert node["state"] == "live" and node["healthy"] is True
     assert node["draining"] is False and node["drain_owner"] is None
@@ -173,15 +179,15 @@ def test_missing_or_malformed_gates_still_announce_draining(tmp_path, monkeypatc
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     loop = _load_loop(tmp_path, monkeypatch, contents)
-    assert loop._run_loop(lambda: False) == 0
+    assert loop._run_loop(Event()) == 0
 
     offer = json.loads(_offer_path(queue).read_text())
     assert offer["state"] == "draining"
     assert all(value == 0 for value in offer["observed_capacity"].values())
     assert offer.get("drain_reason") == reason
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"]
                 if n["node"] == HOST)
     assert node["state"] == "draining" and node["healthy"] is True
 
@@ -195,17 +201,17 @@ def test_a_stale_draining_offer_reads_as_a_stopped_loop(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="parkedbox", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4}, observed_capacity={"cpu": 0},
                    state="draining", drain_owner="x", drain_reason="y",
                    drain_changed_unix=10.0)
-    path = queue.root / pool.WORKERS / "parkedbox.json"
+    path = queue.root / pool.record_store.WORKERS / "parkedbox.json"
     record = json.loads(path.read_text())
     record["announced_unix"] = time.time() - pool.OFFER_TIMEOUT_S - 1
     path.write_text(json.dumps(record))
 
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"]
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"]
                 if n["node"] == "parkedbox")
     assert node["state"] == "stale" and node["healthy"] is False
     assert node["draining"] is False
@@ -225,7 +231,7 @@ def test_a_drain_carries_the_last_declared_spool_forward(tmp_path, monkeypatch):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     gate = tmp_path / "maintenance.json"
     gate.write_text(json.dumps({"draining": False, "changed_unix": 1.0}))
     loop = _load_loop(tmp_path, monkeypatch, None,
@@ -237,6 +243,7 @@ def test_a_drain_carries_the_last_declared_spool_forward(tmp_path, monkeypatch):
 
     real_publish = loop.publish_offer
     statuses: list[str] = []
+    stop = Event()
 
     def publish(announce, **kwargs):
         result = real_publish(announce, **kwargs)
@@ -244,10 +251,12 @@ def test_a_drain_carries_the_last_declared_spool_forward(tmp_path, monkeypatch):
         if len(statuses) == 1:
             # The gate closes between the open poll and the next one.
             gate.write_text(json.dumps(DRAIN_GATE))
+        elif len(statuses) >= 2:
+            stop.set()
         return result
 
     monkeypatch.setattr(loop, "publish_offer", publish)
-    assert loop._run_loop(lambda: len(statuses) >= 2) == 0
+    assert loop._run_loop(stop) == 0
     assert statuses == ["published", "published"]
 
     offer = json.loads(_offer_path(queue).read_text())
@@ -266,10 +275,10 @@ def test_live_and_foreign_malformed_offers_stay_readable(tmp_path):
     """
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="openbox", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4}, observed_capacity={"cpu": 4})
-    (queue.root / pool.WORKERS / "foreign.json").write_text(json.dumps({
+    (queue.root / pool.record_store.WORKERS / "foreign.json").write_text(json.dumps({
         "schema": pool.POOL_OFFER_SCHEMA_V1, "host": "foreign",
         "tags": ["x86"], "has_gpu": False, "capacity": {"cpu": 4},
         "observed_capacity": {"cpu": 0}, "announced_unix": time.time(),
@@ -277,7 +286,7 @@ def test_live_and_foreign_malformed_offers_stay_readable(tmp_path):
         "drain_changed_unix": "soon",
     }))
 
-    nodes = {n["node"]: n for n in pbstatus.read_pool(queue.root)["nodes"]}
+    nodes = {n["node"]: n for n in fleet_census.action_rows(queue.root).value["nodes"]}
     assert nodes["openbox"]["state"] == "live"
     assert nodes["openbox"]["draining"] is False
     assert nodes["foreign"]["state"] == "draining"

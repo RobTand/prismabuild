@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -25,7 +26,7 @@ def ready_denial(tmp_path):
                   checkout_root="/mnt/shared/status-fixture",
                   worker_script=ROOT / "tools/prismabuild_worker.py",
                   resources={"cpu": 1}, tags=["box"])
-    record = json.loads(queue.item_path(pool.READY, key).read_text())
+    record = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     path = queue.ledger("box").base / "adaptive" / pool.CLAIM_DENIALS
     path.parent.mkdir(parents=True, exist_ok=True)
     denial = {"action_key": key, "published_unix": record["published_unix"],
@@ -43,7 +44,7 @@ def ready_denial(tmp_path):
 def test_bad_optional_evidence_cannot_hide_a_ready_job(ready_denial, evidence):
     queue, key, path, denial, write = ready_denial
     write({**denial, "evidence": evidence})
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     row = next(row for row in result["jobs"] if row["action_key"] == key)
     assert row["state"] == "READY"
     assert result["queue"]["ready"] == 1
@@ -57,7 +58,7 @@ def test_claim_keeps_prior_host_denial_visible_with_age(ready_denial, monkeypatc
     write({**denial, "denied_unix": now - 120})
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "box")
     assert queue.claim(tags=["box"], owner="box:fixture")["action_key"] == key
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     row = next(row for row in result["jobs"] if row["action_key"] == key)
     assert row["state"] == "CLAIMED"
     assert row["admission_denials"][0]["age_s"] >= 120
@@ -68,11 +69,11 @@ def test_claim_keeps_prior_host_denial_visible_with_age(ready_denial, monkeypatc
 
 def test_denial_read_error_preserves_job_but_reports_incomplete(ready_denial, monkeypatch):
     queue, key, path, denial, write = ready_denial
-    original = pbstatus._pool_sidecar
-    monkeypatch.setattr(pbstatus, "_pool_sidecar", lambda candidate:
+    original = fleet_census._pool_sidecar
+    monkeypatch.setattr(fleet_census, "_pool_sidecar", lambda candidate, *, reader=None:
                         PermissionError("denial read denied") if candidate == path
-                        else original(candidate))
-    result = pbstatus.read_pool(queue.root)
+                        else original(candidate, reader=reader))
+    result = fleet_census.action_rows(queue.root).value
     assert result["jobs"][0]["state"] == "READY"
     assert result["queue"]["ready"] == 1
     assert result["queue"]["complete"] is False
@@ -84,7 +85,7 @@ def test_status_explains_the_observed_memory_shortage(ready_denial):
     write({**denial, "reason": "reservation_unavailable", "evidence": {
         "token_shortage": {"resource": "mem_gb", "requested": 8, "available": 3},
     }})
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     row = result["jobs"][0]
     assert row["admission_denials"][0]["evidence"]["token_shortage"]["available"] == 3
     text = "\n".join(pbstatus.pool_job_lines([row], result["queue"]))
@@ -101,7 +102,7 @@ def test_status_explains_the_observed_memory_shortage(ready_denial):
 def test_bad_shortage_detail_keeps_the_original_denial_readable(ready_denial, shortage):
     queue, key, path, denial, write = ready_denial
     write({**denial, "evidence": {"token_shortage": shortage}})
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     text = "\n".join(pbstatus.pool_job_lines(result["jobs"], result["queue"]))
     assert "box: adaptive_cpu_refused" in text
     assert "waiting for release" not in text

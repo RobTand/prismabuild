@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import shape_gate  # noqa: E402
 
 
@@ -56,7 +57,7 @@ def test_the_reference_campaign_shape_stages_and_reads_back(
     monkeypatch.setattr(storage_tiers, "GIB", shape_gate.UNIT_BYTES)
 
     result = shape_gate.run_gate(
-        table, root=tmp_path / "gate", shared_root=Path(pbrun.SH),
+        table, root=tmp_path / "gate", shared_root=Path(pbrun.configured_store().root),
         require_chunk_edge=bool(spec["chunk_edge_inside_entry"]))
 
     with capsys.disabled():

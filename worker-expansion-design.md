@@ -93,7 +93,7 @@ does not edit `staged_read_requirements_2026-09-20.json`.
 
 | FLEET ID | Meaning | Maps to today |
 |---|---|---|
-| `FLEET-01 registered` | Roster names the box with a loop shape | `fleet_boxes.json boxes[<host>]` + `supervise._box_entry`; startup `_config` refuses unknown host |
+| `FLEET-01 registered` | Roster names the box with a loop shape | `fleet_boxes.json boxes[<host>]` + `fleet_roster.Roster.for_host`; startup `_config` refuses unknown host |
 | `FLEET-02 qualifying` | Joined but not yet eligible; validation running | broker gate `draining:true` with this join's `changed_unix` + no fresh offer (`workers/<host>.json` absent/stale) |
 | `FLEET-03 eligible` | May be placed and may claim | gate `draining:false` + fresh `workers/<host>.json` (age ≤ `OFFER_TIMEOUT_S=120`) + `placeable`/`claim` match |
 | `FLEET-04 draining` | Declared absent or resigning; finish-only, no new claims/loops | roster `status in {retired,offline}` (`fleet_roster.ABSENT`) **or** broker gate `draining:true`; supervise `target=0,reserve=0`, worker_loop skips offer+admission after parking |
@@ -342,7 +342,7 @@ on the PB-owned path finishes before capacity is reported released.
 |---|---|---|---|
 | Registered hardware shape | `fleet_boxes.json` entry + `fleet_roster.box_status` | versioned file + published generation | supervise `_config` (refuses unknown/absent at startup) |
 | Desired membership (transient resign/rejoin) | broker durable maintenance state (`maintenance_state_path`, schema `prismabuild.resource-maintenance.v1`) | root-owned persistent JSON; restart replays it; boot hold (`owner=client-upgrade`) keeps the fence closed until client verification | broker `_restore_maintenance`; CLI never invents a parallel store |
-| Execution fence (this epoch) | volatile gate mirror (`MAINTENANCE_GATE`, `changed_unix` names the epoch) | tmpfs; missing/unparsable reads as draining (fail closed) | `worker_loop.read_maintenance_gate` |
+| Execution fence (this epoch) | volatile gate mirror (`MAINTENANCE_GATE`, `changed_unix` names the epoch) | tmpfs; missing/unparsable reads as draining (fail closed) | `role_session.read_maintenance_gate` |
 | Exact-loop acks | `PARKED_ROOT/<pid>-<starttime>-<gatekey>` markers | tmpfs; missing marker is never a stale absence | resign collector (exact name-set match, not PID-prefix) |
 | Worker incarnation | live supervisor pid in `supervise.CLAIM` + `/proc` starttime | host-local; reboot clears it (boot hold applies) | CLI derives owner, never mints random per-call nonces |
 | Claim/attempt truth | `claimed/` + leases + immutable withdrawal decisions + terminal records | shared queue | ladder, reaper, `finish` |

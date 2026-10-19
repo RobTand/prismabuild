@@ -33,6 +33,9 @@ a fleet worker loop; pbrun's submitter handles (``pbrun.SH``) are redirected
 into the fixture so ``freeze_action_template`` ingests into a temp CAS.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -46,6 +49,8 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
 import prismabuild.materialize as materialize  # noqa: E402
 import prismabuild.pool as pool  # noqa: E402
@@ -69,6 +74,37 @@ def _isolated_synthetic_launch_context(monkeypatch):
     for name in ("PRISMABUILD_ACTION_NONCE", "PRISMABUILD_ACTION_SCOPE",
                  "PRISMABUILD_READER_HELPER_ROOT", "PRISMABUILD_ACTION_KEY"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_launch_context_keeps_its_narrow_claim_read_error_boundary(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        error_type: type[Exception]) -> None:
+    queue = pool.PoolQueue(tmp_path / "queue")
+    owner = "cd" * 32
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    claimed.parent.mkdir(parents=True, exist_ok=True)
+    claimed.write_text(json.dumps({"worker_script": "/worker.py"}))
+    error = error_type("the claim read failed")
+    cause = ValueError("the original read cause")
+    real_read = Path.read_bytes
+
+    def read(path: Path) -> bytes:
+        if path == claimed:
+            raise error from cause
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+
+    if isinstance(error, OSError):
+        assert po._producer_launch_context(queue, owner) == {
+            "ok": False, "step": "launch-context",
+            "refusal": f"producer-claim-unreadable: {error}"}
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            po._producer_launch_context(queue, owner)
+        assert raised.value is error
+        assert raised.value.__cause__ is cause
 
 
 def _git(root: Path, *args: str) -> str:
@@ -121,7 +157,9 @@ def _execute(world, mover_key: str) -> dict:
     failure IS that message: the worker's checkout-identity preflight.
     """
 
-    row = pool._read_json(world.q.item_path(pool.CLAIMED, mover_key))
+    row = pool.record_store.value_or_raise(
+        world.q.records.item(pool.record_store.CLAIMED, mover_key),
+    )
     assert isinstance(row, dict) and row["action_key"] == mover_key
     outcome = world.q.execute(row, timeout_s=240)
     assert outcome.get("returncode") == 0, (
@@ -145,10 +183,10 @@ class _Producer:
         cwd = source if subdirectory == "." else source / subdirectory
         # ``freeze_action_template`` seals against the submitter's shared
         # handles; redirect them into the fixture, never the live CAS.
-        monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
+        patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
         demand = {"cpu": 1, "mem_gb": 1,
-                  **po.owner_demand_terms(self.template)}
-        frozen = pbrun.freeze_action_template(
+                  **oc.owner_demand_terms(self.template)}
+        frozen = submit_core.freeze_template(
             command=["/bin/true"], cwd=cwd, logical_cwd=subdirectory,
             demand=demand, placement={"required_tags": []},
             variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -159,9 +197,9 @@ class _Producer:
             checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
             exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
             progress=None, profile=None, container_image_refs=(),
-            wrapper_dir=tmp_path / "wrapper")
+            wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
         self.cas = frozen["cas"]
-        self.action = pbrun.seal_action_from_template(frozen)
+        self.action = submit_core.seal(frozen)
         self.cas.publish_action_request(self.action)
         self.key = str(self.action["action_key"])
         self.snapshot = self.action["params"]["checkout_snapshot"]
@@ -185,8 +223,8 @@ class _Producer:
         self.inst = po.bind_instance(self.q, self.template,
                                      owner_action_key=self.key,
                                      claim_snapshot=claimed, env=env)
-        po.declare_instance(self.q.root, self.inst)
-        assert po.admit_instance(self.q, self.inst, self.template)["ok"] is True
+        bl.declare_instance(self.q.root, self.inst)
+        assert bl.BatchLedger.admit(self.q, self.inst, self.template)["ok"] is True
         self.stage_root = tmp_path / "stage"
         _announce_tier(self.q, self.stage_root)
 
@@ -232,7 +270,7 @@ def test_the_first_mover_seals_the_producers_checkout_snapshot(
     assert world.snapshot["input"] in mover["inputs"]
     assert world.snapshot["subdirectory"] == subdirectory
     # The row it will be claimed under materializes that same snapshot.
-    row = pool._read_json(world.q.item_path(pool.READY, mover_key))
+    row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.READY, mover_key))
     assert row is not None and row["checkout_snapshot"] == world.snapshot
     # ...and nothing else of the producer's params was copied wholesale.
     assert "produced_output_template" not in mover["params"]
@@ -301,7 +339,7 @@ def test_a_repeat_materialization_seals_the_same_snapshot(
     retired = po.retire_batch(
         world.q, world.inst, world.template, "b1",
         stage_root=str(world.stage_root),
-        residency_root=po.output_fragment_root(world.q.root / pool.RESIDENCY))
+        residency_root=bl.output_fragment_root(world.q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, retired
     refill = po.refill_window(world.q, world.inst, world.template, tier=TIER)
     assert refill.get("ok") is True, refill
@@ -315,7 +353,9 @@ def test_a_repeat_materialization_seals_the_same_snapshot(
     assert mover1_key != mover0
     mover1 = _read_request(world.cas.root, mover1_key)
     assert mover1["params"].get("checkout_snapshot") == world.snapshot
-    row1 = pool._read_json(world.q.item_path(pool.READY, mover1_key))
+    row1 = pool.record_store.value_or_raise(
+        world.q.records.item(pool.record_store.READY, mover1_key),
+    )
     assert row1 is not None and row1["checkout_snapshot"] == world.snapshot
 
     with world.materialize(mover1_key, mover1) as root:
@@ -391,7 +431,9 @@ def test_a_producer_without_a_snapshot_seals_the_legacy_mover(
     mover = _read_request(cas_root, str(out["mover_key"]))
     assert "checkout_snapshot" not in mover["params"]
     assert mover["params"]["cwd"] == "."
-    row = pool._read_json(q.item_path(pool.READY, str(out["mover_key"])))
+    row = pool.record_store.value_or_raise(
+        q.records.item(pool.record_store.READY, str(out["mover_key"])),
+    )
     assert row is not None and row.get("checkout_root") is not None
     assert f"{KIND}@{TIER}" in row["resources"]
 

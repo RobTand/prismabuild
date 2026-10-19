@@ -91,7 +91,7 @@ def profiled(label, repeat, fn):
     stats = pstats.Stats(profile, stream=buffer).sort_stats("cumulative")
     stats.print_stats(12)
     calls = {}
-    watched = ("_read_json", "output_census_for_owner", "validate_output_funding",
+    watched = ("_read_json", "output_census", "validate_output",
                "output_keep_names_for_owner", "_release_reservation", "scandir", "io.open")
     for (_filename, _line, name), row in stats.stats.items():
         for token in watched:
@@ -116,21 +116,24 @@ def prune_dry_run(live: pool.PoolQueue, funding: Path) -> dict:
         counts["records"] += 1
         stem = entry[: -len(SUFFIX)]
         mover, _, tier = stem.partition(".")
-        record, state = live.output_funding_file_state(mover, tier)
+        record, state = live.funding.output_evidence(mover, tier)
         if state != "ok":
             counts["unreadable"] += 1
             continue
         why = None
         if record.get("state") not in ("consumed", "released"):
             why = f"state-{record.get('state')}"
-        elif any(live.item_path(s, mover).exists() for s in (pool.READY, pool.CLAIMED)):
+        elif any(
+            (live.records.item_path(s, mover).exists(
+            ) for s in (pool.record_store.READY, pool.record_store.CLAIMED)),
+        ):
             why = "mover-queued-or-claimed"
-        elif not any(live.item_path(s, mover).exists()
-                     for s in (pool.DONE, pool.FAILED, pool.WITHDRAWN)):
+        elif not any(live.records.item_path(s, mover).exists()
+                     for s in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)):
             why = "mover-not-terminal"
-        elif live.lease_path(mover).exists():
+        elif live.records.lease_path(mover).exists():
             why = "mover-lease"
-        elif live.tier_ledger(tier).holder_tokens(mover):
+        elif live.tier(tier).holdings(mover):
             why = "mover-holds-tier-tokens"
         if why is None:
             counts["terminal"] += 1
@@ -153,8 +156,8 @@ def main(argv=None) -> int:
                              "and time the census on a local copy with and without them")
     args = parser.parse_args(argv)
     live_root = Path(args.queue)
-    funding = live_root / pool.TIER_FUNDING
-    tiers = sorted(p.name for p in (live_root / pool.TIER_RESERVATIONS).iterdir()
+    funding = live_root / pool.record_store.TIER_FUNDING
+    tiers = sorted(p.name for p in (live_root / pool.record_store.TIER_RESERVATIONS).iterdir()
                    if p.is_dir() and not p.name.startswith("."))
     guard_writes(live_root)
     os.makedirs(args.scratch, exist_ok=True)
@@ -165,41 +168,41 @@ def main(argv=None) -> int:
     try:
         view = pool.PoolQueue(scratch / "view")
         view.root.mkdir()
-        (view.root / pool.TIER_FUNDING).symlink_to(funding, target_is_directory=True)
+        (view.root / pool.record_store.TIER_FUNDING).symlink_to(funding, target_is_directory=True)
         for tier in tiers:
-            view.mint_tier_capacity(tier, {"probe": 4})
+            view.tier(tier).mint({'probe': 4})
         nobody = "0" * 63 + "1"
         holder = "0" * 63 + "2"
         report["scenarios"].append(profiled(
-            "census-nonowner", args.repeat, lambda: view.output_census_for_owner(nobody)))
+            "census-nonowner", args.repeat, lambda: view.funding.output_census(nobody)))
         report["scenarios"].append(profiled(
             "release-nonholder", args.repeat,
             lambda: view._release_reservation(nobody, host=None)))
 
         def holder_cycle():
-            assert view.tier_ledger(tiers[0]).acquire(holder, {"probe": 1})
+            assert view.tier(tiers[0]).take(holder, {'probe': 1})
             view._release_reservation(holder, host=None)
-            assert not view.tier_ledger(tiers[0]).holder_tokens(holder)
+            assert not view.tier(tiers[0]).holdings(holder)
         report["scenarios"].append(profiled("release-holder", args.repeat, holder_cycle))
         if args.prune_dry_run:
             live = pool.PoolQueue(live_root)
             dry = prune_dry_run(live, funding)
             report["prune_dry_run"] = {k: v for k, v in dry.items() if k != "terminal_names"}
             copy = pool.PoolQueue(scratch / "copy")
-            (copy.root / pool.TIER_FUNDING).mkdir(parents=True)
+            (copy.root / pool.record_store.TIER_FUNDING).mkdir(parents=True)
             for name in os.listdir(funding):
                 if name.endswith(SUFFIX):
-                    shutil.copy2(funding / name, copy.root / pool.TIER_FUNDING / name)
+                    shutil.copy2(funding / name, copy.root / pool.record_store.TIER_FUNDING / name)
             report["scenarios"].append(profiled(
                 "local-copy-all-records", args.repeat,
-                lambda: copy.output_census_for_owner(nobody)))
+                lambda: copy.funding.output_census(nobody)))
             aside = copy.root / "aside"
             aside.mkdir()
             for name in dry["terminal_names"]:
-                os.rename(copy.root / pool.TIER_FUNDING / name, aside / name)
+                os.rename(copy.root / pool.record_store.TIER_FUNDING / name, aside / name)
             report["scenarios"].append(profiled(
                 "local-copy-live-records-only", args.repeat,
-                lambda: copy.output_census_for_owner(nobody)))
+                lambda: copy.funding.output_census(nobody)))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     if args.out:

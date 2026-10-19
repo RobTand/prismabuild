@@ -19,11 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 from fullstack_fixtures import corpus  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 WHOLE_MOVER = "a" * 64
@@ -58,7 +60,7 @@ def _pool_fixture(tmp_path: Path) -> tuple[Path, dict[str, object], str]:
              files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]).hexdigest()},
     ]
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "fullstack-harness"},
         "mount_prefix": str(mount),
         "entries": entries,
@@ -77,7 +79,7 @@ def _pool_fixture(tmp_path: Path) -> tuple[Path, dict[str, object], str]:
 
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "host": "dl380g10", "tier": "stage",
@@ -105,7 +107,7 @@ def _move_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2", "--max-readers", "2", "--unpaced",
     ])
@@ -124,7 +126,7 @@ def _promote_args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
     ])
 
 
@@ -163,7 +165,7 @@ def _run_chain(tmp_path: Path):
 def _staged(name: str, offset: int, size: int) -> str:
     """The stage's (and the promotion's) name for one ``model/`` range."""
 
-    return stage_move.stage_relative(f"/m/model/{name}", offset, size,
+    return staged_path.stage_relative(f"/m/model/{name}", offset, size,
                                      mount_prefix="/m")
 
 def test_whole_and_split_ranges_stage_byte_identical(tmp_path: Path) -> None:
@@ -176,7 +178,7 @@ def test_whole_and_split_ranges_stage_byte_identical(tmp_path: Path) -> None:
     assert split_file.is_file(), "split range stages its own .pbrange object"
     staged_split = split_file.read_bytes()
     assert staged_split == files["/pool/model/shard-1.bin"][SPLIT_OFFSET:SPLIT_OFFSET + SPLIT_BYTES]
-    fragments = residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)
+    fragments = residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)
     assert len(fragments) >= 2
 
 
@@ -187,7 +189,7 @@ def test_ram_promotion_lands_under_epoch_with_map_lookup(tmp_path: Path) -> None
     ram_copy = tmp_path / "ram" / _staged(WHOLE, 0, whole_len)
     assert ram_copy.read_bytes() == files["/pool/model/shard-0.bin"]
     fragments = [residency_map.validate_fragment(f) for f in
-                 residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER)]
+                 residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER)]
     stage_frags = [f for f in fragments if f["tier_id"] == STAGE_TIER]
     ram_frags = [f for f in fragments if f["tier_id"] == RAM_TIER]
     mapping = residency_map.compose(stage_frags)

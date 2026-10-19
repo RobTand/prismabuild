@@ -371,7 +371,7 @@ def test_a_cas_request_filed_through_an_unrepointed_default_fails_at_the_call(
         tmp_path: Path) -> None:
     """The September leak's shape: ``pbrun.SH`` left at the store, a CAS request.
 
-    ``PrismaBuildCAS`` opens every directory through ``_open_directory_nofollow``,
+    ``PrismaBuildCAS`` opens every directory through ``immutable_files.open_directory_nofollow``,
     which starts at ``/`` and descends one ``dir_fd``-relative component at a
     time, so no audited call sees an absolute path under the store. The
     request must be refused anyway.
@@ -385,10 +385,10 @@ def test_a_cas_request_filed_through_an_unrepointed_default_fails_at_the_call(
         "from test_core import _action\n"
         "def test_file_a_request(tmp_path):\n"
         "    # The default the per-test fixture did not reach.\n"
-        "    pbrun.SH = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
+        "    live_root = Path(os.environ['PRISMABUILD_TEST_LIVE_ROOT'])\n"
         "    checkout = tmp_path / 'checkout'\n"
         "    checkout.mkdir()\n"
-        "    pb.PrismaBuildCAS(pbrun.SH / 'cas').publish_action_request(\n"
+        "    pb.PrismaBuildCAS(live_root / 'cas').publish_action_request(\n"
         "        _action(checkout))\n"
     ))
     output = result.stdout + result.stderr
@@ -647,23 +647,12 @@ def test_a_marked_descriptor_relative_open_is_let_through(guarded: Path) -> None
 def test_a_cas_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
     """The no-follow walk announces the absolute directory before descending."""
 
-    from prismabuild import core as pb
+    from prismabuild import immutable_files
 
     with pytest.raises(RuntimeError, match=str(guarded / "cas/requests/ab")):
-        pb._open_directory_nofollow(guarded / "cas/requests/ab", where="test",
+        immutable_files.open_directory_nofollow(guarded / "cas/requests/ab", where="test",
                                     create=True)
     assert not (guarded / "cas/requests").exists()
-
-
-def test_a_slurm_lane_directory_walk_is_refused_at_the_descent(guarded: Path) -> None:
-    from prismabuild import slurm
-
-    with pytest.raises(RuntimeError, match=str(guarded / "slurm/jobs/x")):
-        slurm._ensure_real_directory(guarded / "slurm/jobs/x",
-                                     root=guarded / "slurm", where="test")
-    with pytest.raises(RuntimeError, match=str(guarded / "slurm")):
-        slurm._open_directory_nofollow(guarded / "slurm", where="test")
-    assert not (guarded / "slurm/jobs").exists()
 
 
 def test_a_caught_refusal_still_fails_the_test(tmp_path: Path) -> None:

@@ -1,0 +1,11 @@
+{
+  "credit": "archive provenance only; not the current writer golden and not a supported historical generation",
+  "disposition": "superseded current-source golden; historical deployed/bridge goldens never changed",
+  "git_blob": "55f46218f9ea26c711fbe019609250b4a10b4e99",
+  "reason": "Commit 96daf6252 relocated the generator path in a Core comment, changing its attested source from 337320 to 337323 bytes. Actual runtime, attestation and receipt writers bind the Core source hash, so the current-source golden changed even though the wire member set did not.",
+  "records": 6,
+  "replacement_commit": "e49e9f33c9c70008db9a3fbf519cdffd469b1f31",
+  "sha256": "2c20df1aecb94ee9f5860a12416118e984d37c80a6c8f30ad73aad77cf5929a0",
+  "source_change_commit": "96daf6252",
+  "source_commit": "163401560d2ba06e1f93f43b8cd49d4b9563dadf"
+}

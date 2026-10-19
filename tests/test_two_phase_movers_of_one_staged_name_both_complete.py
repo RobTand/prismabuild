@@ -40,8 +40,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:testbox"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -78,7 +80,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, list[Path]]:
                         "sha256": hashlib.sha256(_payload(index)).hexdigest()})
     indices = list(range(N))
     body = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
         "produced_by": {"tool": "two-phase-movers-fixture"},
         "annotations": {},
         "mount_prefix": str(origin),
@@ -116,19 +118,19 @@ def _seal_claim(queue: pool.PoolQueue, cas: Path, mover: str, digest: str,
             "python3", "stage_move.py",
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": digest}],
     }
     path = cas / "requests" / mover[:2] / f"{mover}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(request))
-    queue.item_path(pool.CLAIMED, mover).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.CLAIMED, mover).write_text(json.dumps({
         "action_key": mover, "cas_root": str(cas),
         "resources": {"cpu": 2, "mem_gb": 1, STAGE_KIND: 1}}))
 
 
 def _conclude(queue: pool.PoolQueue, mover: str) -> None:
-    queue.item_path(pool.CLAIMED, mover).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, mover).unlink()
 
 
 def _args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path, digest: str,
@@ -144,7 +146,7 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path, digest: str,
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "1",
         "--max-readers", "1",
@@ -153,7 +155,7 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, manifest: Path, digest: str,
 
 
 def _staged(tmp_path: Path, origin: Path) -> Path:
-    return tmp_path / "stage" / stage_move.stage_relative(
+    return tmp_path / "stage" / staged_path.stage_relative(
         str(origin), 0, SIZE, mount_prefix=str(origin.parent))
 
 
@@ -179,18 +181,18 @@ def _hold(monkeypatch, mover: str, path: Path):
 
 def _fixture(tmp_path: Path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     (tmp_path / "stage").mkdir()
     manifest, digest, paths = _manifest(tmp_path)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", FRAGMENT_S)
     return queue, manifest, digest, paths
 
 
 def _vouched(queue: pool.PoolQueue, consumer: str, mover: str) -> set[str]:
     path = residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
     try:
         fragment = json.loads(path.read_bytes())
     except (OSError, ValueError):

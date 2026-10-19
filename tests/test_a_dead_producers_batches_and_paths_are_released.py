@@ -24,6 +24,10 @@ stage, origin or queue.
 """
 from __future__ import annotations
 
+from prismabuild import funding
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+
 import hashlib
 import json
 from pathlib import Path
@@ -39,12 +43,13 @@ sys.path.insert(0, str(ROOT / "tests"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 
 from test_prepaid_writer_integration import (  # noqa: E402
     KIND, REPO, TIER, _announce_tier, _broker_control, _claim_mover,
     _queue, _template,
 )
+from prismabuild import staged_path
 
 #: The tick's events, spelled out: they are what an operator greps for.
 DEAD_BATCH_RETIRED = "output-dead-producer-batch-retired"
@@ -123,7 +128,7 @@ class _Fleet:
         self.prefix = Path(self.template["output_prefix"])
         self.prefix.mkdir(parents=True, exist_ok=True)
         self.q = _queue(tmp_path, gib=8)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         self.stage = tmp_path / "stage"
         _announce_tier(self.q, self.stage)
         po.declare_template(self.q.root, self.template)
@@ -150,7 +155,7 @@ class _Producer:
                   worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
                   checkout_root=str(fleet.tmp / "mover-checkout"),
                   resources={"cpu": 1, "mem_gb": 1,
-                             **po.owner_demand_terms(fleet.template)},
+                             **oc.owner_demand_terms(fleet.template)},
                   produced_output_template=fleet.template,
                   max_attempts=1, retry_safe=False)
         claimed = q.claim(owner=f"w-{label}")
@@ -162,25 +167,25 @@ class _Producer:
         self.inst = po.bind_instance(q, fleet.template,
                                      owner_action_key=self.owner,
                                      claim_snapshot=claimed, env=env)
-        po.declare_instance(q.root, self.inst)
-        assert po.admit_instance(q, self.inst, fleet.template)["ok"] is True
+        bl.declare_instance(q.root, self.inst)
+        assert bl.BatchLedger.admit(q, self.inst, fleet.template)["ok"] is True
 
     # -- writes ---------------------------------------------------------------
 
     def descriptor(self, path: Path, payload: bytes) -> dict:
-        return po.validate_descriptor({
-            "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+        return oc.validate_descriptor({
+            "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
             "artifact_class": "payload", "path": str(path),
             "bytes": len(payload),
             "sha256": hashlib.sha256(payload).hexdigest(),
-            "producer_generation": po.mint_generation(),
+            "producer_generation": oc.mint_output_generation(),
             "owner_action_key": self.inst["owner_action_key"],
             "owner_attempt": dict(self.inst["owner_attempt"]),
         }, self.fleet.template, self.inst)
 
     def prewrite(self, batch_id: str, paths: list[Path],
                  size: int) -> dict:
-        return po.require_prewrite(
+        return bl.BatchLedger.reserve(
             self.fleet.q, self.inst, self.fleet.template, batch_id=batch_id,
             tier=TIER, class_bytes={"payload": size, "checkpoint": 0,
                                     "temp": 0},
@@ -231,7 +236,7 @@ class _Producer:
         staged.parent.mkdir(parents=True, exist_ok=True)
         staged.write_bytes(payload)
         residency_map.write_fragment(
-            po.output_fragment_root(q.root / pool.RESIDENCY), {
+            bl.output_fragment_root(q.root / pool.record_store.RESIDENCY), {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": namespace,
                 "mover_action_key": mover, "tier_id": TIER,
@@ -247,14 +252,14 @@ class _Producer:
             "range_start_bytes": 0, "range_end_bytes": len(payload),
             "bytes_staged": len(payload), "complete": True})
         q.finish(mover, status="executed")
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             q, mover, consumer_action_key=namespace,
             stage_root=str(self.fleet.stage),
-            residency_root=po.output_fragment_root(q.root / pool.RESIDENCY))
+            residency_root=bl.output_fragment_root(q.root / pool.record_store.RESIDENCY))
         assert receipt.get("complete") is True, receipt
-        assert self.fleet.ledger.holder_tokens(mover) == {}
+        assert self.fleet.ledger.holdings(mover) == {}
         assert not staged.exists()
-        funding = q.read_output_funding(mover, TIER)
+        funding = q.funding.read_output(mover, TIER)
         assert funding is not None and funding["state"] == "consumed"
         entry = self.entry(batch_id)
         assert entry.get("retired") is False
@@ -264,17 +269,15 @@ class _Producer:
     def fail(self) -> None:
         self.fleet.q.finish(self.owner, status="failed",
                             detail={"returncode": 1})
-        assert po._producer_attempt_state(self.fleet.q, self.inst) == "dead"
+        assert bl.producer_attempt_state(self.fleet.q, self.inst) == "dead"
 
     # -- reads ----------------------------------------------------------------
 
     def entry(self, batch_id: str) -> dict:
-        return po._read_commitments(
-            po._commitments_path(self.fleet.q.root, self.inst)
-        )["batches"][batch_id]
+        return bl.BatchLedger.for_instance(self.fleet.q.root, self.inst).capture()["batches"][batch_id]
 
     def prewrite_record(self, batch_id: str) -> Path:
-        return (po._prewrites_dir(self.fleet.q.root, self.inst)
+        return (bl.prewrites_dir(self.fleet.q.root, self.inst)
                 / f"{batch_id}.prewrite.json")
 
     def coordinates(self, batch_id: str) -> str:
@@ -331,7 +334,7 @@ def test_an_ended_staged_attempts_prewrites_are_swept(tmp_path: Path) -> None:
     assert dead.prewrite("b43p0-g1", [present, Path(f"{present}.tmp")],
                          64)["ok"] is True
     dead.write(present, b"at-43, never committed")
-    assert not po.is_write_only(fleet.template)
+    assert not oc.is_write_only(fleet.template)
     dead.fail()
 
     events = fleet.tick()

@@ -174,7 +174,7 @@ def _screen(tmp_path, capsys, *extra, expected_code=0):
     """
 
     absent = str(tmp_path / "absent")
-    for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN):
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN):
         (tmp_path / "pb-queue" / state).mkdir(parents=True, exist_ok=True)
     argv = ["--transport", "slurm", "--sinfo", absent, "--squeue", absent,
             "--scontrol", absent, "--queue-root", str(tmp_path / "pb-queue"),

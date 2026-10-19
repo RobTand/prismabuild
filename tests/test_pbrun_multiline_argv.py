@@ -1,11 +1,12 @@
 """A multiline shell payload is an ordinary submission (issue #21)."""
 
 from __future__ import annotations
+from submission_support import patch_store
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
 from pathlib import Path
-import shlex
 import socket
 import subprocess
 import sys
@@ -51,8 +52,8 @@ def _work_and_queue(tmp_path: Path) -> tuple[Path, pool.PoolQueue]:
 
 
 def _submit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, work: Path) -> int:
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     # ``--wait-s 0`` is one immediate observation with the standard bounded
     # reader budget.  A subsecond caller deadline races bounded-reader startup
@@ -73,15 +74,15 @@ def test_a_multiline_shell_script_is_queued_verbatim(
 
     assert _submit(tmp_path, monkeypatch, work) == 75   # queued, nobody served it
 
-    ready = list(queue.dir(pool.READY).glob("*.json"))
+    ready = list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert len(ready) == 1
     item = json.loads(ready[0].read_text(encoding="utf-8"))
     key = str(item["action_key"])
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     action = json.loads(request.read_text(encoding="utf-8"))
-    # pbrun wraps the command in its own ``bash -lc`` line (PATH, tee of the
-    # result); the script must survive inside it, shell-quoted, byte for byte.
-    assert shlex.quote(SCRIPT) in action["task"]["argv"][-1]
+    # The inner script travels as one original argument, byte for byte.
+    assert action["task"]["argv"][5:] == ["bash", *action["params"]["command"]]
+    assert action["task"]["argv"][-1] == SCRIPT
 
 
 def test_a_refused_contract_is_a_named_refusal_not_a_traceback(
@@ -92,7 +93,7 @@ def test_a_refused_contract_is_a_named_refusal_not_a_traceback(
     def refuse(_body):
         raise pb.ActionContractError("action.task.argv[2] is not acceptable")
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", refuse)
+    monkeypatch.setattr(submit_core.pb, "seal_action", refuse)
     with pytest.raises(SystemExit, match=r"^pbrun: refusing to seal the action: "):
         _submit(tmp_path, monkeypatch, work)
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []

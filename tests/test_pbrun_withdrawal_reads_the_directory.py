@@ -4,7 +4,7 @@ PR #54 gave the lane ``read_withdrawal_marker`` and routed three readers of
 ``pb-queue/withdrawn`` through it, because that directory is on NFS with
 default attribute caching: a lookup of a name that did not exist yet is
 negatively cached, so ``exists()`` keeps answering False and ``open()`` keeps
-raising ``ENOENT`` after the file has landed.  ``pbrun.terminal_record`` polls
+raising ``ENOENT`` after the file has landed.  ``pbrun.action_wait.terminal_record`` polls
 by ``os.listdir`` for the same reason and says so.
 
 ``pbrun._file_slurm_withdrawal`` was left behind.  It asks all three terminal
@@ -37,6 +37,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "ef" * 32
 GENERATION = 1757000000.0
@@ -125,16 +126,16 @@ def test_an_ending_the_client_has_not_revalidated_still_stops_the_withdrawal(
     """
 
     queue_root = tmp_path / "pb-queue"
-    _ending(queue_root, pool.DONE)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.DONE)
+    _ending(queue_root, pool.record_store.DONE)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.DONE)
 
-    marker = pbrun._file_slurm_withdrawal(
+    marker = submit_core._file_slurm_withdrawal(
         queue_root, _submission(), reason="stale", by="rob",
         scancel_command="scancel",
     )
 
     assert marker is None
-    assert not (queue_root / pool.WITHDRAWN / f"{KEY}.json").exists()
+    assert not (queue_root / pool.record_store.WITHDRAWN / f"{KEY}.json").exists()
 
 
 def test_a_failed_ending_is_read_through_the_same_revalidation(
@@ -143,10 +144,10 @@ def test_a_failed_ending_is_read_through_the_same_revalidation(
     """All three terminal directories, not the one the test happened to pick."""
 
     queue_root = tmp_path / "pb-queue"
-    _ending(queue_root, pool.FAILED)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.FAILED)
+    _ending(queue_root, pool.record_store.FAILED)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.FAILED)
 
-    assert pbrun._file_slurm_withdrawal(
+    assert submit_core._file_slurm_withdrawal(
         queue_root, _submission(), reason="stale", by="rob",
         scancel_command="scancel",
     ) is None
@@ -157,14 +158,14 @@ def test_an_action_still_running_is_withdrawn_as_before(tmp_path: Path) -> None:
 
     queue_root = tmp_path / "pb-queue"
 
-    marker = pbrun._file_slurm_withdrawal(
+    marker = submit_core._file_slurm_withdrawal(
         queue_root, _submission(), reason="superseded", by="rob",
         scancel_command="scancel",
     )
 
     assert marker is not None
     filed = json.loads(
-        (queue_root / pool.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8")
+        (queue_root / pool.record_store.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8")
     )
     assert filed["status"] == "withdrawn"
     assert filed["reason"] == "superseded"

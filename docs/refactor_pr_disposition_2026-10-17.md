@@ -1,0 +1,30 @@
+# Open PR decisions for the refactor
+
+GitHub readback at 2026-10-17 15:11 UTC found 20 open PRs. Every head matches the 10:10 readback. `main` remains `6073c9d36555d92cdf67ee58ebc7d46bc9d80512`. The exact heads and readback are retained in `active/pr-disposition-refresh/final-20261017T1510` in the refactor evidence directory.
+
+The accumulation branch is `sol/refactor-simplify-prismabuild-20261014`. Complete its combined qualification and review before applying the supersession decisions below. Keep retained changes as separate, rebased work with their original behavioral controls. An old branch's passing result does not qualify a port to the new owners.
+
+| PR | Decision | Reason and next step |
+| --- | --- | --- |
+| [1790](https://github.com/RobTand/prismabuild/pull/1790) | Supersede after the final control passes | Preserve the launcher replacement and exit-after-pin control in the accumulation branch. Use its final native result before closing the duplicate timing repair. |
+| [1779](https://github.com/RobTand/prismabuild/pull/1779) | Supersede after the final controls pass | The yielding-copy controls belong with the migrated movement owner. Retain all ten original cases and their controlled transition checks. |
+| [1775](https://github.com/RobTand/prismabuild/pull/1775) | Supersede after the final controls pass | Keep the deterministic staged-wait assertions with the current no-progress implementation; do not merge the old caller bindings. |
+| [1764](https://github.com/RobTand/prismabuild/pull/1764) | Replace the old aggregate with the reviewed accumulation | The draft combines independent custody, admission and supervision changes against the old owners. Preserve it as provenance while deciding each constituent below. |
+| [1755](https://github.com/RobTand/prismabuild/pull/1755) | Retain for a separate D38 comparison | Compare its exact GPU preflight refusal with the final `d38_gate` and submission tail. Port any remaining behavior with the original negative controls before deciding supersession. |
+| [1754](https://github.com/RobTand/prismabuild/pull/1754) | Retain as separate GPU behavior work | Rebase device-presence checks and CPU routing onto submission and the shared shard verdict. CPU-only refactor gates do not establish GPU qualification. |
+| [1802](https://github.com/RobTand/prismabuild/pull/1802) | Retain as separate gang behavior work | Port teardown, demand-fence and CPU-class controls to the current claim and lifecycle owners. Qualify the complete gang before merging. |
+| [1678](https://github.com/RobTand/prismabuild/pull/1678) | Port separately from the aggregate | Unified-memory accounting and GB10-specific caps are behavioral changes. Retain their device-specific controls and review the port against the current capability and capacity owners. |
+| [1717](https://github.com/RobTand/prismabuild/pull/1717) | Rebase the bounded scratch change | Compare worker custody and expiry with the final scratch lifetime owner. Preserve unknown-owner retention and the original expiry controls. |
+| [1719](https://github.com/RobTand/prismabuild/pull/1719) | Rebase the mount-probe change | Preserve bounded observation and unknown refusal. Any claim that the Spark publication blocker is cleared needs a fresh actual mount observation. |
+| [1756](https://github.com/RobTand/prismabuild/pull/1756) | Retain as a separate lifetime change | Stall supervision changes runtime behavior. Keep its authenticated progress and quiet-budget controls, and resolve it with the lifetime acceptance below. |
+| [1683](https://github.com/RobTand/prismabuild/pull/1683) | Preserve the recorded deployment hold | Source lifetime checks and permission to deploy timed backfill are separate decisions. The refactor does not grant the latter. |
+| [1490](https://github.com/RobTand/prismabuild/pull/1490) | Preserve composition provenance; port finite callers separately | The draft carries a larger used-filesystem guard composition. Identify the remaining callers against the new owners and retain each original floor and custody control. |
+| [1780](https://github.com/RobTand/prismabuild/pull/1780) | Revise before merging | The proposed timing guard must run in the actual verification path and distinguish controlled timing checks from host-speed assumptions. An unwired guard does not enforce the stated rule. |
+| [1750](https://github.com/RobTand/prismabuild/pull/1750) | Keep the person-owned D38 decision open | Record-only policy and producer readiness remain a product decision. Preserve the existing behavior while that decision is open. |
+| [1752](https://github.com/RobTand/prismabuild/pull/1752) | Preserve the Phase 0 hold | The previous GO was withdrawn. Retain calibration evidence without treating source refactoring as renewed operational approval. |
+| [1325](https://github.com/RobTand/prismabuild/pull/1325) | Keep draft pending the Phase 0 decision | Paced export by default is a product-default change. Preserve the opt-in/default boundary until the calibration decision permits a separate change. |
+| [1326](https://github.com/RobTand/prismabuild/pull/1326) | Keep draft pending the Phase 0 decision | Enabling `--output-windows` on the live tier loop is fleet configuration work. It needs its own rollout and workload evidence. |
+| [1812](https://github.com/RobTand/prismabuild/pull/1812) | Keep cleanup as separate work | Attempt, snapshot and log expiry has its own custody and retention consequences. Preserve active diagnostics and qualify each cleanup policy independently. |
+| [1813](https://github.com/RobTand/prismabuild/pull/1813) | Keep separate pending the retention-policy decision | Automatic checkout reaping reverses the recorded #1465 choice. The owner-lock mechanism does not itself authorize that reversal. |
+
+All 20 PRs are linked to the task in T3 Code. No PR was closed, merged, commented on or rewritten as part of these decisions. Source push permission does not authorize a fleet rollout, a retention-policy reversal or a product-default change.

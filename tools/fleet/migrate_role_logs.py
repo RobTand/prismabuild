@@ -17,13 +17,12 @@ from contextlib import ExitStack
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-import fleet_roster  # noqa: E402
 import publish_runtime  # noqa: E402
-import role_log_identity  # noqa: E402
+from prismabuild import role_log_identity  # noqa: E402
 import supervise  # noqa: E402
 
 sys.path.insert(0, str(supervise.RUNTIME_ROOT / "src"))
-from prismabuild import core  # noqa: E402
+from prismabuild import core, fleet_roster  # noqa: E402
 
 # Closed production scope. Private controls substitute filesystem/runtime facts,
 # never these verification functions or their verdicts. No CLI policy overrides.
@@ -113,21 +112,15 @@ def _source(process: dict, allowed: tuple[str, ...]) -> tuple[dict, dict]:
 
 
 def _roster(root: Path, receipt: dict, host: str) -> dict[str, list[str]]:
-    member = "tools/fleet/fleet_boxes.json"
-    if member not in receipt["files"]:
-        raise OSError("roster is not a qualified generation member")
     try:
-        value = json.loads(_read(root / member))
-        box = value["boxes"][host]
+        roster = fleet_roster.Roster.qualified(root, receipt["files"], max_bytes=_LIMIT)
+        box = roster.boxes[host]
         if (not isinstance(box, dict)
                 or fleet_roster.box_status(host, box)[0] != fleet_roster.ACTIVE):
             raise ValueError("absent host")
-        roles = box.get("roles")
-        if not isinstance(roles, dict) or set(roles) != set(_ROLES):
+        roles = fleet_roster.Box(host, box, roster).roles
+        if set(roles) != set(_ROLES):
             raise ValueError("exact three roles must be declared")
-        for args in roles.values():
-            if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
-                raise ValueError("unsupported declared role argv")
         if any(a == "--log" or a.startswith("--log=")
                for args in roles.values() for a in args):
             raise ValueError("custom diagnostic path declaration")

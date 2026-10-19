@@ -43,7 +43,7 @@ EXEMPT: dict[tuple[str, str], str] = {
         "classifier: compared to lines read from SYSTEMD_UNIT to recognize "
         "the managed service; never executed or opened as a path"
     ),
-    ("pbrun", "SHARED_ROOT"): (
+    ("prismabuild.submission", "SHARED_ROOT"): (
         "classifier: reached only by relative_to() in the placement rules and "
         "by the text of two operator messages, never opened"
     ),
@@ -106,7 +106,7 @@ HOST_LOCAL: dict[tuple[str, str], str] = {
     # box's running roles, and a routine ``ensure_roles`` or role-entrypoint
     # test left pointed at it would contend with those roles or file stray
     # lock directories into /tmp.
-    ("worker_loop", "ROLE_LOCK_ROOT"): (
+    ("prismabuild.role_session", "ROLE_LOCK_ROOT"): (
         "host-local role singleton locks owned by live workers; repointed so "
         "tests never contend on their lock inodes"
     ),

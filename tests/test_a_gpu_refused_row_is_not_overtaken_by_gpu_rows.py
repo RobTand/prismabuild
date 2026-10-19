@@ -23,6 +23,7 @@ that cannot place a row takes no lock; and every withhold stays bounded.
 Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import hashlib
 from pathlib import Path
@@ -54,7 +55,7 @@ def _key_of(item):
 
 
 class _Unheld:
-    """What ``_transition_locked`` yields while another loop holds the key."""
+    """What ``action_transition_lock`` yields while another loop holds the key."""
 
     def __enter__(self):
         return False
@@ -66,14 +67,14 @@ class _Unheld:
 def _contest(monkeypatch, queue: pool.PoolQueue, key: str) -> None:
     """Hold ``key``'s transition lock elsewhere for every later pass."""
 
-    original = queue._transition_locked
+    original = queue.action_transition_lock
 
     def contested(action_key, **kwargs):
         if action_key == key:
             return _Unheld()
         return original(action_key, **kwargs)
 
-    monkeypatch.setattr(queue, "_transition_locked", contested)
+    monkeypatch.setattr(queue, "action_transition_lock", contested)
 
 
 # -- a sparky-shaped box: one GB10, 20 CPUs, adaptive CPU and GPU admission --
@@ -100,9 +101,9 @@ def box(tmp_path: Path, monkeypatch):
         return shape, False, exclusive, int(demand.get("mem_gb", 0)) * GIB
 
     monkeypatch.setattr(adaptive_gpu, "action_contract", contract)
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 20, "interval_s": 1.})
+        "cpu_count": 20, "interval_s": 1.}
     sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(T0),
               "sampled_unix": T0, "complete": True, "attributed": True,
               "devices": [{"uuid": "GPU-1", "name": "NVIDIA GB10", "power_w": 15.,
@@ -112,9 +113,9 @@ def box(tmp_path: Path, monkeypatch):
               "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
               "memory_pressure_some": 0., "memory_pressure_full": 0.,
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(sample))
+    gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -144,10 +145,12 @@ def box(tmp_path: Path, monkeypatch):
             sample["jobs"].append({"action_key": key, "nonce": record["nonce"],
                                    "scope_id": record["scope_unit"], "complete": True})
 
-    def claim():
+    def claim(*, cpu_sampler=cpu_sampler, tags=None):
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
-                                   tags=[pool.socket.gethostname()]))
+                                   tags=[pool.socket.gethostname()] if tags is None else tags,
+                                   cpu_sampler=cpu_sampler,
+                                   gpu_sampler=gpu_sampler))
 
     return queue, clock, contracts, publish, tick, claim
 
@@ -208,7 +211,7 @@ def test_a_gpu_refused_big_row_withholds_later_gpu_rows_but_not_pinned_cpu_rows(
     assert waited["reason"] == "deferred_behind_withheld_row"
     assert waited["evidence"]["withheld_for"] == big
     assert waited["evidence"]["withheld_kinds"] == ["gpu"]
-    assert queue.item_path(pool.READY, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_row).exists()
     assert queue.passes(gpu_row) == 0, "a deferred row earned a pass it was not refused"
 
     tick()
@@ -245,7 +248,7 @@ def test_the_gpu_withhold_is_bounded_by_its_holders(box, contract, refusal: str)
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
     [named] = denial["evidence"]["starved"]["holders"]
     assert named["action_key"] == holder[:12] and named["bound"] == "long"
-    assert queue.item_path(pool.READY, big).exists()
+    assert queue.records.item_path(pool.record_store.READY, big).exists()
 
 
 def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) -> None:
@@ -266,7 +269,7 @@ def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) ->
     assert busy["reason"] == "transition_busy"
     assert busy["evidence"]["withhold_carried"]["mode"] == "gpu"
     assert _denial(queue, gpu_row)["reason"] == "deferred_behind_withheld_row"
-    assert queue.item_path(pool.READY, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_row).exists()
 
 
 # -- path 2: a busy lock does not end a live withhold -------------------------
@@ -275,7 +278,7 @@ def test_a_gpu_withhold_carries_its_kind_across_a_busy_lock(box, monkeypatch) ->
 @pytest.fixture()
 def ledger_clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     return now
 
 
@@ -288,7 +291,7 @@ def _withholding_gpu_action(tmp_path: Path, clock):
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 4, "gpu": 1}
 
     def publish(name, resources):
@@ -299,7 +302,7 @@ def _withholding_gpu_action(tmp_path: Path, clock):
         return key
 
     def claim():
-        return _key_of(queue.claim(capacity=capacity))
+        return _key_of(queue.claim(has_gpu=True, capacity=capacity))
 
     shard = publish("shard", {"cpu": 2})
     assert claim() == shard
@@ -324,7 +327,7 @@ def test_a_busy_lock_keeps_this_hosts_live_withhold_for_the_pass(
     assert busy["reason"] == "transition_busy"
     carried = busy["evidence"]["withhold_carried"]
     assert carried["reason"] == "reservation_unavailable_withholding"
-    assert queue.item_path(pool.READY, small).exists()
+    assert queue.records.item_path(pool.record_store.READY, small).exists()
     # A second busy pass in a row still reads the withhold it carried.
     ledger_clock[0] += 10
     assert claim() is None, "a second busy pass forgot the withhold"
@@ -365,13 +368,13 @@ def test_a_box_that_cannot_place_a_row_does_not_take_its_lock(
     queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources={"cpu": 1, "gpu": 1}, **row)
     taken: list[str] = []
-    original = queue._transition_locked
+    original = queue.action_transition_lock
 
     def recording(action_key, **kwargs):
         taken.append(str(action_key))
         return original(action_key, **kwargs)
 
-    monkeypatch.setattr(queue, "_transition_locked", recording)
+    monkeypatch.setattr(queue, "action_transition_lock", recording)
     assert queue.claim(**worker) is None
     assert key not in taken, (
         "a box that can never place the row took its transition lock (#1085)")

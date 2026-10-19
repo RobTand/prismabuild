@@ -3,6 +3,10 @@
 All queue/CAS/origin paths are private tmp_path fixtures. No stage mover is
 executed and no real mountpoint is read or removed.
 """
+
+from prismabuild import funding
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 import json
 import os
 from pathlib import Path
@@ -11,6 +15,7 @@ import sys
 import time
 
 from prismabuild import adaptive_cpu, pool, produced_output as po
+from prismabuild.record_store import RecordStore
 from prewarm_fixture import Fleet
 from test_a_dead_producers_held_mover_is_retired import (
     _World, _about, _isolated, _tier_census, IDLE, KIND, REPO, RETIRED_EVENT,
@@ -30,16 +35,18 @@ def test_terminal_failed_producer_missing_input_ends_ready_mover(tmp_path):
     world = _World(tmp_path)
     origin = Path(world.descs[0]["path"])
     origin.unlink()
-    before = json.loads(world.q.item_path(pool.READY, world.mover).read_text())
+    before = json.loads(world.q.records.item_path(pool.record_store.READY, world.mover).read_text())
     assert before["produced_output_batch"]["owner_nonce"] == world.inst["owner_attempt"]["nonce"]
     world.fail_the_producer()
-    assert po._producer_attempt_state(world.q, world.inst) == "dead"
+    assert bl.producer_attempt_state(world.q, world.inst) == "dead"
 
     _warm(world, tmp_path)
 
-    assert not world.q.item_path(pool.READY, world.mover).exists(), (
+    assert not world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
         "terminal-failed owner plus missing sealed input left the mover READY")
-    ending = json.loads(world.q.item_path(pool.FAILED, world.mover).read_text())
+    ending = json.loads(
+        world.q.records.item_path(pool.record_store.FAILED, world.mover).read_text(),
+    )
     assert ending["published_unix"] == before["published_unix"]
     assert ending["status"] == "failed"
     assert ending["detail"]["termination_reason"] == "input_dependency_failed"
@@ -53,21 +60,21 @@ def test_live_producer_missing_input_remains_ready_and_can_land(tmp_path):
     origin = Path(world.descs[0]["path"])
     payload = origin.read_bytes()
     origin.unlink()
-    assert po._producer_attempt_state(world.q, world.inst) == "live"
+    assert bl.producer_attempt_state(world.q, world.inst) == "live"
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
     origin.write_bytes(payload)
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
 
 
 def test_terminal_failed_producer_with_present_input_is_not_cancelled(tmp_path):
     world = _World(tmp_path)
     world.fail_the_producer()
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
 
 def test_unknown_producer_evidence_does_not_prove_death(tmp_path):
@@ -85,14 +92,14 @@ def test_unknown_producer_evidence_does_not_prove_death(tmp_path):
                     worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
                     checkout_root=str(tmp_path / "mover-checkout"),
                     resources={"cpu": 1, "mem_gb": 1,
-                               **po.owner_demand_terms(world.template)},
+                               **oc.owner_demand_terms(world.template)},
                     produced_output_template=world.template,
                     max_attempts=1, retry_safe=False)
-    state = po._producer_attempt_state(world.q, world.inst)
+    state = bl.producer_attempt_state(world.q, world.inst)
     assert state == "unknown", state
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
 
 def test_the_ended_mover_releases_its_funding_and_the_batch_retires(tmp_path):
@@ -106,9 +113,9 @@ def test_the_ended_mover_releases_its_funding_and_the_batch_retires(tmp_path):
     Path(world.descs[0]["path"]).unlink()
     world.fail_the_producer()
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.FAILED, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
-    funding = world.q.read_output_funding(world.mover, TIER)
+    funding = world.q.funding.read_output(world.mover, TIER)
     assert funding is not None and funding["state"] == "released", funding
     receipts = world.sweep(IDLE)
     retired = _about(receipts, world.mover)
@@ -116,7 +123,7 @@ def test_the_ended_mover_releases_its_funding_and_the_batch_retires(tmp_path):
     assert _tier_census(world.ledger) == {
         "capacity": 4, "free": 4, "holders": {}}
     assert world.batch_entry().get("retired") is True
-    assert world.q.retire_terminal_output_funding()["retired"] == 1
+    assert world.q.funding.retire_output()["retired"] == 1
 
 
 def test_an_unreadable_origin_is_unknown_not_missing(tmp_path):
@@ -133,25 +140,25 @@ def test_an_unreadable_origin_is_unknown_not_missing(tmp_path):
     try:
         parent.chmod(0o000)
         _warm(world, tmp_path)
-        assert world.q.item_path(pool.READY, world.mover).exists(), (
+        assert world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
             "an unreadable origin filed a permanent ending")
-        assert not world.q.item_path(pool.FAILED, world.mover).exists()
+        assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
     finally:
         parent.chmod(0o755)
     # Readable again, the file is present: still READY.
     assert origin.exists()
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     # Genuinely missing now: the ending files.
     origin.unlink()
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.FAILED, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
 
 def test_a_busy_transition_lock_does_not_block_the_claim_pass(tmp_path):
     """#1202 review finding 3: the claim pass must never wait on a foreign lock.
 
-    ``_transition_locked`` blocks by default (#1115 class): another box
+    ``action_transition_lock`` blocks by default (#1115 class): another box
     holding the mover key's lock for seconds stalled the whole claim pass.
     The refusal attempt must be non-blocking, recording a ``transition_busy``
     denial instead.
@@ -181,7 +188,7 @@ def test_a_busy_transition_lock_does_not_block_the_claim_pass(tmp_path):
         holder.wait(timeout=10)
     assert elapsed < 1.0, f"the claim pass blocked {elapsed:.2f}s on a foreign lock"
     assert claimed is None
-    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     path = (adaptive_cpu.local_state_base(world.q.ledger().base)
             / pool.CLAIM_DENIALS)
     records = adaptive_cpu.read_json(path).get("records", {})
@@ -204,18 +211,26 @@ def test_a_crashed_dead_input_transition_is_recovered_by_the_sweep(
     world = _World(tmp_path)
     Path(world.descs[0]["path"]).unlink()
     world.fail_the_producer()
-    item = json.loads(world.q.item_path(pool.READY, world.mover).read_text())
+    item = json.loads(world.q.records.item_path(pool.record_store.READY, world.mover).read_text())
 
-    def crash(*args, **kwargs):
+    write = pool.immutable_files.write_json_atomic
+    attempted = []
+
+    def crash(target, *args, **kwargs):
+        if target != world.q.records.item_path(pool.record_store.FAILED, world.mover):
+            return write(target, *args, **kwargs)
+        assert target == world.q.records.item_path(pool.record_store.FAILED, world.mover)
+        attempted.append(target)
         raise OSError("simulated write fault before the ending was filed")
 
-    monkeypatch.setattr(pool, "_write_json_atomic", crash)
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic', crash)
     # The guard restores the row instead of raising out of the pass.
     assert world.q.fail_dead_input_dependency(item, world.mover) is False
+    assert attempted == [world.q.records.item_path(pool.record_store.FAILED, world.mover)]
     monkeypatch.undo()
-    assert world.q.item_path(pool.READY, world.mover).exists(), (
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
         "a failed ending write did not restore the row")
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
     # A real crash -- the process dies between the capture and the filing --
     # leaves the captured bytes behind; the sweep recovers them.
@@ -223,12 +238,12 @@ def test_a_crashed_dead_input_transition_is_recovered_by_the_sweep(
     captured_dir.mkdir(parents=True, exist_ok=True)
     captured = (captured_dir / f"{world.mover}.1790000000000000."
                 f"{'0' * 32}.dead-input.json")
-    os.link(world.q.item_path(pool.READY, world.mover), captured)
-    world.q.item_path(pool.READY, world.mover).unlink()
+    os.link(world.q.records.item_path(pool.record_store.READY, world.mover), captured)
+    world.q.records.item_path(pool.record_store.READY, world.mover).unlink()
     assert world.q.sweep_ready_transitions(grace_s=0.0) == [world.mover]
-    assert world.q.item_path(pool.READY, world.mover).exists(), (
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
         "the dead-input kind was not recovered by the sweep")
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
 
 def test_one_claim_pass_reads_each_owner_state_once(tmp_path, monkeypatch):
@@ -250,21 +265,21 @@ def test_one_claim_pass_reads_each_owner_state_once(tmp_path, monkeypatch):
     mover2 = str(res["mover_key"])
 
     calls = []
-    real = po._key_generation
+    real = RecordStore.standing
 
-    def counting(queue, key):
+    def counting(store, key):
         calls.append(key)
-        return real(queue, key)
+        return real(store, key)
 
-    monkeypatch.setattr(po, "_key_generation", counting)
+    monkeypatch.setattr(RecordStore, "standing", counting)
     # One prewarm pass scans every READY row: both movers' checks share one
     # owner-state read.
     _warm(world, tmp_path)
     owner_reads = [key for key in calls if key == world.owner]
     assert len(owner_reads) == 1, calls
     for mover in (world.mover, mover2):
-        assert world.q.item_path(pool.READY, mover).exists()
-        assert not world.q.item_path(pool.FAILED, mover).exists()
+        assert world.q.records.item_path(pool.record_store.READY, mover).exists()
+        assert not world.q.records.item_path(pool.record_store.FAILED, mover).exists()
 
 
 def test_claim_fails_the_mover_before_any_admission(tmp_path):
@@ -280,8 +295,10 @@ def test_claim_fails_the_mover_before_any_admission(tmp_path):
     world.fail_the_producer()
     claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
     assert claimed is None, "a dead producer's missing-input mover was admitted"
-    assert not world.q.item_path(pool.READY, world.mover).exists()
-    ending = json.loads(world.q.item_path(pool.FAILED, world.mover).read_text())
+    assert not world.q.records.item_path(pool.record_store.READY, world.mover).exists()
+    ending = json.loads(
+        world.q.records.item_path(pool.record_store.FAILED, world.mover).read_text(),
+    )
     assert ending["status"] == "failed"
     assert ending["detail"]["termination_reason"] == "input_dependency_failed"
     assert ending["detail"].get("action_returncode") is None  # never executed
@@ -304,8 +321,8 @@ def test_a_malformed_template_does_not_end_the_claim_pass(tmp_path):
     template_file.write_text("null")
     # Neither the prewarm cycle nor the claim pass raises; the row stays.
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
     claimed = world.q.claim(owner="w-mover", tags=[_tier_host(world.q)])
     assert claimed is None or claimed["action_key"] != world.mover
 
@@ -322,16 +339,16 @@ def test_a_live_producer_pays_no_transition_lock(tmp_path, monkeypatch):
     lock_of = lambda key: (world.q.root / "transition-locks" / (
         hashlib.sha256(key.encode()).hexdigest() + ".lock"))
     taken = []
-    original = world.q._transition_locked
+    original = world.q.action_transition_lock
 
     def counting(key, **kwargs):
         if key == world.mover and lock_of(key).exists():
             taken.append(key)
         return original(key, **kwargs)
 
-    monkeypatch.setattr(world.q, "_transition_locked", counting)
+    monkeypatch.setattr(world.q, "action_transition_lock", counting)
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     assert taken == [], f"the live-producer check took the mover's lock {len(taken)}x"
 
 
@@ -385,8 +402,8 @@ def test_a_transient_funding_read_fault_retries_instead_of_stranding(
     world.fail_the_producer()
     faults = {"left": 1}
 
-    real_state = world.q.output_funding_file_state
-    real_read = world.q.read_output_funding
+    real_state = world.q.funding.output_evidence
+    real_read = world.q.funding.read_output
 
     def faulty_state(*args, **kwargs):
         if faults["left"]:
@@ -400,15 +417,15 @@ def test_a_transient_funding_read_fault_retries_instead_of_stranding(
             return None
         return real_read(*args, **kwargs)
 
-    monkeypatch.setattr(world.q, "output_funding_file_state", faulty_state)
-    monkeypatch.setattr(world.q, "read_output_funding", faulty_read)
+    monkeypatch.setattr(world.q.funding, "output_evidence", faulty_state)
+    monkeypatch.setattr(world.q.funding, "read_output", faulty_read)
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists(), (
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists(), (
         "a transient funding read fault filed a permanent ending")
-    assert not world.q.item_path(pool.FAILED, world.mover).exists()
+    assert not world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
 
     monkeypatch.undo()
     _warm(world, tmp_path)
-    assert world.q.item_path(pool.FAILED, world.mover).exists()
-    funding = world.q.read_output_funding(world.mover, TIER)
+    assert world.q.records.item_path(pool.record_store.FAILED, world.mover).exists()
+    funding = world.q.funding.read_output(world.mover, TIER)
     assert funding is not None and funding["state"] == "released", funding

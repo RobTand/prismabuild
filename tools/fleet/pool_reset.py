@@ -79,14 +79,22 @@ import re
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import (  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import (  # noqa: E402
     fleet_tool, generation_root, tool_candidates,
 )
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from collections.abc import Mapping, Sequence  # noqa: E402
-import fleet_submit  # noqa: E402
-import pbrun  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
+from prismabuild import submission
+from prismabuild.submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+
+from prismabuild import submission
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
 #: The submitter this tool re-submits through, under whichever layout the
@@ -311,7 +319,7 @@ def plan_resets(
         # same note on ``fleet_submit.submit``.
         cas_root = SH / "cas"
 
-    failed = sorted(queue.dir(pool.FAILED).glob("*.json"))
+    failed = queue.records.json_slot_paths(pool.record_store.FAILED)
     # A withdrawal is a decision, and re-submitting it would undo it.  Two ways
     # a cancelled action still reaches ``failed/``: a worker running bytes that
     # predate ``withdraw`` files its own outcome there (the verb writes
@@ -331,7 +339,7 @@ def plan_resets(
     skipped: list[tuple[str, str]] = []
     for path in failed:
         try:
-            record = json.loads(path.read_text())
+            record = queue.records.text_document_at(path)
         except (OSError, ValueError) as exc:
             skipped.append((path.stem[:12], f"unreadable: {exc}"))
             continue
@@ -638,7 +646,7 @@ def announced_submission(said: str) -> dict | None:
         except ValueError:
             continue
         if (isinstance(value, dict)
-                and value.get("schema") == pbrun.DETACH_SCHEMA_V1
+                and value.get("schema") == submission.action_client.DETACH_SCHEMA_V1
                 and isinstance(value.get("action_key"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", value["action_key"])
                 and value.get("transport") in ("pool", "slurm")
@@ -711,7 +719,7 @@ def _file_reset(plan: Mapping, *, reason: str,
     the queue uses, and it is what this uses now.
 
     **The rewritten record stays readable.**  Changing ``status`` while leaving
-    ``attempt_history`` in place made ``pbrun.outcome_summary`` refuse the
+    ``attempt_history`` in place made ``action_client.outcome_summary`` refuse the
     record: it adopts the immutable attempt whenever those links are present,
     and the attempt still says ``failed``.  The links are kept under a name of
     their own, exactly as ``pool.withdraw`` keeps them.
@@ -724,7 +732,7 @@ def _file_reset(plan: Mapping, *, reason: str,
     """
 
     for path in plan["paths"]:
-        record = pool._read_json(path)
+        record = pool.record_store.read_document(path)
         if record is None:
             continue
         record["status"] = "reset"
@@ -745,7 +753,7 @@ def _file_reset(plan: Mapping, *, reason: str,
         ):
             if field in record:
                 record[kept] = record.pop(field)
-        pool._write_json_atomic(path, record)
+        pool.record_store.RecordStore(path.parent.parent).replace_record_at(path, record)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -29,7 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 TIER = "prismabuild-stage:dl380g10"
@@ -80,16 +80,15 @@ def _plan(queue: pool.PoolQueue) -> dict[str, object]:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": STAGE_CAPACITY_GIB})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': STAGE_CAPACITY_GIB})
     return q
 
 
 def test_a_consumer_that_accepts_nothing_does_not_get_the_whole_tier(queue) -> None:
     """The incident: 19 movers, ~721 GiB, 0 B free, and no egress to relieve it."""
 
-    decision = residency_plan.window(
-        _plan(queue), accepted_phase=None, free_gib=STAGE_CAPACITY_GIB)
+    decision = residency_plan.ConsumerWindow(_plan(queue), None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=STAGE_CAPACITY_GIB)).decision
 
     spent = sum(int(phase["stage_gib"]) for phase in decision["publish"])
     # The head phase plus the one the overlap contract needs, and no more.
@@ -115,9 +114,7 @@ def test_a_rolling_window_is_bounded_by_the_tier_not_by_its_plan(queue) -> None:
     """
 
     plan = _plan(queue)
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=STAGE_CAPACITY_GIB,
-        capacity_gib=STAGE_CAPACITY_GIB)
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=STAGE_CAPACITY_GIB, capacity_gib=STAGE_CAPACITY_GIB)).decision
 
     runahead = sum(int(phase["stage_gib"]) for phase in decision["publish"]
                    if phase["phase"] != "phase-0000")
@@ -133,9 +130,7 @@ def test_a_consumer_quiet_after_some_progress_is_bounded_the_same_way(queue) -> 
     plan = _plan(queue)
     staged = [_hexkey(f"mover{n}") for n in range(0, 6)]
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0003", free_gib=STAGE_CAPACITY_GIB,
-        capacity_gib=STAGE_CAPACITY_GIB, published=staged, staged=staged)
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0003', residency_plan.LegObservation(published=staged, staged=staged), residency_plan.WindowBudget(free_gib=STAGE_CAPACITY_GIB, capacity_gib=STAGE_CAPACITY_GIB)).decision
 
     ahead = sum(PHASE_GIB[4:6]) + sum(
         int(phase["stage_gib"]) for phase in decision["publish"])
@@ -192,10 +187,9 @@ def test_a_stalled_window_does_not_ask_the_sweep_for_room_it_will_not_use(
     tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                     "mountpoint": str(tmp_path / "stage")}}
     tier_loop.residency_window(queue, tiers=tiers)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     for ordinal in (0, 1):
-        assert ledger.acquire(_hexkey(f"mover{ordinal}"),
-                              {"stage_gib": PHASE_GIB[ordinal]})
+        assert ledger.take(_hexkey(f'mover{ordinal}'), {'stage_gib': PHASE_GIB[ordinal]})
 
     assert tier_loop.window_pressure(queue, tiers=tiers) == {}
 
@@ -207,9 +201,7 @@ def test_a_phase_name_this_plan_does_not_carry_is_not_progress(queue) -> None:
     buys the deeper budget that only demonstrated progress earns.
     """
 
-    decision = residency_plan.window(
-        _plan(queue), accepted_phase="phase-from-another-plan",
-        free_gib=STAGE_CAPACITY_GIB, capacity_gib=STAGE_CAPACITY_GIB)
+    decision = residency_plan.ConsumerWindow(_plan(queue), 'phase-from-another-plan', residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=STAGE_CAPACITY_GIB, capacity_gib=STAGE_CAPACITY_GIB)).decision
 
     assert [phase["phase"] for phase in decision["publish"]] == [
         "phase-0000", "phase-0001"]
@@ -238,6 +230,6 @@ def test_a_published_mover_waiting_on_tokens_is_still_pressure(queue, tmp_path) 
                     "mountpoint": str(tmp_path / "stage")}}
     tier_loop.residency_window(queue, tiers=tiers)
     # Published, unpinned: somebody else holds the tokens it is waiting for.
-    assert queue.item_path(pool.READY, _hexkey("mover0")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
 
     assert tier_loop.window_pressure(queue, tiers=tiers) == {TIER: PHASE_GIB[0]}

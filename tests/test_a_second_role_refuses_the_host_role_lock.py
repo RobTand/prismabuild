@@ -50,6 +50,7 @@ sys.path.insert(0, str(TOOLS))
 
 import supervise  # noqa: E402
 import worker_loop  # noqa: E402
+from prismabuild import flock_owner, role_session
 
 HOST = "dl380g10"
 STORAGE = "prewarm_loop.py"
@@ -94,14 +95,15 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, {tools!r})
 import worker_loop
-worker_loop.ROLE_LOCK_ROOT = Path({lock_root!r})
+from prismabuild import role_session
+role_session.ROLE_LOCK_ROOT = Path({lock_root!r})
 receipt = Path({tmp!r}) / "generation" / "RUNTIME_VERSION.json"
 receipt.parent.mkdir(parents=True, exist_ok=True)
 receipt.write_text(json.dumps({{"commit": "c" * 40, "generation": "gen-test"}}))
-worker_loop.GENERATION_VERSION = receipt
-worker_loop.RUNTIME_VERSION = receipt
-worker_loop.read_maintenance_gate = lambda: None
-import prewarm_loop
+role_session.GENERATION_VERSION = receipt
+role_session.RUNTIME_VERSION = receipt
+role_session.read_maintenance_gate = lambda: None
+from prismabuild import prewarm_loop
 prewarm_loop.cycle = lambda *args, **kwargs: {{}}
 prewarm_loop.require_storage_pacing = lambda *args, **kwargs: None
 raise SystemExit(prewarm_loop.main({argv!r}))
@@ -148,7 +150,7 @@ def test_a_second_service_role_refuses_the_host_singleton_lock(
                 out, _ = second.communicate(timeout=5)
             pytest.fail(
                 "a second storage role served beside the lock holder:\n" + out)
-        assert second.returncode == worker_loop.ROLE_SINGLETON_HELD_EXIT, out
+        assert second.returncode == role_session.ROLE_SINGLETON_HELD_EXIT, out
         assert "refusing" in out.lower(), out
         assert str(_lock_path(lock_root)) in out, out
     finally:
@@ -165,7 +167,7 @@ def test_the_singleton_is_released_when_its_holder_exits(
     """A crashed or rotated role must not wedge the box's next role."""
 
     lock_root = tmp_path / "role-locks"
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", lock_root)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", lock_root)
     script = tmp_path / "gen" / "tools" / STORAGE
     ready = tmp_path / "holder-ready"
     holder = subprocess.Popen(
@@ -173,12 +175,12 @@ def test_the_singleton_is_released_when_its_holder_exits(
          str(_lock_path(lock_root)), str(ready), "30"])
     try:
         assert _wait_for(ready.exists)
-        assert worker_loop.role_singleton_holder(script) == (True, holder.pid)
+        assert role_session.role_singleton_holder(script) == (True, holder.pid)
     finally:
         holder.terminate()
         holder.wait(timeout=5)
     assert _wait_for(
-        lambda: worker_loop.role_singleton_holder(script) == (False, None)), (
+        lambda: role_session.role_singleton_holder(script) == (False, None)), (
         "the singleton outlived its holder")
 
 
@@ -187,21 +189,21 @@ def test_one_roles_lock_never_excludes_another_role(
 ) -> None:
     """Per-role isolation: storage and tiers are separate singletons."""
 
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     generation = tmp_path / "gen" / "tools"
     storage = generation / STORAGE
     tiers = generation / TIERS
-    storage_lock = worker_loop.take_role_singleton(storage)
+    storage_lock = role_session.take_role_singleton(storage)
     try:
-        with pytest.raises(worker_loop.RoleLockHeld) as held:
-            worker_loop.take_role_singleton(storage)
+        with pytest.raises(role_session.RoleLockHeld) as held:
+            role_session.take_role_singleton(storage)
         assert held.value.role == "prewarm_loop"
         assert held.value.holder == os.getpid()
-        tiers_lock = worker_loop.take_role_singleton(tiers)
+        tiers_lock = role_session.take_role_singleton(tiers)
         os.close(tiers_lock)
     finally:
         os.close(storage_lock)
-    again = worker_loop.take_role_singleton(storage)
+    again = role_session.take_role_singleton(storage)
     os.close(again)
 
 
@@ -210,14 +212,14 @@ def test_the_lock_path_is_stable_across_published_generations(
 ) -> None:
     """The generation moves; the role is one per host, so the inode must not."""
 
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     store = tmp_path / "runtime-generations"
     old = store / "aaaaaaaa-old" / "tools" / STORAGE
     new = store / "bbbbbbbb-new" / "tools" / "fleet" / STORAGE
 
-    assert worker_loop.role_lock_path(old) == worker_loop.role_lock_path(new)
-    assert worker_loop.role_lock_path(old).name == LOCK_NAME
-    assert not worker_loop.role_lock_path(old).is_relative_to(store), (
+    assert role_session.role_lock_path(old) == role_session.role_lock_path(new)
+    assert role_session.role_lock_path(old).name == LOCK_NAME
+    assert not role_session.role_lock_path(old).is_relative_to(store), (
         "a generation-local lock would let a stale role and a fresh one "
         "each serve")
 
@@ -303,7 +305,7 @@ def test_the_supervisor_does_not_spawn_over_a_held_role_lock(
     monkeypatch.setattr(supervise, "_published_receipt", lambda: {})
 
     lock_root = tmp_path / "role-locks"
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", lock_root)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", lock_root)
     lock = _lock_path(lock_root)
     lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
@@ -368,20 +370,19 @@ def test_contention_refuses_even_when_no_holder_can_be_named(
     answer: "held, holder unknown" is never free.
     """
 
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks")
     script = tmp_path / "gen" / "tools" / STORAGE
     lock = _lock_path(tmp_path / "role-locks")
     lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    # The admission lock's holder rule is the one parse; make it unable to
-    # answer, as an unreadable /proc/locks would.
-    monkeypatch.setattr(worker_loop.adaptive_cpu, "_holder_of",
+    # A procfs failure must leave the kernel-proven refusal intact.
+    monkeypatch.setattr(flock_owner, "holder_pid",
                         lambda descriptor: None)
     try:
-        assert worker_loop.role_singleton_holder(script) == (True, None)
-        with pytest.raises(worker_loop.RoleLockHeld) as refusal:
-            worker_loop.take_role_singleton(script)
+        assert role_session.role_singleton_holder(script) == (True, None)
+        with pytest.raises(role_session.RoleLockHeld) as refusal:
+            role_session.take_role_singleton(script)
         assert refusal.value.holder is None
     finally:
         os.close(held)
@@ -398,16 +399,16 @@ def test_a_once_operator_cycle_also_refuses_a_held_lock(
     never runs behind a held lock.
     """
 
-    import prewarm_loop
+    from prismabuild import prewarm_loop
 
     lock_root = tmp_path / "role-locks"
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", lock_root)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", lock_root)
     receipt = tmp_path / "generation" / "RUNTIME_VERSION.json"
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps({"commit": "c" * 40}))
-    monkeypatch.setattr(worker_loop, "GENERATION_VERSION", receipt)
-    monkeypatch.setattr(worker_loop, "RUNTIME_VERSION", receipt)
-    monkeypatch.setattr(worker_loop, "read_maintenance_gate", lambda: None)
+    monkeypatch.setattr(role_session, "GENERATION_VERSION", receipt)
+    monkeypatch.setattr(role_session, "RUNTIME_VERSION", receipt)
+    monkeypatch.setattr(role_session, "read_maintenance_gate", lambda: None)
     monkeypatch.setattr(prewarm_loop, "require_storage_pacing",
                         lambda *a, **k: None)
     warmed: list[bool] = []
@@ -424,7 +425,7 @@ def test_a_once_operator_cycle_also_refuses_a_held_lock(
         code = prewarm_loop.main([
             "--mount-map", f"/mnt/shared={local}",
             "--pool-root", str(tmp_path / "pb-queue"), "--once"])
-        assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT, code
+        assert code == role_session.ROLE_SINGLETON_HELD_EXIT, code
         assert warmed == [], "a second reader warmed behind the singleton"
         assert "refusing" in capsys.readouterr().err.lower()
     finally:
@@ -436,10 +437,10 @@ def test_a_once_tier_cycle_also_refuses_a_held_lock(
 ) -> None:
     """The tier minter's one-shot form can mint and announce; same lock."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     lock_root = tmp_path / "role-locks"
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", lock_root)
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", lock_root)
     receipt = tmp_path / "generation" / "RUNTIME_VERSION.json"
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps({"commit": "c" * 40}))
@@ -456,7 +457,7 @@ def test_a_once_tier_cycle_also_refuses_a_held_lock(
     try:
         assert tier_loop.main([
             "--pool-root", str(tmp_path / "pb-queue"), "--once",
-        ]) == worker_loop.ROLE_SINGLETON_HELD_EXIT
+        ]) == role_session.ROLE_SINGLETON_HELD_EXIT
         assert minted == [], "a second minter minted behind the singleton"
     finally:
         os.close(held)

@@ -25,23 +25,15 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 KEY_A = "a" * 64
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1})
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1})).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def test_the_claim_records_the_bytes_the_rename_moved(
@@ -58,16 +50,16 @@ def test_the_claim_records_the_bytes_the_rename_moved(
     waiter on the new one never saw an ending.
     """
 
-    _publish(queue, KEY_A, priority=0)
+    ActionRows(queue).publish(KEY_A, priority=0)
     first = json.loads(
-        queue.item_path(pool.READY, KEY_A).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.READY, KEY_A).read_text(encoding="utf-8")
     )
 
     real_rename = os.rename
 
     def resubmit_then_rename(src: object, dst: object) -> None:
-        if str(src).endswith(f"{pool.READY}/{KEY_A}.json"):
-            _publish(queue, KEY_A, priority=7)
+        if str(src).endswith(f"{pool.record_store.READY}/{KEY_A}.json"):
+            ActionRows(queue).publish(KEY_A, priority=7)
         return real_rename(src, dst)
 
     monkeypatch.setattr(pool.os, "rename", resubmit_then_rename)
@@ -75,7 +67,7 @@ def test_the_claim_records_the_bytes_the_rename_moved(
     assert claimed is not None
 
     on_disk = json.loads(
-        queue.item_path(pool.CLAIMED, KEY_A).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text(encoding="utf-8")
     )
     assert on_disk["priority"] == 7
     assert on_disk["published_unix"] > first["published_unix"]
@@ -93,21 +85,21 @@ def test_replacement_is_admitted_against_its_own_requirements(
     queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
     replacement: dict[str, object],
 ) -> None:
-    _publish(queue, KEY_A, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'cpu': 1})
     real_rename = os.rename
 
     def resubmit_then_rename(src: object, dst: object) -> None:
-        if str(src).endswith(f"{pool.READY}/{KEY_A}.json"):
-            _publish(queue, KEY_A, **replacement)
+        if str(src).endswith(f"{pool.record_store.READY}/{KEY_A}.json"):
+            ActionRows(queue).publish(KEY_A, **replacement)
         return real_rename(src, dst)
 
     with monkeypatch.context() as patch:
         patch.setattr(pool.os, "rename", resubmit_then_rename)
         assert queue.claim(capacity={"cpu": 2}) is None
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().held() == {}
-    ready = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     for name, value in replacement.items():
         assert ready[name] == value
     assert queue.claim(tags=["other-host"], has_gpu=True,

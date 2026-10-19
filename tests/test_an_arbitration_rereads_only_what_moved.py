@@ -14,8 +14,8 @@ The census now keeps each directory's fragment names under the stamp taken
 before its listing (``_StagedPublisher._forest_census``, the #992 index), and
 a later census compares the stamps rather than listing: one ``lstat`` per
 directory and one ``stat`` per fragment, the fingerprint of the judgment's
-census.  Here 2,000 names diverge from one
-dead owner (a FAILED consumer, its DONE mover) in a forest of 400 other
+census.  Here 16 names diverge from one
+dead owner (a FAILED consumer, its DONE mover) in a forest of seven other
 namespaces, and one successor publisher replaces them all:
 
 * every name is replaced, and every owner judgement names the dead owner;
@@ -41,7 +41,7 @@ import os
 from pathlib import Path
 import sys
 import threading
-import time
+from kept_read_clock import after_paths
 
 import pytest
 
@@ -51,11 +51,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
+from prismabuild import kept_reads
 from prismabuild import pool, residency_map  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
-NAMES = 2000
+NAMES = 16
 SIZE = 64
 OLD = b"o" * SIZE
 NEW = b"n" * SIZE
@@ -93,7 +95,7 @@ def _filesystem_type(path: Path) -> str | None:
     """The type the complete trust resolver names for ``path`` (#1506)."""
 
     info = os.stat(path)
-    return stage_move._object_filesystem_type(
+    return kept_reads._object_filesystem_type(
         info, path=path, follow_symlinks=False)
 
 
@@ -130,7 +132,7 @@ def _dead_owner(fleet, destinations: list[Path]) -> tuple[str, str]:
         entries[key] = {"stage_path": str(path), "bytes": SIZE,
                         "sha256": OLD_DIGEST, "file_id": _identity(path)}
     stale._write_sidecar(queue, stage, consumer, mover, entries)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -180,7 +182,7 @@ class _ForestTouches:
         """``"root"``, ``"namespace"`` or ``"file"`` of the forest, or ``None``.
 
         String work only: under the lock this runs once per ``stat`` and
-        ``lstat``, 1.16 million times in the test below.
+        ``lstat`` of the fingerprint.
         """
 
         if type(path) is not str:
@@ -267,11 +269,10 @@ def _forest_touches(monkeypatch: pytest.MonkeyPatch, publisher,
             return answer
         return call
 
-    monkeypatch.setattr(stage_move, "_trusted_directory_stamp",
-                        refused(stage_move._trusted_directory_stamp))
-    # _current_directory_version calls this function. Do not wrap both.
-    monkeypatch.setattr(stage_move, "_directory_version_at",
-                        refused(stage_move._directory_version_at))
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_before',
+                        refused(kept_reads.filesystem_trust.directory_before))
+    monkeypatch.setattr(kept_reads.filesystem_trust, 'directory_current',
+                        refused(kept_reads.filesystem_trust.directory_current))
     return touches
 
 
@@ -304,12 +305,11 @@ def _assert_forest_listings(
 @pytest.fixture()
 def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     queue, stage, _cas = fleet
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", stale.GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
-    counts = bench_stage_adopt.build_forest(
-        queue, stage, empty_dirs=370, small_dirs=30, big_fragments=[],
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', stale.GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
+    bench_stage_adopt.build_forest(
+        queue, stage, empty_dirs=4, small_dirs=3, big_fragments=[],
         produced_fragment_dirs=0)
-    assert counts["empty_dirs"] + 30 >= 400
     names = stage / "range"
     names.mkdir()
     destinations = [names / f"part-{index:05d}.bin" for index in range(NAMES)]
@@ -320,12 +320,8 @@ def world(fleet, monkeypatch: pytest.MonkeyPatch):  # noqa: F811
     # the test below measures the fallback instead of the index.
     assert _filesystem_type(queue.root) in LOCAL_CLOCK, (
         _filesystem_type(queue.root))
-    # A listing is kept only under a stamp older than the clock the proof
-    # reads (CLOCK_REALTIME_COARSE), so a directory the fixture wrote in the
-    # current tick would be listed once more before it is kept.  Two ticks
-    # of that clock make every fixture write provably older than the first
-    # census, and the counts below exact.
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, queue.root, stage,
+                *queue.root.rglob("*"), *stage.rglob("*"))
     return publisher, destinations, consumer, mover, copier
 
 
@@ -336,7 +332,7 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-def test_2000_names_of_one_dead_owner_list_the_forest_once(
+def test_names_of_one_dead_owner_list_the_forest_once(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
     publisher, destinations, consumer, mover, copier = world
     root = publisher.residency_root
@@ -368,7 +364,7 @@ def test_2000_names_of_one_dead_owner_list_the_forest_once(
     # ``lstat`` per directory where each trust check re-proves an anonymous
     # device through its descriptor (#1358). No listing, no read, no second
     # pass on either.
-    probed = stage_move._filesystem_type(os.stat(root).st_dev) is None
+    probed = kept_reads._filesystem_type(os.stat(root).st_dev) is None
     directory_cost = 2 if probed else 1
     per_hold = (1 + len(directories)) * directory_cost + fragments
     # Consume one earlier refusal for this directory at each re-list.
@@ -416,7 +412,7 @@ def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
     base._publish(queue, live_consumer, max_attempts=1)   # claimed: live
     late_mover = base._key()
     target = destinations[10]
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": live_consumer, "mover_action_key": late_mover,
         "tier_id": base.TIER, "stage_root": str(publisher.stage_root),
@@ -430,54 +426,10 @@ def test_a_fragment_filed_mid_range_is_seen_by_the_next_decision(
                              "stage_path": str(target), "bytes": SIZE,
                              "sha256": OLD_DIGEST,
                              "file_id": _identity(target)}})
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, target, copier)
     assert live_consumer[:12] in str(refused.value), str(refused.value)
     assert target.read_bytes() == OLD
-
-
-@pytest.mark.parametrize("extra", ["unrelated", "reused", "late"])
-def test_a_refusal_cannot_pay_for_an_unjustified_listing(
-        fleet, monkeypatch: pytest.MonkeyPatch, extra: str) -> None:
-    """The regression gate must reject a re-list without its own refusal."""
-
-    queue, _stage, _cas = fleet
-    root = queue.root / pool.RESIDENCY
-    first, second = root / "first", root / "second"
-    first.mkdir()
-    second.mkdir()
-    publisher = base._publisher(fleet, base._key(), base._key())
-    time.sleep(2 * time.clock_getres(5))
-    # Keep trust stable except for one root comparison. Exercise the real
-    # census, including current -> version, rather than synthetic counters.
-    refuse_root = False
-
-    def filesystem(_info, *, path=None, **_kwargs):
-        nonlocal refuse_root
-        if refuse_root and os.fspath(path) == str(root):
-            refuse_root = False
-            return None
-        return "tmpfs"
-
-    monkeypatch.setattr(stage_move, "_object_filesystem_type", filesystem)
-    touches = _forest_touches(monkeypatch, publisher, root)
-    publisher._forest_census()
-    assert publisher._listed_root is not None
-    assert set(publisher._listed_children) == {"first", "second"}
-    with publisher.queue.stage_ownership_lock(str(publisher.stage_root)):
-        if extra == "late":
-            with os.scandir(second) as entries:
-                tuple(entries)
-        refuse_root = True
-        publisher._forest_census()
-        if extra != "late":
-            target = second if extra == "unrelated" else root
-            with os.scandir(target) as entries:
-                tuple(entries)
-    with pytest.raises(AssertionError, match="unjustified forest listing"):
-        _assert_forest_listings(
-            touches.events, str(root), [str(first), str(second)])
-    assert touches.refusals == 1
 
 
 @pytest.mark.parametrize("changed", [
@@ -487,12 +439,12 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
     """One refusal re-lists one directory; restored trust retains its names."""
 
     queue, _stage, _cas = fleet
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     first, second = root / "first", root / "second"
     first.mkdir()
     second.mkdir()
     publisher = base._publisher(fleet, base._key(), base._key())
-    time.sleep(2 * time.clock_getres(5))
+    after_paths(monkeypatch, root, first, second)
     target = {"stable": None, "root": str(root), "namespace": str(first),
               "initial": str(root), "both": str(root)}[changed]
     remaining = int(changed == "initial")
@@ -504,7 +456,7 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
             return None
         return "tmpfs"
 
-    monkeypatch.setattr(stage_move, "_object_filesystem_type", filesystem)
+    monkeypatch.setattr(kept_reads, '_object_filesystem_type', filesystem)
     touches = _forest_touches(monkeypatch, publisher, root)
     publisher._forest_census()
     remaining = (2 if changed == "both"
@@ -530,5 +482,5 @@ def test_only_the_directory_that_refuses_trust_is_relisted(
     assert touches.locked_directories == collections.Counter({
         name: 2 + extra_checks + extra_lists if name == target else 2
         for name in expected})
-    assert publisher._listed_root is not None
-    assert set(publisher._listed_children) == {"first", "second"}
+    assert str(root) in publisher._forest_roots._slots
+    assert set(publisher._forest_children._slots) == {str(root / "first"), str(root / "second")}

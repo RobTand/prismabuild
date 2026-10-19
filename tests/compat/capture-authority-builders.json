@@ -1,0 +1,27 @@
+{
+  "capture_name": "authority-builders-01-capture",
+  "capture_report_sha256": "8fbe01422f670d6b3a65acb4f254182a716a7ed620db47032bbf3e236a0e817a",
+  "excluded_cases": [],
+  "files": {
+    "goldens-authority-builders.jsonl": "eb8698f1b98a6173510154230b7a97356f70aa4c9d165a5ee8b45aed5ad72df5",
+    "historical-authority-builders.jsonl": "2aa26347ef50c610525d19081c3d9328e5813b028e0f58f9ddb73fdcdc2e70ce"
+  },
+  "finished_at": "2026-10-17T00:45:50.687319+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "broker-maintenance/boot-fence",
+    "lease-pin/acquired"
+  ],
+  "source_git": {
+    "parents": [
+      "fe4adef9f7577b9110a8c7e51a77a3b7045e996e"
+    ],
+    "snapshot": "8565abfd37d6123b2290961b57c5f3d22b7fb66a",
+    "tree": "ffeac9a6fd066dc24aef5d915c976e599b63297e"
+  },
+  "started_at": "2026-10-17T00:45:33.358325+00:00"
+}

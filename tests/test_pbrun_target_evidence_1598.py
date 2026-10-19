@@ -8,6 +8,7 @@ against its own live facts before it runs, so a wrong packet fails closed.  The
 option adds no seal and no identity field.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import copy
 import json
@@ -22,6 +23,7 @@ from prismabuild import core as pb  # noqa: E402
 import pbevidence  # noqa: E402
 import pbgang  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_pbrun_host_class import _sealed_body  # noqa: E402
 
@@ -96,8 +98,8 @@ def test_the_packet_equals_a_live_probe_of_the_same_facts(monkeypatch, tmp_path)
     # architecture names that worker's bash instead (#1598, see
     # test_pbrun_target_evidence_argv0_1598).
     same_box = _packet("sparklina", "GPU-2222")
-    local = pb.executable_toolchain_contract(pbrun.SEALED_ARGV0)
-    same_box["argv0"] = {"path": pbrun.SEALED_ARGV0, "sha256": local["argv0.sha256"],
+    local = pb.executable_toolchain_contract(submit_core.SEALED_ARGV0)
+    same_box["argv0"] = {"path": submit_core.SEALED_ARGV0, "sha256": local["argv0.sha256"],
                          "bytes": local["argv0.bytes"]}
     packet = _write(tmp_path, same_box)
     _no_probe(monkeypatch)
@@ -144,14 +146,14 @@ def _refusal(tmp_path, packet=None, *, raw: bytes | None = None,
         path.write_bytes(raw)
     elif packet is not None:
         path.write_text(json.dumps(packet))
-    with pytest.raises(SystemExit) as exc:
-        pbrun.load_target_evidence(str(path), host_class=host_class)
+    with pytest.raises(submit_core.SubmissionRefused) as exc:
+        submit_core.load_target_evidence(str(path), host_class=host_class)
     return str(exc.value)
 
 
 def test_a_missing_file_is_refused(tmp_path):
-    with pytest.raises(SystemExit) as exc:
-        pbrun.load_target_evidence(str(tmp_path / "absent.json"), host_class="gb10")
+    with pytest.raises(submit_core.SubmissionRefused) as exc:
+        submit_core.load_target_evidence(str(tmp_path / "absent.json"), host_class="gb10")
     assert "cannot read --target-evidence" in str(exc.value)
 
 
@@ -160,7 +162,7 @@ def test_a_file_that_is_not_json_is_refused(tmp_path):
 
 
 def test_an_oversize_file_is_refused(tmp_path):
-    raw = b" " * (pbrun.TARGET_EVIDENCE_MAX_BYTES + 1)
+    raw = b" " * (submit_core.TARGET_EVIDENCE_MAX_BYTES + 1)
     assert "exceeds" in _refusal(tmp_path, raw=raw)
 
 
@@ -209,7 +211,7 @@ def test_a_packet_with_several_devices_of_one_model_is_accepted(tmp_path):
     other["uuid"] = "GPU-2222"
     packet["accelerators"].append(other)
     path = _write(tmp_path, packet)
-    loaded = pbrun.load_target_evidence(str(path), host_class="gb10")
+    loaded = submit_core.load_target_evidence(str(path), host_class="gb10")
     assert len(loaded["accelerators"]) == 2
 
 
@@ -249,7 +251,7 @@ def test_the_collector_prints_a_packet_the_loader_accepts(monkeypatch, tmp_path,
     assert pbevidence.main([]) == 0
     printed = json.loads(capsys.readouterr().out)
     path = _write(tmp_path, printed)
-    loaded = pbrun.load_target_evidence(str(path), host_class="gb10")
+    loaded = submit_core.load_target_evidence(str(path), host_class="gb10")
     assert loaded["accelerators"][0]["driver_version"] == "595.91.07"
 
 

@@ -25,7 +25,7 @@ def test_until_live_rows_and_hard_max_are_one_lease_rule(tmp_path):
     store, record, spec = resident(tmp_path)
     assert local_resident.lease_active(store, record["set_id"], now=149)
     assert not local_resident.lease_active(store, record["set_id"], now=151)
-    ready = store.queue_root / pool.READY
+    ready = store.queue_root / pool.record_store.READY
     ready.mkdir(exist_ok=True)
     (ready / ("a" * 64 + ".json")).write_text(json.dumps({"resident_set": record["set_id"]}))
     assert local_resident.lease_active(store, record["set_id"], now=151)
@@ -87,14 +87,14 @@ def test_evicting_is_filed_under_lock_before_rename_delete_then_release(tmp_path
         return original_rename(source, target)
     def delete(path):
         assert not held(spec["root"])
-        assert queue.tier_ledger("local:test-host").held()["local_gib"] == 1
+        assert queue.tier('local:test-host').holdings()['local_gib'] == 1
         events.append("delete")
         return original_delete(path)
     monkeypatch.setattr(local_resident.os, "rename", rename)
     monkeypatch.setattr(local_resident.shutil, "rmtree", delete)
     assert local_resident.evict_resident_copy(store, record["set_id"], "test-host", spec, now=201)["state"] == "absent"
     assert events == ["rename", "delete"]
-    assert queue.tier_ledger("local:test-host").held() == {}
+    assert queue.tier('local:test-host').holdings() == {}
 
 
 def test_restart_finishes_evicting_tree_before_mint(tmp_path, monkeypatch):
@@ -106,12 +106,12 @@ def test_restart_finishes_evicting_tree_before_mint(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="interrupted"):
         local_resident.evict_resident_copy(store, record["set_id"], "test-host", spec, now=201)
     assert store.read_copy(record["set_id"], "test-host")["state"] == "evicting"
-    assert pool.PoolQueue(store.queue_root).tier_ledger("local:test-host").held()["local_gib"] == 1
+    assert pool.PoolQueue(store.queue_root).tier('local:test-host').holdings()['local_gib'] == 1
     monkeypatch.setattr(local_resident.shutil, "rmtree", original)
     mint = local_tier.mint_local_tier_capacity
     def checked(queue, host, policy):
         assert not Path(spec["root"]).joinpath(record["set_id"] + ".evicting").exists()
-        assert queue.tier_ledger("local:test-host").held() == {}
+        assert queue.tier('local:test-host').holdings() == {}
         return mint(queue, host, policy)
     monkeypatch.setattr(local_tier, "mint_local_tier_capacity", checked)
     local_tier_loop.local_tier_cycle(pool.PoolQueue(store.queue_root), "test-host", {"hosts": {"test-host": spec}})
@@ -130,7 +130,11 @@ def test_remote_egress_uses_retained_host_pinned_action(tmp_path, monkeypatch):
     result = local_resident.request_eviction(store, record["set_id"], "test-host", spec,
                                            caller_host="elsewhere", now=201)
     assert result["state"] == "queued"
-    assert pool.PoolQueue(store.queue_root).item_path(pool.READY, "e" * 64).exists()
+    assert pool.PoolQueue(store.queue_root).records.item_path(
+        pool.record_store.READY,
+        "e" * 64,
+    ).exists(
+    )
 
 
 def test_busy_mover_is_not_deleted(tmp_path):

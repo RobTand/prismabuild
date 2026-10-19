@@ -24,7 +24,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, reader_lease  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "e" * 64
@@ -40,10 +41,10 @@ DIGEST_B = "c" * 64
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -66,15 +67,14 @@ def _republish(root: Path, stage: Path, generation: str,
         dated_entries[key] = {
             "stage_path": str(path), "bytes": 512,
             "sha256": digest, "file_id": identity}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": "a" * 64, "entries": staged_entries})
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
-        generation=generation, entries=dated_entries)
+        "manifest_sha256": "a" * 64, "entries": staged_entries},
+        generation=generation,
+        material_entries=dated_entries)
 
 
 def _stage_files(stage: Path) -> tuple[Path, Path]:
@@ -91,7 +91,7 @@ def test_covers_see_same_generation_republish(fleet) -> None:
 
     queue, stage = fleet
     first, second = _stage_files(stage)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key_a = residency_map.residency_map_key(SOURCE_A, 0)
     key_b = residency_map.residency_map_key(SOURCE_B, 0)
     generation = reader_lease.mint_generation()
@@ -124,7 +124,7 @@ def test_acquire_sees_same_generation_republish(fleet) -> None:
 
     queue, stage = fleet
     first, second = _stage_files(stage)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     key_a = residency_map.residency_map_key(SOURCE_A, 0)
     key_b = residency_map.residency_map_key(SOURCE_B, 0)
     generation = reader_lease.mint_generation()

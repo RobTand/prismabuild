@@ -21,6 +21,7 @@ action reads a box-local materialization of it, so a checkout on the shared
 mount is not a declared data read.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -35,6 +36,7 @@ from prismabuild import decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbcampaign  # noqa: E402
 
 from test_a_data_manifest_names_bytes_exactly import _manifest as _data_manifest  # noqa: E402
@@ -48,8 +50,8 @@ from test_pbrun_detach import _checkout, _queue  # noqa: E402
 
 @pytest.fixture()
 def fleet_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 
@@ -85,7 +87,7 @@ def test_a_shared_mount_row_without_a_manifest_warns_when_it_is_submitted(
 
     work, queue = fleet_paths
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     manifest = _manifest(tmp_path, [
         _row(work, "printf clean"),
         _row(work, f"python train.py --model {shared}/models/M/weight.safetensors"),
@@ -95,7 +97,7 @@ def test_a_shared_mount_row_without_a_manifest_warns_when_it_is_submitted(
     printed = capsys.readouterr()
     assert [line["status"] for line in _submitted(printed)] == [
         "submitted", "submitted"], printed.out
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
     assert "WARNING row 1" in printed.err, printed.err
     assert "data_manifest" in printed.err, printed.err
@@ -112,7 +114,7 @@ def test_a_row_that_names_its_bytes_is_not_warned(
 
     work, _queue_unused = fleet_paths
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     manifest = _manifest(tmp_path, [
         _row(work, f"python train.py --model {shared}/models/M",
              data_manifest=str(_written_manifest(tmp_path))),
@@ -135,7 +137,7 @@ def test_a_cache_hit_is_not_warned_about_repeating_a_cold_read(
 
     work, queue = fleet_paths
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     # The shared path is a harmless printf argument: the command is real, so
     # the row executes and a receipt exists for the re-run to hit.
     manifest = _manifest(tmp_path, [
@@ -173,7 +175,7 @@ def test_require_data_manifest_refuses_a_row_with_nothing_visible_to_scan(
     """
 
     work, queue = fleet_paths
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", tmp_path / "shared")
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
     manifest = _manifest(tmp_path, [_row(work, "python train.py --config local.json")])
 
     with pytest.raises(SystemExit) as refused:
@@ -183,7 +185,7 @@ def test_require_data_manifest_refuses_a_row_with_nothing_visible_to_scan(
         ])
     message = str(refused.value)
     assert "row 0" in message and "data_manifest" in message, message
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_require_data_manifest_refuses_before_any_row_is_submitted(
@@ -193,7 +195,7 @@ def test_require_data_manifest_refuses_before_any_row_is_submitted(
 
     work, queue = fleet_paths
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     manifest = _manifest(tmp_path, [
         _row(work, "printf clean",
              data_manifest=str(_written_manifest(tmp_path))),
@@ -211,7 +213,7 @@ def test_require_data_manifest_refuses_before_any_row_is_submitted(
     assert "--require-data-manifest" in message, message
     # The rows before the flagged one were not sealed either: the refusal is
     # the manifest's, and no read can have happened cold.
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
@@ -227,7 +229,7 @@ def test_require_data_manifest_treats_a_blank_manifest_as_missing(
             manifest,
         ])
     assert "row 0" in str(refused.value), str(refused.value)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_require_data_manifest_refuses_the_windowed_prefix_before_any_row(
@@ -236,7 +238,7 @@ def test_require_data_manifest_refuses_the_windowed_prefix_before_any_row(
     """A bounded window is still a preflight: no prefix is ever published."""
 
     work, queue = fleet_paths
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", tmp_path / "shared")
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
     manifest = _manifest(tmp_path, [
         _row(work, "printf clean",
              data_manifest=str(_written_manifest(tmp_path))),
@@ -249,7 +251,7 @@ def test_require_data_manifest_refuses_the_windowed_prefix_before_any_row(
             "--require-data-manifest", manifest,
         ])
     assert "row 1" in str(refused.value), str(refused.value)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_require_data_manifest_accepts_a_row_that_names_its_bytes(
@@ -259,7 +261,7 @@ def test_require_data_manifest_accepts_a_row_that_names_its_bytes(
 
     work, _queue_unused = fleet_paths
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     manifest = _manifest(tmp_path, [
         _row(work, f"python train.py --data {shared}/inputs/x.pt",
              data_manifest=str(_written_manifest(tmp_path))),
@@ -278,7 +280,7 @@ def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cu
     """One request's common half is validated with the same rule and timing."""
 
     work, queue = fleet_paths
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", tmp_path / "shared")
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
     request = _logical_request(common=_logical_common(
         data_manifest=None,
         argv=["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER,
@@ -293,8 +295,8 @@ def test_require_data_manifest_refuses_a_logical_requests_common_before_it_is_cu
         ])
     message = str(refused.value)
     assert "common" in message and "data_manifest" in message, message
-    assert not list(queue.dir(pool.READY).glob("*.json"))
-    assert not (tmp_path / "cas" / pbcampaign.DECOMPOSITIONS).exists()
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
+    assert not (tmp_path / "cas" / dc.DECOMPOSITIONS).exists()
 
 
 def test_require_data_manifest_passes_a_common_half_that_names_its_bytes(
@@ -302,7 +304,7 @@ def test_require_data_manifest_passes_a_common_half_that_names_its_bytes(
 ) -> None:
     """The default logical request already names its bytes and is accepted."""
 
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", tmp_path / "shared")
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", tmp_path / "shared")
     request = _logical_request()
     manifest = _manifest(tmp_path, request)
 
@@ -319,7 +321,7 @@ def test_the_scan_reads_flag_values_path_lists_shell_words_and_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
 
     assert pbcampaign.shared_mount_read_evidence(
         {"argv": ["python", f"--model={shared}/M"], "env": {}}) == ["argv[1]"]
@@ -338,7 +340,7 @@ def test_the_scan_does_not_confuse_a_sibling_or_a_relative_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
 
     assert pbcampaign.shared_mount_read_evidence(
         {"argv": ["python", f"--data={shared}ish/x.pt"]}) == []
@@ -352,7 +354,7 @@ def test_a_shared_checkout_is_not_a_declared_data_read(
     """``pbrun`` snapshots ``cwd``, so it is not scanned for shared reads."""
 
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     assert pbcampaign.shared_mount_read_evidence({
         "argv": ["python", "train.py"],
         "cwd": str(shared / "work"),
@@ -369,7 +371,7 @@ def test_a_logical_requests_common_half_is_warned_once_when_children_are_publish
 ) -> None:
     work, _queue_unused = fleet_paths
     shared = tmp_path / "shared"
-    monkeypatch.setattr(pbrun, "SHARED_ROOT", shared)
+    monkeypatch.setattr(submit_core, "SHARED_ROOT", shared)
     request = _cover_request(work)
     request["common"]["data_manifest"] = None
     request["common"]["argv"] = [

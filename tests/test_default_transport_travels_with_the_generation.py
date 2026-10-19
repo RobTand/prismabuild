@@ -17,6 +17,10 @@ published before the cutover has no such field and has to keep behaving as it
 did.
 """
 from __future__ import annotations
+from submission_support import patch_store
+import pbrun
+
+from pbtest_shard_output import finish_submission
 
 import importlib.util
 import json
@@ -30,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location(
     "publish_runtime_default_transport",
@@ -61,7 +65,7 @@ def test_a_checkout_with_no_receipt_still_means_the_pull_queue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(fleet_submit, "RUNTIME_ROOT", tmp_path)
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=tmp_path, runtime_version=Path(tmp_path) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "pool"
 
 
@@ -71,9 +75,7 @@ def test_a_generation_published_before_the_cutover_still_means_the_pull_queue(
     """No ``default_transport`` field at all: the behaviour it was published with."""
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT", _generation(tmp_path / "gen")
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen"), runtime_version=Path(_generation(tmp_path / "gen")) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "pool"
 
 
@@ -81,10 +83,7 @@ def test_the_published_generation_carries_the_cutover(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "slurm"
 
 
@@ -94,10 +93,7 @@ def test_the_environment_overrules_the_generation(
     """A person saying where one submission goes is never overruled by a file."""
 
     monkeypatch.setenv(fleet_submit.DEFAULT_TRANSPORT_ENV, "pool")
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "pool"
 
 
@@ -107,10 +103,7 @@ def test_a_transport_this_code_does_not_have_is_not_guessed_at(
     """A receipt from the future must not route work into a queue nobody drains."""
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="kubernetes"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="kubernetes"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="kubernetes")) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "pool"
 
 
@@ -121,7 +114,7 @@ def test_a_damaged_receipt_does_not_take_submission_with_it(
     generation = tmp_path / "gen"
     generation.mkdir()
     (generation / "RUNTIME_VERSION.json").write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(fleet_submit, "RUNTIME_ROOT", generation)
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=generation, runtime_version=Path(generation) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "pool"
 
 
@@ -159,10 +152,7 @@ def test_an_unflagged_pbtest_shards_onto_the_lane_the_generation_names(
     from test_pbtest import _dispatch
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     command = _dispatch(tmp_path, monkeypatch, [])
     assert command[command.index("--transport") + 1] == "slurm"
 
@@ -179,10 +169,7 @@ def test_the_environment_still_holds_a_suite_back_from_the_lane(
     from test_pbtest import _dispatch
 
     monkeypatch.setenv(fleet_submit.DEFAULT_TRANSPORT_ENV, "pool")
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     command = _dispatch(tmp_path, monkeypatch, [])
     assert command[command.index("--transport") + 1] == "pool"
 
@@ -196,19 +183,17 @@ def test_an_unflagged_pbcampaign_dispatches_onto_the_lane_the_generation_names(
     import pbcampaign
     import pbrun
 
-    seen: dict[str, list[str]] = {}
+    from prismabuild import submission
+    seen = {}
 
-    def fake_main() -> int:
-        seen["argv"] = list(sys.argv)
-        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return 0
+    def fake_submit(request, *, report, **context):
+        seen["request"] = request
+        finish_submission(report, transport=request.transport)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submission, "submit_request", fake_submit)
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps([{"argv": ["/bin/bash", "-lc", "true"], "cwd": str(tmp_path)}]),
@@ -216,8 +201,8 @@ def test_an_unflagged_pbcampaign_dispatches_onto_the_lane_the_generation_names(
     )
 
     assert pbcampaign.main(["--detach", str(manifest)]) == 0
-    argv = seen["argv"]
-    assert argv[argv.index("--transport") + 1] == "slurm"
+    request = seen["request"]
+    assert request.transport == "slurm"
 
 
 # -- writing it --------------------------------------------------------------
@@ -228,6 +213,8 @@ def _checkout(path: Path) -> Path:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text("GENERATION = 'x'\n")
+    for leaf in ("generation_receipt.py", "digest_primitives.py"):
+        (package / leaf).write_bytes((ROOT / "src/prismabuild" / leaf).read_bytes())
     (package / "pool.py").write_text("GENERATION = 'x'\n")
     # Phase-2 default-ON canary: publication refuses without the driver, so
     # the tiny checkout ships the same bounded green-driver seam
@@ -289,7 +276,7 @@ def test_publishing_the_cutover_records_it_in_the_receipt(
     receipt = json.loads((mirror / "RUNTIME_VERSION.json").read_text())
     assert receipt["default_transport"] == "slurm"
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(fleet_submit, "RUNTIME_ROOT", mirror.resolve())
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=mirror.resolve(), runtime_version=Path(mirror.resolve()) / "RUNTIME_VERSION.json")
     assert fleet_submit.default_transport() == "slurm"
 
 

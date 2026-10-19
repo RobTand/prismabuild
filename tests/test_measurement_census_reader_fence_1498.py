@@ -24,6 +24,8 @@ import os
 import threading
 import time
 
+from test_measurement_drains_gpu_backfill import (
+    cpu_sample as fleet_cpu_sample, gpu_sample as fleet_gpu_sample)
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
@@ -50,7 +52,7 @@ def _fill_ready(queue, count):
     action_key, strict JSON, finite published_unix) with no sealed request,
     the supported legacy direct-publication path.
     """
-    directory = queue.root / pool.READY
+    directory = queue.root / pool.record_store.READY
     for index in range(count):
         key = f"{index:064x}"
         (directory / f"{key}.json").write_text(
@@ -67,7 +69,9 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
 
     publish("fence-measurement", measurement=True, priority=-100)
     candidate = publish("fence-candidate", priority=-10)
-    candidate_record = pool._read_json(queue.item_path(pool.READY, candidate))
+    candidate_record = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, candidate),
+    )
 
     # Park the admission pass between the discovery read and the under-H
     # refresh, holding the measurement transition key and host admission,
@@ -96,7 +100,9 @@ def test_the_reader_fence_holds_across_discovery_and_refresh(
     def admit():
         outcome["claimed"] = queue.claim(
             capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-            has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate_record])
+            has_gpu=True, tags=["gb10", "sparklina"], ready=[candidate_record],
+            cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+            gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
 
     def observe():
         census = reservation.CensusReader(other, other.ledger())
@@ -166,11 +172,15 @@ def test_a_busy_fence_refuses_before_any_transition_or_host_lock(
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         publish("busy-fence-measurement", measurement=True, priority=-100)
         candidate = publish("busy-fence-candidate", priority=-10)
-        candidate_record = pool._read_json(queue.item_path(pool.READY, candidate))
+        candidate_record = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.READY, candidate),
+        )
         started = time.monotonic()
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS,
                              adaptive_cpu=True, has_gpu=True,
-                             tags=["gb10", "sparklina"], ready=[candidate_record])
+                             tags=["gb10", "sparklina"], ready=[candidate_record],
+                             cpu_sampler=lambda: fleet_cpu_sample(clock, readings),
+                             gpu_sampler=lambda: fleet_gpu_sample(sample, readings))
         elapsed = time.monotonic() - started
         assert result is None
         row = _denial(queue, candidate)

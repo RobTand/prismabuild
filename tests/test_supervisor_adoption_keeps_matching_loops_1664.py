@@ -3,6 +3,8 @@
 The fixture changes paths, not process or reconciliation functions. Private
 workers read their own receipt to isolate supervisor adoption from their
 independent idle upgrade. A removal control must replace the same idle loops.
+The real publisher stages sealed generations, and its pointer owner binds only
+the private mirror. This fixture does not qualify installed-reader activation.
 """
 from __future__ import annotations
 
@@ -44,9 +46,9 @@ def _private_checkout(tmp_path: Path) -> Path:
         shutil.copytree(ROOT / directory, checkout / directory,
                         ignore=shutil.ignore_patterns("__pycache__"))
     fleet = tmp_path / "fleet"
-    # Each exec loads these private paths from its own published script.
+    # Each exec loads these private paths from its published source owners.
     replacements = {
-        "supervise.py": {
+        "tools/fleet/supervise.py": {
             'MIRROR = Path("/mnt/shared/prismabuild-fleet")':
                 f"MIRROR = Path({str(fleet)!r})",
             'CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")':
@@ -54,17 +56,19 @@ def _private_checkout(tmp_path: Path) -> Path:
             'LOG_DIR = Path("/home/rob/tmp")':
                 f"LOG_DIR = Path({str(tmp_path / 'logs')!r})",
         },
-        "worker_loop.py": {
+        "tools/fleet/worker_loop.py": {
             'SH = Path("/mnt/shared/prismabuild-fleet")':
                 f"SH = Path({str(fleet)!r})",
-            'RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"':
-                "RUNTIME_VERSION = GENERATION_VERSION",
             'PUBLICATION_LOCK_ROOT = Path(f"/tmp/prismabuild-offer-publish-{os.getuid()}")':
                 f"PUBLICATION_LOCK_ROOT = Path({str(tmp_path / 'offer-publish')!r})",
         },
+        "src/prismabuild/role_session.py": {
+            'RUNTIME_VERSION = Path("/mnt/shared/prismabuild-fleet/repo/RUNTIME_VERSION.json")':
+                "RUNTIME_VERSION = GENERATION_VERSION",
+        },
     }
     for name, changes in replacements.items():
-        path = checkout / "tools/fleet" / name
+        path = checkout / name
         source = path.read_text()
         for original, replacement in changes.items():
             assert source.count(original) == 1
@@ -87,16 +91,22 @@ def _write_roster(checkout: Path, shape: list[str]) -> None:
 
 
 def _publish(checkout: Path, fleet: Path, monkeypatch, *, remove: bool = False) -> Path:
-    monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
-    monkeypatch.setattr(publish_runtime, "MIRROR", fleet / "repo")
-    argv = ["publish_runtime.py", "--rollout", "rolling", "--rollout-reason",
+    argv = ["publish_runtime.py", "--stage-only", "--rollout", "rolling", "--rollout-reason",
             "private CPU adoption test", "--shape-gate-waiver",
-            "private CPU adoption test", "--no-canary"]
+            "private CPU adoption test"]
     if remove:
         argv += ["--drop-roster-option-by", "PB private test",
                  "--drop-roster-option-reason", "exercise the removal control"]
-    monkeypatch.setattr(sys, "argv", argv)
-    assert publish_runtime.main() == 0
+    with monkeypatch.context() as publication:
+        publication.setattr(publish_runtime, "CHECKOUT", checkout)
+        publication.setattr(publish_runtime, "MIRROR", fleet / "repo")
+        store = fleet / "runtime-generations"
+        before = set(store.iterdir()) if store.exists() else set()
+        publication.setattr(sys, "argv", argv)
+        assert publish_runtime.main() == 0
+        [created] = set(store.iterdir()) - before
+        generation, _receipt = publish_runtime._sealed_generation(created.name)
+        publish_runtime._activate(generation, migrate_directory=False)
     return (fleet / "repo").resolve(strict=True)
 
 
@@ -120,7 +130,10 @@ def _workers(fleet: Path) -> dict[int, tuple[str, ...]]:
             script = Path(os.fsdecode(argv[1])).resolve()
             if script.name != "worker_loop.py" or not script.is_relative_to(store):
                 continue
-            found[pid] = _identity(pid)
+            identity = _identity(pid)
+            if identity[1:3] != (str(pid), str(pid)):
+                continue
+            found[pid] = identity
         except (OSError, IndexError):
             continue
     return found

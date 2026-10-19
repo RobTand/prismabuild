@@ -62,6 +62,42 @@ from threading import local
 
 import pytest
 
+
+TEST_RUNTIME_EVIDENCE_PREFIX = "prismabuild-test-runtime: "
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Keep unavailable runtime observations separate from test outcomes."""
+    import json
+    import platform
+
+    record = dict(complete=False, version=list(sys.version_info[:3]),
+                  description=sys.version, files=list(config.args))
+    try:
+        executable = Path(sys.executable).resolve()
+        running = Path("/proc/self/exe").read_bytes()
+        source_root = Path(__file__).resolve().parents[1]
+        selected = sorted({str(item.path.relative_to(source_root))
+                           for item in terminalreporter._session.items
+                           if item.path.is_relative_to(source_root)})
+        record.update(complete=True,
+            executable=dict(path=sys.executable, resolved_path=str(executable),
+                bytes=len(running), sha256=pb_core.raw_sha256(running)),
+            executable_path_matches_running=executable.read_bytes() == running,
+            affinity=sorted(os.sched_getaffinity(0)),
+            native_threads={name: os.environ.get(name) for name in (
+                "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
+            conftest_sha256=pb_core.raw_sha256(Path(__file__).read_bytes()),
+            kernel=platform.uname()._asdict(),
+            selected_files=selected,
+            selected_source_sha256={name: pb_core.raw_sha256((source_root / name).read_bytes())
+                                    for name in selected},
+            exitstatus=int(exitstatus))
+    except (OSError, RuntimeError, AttributeError) as exc:
+        record["complete"] = False
+        record["reason"] = f"{type(exc).__name__}: {exc}"
+    terminalreporter.write_line(TEST_RUNTIME_EVIDENCE_PREFIX + json.dumps(record))
+
 # The status reader already owns the fleet's bounded fork-and-abandon contract.
 # Reuse it here rather than adding a second timeout shape for a hard-mounted
 # store. The root conftest adds ``src``; this test-only hook also needs the
@@ -71,6 +107,7 @@ if str(_FLEET_TOOLS) not in sys.path:
     sys.path.insert(0, str(_FLEET_TOOLS))
 import pbstatus  # noqa: E402
 import prismabuild.core as pb_core  # noqa: E402
+from prismabuild import immutable_files  # noqa: E402
 # A private consumer suite can reuse this conftest through a symlink.
 # Resolve its helper directory from the source, not from the consumer's cwd.
 _TEST_HELPERS = str(Path(__file__).resolve().parent)
@@ -137,7 +174,7 @@ AUDITED_PATHS: dict[str, tuple[tuple[int, int | None], ...]] = {
     # from ``/`` one dir_fd-relative component at a time, so the ``open``
     # events of that walk name only ``mnt``, ``shared`` and so on. They
     # announce the absolute directory in this event first.
-    pb_core.NOFOLLOW_DIRECTORY_AUDIT_EVENT: ((0, None),),
+    immutable_files.NOFOLLOW_DIRECTORY_AUDIT_EVENT: ((0, None),),
 }
 
 #: ``dir_fd`` values that mean "relative to the working directory".
@@ -290,7 +327,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
 def d38_config(monkeypatch, tmp_path):
     """Private record-only fleet setting; enforcement tests opt in explicitly."""
 
-    import d38_gate
+    from prismabuild import d38_gate
 
     directory = tmp_path / "d38-config"
     directory.mkdir()
@@ -371,24 +408,25 @@ WATCHED = ("cas", "checkout", "pb-queue", "repo", "runtime-generations", "slurm"
 #: test's guard root each is repointed at. Applied only to modules already
 #: imported; the tests import these through their own ``sys.path`` inserts.
 LIVE_DEFAULTS = (
-    ("pbrun", "SH", "fleet"),
     ("pbstatus", "SHARED_ROOT", "fleet"),
+    ("prismabuild.census", "SHARED_ROOT", "fleet"),
+    ("prismabuild.census", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pbsweep", "SH", "fleet"),
     ("gate_1730_probe", "CANONICAL_DIR", "gate-1730-canonical"),
     ("gate_1730_probe", "STAGE_DIR", "gate-1730-stage"),
     ("pbstatus", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("fleet_membership", "DEFAULT_QUEUE_ROOT", "fleet/pb-queue"),
     ("pool_reset", "SH", "fleet"),
-    ("fleet_submit", "SH", "fleet"),
+    ("prismabuild.fleet_submit", "SH", "fleet"),
     ("worker_loop", "SH", "fleet"),
     ("worker_loop", "PUBLICATION_LOCK_ROOT", "offer-publication"),
     # Role singleton locks are host-local and per-uid (#709): left pointed at
     # the live namespace, a routine ``ensure_roles`` or role-entrypoint test
     # would contend with the box's own running role or file stray lock
     # directories into /tmp.
-    ("worker_loop", "ROLE_LOCK_ROOT", "role-locks"),
-    ("prewarm_loop", "SH", "fleet"),
-    ("worker_loop", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
+    ("prismabuild.role_session", "ROLE_LOCK_ROOT", "role-locks"),
+    ("prismabuild.prewarm_loop", "SH", "fleet"),
+    ("prismabuild.role_session", "RUNTIME_VERSION", "fleet/repo/RUNTIME_VERSION.json"),
     ("worker", "SH", "fleet"),
     # ``supervise.MIRROR`` was the gap this list was completed to close.
     # ``_proven_roots`` lists ``MIRROR / "runtime-generations"``, so
@@ -473,6 +511,10 @@ def _off_the_live_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     def isolated_import(loader, module):
         load(loader, module)
         stem = Path(getattr(module, "__file__", "") or "").stem
+        if hasattr(module, "configured_store"):
+            from prismabuild.submission_frontend import store_for
+            configured = store_for(module.__file__, root=root / "fleet")
+            setattr(module, "configured_store", lambda: configured)
         for module_name, attr, sub in LIVE_DEFAULTS:
             if module_name.rsplit(".", 1)[-1] != stem or not hasattr(module, attr):
                 continue
@@ -1073,3 +1115,33 @@ def action_common(
         "execution_scope": {"kind": "platform_keyed",
                             "platform_key": "linux-aarch64-sm121"},
     }
+
+
+@pytest.fixture(autouse=True)
+def _explicit_submission_store(monkeypatch, tmp_path, _off_the_live_store, d38_config):
+    import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
+    from prismabuild.submission_types import FleetStore
+    root = tmp_path / "fleet"
+    store = FleetStore(root, pbrun.RUNTIME_ROOT,
+        pbrun.fleet_roster.Roster.beside(pbrun.__file__),
+        runtime_version=root / "repo" / "RUNTIME_VERSION.json", d38_config_path=d38_config)
+    monkeypatch.setattr(pbrun, "configured_store", lambda: store)
+    from prismabuild import submission_frontend
+    def fixture_store(entrypoint, *, root=store.root):
+        if Path(root) == Path("/mnt/shared/prismabuild-fleet"):
+            root = store.root
+        return FleetStore(root, store.runtime_root, store.roster_path,
+                          runtime_version=store.runtime_version, d38_config_path=store.d38_config_path)
+    monkeypatch.setattr(submission_frontend, "store_for", fixture_store)
+    from types import ModuleType
+    modules = list(sys.modules.values())
+    nested = [value for module in modules if module is not None
+              for value in vars(module).values() if isinstance(value, ModuleType)]
+    for module in {id(value): value for value in [*modules, *nested] if value is not None}.values():
+        filename = getattr(module, "__file__", "") or ""
+        if Path(filename).parent.name == "fleet" and hasattr(module, "configured_store"):
+            monkeypatch.setattr(module, "configured_store", lambda: store)
+        if getattr(module, "store_for", None) is not None:
+            monkeypatch.setattr(module, "store_for", fixture_store)

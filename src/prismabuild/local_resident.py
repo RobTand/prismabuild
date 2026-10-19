@@ -104,7 +104,7 @@ def sources(store, record, reader_context):
     """Prefer published stage bytes only while their ordinary reader pin is held."""
     canonical = {entry["path"]: entry["path"] for entry in record["manifest"]["entries"]}
     queue = pool.PoolQueue(store.queue_root)
-    base = queue.root / pool.RESIDENCY
+    base = queue.root / pool.record_store.RESIDENCY
     expected = {residency_map.residency_map_key(entry["path"], 0):
                 {"bytes": entry["bytes"], "sha256": entry["sha256"]}
                 for entry in record["manifest"]["entries"]}
@@ -257,34 +257,8 @@ def movement_action(template, store, set_id, tier, *, policy_path, operation, so
         demand={"cpu": 1, "mem_gb": 1}, tags=[host], log_name=f"resident-{operation}-{set_id}-{host}.log")
 
 
-def publish_actions(template, store, set_id, tiers, *, policy_path):
-    """Publish copies now and retain host-pinned egress rows for lease expiry."""
-    record = store.read(set_id)
-    if not lease_active(store, set_id):
-        raise ValueError("resident lease expired")
-    queue = pool.PoolQueue(store.queue_root)
-    cas = template["cas"]
-    by_host = {tier["host"]: tier for tier in tiers if tier.get("tier_id", "").startswith("local:")}
-    rows = {}
-    for host in record["hosts"]:
-        tier = by_host[host]
-        pair = {}
-        for operation in ("copy", "evict"):
-            action = movement_action(template, store, set_id, tier, policy_path=policy_path, operation=operation)
-            cas.publish_action_request(action)
-            pair[operation] = movement_row(action, cas, tier)
-        store.update_movements(set_id, host, pair)
-        if store.read_copy(set_id, host)["state"] != "resident":
-            try:
-                queue.publish(**pair["copy"], recompute=True, refuse_if_live=True)
-            except pool.ActionAlreadyLiveError:
-                pass  # Attach to the existing generation; never replace a live copy.
-        rows[host] = pair
-    return rows
-
-
 def _resident_live_rows(store, set_id):
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         directory = store.queue_root / state
         if not directory.exists():
             continue
@@ -409,7 +383,7 @@ def evict_resident_copy(store, set_id, host, spec, *, now=None):
             shutil.rmtree(tree)
             resident_sets.fsync_directory(root)
         # Capacity is released only once ALL local bytes have been deleted.
-        pool.PoolQueue(store.queue_root).tier_ledger(local_tier.local_resident_tier_id(host)).release(set_id)
+        pool.PoolQueue(store.queue_root).tier(local_tier.local_resident_tier_id(host)).egress(set_id)
         with local_tier.host_lock(root):
             store.write_copy(set_id, host, {**current, "state": "absent", "bytes": 0,
                 "verification": [], "completed_unix": None, "local_root": None})
@@ -485,7 +459,7 @@ def lease_pass(store, host, spec, *, now=None):
         try:
             state = row["copies"][host]["state"]
             _, final, partial, evicting = _paths(set_id, spec)
-            held = pool.held_names_visible(queue.tier_ledger(local_tier.local_resident_tier_id(host)), set_id)
+            held = queue.tier(local_tier.local_resident_tier_id(host)).holder_state(set_id)
             if (state == "absent" and not final.exists() and not partial.exists()
                     and not evicting.exists() and not held):
                 _clear_lease_failure(store, set_id, host)

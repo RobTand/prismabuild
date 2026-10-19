@@ -14,6 +14,7 @@ The claim's identity decides. Two live claims of one key are the shape #61 and
 reaper's.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -32,13 +33,6 @@ KEY_A = "a" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
-
-
-def _publish(q: pool.PoolQueue, **kw: object) -> None:
-    q.publish(
-        action_key=KEY_A, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources={"cpu": 1}, **kw,
-    )
 
 
 def _reap_while_the_claim_turns_over(q: pool.PoolQueue, first: dict) -> dict:
@@ -66,7 +60,15 @@ def test_the_reaper_leaves_a_retry_that_claimed_under_it(
 ) -> None:
     """The retry keeps its claim, its lease and its reservation."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
 
@@ -76,15 +78,17 @@ def test_the_reaper_leaves_a_retry_that_claimed_under_it(
     assert retry is not None and retry["claimed_by"] == "attempt-2"
     # The reaper did not report a requeue it had no claim to requeue.
     assert seen["reaped"] == []
-    live = queue.item_path(pool.CLAIMED, KEY_A)
+    live = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     assert live.exists(), "the retry's claim was deleted by a reaper that never judged it"
     assert json.loads(live.read_text())["claimed_by"] == "attempt-2"
-    assert queue.lease_path(KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
     # The token the retry is running on is still charged to it.
     assert queue.ledger().held() == {"cpu": 1}
     # And the item was not put back in ready under a live claim.
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
-    assert list(queue.dir(pool.CLAIMED).glob(f"*{pool.TOMBSTONE_SUFFIX}")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
+    assert list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    ) == []
 
 
 def test_the_reaper_still_requeues_the_claim_it_did_judge(
@@ -92,16 +96,26 @@ def test_the_reaper_still_requeues_the_claim_it_did_judge(
 ) -> None:
     """The ordinary path is unchanged: nothing turns over, so the claim moves."""
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     assert queue.claim(owner="attempt-1", capacity={"cpu": 1}) is not None
 
     assert queue.reap_stale(timeout_s=-1) == [KEY_A]
 
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.ledger().held() == {}
-    assert list(queue.dir(pool.CLAIMED).glob(f"*{pool.TOMBSTONE_SUFFIX}")) == []
+    assert list(
+        queue.records.dir(pool.record_store.CLAIMED).glob(f"*{pool.record_store.TOMBSTONE_SUFFIX}"),
+    ) == []
 
 
 def test_a_rewritten_claim_is_still_the_claim_the_reaper_judged(
@@ -114,10 +128,18 @@ def test_a_rewritten_claim_is_still_the_claim_the_reaper_judged(
     reaper concluding a claim nobody else holds.
     """
 
-    _publish(queue, max_attempts=4, retry_safe=True)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=4,
+        retry_safe=True,
+    )
     first = queue.claim(owner="attempt-1", capacity={"cpu": 1})
     assert first is not None
-    path = queue.item_path(pool.CLAIMED, KEY_A)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
 
     real = pool.PoolQueue.archive_attempt
 
@@ -132,5 +154,5 @@ def test_a_rewritten_claim_is_still_the_claim_the_reaper_judged(
         assert queue.reap_stale(timeout_s=-1) == [KEY_A]
 
     assert not path.exists()
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.ledger().held() == {}

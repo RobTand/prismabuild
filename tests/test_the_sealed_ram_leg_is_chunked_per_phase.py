@@ -10,6 +10,9 @@ node kind.  A phase that fits in one chunk seals today's whole-phase pair,
 and a plan sealed before this change keeps the leg it was frozen with.
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -23,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -77,6 +80,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -88,7 +93,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                   "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -129,16 +134,13 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue):
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
-    args = types.SimpleNamespace(
+    tier = residency_plan.resolve_stage_tier(queue, None)
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     staged["cas"] = cas
     return staged
 
@@ -192,7 +194,7 @@ def test_a_phase_that_fits_seals_todays_whole_phase_pair(tmp_path) -> None:
 
 def test_the_sealed_plan_freezes_and_names_every_chunk_key(tmp_path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)
     plan = staged["plan"]
     assert isinstance(plan, dict)

@@ -2,7 +2,7 @@
 
 ``storage_tiers.split_range_into_chunks`` cut a phase at fixed byte offsets
 and never saw the manifest's entries.  A mover stages whole entries --
-``prewarm_loop.entries_between`` includes an entry straddling either edge of
+``manifest_layout.entries_between`` includes an entry straddling either edge of
 its range -- so a chunk edge inside an entry handed both neighbouring movers
 more bytes than their tokens reserved, and each refused
 ``residency_overran_reservation`` on every attempt.  Live: 16,308,005 B over
@@ -22,6 +22,9 @@ Nothing here touches the live queue, a real pool, a stage or a tmpfs: every
 root is under ``tmp_path``.
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -33,10 +36,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 HOST = "dl380g10"
@@ -94,7 +100,7 @@ def _manifest(phase_sizes: list[list[int]], *, mount: str = "/mnt/shared",
         table.append({"name": f"phase-{ordinal}", "bytes": sum(sizes),
                       "cumulative_bytes": running})
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {}, "annotations": {"phases": table},
         "mount_prefix": mount, "entries": entries,
         "entry_count": len(entries), "total_bytes": running,
@@ -116,6 +122,8 @@ class _Cas:
 
 def _template(digest: str, size: int) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -127,7 +135,7 @@ def _template(digest: str, size: int) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {
@@ -182,16 +190,13 @@ def _seal(tmp_path: Path, manifest: dict[str, object], *,
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     tier_loop.cycle(queue, host=HOST, source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
-    args = types.SimpleNamespace(
+    tier = residency_plan.resolve_stage_tier(queue, None)
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     cas = _Cas(manifest_path, published)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     return {**staged, "cas": cas, "queue": queue, "digest": digest,
             "manifest_path": manifest_path}
 
@@ -210,7 +215,7 @@ def _leg_ranges(phase: dict, leg: str) -> list[tuple[int, int, dict]]:
 
 def _boundaries(manifest: dict[str, object]) -> set[int]:
     running, seen = 0, {0}
-    for entry in prewarm_loop.manifest_read_entries(manifest):
+    for entry in manifest_layout.read_entries(manifest):
         running += int(entry["bytes"])
         seen.add(running)
     return seen
@@ -230,13 +235,13 @@ def test_every_sealed_range_covers_exactly_the_entries_it_reserves(
 
     manifest = _manifest(_straddling_sizes(GIB, LIVE_ODD_BYTES))
     staged = _seal(tmp_path, manifest)
-    read = prewarm_loop.manifest_read_entries(manifest)
+    read = manifest_layout.read_entries(manifest)
     edges = _boundaries(manifest)
 
     for phase in staged["plan"]["phases"]:  # type: ignore[index]
         for start, end, mover in _leg_ranges(phase, leg):
             covered = sum(int(entry["bytes"]) for entry in
-                          prewarm_loop.entries_between(read, start, end))
+                          manifest_layout.entries_between(read, start, end))
             assert covered == end - start, (
                 f"{leg} range [{start}, {end}) of {phase['name']} covers "
                 f"{covered} bytes of entries: residency_overran_reservation")
@@ -274,17 +279,17 @@ def test_a_phase_s_chunks_stage_each_entry_once(tmp_path, leg) -> None:
 
     manifest = _manifest(_straddling_sizes(GIB, LIVE_ODD_BYTES))
     staged = _seal(tmp_path, manifest)
-    read = prewarm_loop.manifest_read_entries(manifest)
+    read = manifest_layout.read_entries(manifest)
 
     for phase in staged["plan"]["phases"]:  # type: ignore[index]
         start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
         spans = _leg_ranges(phase, leg)
         staged_entries = [entry["path"] for cstart, cend, _ in spans
-                          for entry in prewarm_loop.entries_between(
+                          for entry in manifest_layout.entries_between(
                               read, cstart, cend)]
         assert staged_entries == [
             entry["path"] for entry in
-            prewarm_loop.entries_between(read, start, end)]
+            manifest_layout.entries_between(read, start, end)]
         assert sum(cend - cstart for cstart, cend, _ in spans) == end - start
 
 
@@ -315,7 +320,7 @@ def test_an_entry_larger_than_the_window_refuses_at_seal(tmp_path) -> None:
     sizes = [[10 * GIB, (WINDOW_UNITS + 1) * GIB, 10 * GIB], [5 * GIB]]
     published: dict[str, dict] = {}
 
-    with pytest.raises(SystemExit, match="residency_entry_exceeds_window"):
+    with pytest.raises(submit_core.SubmissionRefused, match="residency_entry_exceeds_window"):
         _seal(tmp_path, _manifest(sizes), published=published)
 
     assert published == {}
@@ -342,8 +347,8 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
     On main, stage chunk 0 refuses ``residency_overran_reservation``.
     """
 
-    import ram_promote
-    import stage_move
+    from prismabuild import ram_promote
+    from prismabuild import stage_move
 
     monkeypatch.setattr(storage_tiers, "GIB", SMALL_UNIT)
     phase_sizes = _straddling_sizes(SMALL_UNIT, SMALL_ODD_BYTES)
@@ -366,7 +371,7 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
     plan = staged["plan"]
     queue = staged["queue"]
     assert isinstance(queue, pool.PoolQueue)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     digest = str(staged["digest"])
     manifest_path = str(staged["manifest_path"])
     (tmp_path / "ram").mkdir()
@@ -384,7 +389,7 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end),
             "--manifest", manifest_path,
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
             "--block", str(1 << 12),
             "--readers", "2", "--max-readers", "2", "--unpaced",
         ])
@@ -402,7 +407,7 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
             "--range-start-bytes", str(start),
             "--range-end-bytes", str(end),
             "--manifest", manifest_path,
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         ])
         return ram_promote.promote(args)
 
@@ -420,6 +425,6 @@ def test_every_sealed_mover_completes_on_both_legs(tmp_path, monkeypatch) -> Non
 
     for root in ("stage", "ram"):
         for path, payload in payloads.items():
-            relative = stage_move.stage_relative(
+            relative = staged_path.stage_relative(
                 path, 0, len(payload), mount_prefix=str(mount))
             assert (tmp_path / root / relative).read_bytes() == payload

@@ -37,6 +37,7 @@ for _path in (str(SRC), str(FLEET_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+from prismabuild import staged_path
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from pbcanary_legs import leg3  # noqa: E402
 from pbcanary_legs.common import deterministic_bytes, sha256_hex  # noqa: E402
@@ -198,12 +199,12 @@ class _Fleet:
     def __init__(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.stage.mkdir()
         self.origins = tmp_path / "origins"
         self.origins.mkdir()
-        self.root = self.queue.root / pool.RESIDENCY
+        self.root = self.queue.root / pool.record_store.RESIDENCY
         self.keys: list[str] = []
         self.fragments: list[dict] = []
         self.materials: list[dict] = []
@@ -234,26 +235,23 @@ class _Fleet:
     def publish(self, indices) -> None:
         """Publish the named chunks as that phase's mover, then recompose."""
         for index in indices:
-            residency_map.write_fragment(self.root, {
+            staged_path.publish_vouch(
+                self.root, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": CONSUMER,
                 "mover_action_key": _mover(index),
                 "tier_id": TIER, "stage_root": str(self.stage),
                 "manifest_sha256": MANIFEST_SHA,
-                "entries": {self.keys[index]: self.fragments[index]}})
-            reader_lease.write_material(
-                self.root, consumer_action_key=CONSUMER,
-                mover_action_key=_mover(index), tier_id=TIER,
-                stage_root=str(self.stage), manifest_sha256=MANIFEST_SHA,
+                "entries": {self.keys[index]: self.fragments[index]}},
                 generation=reader_lease.mint_generation(),
-                entries={self.keys[index]: self.materials[index]})
+                material_entries={self.keys[index]: self.materials[index]})
         mapping = residency_map.compose(
             residency_map.read_fragments(self.root, CONSUMER))
         residency_map.write_map(
-            self.queue.residency_map_path(CONSUMER), mapping)
+            self.queue.records.residency_map_path(CONSUMER), mapping)
 
     def file_claim(self) -> None:
-        claimed = self.queue.dir(pool.CLAIMED)
+        claimed = self.queue.records.dir(pool.record_store.CLAIMED)
         claimed.mkdir(parents=True, exist_ok=True)
         (claimed / f"{CONSUMER}.json").write_text(json.dumps({
             "action_key": CONSUMER, "claimed_by": "worker-leg3",
@@ -309,7 +307,7 @@ def _child_env(fleet: _Fleet, manifest: Path, *, library: Path | None = None,
     if identity:
         env["PRISMABUILD_ACTION_KEY"] = CONSUMER
         env["PRISMABUILD_RESIDENCY_MAP"] = str(
-            fleet.queue.residency_map_path(CONSUMER))
+            fleet.queue.records.residency_map_path(CONSUMER))
         env["PRISMABUILD_ACTION_NONCE"] = NONCE
         env["PRISMABUILD_ACTION_SCOPE"] = SCOPE
     if progress:
@@ -547,7 +545,7 @@ def test_leg3_stage_read_ignores_a_ram_overlay_epoch(tmp_path: Path) -> None:
     fleet = _build_fleet(tmp_path)
     fleet.file_claim()
     fleet.publish(range(3))
-    map_path = fleet.queue.residency_map_path(CONSUMER)
+    map_path = fleet.queue.records.residency_map_path(CONSUMER)
     mapping = residency_map.read_map(map_path)
     residency_map.write_map(map_path, {
         **mapping, "ram_tier_id": "ram:testbox",
@@ -802,7 +800,7 @@ def test_verify_refuses_malformed_serving_evidence(tmp_path: Path) -> None:
 def _attempt_outcome(*, key: str, published_unix: float, attempt: int,
                      stdout: str, observation: dict | None) -> dict:
     return {
-        "schema": pool.POOL_ATTEMPT_SCHEMA_V1,
+        "schema": pool.record_store.POOL_ATTEMPT_SCHEMA_V1,
         "action_key": key, "published_unix": published_unix,
         "attempt": attempt, "max_attempts": 1, "retry_safe": True,
         "status": "executed", "disposition": "done",
@@ -837,12 +835,12 @@ def _write_terminal(queue, key: str, *, attempts: list[dict],
         outcome = _attempt_outcome(
             key=key, published_unix=published_unix, attempt=number,
             stdout=stdout, observation=_observation())
-        path = queue.attempt_path(record, number)
+        path = queue.records.attempt_path(record, number)
         logs = {}
         for stream, text in (("stdout", stdout), ("stderr", "")):
             data = text.encode("utf-8")
             digest = hashlib.sha256(data).hexdigest()
-            log_path = queue.attempt_log_path(record, number, stream, digest)
+            log_path = queue.records.attempt_log_path(record, number, stream, digest)
             _write_readonly(log_path, data)
             logs[stream] = {"bytes": len(data), "sha256": digest,
                             "path": str(log_path.relative_to(queue.root))}
@@ -850,7 +848,7 @@ def _write_terminal(queue, key: str, *, attempts: list[dict],
         _write_readonly(path, json.dumps(outcome).encode("utf-8"))
         record["attempt_history"].append(
             {"attempt": number, "outcome": str(path.relative_to(queue.root))})
-    terminal = queue.dir(pool.DONE)
+    terminal = queue.records.dir(pool.record_store.DONE)
     terminal.mkdir(parents=True, exist_ok=True)
     (terminal / f"{key}.json").write_text(json.dumps(record),
                                           encoding="utf-8")
@@ -869,7 +867,7 @@ def _cas_receipt(artifact: str) -> dict:
 
 def test_driver_binds_progress_to_the_receipt_attempt(tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     paths = _paths(queue, tmp_path)
     artifact = '{"schema":"prismabuild.pbcanary.leg3.v1","ok":true}\n'
     _write_terminal(queue, CONSUMER, attempts=[artifact])
@@ -913,11 +911,11 @@ def test_driver_reads_the_submitted_generation_before_done_is_filed(
     the same evidence, so the driver reads it there, exact to the generation.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     paths = _paths(queue, tmp_path)
     artifact = '{"schema":"prismabuild.pbcanary.leg3.v1","ok":true}\n'
     _write_terminal(queue, CONSUMER, attempts=[artifact])
-    (queue.dir(pool.DONE) / f"{CONSUMER}.json").unlink()
+    (queue.records.dir(pool.record_store.DONE) / f"{CONSUMER}.json").unlink()
 
     evidence = pbcanary.terminal_progress_observation(
         paths, CONSUMER, artifact, _cas_receipt(artifact), generation=100.0)
@@ -987,3 +985,18 @@ def test_driver_attaches_the_observation_to_the_verify_envelope(
     assert envelope["progress_observation"]["last_accepted"][
         "units_completed"] == 3
     assert envelope["progress_attempt"] == 1
+
+
+def test_leg3_import_preserves_fleet_tool_repository_ancestry():
+    script = """
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+sys.path[:0] = [str(root / "src"), str(root / "tools/fleet")]
+from pbcanary_legs import leg3
+import pbmcp
+assert Path(pbmcp.__file__).parents[2] == root, pbmcp.__file__
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", script, str(REPO)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

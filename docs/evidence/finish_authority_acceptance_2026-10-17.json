@@ -1,0 +1,136 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "complete",
+  "step_scope": "C07 L1 restored-finisher terminal and retry publication component only",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "c0abffbd46bf21d455c52f7fa016b89b21eec506",
+  "scope": [
+    "SM-01",
+    "ID-02",
+    "INV-01",
+    "ACC-02",
+    "ACC-04"
+  ],
+  "source_pin": "e2e9b1697b7fdd612d61767d328d789206762d21",
+  "source_tree": "fd29cffb06a2e2ed9e530032f4b540368cc6618a",
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "application_gates": [
+      {
+        "gate": "Actual Python3.12 affected whole files",
+        "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+        "verdict": "pass",
+        "whole_files": 30,
+        "native": 397,
+        "passed": 397,
+        "skipped": 0,
+        "action_keys": [
+          "af39a7cacf347b953dd7bd35844225bb2f7de15d4e7c288f96845a64fe5a525f",
+          "e565e703374a6ba2430bea401671b2021e70dd126eb39f3562a345f2d44ba79d",
+          "ae60861ad090acf561f9f65aeab3a6db365accab4e7518a988f6b63facee57e3",
+          "c2ddcd51327d4b88ad8c853b1ef620a277ffb08d1a3760a8e91b6bd30255cf15"
+        ],
+        "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py312-r1/qualification.json",
+        "primary_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py312-r1/verified.json",
+        "physical_scope_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py312-r1/root-scope-closure.json",
+        "lifecycle_inner_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py312-r1/lifecycle-inner-scope-proof.json",
+        "review_inner_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py312-r1/review-inner-scope-proof.json"
+      },
+      {
+        "gate": "Actual Python3.14 affected whole files",
+        "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+        "verdict": "pass",
+        "whole_files": 30,
+        "native": 397,
+        "passed": 397,
+        "skipped": 0,
+        "action_keys": [
+          "9d0b10eaad3fdc48f673a3aa3e288fe213d83dfbf8ed8c05ed8addc222dc9a7d",
+          "7136ae2fe85110966fceb03d79dd4e51cb27ce0bd1fc9c03123b78b188280334",
+          "ad26d4e190068944a43d52353c9660ec605c955b603fc642d7c9f974d9cb0b83",
+          "cd2193876be386ad37b6200c6d6098158e19ef967bbdd080e112a86a4892f654"
+        ],
+        "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py314-r1/qualification.json",
+        "primary_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py314-r1/verified.json",
+        "physical_scope_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py314-r1/root-scope-closure.json",
+        "lifecycle_inner_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py314-r1/lifecycle-inner-scope-proof.json",
+        "review_inner_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-py314-r1/review-inner-scope-proof.json"
+      }
+    ],
+    "source_proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/terminal-retirement-repair/finish-authority-final-proof.json",
+    "source_audit": "docs/evidence/finish_authority_source_audit.py",
+    "independent_review": {
+      "path": "/home/rob/mailbox/claude-codex-prismabuild-refactor/messages/20261017T102055Z-claude-to-codex-finish-authority-final-review.md",
+      "sha256": "eddbf17a08422ba151471377d61d6199e78315928be31e2eab6ee343581fbbc3",
+      "verdict": "agree, accept; scoped unit",
+      "limits": "Reviewer independently checked actual outer records, source and native gates. Root separately checked all inner events."
+    },
+    "open_unknowns": [
+      "Global S1/S2/C05, combined refactor and full prewarm gates on both interpreters remain open.",
+      "No runtime publication, deployment, live campaign, power-loss durability or cross-host induced crash proof.",
+      "Late-finisher availability policy is unchanged by this repair; unknown saved-scope cleanup retains claim exclusion.",
+      "Historical requirement targets and implementation, validation, deployment and workload axes are unchanged."
+    ]
+  },
+  "causal_reds": [
+    {
+      "phase": "resumed-red-py312-r1",
+      "source": "d86d1776b0ab45d092ec9b080f24f8769a0b5da7",
+      "counts": {
+        "failed": 2,
+        "passed": 8
+      },
+      "action_keys": [
+        "b6ef60ebebfef05dd00caacf5394ebacbfbe5c10c35acdcc8011b6eedacbe594",
+        "d49052b7d45661b2eaf30e1f7690b6f82a70a41a91321018931f1b2ce636c624"
+      ]
+    },
+    {
+      "phase": "resumed-red-py314-r1",
+      "source": "d86d1776b0ab45d092ec9b080f24f8769a0b5da7",
+      "counts": {
+        "failed": 2,
+        "passed": 8
+      },
+      "action_keys": [
+        "e802cc4215cef41cef1ded12cc4a10d4a72a4f3ff93112727a6426d749aa2fd2"
+      ]
+    },
+    {
+      "phase": "retry-red-py312-r1",
+      "source": "ade17ff5d3b567964e5c1b1969f938370d8925ff",
+      "counts": {
+        "failed": 2,
+        "passed": 8
+      },
+      "action_keys": [
+        "261f828a5cad4dcda9ae41abbe4efbbf02b86f0027f12a8c90fa57b55e61d53d",
+        "00312784b79abfad3b4f3aa04db685cdd17ca2530adb75f6638dd4396cae03de"
+      ]
+    },
+    {
+      "phase": "retry-red-py314-r1",
+      "source": "ade17ff5d3b567964e5c1b1969f938370d8925ff",
+      "counts": {
+        "failed": 2,
+        "passed": 8
+      },
+      "action_keys": [
+        "12e02f6a5b642120ac9c35803ccc53691a7c94faf28c73c3a52ba3fb9e83a0bb"
+      ]
+    }
+  ],
+  "causal_credit": "Real ordinary finish, sweep restoration, reaper adoption, later publication/claim/finish; controlled process stalls outside the key lock.",
+  "excluded_control": "The earlier G3-beside-fresh-ordinary-mark premise failed at claim fencing. Its source is outside final ancestry and has zero causal credit.",
+  "retained_history": "All failed runs, sealed rosters and absent failed success receipts remain unchanged.",
+  "persistence_assumption": "Process interruption or suspension after actual filesystem effects in disposable worker queues. No stable-storage power-loss qualification.",
+  "exceptions": []
+}

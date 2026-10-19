@@ -43,7 +43,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 #: A consumer whose directory does not hold the pin: its release falls back
@@ -69,15 +70,18 @@ def _no_waiting(monkeypatch):
 @pytest.fixture()
 def world(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     staged = stage / "model" / "w.safetensors"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x01" * 4096)
-    root = queue.root / pool.RESIDENCY
-    residency_map.write_fragment(root, {
+    root = queue.root / pool.record_store.RESIDENCY
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
@@ -85,14 +89,9 @@ def world(tmp_path: Path):
         "entries": {residency_map.residency_map_key(SOURCE, 0): {
             "stage_path": str(staged), "bytes": 4096,
             "sha256": "b" * 64, "offset": 0}},
-    })
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="a" * 64,
+    },
         generation=reader_lease.mint_generation(),
-        entries={residency_map.residency_map_key(SOURCE, 0): {
+        material_entries={residency_map.residency_map_key(SOURCE, 0): {
             "stage_path": str(staged), "bytes": 4096, "sha256": "b" * 64,
             "file_id": identity}})
     return SimpleNamespace(queue=queue, stage=stage)
@@ -419,9 +418,9 @@ def test_the_failure_file_keeps_its_newest_lines(world, monkeypatch) -> None:
     for _ in range(5):
         assert not reader_lease.release(world.queue, mine["pin_id"],
                                         mine["ref_id"], **kwargs)
-    files = sorted(world.queue.consumer_events_dir(CONSUMER).iterdir())
+    files = sorted(world.queue.records.consumer_events_dir(CONSUMER).iterdir())
     assert [item.name for item in files] == [
-        f"{socket.gethostname()}{reader_lease.RELEASE_EVENTS_SUFFIX}"]
+        f"{socket.gethostname()}{pool.record_store.RELEASE_EVENTS_SUFFIX}"]
     lines = files[0].read_text().splitlines()
     assert len(lines) == 3, "four lines rotate to the newest two, then one more"
     assert [json.loads(line)["step"] for line in lines] == ["unlink"] * 3

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prewarm_fixture import Fleet  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 
 
 def _plan() -> dict:
@@ -29,7 +30,7 @@ def _plan() -> dict:
 
 
 def _manifest(plan: dict | None = None) -> dict:
-    return {"schema": pb.DATA_MANIFEST_SCHEMA_V2, "produced_by": {},
+    return {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2, "produced_by": {},
             "annotations": {}, "mount_prefix": "/mnt/shared",
             "entries": [
                 {"path": f"/mnt/shared/{index}", "offset": 0,
@@ -39,7 +40,7 @@ def _manifest(plan: dict | None = None) -> dict:
 
 
 def test_unique_registry_and_revisit_timeline_are_distinct() -> None:
-    manifest = pb.validate_data_manifest(_manifest())
+    manifest = manifest_codec.validate_data_manifest(_manifest())
     assert manifest["entry_count"] == 2
     assert manifest["total_bytes"] == 8
     assert manifest["read_plan"]["read_bytes"] == 16
@@ -60,14 +61,14 @@ def test_malformed_or_ambiguous_read_plan_fails_closed(change) -> None:
     plan = deepcopy(_plan())
     change(plan)
     with pytest.raises(pb.ActionContractError):
-        pb.validate_data_manifest(_manifest(plan))
+        manifest_codec.validate_data_manifest(_manifest(plan))
 
 
 def test_v2_refuses_ambiguous_v1_phase_annotations() -> None:
     manifest = _manifest()
     manifest["annotations"]["phases"] = []
     with pytest.raises(pb.ActionContractError):
-        pb.validate_data_manifest(manifest)
+        manifest_codec.validate_data_manifest(manifest)
 
 
 def test_revisit_advances_at_claimed_progress_without_warming_duplicate_registry(

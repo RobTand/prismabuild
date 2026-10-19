@@ -12,6 +12,7 @@ that outlives what it describes is the bug (#244), not the fix.
 from __future__ import annotations
 
 import importlib.util
+from functools import partial
 import json
 from pathlib import Path
 import socket
@@ -25,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import box_capacity, pool  # noqa: E402
 import pbmetrics  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 WORKER = REPOSITORY / "tools/fleet/worker_loop.py"
@@ -32,6 +34,9 @@ GIB = 1024**3
 BASE = ["--class", "gb10", "--gpu", "--mem-gb", "72",
         "--cpu-slots", "10", "--all-cores", "--poll-s", "0", "--once"]
 LOOP = "/mnt/shared/prismabuild-fleet/runtime-generations/a98c/tools/worker_loop.py"
+
+
+from prismabuild import role_session
 
 
 def _proc(root: Path, pid: int, argv: list[str]) -> None:
@@ -72,11 +77,20 @@ def _run(tmp_path: Path, *, loops) -> pool.PoolQueue:
     spec.loader.exec_module(worker)
     census = (mock.Mock(side_effect=OSError) if loops is None else
               mock.Mock(return_value=tuple((100 + i, (LOOP,)) for i in range(loops))))
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(worker, "SH", tmp_path), \
          mock.patch.object(worker.cpu_topology, "pin_to_preferred", return_value=None), \
          mock.patch.object(worker.cpu_topology, "inherited_tiers", return_value=None), \
-         mock.patch.object(worker, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(worker, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "role-locks"), \
+         mock.patch.object(worker, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(worker.container_images, "InventoryCache", partial(
+             worker.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(worker.box_capacity, "worker_loops", census), \
          mock.patch.object(worker.box_capacity, "trusted_gpu_sample", return_value=_sample()), \
          mock.patch.object(worker.box_capacity, "mem_available_gb", return_value=100), \
@@ -183,7 +197,7 @@ def _queue_with_offers(tmp_path: Path) -> Path:
 
 def test_status_carries_the_count_and_marks_an_uncounted_box_unknown(tmp_path):
     root = _queue_with_offers(tmp_path)
-    nodes = {node["node"]: node for node in pbstatus.read_pool(root)["nodes"]}
+    nodes = {node["node"]: node for node in fleet_census.action_rows(root).value["nodes"]}
 
     assert nodes["sparky"]["loops"] == 5
     assert nodes["dl380"]["loops"] is None

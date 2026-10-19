@@ -1,0 +1,27 @@
+{
+  "capture_name": "election-capture-02",
+  "capture_report_sha256": "d87dd6e3f83a359dba00af67e0950744f74acd3e320962321b06eb5d168408bc",
+  "excluded_cases": [],
+  "files": {
+    "goldens-election.jsonl": "d0885796b3410c06d6b0a114b8bee48b243bb1a7d97062447a86b966a3879c75",
+    "historical-election.jsonl": "c649751aca6e23b7190af147ec7f2409f30e278160c5ec5fe09ba348c35bbff7"
+  },
+  "finished_at": "2026-10-16T22:21:20.634844+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "measurement-election/bounded",
+    "measurement-election/unbounded"
+  ],
+  "source_git": {
+    "parents": [
+      "eb897d1c6e6538f39172be5f02994e1f7e69377e"
+    ],
+    "snapshot": "f383f740e3712d9697274215c6911523893fdae5",
+    "tree": "eb4bd56766d577298f24f50253e686520967372a"
+  },
+  "started_at": "2026-10-16T22:20:55.891438+00:00"
+}

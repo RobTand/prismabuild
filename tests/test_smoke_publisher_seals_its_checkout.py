@@ -14,6 +14,7 @@ invocation fail.  This one goes through ``fleet_submit.submit`` to a fake
 ``sbatch``.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 from pathlib import Path
@@ -29,7 +30,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import seal_and_publish  # noqa: E402
 
 from test_slurm_lane import _submissions, fleet  # noqa: E402
@@ -58,7 +59,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str,
         return real(action, **kwargs)
 
     monkeypatch.setattr(seal_and_publish.fleet_submit, "submit", confined)
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
     assert seal_and_publish.main(["--transport", transport]) == 0
     return json.loads(capsys.readouterr().out)
 
@@ -118,7 +119,7 @@ def test_the_pull_queue_smoke_still_publishes_one_ready_item(
     assert printed["action_key"] == printed["sealed_action_key"]
     item = Path(printed["where"])
     assert item.is_file()
-    assert item.parent.name == pool.READY
+    assert item.parent.name == pool.record_store.READY
     assert json.loads(item.read_text(encoding="utf-8"))["checkout_root"] == str(
         tmp_path / "checkout")
 

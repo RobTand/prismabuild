@@ -1,10 +1,10 @@
 """Make a bare checkout run its own suite with a plain `pytest`.
 
 Not `pythonpath = ["src"]` in pyproject: that fixes the pytest process only,
-and several tests spawn a *subprocess* that imports prismabuild (the worker
-entry point, the "importing dagster.py pulls in no dagster" check). Those
-children inherit the environment, not pytest's sys.path, so the import has to
-be exported too. Without this the suite passes only for someone who already
+and several tests spawn a *subprocess* that imports prismabuild, including
+worker entry-point checks. Those children inherit the environment, not
+pytest's sys.path, so the import has to be exported too. Without this the
+suite passes only for someone who already
 knows to set PYTHONPATH -- which is exactly the knowledge a fresh clone lacks.
 """
 

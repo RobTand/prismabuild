@@ -31,6 +31,7 @@ all three READY items carried ``tags: ["sparky"]``.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -44,6 +45,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 #: The live fleet's shape at the incident (``tools/fleet/fleet_boxes.json``).
@@ -68,7 +70,7 @@ def _tiers(capacity: dict) -> dict:
 
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="sparky", tags=["gb10", "sparky"], has_gpu=True,
                    capacity=GB10, observed_capacity=GB10)
     queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86"],
@@ -79,11 +81,15 @@ def _fleet(tmp_path: Path) -> pool.PoolQueue:
 def _publish(queue: pool.PoolQueue, seed: str, *, tags: list[str],
              resources: dict | None = None) -> str:
     key = seed * 64
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=str(queue.root),
-                  worker_script=ROOT / "tools/prismabuild_worker.py",
-                  resources=dict(resources or SMALL_CPU_WORK),
-                  tags=tags, needs_gpu=False)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=str(queue.root),
+        worker_script=ROOT / 'tools/prismabuild_worker.py',
+        resources=dict(resources or SMALL_CPU_WORK),
+        tags=tags,
+        needs_gpu=False,
+    )
     return key
 
 
@@ -121,7 +127,7 @@ def test_a_stale_admission_sample_does_not_remove_a_box_from_placement(
     assert queue.placeable_hosts(item) == ["dl380g10", "sparky"]
     assert queue.placeable(item) is True
 
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.action_rows(queue.root).value
     box = next(n for n in census["nodes"] if n["node"] == "dl380g10")
     assert box["state"] == "live" and box["healthy"] is True
     assert box["admission"]["cpu"]["state"] == "stale"
@@ -142,7 +148,7 @@ def test_the_offer_clock_is_the_only_freshness_that_gates_placement(
     assert pool.cpu_admission.MAX_SAMPLE_AGE_S < pool.OFFER_TIMEOUT_S
 
     # Older than the sample window, younger than the offer window: still placeable.
-    offer = queue.root / pool.WORKERS / "dl380g10.json"
+    offer = queue.root / pool.record_store.WORKERS / "dl380g10.json"
     record = json.loads(offer.read_text())
     record["announced_unix"] = time.time() - 30.0
     offer.write_text(json.dumps(record))
@@ -211,7 +217,7 @@ def test_a_box_that_matches_nothing_never_advances_its_admission_sample(
     # the one subsystem which never ran.
     assert queue.passes("a" * 64) == 0
 
-    census = pbstatus.read_pool(queue.root)
+    census = fleet_census.action_rows(queue.root).value
     box = next(n for n in census["nodes"] if n["node"] == "dl380g10")
     assert box["healthy"] is True
     assert box["admission"]["cpu"]["state"] == "stale"

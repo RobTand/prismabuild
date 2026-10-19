@@ -46,7 +46,7 @@ A role must not depend on its launcher being single.  On 2026-09-19 a
 duplicate supervisor started its own storage reader beside the primary's --
 two readers of one ready list, double-published movers and contradictory
 fill measurements compounding the movers wedge (#709).  So each role's
-process takes its own host-local singleton flock (``worker_loop``'s
+process takes its own host-local singleton flock (``role_session``'s
 ``take_role_singleton``, under a private per-uid namespace stable across
 generations), this supervisor probes that lock before spawning and reports a
 held one instead of racing it, and a role the kernel reports stopped -- alive
@@ -62,7 +62,6 @@ import argparse
 from collections import deque
 from dataclasses import dataclass
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -77,20 +76,19 @@ import time
 from typing import Collection, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
-import fleet_roster  # noqa: E402
-import role_log_identity  # noqa: E402
-# The generation readers, and the drift-record writer beside them, live in
-# the worker loop module -- the same object the role loops import as
-# ``runtime_gate`` -- so the supervisor, the workers and the roles all stamp
-# refusals through one code path rather than three near-identical ones.
-import worker_loop as runtime_gate  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
+from prismabuild import role_log_identity  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import filesystem_capacity, local_scratch, pool  # noqa: E402
+from prismabuild import role_session as runtime_gate  # noqa: E402
+from prismabuild import filesystem_capacity, fleet_roster, immutable_files, local_scratch, pool  # noqa: E402
+from prismabuild.generation_receipt import GenerationReceipt  # noqa: E402
 
 MIRROR = Path("/mnt/shared/prismabuild-fleet")
-CONFIG = Path(__file__).resolve().parent / "fleet_boxes.json"
+CONFIG = fleet_roster.Roster.beside(__file__)
 CLAIM = Path("/home/rob/tmp/prismabuild-supervisor.claim")
 LOG_DIR = Path("/home/rob/tmp")
 PROC = Path("/proc")
@@ -204,14 +202,10 @@ INHERITED_CLAIM_FD_ENV = "PRISMABUILD_SUPERVISOR_CLAIM_FD"
 RUNTIME_VERSION_SCHEMA = "prismaquant.prismabuild.runtime_version.v1"
 # A large inherited zombie backlog must not starve the census or re-exec.
 MAX_REAPS_PER_TICK = 256
-#: A worker loop's log is pruned once nothing has written to it for this
-#: long, it is not the highest index, and no live loop holds it.
-WORKER_LOG_RETENTION_S = 7 * 24 * 3600
-#: The most worker logs one regular cycle inspects for pruning, so a
-#: directory of tens of thousands never holds up a cycle or a spawn.
-WORKER_LOG_PRUNES_PER_TICK = 256
-#: The only names ``_spawn`` gives worker logs.
-WORKER_LOG_NAME = re.compile(r"pb-worker-(0|[1-9][0-9]*)\.log")
+from prismabuild import worker_log_retention
+from prismabuild.worker_log_retention import (
+    WORKER_LOG_RETENTION_S, WORKER_LOG_PRUNES_PER_TICK,
+)
 
 
 @dataclass(frozen=True)
@@ -220,14 +214,6 @@ class PublishedGeneration:
     name: str
     commit: str
     supervisor: Path
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _published_generation(
@@ -248,17 +234,10 @@ def _published_generation(
         if (candidate.parent != store or candidate.name.startswith(".")
                 or candidate.name in ("", ".", "..")):
             return None
-        receipt = json.loads(
-            (candidate / "RUNTIME_VERSION.json").read_text(encoding="utf-8"))
-        if not isinstance(receipt, dict):
-            return None
-        commit = receipt.get("commit")
-        files = receipt.get("files")
-        if (receipt.get("schema") != RUNTIME_VERSION_SCHEMA
-                or receipt.get("generation") != candidate.name
-                or not isinstance(commit, str)
-                or re.fullmatch(r"[0-9a-f]{40}", commit) is None
-                or not isinstance(files, dict)):
+        receipt = GenerationReceipt.read(candidate / "RUNTIME_VERSION.json")
+        receipt.require_generation(candidate.name)
+        commit = receipt.require_commit()
+        if not isinstance(commit, str):
             return None
         supervisor = (
             candidate / "tools" / "supervise.py" if entrypoint is None
@@ -267,10 +246,8 @@ def _published_generation(
         relative = supervisor.relative_to(candidate).as_posix()
         if relative not in ("tools/supervise.py", "tools/fleet/supervise.py"):
             return None
-        expected = files.get(relative)
-        if (not isinstance(expected, str)
-                or re.fullmatch(r"[0-9a-f]{64}", expected) is None
-                or _sha256(supervisor) != expected):
+        receipt.member_digest(relative)
+        if not receipt.matches_file(relative, supervisor):
             return None
         return PublishedGeneration(candidate, candidate.name, commit, supervisor)
     except (OSError, ValueError, TypeError):
@@ -421,54 +398,6 @@ def _claim_holders() -> frozenset[int] | None:
         return None
 
 
-def _roster_entry(host: str) -> tuple[dict, dict] | None:
-    """This box's raw roster entry and the roster file it came from.
-
-    The roster document travels with the entry because a box's declaration
-    can depend on a fleet-wide value beside ``boxes`` -- the local-disk free
-    floor that ``--spool-gb`` is checked against -- and both must come from
-    the same file, never one from the live generation and one from the
-    checkout.  ``None`` is the same "no answer" ``_box_entry`` documents.
-    """
-
-    # A supervisor intentionally outlives a generation.  Prefer the current
-    # live generation; CONFIG is only the checkout/bootstrapping fallback.
-    for path in (_current_root() / "tools" / "fleet_boxes.json", CONFIG):
-        try:
-            document = json.loads(path.read_text())
-            boxes = document["boxes"]
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if not isinstance(boxes, dict):
-            continue
-        if host in boxes and isinstance(boxes[host], dict):
-            return boxes[host], document
-        # The second Spark was renamed from gx10-6b77 to sparklina.  Its
-        # declared alias names the same machine, not a second capacity offer.
-        # Keep one shape so the old and new hostname cannot drift apart.
-        aliases = [(name, shape) for name, shape in boxes.items()
-                   if isinstance(shape, dict) and shape.get("_alias") == host]
-        if len(aliases) > 1:
-            raise SystemExit(f"ambiguous fleet hostname alias {host}: {path}")
-        if aliases:
-            return aliases[0][1], document
-    return None
-
-
-def _box_entry(host: str) -> dict | None:
-    """This box's raw roster entry, or ``None`` when no file names it.
-
-    ``None`` covers both "no readable roster" (a transient NFS failure or a
-    damaged generation, which must not take the box's loops with it) and "no
-    entry" (which ``_config`` still refuses at startup, where there is no
-    previous shape to keep).  Alias handling matches ``_config``: the roster
-    key and its ``_alias`` name the same machine.
-    """
-
-    found = _roster_entry(host)
-    return None if found is None else found[0]
-
-
 def box_presence(host: str) -> tuple[str, dict[str, object]] | None:
     """This box's declared presence, or ``None`` when it cannot be read.
 
@@ -477,26 +406,34 @@ def box_presence(host: str) -> tuple[str, dict[str, object]] | None:
     because an ambiguous presence is not an active box (#606).
     """
 
-    entry = _box_entry(host)
-    if entry is None:
+    try:
+        box = fleet_roster.Roster.for_host(
+            host, roots=(_current_root(),), paths=(CONFIG,), flat_first=True)
+    except fleet_roster.RosterPresenceError as exc:
+        raise SystemExit(str(exc)) from None
+    if box is None:
         return None
     try:
-        return fleet_roster.box_status(host, entry)
+        return fleet_roster.box_status(host, box.entry)
     except fleet_roster.RosterPresenceError as exc:
         raise SystemExit(f"cannot establish this box's roster presence: {exc}")
 
 
-def _config(host: str) -> dict:
+def _config(host: str) -> fleet_roster.Box:
     """Read this box's declared shape, from the checkout or the published copy."""
 
-    entry = _box_entry(host)
-    if entry is None:
+    try:
+        box = fleet_roster.Roster.for_host(
+            host, roots=(_current_root(),), paths=(CONFIG,), flat_first=True)
+    except fleet_roster.RosterPresenceError as exc:
+        raise SystemExit(str(exc)) from None
+    if box is None:
         raise SystemExit(
             f"no fleet_boxes.json entry for {host}; refusing to guess what this "
             f"box offers -- add it to tools/fleet/fleet_boxes.json and publish"
         )
     try:
-        status, detail = fleet_roster.box_status(host, entry)
+        status, detail = fleet_roster.box_status(host, box.entry)
     except fleet_roster.RosterPresenceError as exc:
         raise SystemExit(f"cannot establish this box's roster presence: {exc}")
     if status in fleet_roster.ABSENT:
@@ -505,7 +442,7 @@ def _config(host: str) -> dict:
             f"({detail['reason']}) by {detail['by']}; refusing to offer "
             f"loops or roles -- un-declare the absence and publish to resume"
         )
-    return entry
+    return box
 
 
 def declared_shape(host: str, override_loops: int,
@@ -538,18 +475,17 @@ def declared_shape(host: str, override_loops: int,
 
     try:
         config = _config(host)
+        args = config.loop_args
+        loops = override_loops or config.loops
     except (SystemExit, OSError, ValueError):
         if previous is None:
             raise
         return previous
-    args = [str(a) for a in config.get("args", [])]
     if SPOOL_FLAG in args or any(a.startswith(SPOOL_FLAG + "=") for a in args):
         # Only a box that declares a spool budget reads anything more; every
         # other box's arguments are the file's, byte for byte (#910).
-        found = _roster_entry(host)
-        document = found[1] if found is not None else {}
-        args = spool_declaration(host, config, document, args, record=record)
-    return (override_loops or int(config.get("loops", 1)), args)
+        args = spool_declaration(host, config, args, record=record)
+    return (loops, args)
 
 
 #: The worker loop flag that declares this box's local disk budget, in GiB
@@ -566,10 +502,6 @@ SPOOL_KIND = "spool_gb"
 #: roots themselves are the actions' sealed variables, not something a box
 #: knows, so the roster names the disk rather than the supervisor guessing it.
 LOCAL_DISK_FIELD = "local_disk"
-#: Fleet-wide, beside ``boxes``: the share of a local filesystem, in whole
-#: percent of its size, that the fleet keeps free.  It is Rob's disk-headroom
-#: rule, stated in the file rather than assumed by the code.
-LOCAL_DISK_FLOOR_FIELD = "local_disk_free_floor_percent"
 GIB = 1 << 30
 #: One settled set of loop arguments per distinct declaration for the life of
 #: this process.  The arguments carry the first measurement and do not follow
@@ -649,7 +581,7 @@ def _held_spool(ledger) -> int:
     """
 
     try:
-        holders = pool._scan_visible(ledger.held_dir)
+        holders = immutable_files.scan_required(ledger.held_dir)
     except FileNotFoundError:
         return 0
     return sum(1 for holder in holders
@@ -657,7 +589,7 @@ def _held_spool(ledger) -> int:
                if name.rsplit("-", 1)[0] == SPOOL_KIND)
 
 
-def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
+def _spool_budget(host: str, box: fleet_roster.Box, args: list[str], *,
                   statvfs=None) -> tuple:
     """Measure this box's ``--spool-gb`` from its disk: a verdict and a value.
 
@@ -687,16 +619,17 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
     if ceiling == 0:
         return ("offer", 0, "")
     declared = SPOOL_AUTO if ceiling is None else str(ceiling)
-    path = entry.get(LOCAL_DISK_FIELD)
+    path = box.entry.get(LOCAL_DISK_FIELD)
     if not isinstance(path, str) or not path.startswith("/"):
         return ("refuse", f"{host} declares {SPOOL_FLAG} {declared} but no "
                 f"absolute {LOCAL_DISK_FIELD!r} path naming the filesystem it "
                 "is on")
-    floor = document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None
-    if type(floor) is not int or not 0 <= floor < 100:
-        return ("refuse", f"the roster states no {LOCAL_DISK_FLOOR_FIELD!r} as a "
-                f"whole percent from 0 to 99 (found {floor!r}), so there is no "
-                f"floor to measure {SPOOL_FLAG} {declared} against")
+    try:
+        floor = box.disk_floor_percent
+        if floor is None:
+            raise ValueError("roster states no local_disk_free_floor_percent")
+    except ValueError as exc:
+        return ("refuse", f"{exc}, so there is no floor to measure {SPOOL_FLAG} {declared} against")
     try:
         from prismabuild import produced_spool
 
@@ -740,7 +673,7 @@ def _spool_budget(host: str, entry: dict, document: dict, args: list[str], *,
     return ("offer", gib, detail)
 
 
-def spool_declaration(host: str, entry: dict, document: dict,
+def spool_declaration(host: str, box: fleet_roster.Box,
                       args: list[str], *, statvfs=None,
                       record: bool = True) -> list[str]:
     """The loop arguments with ``--spool-gb`` measured, or dropped with a reason.
@@ -768,13 +701,16 @@ def spool_declaration(host: str, entry: dict, document: dict,
     holds none.
     """
 
-    key = (host, tuple(args), entry.get(LOCAL_DISK_FIELD),
-           document.get(LOCAL_DISK_FLOOR_FIELD) if isinstance(document, dict) else None)
+    try:
+        floor_key = box.disk_floor_percent
+    except ValueError as exc:
+        floor_key = str(exc)
+    key = (host, tuple(args), box.entry.get(LOCAL_DISK_FIELD), floor_key)
     if key in _SPOOL_VERDICTS:
         settled = list(_SPOOL_VERDICTS[key])
         if (record and SPOOL_FLAG in settled
                 and int(settled[settled.index(SPOOL_FLAG) + 1]) > 0):
-            verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+            verdict = _spool_budget(host, box, args, statvfs=statvfs)
             if verdict[0] == "wait" and key not in _SPOOL_LIVE:
                 # Settled before this process owned the box, and a holder has
                 # arrived since: whatever the file holds was not measured here.
@@ -783,7 +719,7 @@ def spool_declaration(host: str, entry: dict, document: dict,
             else:
                 _record_live_spool(host, key, verdict)
         return settled
-    verdict = _spool_budget(host, entry, document, args, statvfs=statvfs)
+    verdict = _spool_budget(host, box, args, statvfs=statvfs)
     if verdict[0] == "offer":
         # A verdict of "offer" means the declaration parsed.
         declared = args[args.index(SPOOL_FLAG) + 1]
@@ -892,9 +828,10 @@ def declared_roles(host: str) -> list[tuple[str, list[str]]]:
         config = _config(host)
     except (SystemExit, OSError, ValueError):
         return []
-    declared = config.get("roles") or {}
-    if not isinstance(declared, dict):
-        raise SystemExit(f"fleet_boxes.json roles for {host} must be an object")
+    try:
+        declared = config.roles
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
     out: list[tuple[str, list[str]]] = []
     for name in sorted(declared):
         if name not in ROLE_SCRIPTS:
@@ -1167,7 +1104,7 @@ def _ready_backlog() -> bool | None:
     signal and must not duplicate that NFS work.
     """
 
-    ready = _queue_root() / pool.READY
+    ready = _queue_root() / pool.record_store.READY
     try:
         with os.scandir(ready) as entries:
             return any(entry.name.endswith(".json") for entry in entries)
@@ -1213,93 +1150,13 @@ def housekeeping_ceiling(floor: int) -> int:
 
 
 def _worker_log_census() -> list[int]:
-    """Every worker log index in ``LOG_DIR``, lowest first.
-
-    Listed once per supervisor start.  The next slot is one above the
-    highest, so no running or earlier loop can already be appending to it;
-    the rest are what ``_prune_worker_logs`` works through.
-    """
-
-    try:
-        names = os.listdir(LOG_DIR)
-    except OSError:
-        return []
-    return sorted(int(match.group(1)) for name in names
-                  if (match := WORKER_LOG_NAME.fullmatch(name)))
+    return worker_log_retention.worker_log_census(LOG_DIR)
 
 
-def _log_writers(pids: Collection[int]) -> set[tuple[int, int]] | None:
-    """The files these loops hold as stdout and stderr; ``None`` if unreadable.
-
-    A loop that has exited (or closed the descriptor) holds nothing; any
-    other failure to read one is unknown, and unknown keeps every log.
-    """
-
-    held = set()
-    for pid in pids:
-        for descriptor in (1, 2):
-            try:
-                info = os.stat(PROC / str(pid) / "fd" / str(descriptor))
-            except FileNotFoundError:
-                continue
-            except OSError:
-                return None
-            held.add((info.st_dev, info.st_ino))
-    return held
-
-
-def _prune_worker_logs(backlog: deque[int], pids: Collection[int],
-                       newest: int) -> int:
-    """Remove worker logs no loop will append to again; return the count.
-
-    A log goes when it is a single-link regular file this user owns, last
-    written more than ``WORKER_LOG_RETENTION_S`` ago, below ``newest`` (the
-    highest index, which a restarted supervisor counts from), and held as
-    stdout or stderr by none of ``pids``, the cycle's live loops.  At most
-    ``WORKER_LOG_PRUNES_PER_TICK`` are inspected; a kept log returns to the
-    back of the backlog and anything else is forgotten untouched.  A loop
-    whose descriptors cannot be read might hold any log, so that cycle
-    prunes nothing.
-    """
-
-    now = time.time()
-    held = None
-    pruned = 0
-    try:
-        directory = os.open(LOG_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
-                            | os.O_NOFOLLOW)
-    except OSError:
-        return 0
-    try:
-        role_log_identity.check_directory(directory, LOG_DIR, os.getuid())
-        for _ in range(min(WORKER_LOG_PRUNES_PER_TICK, len(backlog))):
-            index = backlog.popleft()
-            name = f"pb-worker-{index}.log"
-            try:
-                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or info.st_uid != os.getuid()):
-                continue
-            if index >= newest or now - info.st_mtime < WORKER_LOG_RETENTION_S:
-                backlog.append(index)
-                continue
-            if held is None and (held := _log_writers(pids)) is None:
-                backlog.appendleft(index)
-                break
-            again = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            if ((info.st_dev, info.st_ino) in held
-                    or (again.st_dev, again.st_ino) != (info.st_dev, info.st_ino)):
-                backlog.append(index)
-                continue
-            os.unlink(name, dir_fd=directory)
-            pruned += 1
-    except OSError as exc:
-        print(f"worker log pruning stopped: {str(exc)[:200]!r}", flush=True)
-    finally:
-        os.close(directory)
-    return pruned
+def _prune_worker_logs(backlog, pids, newest):
+    return worker_log_retention.prune_worker_logs(
+        backlog, pids, newest, log_dir=LOG_DIR, proc=PROC,
+        limit=WORKER_LOG_PRUNES_PER_TICK)
 
 
 def cycle_stale(published: str) -> list[int]:
@@ -1364,7 +1221,7 @@ def _loop_commit(pid: int, roots: list[Path],
         if not script.is_relative_to(root):
             continue
         try:
-            receipt = json.loads((root / "RUNTIME_VERSION.json").read_text())
+            receipt = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text()).document
         except (OSError, ValueError):
             return ""
         commit = receipt.get("commit") if isinstance(receipt, dict) else None
@@ -1399,8 +1256,7 @@ def _published_receipt() -> dict:
     """The active generation's receipt, or ``{}`` when it cannot be read."""
 
     try:
-        value = json.loads(
-            (_current_root() / "RUNTIME_VERSION.json").read_text())
+        value = GenerationReceipt.capture((_current_root() / "RUNTIME_VERSION.json").read_text()).document
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -1487,8 +1343,7 @@ def _record_role_restart(host: str, role: str, entry: dict,
             if not script.is_relative_to(root):
                 continue
             try:
-                value = json.loads(
-                    (root / "RUNTIME_VERSION.json").read_text())
+                value = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text()).document
                 if isinstance(value, dict):
                     loaded_commit = str(value.get("commit") or "")
                     loaded_generation = str(value.get("generation") or "")
@@ -2222,9 +2077,8 @@ def _run_supervisor(stop_requested) -> int:
         # precisely when a supervisor is present -- which is always.
         published = ""
         try:
-            published = str(json.loads(
-                (_current_root() / "RUNTIME_VERSION.json").read_text()
-            ).get("commit") or "")
+            published = str(GenerationReceipt.capture(
+                (_current_root() / "RUNTIME_VERSION.json").read_text()).document.get("commit") or "")
         except (OSError, ValueError):
             pass
         stopped = cycle_stale(published)
@@ -2258,9 +2112,8 @@ def _run_supervisor(stop_requested) -> int:
     if args.cycle_stale:
         published = ""
         try:
-            published = str(json.loads(
-                (_current_root() / "RUNTIME_VERSION.json").read_text()
-            ).get("commit") or "")
+            published = str(GenerationReceipt.capture(
+                (_current_root() / "RUNTIME_VERSION.json").read_text()).document.get("commit") or "")
         except (OSError, ValueError):
             pass
         stopped = cycle_stale(published)

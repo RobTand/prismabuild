@@ -66,7 +66,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
+from prismabuild import tier_holdings
 
 TIER = "prismabuild-stage:r6excl"
 KIND = "stage_gib"
@@ -88,15 +90,15 @@ def _shaped_queue(tmp_path: Path) -> tuple[pool.PoolQueue, str]:
     Returns the queue and the dead name.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    ledger = queue.tier_ledger(TIER)
-    queue.mint_tier_capacity(TIER, {KIND: 3})
-    assert ledger.acquire(HOLDER_H, {KIND: 1}) is True
-    assert ledger.acquire(HOLDER_X, {KIND: 1}) is True
-    assert ledger.retire_held(HOLDER_X, {KIND: 1}) == {KIND: 1}
-    assert ledger.capacity().get(KIND) == 2
-    assert ledger.available().get(KIND) == 1
-    dead = sorted(path.name for path in (ledger.minted_dir / "dead").iterdir())
+    queue.records.ensure_layout()
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).mint({KIND: 3})
+    assert ledger.take(HOLDER_H, {KIND: 1}) is True
+    assert ledger.take(HOLDER_X, {KIND: 1}) is True
+    assert ledger.retire_duplicate(HOLDER_X, {KIND: 1}) == {KIND: 1}
+    assert ledger.mint_supply().get(KIND) == 2
+    assert ledger.free_supply().get(KIND) == 1
+    dead = sorted((path.name for path in (ledger.paths.minted / 'dead').iterdir()))
     assert len(dead) == 1
     return queue, dead[0]
 
@@ -119,7 +121,7 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
     """Run one mint with a real held->free release armed between the
     reclaim's two listings, a prefix free snapshot plus a real claim
     right after the reclaim, and report the observed outcome."""
-    free_dir = queue.root / pool.TIER_RESERVATIONS / TIER / "free"
+    free_dir = queue.root / pool.record_store.TIER_RESERVATIONS / TIER / "free"
     fired = {"glob": False}
     helper_done = threading.Event()
     helper_attempted = threading.Event()
@@ -130,10 +132,10 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         # of any lock.  Pre-R6 it takes no guard and lands mid-scan;
         # fixed code blocks it on the new guard outside the apply.
         helper_attempted.set()
-        queue.tier_ledger(TIER).release(HOLDER_H)
+        queue.tier(TIER).release_unspent(HOLDER_H, authority=tier_holdings.Unspent.NEVER_STARTED)
         helper_done.set()
 
-    real_glob = pool._glob
+    real_glob = pool.immutable_files.match_optional
 
     def _observe_free_scan(path, pattern, result):
         if (not fired["glob"] and str(path) == str(free_dir)
@@ -153,31 +155,29 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
     def _hooked_glob(path, pattern):
         return _observe_free_scan(path, pattern, real_glob(path, pattern))
 
-    monkeypatch.setattr(pool, "_glob", _hooked_glob)
-    # The fixed minter uses the strict census. Interrupt the same actual
+    monkeypatch.setattr(pool.immutable_files, 'match_optional', _hooked_glob)
+    # The fixed minter uses the strict fleet_census. Interrupt the same actual
     # headroom scan on both revisions, before either scans held tokens.
-    if hasattr(pool, "_glob_visible"):
-        real_visible = pool._glob_visible
+    real_visible = pool.immutable_files.match_required
 
-        def _hooked_visible(path, pattern):
-            return _observe_free_scan(path, pattern, real_visible(path, pattern))
+    def _hooked_visible(path, pattern):
+        return _observe_free_scan(path, pattern, real_visible(path, pattern))
 
-        monkeypatch.setattr(pool, "_glob_visible", _hooked_visible)
-    real_reclaim = pool.PoolQueue._reclaim_dead_markers
+    monkeypatch.setattr(pool.immutable_files, 'match_required', _hooked_visible)
+    real_reclaim = tier_holdings.TierLedger._reclaim_mint
 
     def _hooked_reclaim(self, ledger, wanted):
         outcome = real_reclaim(self, ledger, wanted)
-        if str(ledger.base) == str(queue.root / pool.TIER_RESERVATIONS / TIER):
-            probe_ledger = self.tier_ledger(TIER)
-            observed["prefix_free"] = int(
-                probe_ledger.available().get(KIND, 0))
+        if str(ledger.base) == str(queue.root / pool.record_store.TIER_RESERVATIONS / TIER):
+            probe_ledger = queue.tier(TIER)
+            observed["prefix_free"] = int(probe_ledger.free_supply().get(KIND, 0))
             # The REAL claim boundary, in its own thread: same-thread
             # execution would re-acquire the held guard and mask
             # contention, so the claimant runs as production does.
             claim_out: dict = {}
 
             def _claimant() -> None:
-                claim_out["row"] = self.claim(
+                claim_out["row"] = queue.claim(
                     owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
                     tags=["dl380g10"])
 
@@ -189,17 +189,17 @@ def _run_scan_gap_interleaving(queue: pool.PoolQueue, monkeypatch) -> dict:
         return outcome
 
     monkeypatch.setattr(
-        pool.PoolQueue, "_reclaim_dead_markers", _hooked_reclaim)
+        tier_holdings.TierLedger, "_reclaim_mint", _hooked_reclaim)
     _publish_claimant(queue)
-    result = queue.mint_tier_capacity(TIER, dict(WANTED))
+    result = queue.tier(TIER).mint(dict(WANTED))
     observed["result"] = result
     assert fired["glob"], "free-scan hook never fired"
     assert helper_attempted.is_set(), "helper never attempted its release"
     assert helper_done.wait(timeout=60.0), "helper release never finished"
-    probe = queue.tier_ledger(TIER)
-    observed["final_total"] = int(probe.capacity().get(KIND, 0))
-    observed["final_free"] = int(probe.available().get(KIND, 0))
-    holder_dir = probe.held_dir / CLAIM_KEY
+    probe = queue.tier(TIER)
+    observed["final_total"] = int(probe.mint_supply().get(KIND, 0))
+    observed["final_free"] = int(probe.free_supply().get(KIND, 0))
+    holder_dir = probe.paths.held / CLAIM_KEY
     observed["claimant_names"] = (
         sorted(path.name for path in holder_dir.glob("*-*"))
         if holder_dir.is_dir() else [])
@@ -285,15 +285,15 @@ def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
     name with no backing (``reclaimed == {stage_gib: 1}``).
     """
     queue, dead_name = _shaped_queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    holder = ledger.held_dir / HOLDER_H
+    ledger = queue.tier(TIER)
+    holder = ledger.paths.held / HOLDER_H
     with monkeypatch.context() as guarded:
         _unreadable(guarded, [holder], path_impl)
-        result = queue.mint_tier_capacity(TIER, dict(WANTED))
-        free_during = ledger.available().get(KIND, 0)
+        result = queue.tier(TIER).mint(dict(WANTED))
+        free_during = ledger.free_supply().get(KIND, 0)
     # The unknown census reissued nothing: the dead name stays dead.
     assert result["reclaimed"] == {}
-    assert (ledger.minted_dir / "dead" / dead_name).exists()
+    assert (ledger.paths.minted / 'dead' / dead_name).exists()
     # H counted as HELD by the mint markers (3 minted - 1 dead - 1 free =
     # 1 held): at wanted 2 nothing is unbacked, so the valid free token is
     # kept, and the report names H with its errno.
@@ -301,14 +301,14 @@ def test_metadata_stat_error_cannot_hide_a_live_holder(tmp_path, monkeypatch,
     assert free_during == 1
     assert result["census_unreadable"]["unreadable"] == [_eio(holder)]
     assert result["census_unreadable"]["retired"] == {}
-    assert ledger.capacity().get(KIND) == 2
+    assert ledger.mint_supply().get(KIND) == 2
     # Readable again: the books are exact and the report is removed.
-    result = queue.mint_tier_capacity(TIER, dict(WANTED))
+    result = queue.tier(TIER).mint(dict(WANTED))
     assert result["reclaimed"] == {}
-    assert ledger.capacity().get(KIND) == 2
-    assert ledger.available().get(KIND) == 1
+    assert ledger.mint_supply().get(KIND) == 2
+    assert ledger.free_supply().get(KIND) == 1
     assert result["census_unreadable"] is None
-    assert not ledger.census_report_path.exists()
+    assert not ledger.census_report.exists()
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
@@ -323,14 +323,14 @@ def test_unreadable_holder_still_retires_under_a_falling_wanted(
     retire never runs and the unbacked free token stays admissible.
     """
     queue, _dead = _shaped_queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    holder = ledger.held_dir / HOLDER_H
+    ledger = queue.tier(TIER)
+    holder = ledger.paths.held / HOLDER_H
     with monkeypatch.context() as guarded:
         _unreadable(guarded, [holder], path_impl)
-        result = queue.mint_tier_capacity(TIER, {KIND: 1})
+        result = queue.tier(TIER).mint({KIND: 1})
     assert result["retired"] == {KIND: 1}
-    assert ledger.available().get(KIND, 0) == 0
-    assert ledger.capacity().get(KIND) == 1
+    assert ledger.free_supply().get(KIND, 0) == 0
+    assert ledger.mint_supply().get(KIND) == 1
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
@@ -347,8 +347,8 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
     ``pbstatus --starvation`` attributes the refusal to the holder.
     """
     queue, _dead = _shaped_queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    holder = ledger.held_dir / HOLDER_H
+    ledger = queue.tier(TIER)
+    holder = ledger.paths.held / HOLDER_H
     # Claim admission reads immutable authority by its real hexadecimal key.
     small = "e" * 64
     _publish_claimant(queue)
@@ -357,20 +357,20 @@ def test_a_holder_that_stays_unreadable_is_reported_every_cycle(
     with monkeypatch.context() as guarded:
         _unreadable(guarded, [holder], path_impl)
         for _cycle in range(3):
-            reports.append(queue.mint_tier_capacity(TIER, dict(WANTED))["census_unreadable"])
+            reports.append(queue.tier(TIER).mint(dict(WANTED))['census_unreadable'])
         row = queue.claim(owner="worker:1:abcd0001", capacity=dict(HOST_CAP),
                           tags=["dl380g10"])
-        starvation = pbstatus.read_starvation(queue.root)
+        starvation = fleet_census.starvation(queue.root)
     assert [report["cycles"] for report in reports] == [1, 2, 3]
     for report in reports:
-        assert report["ledger"] == str(ledger.base)
+        assert report['ledger'] == str(ledger.paths.base)
         assert report["unreadable"] == [_eio(holder)]
         assert report["kinds_asked"] == [KIND]
     # Nothing is unbacked at wanted 2, so no cycle retires a valid token.
     assert [report["retired"] for report in reports] == [{}, {}, {}]
     # No stall: the mover that fits takes the backed free token.
     assert row is not None and row["action_key"] == small
-    assert ledger.holder_tokens(small) == {KIND: 1}
+    assert ledger.holdings(small) == {KIND: 1}
     # The one that cannot fit is refused, and the refusal names the holder.
     denials = adaptive_cpu.read_json(
         adaptive_cpu.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS)
@@ -415,23 +415,22 @@ def test_retire_counts_an_unreadable_holder_as_held_in_its_own_ledger(
     sick, well = _free5_held3(root, "boxa", key), _free5_held3(root, "boxb", key)
     queue, _dead = _shaped_queue(tmp_path)
     other_tier = "prismabuild-stage:r6other"
-    queue.mint_tier_capacity(other_tier, {KIND: 2})
+    queue.tier(other_tier).mint({KIND: 2})
     with monkeypatch.context() as guarded:
-        _unreadable(guarded, [sick.held_dir / key,
-                              queue.tier_ledger(TIER).held_dir / HOLDER_H], path_impl)
+        _unreadable(guarded, [sick.held_dir / key, queue.tier(TIER).paths.held / HOLDER_H], path_impl)
         assert sick.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
         assert well.retire_free_capacity({"cpu": 4}) == {"cpu": 4}
-        queue.mint_tier_capacity(TIER, {KIND: 1})
+        queue.tier(TIER).mint({KIND: 1})
     assert sick.available() == {"cpu": 1, "mem_gb": 4}
     assert well.available() == {"cpu": 1, "mem_gb": 4}
-    report = pool._read_json(sick.census_report_path)
+    report = pool.record_store.read_document(sick.census_report_path)
     assert report["kinds_asked"] == ["cpu"]
     assert report["retired"] == {"cpu": 4}
     assert report["unreadable"] == [_eio(sick.held_dir / key)]
     assert not well.census_report_path.exists()
-    other = queue.tier_ledger(other_tier)
-    assert other.available() == {KIND: 2}
-    assert not other.census_report_path.exists()
+    other = queue.tier(other_tier)
+    assert other.free_supply() == {KIND: 2}
+    assert not other.census_report.exists()
 
 
 @pytest.mark.parametrize("path_impl", PATH_IMPLS)
@@ -502,7 +501,7 @@ def test_r6_reclaim_headroom_atomic_with_exclusion(tmp_path: Path,
     assert observed["claim_row"] is None, _brief(observed)
     assert observed["claimant_names"] == [], _brief(observed)
     assert observed["result"]["reclaimed"] == {}, _brief(observed)
-    assert (queue.tier_ledger(TIER).minted_dir / "dead" / dead_name).exists()
+    assert (queue.tier(TIER).paths.minted / 'dead' / dead_name).exists()
     # Books exact after the serialized release lands.
     assert observed["final_total"] == 2, _brief(observed)
     assert observed["final_free"] == 2, _brief(observed)
@@ -521,7 +520,7 @@ def test_r6_tier_begin_declines_on_contended_guard(tmp_path: Path) -> None:
             CLAIM_KEY, {TIER: {KIND: 1}}, handles, {})
         outcome["handles"] = handles
 
-    with queue.tier_mint_lock(TIER):
+    with queue.tier(TIER).mutation_lock():
         thread = threading.Thread(target=_contender, daemon=True)
         thread.start()
         thread.join(timeout=60.0)
@@ -537,21 +536,20 @@ def test_r6_commit_and_abandon_complete_under_contention(
     completes -- the exact count is earned under the lock, never
     reported without it."""
     queue, _ = _shaped_queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    handle = ledger.begin_acquire(HOLDER_X, {KIND: 1})
+    ledger = queue.tier(TIER)
+    handle = ledger.begin_take(HOLDER_X, {KIND: 1})
     assert handle is not None
     moved: dict = {}
     probed = threading.Event()
 
     def _committer() -> None:
-        with queue.tier_mint_lock(TIER, blocking=False) as ok:
+        with queue.tier(TIER).mutation_lock(blocking=False) as ok:
             moved["probe"] = bool(ok)
         probed.set()
-        moved["count"] = queue.tier_ledger(TIER).commit_acquire(
-            HOLDER_X, handle)
+        moved["count"] = queue.tier(TIER).commit_take(HOLDER_X, handle)
 
     thread = threading.Thread(target=_committer, daemon=True)
-    with queue.tier_mint_lock(TIER):
+    with queue.tier(TIER).mutation_lock():
         thread.start()
         # The probe ran while this thread held the lock: contention is
         # observed, not timed.  Releasing below lets the blocking
@@ -561,33 +559,33 @@ def test_r6_commit_and_abandon_complete_under_contention(
     assert not thread.is_alive(), "committer hung"
     assert moved.get("probe") is False, moved
     assert moved.get("count") == 1, moved
-    assert ledger.holder_tokens(HOLDER_X).get(KIND) == 1
+    assert ledger.holdings(HOLDER_X).get(KIND) == 1
 
-    handle_b = ledger.begin_acquire(HOLDER_X, {KIND: 1})
+    handle_b = ledger.begin_take(HOLDER_X, {KIND: 1})
     # HOLDER_X already holds 1 and free holds 0: the second begin must
     # decline rather than invent capacity.
     assert handle_b is None
-    assert ledger.release(HOLDER_X) == 1
-    handle_c = ledger.begin_acquire(HOLDER_X, {KIND: 1})
+    assert ledger.release_unspent(HOLDER_X, authority=tier_holdings.Unspent.NEVER_STARTED) == 1
+    handle_c = ledger.begin_take(HOLDER_X, {KIND: 1})
     assert handle_c is not None
     returned: dict = {}
     abandon_probed = threading.Event()
 
     def _abandoner() -> None:
-        with queue.tier_mint_lock(TIER, blocking=False) as ok:
+        with queue.tier(TIER).mutation_lock(blocking=False) as ok:
             returned["probe"] = bool(ok)
         abandon_probed.set()
-        returned["count"] = queue.tier_ledger(TIER).abandon_acquire(handle_c)
+        returned["count"] = queue.tier(TIER).abandon_take(handle_c)
 
     thread = threading.Thread(target=_abandoner, daemon=True)
-    with queue.tier_mint_lock(TIER):
+    with queue.tier(TIER).mutation_lock():
         thread.start()
         assert abandon_probed.wait(timeout=60.0), "abandoner never probed"
     thread.join(timeout=60.0)
     assert not thread.is_alive(), "abandoner hung"
     assert returned.get("probe") is False, returned
     assert returned.get("count") == 1, returned
-    assert ledger.available().get(KIND) == 1
+    assert ledger.free_supply().get(KIND) == 1
 
 
 def test_r6_unreadable_holder_refuses_reissue_and_recovers(
@@ -596,46 +594,46 @@ def test_r6_unreadable_holder_refuses_reissue_and_recovers(
     empty: no reissue, every valid token preserved, honest regrowth on
     retry after the permissions heal."""
     queue, dead_name = _shaped_queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    holder_dir = ledger.held_dir / HOLDER_H
+    ledger = queue.tier(TIER)
+    holder_dir = ledger.paths.held / HOLDER_H
     if os.geteuid() == 0:
         pytest.skip("chmod unreadability needs a non-root worker")
     os.chmod(holder_dir, 0o000)
     try:
-        result = queue.mint_tier_capacity(TIER, dict(WANTED))
+        result = queue.tier(TIER).mint(dict(WANTED))
     finally:
         os.chmod(holder_dir, 0o755)
     assert result["reclaimed"] == {}, result
-    assert (ledger.minted_dir / "dead" / dead_name).exists()
-    assert ledger.capacity().get(KIND) == 2, "valid tokens must be preserved"
-    assert ledger.holder_tokens(HOLDER_H).get(KIND) == 1
+    assert (ledger.paths.minted / 'dead' / dead_name).exists()
+    assert ledger.mint_supply().get(KIND) == 2, "valid tokens must be preserved"
+    assert ledger.holdings(HOLDER_H).get(KIND) == 1
     # Retry with honest growth reissues exactly the dead name.
-    result = queue.mint_tier_capacity(TIER, {KIND: 3})
+    result = queue.tier(TIER).mint({KIND: 3})
     assert result["reclaimed"] == {KIND: 1}, result
-    assert not (ledger.minted_dir / "dead" / dead_name).exists()
-    assert ledger.capacity().get(KIND) == 3
-    assert ledger.available().get(KIND) == 2
+    assert not (ledger.paths.minted / 'dead' / dead_name).exists()
+    assert ledger.mint_supply().get(KIND) == 3
+    assert ledger.free_supply().get(KIND) == 2
 
 
 def test_r6_unreadable_free_refuses_mint(tmp_path: Path) -> None:
     """An unreadable free directory aborts the mint with everything
     retained; the next cycle after healing is exact."""
     queue, dead_name = _shaped_queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     if os.geteuid() == 0:
         pytest.skip("chmod unreadability needs a non-root worker")
-    os.chmod(ledger.free_dir, 0o000)
+    os.chmod(ledger.paths.free, 0)
     try:
-        result = queue.mint_tier_capacity(TIER, dict(WANTED))
+        result = queue.tier(TIER).mint(dict(WANTED))
     finally:
-        os.chmod(ledger.free_dir, 0o755)
+        os.chmod(ledger.paths.free, 493)
     assert result["reclaimed"] == {}, result
-    assert (ledger.minted_dir / "dead" / dead_name).exists()
-    assert ledger.holder_tokens(HOLDER_H).get(KIND) == 1
-    result = queue.mint_tier_capacity(TIER, dict(WANTED))
+    assert (ledger.paths.minted / 'dead' / dead_name).exists()
+    assert ledger.holdings(HOLDER_H).get(KIND) == 1
+    result = queue.tier(TIER).mint(dict(WANTED))
     assert result["reclaimed"] == {}, result
-    assert ledger.capacity().get(KIND) == 2
-    assert ledger.available().get(KIND) == 1
+    assert ledger.mint_supply().get(KIND) == 2
+    assert ledger.free_supply().get(KIND) == 1
 
 
 def test_r6_dead_path_enotdir_refuses_dead_decision(tmp_path: Path) -> None:
@@ -643,39 +641,37 @@ def test_r6_dead_path_enotdir_refuses_dead_decision(tmp_path: Path) -> None:
     refuses the dead decision instead of crashing the mint; free and
     held stay exact and the healed retry is exact."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    ledger = queue.tier_ledger(TIER)
-    queue.mint_tier_capacity(TIER, {KIND: 2})
-    assert ledger.acquire(HOLDER_H, {KIND: 1}) is True
-    dead_dir = ledger.minted_dir / "dead"
+    queue.records.ensure_layout()
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).mint({KIND: 2})
+    assert ledger.take(HOLDER_H, {KIND: 1}) is True
+    dead_dir = ledger.paths.minted / 'dead'
     assert not dead_dir.exists()
     dead_dir.write_text("")  # a file where the namespace belongs: ENOTDIR
     try:
-        result = queue.mint_tier_capacity(TIER, {KIND: 2})
+        result = queue.tier(TIER).mint({KIND: 2})
     finally:
         dead_dir.unlink(missing_ok=True)
     assert result["reclaimed"] == {}, result
-    assert ledger.capacity().get(KIND) == 2
-    assert ledger.available().get(KIND) == 1
-    assert ledger.holder_tokens(HOLDER_H).get(KIND) == 1
-    result = queue.mint_tier_capacity(TIER, {KIND: 2})
-    assert ledger.capacity().get(KIND) == 2
+    assert ledger.mint_supply().get(KIND) == 2
+    assert ledger.free_supply().get(KIND) == 1
+    assert ledger.holdings(HOLDER_H).get(KIND) == 1
+    result = queue.tier(TIER).mint({KIND: 2})
+    assert ledger.mint_supply().get(KIND) == 2
 
 
 def test_r6_visible_enumeration_contract(tmp_path: Path) -> None:
     """Pins the enumeration contract the census refusal rests on: the
-    legacy listing suppresses a file-as-directory, the authoritative
-    one raises.  Skipped where the strict census predates the tree."""
-    if getattr(pool, "_scan_visible", None) is None:
-        pytest.skip("strict census absent pre-R6")
+    legacy listing suppresses a file-as-directory; the authoritative
+    one raises."""
     probe = tmp_path / "probe"
     probe.write_text("")
-    assert pool._scan(probe) == []
+    assert pool.immutable_files.scan_optional(probe) == []
     with pytest.raises(OSError):
-        pool._scan_visible(probe)
-    assert pool._glob(probe, "*-*") == []
+        pool.immutable_files.scan_required(probe)
+    assert pool.immutable_files.match_optional(probe, "*-*") == []
     with pytest.raises(OSError):
-        pool._glob_visible(probe, "*-*")
+        pool.immutable_files.match_required(probe, "*-*")
 
 
 def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
@@ -684,15 +680,15 @@ def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
     The generous bound below detects deadlock, not a performance claim.
     """
     queue, _ = _shaped_queue(tmp_path)
-    tier_ledger = queue.tier_ledger(TIER)
+    tier_ledger = queue.tier(TIER)
     host_ledger = queue.ledger("r6bench")
     host_ledger.ensure_capacity({"cpu": 2})
     repeats = 30
     start = time.monotonic()
     for _ in range(repeats):
-        handle = tier_ledger.begin_acquire("k" * 64, {KIND: 1})
+        handle = tier_ledger.begin_take('k' * 64, {KIND: 1})
         assert handle is not None
-        assert tier_ledger.abandon_acquire(handle) == 1
+        assert tier_ledger.abandon_take(handle) == 1
     guarded_s = time.monotonic() - start
     start = time.monotonic()
     for _ in range(repeats):
@@ -712,7 +708,7 @@ def test_r6_mutation_guard_overhead_sample(tmp_path: Path) -> None:
 
 def _host_ledger(tmp_path: Path, host: str = "atomic-host"):
     queue = pool.PoolQueue(tmp_path / "host-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     return queue, queue.ledger(host)
 
 
@@ -766,14 +762,14 @@ def test_host_begin_declines_but_other_owners_are_independent(tmp_path: Path):
     ledger.ensure_capacity({"spool_gb": 1})
     other = queue.ledger("independent-host")
     other.ensure_capacity({"spool_gb": 1})
-    tier = queue.tier_ledger(TIER)
-    tier.ensure_capacity({KIND: 1})
+    tier = queue.tier(TIER)
+    tier.grow_supply({KIND: 1})
     result = {}
 
     def contender():
         result["same"] = queue.ledger(ledger.host).begin_acquire(HOLDER_H, {"spool_gb": 1})
         result["other"] = other.begin_acquire(HOLDER_X, {"spool_gb": 1})
-        result["tier"] = tier.begin_acquire(HOLDER_X, {KIND: 1})
+        result["tier"] = tier.begin_take(HOLDER_X, {KIND: 1})
 
     with ledger._mutation_locked():
         worker = threading.Thread(target=contender, daemon=True)
@@ -784,7 +780,7 @@ def test_host_begin_declines_but_other_owners_are_independent(tmp_path: Path):
         assert result["other"] is not None
         assert result["tier"] is not None
     assert other.abandon_acquire(result["other"]) == 1
-    assert tier.abandon_acquire(result["tier"]) == 1
+    assert tier.abandon_take(result['tier']) == 1
     assert ledger.available() == {"spool_gb": 1}
 
 
@@ -923,7 +919,7 @@ def test_host_transfer_cannot_hide_a_token_mid_holder_census(
     assert ledger.acquire(HOLDER_H, {"spool_gb": 1})
     started, completed = threading.Event(), threading.Event()
     errors, workers = [], []
-    real_glob = pool._glob
+    real_glob = pool.immutable_files.match_optional
     fired = False
 
     def transfer():
@@ -946,7 +942,7 @@ def test_host_transfer_cannot_hide_a_token_mid_holder_census(
             assert not completed.wait(timeout=0.1), "transfer hid a captured holder's token"
         return real_glob(directory, pattern)
 
-    monkeypatch.setattr(pool, "_glob", holder_names)
+    monkeypatch.setattr(pool.immutable_files, 'match_optional', holder_names)
     try:
         with ledger._mutation_locked():
             assert ledger.held() == {"spool_gb": 1}

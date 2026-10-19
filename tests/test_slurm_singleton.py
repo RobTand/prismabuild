@@ -352,12 +352,12 @@ def test_a_job_that_only_read_the_receipt_files_cache_hit(
 
     assert result.receipt is not None
     filed = json.loads(
-        (tmp_path / "queue" / pool.DONE / f"{KEY}.json").read_text())
+        (tmp_path / "queue" / pool.record_store.DONE / f"{KEY}.json").read_text())
     assert filed["status"] == "cache_hit"
     assert filed["detail"]["status"] == "cache_hit"
     assert filed["detail"]["receipt_published"] is True
     assert filed["detail"]["result_digest"] == DIGEST
-    assert not (tmp_path / "queue" / pool.FAILED).exists()
+    assert not (tmp_path / "queue" / pool.record_store.FAILED).exists()
 
 
 def test_a_job_that_did_the_work_still_files_executed(tmp_path: Path) -> None:
@@ -373,7 +373,7 @@ def test_a_job_that_did_the_work_still_files_executed(tmp_path: Path) -> None:
 
     assert result.receipt is not None
     filed = json.loads(
-        (tmp_path / "queue" / pool.DONE / f"{KEY}.json").read_text())
+        (tmp_path / "queue" / pool.record_store.DONE / f"{KEY}.json").read_text())
     assert filed["status"] == "executed"
 
 
@@ -388,7 +388,7 @@ def test_a_cache_hit_leaves_the_record_of_the_run_that_did_the_work(
     zeroes.
     """
 
-    done = tmp_path / "queue" / pool.DONE
+    done = tmp_path / "queue" / pool.record_store.DONE
     done.mkdir(parents=True)
     original = json.dumps({"status": "executed", "action_key": KEY,
                            "detail": {"slurm": {"job_id": "41"}}})

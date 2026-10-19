@@ -44,6 +44,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
 import pbcampaign  # noqa: E402
 
@@ -1152,7 +1153,7 @@ def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = uuid.uuid4().hex + uuid.uuid4().hex
     stub = tmp_path / "stub_worker.py"
     stub.write_text(
@@ -1167,13 +1168,13 @@ def test_the_ending_a_worker_files_carries_the_profile(tmp_path: Path):
     assert outcome is not None and outcome["status"] == "executed"
     assert outcome["profile"] == _profile_record()
     ending = json.loads(
-        queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
     filed = queue.attempt_outcomes(ending)[-1]
     assert filed["detail"]["profile"] == _profile_record()
 
 
 def test_pbrun_prints_the_blob_for_a_profiled_ending():
-    line = pbrun.outcome_headline({
+    line = submit_core.action_client.outcome_headline({
         "status": "executed", "finished_host": "dl380g10",
         "detail": {"elapsed_s": 61.0, "profile": _profile_record()},
     })

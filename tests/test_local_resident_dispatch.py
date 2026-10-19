@@ -1,3 +1,5 @@
+import pbrun
+from prismabuild import submission
 import json
 from pathlib import Path
 
@@ -15,7 +17,7 @@ def test_publish_dispatches_host_movers_after_record_publication(tmp_path, monke
     import pbresident
     root, manifest = source(tmp_path)
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.mint_tier_capacity("local:test-host", {"local_gib": 1})
+    queue.tier('local:test-host').mint({'local_gib': 1})
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))
     observed = []
@@ -33,7 +35,7 @@ def test_publish_dispatches_host_movers_after_record_publication(tmp_path, monke
 def test_local_role_announces_own_interpreter_and_tools(tmp_path):
     import local_tier_loop
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     root = tmp_path / "local"
     spec = {"root": str(root), "maximum_gib": 0, "floor_fraction": .05, "docker_allowance_gib": 0}
     local_tier_loop.local_tier_cycle(queue, "test-host", {"hosts": {"test-host": spec}})
@@ -49,17 +51,18 @@ def test_published_pairs_queue_only_copy_and_retain_egress_for_owner(tmp_path, m
     import test_a_stage_mover_declares_the_cpu_and_retries_it_owns as fixture
     store, record = publish(tmp_path)
     monkeypatch.setattr(local_resident.time, "time", lambda: 120)
-    class Cas:
-        root = tmp_path / "cas"
-        def publish_action_request(self, action):
-            pass
     template = fixture._template("c" * 64, 7)
-    template["cas"] = Cas()
+    template["cas"] = submission.pb.PrismaBuildCAS(tmp_path / "cas")
+    monkeypatch.setattr(submission, "freeze_resident", lambda *args, **kwargs: template)
     tier = {"tier_id": "local:test-host", "host": "test-host", "mountpoint": str(tmp_path / "local"),
         "mover_python": "/usr/bin/python3", "mover_tools_root": "/generation/tools"}
-    rows = local_resident.publish_actions(template, store, record["set_id"], [tier], policy_path="/policy.json")
+    rows = submission.dispatch_resident(store, record["set_id"], [tier], policy_path="/policy.json", checkout=tmp_path, store=pbrun.configured_store())
     queue = pool.PoolQueue(store.queue_root)
     copy = rows["test-host"]["copy"]
-    assert queue.item_path(pool.READY, copy["action_key"]).exists()
-    assert not queue.item_path(pool.READY, rows["test-host"]["evict"]["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, copy["action_key"]).exists()
+    assert not queue.records.item_path(
+        pool.record_store.READY,
+        rows["test-host"]["evict"]["action_key"],
+    ).exists(
+    )
     assert store.read_movements(record["set_id"], "test-host") == rows["test-host"]

@@ -9,7 +9,9 @@ import pytest
 import test_pbrun_residency_stage_submission as staging
 import test_a_decomposed_campaign_closes_on_an_exact_cover as closing
 from prismabuild import core as pb, decomposition as dc, pool, residency_plan
+from prismabuild import data_manifest as manifest_codec
 import pbrun
+from prismabuild import submission as submit_core
 import pbcampaign
 
 
@@ -50,7 +52,7 @@ def test_children_have_only_their_declared_reads_and_all_graphs_freeze_first(tmp
     observations = []
     def publish(child, **kwargs):
         logical = child['params'][dc.LOGICAL_BATCH_PARAM]
-        path = pbcampaign.decomposition_dir(kwargs['cas'], logical['parent_key']) / 'data-plans.json'
+        path = dc.record_dir(kwargs['cas'].root, logical['parent_key']) / 'data-plans.json'
         body = json.loads(path.read_text())
         assert len(body['children']) == 4  # ALL graphs already durable
         observations.append(child['action_key'])
@@ -67,17 +69,19 @@ def test_children_have_only_their_declared_reads_and_all_graphs_freeze_first(tmp
         expected = [{**entry, 'path': request['task_data_manifest']['mount_prefix'] + '/' + entry['path']}
                     for t in wanted for entry in t['payload']['reads']]
         manifest_ref = child['params'].get('data_manifest')
-        row = pool._read_json(fixture['queue'].item_path(pool.READY, child['action_key']))
+        row = pool.record_store.value_or_raise(
+            fixture['queue'].records.item(pool.record_store.READY, child['action_key']),
+        )
         if not expected:
             assert manifest_ref is None and 'residency' not in row
             continue
-        manifest, _ = pb.read_data_manifest(cas.input_path(manifest_ref['input']))
+        manifest, _ = manifest_codec.read_data_manifest(cas.input_path(manifest_ref['input']))
         assert manifest['entries'] == expected
         all_reads.extend(manifest['entries'])
         plan = residency_plan.read(fixture['queue'], child['action_key'])
         assert plan['manifest_sha256'] == manifest_ref['input']['sha256']
         assert row['residency']['leads'] == residency_plan.leads_for(plan)
-        assert all(not fixture['queue'].item_path(pool.READY, key).exists()
+        assert all(not fixture['queue'].records.item_path(pool.record_store.READY, key).exists()
                    for key in residency_plan.mover_keys(plan))
     assert len(all_reads) == 6
 
@@ -87,7 +91,7 @@ def test_replay_reuses_membership_and_graphs_without_replanning(tmp_path, monkey
     first, initial = decompose(request)
     def unexpected(*args, **kwargs):
         raise AssertionError('replay rebuilt an immutable graph')
-    monkeypatch.setattr(pbrun, 'residency_stage_rows', unexpected)
+    monkeypatch.setattr(residency_plan, "prepare_window", unexpected)
     second, replay = decompose(request)
     assert [r['action_key'] for r in first] == [r['action_key'] for r in second]
     assert replay['plan'] == initial['plan']
@@ -143,7 +147,7 @@ def test_manifest_deduplicates_identical_reads_but_refuses_conflicts(tmp_path, m
 def test_corrupt_frozen_graph_binding_refuses_before_republishing(tmp_path, monkeypatch):
     fixture, request = setup_request(tmp_path, monkeypatch)
     records, group = decompose(request)
-    path = pbcampaign.decomposition_dir(pb.PrismaBuildCAS(tmp_path / 'cas'), group['plan']['parent_key']) / 'data-plans.json'
+    path = dc.record_dir(tmp_path / 'cas', group['plan']['parent_key']) / 'data-plans.json'
     body = json.loads(path.read_text())
     body['children'][0]['action_key'] = '0' * 64
     path.chmod(0o600)  # Deliberately corrupt this private immutable fixture.

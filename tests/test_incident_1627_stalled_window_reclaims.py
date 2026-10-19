@@ -24,11 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import prelaunch_tier as pt  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
 import residency_publication as rp  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 from prismabuild import pool, prelaunch_group, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     _claim_with_progress, _stage_range, _tier_record)
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
@@ -36,6 +36,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
 from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan)
+from prismabuild import staged_path
 
 STAGE = "prismabuild-stage:dl380g10"
 RAM = "ram:dl380g10"
@@ -94,10 +95,10 @@ def _end(queue, key, *, how) -> None:
 
 def _ram_orphan(queue, ram: Path, consumer: str, seed: str, ordinal: int) -> str:
     mover = _hexkey(f"1627-ram-{seed}-{ordinal}")
-    assert queue.tier_ledger(RAM).acquire(mover, {"ram_gib": 2})
+    assert queue.tier(RAM).take(mover, {'ram_gib': 2})
     assert queue.ledger("dl380g10").acquire(
         f"ram-host:{mover}", {"mem_gb": 2})
-    rp.vouch_landed(
+    rp.publish_landed_files(
         queue, consumer_action_key=consumer, mover_action_key=mover,
         tier_id=RAM, stage_root=ram, manifest_sha256=_hexkey(f"man-{seed}"),
         range_start_bytes=ordinal * 2 * GIB,
@@ -217,20 +218,21 @@ def _cycle(queue, stage: Path, ram: Path) -> None:
     tiers = _tiers(stage, ram)
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(),
-                    discover=lambda **_kwargs: dict(tiers))
+                    discover=lambda **_kwargs: dict(tiers),
+                    supply_reader_for=lambda *_args, **_kwargs: None)
 
 
 def _jammed(tmp_path: Path):
     """The incident shape: orphans, a withdrawn group, waiters, no room."""
     queue = _queue(tmp_path, stage_gib=STAGE_CAP)
-    queue.mint_tier_capacity(RAM, {"ram_gib": RAM_CAP})
+    queue.tier(RAM).mint({'ram_gib': RAM_CAP})
     queue.ledger("dl380g10").ensure_capacity({"cpu": 80, "mem_gb": 64})
     stage = tmp_path / "stage"
     stage.mkdir()
     ram = tmp_path / "ram"
     ram.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
-    stage_release.register_stage_root(queue, tier_id=RAM, stage_root=ram)
+    staged_path.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=RAM, stage_root=ram)
 
     _end(queue, DONE, how="done")
     _end(queue, GONE, how="withdrawn")
@@ -303,7 +305,7 @@ def _jammed(tmp_path: Path):
 
 def _held(queue, tier_id: str, key: str) -> bool:
     """Whether one holder still owns tokens on one tier."""
-    return bool(queue.tier_ledger(tier_id).holder_tokens(key))
+    return bool(queue.tier(tier_id).holdings(key))
 
 
 def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
@@ -319,8 +321,12 @@ def test_the_stalled_shape_asks_pressure_on_both_tiers(tmp_path: Path) -> None:
     assert silent == [], (pressure, skipped)
 
 
-def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
+def test_cycles_reclaim_the_stranded_holders(tmp_path: Path, monkeypatch) -> None:
     """A few real cycles give back the orphans and the withdrawn prefix."""
+    def physical_reader(*_args, **_kwargs):
+        raise AssertionError("synthetic tiers sampled physical writable room")
+
+    monkeypatch.setattr(tier_loop, "_supply_reader_for", physical_reader)
     (queue, stage, ram, stage_orphans, ram_orphans, live_head, pg_holder,
      d_prefix) = _jammed(tmp_path)
     for _ in range(4):
@@ -331,9 +337,8 @@ def test_cycles_reclaim_the_stranded_holders(tmp_path: Path) -> None:
             if _held(queue, RAM, mover)] == []
     assert not _held(queue, STAGE, pg_holder), "a withdrawn group lets go"
     assert _held(queue, STAGE, live_head), "a live claim stays"
-    ledger = queue.tier_ledger(STAGE)
-    held_prefix = sum(
-        int(ledger.holder_tokens(key).get("stage_gib", 0)) for key in d_prefix)
+    ledger = queue.tier(STAGE)
+    held_prefix = sum((int(ledger.holdings(key).get('stage_gib', 0)) for key in d_prefix))
     assert held_prefix == 2, "the declared waiter reserves its prefix"
 
 
@@ -342,7 +347,7 @@ def test_a_futile_waiter_names_its_refusal_once(tmp_path: Path) -> None:
     queue = _queue(tmp_path, stage_gib=STAGE_CAP)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
     waiter = _hexkey("1627-too-big")
     plan = _declared_plan(queue, waiter,
                           [("p0", 25, True, 1), ("p1", 1, False, 1)], tag="b")

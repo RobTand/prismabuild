@@ -11,6 +11,8 @@ Git fixtures. Execute through PrismaBuild, not on the coordinator.
 """
 
 from __future__ import annotations
+from submission_support import refusal_value
+from prismabuild import submission as submit_core
 
 from pathlib import Path
 import subprocess
@@ -99,8 +101,10 @@ def test_pbsnapshot_git_stays_bytes():
 
 def test_pbrun_snapshot_git_returns_str():
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    out = pbrun._snapshot_git(REPOSITORY, ["rev-parse", "--verify", "HEAD"])
+    out = submit_core._snapshot_git(REPOSITORY, ["rev-parse", "--verify", "HEAD"])
     assert isinstance(out, str) and len(out.strip()) == 40
 
 
@@ -218,8 +222,8 @@ def test_snapshot_timeout_keeps_120s_bound_and_refuses(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pb, "_git_run", _hang)
     argv = ["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"]
-    with pytest.raises(SystemExit, match=r"^pbrun: cannot snapshot checkout: .*120"):
-        pbrun._snapshot_git(tmp_path, argv, input_text="tracked.txt\0")
+    with pytest.raises(submit_core.SubmissionRefused, match=r"^pbrun: cannot snapshot checkout: .*120"):
+        submit_core._snapshot_git(tmp_path, argv, input_text="tracked.txt\0")
     assert captured["timeout"] == 120
     assert captured["argv"] == tuple(argv)
     assert captured["input_text"] == "tracked.txt\0"
@@ -290,8 +294,8 @@ def test_snapshot_nonzero_refusal_identifies_operation(
         return subprocess.CompletedProcess(args, 17, stdout=stdout, stderr=stderr)
 
     monkeypatch.setattr(pb, "_git_run", _failed)
-    with pytest.raises(SystemExit) as caught:
-        pbrun._snapshot_git(tmp_path, list(argv))
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
+        submit_core._snapshot_git(tmp_path, list(argv))
     message = str(caught.value)
     assert message.startswith("pbrun: cannot snapshot checkout: ")
     assert f"Git {' '.join(argv)} failed: {detail}" in message
@@ -305,8 +309,8 @@ def test_snapshot_transport_refusal_identifies_operation(monkeypatch, tmp_path, 
         raise OSError("generic transport failure")
 
     monkeypatch.setattr(pb, "_git_run", _failed)
-    with pytest.raises(SystemExit) as caught:
-        pbrun._snapshot_git(tmp_path, list(argv))
+    with pytest.raises(submit_core.SubmissionRefused) as caught:
+        submit_core._snapshot_git(tmp_path, list(argv))
     assert f"Git {' '.join(argv)} failed: generic transport failure" in str(caught.value)
 
 
@@ -327,7 +331,7 @@ def test_snapshot_positive_output_and_options_stay_equivalent(
         return subprocess.CompletedProcess(args, returncode, stdout=output, stderr="")
 
     monkeypatch.setattr(pb, "_git_run", _completed)
-    actual = pbrun._snapshot_git(
+    actual = submit_core._snapshot_git(
         tmp_path, argv, environment=environment, input_text="tracked\0",
         accepted_returncodes=(0, 17), strip=strip,
     )

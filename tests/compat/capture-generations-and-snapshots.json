@@ -1,0 +1,32 @@
+{
+  "capture_name": "generation-and-snapshot-capture-02",
+  "capture_report_sha256": "b4b5210a07f591259f21b6b43a4ced4a9a5a207751c942e9c8e9d40013a68c48",
+  "excluded_cases": [],
+  "files": {
+    "goldens-generations-and-snapshots.jsonl": "bd088ae157015d77fb25f5fa023a74380b99ad9dabf30ca1714d3d2eab8c645f",
+    "historical-generations-and-snapshots.jsonl": "205dc29da4eacdda0607d34f1f6962509068749c95e3d6c5145a8468cc9a1061"
+  },
+  "finished_at": "2026-10-16T22:27:24.998920+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "checkout-snapshot/clean",
+    "checkout-snapshot/dirty",
+    "checkout-v1-input/shape-gate-input",
+    "movement-publication/initial",
+    "runtime-receipt/implicit",
+    "runtime-receipt/pool",
+    "runtime-receipt/slurm"
+  ],
+  "source_git": {
+    "parents": [
+      "9f42048a7baff10349b0732cd6ff1c219140a93d"
+    ],
+    "snapshot": "8efe0ef27fe3074fd021a0452c75d7922f98c552",
+    "tree": "b5521be943330efe67e43535457c2e4c0f8b326d"
+  },
+  "started_at": "2026-10-16T22:26:14.845125+00:00"
+}

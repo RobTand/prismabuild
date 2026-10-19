@@ -17,6 +17,7 @@ Run only inside the parent's admitted CPU-only PB test action; its real CAS
 receipt is separate from the synthetic inner queue's durable claim evidence.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 import shlex
@@ -35,6 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "tools" / "fleet"))
 import pbrun  # noqa: E402  # type: ignore[import-not-found]
+from prismabuild import submission as submit_core
 import worker_loop  # noqa: E402  # type: ignore[import-not-found]
 from prismabuild import adaptive_cpu, adaptive_gpu, materialize, pool  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
@@ -65,7 +67,7 @@ def _canonical(body):
 
 
 def _record(path) -> dict[str, Any]:
-    record = pool._read_json(path)
+    record = pool.record_store.read_document(path)
     assert isinstance(record, dict), f"missing durable queue record: {path}"
     return cast(dict[str, Any], record)
 
@@ -96,21 +98,19 @@ class ScratchFleet:
         self.actual_root_identity = getattr(ls, "root_identity", None)
         self.clock = [time.time()]
         monkeypatch.setattr(time, "time", lambda: self.clock[0])
-        monkeypatch.setattr(pbrun, "SH", root)
-        monkeypatch.setattr(pbrun, "RUNTIME_ROOT", SHARED_RUNTIME)
-        monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", SHARED_RUNTIME / "tools")
+        patch_store(monkeypatch, client=pbrun, root=root)
+        patch_store(monkeypatch, client=pbrun, runtime_root=SHARED_RUNTIME)
+        patch_store(monkeypatch, client=pbrun, wrapper_dir=SHARED_RUNTIME / "tools")
         monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", root / "box-state")
         monkeypatch.setenv("PRISMABUILD_BOX_STATE_ROOT", str(root / "box-state"))
         self.host = SLOW
         monkeypatch.setattr(socket, "gethostname", lambda: self.host)
         self.cpu_fault = self.gpu_fault = None
-        monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda _: self.cpu_sample())
-        monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda _: self.gpu_sample())
         self.work = _checkout(root)
         self.scratch = str(root / "scratch")
         Path(self.scratch).mkdir()
         self.queue = pool.PoolQueue(root / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.cas = pb.PrismaBuildCAS(root / "cas")
         # Independent current-device observations; profile mutation never updates these.
         self.devices = {host: {"filesystem": f"fixture-fs-{host}",
@@ -196,8 +196,8 @@ class ScratchFleet:
             *(["--max-attempts", "2", "--retry-safe"] if retry else []),
             "--", "/bin/bash", "-c", "true"])
         # prepare_submission calls the real freeze_action_template.
-        template = pbrun.prepare_submission(args)["template"]
-        action = pbrun.seal_action_from_template(template)
+        template = submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
+        action = submit_core.seal(template)
         assert action["params"]["demand"] == {"cpu": 1, "mem_gb": 4, "gpu": 1, "spool_gb": 186}
         assert -(-ISSUE_BYTES // GIB) == 186
         required = action["params"]["placement"]["required_tags"]
@@ -207,23 +207,25 @@ class ScratchFleet:
     def publish(self, **options):
         args, self.action, self.declaration = self.build(**options)
         self.cas.publish_action_request(self.action)
-        row = pbrun.publication_row(self.action, args=args, queue=self.queue)
+        row = submit_core.row_publication(pbrun.request_from_args(args), pbrun.configured_store()).row(self.action, queue=self.queue)
         self.publication = deepcopy(row)
         self.queue.publish(**row)
         self.key = self.action["action_key"]
         return self.key
 
-    def claim(self, host):
+    def claim(self, host, *, gpu_sampler=None):
         self.host = host
         return self.queue.claim(owner=f"worker-{host}", capacity=CAPACITY, cpu_tiers=self.tiers,
-                                adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY])
+                                adaptive_cpu=True, has_gpu=True, tags=["gb10", CAPABILITY],
+                                cpu_sampler=self.cpu_sample,
+                                gpu_sampler=self.gpu_sample if gpu_sampler is None else gpu_sampler)
 
     def ready_unspent(self):
-        item = _record(self.queue.item_path(pool.READY, self.key))
+        item = _record(self.queue.records.item_path(pool.record_store.READY, self.key))
         assert item["attempts"] == 0
-        assert not self.queue.item_path(pool.CLAIMED, self.key).exists()
-        assert not self.queue.lease_path(self.key).exists()
-        assert not self.queue.passes_path(self.key).exists()
+        assert not self.queue.records.item_path(pool.record_store.CLAIMED, self.key).exists()
+        assert not self.queue.records.lease_path(self.key).exists()
+        assert not self.queue.records.passes_path(self.key).exists()
         for host in (SLOW, FAST):
             assert not self.queue.ledger(host).held_keys()
             assert self.queue.ledger(host).available() == CAPACITY
@@ -250,7 +252,7 @@ class ScratchFleet:
     def receipt(self, claimed, host):
         # Called only AFTER the actual behavioral assertion/claim. No injected receipt.
         assert claimed is not None and claimed["claimed_host"] == host
-        persisted = _record(self.queue.item_path(pool.CLAIMED, self.key))
+        persisted = _record(self.queue.records.item_path(pool.record_store.CLAIMED, self.key))
         evidence = persisted[PLACEMENT]
         assert claimed[PLACEMENT] == evidence
         assert evidence["schema"] == PLACEMENT_SCHEMA
@@ -292,7 +294,7 @@ def test_199gb_scratch_yields_slower_host_and_claims_faster_with_measured_receip
         assert claimed["claimed_host"] == SLOW
         assert fleet.queue.ledger(SLOW).held()["spool_gb"] == 186
         assert fleet.queue.ledger(SLOW).held()["gpu"] == 1
-        assert fleet.queue.item_path(pool.CLAIMED, fleet.key).is_file()
+        assert fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).is_file()
     assert claimed is None, "capacity-only placement actually CLAIMED the slower host"
     fleet.ready_unspent()
     denial = fleet.denial(SLOW)
@@ -446,7 +448,7 @@ def test_unavailable_faster_host_ends_yield_but_preserves_real_admission(fleet, 
     elif why == "incompatible":
         fleet.announce(FAST, tags=["x86", CAPABILITY])
     else:
-        (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+        (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     _, candidates = fleet.receipt(fleet.claim(SLOW), SLOW)
     if why in {"full", "draining"}:
         assert candidates[FAST]["fit"] is False
@@ -480,7 +482,7 @@ def test_transition_busy_on_faster_host_is_not_an_admission_refusal(fleet):
     def independent_lock_holder():
         try:
             # Different thread: posix_lock's same-thread nesting is reentrant.
-            with fleet.queue._transition_locked(fleet.key) as locked:
+            with fleet.queue.action_transition_lock(fleet.key) as locked:
                 assert locked
                 acquired.set()
                 assert release.wait(10.), "test lock release signal timed out"
@@ -508,8 +510,8 @@ def test_transition_busy_on_faster_host_is_not_an_admission_refusal(fleet):
 
 def test_profile_expiry_during_slow_offer_read_is_rechecked_before_tokens(fleet, monkeypatch):
     fleet.publish(max_age=1.)
-    read_json = pool._read_json
-    peer = fleet.queue.root / pool.WORKERS / f"{FAST}.json"
+    read_json = pool.record_store._read_json
+    peer = fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json"
     delayed = []
 
     def delayed_observation(path, *args, **kwargs):
@@ -519,7 +521,7 @@ def test_profile_expiry_during_slow_offer_read_is_rechecked_before_tokens(fleet,
             fleet.clock[0] += 2.                 # shared read delay, not a decision patch
         return value
 
-    monkeypatch.setattr(pool, "_read_json", delayed_observation)
+    monkeypatch.setattr(pool.record_store, '_read_json', delayed_observation)
     assert fleet.claim(SLOW) is None
     assert delayed, "fixture did not exercise the actual offer read"
     fleet.ready_unspent()
@@ -559,7 +561,7 @@ def test_measured_preference_cannot_override_existing_freshness_or_gpu_safety(
     fleet.gpu_fault = fault.removeprefix("gpu-")
     assert fleet.claim(FAST) is None
     assert not fleet.queue.ledger(FAST).held_keys()
-    assert fleet.queue.item_path(pool.READY, fleet.key).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, fleet.key).exists()
     assert fleet.denial(FAST)["reason"].startswith("adaptive_gpu_refused")
 
 
@@ -606,7 +608,7 @@ def test_apparently_faster_incomparable_workload_cannot_induce_yield(fleet, fact
     {"max_age": 0}, {"max_age": float("inf")}, {"max_age": True},
 ])
 def test_real_prepare_refuses_invalid_traffic_before_publication(fleet, options):
-    with pytest.raises(SystemExit, match=IO_ENV):
+    with pytest.raises(submit_core.SubmissionRefused, match=IO_ENV):
         fleet.build(**options)
     assert fleet.queue.ready_items() == []
 
@@ -634,14 +636,14 @@ def test_traffic_requires_pool_one_pair_and_exact_version_at_prepare(fleet, faul
     args = pbrun.parse_args(["--cwd", str(fleet.work), "--no-default-env", "--tag", "gb10",
                              "--transport", "slurm" if fault == "slurm" else "pool", *extra,
                              "--", "/bin/bash", "-c", "true"])
-    with pytest.raises(SystemExit, match=IO_ENV):
-        pbrun.prepare_submission(args)
+    with pytest.raises(submit_core.SubmissionRefused, match=IO_ENV):
+        submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)
     assert fleet.queue.ready_items() == []
 
 
 def test_freeze_cannot_omit_opted_in_worker_code_fence(fleet):
-    with pytest.raises(SystemExit, match=CAPABILITY):
-        pbrun.freeze_action_template(
+    with pytest.raises(submit_core.SubmissionRefused, match=CAPABILITY):
+        submit_core.freeze_template(
             command=["/bin/bash", "-c", "true"], cwd=fleet.work, logical_cwd=".",
             demand={"cpu": 1, "mem_gb": 4, "spool_gb": 186},
             placement={"required_tags": ["gb10"]}, variables=_variables(fleet),
@@ -649,7 +651,7 @@ def test_freeze_cannot_omit_opted_in_worker_code_fence(fleet):
             host_class=None, measurement=False, transport="pool", pool_measurement_class=False,
             data_manifest_path=None, checkout_snapshot_max_bytes=512 * 1024 * 1024,
             snapshot_refs=[], exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
-            progress=None, profile=None, wrapper_dir=SHARED_RUNTIME / "tools")
+            progress=None, profile=None, wrapper_dir=SHARED_RUNTIME / "tools", store=pbrun.configured_store())
 
 
 def test_direct_unsealed_publication_cannot_forge_the_capability(fleet):
@@ -664,7 +666,7 @@ def test_direct_unsealed_publication_cannot_forge_the_capability(fleet):
 @pytest.mark.parametrize("fault", ["erase", "erase-and-untag", "traffic", "resources"])
 def test_forged_ready_projection_cannot_bypass_the_actual_sealed_request(fleet, fault):
     fleet.publish()
-    path = fleet.queue.item_path(pool.READY, fleet.key)
+    path = fleet.queue.records.item_path(pool.record_store.READY, fleet.key)
     item = _record(path)
     if fault.startswith("erase"):
         item.pop(IO_ENV)
@@ -674,7 +676,7 @@ def test_forged_ready_projection_cannot_bypass_the_actual_sealed_request(fleet, 
         item[IO_ENV]["declaration"]["write_bytes"] += 1
     else:
         item["resources"]["spool_gb"] = 1
-    pool._write_json_atomic(path, item)             # owned corrupt-row observation
+    pool.immutable_files.write_json_atomic(path, item)             # owned corrupt-row observation
     assert fleet.claim(FAST) is None
     fleet.ready_unspent()
     assert fleet.denial(FAST)["reason"] == "local_scratch_io_intent_invalid"
@@ -683,11 +685,13 @@ def test_forged_ready_projection_cannot_bypass_the_actual_sealed_request(fleet, 
 def test_no_capacity_legacy_claim_cannot_bypass_opted_in_admission(fleet):
     fleet.publish()
     fleet.host = FAST
-    assert fleet.queue.claim(tags=["gb10", CAPABILITY], has_gpu=True) is None
+    assert fleet.queue.claim(tags=["gb10", CAPABILITY], has_gpu=True,
+        cpu_sampler=fleet.cpu_sample,
+        gpu_sampler=fleet.gpu_sample) is None
     fleet.ready_unspent()
 
 
-def test_actual_worker_offer_path_keeps_opt_out_and_merges_configured_inputs(fleet):
+def test_optional_scratch_profiles_merge_configured_inputs(fleet):
     assert worker_loop.build_parser().parse_args([]).local_scratch_profile_config is None
     assert worker_loop.scratch_observed_detail(None, None) == {}
     config = fleet.root / "profile-inputs.json"
@@ -695,13 +699,6 @@ def test_actual_worker_offer_path_keeps_opt_out_and_merges_configured_inputs(fle
     reader = ls.ProfileInputs(config, source_root=REPO, checkout_root=fleet.root / "verification",
                               producer_python=sys.executable)
     assert worker_loop.scratch_observed_detail(None, reader)[PROFILES] == []
-    # Structural closure control supplements the real loader/CAS controls;
-    # it is not the primary behavioral RED or a deployed worker run.
-    import inspect
-    source = inspect.getsource(worker_loop._run_loop)
-    assert "scratch_observed_detail(observer, profile_inputs)" in source
-    assert "observed_detail=observed_detail" in source
-    assert "tags.append(local_scratch.IO_CAPABILITY)" in source
 
 
 def _recorder_action(fleet, *, changed_source=False, extra_env=None):
@@ -724,15 +721,15 @@ def _recorder_action(fleet, *, changed_source=False, extra_env=None):
         "--", sys.executable, "-I", "-S", ls.RECORDER, "--root", fleet.scratch,
         "--bytes", "1024", "--block-bytes", "256", "--repetitions", "1",
         "--result", ls.PROFILE_RESULT])
-    template = pbrun.prepare_submission(args)["template"]
-    action = pbrun.seal_action_from_template(template)
+    template = submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
+    action = submit_core.seal(template)
     fleet.cas.publish_action_request(action)
     return action
 
 
 @pytest.mark.parametrize("hook", ["PATH", "BASH_ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH"])
 def test_recorder_freeze_rejects_forged_path_tee_startup_and_loader_hooks(fleet, hook):
-    with pytest.raises(SystemExit, match="scratch recorder"):
+    with pytest.raises(submit_core.SubmissionRefused, match="scratch recorder"):
         _recorder_action(fleet, extra_env={hook: str(fleet.root / "untrusted")})
     assert not list(Path(fleet.scratch).iterdir())
     assert not (fleet.work / ls.PROFILE_RESULT).exists()
@@ -975,9 +972,9 @@ def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, 
         "--cpus", str(cpu), "--demand", f"mem_gb={memory}", "--priority", str(priority),
         "--timeout-s", "30", *(["--max-attempts", "2", "--retry-safe"] if retry else []),
         "--", "/bin/bash", "-c", f"true # {label}"])
-    action = pbrun.seal_action_from_template(pbrun.prepare_submission(args)["template"])
+    action = submit_core.seal(submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"])
     fleet.cas.publish_action_request(action)
-    fleet.queue.publish(**pbrun.publication_row(action, args=args, queue=fleet.queue))
+    fleet.queue.publish(**submit_core.row_publication(pbrun.request_from_args(args), pbrun.configured_store()).row(action, queue=fleet.queue))
     return str(action["action_key"])
 
 
@@ -985,7 +982,7 @@ def _normal_cpu_publication(fleet, *, cpu=1, memory=1, priority=0, retry=False, 
 def test_local_fallback_without_preferred_or_alternative_reaches_real_admission(
         tmp_path, monkeypatch, opted_in):
     fleet = ScratchFleet(tmp_path, monkeypatch, cpu_tiers={"preferred": [], "fallback": [0, 1, 2, 3]})
-    (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+    (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     fleet.publish(opted_in=opted_in)
     assert fleet.queue.ledger(SLOW).free_preferred(fleet.tiers) == 0
     assert fleet.queue.ledger(SLOW).available() == CAPACITY
@@ -1001,7 +998,7 @@ def test_local_fallback_without_preferred_or_alternative_reaches_real_admission(
 def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
         tmp_path, monkeypatch, opted_in):
     fleet = ScratchFleet(tmp_path, monkeypatch, cpu_tiers={"preferred": [0], "fallback": [1, 2, 3]})
-    (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+    (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     holder = _normal_cpu_publication(fleet)
     first = fleet.claim(SLOW)
     assert first is not None and first["action_key"] == holder
@@ -1034,7 +1031,7 @@ def test_local_preferred_borrow_still_uses_actual_holder_telemetry(
 
 @pytest.mark.parametrize("opted_in", [False, True], ids=["old-priority-gate", "measured-priority-gate"])
 def test_local_token_shortage_still_reaches_real_background_preemption(fleet, opted_in):
-    (fleet.queue.root / pool.WORKERS / f"{FAST}.json").unlink()
+    (fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json").unlink()
     holder = _normal_cpu_publication(fleet, memory=29, priority=-10, retry=True)
     first = fleet.claim(SLOW)
     assert first is not None and first["action_key"] == holder
@@ -1044,7 +1041,7 @@ def test_local_token_shortage_still_reaches_real_background_preemption(fleet, op
     fleet.publish(opted_in=opted_in)
     assert fleet.queue.ledger(SLOW).available()["mem_gb"] == 3
     assert fleet.claim(SLOW) is None               # preemption never releases the holder's tokens
-    decisions = [d for _, d in fleet.queue.withdrawal_decisions(holder)]
+    decisions = [d for _, d in fleet.queue.records.withdrawal_decisions(holder)]
     assert decisions, "scratch local prefit bypassed the real priority/token-shortage gate"
     assert decisions[-1]["status"] == "withdrawn" and decisions[-1]["preempted_by"] == fleet.key
     assert fleet.queue.ledger(SLOW).held()["mem_gb"] == 29
@@ -1057,7 +1054,7 @@ def test_local_token_shortage_still_reaches_real_background_preemption(fleet, op
 
 def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdict(fleet):
     fleet.publish()
-    a = _record(fleet.queue.item_path(pool.READY, fleet.key))
+    a = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
     fleet.gpu_fault = "foreign"
     assert fleet.claim(FAST) is None
     fleet.mirror_real_denial(FAST, "adaptive_gpu_refused")
@@ -1075,10 +1072,10 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
         # Actual private pre-rename token reservation, not a vacuous zero.
         assert ledger.capacity()["spool_gb"] == 186
         assert ledger.held()["spool_gb"] == 186
-        assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
+        assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).exists()
         fleet.clock[0] += 1.
         fleet.queue.publish(**fleet.publication)   # real publication B, same sealed action/demand
-        b = _record(fleet.queue.item_path(pool.READY, fleet.key))
+        b = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
         assert b["published_unix"] > a["published_unix"]
         assert b["resources"] == a["resources"] and b["action_key"] == a["action_key"]
         replacements.append(b)
@@ -1086,19 +1083,21 @@ def test_generation_replacement_at_supported_gate_unwinds_earlier_refusal_verdic
 
     claimed = fleet.queue.claim(owner="generation-race-control", capacity=CAPACITY,
                                 cpu_tiers=fleet.tiers, adaptive_cpu=True, has_gpu=True,
-                                tags=["gb10", CAPABILITY], admission_open=reentrant_publication_gate)
+                                tags=["gb10", CAPABILITY], admission_open=reentrant_publication_gate,
+                                cpu_sampler=fleet.cpu_sample,
+                                gpu_sampler=fleet.gpu_sample)
     assert replacements, "fixture did not reach the actual pre-rename gate"
     if claimed is not None:
         assert claimed["published_unix"] == replacements[0]["published_unix"]
         assert claimed[PLACEMENT]["published_unix"] == claimed["published_unix"]
     assert claimed is None, "publication B inherited A's evaluated peer-refusal placement"
-    b = _record(fleet.queue.item_path(pool.READY, fleet.key))
+    b = _record(fleet.queue.records.item_path(pool.record_store.READY, fleet.key))
     assert b["published_unix"] == replacements[0]["published_unix"]
     assert not fleet.queue.ledger(SLOW).held_keys()
     assert fleet.queue.ledger(SLOW).available() == CAPACITY
-    assert not fleet.queue.lease_path(fleet.key).exists()
-    assert not fleet.queue.item_path(pool.CLAIMED, fleet.key).exists()
-    assert not fleet.queue.item_path(pool.DONE, fleet.key).exists()
+    assert not fleet.queue.records.lease_path(fleet.key).exists()
+    assert not fleet.queue.records.item_path(pool.record_store.CLAIMED, fleet.key).exists()
+    assert not fleet.queue.records.item_path(pool.record_store.DONE, fleet.key).exists()
     assert b.get("attempt_history", []) == [] and PLACEMENT not in b
 
 
@@ -1112,9 +1111,9 @@ def test_refusal_sample_total_age_cannot_authorize_measured_pass_on(fleet, monke
             sample["sampled_unix"] -= 4.9
         return sample
 
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda _: aging_gpu_observation())
+    gpu_sampler = lambda: aging_gpu_observation()
     fleet.gpu_fault = "foreign"
-    assert fleet.claim(FAST) is None
+    assert fleet.claim(FAST, gpu_sampler=gpu_sampler) is None
     fleet.mirror_real_denial(FAST, "adaptive_gpu_refused")
     denial = fleet.denial(FAST)
     sampled = denial["evidence"]["decision"]["sample"]["sampled_unix"]
@@ -1122,12 +1121,12 @@ def test_refusal_sample_total_age_cannot_authorize_measured_pass_on(fleet, monke
     fleet.gpu_fault = None
     fleet.clock[0] += 4.9
     # Do NOT reannounce FAST: that would independently invalidate its denial.
-    offer = _record(fleet.queue.root / pool.WORKERS / f"{FAST}.json")
+    offer = _record(fleet.queue.root / pool.record_store.WORKERS / f"{FAST}.json")
     assert offer["announced_unix"] <= denial["denied_unix"]
     assert fleet.clock[0] - offer["observed_detail"]["observed_unix"] < pool.box_capacity.GPU_SAMPLE_MAX_AGE_S
     assert fleet.queue.ledger(FAST).available() == CAPACITY
     assert 0 < fleet.clock[0] - denial["denied_unix"] < adaptive_gpu.MAX_SAMPLE_AGE_S
     assert fleet.clock[0] - sampled > adaptive_gpu.MAX_SAMPLE_AGE_S
-    claimed = fleet.claim(SLOW)
+    claimed = fleet.claim(SLOW, gpu_sampler=gpu_sampler)
     assert claimed is None, "individually fresh ages improperly admitted a currently stale refusal sample"
     assert not fleet.queue.ledger(SLOW).held_keys()

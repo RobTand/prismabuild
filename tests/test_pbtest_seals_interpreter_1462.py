@@ -1,5 +1,6 @@
 """The generated producer seals its interpreter, environment and queue row."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 import shutil
@@ -10,8 +11,10 @@ import pytest
 
 from test_pbtest import pbtest
 from test_pbrun_detach import _checkout, pbrun
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import core as pb, pool
-from pbtest_shard_output import ShardProcess, shard_output_for
+from pbtest_shard_output import ShardProcess, shard_output_for, submission_command
 
 PUBLISHED = Path('/mnt/shared/prismabuild-fleet/repo')
 
@@ -30,7 +33,7 @@ def _generated(root, monkeypatch, *, extra=(), python=sys.executable):
             return self.output, None
 
     def capture(command, **kwargs):
-        calls.append(command)
+        calls.append(submission_command(command))
         return Finished(command)
 
     with monkeypatch.context() as scoped:
@@ -48,18 +51,30 @@ def _generated(root, monkeypatch, *, extra=(), python=sys.executable):
 def _sealed(root, monkeypatch, *, extra=(), python=sys.executable):
     work, command = _generated(root, monkeypatch, extra=extra, python=python)
     queue = pool.PoolQueue(root / 'pb-queue')
-    queue.announce(host='qualified', tags=['x86', pb.INTERPRETER_TAG],
-                   interpreters=[python], has_gpu=False,
-                   capacity={'cpu': 8, 'mem_gb': 16}, timeout_ceiling_s=300)
+    queue.announce(
+        host='qualified',
+        tags=['x86', contracts.INTERPRETER_TAG],
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                [python],
+                None,
+            ),
+        ),
+        has_gpu=False,
+        capacity={'cpu': 8, 'mem_gb': 16},
+        timeout_ceiling_s=300,
+    )
     with monkeypatch.context() as scoped:
-        scoped.setattr(pbrun, 'SH', root)
-        scoped.setattr(pbrun, 'RUNTIME_ROOT', PUBLISHED)
+        patch_store(scoped, client=pbrun, root=root)
+        patch_store(scoped, client=pbrun, runtime_root=PUBLISHED)
         scoped.setattr(sys, 'argv', [*command[1:2], '--detach', *command[2:]])
         assert pbrun.main() == 0
     requests = list((root / 'cas/requests').rglob('*.json'))
     assert len(requests) == 1
     action = json.loads(requests[0].read_text())
-    item = json.loads(queue.item_path(pool.READY, action['action_key']).read_text())
+    item = json.loads(
+        queue.records.item_path(pool.record_store.READY, action['action_key']).read_text(),
+    )
     return action, item, queue
 
 
@@ -69,7 +84,7 @@ def test_generated_request_and_published_row_bind_the_same_interpreter(tmp_path,
     assert action['params']['command'][0] == sys.executable
     assert action['params']['interpreter'] == sys.executable
     assert row['interpreter'] == sys.executable
-    assert pb.INTERPRETER_TAG in row['tags']
+    assert contracts.INTERPRETER_TAG in row['tags']
     assert action['params']['placement']['required_tags'] == []
 
 
@@ -95,23 +110,42 @@ def test_untagged_generated_row_matches_all_and_only_capable_architectures(tmp_p
                                                                        monkeypatch):
     _, row, queue = _sealed(tmp_path, monkeypatch)
     for host, tags, answers in [
-            ('arm', [pb.INTERPRETER_TAG, 'gb10'], [sys.executable]),
-            ('x86', [pb.INTERPRETER_TAG, 'x86'], [sys.executable]),
-            ('missing', [pb.INTERPRETER_TAG], []),
+            ('arm', [contracts.INTERPRETER_TAG, 'gb10'], [sys.executable]),
+            ('x86', [contracts.INTERPRETER_TAG, 'x86'], [sys.executable]),
+            ('missing', [contracts.INTERPRETER_TAG], []),
             ('legacy', [], None)]:
-        queue.announce(host=host, tags=tags, interpreters=answers,
-                       has_gpu=False, capacity={'cpu': 8, 'mem_gb': 16})
+        queue.announce(
+            host=host,
+            tags=tags,
+            capabilities=capability_eligibility.OfferCapabilities(
+                interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                    answers,
+                    None,
+                ),
+            ),
+            has_gpu=False,
+            capacity={'cpu': 8, 'mem_gb': 16},
+        )
     assert set(queue.placeable_hosts(row)) == {'qualified', 'arm', 'x86'}
 
 
 def test_explicit_architecture_constraint_survives_the_interpreter_requirement(tmp_path,
                                                                             monkeypatch):
     action, row, queue = _sealed(tmp_path, monkeypatch, extra=('--tag', 'x86'))
-    queue.announce(host='arm', tags=[pb.INTERPRETER_TAG, 'gb10'],
-                   interpreters=[sys.executable], has_gpu=False,
-                   capacity={'cpu': 8, 'mem_gb': 16})
+    queue.announce(
+        host='arm',
+        tags=[contracts.INTERPRETER_TAG, 'gb10'],
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                [sys.executable],
+                None,
+            ),
+        ),
+        has_gpu=False,
+        capacity={'cpu': 8, 'mem_gb': 16},
+    )
     assert action['params']['placement']['required_tags'] == ['x86']
-    assert row['tags'] == [pb.INTERPRETER_TAG, 'x86']
+    assert row['tags'] == [contracts.INTERPRETER_TAG, 'x86']
     assert queue.placeable_hosts(row) == ['qualified']
 
 
@@ -136,9 +170,18 @@ def test_preflight_prices_the_same_cpu_demand_as_the_generated_request(tmp_path,
 def test_published_request_keeps_the_existing_three_state_path_verdict(
         tmp_path, monkeypatch, answers, absent, verdict):
     _, row, queue = _sealed(tmp_path, monkeypatch)
-    queue.announce(host='qualified', tags=[pb.INTERPRETER_TAG],
-                   interpreters=answers, has_gpu=False,
-                   capacity={'cpu': 8, 'mem_gb': 16})
+    queue.announce(
+        host='qualified',
+        tags=[contracts.INTERPRETER_TAG],
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                answers,
+                None,
+            ),
+        ),
+        has_gpu=False,
+        capacity={'cpu': 8, 'mem_gb': 16},
+    )
     path = queue.root / 'workers/qualified.json'
     document = json.loads(path.read_text())
     document['interpreters_absent'] = absent
@@ -150,7 +193,7 @@ def test_published_request_keeps_the_existing_three_state_path_verdict(
 def test_legacy_worker_cannot_claim_the_generated_naming_row(tmp_path, monkeypatch):
     _, row, queue = _sealed(tmp_path, monkeypatch)
     assert queue.claim(capacity={'cpu': 8, 'mem_gb': 16}, tags=['x86']) is None
-    assert queue.item_path(pool.READY, row['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.READY, row['action_key']).exists()
 
 
 def test_interpreter_removed_after_publication_is_refused_at_claim(tmp_path, monkeypatch):
@@ -161,12 +204,12 @@ def test_interpreter_removed_after_publication_is_refused_at_claim(tmp_path, mon
     _, row, queue = _sealed(tmp_path, monkeypatch, python=str(interpreter))
     interpreter.unlink()
     assert queue.claim(capacity={'cpu': 8, 'mem_gb': 16},
-                       tags=[pb.INTERPRETER_TAG]) is None
+                       tags=[contracts.INTERPRETER_TAG]) is None
     from test_interpreter_placement import _denials
     denial = _denials(queue)[-1]
     assert denial['reason'] == 'interpreter_not_present'
     assert denial['evidence']['interpreter'] == str(interpreter)
-    assert queue.item_path(pool.READY, row['action_key']).exists()
+    assert queue.records.item_path(pool.record_store.READY, row['action_key']).exists()
 
 
 @pytest.mark.parametrize('python', ['python3', 'relative/bin/python', '/bin/sh'])

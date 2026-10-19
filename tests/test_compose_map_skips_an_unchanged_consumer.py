@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map  # noqa: E402
 
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 OTHER_CONSUMER = "d" * 64
@@ -40,7 +40,7 @@ def _hexkey(seed: str) -> str:
 def queue(tmp_path: Path) -> pool.PoolQueue:
     tier_loop._COMPOSE_FINGERPRINTS.clear()
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     return q
 
 
@@ -72,7 +72,7 @@ def _ram_fragment(consumer: str, mover: str, name: str,
 
 
 def _write(queue: pool.PoolQueue, fragment: dict[str, object]) -> None:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, fragment)
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, fragment)
 
 
 def _stat(path: Path) -> tuple[int, int]:
@@ -129,7 +129,7 @@ def test_a_removed_fragment_recomposes(queue: pool.PoolQueue) -> None:
     assert residency_map.read_map(first)["generation"] == 2
 
     residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER,
+        queue.root / pool.record_store.RESIDENCY, CONSUMER,
         _hexkey("mover1")).unlink()
     second = tier_loop.compose_map(queue, CONSUMER)
     mapping = residency_map.read_map(second)
@@ -158,7 +158,7 @@ def test_an_empty_consumer_stays_empty(queue: pool.PoolQueue) -> None:
 
     assert tier_loop.compose_map(queue, CONSUMER) is None
     assert tier_loop.compose_map(queue, CONSUMER) is None
-    assert not queue.residency_map_path(CONSUMER).exists()
+    assert not queue.records.residency_map_path(CONSUMER).exists()
 
 
 def test_consumers_are_independent(queue: pool.PoolQueue) -> None:

@@ -6,25 +6,27 @@ from pathlib import Path
 import pytest
 
 from test_pbtest_reports_whether_pytest_ran import _one_shard
+from pbtest_shard_output import execution_reply
 
 
-@pytest.mark.parametrize("output,returncode", [
+@pytest.mark.parametrize("output,returncode,timed_out", [
     pytest.param(
         "................................F [82%]\n"
         "pbrun: timeout on dl380g10 in 3620s\n",
-        1, id="partial-pytest-action-timeout"),
+        1, True, id="partial-pytest-action-timeout"),
     pytest.param(
         "PrismaBuild per-test bound: tests/test_one.py::test_one exceeded "
         "the per-test bound of 300s during call\n",
-        1, id="known-call-without-final-roster"),
-    pytest.param("", -9, id="signal-with-unknown-execution"),
-    pytest.param("........ [53%]\n", 0, id="clean-exit-without-summary"),
+        1, False, id="known-call-without-final-roster"),
+    pytest.param("", -9, False, id="signal-with-unknown-execution"),
+    pytest.param("........ [53%]\n", 0, False, id="clean-exit-without-summary"),
 ])
 def test_missing_final_summary_reports_unknown_coverage(
-    tmp_path: Path, monkeypatch, output: str, returncode: int,
+    tmp_path: Path, monkeypatch, output: str, returncode: int, timed_out: bool,
 ) -> None:
     exit_code, record = _one_shard(
-        tmp_path, monkeypatch, output, returncode, with_exit=True)
+        tmp_path, monkeypatch, output, returncode, with_exit=True,
+        client_reply=execution_reply(output, returncode, timed_out=True) if timed_out else None)
 
     # The compatibility flag means a verified terminal summary exists, not
     # that no case ran when it is false. Missing counts never admit green.

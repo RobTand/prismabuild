@@ -41,11 +41,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _raise_on(monkeypatch: pytest.MonkeyPatch, name: str, err: int) -> None:
@@ -64,7 +65,7 @@ def _raise_on(monkeypatch: pytest.MonkeyPatch, name: str, err: int) -> None:
 def _write_ready(queue: pool.PoolQueue, key: str) -> Path:
     """A ready record complete enough that ``quarantine_orphans`` leaves it be."""
 
-    path = queue.item_path(pool.READY, key)
+    path = queue.records.item_path(pool.record_store.READY, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -83,7 +84,7 @@ def _write_ready(queue: pool.PoolQueue, key: str) -> Path:
 
 
 def _write_claim(queue: pool.PoolQueue, key: str, *, claimed_unix: float) -> Path:
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -148,7 +149,7 @@ def test_quarantine_orphans_leaves_a_stale_entry_alone(
     """
 
     _write_ready(queue, "orphan")          # no worker_script: genuinely unusable
-    queue.item_path(pool.READY, "orphan").write_text(
+    queue.records.item_path(pool.record_store.READY, "orphan").write_text(
         json.dumps({"action_key": "orphan"}), encoding="utf-8"
     )
     stale = _write_ready(queue, "stale")
@@ -158,7 +159,7 @@ def test_quarantine_orphans_leaves_a_stale_entry_alone(
 
     assert filed == ["orphan"]
     assert stale.exists(), "a record the sweep could not read must survive it"
-    assert not queue.item_path(pool.FAILED, "stale").exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, "stale").exists()
 
 
 def test_quarantine_orphans_still_files_a_truly_empty_record(
@@ -166,12 +167,12 @@ def test_quarantine_orphans_still_files_a_truly_empty_record(
 ) -> None:
     """The torn-write case the sweep exists for is unchanged."""
 
-    torn = queue.item_path(pool.READY, "torn")
+    torn = queue.records.item_path(pool.record_store.READY, "torn")
     torn.parent.mkdir(parents=True, exist_ok=True)
     torn.write_bytes(b"")
 
     assert queue.quarantine_orphans() == ["torn"]
-    assert queue.item_path(pool.FAILED, "torn").exists()
+    assert queue.records.item_path(pool.record_store.FAILED, "torn").exists()
 
 
 def test_quarantine_orphans_still_raises_on_a_genuine_read_error(

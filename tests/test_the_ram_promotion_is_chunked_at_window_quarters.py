@@ -21,6 +21,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import manifest_layout
 from prismabuild import storage_tiers  # noqa: E402
 
 GIB = storage_tiers.GIB
@@ -54,7 +55,7 @@ def test_a_phase_splits_into_quarters_with_a_short_last_chunk() -> None:
     exactly the window-quarter arithmetic.
     """
 
-    chunks = storage_tiers.split_range_into_chunks(
+    chunks = manifest_layout.split_range_into_chunks(
         0, 123 * GIB, 40 * GIB, entry_bytes=[GIB] * 123)
 
     assert chunks == [(0, 40 * GIB), (40 * GIB, 80 * GIB),
@@ -62,7 +63,7 @@ def test_a_phase_splits_into_quarters_with_a_short_last_chunk() -> None:
 
 
 def test_an_exact_multiple_needs_no_short_chunk() -> None:
-    assert storage_tiers.split_range_into_chunks(
+    assert manifest_layout.split_range_into_chunks(
         0, 80 * GIB, 40 * GIB, entry_bytes=[GIB] * 80) == [
         (0, 40 * GIB), (40 * GIB, 80 * GIB)]
 
@@ -70,16 +71,16 @@ def test_an_exact_multiple_needs_no_short_chunk() -> None:
 def test_a_phase_that_fits_is_one_chunk_whole() -> None:
     """A range at or under the chunk seals one node over the whole phase."""
 
-    assert storage_tiers.split_range_into_chunks(
+    assert manifest_layout.split_range_into_chunks(
         0, 40 * GIB, 40 * GIB, entry_bytes=[GIB] * 40) == [(0, 40 * GIB)]
-    assert storage_tiers.split_range_into_chunks(
+    assert manifest_layout.split_range_into_chunks(
         0, 3 * GIB, 40 * GIB, entry_bytes=[3 * GIB]) == [(0, 3 * GIB)]
 
 
 def test_chunks_cover_without_gap_or_overlap() -> None:
     """Contiguity is the property the plan validator will recheck at freeze."""
 
-    chunks = storage_tiers.split_range_into_chunks(
+    chunks = manifest_layout.split_range_into_chunks(
         7, 100 * GIB + 7, 30 * GIB, entry_bytes=[7] + [GIB] * 100)
 
     assert chunks[0][0] == 7
@@ -95,7 +96,7 @@ def test_an_empty_range_and_a_non_positive_chunk_refuse() -> None:
     for start, end, chunk in ((5, 5, 40 * GIB), (9, 5, 40 * GIB),
                               (0, 40 * GIB, 0), (0, 40 * GIB, -1)):
         with pytest.raises(ValueError):
-            storage_tiers.split_range_into_chunks(
+            manifest_layout.split_range_into_chunks(
                 start, end, chunk, entry_bytes=[GIB] * 40)
 
 

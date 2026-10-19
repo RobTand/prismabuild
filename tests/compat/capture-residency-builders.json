@@ -1,0 +1,40 @@
+{
+  "capture_name": "residency-builders-capture-s6",
+  "capture_report_sha256": "940d143f4b5382c02d43db4107524083b2f998370c05899e6f04a4d669ee8065",
+  "excluded_cases": [],
+  "files": {
+    "goldens-residency-builders.jsonl": "6909125448f16ace7f94580955a7b505bff2410ed043388e09a7536c60344250",
+    "historical-residency-builders.jsonl": "9c0c5be7a3f4389d93ec3c0f35d347f95853ebd5d4a9a0c8a24b75d91e7d435f"
+  },
+  "finished_at": "2026-10-19T06:22:35.975799+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "residency-block/campaign-writer",
+    "residency-block/output-due-writer",
+    "residency-block/output-publish-writer",
+    "residency-block/pbrun-mover-writer",
+    "residency-block/pbrun-ram-writer",
+    "residency-block/pbrun-reuse-writer",
+    "residency-block/pbrun-stage-writer"
+  ],
+  "source_git": {
+    "parents": [
+      "5506db22e4237816f1c8a6ed6f8938fd5e1c1200"
+    ],
+    "snapshot": "15fbad49b19f99a0498de759736893031b8a335a",
+    "tree": "292f8119bcabfed96511d064059c4283b33e487b"
+  },
+  "started_at": "2026-10-19T06:19:31.162549+00:00",
+  "superseded_current_archive": "tests/compat/history-controls/superseded-residency-capture-de5a1ed064bdb184",
+  "verified_producer": {
+    "action_key": "9b995df7644ca6a8da7f0b66744f9f5e7e75d94c4c3f2e00aa576141bc359329",
+    "receipt_sha256": "85e9626893908e647d93d12b315220308dc636accad8636d08b8cb0e42ced0db",
+    "request_sha256": "e9ca088722dea22674cb69ba9ca4e41b1dcf53ed8d68786f41e65228c37d3877",
+    "source_parent": "5506db22e4237816f1c8a6ed6f8938fd5e1c1200"
+  }
+}

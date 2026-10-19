@@ -6,6 +6,7 @@ imports. Plans here declare a resident prefix; every number asserted
 comes from the plan the test builds. The integrator runs them;
 nothing here runs anything itself.
 """
+
 from pathlib import Path
 import sys
 from typing import Mapping
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 from prismabuild import prelaunch_group as pg  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     GIB, MANIFEST, STAGE_KIND, TIER, _chunks, _drive_to_committed, _hexkey,
     _plan, _queue, _row)
@@ -135,7 +136,7 @@ def _publish_leg(queue, plan, mover):
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     return row
 
@@ -289,7 +290,7 @@ def test_units_sort_by_priority_then_publish_time(tmp_path) -> None:
 def test_reserve_pass_reserves_a_whole_group_in_one_pass(tmp_path) -> None:
     """An admitted unit files once and owns its whole demand at once."""
     queue = _queue(tmp_path, stage_gib=300)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     consumer = _hexkey("reserve-consumer")
     plan = _declared_plan(queue, consumer, [("phase-a", 4, True, 2),
                                             ("phase-b", 4, False, 1)],
@@ -312,13 +313,13 @@ def test_reserve_pass_reserves_a_whole_group_in_one_pass(tmp_path) -> None:
     assert authority == {consumer: True}
     assert any(event["event"] == "prelaunch-group-committed"
                for event in events)
-    assert ledger.holder_tokens(units[0].holder).get("stage_gib", 0) == 4
+    assert ledger.holdings(units[0].holder).get('stage_gib', 0) == 4
 
 
 def test_reserve_pass_holds_back_a_non_admitted_unit(tmp_path) -> None:
     """A refused unit waits: intent stands, the ledger never moves."""
     queue = _queue(tmp_path, stage_gib=300)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     consumer = _hexkey("wait-consumer")
     plan = _declared_plan(queue, consumer, [("phase-a", 4, True, 2),
                                             ("phase-b", 4, False, 1)],
@@ -329,8 +330,8 @@ def test_reserve_pass_holds_back_a_non_admitted_unit(tmp_path) -> None:
                                         admitted=lambda unit: False)
     assert [event["event"] for event in events] == ["prelaunch-waiting"]
     assert authority == {consumer: False}
-    assert ledger.available().get("stage_gib") == 300
-    assert ledger.holder_tokens(units[0].holder).get("stage_gib", 0) == 0
+    assert ledger.free_supply().get('stage_gib') == 300
+    assert ledger.holdings(units[0].holder).get('stage_gib', 0) == 0
     assert (pg.group_dir(queue, consumer, TIER) / "intent.json").exists()
 
 
@@ -340,7 +341,7 @@ def test_reserve_pass_holds_back_a_non_admitted_unit(tmp_path) -> None:
 def test_publish_declared_binds_only_rowed_legs(tmp_path) -> None:
     """Funding follows the rows the window published; the rest waits."""
     queue = _queue(tmp_path, stage_gib=300)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     consumer = _hexkey("bind-consumer")
     plan = _declared_plan(queue, consumer, [("phase-a", 4, True, 2),
                                             ("phase-b", 4, False, 1)],
@@ -357,10 +358,10 @@ def test_publish_declared_binds_only_rowed_legs(tmp_path) -> None:
     events = pt.publish_declared(queue, TIER, units[0], rows)
     assert [event["event"] for event in events] == ["prelaunch-chunk-published"]
     assert events[0]["mover"] == movers[0]
-    record = queue.read_funding(movers[0], TIER)
+    record = queue.funding.read_window(movers[0], TIER)
     assert record is not None and record["state"] == "transferring"
-    assert ledger.holder_tokens(units[0].holder).get("stage_gib", 0) == 2
-    assert ledger.holder_tokens(movers[1]).get("stage_gib", 0) == 0
+    assert ledger.holdings(units[0].holder).get('stage_gib', 0) == 2
+    assert ledger.holdings(movers[1]).get('stage_gib', 0) == 0
 
 
 # -------------------------------------------------------------- obligations
@@ -456,35 +457,35 @@ def _orphan(queue, tag):
 def test_dangling_releases_an_orphan_holder(tmp_path) -> None:
     """A holder no live unit names returns its tokens."""
     queue = _queue(tmp_path, stage_gib=8)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     _, holder = _orphan(queue, "orphan")
     events = pt.dangling(queue, TIER, ledger, [], complete_census=True)
     assert [event["event"] for event in events] == [
         "prelaunch-dangling-released"]
     assert events[0]["holder"] == holder
-    assert ledger.holder_tokens(holder).get("stage_gib", 0) == 0
-    assert ledger.available().get("stage_gib") == 8
+    assert ledger.holdings(holder).get('stage_gib', 0) == 0
+    assert ledger.free_supply().get('stage_gib') == 8
 
 
 def test_dangling_retains_on_incomplete_census(tmp_path) -> None:
     """Half a census releases nothing and files nothing."""
     queue = _queue(tmp_path, stage_gib=8)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     _, holder = _orphan(queue, "half")
     assert pt.dangling(queue, TIER, ledger, [], complete_census=False) == []
-    assert ledger.holder_tokens(holder).get("stage_gib", 0) == 2
+    assert ledger.holdings(holder).get('stage_gib', 0) == 2
 
 
 def test_dangling_never_touches_a_live_unit(tmp_path) -> None:
     """A live unit's holder stays out of the orphan census."""
     queue = _queue(tmp_path, stage_gib=8)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     consumer, holder = _orphan(queue, "live")
     units = pt.declared_units(queue, TIERS, [_consumer(consumer)])
     assert [found.key for found in units] == [consumer]
     assert pt.dangling(queue, TIER, ledger, units,
                        complete_census=True) == []
-    assert ledger.holder_tokens(holder).get("stage_gib", 0) == 2
+    assert ledger.holdings(holder).get('stage_gib', 0) == 2
 
 
 # ---------------------------------------------------------- release_terminal
@@ -493,7 +494,7 @@ def test_dangling_never_touches_a_live_unit(tmp_path) -> None:
 def test_release_terminal_returns_tokens_but_keeps_a_copy(tmp_path) -> None:
     """An ended unit frees its remainder; a copying chunk keeps its own."""
     queue = _queue(tmp_path, stage_gib=8)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     consumer = _hexkey("end-consumer")
     plan = _declared_plan(queue, consumer, [("phase-a", 4, True, 2)],
                           tag="end")
@@ -517,6 +518,6 @@ def test_release_terminal_returns_tokens_but_keeps_a_copy(tmp_path) -> None:
     events = pt.release_terminal(queue, TIER, units, shared_owned=[])
     assert any(event["event"] == "prelaunch-group-released"
                for event in events)
-    assert ledger.holder_tokens(movers[0]).get("stage_gib", 0) == 2
-    assert ledger.holder_tokens(movers[1]).get("stage_gib", 0) == 0
-    assert ledger.available().get("stage_gib") == 6
+    assert ledger.holdings(movers[0]).get('stage_gib', 0) == 2
+    assert ledger.holdings(movers[1]).get('stage_gib', 0) == 0
+    assert ledger.free_supply().get('stage_gib') == 6

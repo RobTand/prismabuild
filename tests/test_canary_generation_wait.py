@@ -7,6 +7,7 @@ the only blocker.  The submission now waits within the leg's own budget;
 an image no box reports at all stays an immediate refusal.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -14,6 +15,8 @@ import sys
 
 import prismabuild.core as pb
 import prismabuild.pool as pool
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import publication_canary
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -35,18 +38,26 @@ def _paths(tmp_path: Path) -> dict:
 
 def _offer(queue, host, *, generation, image=True, gpu=True):
     queue.announce(
-        host=host, tags=[HOST, publication_canary.CAPABILITY,
+        host=host,
+        tags=[HOST, publication_canary.CAPABILITY,
                          f"runtime-generation:{generation}",
-                         *( [pb.CONTAINER_IMAGE_TAG] if image else [] )],
-        has_gpu=gpu, capacity=dict(CAPACITY),
-        observed_images=[IMAGE] if image else [])
+                         *( [contracts.CONTAINER_IMAGE_TAG] if image else [] )],
+        has_gpu=gpu,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [IMAGE] if image else [],
+                None,
+            ),
+        ),
+    )
 
 
 def test_an_image_with_the_old_generation_tag_waits(tmp_path):
     """The rollout's own shape: image present, generation not yet turned."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN)
 
     assert pbcanary.generation_pending(
@@ -55,7 +66,7 @@ def test_an_image_with_the_old_generation_tag_waits(tmp_path):
 
 def test_the_same_offer_on_the_new_generation_does_not_wait(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=NEW_GEN)
 
     assert pbcanary.generation_pending(
@@ -66,7 +77,7 @@ def test_an_image_no_box_reports_does_not_wait(tmp_path):
     """Nowhere at all is the immediate refusal it always was."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN, image=False)
 
     assert pbcanary.generation_pending(
@@ -238,10 +249,10 @@ def test_a_retained_offer_on_the_old_generation_waits(tmp_path, monkeypatch):
     reads "not pending" and lets the leg submit into the refusal.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _offer(queue, HOST, generation=OLD_GEN)
     later = pool._now() + 10 * pool.OFFER_TIMEOUT_S
-    monkeypatch.setattr(pool, "_now", lambda: later)
+    FleetClock(source=lambda: later).install(monkeypatch, scope="pool")
 
     assert pbcanary.generation_pending(
         _paths(tmp_path), SPEC, NEW_GEN, HOST) is True

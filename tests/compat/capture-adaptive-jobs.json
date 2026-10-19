@@ -1,0 +1,27 @@
+{
+  "capture_name": "state-cpu-jobs-capture-02",
+  "capture_report_sha256": "6d5d40da8090cbaa00bf4e6f2868282a718b1fc5d325229b2a9f408a42b6821d",
+  "excluded_cases": [],
+  "files": {
+    "goldens-adaptive-jobs.jsonl": "793a3bafb10d55cc28b8884d3275af3e5ffb593452187bfe378b0a367e1d3877",
+    "historical-adaptive-jobs.jsonl": "ee231e9e327555870158ffaec7bac92e4dc09fd3c1730440f5dd4ebf838e5a39"
+  },
+  "finished_at": "2026-10-17T00:20:08.448336+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "state-cpu-jobs/initial",
+    "state-cpu-jobs/measured"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "1435b2d67983ce7178d6eb026813bd3345a418ae",
+    "tree": "66fdcb25c41167b0d246ca7db2c75c97aa1474ae"
+  },
+  "started_at": "2026-10-17T00:19:39.376246+00:00"
+}

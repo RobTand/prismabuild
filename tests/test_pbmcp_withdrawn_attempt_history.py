@@ -14,6 +14,7 @@ corrupt instead of answering an empty list.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -41,18 +42,6 @@ def _session(queue: pool.PoolQueue, base: Path) -> pbmcp.Session:
                          repo_link=base / "repo")
 
 
-def _publish(queue: pool.PoolQueue, base: Path, key: str, **extra: object) -> None:
-    queue.publish(
-        action_key=key,
-        cas_root=str(base / "cas"),
-        checkout_root=str(base / "checkout"),
-        worker_script=str(base / "worker.py"),
-        max_attempts=3,
-        retry_safe=True,
-        **extra,
-    )
-
-
 @pytest.fixture()
 def withdrawn(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     """One failed attempt, a requeue, then an operator's verb on the ready row.
@@ -65,14 +54,21 @@ def withdrawn(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    _publish(queue, tmp_path, KEY)
+    queue.records.ensure_layout()
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=str(tmp_path / 'cas'),
+        checkout_root=str(tmp_path / 'checkout'),
+        worker_script=str(tmp_path / 'worker.py'),
+        max_attempts=3,
+        retry_safe=True,
+    )
     assert queue.claim() is not None
     requeued = queue.finish(
         KEY, status="failed",
         detail={"returncode": 1, "elapsed_s": 0.759, "status": "failed",
                 "stdout": STDOUT, "stderr": STDERR})
-    assert requeued == queue.item_path(pool.READY, KEY)
+    assert requeued == queue.records.item_path(pool.record_store.READY, KEY)
     queue.withdraw(KEY, reason="producer timed out", by="rob",
                    signal_child=False)
     return queue, _session(queue, tmp_path)
@@ -85,8 +81,15 @@ def done(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    _publish(queue, tmp_path, DONE_KEY)
+    queue.records.ensure_layout()
+    ActionRows(queue).publish(
+        DONE_KEY,
+        cas_root=str(tmp_path / 'cas'),
+        checkout_root=str(tmp_path / 'checkout'),
+        worker_script=str(tmp_path / 'worker.py'),
+        max_attempts=3,
+        retry_safe=True,
+    )
     assert queue.claim() is not None
     queue.finish(DONE_KEY, status="executed",
                  detail={"returncode": 0, "elapsed_s": 1.5, "status": "executed",
@@ -96,11 +99,11 @@ def done(tmp_path: Path) -> tuple[pool.PoolQueue, pbmcp.Session]:
 
 def _record(queue: pool.PoolQueue, key: str = KEY) -> dict:
     return json.loads(
-        queue.item_path(pool.WITHDRAWN, key).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text(encoding="utf-8"))
 
 
 def _rewrite(queue: pool.PoolQueue, record: dict, key: str = KEY) -> None:
-    queue.item_path(pool.WITHDRAWN, key).write_text(
+    queue.records.item_path(pool.record_store.WITHDRAWN, key).write_text(
         json.dumps(record), encoding="utf-8")
 
 

@@ -30,6 +30,7 @@ Nothing here touches the real shared mount.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -178,7 +179,7 @@ def test_no_rollout_tree_at_all_reads_as_nothing_posted(fleet):
 
 
 def test_the_roster_accepts_a_box_under_its_alias(fleet):
-    assert publish_runtime._roster_boxes() == [
+    assert [(key, names) for key, names, _ in publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT).declarations()] == [
         ("gx10-6b77", frozenset({"gx10-6b77", "sparklina"})),
         ("sparky", frozenset({"sparky"})),
     ]
@@ -187,26 +188,26 @@ def test_the_roster_accepts_a_box_under_its_alias(fleet):
 def test_the_real_roster_still_keys_the_second_gb10_under_its_alias():
     """A rename in the fleet has to reach this check, not go around it."""
 
-    boxes = dict(publish_runtime._roster_boxes())
+    boxes = dict([(key, names) for key, names, _ in publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT).declarations()])
     assert "sparklina" in boxes["gx10-6b77"]
 
 
 def test_history_check_passes_when_every_box_attested_the_published_agent(fleet):
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", SHA)
-    publish_runtime._require_attested_fleet(SHA)
+    publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 def test_a_box_answering_under_its_roster_key_also_counts(fleet):
     post(fleet, "sparky", SHA)
     post(fleet, "gx10-6b77", SHA)
-    publish_runtime._require_attested_fleet(SHA)
+    publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 def test_a_silent_box_is_named_in_the_refusal(fleet):
     post(fleet, "sparky", SHA)
     with pytest.raises(SystemExit) as raised:
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
     message = str(raised.value)
     assert "gx10-6b77 (gx10-6b77/sparklina): has posted no attestation" in message
     # Rolling installs nothing, so the advice below must not be the only thing
@@ -220,7 +221,7 @@ def test_a_box_missing_the_version_is_named_with_its_recorded_history(fleet):
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", OTHER)
     with pytest.raises(SystemExit) as raised:
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
     assert f"posted versions {OTHER[:12]}" in str(raised.value)
 
 
@@ -230,7 +231,7 @@ def test_a_generation_that_changes_the_agent_cannot_be_its_own_first_barrier(fle
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", SHA)
     with pytest.raises(SystemExit) as raised:
-        publish_runtime._require_attested_fleet(OTHER)
+        publish_runtime._require_attested_fleet(OTHER, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
     assert OTHER[:12] in str(raised.value)
 
 
@@ -258,13 +259,18 @@ def test_default_mutating_publication_requires_a_bridge_before_history(monkeypat
         publish_runtime.main()
 
 
+def manifested_roster():
+    member = "tools/fleet/fleet_boxes.json"
+    return {member: hashlib.sha256((publish_runtime.CHECKOUT / member).read_bytes()).hexdigest()}
+
+
 def test_default_barrier_dry_run_keeps_the_historical_preflight(fleet, monkeypatch):
     member = upgrade.MEMBERS["upgrade_client.py"]
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", SHA)
     monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
     monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
-    monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {member: SHA})
+    monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {member: SHA, **manifested_roster()})
     monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
     monkeypatch.setattr(publish_runtime.sys, "argv", ["publish_runtime.py", "--dry-run",
                                                       "--shape-gate-waiver", "fixture publication"])
@@ -290,7 +296,7 @@ def test_a_barrier_publication_refuses_before_anything_is_staged(fleet, monkeypa
     member = upgrade.MEMBERS["upgrade_client.py"]
     monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
     monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
-    monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {member: SHA})
+    monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {member: SHA, **manifested_roster()})
     monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
     monkeypatch.setattr(
         publish_runtime.sys, "argv",
@@ -322,6 +328,11 @@ def _generation(fleet, member_sha):
     receipt = {"commit": "c" * 40, "generation": generation.name, "files": {}}
     if member_sha is not None:
         receipt["files"] = {upgrade.MEMBERS["upgrade_client.py"]: member_sha}
+    member = "tools/fleet/fleet_boxes.json"
+    data = (publish_runtime.CHECKOUT / member).read_bytes()
+    (generation / member).parent.mkdir(parents=True, exist_ok=True)
+    (generation / member).write_bytes(data)
+    receipt["files"][member] = hashlib.sha256(data).hexdigest()
     (generation / "RUNTIME_VERSION.json").write_text(json.dumps(receipt))
     return generation
 

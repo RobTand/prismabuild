@@ -23,6 +23,8 @@ from prismabuild import pool
 KEY = "c" * 64
 
 
+
+
 def exercise(tmp_path, *, draining, loaded, live):
     """Run worker.main() in a child against a private queue and gate."""
 
@@ -35,7 +37,7 @@ def exercise(tmp_path, *, draining, loaded, live):
         gate.write_text(json.dumps({
             "schema": "prismabuild.resource-maintenance.v1", "draining": draining}))
     for name, generation in (("loaded.json", loaded), ("live.json", live)):
-        (tmp_path / name).write_text(json.dumps({"generation": generation}))
+        (tmp_path / name).write_text(json.dumps({"commit": "a" * 40, "generation": generation}))
 
     script = tmp_path / "exercise.py"
     script.write_text(f'''
@@ -44,11 +46,12 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
-wl.MAINTENANCE_GATE = Path({str(gate)!r})
+from prismabuild import role_session
+role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
-worker.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
-worker.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
+role_session.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
+role_session.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 seen = {{}}
 def serve_once(self, **kwargs):
     seen["containment"] = kwargs.get("containment")
@@ -57,7 +60,7 @@ def serve_once(self, **kwargs):
     seen["claimed"] = item is not None
     return None
 wl.pool.PoolQueue.serve_once = serve_once
-def once(stop_requested, **options):
+def once(stop, **options):
     q = wl.pool.PoolQueue(Path({str(tmp_path / 'pb-queue')!r}))
     result = q.serve_once(tags=["gb10"], has_gpu=True,
                           capacity={{"cpu": 1}}, containment=True)
@@ -86,7 +89,8 @@ def test_a_stopped_host_is_stopped_for_the_one_shot_too(tmp_path, draining, load
     queue, seen, stdout = exercise(tmp_path, draining=draining, loaded=loaded,
                                   live=live)
     assert seen == {}, "serve_once ran while the host was stopped"
-    assert queue.item_path(pool.READY, KEY).exists(), "the item was claimed anyway"
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists(
+    ), "the item was claimed anyway"
     assert why in json.loads(stdout)["declined"]
 
 
@@ -95,6 +99,14 @@ def test_an_admitting_host_serves_the_claim_in_front_of_the_broker(tmp_path):
     assert seen["claimed"] is True, "an open host must still serve"
     assert seen["containment"] is True, (
         "an uncontained claim never reaches the broker's draining refusal")
+
+
+@pytest.mark.parametrize("draining", [True, None])
+def test_maintenance_refusal_takes_priority_over_unknown_receipts(tmp_path, draining):
+    queue, seen, stdout = exercise(tmp_path, draining=draining, loaded="", live="gen-b")
+    assert seen == {}
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
+    assert "resource broker draining" in json.loads(stdout)["declined"]
 
 
 def test_an_unreadable_gate_stops_admission(tmp_path):
@@ -107,7 +119,7 @@ def test_an_unreadable_gate_stops_admission(tmp_path):
     gate = tmp_path / "maintenance.json"
     gate.write_text("{ this is not json")
     for name in ("loaded.json", "live.json"):
-        (tmp_path / name).write_text(json.dumps({"generation": "gen-a"}))
+        (tmp_path / name).write_text(json.dumps({"commit": "a" * 40, "generation": "gen-a"}))
     script = tmp_path / "exercise.py"
     script.write_text(f'''
 import sys
@@ -115,11 +127,12 @@ from pathlib import Path
 sys.path.insert(0, {str(REPOSITORY / "src")!r})
 sys.path.insert(0, {str(REPOSITORY / "tools" / "fleet")!r})
 import worker_loop as wl
-wl.MAINTENANCE_GATE = Path({str(gate)!r})
+from prismabuild import role_session
+role_session.MAINTENANCE_GATE = Path({str(gate)!r})
 import worker
 worker.SH = Path({str(tmp_path)!r})
-worker.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
-worker.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
+role_session.GENERATION_VERSION = Path({str(tmp_path / "loaded.json")!r})
+role_session.RUNTIME_VERSION = Path({str(tmp_path / "live.json")!r})
 def serve_once(self, **kwargs):
     raise AssertionError("served with an unreadable maintenance gate")
 wl.pool.PoolQueue.serve_once = serve_once
@@ -128,4 +141,4 @@ raise SystemExit(worker.main())
     result = subprocess.run([sys.executable, str(script)], capture_output=True,
                             text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()

@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.storage_tiers as storage_tiers  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 GIB = storage_tiers.GIB
 HOST = "dl380g10"
@@ -169,7 +169,7 @@ def test_the_minted_supply_is_zero_when_the_resample_hits_the_inode_floor(
 
     _inode_exhausted(monkeypatch)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tier_id = storage_tiers.tier_id("ram", HOST)
     kind = storage_tiers.RAM_CAPACITY_KIND
     discovery_window = 160
@@ -181,7 +181,7 @@ def test_the_minted_supply_is_zero_when_the_resample_hits_the_inode_floor(
         writable_reader=read, cap=discovery_window)
     assert minted["writable"] == 0, minted
     assert minted["supply"] == 0, minted
-    assert int(queue.tier_ledger(tier_id).available().get(kind, 0)) == 0
+    assert int(queue.tier(tier_id).free_supply().get(kind, 0)) == 0
 
 
 def test_ram_tier_refuses_inode_exhaustion_with_free_bytes(tmp_path):

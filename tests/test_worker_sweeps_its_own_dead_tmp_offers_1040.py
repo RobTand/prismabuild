@@ -1,4 +1,5 @@
 """Offer temporaries a killed writer left behind (#1040)."""
+from fleet_world import Clock as FleetClock
 
 import importlib.util
 import json
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
 
 WORKER = ROOT / "tools/fleet/worker_loop.py"
@@ -85,22 +87,24 @@ def test_missing_directory_is_not_an_error(worker, tmp_path):
 
 def test_day_old_offer_is_marked_retired_and_kept(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     queue.announce(host="gone", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8})
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0 + 2 * 86400.0)
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     node = next(node for node in result["nodes"] if node["node"] == "gone")
     assert node["state"] == "retired"
-    assert (queue.root / pool.WORKERS / "gone.json").exists()
-    assert json.loads((queue.root / pool.WORKERS / "gone.json").read_text())["host"] == "gone"
+    assert (queue.root / pool.record_store.WORKERS / "gone.json").exists()
+    assert json.loads(
+        (queue.root / pool.record_store.WORKERS / "gone.json").read_text(),
+    )["host"] == "gone"
 
 
 def test_an_hour_old_offer_is_stale_not_retired(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     queue.announce(host="slow", tags=[], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 8})
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0 + 3600.0)
-    node = next(n for n in pbstatus.read_pool(queue.root)["nodes"] if n["node"] == "slow")
+    node = next(n for n in fleet_census.action_rows(queue.root).value["nodes"] if n["node"] == "slow")
     assert node["state"] == "stale"

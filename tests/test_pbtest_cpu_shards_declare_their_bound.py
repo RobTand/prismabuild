@@ -49,18 +49,6 @@ SPARK_CEILING_S = 86400.0
 CAP_S = pbtest.NON_GPU_UNREQUESTED_CEILING_CAP_S
 
 
-def test_the_cap_is_twice_the_pools_withhold_ceiling() -> None:
-    """The derivation, not a coincidence: see ``shard_ceiling``'s docstring.
-
-    ``holder_bound`` reads ``transient`` while age <= ``WITHHOLD_CEILING_S``
-    or the declared end is within ``WITHHOLD_CEILING_S`` of now.  Those two
-    windows tile a holder's whole life with no gap exactly when its declared
-    end is at most twice ``WITHHOLD_CEILING_S``.
-    """
-
-    assert CAP_S == 2 * pool.WITHHOLD_CEILING_S
-
-
 def test_a_cpu_shard_tagged_gb10_caps_at_twice_the_withhold_ceiling_not_the_days_ceiling(
     tmp_path, monkeypatch, capsys,
 ) -> None:

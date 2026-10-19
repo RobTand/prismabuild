@@ -23,6 +23,8 @@ measurement is claimed through the real adaptive path, so its holder carries
 the metadata a live measurement does.  Only the CPU sample is stated.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
+from prismabuild import submission as submit_core
 
 import hashlib
 from pathlib import Path
@@ -34,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, core as pb  # noqa: E402
 from prismabuild import movement_actions, pool  # noqa: E402
 from prismabuild import produced_output as po  # noqa: E402
+from prismabuild import drain_policy
 
 HOST = "sparklina"
 #: Sized like the live Spark: 20 CPUs and 104 GiB offered.
@@ -51,6 +54,8 @@ def _template(*, measurement: bool, command: list[str]) -> dict[str, object]:
     """A ``pbrun`` template, shaped as ``--measurement`` seals it or not."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     if measurement:
         scope = {"portability": "platform_keyed",
@@ -74,7 +79,7 @@ def _template(*, measurement: bool, command: list[str]) -> dict[str, object]:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": command, "cwd": "/home/rob",
                    "demand": dict(demand),
                    "placement": {"required_tags": [HOST]},
@@ -89,23 +94,29 @@ def _template(*, measurement: bool, command: list[str]) -> dict[str, object]:
     }
 
 
-def _sample(monkeypatch, busy_cpus: float) -> None:
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+def _sample(busy_cpus: float):
+    return lambda: {
         "sampled_unix": time.time(), "cpu_count": 20, "interval_s": 1.,
-        "busy_cpus": busy_cpus, "psi_some": 0.})
+        "busy_cpus": busy_cpus, "psi_some": 0.}
 
 
-def _claim(queue: pool.PoolQueue):
+def _claim(queue: pool.PoolQueue, cpu_sampler):
     return queue.claim(capacity=CAPACITY, tags=[HOST], cpu_tiers=CPU_TIERS,
-                       adaptive_cpu=True)
+                       adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _publish(queue: pool.PoolQueue, cas: pb.PrismaBuildCAS, action, demand) -> str:
     cas.publish_action_request(action)
     key = str(action["action_key"])
-    queue.publish(action_key=key, cas_root=str(cas.root), checkout_root="/co",
-                  worker_script="worker.py", resources=dict(demand), tags=[HOST],
-                  priority=-10)
+    ActionRows(queue).publish(
+        key,
+        cas_root=str(cas.root),
+        checkout_root='/co',
+        worker_script='worker.py',
+        resources=dict(demand),
+        tags=[HOST],
+        priority=-10,
+    )
     return key
 
 
@@ -137,7 +148,7 @@ def _denial(queue: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _running(queue: pool.PoolQueue, key: str, monkeypatch) -> None:
+def _running(queue: pool.PoolQueue, key: str, monkeypatch):
     """The measurement is running, as every live holder is.
 
     Its CPUs are busy, and its worker's sampler reports what it burns (fresh
@@ -145,7 +156,7 @@ def _running(queue: pool.PoolQueue, key: str, monkeypatch) -> None:
     five seconds apart, the second current, both after its admission.
     """
 
-    _sample(monkeypatch, MEASUREMENT_CPU_PER_S)
+    cpu_sampler = _sample(MEASUREMENT_CPU_PER_S)
     meta = adaptive_cpu.read_json(queue.ledger().held_dir / key / adaptive_cpu.METADATA)
     base = adaptive_cpu.local_state_base(queue.ledger().base)
     current = {"action_key": key, "complete": True, "nonce": "live",
@@ -155,6 +166,7 @@ def _running(queue: pool.PoolQueue, key: str, monkeypatch) -> None:
     adaptive_cpu.write_json(base / "jobs.json", {key: dict(
         current, sampled_unix=meta["admitted_unix"], wall_seconds=10.,
         cpu_seconds=10. * MEASUREMENT_CPU_PER_S)})
+    return cpu_sampler
 
 
 def _holding_measurement(tmp_path: Path, monkeypatch):
@@ -163,20 +175,20 @@ def _holding_measurement(tmp_path: Path, monkeypatch):
     import pbrun
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    measurement = pbrun.seal_action_from_template(
+    measurement = submit_core.seal(
         _template(measurement=True, command=["python", "stage_a.py"]))
     key = _publish(queue, cas, measurement, MEASUREMENT_DEMAND)
     assert adaptive_cpu.action_identity(
         {"action_key": key, "cas_root": str(cas.root)})[1] is True
-    _sample(monkeypatch, 0.)
-    claim = _claim(queue)
+    cpu_sampler = _sample(0.)
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == key
     meta = adaptive_cpu.read_json(queue.ledger().held_dir / key / adaptive_cpu.METADATA)
     assert meta.get("measurement") is True, meta
-    _running(queue, key, monkeypatch)
-    return queue, cas, measurement, key
+    cpu_sampler = _running(queue, key, monkeypatch)
+    return queue, cas, measurement, key, cpu_sampler
 
 
 def test_a_measurements_own_pinned_export_is_admitted_beside_it(
@@ -188,12 +200,12 @@ def test_a_measurements_own_pinned_export_is_admitted_beside_it(
     is untouched and none of its CPUs is lent.
     """
 
-    queue, cas, measurement, holder = _holding_measurement(tmp_path, monkeypatch)
+    queue, cas, measurement, holder, cpu_sampler = _holding_measurement(tmp_path, monkeypatch)
     export = _export(queue, measurement, owner=holder, batch_id="g0")
     export_key = _publish(queue, cas, export, EXPORT_DEMAND)
 
-    _running(queue, holder, monkeypatch)
-    claim = _claim(queue)
+    cpu_sampler = _running(queue, holder, monkeypatch)
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     if claim is None:
         decision = _denial(queue, export_key)["evidence"]["decision"]
         raise AssertionError(
@@ -230,28 +242,28 @@ def test_foreign_work_is_still_refused_and_the_refusal_names_the_holder(
 
     import pbrun
 
-    queue, cas, measurement, holder = _holding_measurement(tmp_path, monkeypatch)
-    plain = pbrun.seal_action_from_template(
+    queue, cas, measurement, holder, cpu_sampler = _holding_measurement(tmp_path, monkeypatch)
+    plain = submit_core.seal(
         _template(measurement=False, command=["python", "foreign.py"]))
     stranger = _export(queue, measurement, owner="c" * 64, batch_id="g-stranger")
     foreign = [_publish(queue, cas, plain, EXPORT_DEMAND),
                _publish(queue, cas, stranger, EXPORT_DEMAND)]
     for key in foreign:
-        assert _claim(queue) is None
+        assert _claim(queue, cpu_sampler=cpu_sampler) is None
         denial = _denial(queue, key)
         assert denial["reason"].startswith("adaptive_cpu_refused"), denial
         decision = denial["evidence"]["decision"]
         assert decision["reason"] == "measurement_holder", decision
         assert decision["holder"] == holder, decision
-        assert queue.item_path(pool.READY, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
 
     own_key = _publish(queue, cas, _export(queue, measurement, owner=holder, batch_id="g1"),
                        EXPORT_DEMAND)
-    _running(queue, holder, monkeypatch)
-    claim = _claim(queue)
+    cpu_sampler = _running(queue, holder, monkeypatch)
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == own_key
     for key in foreign:
-        assert queue.item_path(pool.READY, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
         assert queue.passes(key) >= 2
         denial = _denial(queue, key)
         assert denial["reason"] == "adaptive_cpu_refused_starved", denial
@@ -268,16 +280,16 @@ def test_a_waiting_measurement_is_never_a_dependent(tmp_path, monkeypatch) -> No
 
     import pbrun
 
-    queue, cas, _measurement, holder = _holding_measurement(tmp_path, monkeypatch)
+    queue, cas, _measurement, holder, cpu_sampler = _holding_measurement(tmp_path, monkeypatch)
     template = _template(measurement=True, command=["python", "second.py"])
     template["params"]["produced_spool"] = {"owner": holder, "batch_id": "x",
                                             "manifest_sha256": "d" * 64}
-    second = pbrun.seal_action_from_template(template)
+    second = submit_core.seal(template)
     key = _publish(queue, cas, second, EXPORT_DEMAND)
     assert adaptive_cpu.dependent_owner({"action_key": key, "cas_root": str(cas.root)}) is None
     # Idle, so the refusal is the holder's and not the busy host's.
-    _sample(monkeypatch, 0.)
-    assert _claim(queue) is None
+    cpu_sampler = _sample(0.)
+    assert _claim(queue, cpu_sampler=cpu_sampler) is None
     decision = _denial(queue, key)["evidence"]["decision"]
     assert decision["reason"] == "measurement_holder" and decision["holder"] == holder
     assert decision["isolated_by"] == holder
@@ -299,6 +311,6 @@ def test_a_measurement_waiting_behind_ordinary_work_is_not_isolated(tmp_path) ->
     decision = controller.last_decision
     assert decision["reason"] == "measurement_holder" and decision["holder"] == "0" * 64
     assert decision["isolated_by"] is None
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_cpu_refused", decision, demand={"cpu": 1}, measurement=True,
         cpu_count=2) == ("exclusive", False)

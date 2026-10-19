@@ -30,6 +30,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 WORKER = REPOSITORY / "tools" / "prismabuild_worker.py"
@@ -93,8 +94,8 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
     queue = tmp_path / "pb-queue"
     lane = tmp_path / "lane"
     fleet = _Fleet()
-    marker = queue / pool.WITHDRAWN / f"{KEY}.json"
-    published = sl._write_json_atomic
+    marker = queue / pool.record_store.WITHDRAWN / f"{KEY}.json"
+    published = sl.immutable_files.write_json_atomic
     withdrawn: list[int] = []
 
     def write_then_withdraw(path: Path, payload, *, trailing_newline: bool) -> None:
@@ -105,13 +106,13 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
         withdrawn.append(1)
         # Another process resolves the record this call just published and
         # runs the real withdrawal: marker, terminal record, then scancel.
-        assert pbrun.withdraw_slurm_main(
+        assert submit_core.withdraw_slurm_main(
             [KEY], lane_root=lane, queue_root=queue, by="audit-operator",
             reason="stop this generation", squeue=fleet.squeue,
-        ) == 0
+        store=pbrun.configured_store(), display=pbrun.render_submission) == 0
         assert marker.exists()
 
-    monkeypatch.setattr(sl, "_write_json_atomic", write_then_withdraw)
+    monkeypatch.setattr(sl.immutable_files, "write_json_atomic", write_then_withdraw)
     monkeypatch.setattr(sl, "cancel", fleet.cancel)
 
     _run(tmp_path, fleet, queue=queue, lane=lane,
@@ -120,14 +121,14 @@ def test_a_withdrawal_of_this_run_survives_the_submission_that_follows_it(
     assert fleet.submitted == ["2001"]
     assert fleet.cancelled == ["2001"]
     assert marker.exists()
-    assert not (queue / pool.FAILED / f"{KEY}.json").exists()
+    assert not (queue / pool.record_store.FAILED / f"{KEY}.json").exists()
     ending = json.loads(
-        (queue / pool.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8"))
+        (queue / pool.record_store.WITHDRAWN / f"{KEY}.json").read_text(encoding="utf-8"))
     assert ending["status"] == "withdrawn"
     assert ending["withdrawn_by"] == "audit-operator"
     assert ending["reason"] == "stop this generation"
     assert not list(
-        (queue / pool.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))
+        (queue / pool.record_store.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))
 
 
 def test_a_withdrawal_filed_between_the_read_and_the_claim_is_not_lost(
@@ -146,7 +147,7 @@ def test_a_withdrawal_filed_between_the_read_and_the_claim_is_not_lost(
     lane = tmp_path / "lane"
     fleet = _Fleet()
     directory = sl.lane_directory(KEY, root=lane)
-    marker = queue / pool.WITHDRAWN / f"{KEY}.json"
+    marker = queue / pool.record_store.WITHDRAWN / f"{KEY}.json"
     # An earlier run of this key was withdrawn; that decision is stale and a
     # submission is what retires it.
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -190,4 +191,4 @@ def test_a_withdrawal_filed_between_the_read_and_the_claim_is_not_lost(
     assert kept["published_unix"] == crossed[0]
     assert kept["withdrawn_by"] == "audit-operator"
     assert not list(
-        (queue / pool.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))
+        (queue / pool.record_store.WITHDRAWN / "superseded").glob(f"{KEY}.*.json"))

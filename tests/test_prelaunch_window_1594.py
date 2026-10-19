@@ -122,8 +122,7 @@ def _triples(published):
 def test_unheld_whole_prefix_publishes_nothing_and_stalls() -> None:
     """No group means no declared leg and a prelaunch stall (R1')."""
     plan = _prefix_plan()
-    out = residency_plan.window(plan, accepted_phase=None, free_gib=200,
-                                capacity_gib=210)
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=200, capacity_gib=210)).decision
     assert out["publish"] == []
     assert out["evict"] == []
     assert out["stall"] == {
@@ -141,8 +140,8 @@ def test_unheld_chunked_prefix_blocks_on_first_phase_with_full_sum() -> None:
     plan = _chunked_plan()
     args: dict = {"accepted_phase": None, "free_gib": 200,
                   "capacity_gib": 210}
-    none_out = residency_plan.window(plan, **args)
-    false_out = residency_plan.window(plan, prelaunch_held=False, **args)
+    none_out = residency_plan.ConsumerWindow(plan, args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=args['free_gib'], capacity_gib=args['capacity_gib'])).decision
+    false_out = residency_plan.ConsumerWindow(plan, args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=args['free_gib'], capacity_gib=args['capacity_gib'], prelaunch_held=False)).decision
     assert none_out == false_out
     assert none_out["publish"] == []
     stall = none_out["stall"]
@@ -156,8 +155,7 @@ def test_unheld_chunked_prefix_blocks_on_first_phase_with_full_sum() -> None:
 def test_held_prefix_only_publishes_every_leg_without_room() -> None:
     """Held declared legs publish in read order with 1 GiB free (R1')."""
     plan = _prefix_only_plan()
-    out = residency_plan.window(plan, accepted_phase=None, free_gib=1,
-                                capacity_gib=210, prelaunch_held=True)
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=1, capacity_gib=210, prelaunch_held=True)).decision
     assert [row["chunk_index"] for row in out["publish"]] == [0, 1]
     assert [row["stage_gib"] for row in out["publish"]] == [45, 45]
     assert [row["mover_action_key"] for row in out["publish"]] == [
@@ -169,14 +167,10 @@ def test_held_prefix_skips_published_and_withdrawn_legs() -> None:
     """A held leg publishes once; a withdrawn leg never publishes."""
     plan = _prefix_only_plan()
     first = _hexkey("w2d0mover0")
-    published_out = residency_plan.window(
-        plan, accepted_phase=None, free_gib=1000, capacity_gib=210,
-        published=[first], prelaunch_held=True)
+    published_out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[first]), residency_plan.WindowBudget(free_gib=1000, capacity_gib=210, prelaunch_held=True)).decision
     assert [row["mover_action_key"] for row in published_out["publish"]] == [
         _hexkey("w2d0mover1")]
-    withdrawn_out = residency_plan.window(
-        plan, accepted_phase=None, free_gib=1000, capacity_gib=210,
-        withdrawn=[first], prelaunch_held=True)
+    withdrawn_out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=1000, capacity_gib=210, withdrawn=[first], prelaunch_held=True)).decision
     assert [row["mover_action_key"] for row in withdrawn_out["publish"]] == [
         _hexkey("w2d0mover1")]
 
@@ -184,10 +178,7 @@ def test_held_prefix_skips_published_and_withdrawn_legs() -> None:
 def test_passed_prefix_never_evicts_while_streaming_does() -> None:
     """Progress past the prefix evicts the passed streaming phase only (R2)."""
     plan = _prefix_plan()
-    out = residency_plan.window(
-        plan, accepted_phase="s2", free_gib=1000, capacity_gib=210,
-        staged=[_mover(plan, 0), _mover(plan, 1), _mover(plan, 2)],
-        prelaunch_held=True)
+    out = residency_plan.ConsumerWindow(plan, 's2', residency_plan.LegObservation(staged=[_mover(plan, 0), _mover(plan, 1), _mover(plan, 2)]), residency_plan.WindowBudget(free_gib=1000, capacity_gib=210, prelaunch_held=True)).decision
     assert [entry["phase"] for entry in out["evict"]] == ["s1"]
     assert [entry["mover_action_key"] for entry in out["evict"]] == [
         _mover(plan, 1)]
@@ -198,10 +189,7 @@ def test_passed_prefix_never_evicts_while_streaming_does() -> None:
 def test_published_declared_legs_do_not_count_as_runahead() -> None:
     """Held prefix legs stay outside the run-ahead budget (R1')."""
     plan = _multi_prefix_plan()
-    out = residency_plan.window(
-        plan, accepted_phase=None, free_gib=1000, capacity_gib=1000,
-        runahead_cap_gib=1, published=[_mover(plan, 0), _mover(plan, 1)],
-        prelaunch_held=True)
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[_mover(plan, 0), _mover(plan, 1)]), residency_plan.WindowBudget(free_gib=1000, capacity_gib=1000, runahead_cap_gib=1, prelaunch_held=True)).decision
     assert [row["phase"] for row in out["publish"]] == ["s1"]
     assert out["stall"]["reason"] == "no_accepted_progress"
     assert out["stall"]["blocked_phase"] == "s2"
@@ -212,9 +200,7 @@ def test_published_declared_legs_do_not_count_as_runahead() -> None:
 def test_horizon_cuts_streaming_but_not_declared_legs() -> None:
     """The horizon stops the far streaming leg with no stall (R1')."""
     plan = _prefix_plan()
-    out = residency_plan.window(
-        plan, accepted_phase=None, free_gib=1000, capacity_gib=1000,
-        horizon_end_bytes=130 * GIB, prelaunch_held=True)
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(horizon_end_bytes=130 * GIB), residency_plan.WindowBudget(free_gib=1000, capacity_gib=1000, prelaunch_held=True)).decision
     assert [row["phase"] for row in out["publish"]] == ["d0", "s1"]
     assert out["stall"] is None
 
@@ -223,9 +209,8 @@ def test_first_streaming_phase_matches_the_undeclared_plan() -> None:
     """The suffix follows today's rules with the prefix held (R1')."""
     held_args: dict = {"accepted_phase": None, "free_gib": 1000,
                        "capacity_gib": 1000, "runahead_cap_gib": 30}
-    declared_out = residency_plan.window(
-        _prefix_plan(), prelaunch_held=True, **held_args)
-    plain_out = residency_plan.window(_stream_plan(), **held_args)
+    declared_out = residency_plan.ConsumerWindow(_prefix_plan(), held_args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=held_args['free_gib'], capacity_gib=held_args['capacity_gib'], runahead_cap_gib=held_args['runahead_cap_gib'], prelaunch_held=True)).decision
+    plain_out = residency_plan.ConsumerWindow(_stream_plan(), held_args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=held_args['free_gib'], capacity_gib=held_args['capacity_gib'], runahead_cap_gib=held_args['runahead_cap_gib'])).decision
     assert _triples(declared_out["publish"])[1:] == _triples(
         plain_out["publish"])
     assert [row["phase"] for row in declared_out["publish"]] == ["d0", "s1"]
@@ -243,18 +228,16 @@ def test_undeclared_plan_ignores_prelaunch_held() -> None:
     for accepted in (None, "s1"):
         args: dict = {"accepted_phase": accepted, "free_gib": 1000,
                       "capacity_gib": 1000}
-        base = residency_plan.window(plan, **args)
-        assert residency_plan.window(plan, prelaunch_held=None, **args) == base
-        assert residency_plan.window(plan, prelaunch_held=True, **args) == base
-        assert residency_plan.window(plan, prelaunch_held=False,
-                                     **args) == base
+        base = residency_plan.ConsumerWindow(plan, args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=args['free_gib'], capacity_gib=args['capacity_gib'])).decision
+        assert residency_plan.ConsumerWindow(plan, args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=args['free_gib'], capacity_gib=args['capacity_gib'], prelaunch_held=None)).decision == base
+        assert residency_plan.ConsumerWindow(plan, args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=args['free_gib'], capacity_gib=args['capacity_gib'], prelaunch_held=True)).decision == base
+        assert residency_plan.ConsumerWindow(plan, args['accepted_phase'], residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=args['free_gib'], capacity_gib=args['capacity_gib'], prelaunch_held=False)).decision == base
 
 
 def test_unheld_suffix_waits_while_unheld_prefix_blocks() -> None:
     """Without the group even roomy streaming legs publish nothing (R1')."""
     plan = _prefix_plan()
-    out = residency_plan.window(plan, accepted_phase=None, free_gib=1000,
-                                capacity_gib=1000, prelaunch_held=False)
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=1000, capacity_gib=1000, prelaunch_held=False)).decision
     assert out["publish"] == []
     assert out["stall"]["reason"] == "prelaunch_waiting_for_room"
 
@@ -262,9 +245,7 @@ def test_unheld_suffix_waits_while_unheld_prefix_blocks() -> None:
 def test_fully_published_prefix_releases_the_suffix() -> None:
     """No pending declared leg means no prelaunch stall for them."""
     plan = _prefix_plan()
-    out = residency_plan.window(
-        plan, accepted_phase=None, free_gib=1000, capacity_gib=1000,
-        runahead_cap_gib=30, published=[_mover(plan, 0)])
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[_mover(plan, 0)]), residency_plan.WindowBudget(free_gib=1000, capacity_gib=1000, runahead_cap_gib=30)).decision
     assert [row["phase"] for row in out["publish"]] == ["s1"]
     assert out["stall"]["reason"] == "no_accepted_progress"
     assert out["stall"]["blocked_phase"] == "s2"

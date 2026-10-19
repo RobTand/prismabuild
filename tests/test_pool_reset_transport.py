@@ -15,6 +15,7 @@ of no other, because an action key is a content hash and asking for the same
 work again is not an attempt to defeat somebody's cancellation.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -30,7 +31,7 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import slurm_lane as sl  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import pool_reset  # noqa: E402
 
 from test_slurm_lane import (  # noqa: E402
@@ -79,7 +80,7 @@ def _failed(
         record["detail"]["slurm"] = {
             "job_id": "1001", "state": state, "gres": gres,
         }
-    path = queue_root / pool.FAILED / f"{key}.json"
+    path = queue_root / pool.record_store.FAILED / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
     return path
@@ -158,10 +159,7 @@ def test_a_reset_reads_the_cutover_out_of_the_published_generation(
     """
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     where = ["--queue-root", str(fleet["queue_root"]),
              "--cas-root", str(fleet["cas_root"])]
 
@@ -184,10 +182,7 @@ def test_the_transport_flag_is_spelled_the_way_every_producer_spells_it(
     """
 
     monkeypatch.delenv(fleet_submit.DEFAULT_TRANSPORT_ENV, raising=False)
-    monkeypatch.setattr(
-        fleet_submit, "RUNTIME_ROOT",
-        _generation(tmp_path / "gen", default_transport="slurm"),
-    )
+    patch_store(monkeypatch, client=fleet_submit, runtime_root=_generation(tmp_path / "gen", default_transport="slurm"), runtime_version=Path(_generation(tmp_path / "gen", default_transport="slurm")) / "RUNTIME_VERSION.json")
     assert pool_reset.build_parser().parse_args([]).transport == "slurm"
     assert pool_reset.build_parser().parse_args(
         ["--transport", "pool"]).transport == "pool"
@@ -209,7 +204,7 @@ def test_a_withdrawal_of_this_generation_is_never_resubmitted(fleet) -> None:
     be there.  Re-submitting past it undoes an operator's decision.
     """
 
-    marker = fleet["queue_root"] / pool.WITHDRAWN / f"{KEY_SLURM}.json"
+    marker = fleet["queue_root"] / pool.record_store.WITHDRAWN / f"{KEY_SLURM}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "action_key": KEY_SLURM, "status": "withdrawn",
@@ -233,7 +228,7 @@ def test_a_withdrawal_of_another_generation_does_not_blacklist_the_key(
     is what this tool did -- turns one cancellation into a permanent ban.
     """
 
-    marker = fleet["queue_root"] / pool.WITHDRAWN / f"{KEY_SLURM}.json"
+    marker = fleet["queue_root"] / pool.record_store.WITHDRAWN / f"{KEY_SLURM}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "action_key": KEY_SLURM, "status": "withdrawn",
@@ -377,7 +372,7 @@ def _sealed_failure(
                    "slurm": {"job_id": "4242", "state": "FAILED",
                              "gres": gres}},
     }
-    path = queue_root / pool.FAILED / f"{key}.json"
+    path = queue_root / pool.record_store.FAILED / f"{key}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record), encoding="utf-8")
     return {"key": key, "action": action, "cas_root": tmp_path / "cas",
@@ -525,7 +520,7 @@ def test_a_sealed_reset_leaves_its_ending_to_pbwait(
     assert f"pbwait.py {sealed['key'][:12]}" in out
 
     # No ending, and no second failure record: the ending is pbwait's.
-    assert not (sealed["queue_root"] / pool.DONE).exists()
+    assert not (sealed["queue_root"] / pool.record_store.DONE).exists()
     assert json.loads(
         sealed["record_path"].read_text())["status"] == "reset"
     # And the submission pbwait resolves it from.

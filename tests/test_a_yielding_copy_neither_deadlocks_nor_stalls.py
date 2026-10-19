@@ -18,6 +18,7 @@ Three defects in the first cut of the reader plan:
 Everything runs on ``tmp_path`` queues (#628).
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, storage_tiers  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 from test_progress_keeps_a_working_action_alive import _claimed, _policy  # noqa: E402
 from test_the_reader_plan_measures_and_fails_open import (  # noqa: E402
     GIB, TIER, _claim, _queue)
@@ -72,7 +73,7 @@ def clock(monkeypatch) -> _Clock:
     controlled = _Clock()
     for module in (pool, pool.pb, pool.materialize):
         monkeypatch.setattr(module, "time", controlled)
-    monkeypatch.setattr(pool, "_now", controlled.time)
+    FleetClock(source=controlled.time).install(monkeypatch, scope="pool")
     return controlled
 
 
@@ -163,7 +164,7 @@ def test_a_reader_plan_refreshes_at_its_injected_hold_boundary(
     other, waited = _plan(queue, OTHER, clock), _plan(queue, WAITED, clock)
     assert not other.yields()
     assert waited.exempt()
-    path = queue.tier_record_path(TIER)
+    path = queue.records.tier_record_path(TIER)
     original_inode = path.stat().st_ino
 
     clock.advance(0.125)
@@ -202,12 +203,12 @@ def _standing_mover(tmp_path: Path):
     queue, item = _claimed(tmp_path, mode="scripted", seconds=0,
                            policy=_policy(0.4, 0.4, 0.4),
                            source='raise AssertionError("use the process script")\n')
-    queue.mint_tier_capacity(TIER, {"stage_gib": 16})
+    queue.tier(TIER).mint({'stage_gib': 16})
     item["residency"] = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
                          "manifest_sha256": "9" * 64, "manifest_bytes": 4 * GIB,
                          "range_start_bytes": 2 * GIB,
                          "range_end_bytes": 4 * GIB}
-    queue.item_path(pool.CLAIMED, str(item["action_key"])).write_text(
+    queue.records.item_path(pool.record_store.CLAIMED, str(item["action_key"])).write_text(
         json.dumps(item))
     return queue, item
 
@@ -216,12 +217,12 @@ def _waited_claimed(queue: pool.PoolQueue, clock: _Clock) -> None:
     """``WAITED`` claimed on ``TIER``, as the worker will read it."""
 
     _publish_mover(queue, WAITED, 0)
-    source = queue.item_path(pool.READY, WAITED)
+    source = queue.records.item_path(pool.record_store.READY, WAITED)
     record = json.loads(source.read_text())
     source.unlink()
     record.update({"claimed_unix": clock.time() - 5.0,
                    "claimed_by": "waited-fixture", "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, WAITED).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, WAITED).write_text(json.dumps(record))
 
 
 def _publish_progress(path: Path, token: str, clock: _Clock) -> None:
@@ -374,7 +375,7 @@ def test_the_grace_applies_again_once_the_waited_copy_leaves_the_plan(
     prior_credit = []
 
     def remove_waited() -> None:
-        observation = json.loads(queue.lease_path(str(item["action_key"])).read_text())[
+        observation = json.loads(queue.records.lease_path(str(item["action_key"])).read_text())[
             "progress_observation"]
         credit = observation["reader_plan_exempt_s"]
         assert credit > 0
@@ -418,7 +419,7 @@ def test_a_reader_plan_credit_is_applied_once_per_virtual_interval(
     _announce(queue, [(WAITED, "claimed")])
     policy = pool.progress_policy(item, None)
     assert policy is not None
-    path = queue.action_progress_path(str(item["action_key"]))
+    path = queue.records.action_progress_path(str(item["action_key"]))
     token = "virtual-launch"
     watch = pool.ProgressWatch(path, token, policy, started=clock.monotonic())
     verdict = queue.reader_plan_stand_aside(item)

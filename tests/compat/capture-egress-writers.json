@@ -1,0 +1,49 @@
+{
+  "capture_name": "egress-writers-02-capture",
+  "capture_report_sha256": "a18b34d198656a9fc725826e3359d1c1a7af2e80f7570c8050c480d2cbc1b751",
+  "excluded_cases": [],
+  "files": {
+    "goldens-egress-writers.jsonl": "299b3368e0ae9eeeb82e5b987ca30a732cf55a469bc3c64b3c232ed16f1c77ff",
+    "historical-egress-writers.jsonl": "6b7b148adb15cc93ce7d3d93e3fd7a2dacfd8e949ccaa40b4cf1701df673c194"
+  },
+  "finished_at": "2026-10-17T01:23:59.713435+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "egress/evict-writer",
+    "egress/ledger-refusal-writer",
+    "egress/output-deferred-writer",
+    "egress/produced-orphan-writer",
+    "egress/prune-writer",
+    "egress/receiptless-writer",
+    "egress/reclaim-refusal-writer",
+    "egress/reclaim-writer",
+    "egress/reconcile-writer",
+    "egress/recover-writer",
+    "egress/restore-writer",
+    "egress/root-refusal-writer",
+    "egress/shared-writer",
+    "egress/sweep-refusal-writer",
+    "egress/uncharged-refusal-writer",
+    "egress/uncharged-report-writer",
+    "egress/unresolved-writer"
+  ],
+  "source_git": {
+    "parents": [
+      "1c8a1c2ad5b13fcab76728045d1e8cb330d38bc9"
+    ],
+    "snapshot": "0b4e2ef4f770038f288e2f4ae97f73029b6db4db",
+    "tree": "491625224e86f2032628c61b8fdfb280f91e7422"
+  },
+  "started_at": "2026-10-17T01:16:16.874995+00:00",
+  "verified_producer": {
+    "action_key": "dc4b3785a2f36b5c1bc72c5343a5f3fa5f8e89ec9fe1a8ac6e2215c3906bfbfa",
+    "receipt_sha256": "ff3d0f84d3cf40b2cfb24cc96a77a5a8004ab86ebb375fb8086b2153f411a754",
+    "request_sha256": "b58fc36e0afd933af2be7cdfd030d19db0bde0615e3c663b088af966bfa30a1d",
+    "source_parent": "1c8a1c2ad5b13fcab76728045d1e8cb330d38bc9"
+  }
+}

@@ -27,6 +27,7 @@ there, and the harness refuses any other.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -36,10 +37,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import storage_tiers  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import shape_gate  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 GIB = 1 << 30
 #: 4 KiB stands in for a GiB, so every mover copies real bytes quickly.
@@ -102,7 +105,7 @@ def small_units(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run(tmp_path: Path, table: dict) -> dict:
     return shape_gate.run_gate(table, root=tmp_path / "gate",
-                               shared_root=Path(pbrun.SH), scale=SMALL_SCALE)
+                               shared_root=Path(pbrun.configured_store().root), scale=SMALL_SCALE)
 
 
 def test_a_campaign_shaped_window_stages_and_reads_back_strictly(
@@ -202,7 +205,7 @@ def test_a_byte_cut_splitter_is_refused_by_name(
         return [(position, min(position + chunk_bytes, end))
                 for position in range(start, end, chunk_bytes)]
 
-    monkeypatch.setattr(storage_tiers, "split_range_into_chunks", byte_cuts)
+    monkeypatch.setattr(manifest_layout, "split_range_into_chunks", byte_cuts)
     with pytest.raises(shape_gate.ShapeGateFailure) as caught:
         _run(tmp_path, _campaign_like())
     assert caught.value.reason == "movement_refused", caught.value
@@ -304,8 +307,18 @@ def _outcomes(**changes) -> dict:
     return record
 
 
+def _gate_log(record):
+    if record is None:
+        return ""
+    counts = {}
+    for row in record["reports"]:
+        counts[row[2]] = counts.get(row[2], 0) + 1
+    summary = ", ".join(f"{count} {category}" for category, count in counts.items())
+    return "pbtest-outcomes: " + json.dumps(record) + "\n" + summary + " in 0.01s\n"
+
+
 def test_a_gate_run_that_passed_every_table_is_accepted() -> None:
-    shape_gate.judge_outcomes(_outcomes(), where="k")
+    shape_gate.judge_gate_log(_gate_log(_outcomes()), where="k")
 
 
 @pytest.mark.parametrize("record", [
@@ -329,7 +342,7 @@ def test_a_gate_run_that_passed_every_table_is_accepted() -> None:
         "failed", "teardown-error", "uncounted"])
 def test_a_gate_run_that_is_not_every_table_passing_is_refused(record) -> None:
     with pytest.raises(shape_gate.ShapeGateFailure) as caught:
-        shape_gate.judge_outcomes(record, where="k")
+        shape_gate.judge_gate_log(_gate_log(record), where="k")
     assert caught.value.reason == "receipt_refused"
 
 
@@ -389,3 +402,15 @@ def test_an_unreadable_terminal_record_is_refused_by_name(tmp_path: Path) -> Non
             action_key=key[:12], commit="a" * 40, checkout=tmp_path,
             queue_root=queue, cas_root=tmp_path / "cas")
     assert caught.value.reason == "receipt_refused"
+
+
+@pytest.mark.parametrize("variant", ["unhashed", "hashed"])
+def test_table_encoding_preserves_the_exact_committed_wire(variant: str) -> None:
+    goldens = Path(__file__).parent / "compat" / "goldens-observations.jsonl"
+    record = next(row for line in goldens.read_text().splitlines()
+                  if (row := json.loads(line))["case"] == f"shape-table/{variant}")
+    expected = base64.b64decode(record["raw"], validate=True)
+    assert hashlib.sha256(expected).hexdigest() == record["sha256"]
+    encoded = shape_gate.table_bytes(shape_gate.parse_table(expected))
+    assert encoded[:10] == bytes.fromhex("1f8b08000000000002ff")
+    assert encoded == expected

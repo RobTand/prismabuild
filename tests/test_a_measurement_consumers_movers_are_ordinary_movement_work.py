@@ -22,6 +22,10 @@ sealed bytes.  Only the CPU sample is stated: eight CPUs, one of them busy
 with load the pool does not own.
 """
 from __future__ import annotations
+from submission_support import patch_store
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -36,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, core as pb  # noqa: E402
 from prismabuild import movement_actions, pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 GIB = storage_tiers.GIB
@@ -87,6 +91,8 @@ def _template(digest: str, size: int, *, measurement: bool) -> dict[str, object]
     """A ``pbrun`` template, shaped as ``--measurement`` seals it or not."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     if measurement:
         scope = {"portability": "platform_keyed", "platform_key": SPARK_PLATFORM,
@@ -107,7 +113,7 @@ def _template(digest: str, size: int, *, measurement: bool) -> dict[str, object]
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["python", "measure.py"], "cwd": "/home/rob",
                    "demand": {"cpu": 1, "mem_gb": 1},
                    "placement": {"required_tags": ["sparky"]},
@@ -129,9 +135,9 @@ def _seal(tmp_path: Path, monkeypatch, *, measurement: bool = True):
     import pbrun
 
     # The rows name ``SH / "cas"`` as their CAS; point it at this test's.
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(_manifest()))
     digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -147,31 +153,28 @@ def _seal(tmp_path: Path, monkeypatch, *, measurement: bool = True):
     template = _template(digest, manifest_path.stat().st_size,
                          measurement=measurement)
     cas = _Cas(manifest_path, tmp_path / "cas")
-    consumer = pbrun.seal_action_from_template(template)
+    consumer = submit_core.seal(template)
     cas.publish_action_request(consumer)
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
-    staged = pbrun.residency_stage_rows(
-        template, consumer_action_key=str(consumer["action_key"]),
-        tier=pbrun.resolve_stage_tier(queue, None), args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(template, consumer_action_key=str(consumer['action_key']), tier=residency_plan.resolve_stage_tier(queue, None), queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     phase = staged["plan"]["phases"][0]
     return queue, template, consumer, phase["mover_row"], phase["egress_row"], cas
 
 
-def _busy_stage_host(monkeypatch) -> None:
+def _busy_stage_host():
     """dl380g10 as it always is: sampled fresh, one CPU of eight busy."""
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    return lambda: {
         "sampled_unix": time.time(), "cpu_count": 8, "interval_s": 1.,
-        "busy_cpus": FOREIGN_BUSY_CPUS, "psi_some": 0.})
+        "busy_cpus": FOREIGN_BUSY_CPUS, "psi_some": 0.}
 
 
-def _claim(queue: pool.PoolQueue):
+def _claim(queue: pool.PoolQueue, cpu_sampler):
     return queue.claim(capacity=CAPACITY, tags=["dl380g10"], cpu_tiers=CPU_TIERS,
-                       adaptive_cpu=True)
+                       adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _denial(queue: pool.PoolQueue, key: str) -> dict:
@@ -190,7 +193,7 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
     """
 
     queue, _template_, consumer, mover_row, _egress, cas = _seal(tmp_path, monkeypatch)
-    _busy_stage_host(monkeypatch)
+    cpu_sampler = _busy_stage_host()
     consumer_key = str(consumer["action_key"])
     queue.publish(action_key=consumer_key, cas_root=str(cas.cas.root),
                   checkout_root=str(tmp_path), worker_script="worker.py",
@@ -199,7 +202,7 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
         {"action_key": consumer_key, "cas_root": str(cas.cas.root)})[1] is True
 
     queue.publish(**mover_row)
-    claim = _claim(queue)
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     if claim is None:
         refused = _denial(queue, str(mover_row["action_key"]))["evidence"]["decision"]
         pytest.fail("a measurement consumer's mover must run on a stage host "
@@ -208,7 +211,7 @@ def test_a_measurement_consumers_mover_is_admitted_on_a_busy_stage_host(
 
     decision = _denial(queue, consumer_key)["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
-    assert queue.item_path(pool.READY, consumer_key).exists()
+    assert queue.records.item_path(pool.record_store.READY, consumer_key).exists()
 
 
 def test_the_consumer_alone_is_still_held_to_an_idle_host(
@@ -220,15 +223,15 @@ def test_the_consumer_alone_is_still_held_to_an_idle_host(
     queue.publish(action_key=consumer_key, cas_root=str(cas.cas.root),
                   checkout_root=str(tmp_path), worker_script="worker.py",
                   resources={"cpu": 1, "mem_gb": 1}, tags=["dl380g10"])
-    _busy_stage_host(monkeypatch)
-    assert _claim(queue) is None
+    cpu_sampler = _busy_stage_host()
+    assert _claim(queue, cpu_sampler=cpu_sampler) is None
     decision = _denial(queue, consumer_key)["evidence"]["decision"]
     assert decision["reason"] == "measurement_host_not_idle", decision
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": time.time(), "cpu_count": 8, "interval_s": 1.,
-        "busy_cpus": 0., "psi_some": 0.})
-    claim = _claim(queue)
+        "busy_cpus": 0., "psi_some": 0.}
+    claim = _claim(queue, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == consumer_key
 
 

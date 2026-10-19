@@ -21,6 +21,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import sys
 import time
@@ -36,9 +37,11 @@ from test_pbmetrics_kept_reads import (  # noqa: E402
 )
 
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 import supervise  # noqa: E402
-import worker_loop  # noqa: E402
+from prismabuild import role_session
+from prismabuild import tier_holdings
 
 MANIFEST = "9" * 64
 CONSUMER = _key("consumer", 0)
@@ -63,10 +66,11 @@ def _sample(text: str, series: str) -> str | None:
 class Scrapes:
     """One exporter's kept reader, checked against a fresh read every time."""
 
-    def __init__(self, root: Path, now: float) -> None:
+    def __init__(self, root: Path, now: float, monkeypatch) -> None:
+        self.patch = monkeypatch
         self.root = root
         self.now = now
-        self.reader = pbmetrics.KeptReads()
+        self.reader = fleet_census.KeptReads()
 
     def check(self, label: str) -> str:
         kept = shaped.queue_readings(_collect(self.root, self.now, self.reader))
@@ -81,21 +85,21 @@ class Scrapes:
         """Scrape once, change, scrape in the change's tick and after it."""
 
         self.check(f"{label} (before)")
-        settle()
+        settle(self.root, self.patch)
         self.check(f"{label} (settled before)")
         change()
         self.check(f"{label} (same tick)")
-        settle()
+        settle(self.root, self.patch)
         return self.check(label)
 
 
 @pytest.fixture
-def queue_and_scrapes(tmp_path):
+def queue_and_scrapes(tmp_path, monkeypatch):
     root = tmp_path / "pb-queue"
     now = time.time()
     queue = build_queue(root, now, SMALL_SHAPE)
-    settle()
-    return queue, Scrapes(root, now)
+    settle(root, monkeypatch)
+    return queue, Scrapes(root, now, monkeypatch)
 
 
 def _land(queue: pool.PoolQueue, *, complete: bool = True) -> None:
@@ -107,7 +111,7 @@ def _land(queue: pool.PoolQueue, *, complete: bool = True) -> None:
 
     stage = queue.root / "stage"
     path = stage / "part-0.bin"
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": STAGE_TIER, "stage_root": str(stage),
@@ -142,11 +146,10 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
     text = scrapes.after("fragment and receipt filed", lambda: _land(queue))
     assert _sample(text, STAGED) == "1"
 
-    ledger = queue.tier_ledger(STAGE_TIER)
-    text = scrapes.after("tokens released", lambda: ledger.release(MOVER))
+    ledger = queue.tier(STAGE_TIER)
+    text = scrapes.after('tokens released', lambda: ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED))
     assert _sample(text, STAGED) == "0"
-    text = scrapes.after("tokens taken again",
-                         lambda: ledger.acquire(MOVER, {"stage_gib": 1}))
+    text = scrapes.after('tokens taken again', lambda: ledger.take(MOVER, {'stage_gib': 1}))
     assert _sample(text, STAGED) == "1"
 
     text = scrapes.after("receipt replaced by an incomplete one",
@@ -158,7 +161,7 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
 
     # A claim file for the mover makes its receipt a previous run's, even
     # one too torn to parse: ``resident_movers`` asks the filesystem.
-    claim = queue.item_path(pool.CLAIMED, MOVER)
+    claim = queue.records.item_path(pool.record_store.CLAIMED, MOVER)
     text = scrapes.after("a torn claim for the mover",
                          lambda: _file_raw(claim, "{"))
     assert _sample(text, STAGED) == "0"
@@ -166,7 +169,7 @@ def test_residency_follows_its_fragment_ledger_receipt_and_claim(queue_and_scrap
     assert _sample(text, STAGED) == "1"
 
     fragment = residency_map.fragment_path(
-        queue.residency_fragment_root(), CONSUMER, MOVER)
+        queue.records.residency_fragment_root(), CONSUMER, MOVER)
     text = scrapes.after("fragment removed", fragment.unlink)
     assert _sample(text, STAGED) == "0"
 
@@ -175,9 +178,9 @@ def test_the_cursor_follows_the_lease(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     _land(queue)
-    settle()
+    settle(queue.root, scrapes.patch)
     assert _sample(scrapes.check("landed"), STAGED) == "1"
-    lease_path = queue.lease_path(CONSUMER)
+    lease_path = queue.records.lease_path(CONSUMER)
     lease = json.loads(lease_path.read_text())
     lease["progress_observation"]["last_accepted"]["phase"] = "phase-0001"
     # The staged first phase is now behind the cursor, which counts only
@@ -195,7 +198,7 @@ def test_heartbeats_and_announcements_are_followed(queue_and_scrapes):
     scrapes.check("initial")
 
     def heartbeat() -> None:
-        for path in sorted(queue.lease_path(CONSUMER).parent.glob("*.lease")):
+        for path in sorted(queue.records.lease_path(CONSUMER).parent.glob("*.lease")):
             lease = json.loads(path.read_text())
             lease["heartbeat_unix"] = lease["heartbeat_unix"] + 0.5
             _replace(path, lease)
@@ -217,14 +220,14 @@ def test_plans_follow_their_consumers_and_their_files(queue_and_scrapes):
     before = _sample(scrapes.check("initial"), ready_plans)
     consumer = _key("consumer", 2)
     text = scrapes.after("a plan's consumer published", lambda: _put(
-        queue.root / pool.READY / f"{consumer}.json",
+        queue.root / pool.record_store.READY / f"{consumer}.json",
         shaped._item(consumer, scrapes.now - 5.0)))
     assert int(_sample(text, ready_plans)) == int(before) + 1
 
     absent = (f'prismabuild_residency_plans'
               f'{{state="absent",tier="{STAGE_TIER}"}}')
     counted = int(_sample(text, absent))
-    plan = queue.residency_plan_path(_key("consumer", 3))
+    plan = queue.records.residency_plan_path(_key("consumer", 3))
     text = scrapes.after("a plan removed", plan.unlink)
     assert int(_sample(text, absent)) == counted - 1
 
@@ -238,14 +241,14 @@ def test_history_follows_new_records(queue_and_scrapes):
 
     key = _key("late-ending", 0)
     text = scrapes.after("a new ending", lambda: _put(
-        queue.root / pool.DONE / f"{key}.json",
+        queue.root / pool.record_store.DONE / f"{key}.json",
         shaped._ending(key, "executed", "sparky", scrapes.now - 1.0,
                        profiled=True), scrapes.now - 1.0))
     assert int(_sample(text, window)) == int(_sample(before, window)) + 1
 
     receipt = _key("late-receipt", 0)
     text = scrapes.after("a new receipt", lambda: _put(
-        queue.root / pool.MOVERS / f"{receipt}.json", {
+        queue.root / pool.record_store.MOVERS / f"{receipt}.json", {
             "schema": pool.POOL_MOVE_SCHEMA_V1, "action_key": receipt,
             "tier_id": STAGE_TIER, "host": "dl380g10",
             "unix": scrapes.now - 1.0, "complete": True,
@@ -256,16 +259,16 @@ def test_history_follows_new_records(queue_and_scrapes):
     assert int(_sample(text, jobs)) == int(_sample(before, jobs)) + 1
 
     # A withdrawal decision newer than its summary displaces the summary.
-    withdrawn = _key(pool.WITHDRAWN, 0)
-    summary = queue.root / pool.WITHDRAWN / f"{withdrawn}.json"
+    withdrawn = _key(pool.record_store.WITHDRAWN, 0)
+    summary = queue.root / pool.record_store.WITHDRAWN / f"{withdrawn}.json"
     decided = os.stat(summary).st_mtime + 1.0
     scrapes.after("a newer withdrawal decision", lambda: _put(
-        queue.root / pool.WITHDRAWN / "decisions" / withdrawn / "2.000000.json",
+        queue.root / pool.record_store.WITHDRAWN / "decisions" / withdrawn / "2.000000.json",
         {"status": "withdrawn", "action_key": withdrawn}, decided))
 
     # Filed by rename, as every queue writer files (``DirectoryRecords``).
     scrapes.after("a torn receipt filed", lambda: _file_raw(
-        queue.root / pool.MOVERS / f"{receipt}.json", "{"))
+        queue.root / pool.record_store.MOVERS / f"{receipt}.json", "{"))
 
 
 def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
@@ -274,20 +277,20 @@ def test_a_kept_reader_holds_nothing_the_queue_no_longer_has(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     scrapes.check("initial")
-    histories = scrapes.reader._histories
-    decisions = queue.root / pool.WITHDRAWN / "decisions"
+    histories = scrapes.reader._histories._slots
+    decisions = queue.root / pool.record_store.WITHDRAWN / "decisions"
     gone = sorted(decisions.iterdir())[0]
     assert str(gone) in histories
-    receipts = sorted((queue.root / pool.MOVERS).glob("*.json"))
+    receipts = sorted((queue.root / pool.record_store.MOVERS).glob("*.json"))
     for path in receipts[: len(receipts) // 2]:
         path.unlink()
     for path in gone.iterdir():
         path.unlink()
     gone.rmdir()
-    settle()
+    settle(queue.root, scrapes.patch)
     scrapes.check("half the receipts and one decision gone")
     assert str(gone) not in histories
-    movers = histories[str(queue.root / pool.MOVERS)][1]
+    movers = histories[str(queue.root / pool.record_store.MOVERS)].value
     assert len(movers) == len(receipts) - len(receipts) // 2
     derived = scrapes.reader._derived_entries.get("receipt", {})
     assert len(derived) <= len(movers)
@@ -325,7 +328,7 @@ def _fails(name: str, target: Path, error: int):
 
 def _new_ending(queue: pool.PoolQueue, now: float, index: int = 0) -> Path:
     key = _key("late-ending", index)
-    path = queue.root / pool.DONE / f"{key}.json"
+    path = queue.root / pool.record_store.DONE / f"{key}.json"
     _put(path, shaped._ending(key, "executed", "sparky", now - 1.0, profiled=True),
          now - 1.0)
     return path
@@ -338,7 +341,7 @@ def test_a_record_that_cannot_be_stat_ed_fails_the_scrape(queue_and_scrapes):
     shaped._require_trusted(queue.root)
     assert _sample(scrapes.check("initial"), TERMINAL_OK) == "1"
     path = _new_ending(queue, scrapes.now)
-    settle()
+    settle(queue.root, scrapes.patch)
     with _fails("stat", path, errno.EIO):
         failed = _collect(queue.root, scrapes.now, scrapes.reader)
         fresh = _collect(queue.root, scrapes.now, None)
@@ -359,10 +362,10 @@ def test_a_receipt_that_cannot_be_stat_ed_fails_the_move_window(queue_and_scrape
     shaped._require_trusted(queue.root)
     complete = "prismabuild_tier_move_window_complete"
     assert _sample(scrapes.check("initial"), complete) == "1"
-    receipt = queue.root / pool.MOVERS / f"{_key('late-receipt', 0)}.json"
+    receipt = queue.root / pool.record_store.MOVERS / f"{_key('late-receipt', 0)}.json"
     _put(receipt, {"schema": pool.POOL_MOVE_SCHEMA_V1, "unix": scrapes.now - 1.0,
                    "tier_id": STAGE_TIER}, scrapes.now - 1.0)
-    settle()
+    settle(queue.root, scrapes.patch)
     with _fails("stat", receipt, errno.EIO):
         failed = _collect(queue.root, scrapes.now, scrapes.reader)
     assert _sample(failed, complete) == "0"
@@ -374,10 +377,10 @@ def test_a_directory_that_cannot_be_listed_fails_the_scrape(queue_and_scrapes):
     queue, scrapes = queue_and_scrapes
     shaped._require_trusted(queue.root)
     scrapes.check("initial")
-    done = queue.root / pool.DONE
+    done = queue.root / pool.record_store.DONE
     # A permission change moves the directory's ctime, as a real one would.
     os.chmod(done, os.stat(done).st_mode)
-    settle()
+    settle(queue.root, scrapes.patch)
     with _fails("scandir", done, errno.EACCES):
         failed = _collect(queue.root, scrapes.now, scrapes.reader)
         fresh = _collect(queue.root, scrapes.now, None)
@@ -394,7 +397,7 @@ def test_a_directory_that_leaves_and_returns_is_followed(queue_and_scrapes):
     shaped._require_trusted(queue.root)
     window = "prismabuild_terminal_outcomes_window_jobs"
     before = scrapes.check("initial")
-    done = queue.root / pool.DONE
+    done = queue.root / pool.record_store.DONE
     away = queue.root / "done.away"
     text = scrapes.after("done/ gone", lambda: done.rename(away))
     assert _sample(text, TERMINAL_OK) == "0"
@@ -481,13 +484,13 @@ def test_the_metrics_role_runs_the_exporter_on_the_queue_host():
 
 
 def test_a_second_exporter_on_the_box_refuses(tmp_path, capsys):
-    with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
-        with worker_loop.role_singleton(Path(pbmetrics.__file__)):
+    with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+        with role_session.role_singleton(Path(pbmetrics.__file__)):
             with mock.patch.object(pbmetrics, "ThreadingHTTPServer") as server:
                 code = pbmetrics.main(["--port", "9469",
                                        "--queue-root", str(tmp_path / "q")])
         server.assert_not_called()
-    assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    assert code == role_session.ROLE_SINGLETON_HELD_EXIT
     assert "refusing a second metrics exporter" in capsys.readouterr().err
 
 
@@ -498,24 +501,26 @@ def test_the_exporter_serves_under_its_role_lock(tmp_path):
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def serve_forever(self) -> None:
-            held.append(worker_loop.role_singleton_holder(
+        def handle_request(self) -> None:
+            held.append(role_session.role_singleton_holder(
                 Path(pbmetrics.__file__))[0])
+            os.kill(os.getpid(), signal.SIGTERM)
 
         def server_close(self) -> None:
             pass
 
-    with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"), \
+    with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"), \
+            mock.patch.object(role_session, "read_maintenance_gate", return_value=None), \
             mock.patch.object(pbmetrics, "ThreadingHTTPServer", Server):
         assert pbmetrics.main(["--port", "9469",
                                "--queue-root", str(tmp_path / "q")]) == 0
         assert held == [True]
-        assert worker_loop.role_singleton_holder(Path(pbmetrics.__file__)) == (False, None)
+        assert role_session.role_singleton_holder(Path(pbmetrics.__file__)) == (False, None)
 
 
 def test_once_takes_no_lock(tmp_path, capsys):
-    with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
-        with worker_loop.role_singleton(Path(pbmetrics.__file__)):
+    with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+        with role_session.role_singleton(Path(pbmetrics.__file__)):
             assert pbmetrics.main(["--once", "--queue-root", str(tmp_path / "q")]) == 0
     assert "prismabuild_collection_success" in capsys.readouterr().out
 
@@ -528,15 +533,15 @@ def test_a_port_in_use_refuses_with_a_record(tmp_path, capsys):
         holder.bind(("127.0.0.1", 0))
         holder.listen(1)
         port = holder.getsockname()[1]
-        with mock.patch.object(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles"):
+        with mock.patch.object(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles"):
             code = pbmetrics.main(["--listen", "127.0.0.1", "--port", str(port),
                                    "--queue-root", str(tmp_path / "q")])
             # The refusal let the role lock go with the process's attempt.
-            assert worker_loop.role_singleton_holder(
+            assert role_session.role_singleton_holder(
                 Path(pbmetrics.__file__)) == (False, None)
     finally:
         holder.close()
-    assert code == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    assert code == role_session.ROLE_SINGLETON_HELD_EXIT
     err = capsys.readouterr().err
     assert "Traceback" not in err
     record = json.loads(err.strip().splitlines()[-1])
@@ -545,4 +550,4 @@ def test_a_port_in_use_refuses_with_a_record(tmp_path, capsys):
     assert record["reason"] == "port-in-use"
     assert (record["listen"], record["port"]) == ("127.0.0.1", port)
     assert record["holder_pid"] == os.getpid()
-    assert record["exit"] == worker_loop.ROLE_SINGLETON_HELD_EXIT
+    assert record["exit"] == role_session.ROLE_SINGLETON_HELD_EXIT

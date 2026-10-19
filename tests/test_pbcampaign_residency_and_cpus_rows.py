@@ -11,6 +11,9 @@ and bounds, and omitted fields pass nothing, as every row field does.
 """
 
 from __future__ import annotations
+from submission_support import patch_store
+
+from pbtest_shard_output import finish_submission
 
 import json
 from pathlib import Path
@@ -24,9 +27,11 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import submission
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
     RAM_TIER, TIER, _manifest,
@@ -98,26 +103,24 @@ def test_the_argv_pbrun_is_given_is_the_hand_typed_submission(
 ) -> None:
     """``submit_row`` hands ``pbrun.main`` this row's command line, byte for byte."""
 
-    seen: list[list[str]] = []
+    seen = []
 
-    def fake_main() -> int:
-        seen.append(list(sys.argv))
+    def fake_submit(request, *, report, **kwargs):
+        seen.append(request)
         print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return 0
+        finish_submission(report)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submission, 'submit_request', fake_submit)
     row = {"argv": ["./reader.sh"], "cwd": "/home/rob/tree",
            "data_manifest": "/home/rob/manifest.json",
            **{field: value for field, (value, _) in FIELDS.items()}}
 
     assert pbcampaign.submit_row(row, transport="pool")["status"] == "submitted"
-    assert seen == [[
-        "pbrun.py", "--detach", "--transport", "pool",
-        "--cwd", "/home/rob/tree", "--data-manifest", "/home/rob/manifest.json",
-        "--residency", "stage", "--residency-ram", "off",
-        "--residency-prefetch-depth-gib", "8", "--residency-read-mb-s", "400",
-        "--cpus", "4", "--", "./reader.sh",
-    ]]
+    assert seen == [submission.SubmissionRequest(detach=True, transport="pool",
+        cwd="/home/rob/tree", data_manifest="/home/rob/manifest.json", residency="stage",
+        residency_ram="off", residency_prefetch_depth_gib=8, residency_read_mb_s=400,
+        cpus=4, command=["./reader.sh"])]
 
 
 # -- the staged read path, end to end ----------------------------------------
@@ -130,8 +133,8 @@ def _staged_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQ
     the default, a submission seals a ram leg onto the plan.
     """
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
@@ -188,7 +191,7 @@ def test_a_staged_row_publishes_the_request_and_plan_pbrun_publishes(
     assert "ram_tier_id" not in plan, "residency_ram off did not reach pbrun"
     assert plan["reader"] == {"prefetch_depth_bytes": 8 * storage_tiers.GIB,
                               "read_mb_s": 400}
-    row = json.loads(queue.item_path(pool.READY, key).read_text())
+    row = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert row["residency"]["tier_id"] == TIER
     assert row["resources"]["cpu"] == 4
     request = (tmp_path / "cas" / "requests" / key[:2] / f"{key}.json").read_bytes()
@@ -213,6 +216,6 @@ def test_a_staged_row_publishes_the_request_and_plan_pbrun_publishes(
     assert by_hand is not None
     assert ({k: v for k, v in by_hand.items() if k != "demand_source"}
             == {k: v for k, v in plan.items() if k != "demand_source"})
-    by_hand_row = json.loads(queue.item_path(pool.READY, key).read_text())
+    by_hand_row = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     assert by_hand_row["residency"] == row["residency"]
     assert by_hand_row["resources"] == row["resources"]

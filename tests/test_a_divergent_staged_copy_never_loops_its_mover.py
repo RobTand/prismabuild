@@ -51,8 +51,9 @@ from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F40
 import test_stale_material_done_owner_retires as stale  # noqa: E402
 from prismabuild import (  # noqa: E402
     adaptive_cpu, pool, reader_lease, residency_map, residency_plan)
-import stage_move  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 SIZE = base.SIZE
@@ -159,7 +160,7 @@ def _keep_plan(queue: pool.PoolQueue, stage: Path, consumer: str,
                     "range_start_bytes": 0, "range_end_bytes": total}},
             "egress_row": _row(queue, base._key(), {"cpu": 1, "mem_gb": 1}),
         }]))
-    assert queue.residency_plan_path(consumer).exists()
+    assert queue.records.residency_plan_path(consumer).exists()
 
 
 def _row(queue: pool.PoolQueue, key: str,
@@ -179,8 +180,8 @@ class _World:
         # fixture row does not have; the shape is all admission needs here.
         monkeypatch.setattr(adaptive_cpu, "action_identity",
                             lambda item: ("shape", False))
-        monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", stale.GRACE)
-        monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+        monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', stale.GRACE)
+        monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
         self.queue, self.stage, self.cas = queue, stage, cas
         self.payloads = ORDERS[order]
         (self.manifest, self.digest, self.entries,
@@ -218,7 +219,7 @@ class _World:
                        "manifest_bytes": self.total,
                        "leads": residency_plan.leads_for(self.plan)})
         # Room for the old owner's charge and this mover's one token.
-        queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+        queue.tier(TIER).mint({'stage_gib': 4})
         self.tiers = {TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(stage)}}
 
@@ -239,7 +240,7 @@ class _World:
             tags=["dl380g10"], owner=f"{socket.gethostname()}:1:stage",
             capacity={"cpu": 4, "mem_gb": 16}, ready=ready)
         assert claimed is not None and claimed["action_key"] == self.copier
-        assert self.queue.tier_ledger(TIER).holder_tokens(self.copier), (
+        assert self.queue.tier(TIER).holdings(self.copier), (
             "control: the claim must take the mover's tier tokens")
         self.claimed = claimed
 
@@ -258,7 +259,7 @@ class _World:
             "--manifest-sha256", self.digest,
             "--range-start-bytes", "0",
             "--range-end-bytes", str(self.total),
-            "--residency-root", str(self.queue.residency_fragment_root()),
+            "--residency-root", str(self.queue.records.residency_fragment_root()),
             "--readers", "1", "--max-readers", "1", "--unpaced"])
         receipt = self.queue.move_record(self.copier)
         assert isinstance(receipt, dict)
@@ -278,7 +279,7 @@ STEPS = ["adopt", "publish"]
 
 def _meet_at(monkeypatch, step: str) -> None:
     if step == "publish":
-        monkeypatch.setattr(stage_move._StagedPublisher, "try_adopt",
+        monkeypatch.setattr(staged_path.StagedPublisher, "try_adopt",
                             lambda self, *args, **kwargs: None)
 
 
@@ -305,8 +306,7 @@ def test_an_ended_owner_is_invalidated_and_the_mover_is_not_republished(
         f"complete={receipt.get('complete')!r}, errors={receipt.get('errors')}")
     assert rc == 0 and receipt["complete"] is True, receipt.get("errors")
     assert "refusal" not in receipt, receipt.get("refusal")
-    assert queue.tier_ledger(TIER).holder_tokens(world.copier) == {
-        "stage_gib": 1}
+    assert queue.tier(TIER).holdings(world.copier) == {'stage_gib': 1}
     for staged_name, payload in world.payloads.items():
         assert _staged(stage, staged_name).read_bytes() == payload
     # The ended owner's copy was invalidated: a fresh inode, so its sidecar's
@@ -367,12 +367,12 @@ def test_a_live_owner_is_a_terminal_conflict_naming_both_owners(
                                                  before.st_mtime_ns)
     assert path.read_bytes() == OLD
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 1}
+        queue.records.residency_fragment_root(), consumer, mover).exists()
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 1}
     # The refused mover holds nothing, and its window is retired by name.
-    assert queue.tier_ledger(TIER).holder_tokens(world.copier) == {}
+    assert queue.tier(TIER).holdings(world.copier) == {}
     assert receipt["plan_superseded"] is True
     marker = residency_plan.superseded(queue, world.plan)
     assert marker is not None and marker["movers"] == [world.copier]
@@ -409,17 +409,17 @@ def test_an_owner_whose_ending_is_unproven_is_never_replaced(
     # and only the mover's ending proof meets the missing fact.
     world.claim()
     if guard == "consumer-lease":
-        queue.lease_path(consumer).write_text("{}")
+        queue.records.lease_path(consumer).write_text("{}")
     elif guard == "mover-lease":
-        queue.lease_path(mover).write_text("{}")
+        queue.records.lease_path(mover).write_text("{}")
     elif guard == "mover-queued":
         queue.publish(action_key=mover, cas_root="/cas", checkout_root="/co",
                       worker_script="/w.py", resources={"cpu": 1},
                       max_attempts=1, recompute=True)
-        assert queue.item_path(pool.READY, mover).exists()
+        assert queue.records.item_path(pool.record_store.READY, mover).exists()
     elif guard == "unreadable-fragment":
         path = residency_map.fragment_path(
-            queue.residency_fragment_root(), base._key(), base._key())
+            queue.records.residency_fragment_root(), base._key(), base._key())
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
     name = _divergent(order)
@@ -467,7 +467,7 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
     path = _staged(stage, NAMES[1])
     before = os.stat(path)
     late_consumer, late_mover = base._key(), base._key()
-    real = stage_move._StagedPublisher._judge_owners
+    real = staged_path.StagedPublisher._judge_owners
     arrived: list[bool] = []
 
     def judge_then_arrive(self, pairs):
@@ -483,7 +483,7 @@ def test_an_owner_that_appears_after_the_judgment_is_judged_before_any_act(
             stale._fragment(queue, stage, late_consumer, late_mover)
         return rows
 
-    monkeypatch.setattr(stage_move._StagedPublisher, "_judge_owners",
+    monkeypatch.setattr(staged_path.StagedPublisher, "_judge_owners",
                         judge_then_arrive)
 
     rc, receipt = world.run(claimed=True)
@@ -522,7 +522,7 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
     world = _World(fleet, tmp_path, monkeypatch, "last")
     path = _staged(stage, NAMES[1])
     before = os.stat(path)
-    real = stage_move._StagedPublisher.publish
+    real = staged_path.StagedPublisher.publish
     resubmitted: list[bool] = []
 
     def resubmit_then_publish(self, *args, **kwargs):
@@ -534,7 +534,7 @@ def test_an_owner_resubmitted_after_its_ending_was_proven_is_judged_again(
                 resources={"cpu": 1})
         return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(stage_move._StagedPublisher, "publish",
+    monkeypatch.setattr(staged_path.StagedPublisher, "publish",
                         resubmit_then_publish)
 
     rc, receipt = world.run()
@@ -580,13 +580,13 @@ def test_a_movers_own_record_is_not_an_owner_it_judges(fleet) -> None:
     declared = hashlib.sha256(NEW).hexdigest()
 
     own = base._publisher(fleet, mover, consumer)
-    collected = stage_move._Owners()
+    collected = staged_path._Owners()
     _, standing, _ = own._proof_search(path, SIZE, declared, owners=collected)
     assert standing == "divergent"
     assert collected.pairs == set() and collected.complete
 
     other = base._publisher(fleet, base._key(), base._key())
-    collected = stage_move._Owners()
+    collected = staged_path._Owners()
     _, standing, _ = other._proof_search(path, SIZE, declared,
                                          owners=collected)
     assert standing == "divergent"

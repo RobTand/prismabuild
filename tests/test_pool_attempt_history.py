@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -26,7 +27,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     value = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    value.ensure_layout()
+    value.records.ensure_layout()
     value.publish(
         action_key=KEY,
         cas_root="/cas",
@@ -62,7 +63,8 @@ def test_first_cause_and_later_stale_output_refusal_both_survive(
             "elapsed_s": 600.0,
         },
     )
-    assert queue.item_path(pool.READY, KEY).exists(), "retry is explicitly enabled"
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists(
+    ), "retry is explicitly enabled"
 
     assert queue.claim() is not None
     terminal_path = queue.finish(
@@ -76,7 +78,7 @@ def test_first_cause_and_later_stale_output_refusal_both_survive(
         },
     )
     terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
-    assert terminal_path == queue.item_path(pool.FAILED, KEY)
+    assert terminal_path == queue.records.item_path(pool.record_store.FAILED, KEY)
     assert terminal["attempts"] == 2
     assert "CAUSAL:" not in terminal["detail"]["stdout"], (
         "the mutable terminal still demonstrates why immutable history is needed"
@@ -100,8 +102,8 @@ def test_first_cause_and_later_stale_output_refusal_both_survive(
         assert stat.S_IMODE(stdout_path.stat().st_mode) == 0o444
         assert stat.S_IMODE(stderr_path.stat().st_mode) == 0o444
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
-    assert pbrun.await_outcome(queue, KEY, wait_s=1.0) == 24
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 24
     shown = capsys.readouterr()
     assert "CAUSAL: corpus gives 4088" in shown.out
     assert "REFUSED: stale output exists" in shown.out
@@ -114,13 +116,13 @@ def test_lease_loss_is_an_attempt_with_immutable_empty_logs(
     """A dead claimant consumed an attempt even though it returned no pipes."""
 
     assert queue.claim(owner="dead-box:1") is not None
-    lease = json.loads(queue.lease_path(KEY).read_text(encoding="utf-8"))
+    lease = json.loads(queue.records.lease_path(KEY).read_text(encoding="utf-8"))
     lease["heartbeat_unix"] = 0.0
-    queue.lease_path(KEY).write_text(json.dumps(lease), encoding="utf-8")
+    queue.records.lease_path(KEY).write_text(json.dumps(lease), encoding="utf-8")
     assert queue.reap_stale(timeout_s=-1.0) == [KEY]
 
     requeued = json.loads(
-        queue.item_path(pool.READY, KEY).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8")
     )
     assert requeued["attempts"] == 1
     first = queue.attempt_outcomes(requeued)
@@ -130,17 +132,17 @@ def test_lease_loss_is_an_attempt_with_immutable_empty_logs(
     assert first[0]["stdout"] == first[0]["stderr"] == ""
 
     assert queue.claim(owner="dead-box:2") is not None
-    lease = json.loads(queue.lease_path(KEY).read_text(encoding="utf-8"))
+    lease = json.loads(queue.records.lease_path(KEY).read_text(encoding="utf-8"))
     lease["heartbeat_unix"] = 0.0
-    queue.lease_path(KEY).write_text(json.dumps(lease), encoding="utf-8")
+    queue.records.lease_path(KEY).write_text(json.dumps(lease), encoding="utf-8")
     assert queue.reap_stale(timeout_s=-1.0) == [KEY]
     terminal = json.loads(
-        queue.item_path(pool.FAILED, KEY).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.FAILED, KEY).read_text(encoding="utf-8")
     )
     attempts = queue.attempt_outcomes(terminal)
     assert [one["attempt"] for one in attempts] == [1, 2]
     assert attempts[1]["status"] == "lease_lost_max_attempts"
-    assert attempts[1]["disposition"] == pool.FAILED
+    assert attempts[1]["disposition"] == pool.record_store.FAILED
 
 
 def test_first_writer_is_relinked_after_a_crash_between_archive_and_summary(
@@ -159,7 +161,7 @@ def test_first_writer_is_relinked_after_a_crash_between_archive_and_summary(
         },
     )
     requeued = json.loads(
-        queue.item_path(pool.READY, KEY).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8")
     )
     expected_history = requeued.pop("attempt_history")
 
@@ -209,11 +211,11 @@ def test_finish_adopts_reaper_attempt_that_won_immutable_race(
         detail={"returncode": 0, "stdout": "late success\n"},
     )
 
-    assert landed == queue.item_path(pool.READY, KEY)
-    assert not queue.item_path(pool.DONE, KEY).exists()
+    assert landed == queue.records.item_path(pool.record_store.READY, KEY)
+    assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()
     ready = json.loads(landed.read_text(encoding="utf-8"))
     adopted = queue.attempt_outcomes(ready)[0]
-    summary = queue.adopted_attempt_summary(ready)
+    summary = queue.attempt_ending(ready)
     assert ready["status"] == adopted["status"] == "lease_lost"
     assert ready["detail"] == summary["detail"]
     assert ready["detail"]["stdout"] == ready["detail"]["stderr"] == ""
@@ -230,7 +232,7 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=KEY,
         cas_root="/cas",
@@ -239,9 +241,9 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
         max_attempts=1,
     )
     assert queue.claim(owner="worker:1") is not None
-    lease = json.loads(queue.lease_path(KEY).read_text(encoding="utf-8"))
+    lease = json.loads(queue.records.lease_path(KEY).read_text(encoding="utf-8"))
     lease["heartbeat_unix"] = 0.0
-    queue.lease_path(KEY).write_text(json.dumps(lease), encoding="utf-8")
+    queue.records.lease_path(KEY).write_text(json.dumps(lease), encoding="utf-8")
     real_archive = queue.archive_attempt
     injected = False
 
@@ -253,7 +255,7 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
                 record,
                 attempt=reaper["attempt"],
                 status="failed",
-                disposition=pool.FAILED,
+                disposition=pool.record_store.FAILED,
                 detail={
                     "returncode": 37,
                     "stdout": "finisher's causal error\n",
@@ -265,16 +267,16 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
     monkeypatch.setattr(queue, "archive_attempt", finisher_wins)
     assert queue.reap_stale(timeout_s=-1.0) == [KEY]
 
-    terminal_path = queue.item_path(pool.FAILED, KEY)
+    terminal_path = queue.records.item_path(pool.record_store.FAILED, KEY)
     terminal = json.loads(terminal_path.read_text(encoding="utf-8"))
     adopted = queue.attempt_outcomes(terminal)[0]
-    summary = queue.adopted_attempt_summary(terminal)
+    summary = queue.attempt_ending(terminal)
     assert terminal["status"] == adopted["status"] == "failed"
     assert terminal["detail"]["returncode"] == 37
     assert terminal["detail"] == summary["detail"]
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
-    assert pbrun.await_outcome(queue, KEY, wait_s=1.0) == 37
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 37
     shown = capsys.readouterr()
     assert "finisher's causal error" in shown.out
     assert "lease expired" not in shown.err
@@ -282,7 +284,7 @@ def test_reaper_adopts_finisher_attempt_and_await_returncode(
     terminal["detail"]["returncode"] = 99
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
     with pytest.raises(pool.PoolContractError, match="adopted immutable"):
-        pbrun.await_outcome(queue, KEY, wait_s=1.0)
+        submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)
 
 
 def test_adopted_attempt_requires_a_finite_finish_time(
@@ -310,7 +312,7 @@ def test_adopted_attempt_requires_a_finite_finish_time(
 
     monkeypatch.setattr(queue, "attempt_outcomes", nonfinite)
     with pytest.raises(pool.PoolContractError, match="finished_unix must be finite"):
-        queue.adopted_attempt_summary(linked)
+        queue.attempt_ending(linked)
 
 
 def test_rollout_archives_the_next_attempt_without_inventing_old_history(
@@ -319,7 +321,7 @@ def test_rollout_archives_the_next_attempt_without_inventing_old_history(
     """A requeued pre-deploy record remains executable across the rollout."""
 
     assert queue.claim() is not None
-    claimed_path = queue.item_path(pool.CLAIMED, KEY)
+    claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
     claimed = json.loads(claimed_path.read_text(encoding="utf-8"))
     claimed["attempts"] = 1
     claimed_path.write_text(json.dumps(claimed), encoding="utf-8")
@@ -333,8 +335,8 @@ def test_rollout_archives_the_next_attempt_without_inventing_old_history(
     assert terminal["attempt_history_missing_before"] == 1
     assert [one["attempt"] for one in queue.attempt_outcomes(terminal)] == [2]
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
-    assert pbrun.await_outcome(queue, KEY, wait_s=1.0) == 24
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
+    assert submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0) == 24
     shown = capsys.readouterr()
     assert "1 earlier attempt predates immutable history" in shown.err
     assert "attempt 2/2" in shown.err
@@ -358,6 +360,6 @@ def test_terminal_attempt_count_cannot_outlive_its_history_links(
     terminal["attempt_history"] = []
     terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     with pytest.raises(pool.PoolContractError, match="attempt count"):
-        pbrun.await_outcome(queue, KEY, wait_s=1.0)
+        submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=1.0)

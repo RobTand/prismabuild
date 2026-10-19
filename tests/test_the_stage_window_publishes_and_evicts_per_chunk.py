@@ -22,9 +22,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 import residency_publication  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
@@ -60,7 +61,8 @@ def _chunk(phase: int, chunk: int, start: int, end: int) -> dict:
     }
 
 
-def _plan(*, phases: int = 3, chunk_gib: int = 1) -> dict[str, object]:
+def _plan(*, phases: int = 3, chunk_gib: int = 1,
+          stage_root: str = "/stage/prewarm") -> dict[str, object]:
     """Phases of two stage chunks each, all sealed, frozen via build_plan."""
 
     built = []
@@ -77,7 +79,7 @@ def _plan(*, phases: int = 3, chunk_gib: int = 1) -> dict[str, object]:
         start = end
     return residency_plan.build_plan(
         consumer_action_key=CONSUMER, tier_id=STAGE_TIER,
-        stage_root="/stage/prewarm", manifest_sha256=MANIFEST,
+        stage_root=stage_root, manifest_sha256=MANIFEST,
         manifest_bytes=start, phases=built)
 
 
@@ -88,9 +90,7 @@ def _key(phase: int, chunk: int) -> str:
 def test_chunks_publish_in_read_order_behind_free_space() -> None:
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=3, capacity_gib=4,
-        published=[_key(0, 0)], staged=[_key(0, 0)])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_key(0, 0)], staged=[_key(0, 0)]), residency_plan.WindowBudget(free_gib=3, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["publish"]] == [
@@ -105,10 +105,7 @@ def test_the_current_phases_chunks_ignore_the_runahead_budget() -> None:
 
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=3, capacity_gib=4,
-        published=[_key(0, 0), _key(1, 0), _key(1, 1), _key(2, 0)],
-        staged=[_key(0, 0)])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_key(0, 0), _key(1, 0), _key(1, 1), _key(2, 0)], staged=[_key(0, 0)]), residency_plan.WindowBudget(free_gib=3, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["publish"]] == [("phase-0000", 1)]
@@ -124,10 +121,7 @@ def test_the_current_phases_chunks_ignore_the_runahead_budget() -> None:
 def test_each_chunk_of_a_passed_phase_egresses_through_its_own_node() -> None:
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0001", free_gib=4, capacity_gib=4,
-        published=[_key(0, 0), _key(0, 1)],
-        staged=[_key(0, 0), _key(0, 1)])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0001', residency_plan.LegObservation(published=[_key(0, 0), _key(0, 1)], staged=[_key(0, 0), _key(0, 1)]), residency_plan.WindowBudget(free_gib=4, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["evict"]] == [
@@ -169,9 +163,7 @@ def test_a_whole_phase_leg_beside_chunks_decides_as_it_always_did() -> None:
         manifest_bytes=6 * GIB,
         phases=[whole, *plan["phases"][1:]])  # type: ignore[index]
 
-    decision = residency_plan.window(
-        mixed, accepted_phase=None, free_gib=4, capacity_gib=4,
-        published=[], staged=[])
+    decision = residency_plan.ConsumerWindow(mixed, None, residency_plan.LegObservation(published=[], staged=[]), residency_plan.WindowBudget(free_gib=4, capacity_gib=4)).decision
 
     first = decision["publish"][0]
     assert first["phase"] == "phase-0000"
@@ -230,23 +222,23 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
     ``stage``, which stays ``None`` so the existing shape holds."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    plan = _plan()
+    queue.records.ensure_layout()
+    plan = _plan(stage_root=str(tmp_path / "stage"))
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}), residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 8})
-    assert queue.tier_ledger(STAGE_TIER).acquire(_key(0, 0), {"stage_gib": 1})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 8})
+    assert queue.tier(STAGE_TIER).take(_key(0, 0), {'stage_gib': 1})
     # The booking above is the room; these are the records the finished
     # copy left, which is what the census now reports (#759).
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER, mover_action_key=_key(0, 0),
-        tier_id=STAGE_TIER, stage_root="/stage/prewarm",
+        tier_id=STAGE_TIER, stage_root=tmp_path / "stage",
         manifest_sha256=MANIFEST, range_start_bytes=0, range_end_bytes=GIB)
 
-    entry = pbstatus._starvation_plan_entry(
+    entry = fleet_census._starvation_plan_entry(
         queue, CONSUMER, plan, ready={CONSUMER}, claimed=set("#"),
         notes=[], unreadable=[], now=0.0)
 
@@ -263,8 +255,8 @@ def test_the_census_reports_a_chunked_stage_phase_per_chunk(tmp_path) -> None:
 @pytest.fixture()
 def live_queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(STAGE_TIER, {"stage_gib": 5})
+    q.records.ensure_layout()
+    q.tier(STAGE_TIER).mint({'stage_gib': 5})
     return q
 
 
@@ -297,8 +289,9 @@ def test_the_loop_publishes_chunk_movers_with_their_index(
                          ("phase-0001", 0)]
     for event in events:
         if event["event"] == "mover-published":
-            assert pool._read_json(
-                live_queue.item_path(pool.READY, event["action_key"]))[
+            assert pool.record_store.value_or_raise(
+                live_queue.records.item(pool.record_store.READY, event["action_key"]),
+            )[
                     "recompute"] is True
 
 
@@ -320,5 +313,5 @@ def test_a_chunk_whose_egress_is_queued_waits_for_the_deletion(
                 if event["event"] == "mover-publish-deferred-for-egress"]
     assert [(event["phase"], event["chunk_index"]) for event in deferred] == [
         ("phase-0000", 0)]
-    assert not live_queue.item_path(
-        pool.READY, _key(0, 0)).exists()
+    assert not live_queue.records.item_path(
+        pool.record_store.READY, _key(0, 0)).exists()

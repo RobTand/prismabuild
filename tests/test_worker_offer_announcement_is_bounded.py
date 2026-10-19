@@ -1,15 +1,20 @@
 """Causal private-FIFO regression for the worker's pre-admission offer write."""
 import importlib.util
+from functools import partial
 import json
 import os
 from pathlib import Path
 import select
 import signal
 import sys
+from threading import Event
 import time
 from unittest.mock import patch
 
 WORKER = Path(__file__).resolve().parents[1] / 'tools/fleet/worker_loop.py'
+
+
+from prismabuild import role_session
 
 
 def test_blocked_offer_returns_without_admission(tmp_path):
@@ -29,6 +34,10 @@ def test_blocked_offer_returns_without_admission(tmp_path):
         return None
     queue.announce = announce
     queue.serve_once = serve
+    gate = tmp_path / 'maintenance.json'
+    gate.write_text(json.dumps({'draining': False}))
+    for name in ('loaded.json', 'published.json'):
+        (tmp_path / name).write_text(json.dumps({'commit': 'fixed', 'generation': 'fixed'}))
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -41,13 +50,14 @@ def test_blocked_offer_returns_without_admission(tmp_path):
                     '--cpu-slots', '1', '--all-cores', '--assume-idle',
                     '--once', '--poll-s', '0']
             with patch.object(worker.pool, 'PoolQueue', return_value=queue), \
-                 patch.object(worker, 'read_maintenance_gate', return_value=None), \
-                 patch.object(worker, 'loaded_runtime_commit', return_value='fixed'), \
-                 patch.object(worker, 'published_commit', return_value='fixed'), \
-                 patch.object(worker, '_generation_at', return_value='fixed'), \
+                 patch.object(role_session, 'MAINTENANCE_GATE', gate), \
+                 patch.object(role_session, 'GENERATION_VERSION', tmp_path / 'loaded.json'), \
+                 patch.object(role_session, 'RUNTIME_VERSION', tmp_path / 'published.json'), \
+                 patch.object(worker.container_images, 'InventoryCache', partial(
+                     worker.container_images.InventoryCache, root=tmp_path / 'images')), \
                  patch.object(worker.cpu_topology, 'inherited_tiers', return_value=None), \
                  patch.object(sys, 'argv', argv):
-                result = {'returncode': worker._run_loop(lambda: False)}
+                result = {'returncode': worker._run_loop(Event())}
         except BaseException as exc:
             result = {'error': repr(exc)}
         try:

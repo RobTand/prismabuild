@@ -36,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 NAMES = base.NAMES
@@ -59,7 +60,7 @@ def _claim_export(queue: pool.PoolQueue, cas: Path, *,
 
     key = base._key()
     base._publish(queue, key, cas_root=str(cas), max_attempts=1)
-    claimed = queue.item_path(pool.CLAIMED, key)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
     item = json.loads(claimed.read_text())
     item["resources"] = (resources if resources is not None
                          else {"cpu": 1, "mem_gb": 1, FILL: 510})
@@ -101,9 +102,9 @@ def _charged_orphan(fleet) -> tuple[str, str]:
     queue.finish(mover, status="executed", detail={"returncode": 0})
     # The whole tier is this orphan's: a window that needs one GiB finds none
     # free, so the pressure pass must evict it.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 1})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1}) is True
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    queue.tier(TIER).mint({'stage_gib': 1})
+    assert queue.tier(TIER).take(mover, {'stage_gib': 1}) is True
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 0
     return consumer, mover
 
 
@@ -127,9 +128,9 @@ def test_a_rate_only_export_does_not_block_a_dead_owners_retirement(fleet) -> No
     assert any(entry.get("complete") is True for entry in own), own
     assert not any((stage / name).exists() for name in NAMES)
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
     # The export's claim is untouched: it is still the worker's.
-    assert queue.item_path(pool.CLAIMED, export).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, export).exists()
 
 
 def test_a_rate_only_export_does_not_block_an_orphan_under_pressure(fleet) -> None:
@@ -148,8 +149,8 @@ def test_a_rate_only_export_does_not_block_an_orphan_under_pressure(fleet) -> No
     assert [entry.get("reason") for entry in own
             if entry.get("complete") is True] == ["orphan-sweep"], own
     assert not any((stage / name).exists() for name in NAMES)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 1
+    assert queue.tier(TIER).holdings(mover) == {}
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 1
 
 
 @pytest.mark.parametrize("resources", [
@@ -176,7 +177,7 @@ def test_a_copy_that_seals_no_range_still_taints(fleet, resources) -> None:
                for error in errors), errors
     assert all((stage / name).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover).exists()
+        queue.root / pool.record_store.RESIDENCY, consumer, mover).exists()
 
 
 @pytest.mark.parametrize("resources", [
@@ -190,7 +191,7 @@ def test_the_claim_census_reads_a_rate_only_claim_as_no_copy(
     queue, _stage, cas = fleet
     _claim_export(queue, cas, resources=resources)
 
-    paths, tainted = stage_release._claimed_paths(queue, TIER)
+    paths, tainted = staged_path.claimed_paths(queue, TIER)
 
     assert tainted == []
     assert paths == set()

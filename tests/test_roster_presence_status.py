@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import fleet_roster  # noqa: E402
+from prismabuild import fleet_roster  # noqa: E402
 import supervise  # noqa: E402
 
 from test_the_coordinator_proves_the_fleet_before_a_barrier import (
@@ -49,6 +49,32 @@ def test_absent_status_is_active():
     assert fleet_roster.box_status("boxa", {"loops": 1}) == ("active", {})
     assert fleet_roster.box_status("boxa", {"loops": 1, "status": "active"}) == ("active", {})
     assert fleet_roster.box_status("boxa", "not-a-mapping") == ("active", {})
+
+
+@pytest.mark.parametrize("boxes, host, expected", [
+    ({"old": {"_alias": "renamed", "loops": 3}}, "renamed",
+     {"_alias": "renamed", "loops": 3}),
+    ({"old": {"_alias": "renamed"}, "renamed": {"loops": 2}}, "renamed",
+     {"loops": 2}),
+    ({"renamed": 7, "old": {"_alias": "renamed"}}, "renamed",
+     {"_alias": "renamed"}),
+    ({"old": {"_alias": "renamed"}}, "missing", None),
+])
+def test_host_entry_preserves_canonical_precedence(boxes, host, expected):
+    assert fleet_roster.entry_for_host(boxes, host) == expected
+
+
+def test_ambiguous_aliases_refuse_without_a_canonical_entry():
+    boxes = {"one": {"_alias": "renamed"}, "two": {"_alias": "renamed"}}
+    with pytest.raises(fleet_roster.RosterPresenceError, match="ambiguous.*renamed"):
+        fleet_roster.entry_for_host(boxes, "renamed")
+
+
+def test_recorder_evidence_cannot_use_canonical_precedence_to_hide_a_collision():
+    boxes = {"old": {"_alias": "renamed"}, "renamed": {"loops": 2}}
+    assert fleet_roster.entry_for_host(boxes, "renamed") == {"loops": 2}
+    with pytest.raises(ValueError, match="ambiguous.*renamed"):
+        fleet_roster.recorder_hostnames(boxes, "renamed")
 
 
 def test_absent_states_carry_their_provenance():
@@ -96,7 +122,7 @@ def test_preflight_passes_when_only_an_absent_box_is_silent(
     post(fleet, "sparky", SHA)
     post(fleet, "sparklina", SHA)
 
-    publish_runtime._require_attested_fleet(SHA)
+    publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
     out = capsys.readouterr().out
     assert "skipping absent box" in out and "wsl-gpu" in out
@@ -109,7 +135,7 @@ def test_preflight_names_the_skipped_box(fleet, monkeypatch, capsys):
     })
     post(fleet, "sparky", SHA)
 
-    publish_runtime._require_attested_fleet(SHA)
+    publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
     out = capsys.readouterr().out
     assert "wsl-gpu" in out and "host down, ssh refused" in out
@@ -122,7 +148,7 @@ def test_preflight_still_names_a_silent_active_box(fleet, monkeypatch):
     })
     post(fleet, "wsl-gpu", SHA)
     with pytest.raises(SystemExit, match="has posted no attestation"):
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 def test_preflight_refuses_a_malformed_presence(fleet, monkeypatch):
@@ -132,7 +158,7 @@ def test_preflight_refuses_a_malformed_presence(fleet, monkeypatch):
     })
     post(fleet, "sparky", SHA)
     with pytest.raises(SystemExit, match="cannot establish the fleet roster"):
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 def test_preflight_refuses_an_unknown_status(fleet, monkeypatch):
@@ -142,7 +168,7 @@ def test_preflight_refuses_an_unknown_status(fleet, monkeypatch):
     })
     post(fleet, "sparky", SHA)
     with pytest.raises(SystemExit, match="unknown status"):
-        publish_runtime._require_attested_fleet(SHA)
+        publish_runtime._require_attested_fleet(SHA, publish_runtime.fleet_roster.Roster.at(publish_runtime.CHECKOUT))
 
 
 # -- the epoch roster excludes absent boxes ----------------------------------
@@ -235,7 +261,7 @@ def _supervisor_config(tmp_path, monkeypatch, boxes, host="boxa"):
 
 def test_supervisor_starts_an_active_box(tmp_path, monkeypatch):
     _supervisor_config(tmp_path, monkeypatch, {"boxa": {"loops": 2, "args": []}})
-    assert supervise._config("boxa") == {"loops": 2, "args": []}
+    assert supervise._config("boxa").entry == {"loops": 2, "args": []}
     assert supervise.box_presence("boxa") == ("active", {})
 
 

@@ -9,7 +9,7 @@ lock the movers and egresses of the stage root wait for (~1.7 ms a name
 at the campaign's range size, action 1e0a9b624335).
 
 The hint: the range directory is listed once per
-``_trusted_directory_stamp`` -- the stamp taken before the scan, the
+``directory_before`` -- the stamp taken before the scan, the
 listing remembered only while a fresh directory version still equals it
 -- and every name revalidates with one directory version, re-listing only
 a directory that moved.  A version the directory's own clock tick
@@ -46,10 +46,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import test_stale_material_done_owner_retires as stale  # noqa: E402
+from kept_read_clock import after_paths
+from record_store_trust import ObservedTrust
+from prismabuild import kept_reads
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 #: The campaign's range size, the shape the issue prices (#1028).
 NAMES = 2048
@@ -97,7 +101,7 @@ def _dead_owner(fleet, destinations: list[Path]) -> tuple[str, str]:
         entries[key] = {"stage_path": str(path), "bytes": SIZE,
                         "sha256": OLD_DIGEST, "file_id": _identity(path)}
     stale._write_sidecar(queue, stage, consumer, mover, entries)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -129,7 +133,7 @@ def _terminal_pair(queue: pool.PoolQueue, stage: Path, destination: Path,
     base._publish(queue, mover, max_attempts=1)
     queue.finish(mover, status="executed", detail={"returncode": 0})
     key = residency_map.residency_map_key(str(destination), 0)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": base.TIER, "stage_root": str(stage),
@@ -173,13 +177,13 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
         "params": {"command": ["python3", "stage_move.py",
                                "--range-start-bytes", str(start),
                                "--range-end-bytes", str(end)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": digest, "bytes": len(blob)}],
     }
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     claimed_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "action_key": key,
@@ -243,7 +247,7 @@ def _replace(publisher, destination: Path, copier: str):
                              destination, temp, NEW_DIGEST)
 
 
-def _adoption_world(fleet, count: int):
+def _adoption_world(fleet, count: int, monkeypatch, *, trust=None):
     """A campaign range of already-correct names nothing vouches for.
 
     The #1081 shape -- a promotion killed before it filed its records
@@ -252,7 +256,7 @@ def _adoption_world(fleet, count: int):
     three censuses and its lock per name and writes nothing, so the range
     directory holds still across the whole decision unless the test moves
     it.  Two coarse-clock ticks after the last write, so
-    :func:`_trusted_directory_stamp` will trust the directory at the
+    :func:`directory_before` will trust the directory at the
     first decision (a version in its own change tick is refused).
     """
 
@@ -263,16 +267,21 @@ def _adoption_world(fleet, count: int):
         path.write_bytes(NEW)
     # A quiet pool's claimed/: present and empty, so the claim census
     # reads an empty listing rather than failing one closed.
-    queue.dir(pool.CLAIMED).mkdir(parents=True, exist_ok=True)
-    time.sleep(2 * time.clock_getres(5))
+    queue.records.dir(pool.record_store.CLAIMED).mkdir(parents=True, exist_ok=True)
+    after_paths(
+        monkeypatch,
+        *destinations,
+        destinations[0].parent,
+        queue.records.dir(pool.record_store.CLAIMED),
+    )
     successor, copier = base._key(), base._key()
-    publisher = base._publisher(fleet, copier, successor)
+    publisher = base._publisher(fleet, copier, successor, trust=trust)
     return publisher, destinations
 
 
 def test_a_2048_name_range_decision_lists_the_range_directory_once(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
-    publisher, destinations = _adoption_world(fleet, NAMES)
+    publisher, destinations = _adoption_world(fleet, NAMES, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     holds = _count_lock_holds(monkeypatch, publisher)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
@@ -302,7 +311,7 @@ def test_a_partial_that_appears_mid_range_is_seen_by_the_next_name(
     """The hint is revalidated: the partial moves the directory, and the
     very next name of the same range re-lists and defers to it."""
 
-    publisher, destinations = _adoption_world(fleet, 3)
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None
 
@@ -326,7 +335,7 @@ def test_a_claim_that_appears_mid_range_is_seen_by_the_next_name(
     re-reads it and defers, and the name after that is free again."""
 
     queue, stage, cas = fleet
-    publisher, destinations = _adoption_world(fleet, 3)
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None
 
@@ -413,7 +422,7 @@ def test_a_pin_gaining_a_ref_between_names_is_read_by_the_second_name(
     assert second["ref_id"] != first["ref_id"]
     parsed_refs.clear()  # Observe the publisher, not acquire's validation.
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, pinned, copier)
     assert "every owner has ended, but it is live-pinned by" in str(refused.value)
     assert {first["ref_id"], second["ref_id"]} in parsed_refs, (
@@ -427,7 +436,7 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
         fleet, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: F811
     """Where the fence cannot hold, every name reads fresh -- #1208's rule.
 
-    ``_current_directory_version`` answers ``None`` for a filesystem whose
+    ``directory_current`` answers ``None`` for a filesystem whose
     directory times are not this kernel's clock (NFS); the hint must then
     be re-read for every name, never reused.  Counted: two names, two
     listings of the range directory; behavioral: a partial and a claim
@@ -435,9 +444,9 @@ def test_a_disabled_fence_reads_fresh_per_name_and_never_the_hint(
     """
 
     queue, stage, cas = fleet
-    publisher, destinations = _adoption_world(fleet, 3)
-    monkeypatch.setattr(stage_move, "_current_directory_version",
-                        lambda path: None)
+    trust = ObservedTrust()
+    trust.directory_available = False
+    publisher, destinations = _adoption_world(fleet, 3, monkeypatch, trust=trust)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     entry = {"bytes": SIZE, "sha256": NEW_DIGEST}
     assert publisher.try_adopt(entry, destinations[0]) is not None
@@ -468,18 +477,18 @@ def test_a_same_tick_partial_is_never_hidden_by_the_hint(
 
     With the range directory's ``lstat`` and the coarse clock pinned into
     one tick -- the fixture writes and the stamping read land together --
-    :func:`_trusted_directory_stamp` refuses every version, the hint is
+    :func:`directory_before` refuses every version, the hint is
     never stored, and every name of the range lists fresh.  Two names,
     two listings; a partial added after the first is still seen, because
     nothing stood between it and the second listing.
     """
 
-    publisher, destinations = _adoption_world(fleet, 2)
+    publisher, destinations = _adoption_world(fleet, 2, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     target = os.fspath(destinations[0].parent)
     real_lstat = os.lstat
     real_clock = time.clock_gettime_ns
-    tick = real_clock(stage_move._COARSE_REALTIME)
+    tick = real_clock(kept_reads._COARSE_REALTIME)
 
     class Pinned:
         def __init__(self, info):
@@ -496,7 +505,7 @@ def test_a_same_tick_partial_is_never_hidden_by_the_hint(
         return info
 
     def clock(clock_id):
-        return (tick if clock_id == stage_move._COARSE_REALTIME
+        return (tick if clock_id == kept_reads._COARSE_REALTIME
                 else real_clock(clock_id))
 
     monkeypatch.setattr(os, "lstat", lstat)
@@ -522,7 +531,7 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
     pre-scan stamp: the next name lists again rather than reusing a scan
     the directory moved."""
 
-    publisher, destinations = _adoption_world(fleet, 2)
+    publisher, destinations = _adoption_world(fleet, 2, monkeypatch)
     counted = _count_range_listings(monkeypatch, destinations[0].parent)
     target = os.fspath(destinations[0].parent)
     scans: list[str] = []
@@ -536,7 +545,31 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
         if isinstance(path, (str, os.PathLike)) and os.fspath(path) == target:
             scans.append(os.fspath(path))
             if len(scans) == 1:
+                directory = destinations[0].parent
+                previous = directory.stat()
                 partial.write_bytes(b"half a copy")
+                published = directory.stat()
+                version = lambda info: (info.st_mtime_ns, info.st_ctime_ns)
+                if version(published) == version(previous):
+                    # ZFS can publish two namespace changes in one clock tick.
+                    # Keep mtime fixed and wait for a real ctime change.
+                    deadline = time.monotonic() + 1
+                    while (version(directory.stat()) == version(previous)
+                           and time.monotonic() < deadline):
+                        time.sleep(0.001)
+                        os.utime(directory, ns=(published.st_atime_ns,
+                                                published.st_mtime_ns))
+                    changed = directory.stat()
+                    assert version(changed) != version(previous)
+                    assert (changed.st_dev, changed.st_ino, changed.st_mode,
+                            changed.st_nlink, changed.st_size, changed.st_mtime_ns) == (
+                                published.st_dev, published.st_ino, published.st_mode,
+                                published.st_nlink, published.st_size, published.st_mtime_ns)
+                before = previous
+                after = os.stat(target)
+                os.utime(target, ns=(after.st_atime_ns,
+                                    max(after.st_mtime_ns, before.st_mtime_ns + 1)))
+                assert os.stat(target).st_mtime_ns != before.st_mtime_ns
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", scan)
@@ -545,7 +578,7 @@ def test_a_partial_created_during_a_scan_is_reported_and_not_kept(
         "the raced partial names another entry; this name is free")
     # A scan the directory moved during is never kept under the pre-scan
     # stamp -- nothing sits between the next name and a fresh listing.
-    remembered = getattr(publisher, "_range_partials", {})
+    remembered = publisher._partial_names._slots
     assert remembered.get(os.path.normpath(target)) is None, (
         "the raced listing must not be remembered")
     assert publisher.try_adopt(entry, destinations[1]) is None, (
@@ -602,17 +635,17 @@ def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
     written, digest, _identity_ = _replace(publisher, free, copier)
     assert (written, digest) == (SIZE, NEW_DIGEST)
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, pinned, copier)
     assert "every owner has ended, but it is live-pinned by" in \
         str(refused.value), str(refused.value)
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, destinations[2], copier)
     assert "every owner has ended, but another live mover claim covers it" \
         in str(refused.value), str(refused.value)
 
-    with pytest.raises(stage_move._PublicationRefused) as refused:
+    with pytest.raises(staged_path.PublicationRefused) as refused:
         _replace(publisher, in_flight, copier)
     assert "every owner has ended, but a copy is in flight" in \
         str(refused.value), str(refused.value)
@@ -627,5 +660,5 @@ def test_a_mixed_range_decides_each_name_exactly_as_per_name_censuses_did(
     assert len(publisher.invalidated) == 2
     live, tainted = reader_lease.live_for(
         queue, {os.path.normpath(str(pinned))},
-        residency_root=queue.residency_fragment_root())
+        residency_root=queue.records.residency_fragment_root())
     assert live and not tainted, (live, tainted)

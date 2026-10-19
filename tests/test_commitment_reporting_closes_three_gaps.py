@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     TIER, _hexkey, _tier_record)
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
@@ -61,11 +61,11 @@ def _cycle(queue: pool.PoolQueue, discovered: dict) -> list[dict[str, object]]:
 def test_the_commitment_directory_is_made_once_not_per_call(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     made = _count_mkdirs(monkeypatch)
 
     queue.file_tier_commitment({"tier_id": TIER, "waiting": []})
-    assert made == [queue.tier_commitment_path(TIER).parent]
+    assert made == [queue.records.tier_commitment_path(TIER).parent]
 
     made.clear()
     for _ in range(3):
@@ -74,8 +74,8 @@ def test_the_commitment_directory_is_made_once_not_per_call(
     assert queue.tier_commitment(TIER)["waiting"] == []
 
     # A directory an operator deletes comes back on the next write.
-    queue.tier_commitment_path(TIER).unlink()
-    queue.tier_commitment_path(TIER).parent.rmdir()
+    queue.records.tier_commitment_path(TIER).unlink()
+    queue.records.tier_commitment_path(TIER).parent.rmdir()
     queue.file_tier_commitment({"tier_id": TIER, "waiting": []})
     assert queue.tier_commitment(TIER) is not None
 
@@ -83,7 +83,7 @@ def test_the_commitment_directory_is_made_once_not_per_call(
 def test_announcing_a_tier_makes_no_directory_per_call(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     made = _count_mkdirs(monkeypatch)
 
     for _ in range(3):
@@ -99,7 +99,7 @@ def test_announcing_a_tier_makes_no_directory_per_call(
 def test_a_retired_tier_marks_its_commitment_record_in_the_same_cycle(
         tmp_path: Path) -> None:
     queue, stage = _fixture_queue(tmp_path, 20)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     _reader(queue, stage, landed=(0,))
     _cycle(queue, {TIER: _tier_record(stage, gib=20)})
     live = queue.tier_commitment(TIER)
@@ -144,7 +144,7 @@ def test_the_tier_cycle_line_carries_each_tiers_commitment_totals(
 
 def test_a_waiting_newcomer_is_counted_on_the_line(tmp_path: Path) -> None:
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(STATIC, {"stage_gib": 10})
+    assert queue.tier(TIER).take(STATIC, {'stage_gib': 10})
     _reader(queue, stage)
     newcomer = Consumer(queue, stage, "n")
     tier_loop._CYCLE_COMMITMENTS.clear()

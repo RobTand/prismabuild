@@ -28,6 +28,9 @@ next to a legacy flat consumer, and drive the actual
 """
 from __future__ import annotations
 
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+
 from pathlib import Path
 import shutil
 import sys
@@ -38,10 +41,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, produced_output as po, residency_map  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 import test_produced_output_lifecycle_r2 as produced  # noqa: E402
+from prismabuild import staged_path
 
 TIER = produced.STAGE_TIER
 KIND = produced.STAGE_BARE
@@ -59,7 +63,7 @@ def _staged(stage: Path, name: str, size: int = LEGACY_BYTES) -> Path:
 
 
 def _legacy_fragment(queue: pool.PoolQueue, stage: Path, staged: Path) -> None:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": LEGACY_CONSUMER,
         "mover_action_key": LEGACY_MOVER,
@@ -72,7 +76,7 @@ def _legacy_fragment(queue: pool.PoolQueue, stage: Path, staged: Path) -> None:
 
 
 def _register(queue: pool.PoolQueue, stage: Path) -> None:
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
 
 
@@ -92,14 +96,14 @@ def legacy_only(tmp_path: Path):
     """One legacy flat consumer, its staged file and its held token."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 2})
+    queue.records.ensure_layout()
+    queue.tier(TIER).mint({KIND: 2})
     stage = tmp_path / "stage"
     stage.mkdir()
     _register(queue, stage)
     legacy = _staged(stage, "legacy.bin")
     _legacy_fragment(queue, stage, legacy)
-    assert queue.tier_ledger(TIER).acquire(LEGACY_MOVER, {KIND: 1}) is True
+    assert queue.tier(TIER).take(LEGACY_MOVER, {KIND: 1}) is True
     return SimpleNamespace(queue=queue, stage=stage, legacy_path=legacy)
 
 
@@ -119,8 +123,8 @@ def world(tmp_path: Path):
     template = produced._template(str(origin))
     bound = produced._bind_live(queue, tmp_path, template)
     instance = bound["instance"]
-    assert po.admit_instance(queue, instance, template)["ok"] is True
-    assert po.require_prewrite(
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
+    assert bl.BatchLedger.reserve(
         queue, instance, template, batch_id="w0", tier=TIER,
         class_bytes={"payload": 64, "checkpoint": 0, "temp": 0},
         paths=[str(origin / "w0.pt")])["ok"] is True
@@ -128,7 +132,7 @@ def world(tmp_path: Path):
     batch = po.commit_batch(queue, instance, template, [desc], batch_id="w0",
                             tier=TIER, mover_key=PRODUCED_MOVER)
     assert batch["ok"] is True, batch
-    out_base = po.output_fragment_root(queue.root / pool.RESIDENCY)
+    out_base = bl.output_fragment_root(queue.root / pool.record_store.RESIDENCY)
     moved = produced._move(queue, batch, origin, stage, out_base, tmp_path, "w0")
     assert moved["complete"] is True, moved
     namespace = str(batch["batch_namespace"])
@@ -146,8 +150,8 @@ def world(tmp_path: Path):
     (leases / "not-a-fragment.json").write_text("{}\n")
     # Both movers are resident: their tier tokens are what makes their
     # fragments attribution in the sweep's ``wanted`` set.
-    assert queue.tier_ledger(TIER).acquire(LEGACY_MOVER, {KIND: 1}) is True
-    assert queue.tier_ledger(TIER).acquire(PRODUCED_MOVER, {KIND: 1}) is True
+    assert queue.tier(TIER).take(LEGACY_MOVER, {KIND: 1}) is True
+    assert queue.tier(TIER).take(PRODUCED_MOVER, {KIND: 1}) is True
     return SimpleNamespace(
         queue=queue, stage=stage, origin=origin, out_base=out_base,
         legacy_path=legacy, produced_path=produced_path, namespace=namespace,
@@ -161,8 +165,8 @@ def world(tmp_path: Path):
 def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
     """The real cycle boundary: no raise, nothing deleted, nothing unknown."""
 
-    legacy_held = world.queue.tier_ledger(TIER).holder_tokens(LEGACY_MOVER)
-    produced_held = world.queue.tier_ledger(TIER).holder_tokens(PRODUCED_MOVER)
+    legacy_held = world.queue.tier(TIER).holdings(LEGACY_MOVER)
+    produced_held = world.queue.tier(TIER).holdings(PRODUCED_MOVER)
     assert legacy_held and produced_held
 
     events = _sweep(world.queue, world.stage)
@@ -179,21 +183,19 @@ def test_a_tier_sweep_over_produced_namespaces_does_not_crash(world) -> None:
         PRODUCED_MOVER: stage_release.HOLDER_UNRESOLVED_EVENT}, events
     assert world.legacy_path.exists()
     assert world.produced_path.exists()
-    assert world.queue.tier_ledger(TIER).holder_tokens(
-        LEGACY_MOVER) == legacy_held
-    assert world.queue.tier_ledger(TIER).holder_tokens(
-        PRODUCED_MOVER) == produced_held
+    assert world.queue.tier(TIER).holdings(LEGACY_MOVER) == legacy_held
+    assert world.queue.tier(TIER).holdings(PRODUCED_MOVER) == produced_held
 
 
 def test_both_fragment_layouts_are_attributed(world) -> None:
     """The attribution census reads the produced namespace, not just skips it."""
 
-    both = stage_release.attributed_stage_paths(
+    both = staged_path.attributed_stage_paths(
         world.queue, wanted={LEGACY_MOVER, PRODUCED_MOVER})
     assert both == {str(world.legacy_path), str(world.produced_path)}
-    assert stage_release.attributed_stage_paths(
+    assert staged_path.attributed_stage_paths(
         world.queue, wanted={LEGACY_MOVER}) == {str(world.legacy_path)}
-    assert stage_release.attributed_stage_paths(
+    assert staged_path.attributed_stage_paths(
         world.queue, wanted={PRODUCED_MOVER}) == {str(world.produced_path)}
 
 
@@ -213,8 +215,8 @@ def test_a_produced_fragment_protects_a_shared_stage_path(world) -> None:
                 "stage_path": str(world.legacy_path), "bytes": LEGACY_BYTES,
                 "offset": 0, "sha256": "4" * 64}}})
 
-    owners, taint = stage_release._fragment_owners(
-        world.queue.root / pool.RESIDENCY, {str(world.legacy_path)},
+    owners, taint = staged_path.fragment_owners(
+        world.queue.root / pool.record_store.RESIDENCY, {str(world.legacy_path)},
         except_consumer=LEGACY_CONSUMER, except_mover=LEGACY_MOVER)
 
     assert taint == []
@@ -226,15 +228,15 @@ def test_the_walked_root_is_the_exclusion_namespace(world) -> None:
 
     # A base-store walk: the nested produced fragment is another namespace
     # domain, so naming its key as the exception must not drop its proof.
-    owners, taint = stage_release._fragment_owners(
-        world.queue.root / pool.RESIDENCY, {str(world.produced_path)},
+    owners, taint = staged_path.fragment_owners(
+        world.queue.root / pool.record_store.RESIDENCY, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
     assert owners == {
         str(world.produced_path): {(world.namespace, PRODUCED_MOVER)}}
 
     # The produced store's own child is that mover's self, and is excluded.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
@@ -246,7 +248,7 @@ def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
 
     co_consumer = "7" * 64
     co_mover = "8" * 64
-    residency_map.write_fragment(world.queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(world.queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": co_consumer, "mover_action_key": co_mover,
         "tier_id": TIER, "stage_root": str(world.stage),
@@ -258,7 +260,7 @@ def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
 
     # Excluding the produced mover's own key leaves the legacy co-owner of
     # the same physical staged path fully protected.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert taint == []
@@ -266,7 +268,7 @@ def test_a_produced_root_walk_sees_a_legacy_coowner(world) -> None:
 
     # And naming the legacy key as the exception from the produced root does
     # not drop it either: it is not filed in the walked root's namespace.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=co_consumer, except_mover=co_mover)
     assert taint == []
@@ -299,7 +301,7 @@ def test_an_unknown_residency_directory_retains(world) -> None:
     """A directory the census cannot classify is unknown ownership."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    unknown = world.queue.root / pool.RESIDENCY / "not-a-namespace"
+    unknown = world.queue.root / pool.record_store.RESIDENCY / "not-a-namespace"
     unknown.mkdir()
     (unknown / "record.json").write_text("{}\n")
 
@@ -320,7 +322,7 @@ def test_a_symlinked_produced_container_taints_instead_of_recursing(world) -> No
     """A link back into the store is unknown ownership, never a walk."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
+    (world.out_base / oc.OUTPUT_FRAGMENTS_SUBDIR).symlink_to(
         "..", target_is_directory=True)
 
     events = _sweep(world.queue, world.stage)
@@ -338,7 +340,7 @@ def test_a_nested_produced_container_is_unknown(world) -> None:
     """One produced container, at the base store; a second is not a layout."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    (world.out_base / po.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
+    (world.out_base / oc.OUTPUT_FRAGMENTS_SUBDIR).mkdir()
 
     events = _sweep(world.queue, world.stage)
 
@@ -374,7 +376,7 @@ def test_a_composed_map_beside_the_fragments_is_not_a_taint(world) -> None:
     """The map a reader reads sits beside its namespace; it is not ownership."""
 
     orphan = _staged(world.stage, "orphan.bin", 128)
-    root = world.queue.root / pool.RESIDENCY
+    root = world.queue.root / pool.record_store.RESIDENCY
     composed = residency_map.map_path(root, LEGACY_CONSUMER)
     residency_map.write_map(composed, residency_map.compose(
         residency_map.read_fragments(root, LEGACY_CONSUMER)))
@@ -403,7 +405,7 @@ def test_a_misfiled_mover_cannot_vanish_as_self(world) -> None:
     # The valid record still vouches, and the mismatched duplicate is
     # reported rather than dropped; naming the mover as the exception must
     # not make the misfiled record vanish.
-    owners, taint = stage_release._fragment_owners(
+    owners, taint = staged_path.fragment_owners(
         world.out_base, {str(world.produced_path)},
         except_consumer=world.namespace, except_mover=PRODUCED_MOVER)
     assert any("another mover" in item for item in taint), taint
@@ -425,7 +427,7 @@ def test_a_corrupt_legacy_fragment_is_not_read_as_unowned(legacy_only) -> None:
     """read_fragments' reader tolerance must not become a GC deletion."""
 
     orphan = _staged(legacy_only.stage, "orphan.bin", 128)
-    fragment = (legacy_only.queue.root / pool.RESIDENCY / LEGACY_CONSUMER
+    fragment = (legacy_only.queue.root / pool.record_store.RESIDENCY / LEGACY_CONSUMER
                 / f"{LEGACY_MOVER}.json")
     fragment.write_text('{"schema": "prismaquant.prismabuild.residency_map')
 

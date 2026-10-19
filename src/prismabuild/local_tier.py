@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from . import pool, resident_sets
+from prismabuild import tier_holdings
 
 GIB = 1 << 30
 KIND = "local_gib"
@@ -60,7 +61,7 @@ def mint_local_tier_capacity(queue, host, spec):
         held = occupied_bytes(root)
         sampled = os.statvfs(root)
         wanted = capacity_gib(spec, sampled, held_bytes=held)
-        result = queue.mint_tier_capacity(local_resident_tier_id(host), {KIND: wanted})
+        result = queue.tier(local_resident_tier_id(host)).mint({KIND: wanted})
         result.update({"root": str(root), "available_bytes": sampled.f_bavail * sampled.f_frsize,
                        "occupied_bytes": held, "wanted_gib": wanted, "host": host})
         resident_sets.write_record(queue.root / "resident-capacity" / (host + ".json"), result)
@@ -73,18 +74,18 @@ def reserve(queue, set_id, hosts, size):
     count = math.ceil(size / GIB)
     try:
         for host in hosts:
-            ledger = queue.tier_ledger(local_resident_tier_id(host))
-            with queue.tier_mint_lock(local_resident_tier_id(host)):
-                prior = pool.held_names_visible(ledger, set_id)
+            ledger = queue.tier(local_resident_tier_id(host))
+            with queue.tier(local_resident_tier_id(host)).mutation_lock():
+                prior = ledger.holder_state(set_id)
                 if prior:
                     if len(prior) != count or any(not name.startswith(KIND + "-") for name in prior):
                         raise ValueError(f"local capacity reservation disagrees for {host}")
                     continue
-                if not ledger.acquire(set_id, {KIND: count}):
+                if not ledger.take(set_id, {KIND: count}):
                     raise ValueError(f"local capacity unavailable on {host}")
                 acquired.append(ledger)
     except BaseException:
         for ledger in reversed(acquired):
-            ledger.release(set_id)
+            ledger.release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED)
         raise
     return acquired

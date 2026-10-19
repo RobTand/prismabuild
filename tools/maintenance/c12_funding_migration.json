@@ -1,0 +1,281 @@
+{
+  "methods": {
+    "validate_funding": "validate_window",
+    "read_funding": "read_window",
+    "read_funding_evidence": "window_evidence",
+    "write_funding": "write_window",
+    "_write_funding_record_locked": "_write_locked",
+    "advance_funding_state": "advance_window",
+    "_advance_funding_state_locked": "advance_locked",
+    "funded_cover": "cover_window",
+    "reserve_fence": "reserve_window",
+    "_reserve_fence_locked": "_reserve_window_locked",
+    "transfer_fence": "_transfer_window",
+    "validate_output_funding": "validate_output",
+    "read_output_funding": "read_output",
+    "output_funding_file_state": "output_evidence",
+    "write_output_funding": "write_output",
+    "_refuse_retired_output_funding": "_refuse_retired_output_funding",
+    "retire_terminal_output_funding": "retire_output",
+    "_output_funding_terminal": "_output_funding_terminal",
+    "_output_live_owner": "_output_live_owner",
+    "_output_live_mover": "_output_live_mover",
+    "_output_owner_authority": "_output_owner_authority",
+    "_output_batch_authority": "_output_batch_authority",
+    "_output_precommit_authority": "_output_precommit_authority",
+    "stage_output_intent": "stage_output",
+    "fund_output_batch": "fund_output",
+    "_fund_output_batch_locked": "_fund_output_batch_locked",
+    "output_funded_cover": "output_funded_cover",
+    "drive_output_funding": "drive_output",
+    "release_output_funding": "release_output",
+    "_release_never_started_funding_locked": "_release_never_started_funding_locked",
+    "_output_funding_nonexecution_locked": "_output_funding_nonexecution_locked",
+    "output_census_for_owner": "output_census",
+    "_output_spoken_token_names": "_output_spoken_token_names",
+    "_output_outstanding_window_tokens": "_output_outstanding_window_tokens",
+    "output_keep_names_for_owner": "output_keep_names_for_owner",
+    "_window_fence_state": "pending_window"
+  },
+  "constants": [
+    "TIER_FUNDING_SCHEMA_V1",
+    "TIER_FUNDING_OUTPUT_SCHEMA_V1",
+    "TIER_FUNDING_STATES",
+    "_FUNDING_TRANSITIONS",
+    "_FUNDING_BINDING_FIELDS",
+    "_FUNDING_OUTPUT_BINDING_FIELDS",
+    "_FUNDING_KIND_ROLES"
+  ],
+  "base": "dac2006656264b4bd55e4e3837331205a9740fd3",
+  "prelaunch": {
+    "_leg_mover": "_chunk_leg_mover",
+    "_leg_size": "_chunk_leg_size",
+    "_funding_matches": "_chunk_funding_matches",
+    "_record_tokens": "_chunk_record_tokens",
+    "_birth_record": "_chunk_birth_record",
+    "_row_is_ready": "_chunk_row_is_ready",
+    "_rotate_record": "_chunk_rotate_record",
+    "_advance_record": "_chunk_advance_record",
+    "_fresh_binding": "_chunk_fresh_binding",
+    "_rebind_retained": "_chunk_rebind_retained",
+    "publish_chunk": "bind_chunk",
+    "_publish_chunk": "_bind_chunk_locked",
+    "_republished": "_chunk_republished"
+  },
+  "tier": {
+    "_settle_live_row": "settle_live_row",
+    "_settle_terminal_is_stale": "settle_terminal_is_stale",
+    "_settle_terminal_fence": "settle_terminal_fence",
+    "_stranded_producer_dead": "stranded_producer_dead",
+    "_stranded_prewrite_paths_absent": "stranded_prewrite_paths_absent",
+    "_reconcile_stranded_output_funding": "reconcile_stranded_output_funding",
+    "_reconcile_stranded_output_funding_locked": "reconcile_stranded_output_funding_locked",
+    "_settle_protected": "settle_windows"
+  },
+  "callers": [
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 442,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 447,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 466,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 469,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 485,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 499,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 505,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 522,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 548,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 573,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 578,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_group_reconcile_1594.py",
+      "line": 598,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_recovery_claim_interval_1637.py",
+      "line": 50,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_recovery_claim_interval_1637.py",
+      "line": 65,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_second_capture_1628.py",
+      "line": 265,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_second_capture_1628.py",
+      "line": 281,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_second_capture_1628.py",
+      "line": 305,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_prelaunch_second_capture_1628.py",
+      "line": 335,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_r3_repro.py",
+      "line": 65,
+      "old": "_settle_terminal_fence",
+      "new": "settle_terminal_fence"
+    },
+    {
+      "path": "tests/test_r4_recovery.py",
+      "line": 135,
+      "old": "_settle_terminal_fence",
+      "new": "settle_terminal_fence"
+    },
+    {
+      "path": "tests/test_r4_recovery.py",
+      "line": 150,
+      "old": "_settle_terminal_fence",
+      "new": "settle_terminal_fence"
+    },
+    {
+      "path": "tests/test_r4_recovery.py",
+      "line": 175,
+      "old": "_settle_terminal_fence",
+      "new": "settle_terminal_fence"
+    },
+    {
+      "path": "tests/test_r4_recovery.py",
+      "line": 106,
+      "old": "_settle_terminal_fence",
+      "new": "settle_terminal_fence"
+    },
+    {
+      "path": "tests/test_record_store_liveness_controls.py",
+      "line": 49,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tests/test_settle_consumed_pin.py",
+      "line": 138,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tests/test_settle_consumed_pin.py",
+      "line": 228,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tests/test_settle_consumed_pin.py",
+      "line": 240,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tests/test_stage_stranded_funding_rolls_back_1555.py",
+      "line": 174,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tests/test_window_progress_protection.py",
+      "line": 848,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tools/fleet/prelaunch_tier.py",
+      "line": 480,
+      "old": "publish_chunk",
+      "new": "bind_chunk"
+    },
+    {
+      "path": "tools/fleet/tier_loop.py",
+      "line": 1812,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tools/fleet/tier_loop.py",
+      "line": 1823,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tools/fleet/tier_loop.py",
+      "line": 8967,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    },
+    {
+      "path": "tools/fleet/tier_loop.py",
+      "line": 8978,
+      "old": "_settle_protected",
+      "new": "settle_windows"
+    }
+  ]
+}
