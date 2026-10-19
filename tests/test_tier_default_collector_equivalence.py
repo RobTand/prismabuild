@@ -98,7 +98,7 @@ def test_commit_default_matches_original_effect_and_read_order(
         source, target = ledger.held_dir / handle, ledger.held_dir / OWNER
         target.mkdir()
         if case == "collision":
-            token = next(source.iterdir())
+            token = min(source.iterdir())
             (target / token.name).write_bytes(token.read_bytes())
         if case == "missing-source":
             ledger.abandon_acquire(handle)
