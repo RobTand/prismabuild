@@ -838,9 +838,8 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     here = Path(__file__)
     sources = {SHARD_DIGEST_MODULE:
                    Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
-               "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
                "pbtest_collection": Path(pbtest_collection.__file__).read_text()}
-    packed = {}
+    packed = {"pbtest_outcomes": packed_source(here.with_name("pbtest_outcomes.py"))}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
         # Carry its standalone source into any target project/interpreter;
