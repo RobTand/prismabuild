@@ -18035,8 +18035,7 @@ clients. An uncoordinated mixed-version rollout is unsupported; there is no
 new capability tag that makes it safe automatically. For rollback, pause
 submitters and drain all positional-recipe work before restoring old workers
 or binding consumers. New workers can continue to accept S5 clients during
-the forward rollout. This follow-up changes source support only; it does not
-publish a runtime or modify the active release candidate.
+the forward rollout.
 
 Core's attested `digest_primitives.py` half owns the default sorted JSON profile used by retained-reader
 diagnostics, resident command output and merge-queue duration hints (#1386, #1547).
