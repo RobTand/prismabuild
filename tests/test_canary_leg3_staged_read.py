@@ -985,3 +985,18 @@ def test_driver_attaches_the_observation_to_the_verify_envelope(
     assert envelope["progress_observation"]["last_accepted"][
         "units_completed"] == 3
     assert envelope["progress_attempt"] == 1
+
+
+def test_leg3_import_preserves_fleet_tool_repository_ancestry():
+    script = """
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+sys.path[:0] = [str(root / "src"), str(root / "tools/fleet")]
+from pbcanary_legs import leg3
+import pbmcp
+assert Path(pbmcp.__file__).parents[2] == root, pbmcp.__file__
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", script, str(REPO)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
