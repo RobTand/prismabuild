@@ -48,7 +48,8 @@ def _default_runner(checkout: Path) -> Runner:
 
 def _generation_commit(generation_dir: Path) -> str | None:
     try:
-        return json.loads((generation_dir / "RUNTIME_VERSION.json").read_text())["commit"]
+        from prismabuild.generation_receipt import GenerationReceipt
+        return GenerationReceipt.capture((generation_dir / "RUNTIME_VERSION.json").read_text()).document["commit"]
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

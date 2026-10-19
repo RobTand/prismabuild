@@ -34,8 +34,9 @@ from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, slurm_lane  # noqa: E402
 
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 from test_slurm_lane import fleet, _runnable_action  # noqa: E402,F401
@@ -81,14 +82,14 @@ def _submits_on_the_first_lookup(
 def _wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str):
     """One wait started before the submission, and the rows it returned."""
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.0)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.0)
     monkeypatch.setenv("FAKE_SBATCH_VERDICT", verdict)
     monkeypatch.setenv(
         "PRISMABUILD_LOCAL_CHECKOUT_ROOT", str(tmp_path / "checkouts"))
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     action = _runnable_action(tmp_path, cas)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = str(action["action_key"])
 
     passes = _submits_on_the_first_lookup(
@@ -120,7 +121,7 @@ def test_a_later_detached_submission_that_failed_is_found_and_filed(
     assert rows[0]["status"] == "failed", rows
     assert rows[0]["transport"] == "slurm"
     assert pbwait.verdict(rows) == 1
-    filed = queue.item_path(pool.FAILED, key)
+    filed = queue.records.item_path(pool.record_store.FAILED, key)
     record = json.loads(filed.read_text(encoding="utf-8"))
     assert record["status"] == "failed"
     assert record["detail"]["slurm"]["state"] == "FAILED"
@@ -148,7 +149,7 @@ def test_a_later_detached_submission_that_worked_is_found_and_filed(
     assert rows[0]["receipt_published"] is True
     assert pbwait.verdict(rows) == 0
     record = json.loads(
-        queue.item_path(pool.DONE, key).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, key).read_text(encoding="utf-8"))
     assert record["status"] == "executed"
     assert record["detail"]["receipt_published"] is True
     assert len(passes) >= 2
@@ -164,9 +165,9 @@ def test_a_key_nothing_ever_records_still_gives_up_as_waiting(
     work is still out there".
     """
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.0)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.0)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     rows = pbwait.wait_for_keys(queue, ["c" * 64], cas=cas, wait_s=0.0)

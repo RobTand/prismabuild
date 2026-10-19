@@ -15,6 +15,7 @@ for this generation's window, and a reference that no longer resolves leaves
 no dangling pointer in an immutable record.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -31,18 +32,12 @@ KEY = uuid.uuid4().hex + uuid.uuid4().hex
 OTHER = uuid.uuid4().hex + uuid.uuid4().hex
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
-    return q
-
-
-def _publish(q: pool.PoolQueue, key: str) -> None:
-    q.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-              worker_script="/w.py")
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def _warm(q: pool.PoolQueue, key: str) -> None:
@@ -56,7 +51,7 @@ def _warm(q: pool.PoolQueue, key: str) -> None:
 
 def test_the_reference_reaches_the_claim_and_resolves_into_the_done_row(
         queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY)
+    ActionRows(queue).publish(KEY)
     _warm(queue, KEY)
 
     claimed = queue.claim()
@@ -66,7 +61,7 @@ def test_the_reference_reaches_the_claim_and_resolves_into_the_done_row(
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done["detail"]["prewarm"]["bytes_warmed"] == 63786036448
     assert done["detail"]["prewarm"]["status"] == "complete"
     assert done["detail"]["status"] == "executed"
@@ -76,15 +71,15 @@ def test_a_receipt_pruned_before_finish_leaves_no_dangling_pointer(
         queue: pool.PoolQueue) -> None:
     """The sidecar is a cache: pruning it before finish must not poison the row."""
 
-    _publish(queue, KEY)
+    ActionRows(queue).publish(KEY)
     _warm(queue, KEY)
     claimed = queue.claim()
     assert claimed is not None
-    (queue.root / pool.PREWARM / f"{KEY}.json").unlink()
+    (queue.root / pool.record_store.PREWARM / f"{KEY}.json").unlink()
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert "prewarm" not in done["detail"]
 
 
@@ -92,7 +87,7 @@ def test_a_same_key_successors_receipt_is_not_this_generations_window(
         queue: pool.PoolQueue) -> None:
     """A receipt rewritten under the same key must fail the digest check."""
 
-    _publish(queue, KEY)
+    ActionRows(queue).publish(KEY)
     _warm(queue, KEY)
     claimed = queue.claim()
     assert claimed is not None
@@ -105,7 +100,7 @@ def test_a_same_key_successors_receipt_is_not_this_generations_window(
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert "prewarm" not in done["detail"]
 
 
@@ -113,24 +108,24 @@ def test_a_legacy_full_copy_claim_still_files_a_complete_row(
         queue: pool.PoolQueue) -> None:
     """Claims filed before the reference resolve by copying, as they always did."""
 
-    _publish(queue, KEY)
+    ActionRows(queue).publish(KEY)
     claimed = queue.claim()
     assert claimed is not None
     # A legacy claim carries the full receipt on the on-disk claimed record
     # itself -- filed before the reference -- so the legacy block goes there,
     # where ``finish`` reads it, not on the in-memory snapshot.
-    path = queue.item_path(pool.CLAIMED, KEY)
-    on_disk = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY)
+    on_disk = pool.record_store.read_document(path)
     assert on_disk is not None
     on_disk["prewarm"] = {
         "host": "dl380g10", "manifest_sha256": "a" * 64,
         "bytes_warmed": 63786036448, "status": "complete",
     }
-    pool._write_json_atomic(path, on_disk)
+    pool.immutable_files.write_json_atomic(path, on_disk)
 
     queue.finish(KEY, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done["detail"]["prewarm"]["bytes_warmed"] == 63786036448
 
 
@@ -143,25 +138,25 @@ def test_an_action_nobody_warmed_carries_no_prewarm_key(
     looked", and those are different facts.
     """
 
-    _publish(queue, OTHER)
+    ActionRows(queue).publish(OTHER)
     claimed = queue.claim()
     assert claimed is not None
     assert "prewarm" not in claimed
 
     queue.finish(OTHER, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, OTHER))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, OTHER))
     assert "prewarm" not in done["detail"]
 
 
 def test_a_workers_own_measurement_outranks_the_loops_prediction(
         queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY)
+    ActionRows(queue).publish(KEY)
     _warm(queue, KEY)
     claimed = queue.claim()
     queue.finish(KEY, status="executed",
                  detail={"status": "executed",
                          "prewarm": {"measured_by": "the worker"}},
                  claim_snapshot=claimed)
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done["detail"]["prewarm"] == {"measured_by": "the worker"}

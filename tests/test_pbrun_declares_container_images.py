@@ -17,13 +17,17 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import container_images as ci  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import movement_actions  # noqa: E402
 
 from test_pbrun_detach import _checkout, _one_json_line, _queue, _run_pbrun  # noqa: E402
 
@@ -32,14 +36,21 @@ ID_B = "sha256:" + "b" * 64
 REF_A = "ghcr.io/example/stage-a@sha256:" + "a" * 64
 REF_B = "ghcr.io/example/stage-b@sha256:" + "b" * 64
 
-CAPABILITY = pb.CONTAINER_IMAGE_TAG
+CAPABILITY = contracts.CONTAINER_IMAGE_TAG
 
 
 def _offer_images(queue, *images):
     queue.announce(
-        host="sparky", tags=["sparky", "gb10", CAPABILITY], has_gpu=True,
+        host="sparky",
+        tags=["sparky", "gb10", CAPABILITY],
+        has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
-        observed_images=list(images),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                list(images),
+                None,
+            ),
+        ),
     )
 
 
@@ -50,12 +61,12 @@ def _sealed_request(tmp_path: Path, key: str) -> dict:
 
 
 def _item(tmp_path: Path, key: str) -> dict:
-    path = tmp_path / "pb-queue" / pool.READY / f"{key}.json"
+    path = tmp_path / "pb-queue" / pool.record_store.READY / f"{key}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _owner(action: dict) -> str:
-    return action["environment"]["variables"][pbrun.CONTAINER_OWNER_ENV]
+    return action["environment"]["variables"][submit_core.CONTAINER_OWNER_ENV]
 
 
 # --------------------------------------------------------------------------
@@ -104,7 +115,7 @@ def test_no_offers_at_all_refuses_an_image_declaration_fail_closed(
                    "--container-image", REF_A)
     assert REF_A in str(exc.value)
     assert "no worker offers on record" in str(exc.value)
-    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    assert not list((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
 
 
 def test_a_mutable_tag_is_an_argument_error(tmp_path, monkeypatch, capsys):
@@ -114,7 +125,7 @@ def test_a_mutable_tag_is_an_argument_error(tmp_path, monkeypatch, capsys):
                    "--container-image", "stage-a:latest")
     assert exc.value.code == 2
     assert "immutable" in capsys.readouterr().err
-    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    assert not list((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
 
 
 def test_the_slurm_lane_cannot_declare_an_image(tmp_path, monkeypatch, capsys):
@@ -128,11 +139,21 @@ def test_the_slurm_lane_cannot_declare_an_image(tmp_path, monkeypatch, capsys):
 
 def test_the_notice_names_the_capability_the_boxes_lack(tmp_path, capsys):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.announce(host="new-box", tags=["gb10", CAPABILITY], has_gpu=False,
-                   capacity={"cpu": 4, "mem_gb": 16}, observed_images=[REF_A])
+    queue.announce(
+        host="new-box",
+        tags=["gb10", CAPABILITY],
+        has_gpu=False,
+        capacity={"cpu": 4, "mem_gb": 16},
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [REF_A],
+                None,
+            ),
+        ),
+    )
     queue.announce(host="old-box", tags=["gb10"], has_gpu=False,
                    capacity={"cpu": 4, "mem_gb": 16})
-    notice = pbrun.container_image_notice(queue, {
+    notice = submit_core.container_image_notice(queue, {
         "tags": ["gb10", CAPABILITY], "needs_gpu": False,
         "resources": {"cpu": 1, "mem_gb": 1}, "container_images": [REF_A],
     })
@@ -143,9 +164,18 @@ def test_the_notice_names_the_capability_the_boxes_lack(tmp_path, capsys):
 def test_capacity_refusal_does_not_blame_a_present_image(tmp_path, monkeypatch):
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
-    queue.announce(host="sparky", tags=["sparky", CAPABILITY], has_gpu=False,
-                   capacity={"cpu": 4, "mem_gb": 16, "spool_gb": 241},
-                   observed_images=[REF_A])
+    queue.announce(
+        host="sparky",
+        tags=["sparky", CAPABILITY],
+        has_gpu=False,
+        capacity={"cpu": 4, "mem_gb": 16, "spool_gb": 241},
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [REF_A],
+                None,
+            ),
+        ),
+    )
     with pytest.raises(SystemExit) as exc:
         _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--tag", "sparky",
                    "--container-image", REF_A, "--env",
@@ -188,7 +218,7 @@ def test_capacity_notice_does_not_invent_an_announcement_time(tmp_path):
                   if record.get("host") == "sparky")
     record["announced_unix"] = "not a stamp"
 
-    notice = pbrun.placement_capacity_notice(
+    notice = submit_core.placement_capacity_notice(
         _OneOfferQueue(record),
         {"tags": ["sparky"], "needs_gpu": False,
          "resources": {"spool_gb": 250}},
@@ -250,10 +280,10 @@ def test_container_owner_includes_images_only_when_declared(tmp_path):
         marker_root=tmp_path / "markers", identity="checkout",
         logical_cwd=".", placement={"required_tags": []},
     )
-    legacy = pbrun.container_owner(**common)
-    empty = pbrun.container_owner(**common, container_images=[])
-    with_a = pbrun.container_owner(**common, container_images=[REF_A])
-    with_b = pbrun.container_owner(**common, container_images=[REF_B])
+    legacy = movement_actions.submission_container_owner(**common)
+    empty = movement_actions.submission_container_owner(**common, container_images=[])
+    with_a = movement_actions.submission_container_owner(**common, container_images=[REF_A])
+    with_b = movement_actions.submission_container_owner(**common, container_images=[REF_B])
     assert legacy == empty
     assert with_a != with_b != legacy
 
@@ -262,7 +292,7 @@ def test_a_submission_without_images_keeps_its_legacy_shape(tmp_path, monkeypatc
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
-    key = json.loads(next((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    key = json.loads(next((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
                      .read_text())["action_key"]
     request = _sealed_request(tmp_path, key)
     assert "container_images" not in request["params"]
@@ -271,7 +301,7 @@ def test_a_submission_without_images_keeps_its_legacy_shape(tmp_path, monkeypatc
     assert CAPABILITY not in item["tags"]
     # Re-running the identical submission answers with the same key.
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach") == 0
-    again = json.loads(next((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    again = json.loads(next((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
                        .read_text())["action_key"]
     assert again == key
 
@@ -317,7 +347,7 @@ def test_a_producer_submitting_a_sealed_action_keeps_the_requirement(tmp_path):
         queue_root=tmp_path / "pb-queue",
     )
     item = json.loads(
-        (tmp_path / "pb-queue" / pool.READY / f"{'c' * 64}.json").read_text())
+        (tmp_path / "pb-queue" / pool.record_store.READY / f"{'c' * 64}.json").read_text())
     assert item["container_images"] == [REF_A]
     assert CAPABILITY in item["tags"]
 

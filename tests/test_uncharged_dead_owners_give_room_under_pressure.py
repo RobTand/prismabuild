@@ -36,11 +36,14 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
+from record_store_trust import ObservedTrust
+from prismabuild import kept_reads
+from prismabuild import stage_marks  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 GIB = storage_tiers.GIB
@@ -50,10 +53,10 @@ MANIFEST = "a" * 64
 
 @pytest.fixture(autouse=True)
 def _fresh_process_state():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
 
 
@@ -70,7 +73,7 @@ def _staged(stage: Path, name: str, size: int) -> Path:
     if not path.exists():
         with open(path, "wb") as stream:
             stream.truncate(size)
-        os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+        os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                     f"/originals/{name}@0".encode())
     return path
 
@@ -87,7 +90,7 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
     """
 
     queue, stage, _ = fleet
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     consumer, _generation = base._fail_consumer(queue)
     mover = base._key()
     base._publish(queue, mover, max_attempts=1)
@@ -101,15 +104,14 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
                          "file_id": reader_lease.stat_identity(str(path))}
         entries[key] = {"stage_path": str(path), "bytes": size,
                         "sha256": DIGEST, "offset": 0}
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
-        generation="c" * 32, entries=mentions)
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": MANIFEST, "entries": entries})
+        "manifest_sha256": MANIFEST, "entries": entries},
+        generation="c" * 32,
+        material_entries=mentions)
     queue.record_move(mover, {
         "consumer_action_key": consumer, "tier_id": TIER,
         "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -120,23 +122,22 @@ def dead_owner(fleet, names, *, unix: float, size: int = GIB,
         "complete": charged, "errors": [], "seconds": 20.0, "unix": unix})
     queue.finish(mover, status="executed", detail={"returncode": 0})
     if charged:
-        queue.mint_tier_capacity(TIER, {"stage_gib": len(names)})
-        assert queue.tier_ledger(TIER).acquire(
-            mover, {"stage_gib": len(names)}) is True
+        queue.tier(TIER).mint({'stage_gib': len(names)})
+        assert queue.tier(TIER).take(mover, {'stage_gib': len(names)}) is True
     else:
-        assert mover not in queue.tier_ledger(TIER).held_keys()
+        assert mover not in queue.tier(TIER).holders()
     return consumer, mover
 
 
-def _sweep(queue, stage, pressure):
+def _sweep(queue, stage, pressure, *, index=None):
     return stage_release.sweep(queue, stage_roots={TIER: str(stage)},
-                               pressure=pressure)
+                               pressure=pressure, index=index)
 
 
 def _owned(queue, consumer: str, mover: str) -> bool:
     """Whether the owner's fragment and material are both still filed."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     fragment = residency_map.fragment_path(root, consumer, mover).exists()
     material = reader_lease.material_path(root, consumer, mover).exists()
     assert fragment == material, (fragment, material)
@@ -234,8 +235,8 @@ def test_no_pressure_evicts_none(fleet, pressure):
 def test_room_the_ledger_already_has_evicts_none(fleet):
     queue, stage, _ = fleet
     owner = dead_owner(fleet, ["roomy-00001"], unix=100.0)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 1})
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
+    queue.tier(TIER).mint({'stage_gib': 1})
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 1
 
     receipts = _sweep(queue, stage, {TIER: 1})
 
@@ -266,13 +267,13 @@ def test_charged_and_uncharged_orphans_share_one_age_order(fleet):
     queue, stage, _ = fleet
     uncharged_old = dead_owner(fleet, ["mix-00100"], unix=100.0)
     charged_new = dead_owner(fleet, ["mix-00200"], unix=200.0, charged=True)
-    assert queue.tier_ledger(TIER).available().get("stage_gib", 0) == 0
+    assert queue.tier(TIER).free_supply().get('stage_gib', 0) == 0
 
     receipts = _sweep(queue, stage, {TIER: 1})
 
     assert not _owned(queue, *uncharged_old), receipts
     assert _owned(queue, *charged_new), receipts
-    assert charged_new[1] in queue.tier_ledger(TIER).held_keys()
+    assert charged_new[1] in queue.tier(TIER).holders()
 
 
 def test_an_older_charged_orphan_goes_first_and_covers_the_room(fleet):
@@ -283,7 +284,7 @@ def test_an_older_charged_orphan_goes_first_and_covers_the_room(fleet):
     receipts = _sweep(queue, stage, {TIER: 1})
 
     assert not _owned(queue, *charged_old), receipts
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 1
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 1
     assert _owned(queue, *uncharged_new), receipts
 
 
@@ -302,16 +303,15 @@ def test_a_live_pin_protects_every_byte_and_the_next_owner_goes(
     assert pin["ok"], pin
 
     # The first pass sees the pin in the stale-mention census and leaves the
-    # owner out.  The second reaches it through a skip checkpoint (forced
-    # here, since a checkpoint on a directory changed this clock tick is
-    # refused), and the whole eviction declines it.  Each pass takes the
+    # owner out.  The second reaches it through a qualified skip checkpoint from the first pass, and the whole eviction declines it.  Each pass takes the
     # next owner instead.
-    first = _sweep(queue, stage, {TIER: 1})
+    index = kept_reads.CensusIndex(trust=ObservedTrust())
+    first = _sweep(queue, stage, {TIER: 1}, index=index)
     assert _owned(queue, *pinned) and not _owned(queue, *later), first
     assert _for(first, pinned[1]) == []
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_hit",
-                        lambda *args: True)
-    second = _sweep(queue, stage, {TIER: 1})
+    skipped = index.stale_skipped
+    second = _sweep(queue, stage, {TIER: 1}, index=index)
+    assert index.stale_skipped > skipped, "the real qualified checkpoint did not hit"
     assert _owned(queue, *pinned) and not _owned(queue, *last), second
     assert _files(stage, ["pin-00100"]) == [True]
     (receipt,) = _for(second, pinned[1])
@@ -333,15 +333,16 @@ def test_a_live_claim_keeps_the_file(fleet, monkeypatch, claim):
             return {relative}, [], set()
         return set(), [], ({relative} if own_key == claimed[1] else set())
 
-    monkeypatch.setattr(stage_release, "_claimed_paths_attributed", attributed)
+    monkeypatch.setattr(staged_path, 'claimed_paths_attributed', attributed)
 
-    first = _sweep(queue, stage, {TIER: 1})
+    index = kept_reads.CensusIndex(trust=ObservedTrust())
+    first = _sweep(queue, stage, {TIER: 1}, index=index)
     assert _owned(queue, *claimed) and not _owned(queue, *later), first
     assert _for(first, claimed[1]) == []
-    # Through a (forced) skip checkpoint, the eviction's own census decides.
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_hit",
-                        lambda *args: True)
-    second = _sweep(queue, stage, {TIER: 1})
+    # Through its actual qualified checkpoint, the eviction's own census decides.
+    skipped = index.stale_skipped
+    second = _sweep(queue, stage, {TIER: 1}, index=index)
+    assert index.stale_skipped > skipped, "the real qualified checkpoint did not hit"
     assert _files(stage, ["claim-00100"]) == [True], second
     (receipt,) = _for(second, claimed[1])
     assert receipt["bytes_deleted"] == 0, receipt
@@ -379,8 +380,8 @@ def test_a_live_co_owner_keeps_the_file(fleet):
     base._publish(queue, live_consumer, max_attempts=1)
     fragment = residency_map.validate_fragment(json.loads(
         residency_map.fragment_path(
-            queue.residency_fragment_root(), *dead).read_text()))
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+            queue.records.residency_fragment_root(), *dead).read_text()))
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         **{key: value for key, value in fragment.items()
            if key not in ("consumer_action_key", "mover_action_key")},
         "consumer_action_key": live_consumer,
@@ -463,13 +464,13 @@ def test_an_unreadable_discovery_files_no_report_and_evicts_none(
     queue, stage, _ = fleet
     owner = dead_owner(fleet, ["taint-00001"], unix=100.0)
     assert len(_reports(_sweep(queue, stage, {}))) == 1
-    real = stage_release._fragment_census
+    real = staged_path.fragment_census
 
     def tainted(root, index=None):
         fragments, _ = real(root, index)
         return fragments, ["fixture: unreadable fragment"]
 
-    monkeypatch.setattr(stage_release, "_fragment_census", tainted)
+    monkeypatch.setattr(staged_path, 'fragment_census', tainted)
     receipts = _sweep(queue, stage, {TIER: 1})
 
     assert _owned(queue, *owner), receipts
@@ -503,7 +504,7 @@ def test_a_partially_pruned_owner_is_collected_from_its_rewritten_fragment(
 
     first = _sweep(queue, stage, {TIER: 1})
     (pruned,) = [entry for entry in first if entry.get("action_key") == mover
-                 and entry.get("event") == stage_release.STALE_MENTION_EVENT]
+                 and entry.get("event") == staged_path.STALE_MENTION_EVENT]
     assert pruned["partial"] is True and pruned["entries_pruned"] == 1, pruned
     assert _for(first, mover) == [] and _reports(first) == [], first
     assert _owned(queue, consumer, mover)

@@ -80,12 +80,12 @@ class Fleet:
 
     def record(self, state: str, key: str) -> dict:
         return json.loads(
-            self.queue.item_path(state, key).read_text(encoding="utf-8"))
+            self.queue.records.item_path(state, key).read_text(encoding="utf-8"))
 
     def attempt_log(self, key: str, attempt: int = 1, stream: str = "stdout") -> Path:
-        record = self.record(pool.DONE, key)
+        record = self.record(pool.record_store.DONE, key)
         outcome = json.loads(
-            self.queue.attempt_path(record, attempt).read_text(encoding="utf-8"))
+            self.queue.records.attempt_path(record, attempt).read_text(encoding="utf-8"))
         return self.queue_root / str(outcome["logs"][stream]["path"])
 
 
@@ -95,7 +95,7 @@ def build(base: Path, *, host: str = "fixture-box") -> Fleet:
     fleet = Fleet(base)
     fleet.checkout.mkdir(parents=True, exist_ok=True)
     queue = pool.PoolQueue(fleet.queue_root)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     common = {
         "cas_root": fleet.cas_root,
         "checkout_root": str(fleet.checkout),
@@ -291,15 +291,39 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
     timestamp are real records rather than assertions), tier announcements
     beside minted ledgers, a ram promotion fragment, a published-but-unstaged
     mover for phase two, and adaptive claim denials for the host and the
-    mover.  The clock is read at build time rather than frozen, so the ages
-    the tools derive are asserted approximately in the tests.
+    mover. The observation clock starts after landed-file construction, so
+    setup cost does not change the ages asserted approximately by the tests.
     """
 
     fleet = build(base, host=host)
     queue = fleet.queue
-    now = time.time()
     plan = _two_phase_plan(queue, stage_root=str(base / "stage"))
     residency_plan.freeze(queue, plan)
+    # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
+    # as a ready mover and staged nowhere.
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    queue.ledger(RAM_TIER.split(":", 1)[1]).ensure_capacity({"mem_gb": 8})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(STAGE_TIER).take(_hexkey('mover0'), {'stage_gib': 2})
+    assert queue.tier(RAM_TIER).take(_hexkey('rampromote0'), {'ram_gib': 2})
+    # Landed means landed (#759): the booking above is the room, and these
+    # are the records a finished copy leaves.  The promotion's fragment
+    # names the ram root it landed on, under the announced epoch, which is
+    # what ``ram_promote`` writes and what the census now reports.
+    residency_publication.publish_landed_files(
+        queue, consumer_action_key=CONSUMER_KEY,
+        mover_action_key=_hexkey("mover0"), tier_id=STAGE_TIER,
+        stage_root=base / "stage", manifest_sha256=CONSUMER_MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB)
+    residency_publication.publish_landed_files(
+        queue, consumer_action_key=CONSUMER_KEY,
+        mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
+        stage_root=base / "ram", manifest_sha256=CONSUMER_MANIFEST,
+        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB,
+        epoch=RAM_EPOCH)
+    # Date the observations after the actual landed-file work. Its cost
+    # is setup, not part of the configured cursor/claim/denial ages.
+    now = time.time()
     # The consumer, claimed and quiet on its first phase.  Filed directly
     # rather than through claim(): the claim gate admits a consumer only once
     # its leads are resident, and the census reads the claim, not the gate.
@@ -308,13 +332,13 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
         "manifest_sha256": CONSUMER_MANIFEST,
         "manifest_bytes": 4 * STARVED_GIB,
         "leads": residency_plan.leads_for(plan)})
-    ready_path = queue.item_path(pool.READY, CONSUMER_KEY)
+    ready_path = queue.records.item_path(pool.record_store.READY, CONSUMER_KEY)
     record = json.loads(ready_path.read_text())
     record.update({"claimed_unix": now - 100, "claimed_host": host,
                    "claimed_by": f"worker-{host}"})
-    queue.item_path(pool.CLAIMED, CONSUMER_KEY).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, CONSUMER_KEY).write_text(json.dumps(record))
     ready_path.unlink()
-    queue.lease_path(CONSUMER_KEY).write_text(json.dumps({
+    queue.records.lease_path(CONSUMER_KEY).write_text(json.dumps({
         "action_key": CONSUMER_KEY, "owner": record["claimed_by"], "host": host,
         "claimed_unix": record["claimed_unix"],
         "published_unix": record["published_unix"],
@@ -328,29 +352,6 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
             "child": {"alive": True, "pid_count": 3, "cpu_seconds": 12.0,
                       "silent_s": 700.0}}}))
     fleet.consumer_reported_unix = now - 800  # type: ignore[attr-defined]
-    # Phase 0 staged on both tiers, with a ram fragment; phase 1 published
-    # as a ready mover and staged nowhere.
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(STAGE_TIER).acquire(
-        _hexkey("mover0"), {"stage_gib": 2})
-    assert queue.tier_ledger(RAM_TIER).acquire(
-        _hexkey("rampromote0"), {"ram_gib": 2})
-    # Landed means landed (#759): the booking above is the room, and these
-    # are the records a finished copy leaves.  The promotion's fragment
-    # names the ram root it landed on, under the announced epoch, which is
-    # what ``ram_promote`` writes and what the census now reports.
-    residency_publication.vouch_landed(
-        queue, consumer_action_key=CONSUMER_KEY,
-        mover_action_key=_hexkey("mover0"), tier_id=STAGE_TIER,
-        stage_root=base / "stage", manifest_sha256=CONSUMER_MANIFEST,
-        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB)
-    residency_publication.vouch_landed(
-        queue, consumer_action_key=CONSUMER_KEY,
-        mover_action_key=_hexkey("rampromote0"), tier_id=RAM_TIER,
-        stage_root=base / "ram", manifest_sha256=CONSUMER_MANIFEST,
-        range_start_bytes=0, range_end_bytes=2 * STARVED_GIB,
-        epoch=RAM_EPOCH)
     queue.publish(**_tier_row(_hexkey("mover1"),
                               {STAGE_KIND: 2, "mem_gb": 1}, queue),
                    residency={
@@ -375,7 +376,7 @@ def build_starved(base: Path, *, host: str = "fixture-box") -> Fleet:
         "capacity_bytes": 8 * STARVED_GIB, "sampled_unix": now - 5,
         "epoch": RAM_EPOCH, "window_gib": 4})
     published = json.loads(
-        queue.item_path(pool.READY, _hexkey("mover1")).read_text())
+        queue.records.item_path(pool.record_store.READY, _hexkey("mover1")).read_text())
     denials = {
         "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
             "mover": {"action_key": _hexkey("mover1"),

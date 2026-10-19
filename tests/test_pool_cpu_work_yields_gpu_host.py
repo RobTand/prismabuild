@@ -53,7 +53,7 @@ def fleet(tmp_path):
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                       checkout_root=str(tmp_path), worker_script='worker.py',
                       resources=resources, **({'tags': tags} if tags else {}))
-        return pool._read_json(queue.item_path(pool.READY, key))
+        return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
     def claim(has_gpu=True):
         return queue.claim(tags=['gb10'], has_gpu=has_gpu, capacity=CAPACITY,
@@ -92,7 +92,7 @@ def test_a_cpu_only_row_is_left_to_a_host_without_a_gpu(fleet):
     denial = _local_denial(queue, 'a' * 64)
     assert denial and denial['reason'] == 'deferred_for_cpu_only_host'
     assert denial['evidence']['cpu_host']['host'] == CPU_HOST
-    assert not queue.passes_path('a' * 64).exists()     # not a refusal: ages nothing
+    assert not queue.records.passes_path('a' * 64).exists()     # not a refusal: ages nothing
 
 
 def test_the_wait_has_no_timer(fleet, monkeypatch):
@@ -136,7 +136,8 @@ def test_a_full_denial_file_falls_back_to_the_reason_ring(fleet):
     assert claimed and claimed['action_key'] == 'a' * 64
 
 
-@pytest.mark.parametrize('why', ['stale', 'full', 'mismatch', 'gone', 'draining'])
+@pytest.mark.parametrize('why', ['stale', 'full', 'mismatch', 'gone', 'draining',
+                                 'unknown-gpu', 'malformed-gpu'])
 def test_without_a_cpu_host_that_can_take_it_the_gpu_host_claims(fleet, why):
     queue, announce, publish, claim = fleet
     tags = None
@@ -148,6 +149,14 @@ def test_without_a_cpu_host_that_can_take_it_the_gpu_host_claims(fleet, why):
         announce(CPU_HOST, has_gpu=False, tags=['x86'], state='draining')
     elif why == 'mismatch':
         tags = ['gb10']                        # aarch64-only work: no CPU host matches
+    elif why in ('unknown-gpu', 'malformed-gpu'):
+        path = queue.root / pool.WORKERS / f'{CPU_HOST}.json'
+        offer = json.loads(path.read_text())
+        if why == 'unknown-gpu':
+            offer.pop('has_gpu')
+        else:
+            offer['has_gpu'] = []
+        path.write_text(json.dumps(offer))
     else:
         (queue.root / 'workers' / f'{CPU_HOST}.json').unlink()
     publish('a' * 64, {'cpu': 2, 'mem_gb': 2}, tags=tags)
@@ -180,3 +189,39 @@ def test_one_pass_never_leaves_a_cpu_host_more_than_it_fits(fleet):
     assert claimed and claimed['action_key'] in {'a' * 64, 'c' * 64}
     left = ({'a' * 64, 'c' * 64} - {claimed['action_key']}).pop()
     assert _local_denial(queue, left)['reason'] == 'deferred_for_cpu_only_host'
+
+
+@pytest.mark.parametrize('timer', ['cross_resource', 'preferred_cpu'])
+def test_timer_queries_respect_an_earlier_cpu_host_charge(tmp_path, monkeypatch, timer):
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    local_tiers = (TIERS if timer == 'cross_resource'
+                   else {'preferred': [0], 'fallback': [1, 2, 3]})
+    for host, capacity, tiers, has_gpu in (
+        (socket.gethostname(), CAPACITY, local_tiers, True),
+        (CPU_HOST, CPU_CAPACITY, TIERS, False),
+    ):
+        ledger = queue.ledger(host)
+        ledger.configure_cpu_tiers(tiers)
+        ledger.ensure_capacity(capacity)
+        detail = _detail(gpu=has_gpu)
+        if has_gpu and timer == 'cross_resource':
+            detail['gpu_power_fraction'] = .9
+        queue.announce(host=host, tags=[], has_gpu=has_gpu, capacity=capacity,
+                       observed_capacity=capacity, cpu_tiers=tiers, observed_detail=detail)
+    keys = {'a' * 64, 'c' * 64}
+    for key in sorted(keys):
+        queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
+                      checkout_root=str(tmp_path), worker_script='worker.py',
+                      resources={'cpu': 3, 'mem_gb': 1})
+    monkeypatch.setattr(pool.time, 'monotonic', lambda: 10.)
+    claimed = queue.claim(has_gpu=True, capacity=CAPACITY, cpu_tiers=local_tiers)
+    denials = [_local_denial(queue, key) for key in sorted(keys)]
+    assert claimed, [denial['reason'] for denial in denials if denial]
+    left = (keys - {claimed['action_key']}).pop()
+    assert _local_denial(queue, left)['reason'] == 'deferred_for_cpu_only_host'
+    assert [denial['reason'] for denial in denials if denial] == ['deferred_for_cpu_only_host']
+    assert queue.records.item_path(pool.record_store.READY, left).exists()
+    assert not queue.records.lease_path(left).exists()
+    assert all(not queue.records.passes_path(key).exists() for key in keys)
+    assert queue.ledger().available()['cpu'] == 1
+    assert queue.ledger(CPU_HOST).available()['cpu'] == 4

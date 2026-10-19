@@ -35,8 +35,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 SIZE = 4096
 TIER = base.TIER
@@ -63,18 +65,18 @@ def _manifest(tmp_path: Path, names: list[str], payloads: dict[str, bytes]):
         source.write_bytes(payload)
         entries.append({"path": str(source), "offset": 0, "bytes": SIZE,
                         "sha256": hashlib.sha256(payload).hexdigest()})
-    body = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    body = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
             "annotations": {}, "mount_prefix": str(mount),
             "entries": entries, "entry_count": len(entries),
             "total_bytes": len(entries) * SIZE}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(body))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(body))
     path = tmp_path / "manifest.json"
     path.write_bytes(raw)
     return mount, path, hashlib.sha256(raw).hexdigest(), entries
 
 
 def _destination(stage: Path, mount: Path, entry: dict[str, object]) -> Path:
-    relative = stage_move.stage_relative(
+    relative = staged_path.stage_relative(
         str(entry["path"]), 0, SIZE, mount_prefix=str(mount))
     return stage / relative
 
@@ -88,7 +90,7 @@ def _args(queue, stage, cas, mover: str, consumer: str, manifest: Path,
         "--manifest", str(manifest), "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(len(entries) * SIZE),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--readers", "1", "--max-readers", "1", "--unpaced"])
 
 
@@ -105,7 +107,7 @@ def _fragment_no_sidecar(queue, stage: Path, consumer: str, mover: str,
     """
 
     key = residency_map.residency_map_key(str(path), 0)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -134,8 +136,8 @@ def test_a_publish_wait_is_recorded_by_verdict_and_seconds(
     _fragment_no_sidecar(queue, stage, owner_consumer, owner_mover,
                         destination, hashlib.sha256(old).hexdigest())
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     mover, successor = base._key(), base._key()
     args = _args(queue, stage, cas, mover, successor, manifest, digest,
                 entries)

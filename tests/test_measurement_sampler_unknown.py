@@ -5,20 +5,22 @@ and sampler observations are controlled. No GPU execution or subprocesses.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from prismabuild import adaptive_cpu, pool
 
 
-def _silence(monkeypatch, clock, readings, kind):
-    observed = clock[0]
+def _silence(clock, readings, kind):
+    observed = clock.now
 
-    def sample(self):
+    def sample():
         if kind == "missing":
             return {}
         return {
-            "sampled_unix": observed if kind == "stale" else clock[0] + (
+            "sampled_unix": observed if kind == "stale" else clock.now + (
                 1 if kind == "future" else 0),
             "cpu_count": 20, "interval_s": 1.0,
             "psi_some": None if kind == "partial" else 0.0,
@@ -26,8 +28,8 @@ def _silence(monkeypatch, clock, readings, kind):
             "foreign_per_cpu_busy": dict(readings["foreign"]),
         }
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", sample)
-    clock[0] += adaptive_cpu.MAX_SAMPLE_AGE_S + 1
+    clock.now += adaptive_cpu.MAX_SAMPLE_AGE_S + 1
+    return sample
 
 
 def _reason(value):
@@ -54,10 +56,12 @@ def _assert_unknown(queue, measurement, denial, clock):
     assert decision["reason"] == "measurement_sampler_unknown", waiting
     assert decision["fresh"] is False
     assert waiting["evidence"].get("withhold", {}).get("withhold") is not True
-    assert queue.item_path(pool.READY, measurement).exists()
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert queue._carried_withhold(queue._host_denial_records(), item,
-                                 host="sparklina", now=clock[0]) is None
+                                 host="sparklina", now=clock.now) is None
 
 
 def _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock, *, q=None):
@@ -82,9 +86,9 @@ def test_unknown_observations_do_not_protect_a_long_incumbent_drain(fleet, monke
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     backfill = publish("backfill")
-    _silence(monkeypatch, clock, readings, kind)
+    claim = partial(claim, cpu_sampler=_silence( clock, readings, kind))
     _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock)
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
     assert set(queue.ledger().held_keys()) == {holder, backfill}
 
 
@@ -92,7 +96,7 @@ def test_absent_initial_observation_is_unknown_not_idle(fleet, monkeypatch):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     measurement = publish("measurement", measurement=True, pinned=True)
     backfill = publish("backfill")
-    _silence(monkeypatch, clock, readings, "missing")
+    claim = partial(claim, cpu_sampler=_silence( clock, readings, "missing"))
     assert claim() == backfill
     _assert_unknown(queue, measurement, denial, clock)
     assert set(queue.ledger().held_keys()) == {backfill}
@@ -105,10 +109,12 @@ def test_transient_carry_cannot_extend_a_measurement_cpu_observation(fleet, repe
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     records = queue._host_denial_records()
-    carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
+    carried = queue._carried_withhold(records, item, host="sparklina", now=clock.now)
     assert carried is not None
     tick(adaptive_cpu.MAX_SAMPLE_AGE_S + 1)
     if repeated:
@@ -119,12 +125,12 @@ def test_transient_carry_cannot_extend_a_measurement_cpu_observation(fleet, repe
         assert isinstance(previous, dict)
         # A transient/busy pass may be new, but its CPU observation is not.
         records = {generation: dict(previous, reason="transition_busy",
-                                   denied_unix=clock[0],
+                                   denied_unix=clock.now,
                                    evidence={"withhold_carried": carried})}
         assert "transition_busy" in pool.WITHHOLD_CARRYING_REASONS
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 @pytest.mark.parametrize("bad", ["partial", "huge_timestamp", "carried_unknown"])
@@ -134,7 +140,9 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     records = queue._host_denial_records()
     published = item["published_unix"]
@@ -151,7 +159,7 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
     # Before the typed refusal, partial telemetry could protect an exclusive
     # measurement drain even while its timestamp was inside the five seconds.
     if bad == "carried_unknown":
-        unproven = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
+        unproven = queue._carried_withhold(records, item, host="sparklina", now=clock.now)
         assert unproven is not None
         unproven.pop("measurement_cpu_sample_fresh")
         records = {generation: dict(previous, reason="transition_busy",
@@ -163,8 +171,8 @@ def test_a_legacy_bad_observation_is_not_carried(fleet, bad):
         else:
             invalid = dict(decision, sample=dict(observed, sampled_unix=10 ** 1000))
         records = {generation: dict(previous, evidence=dict(evidence, decision=invalid))}
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert set(queue.ledger().held_keys()) == {holder}
 
 
@@ -177,21 +185,21 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
     original = denial(measurement)["evidence"]["withhold"]["drain_until_unix"]
-    fresh_sample = adaptive_cpu.Controller.sample
-    _silence(monkeypatch, clock, readings, "stale")
+    fresh_claim = claim
+    claim = partial(claim, cpu_sampler=_silence( clock, readings, "stale"))
     if recover_after_expiry:
-        tick(original - clock[0] + 1)
+        tick(original - clock.now + 1)
     backfill = publish("backfill", timeout_s=8000)
     restarted = pool.PoolQueue(queue.root)
     _claim_backfill_after_gap(queue, measurement, backfill, claim, denial, clock, q=restarted)
-    record = pool._read_json(queue.passes_path(measurement))
+    record = pool.record_store.read_document(queue.records.passes_path(measurement))
     assert isinstance(record, dict)
     episodes = record["measurement_drains"]
     assert isinstance(episodes, dict)
     episode = episodes["sparklina"]
     assert isinstance(episode, dict)
     assert episode["measurement_until_unix"] == original
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", fresh_sample)
+    claim = fresh_claim
     assert claim(q=restarted) is None, "fresh recovery bypassed holder isolation"
     recovered = denial(measurement)["evidence"]["withhold"]
     assert recovered["drain_until_unix"] == original
@@ -205,5 +213,5 @@ def test_silence_restart_and_recovery_preserve_the_original_deadline(
         assert recovered["selection"]["host"] == "sparklina"
         assert recovered["selection"]["action_key"] == measurement
         assert recovered["selection"]["opportunity_unix"] == original
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
     assert set(queue.ledger().held_keys()) == {holder, backfill}

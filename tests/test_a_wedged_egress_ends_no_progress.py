@@ -37,7 +37,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import contracts
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -45,6 +47,7 @@ from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E40
 from test_a_stalled_mover_ends_no_progress import (  # noqa: E402
     CONSUMER, HEARTBEAT, MEMBERS, MIB, UNDER, _Disks, _contention,
     _mover_source, _policy, _real_window, _seal_rows)
+from prismabuild import staged_path
 
 #: The consumer the mover waiting at the gate stages for.  Its range is a
 #: second manifest, so its staged names never meet the egressed range's.
@@ -56,8 +59,8 @@ WAITING = _hexkey("waiting-at-the-gate")
 #: later one hangs (``None``: none does), and each one sleeps ``delay``.
 EGRESS = textwrap.dedent('''
     import os, sys, time
-    sys.path.insert(0, {tools!r})
-    import stage_release
+    sys.path.insert(0, {source!r})
+    from prismabuild import stage_release
     from prismabuild import pool
     pool.HEARTBEAT_S = {heartbeat!r}
     stage = os.path.realpath({stage!r}) + os.sep
@@ -129,7 +132,7 @@ def _claimed(queue: pool.PoolQueue, cas: pb.PrismaBuildCAS, base: Path,
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout, max_attempts=1,
                   worker_script=ROOT / "tools" / "prismabuild_worker.py")
-    item = queue.claim()
+    item = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert item is not None and item["action_key"] == action["action_key"]
     return item
 
@@ -162,7 +165,7 @@ def _second_window(base: Path) -> tuple[Path, int]:
     total = 3 * MIB
     manifest = base / "gate-manifest.json"
     manifest.write_text(json.dumps({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
         "annotations": {"phases": [{"name": "layer-0", "bytes": total,
                                     "cumulative_bytes": total}]},
         "mount_prefix": str(mount), "entries": listed,
@@ -225,7 +228,7 @@ def _egress_source(tmp_path: Path, mover: str, *, after: int | None,
             "--mover-action-key", mover, "--consumer-action-key", CONSUMER,
             "--stage-root", str(tmp_path / "stage"),
             "--receipt", str(tmp_path / "egress-receipt.json")]
-    return EGRESS.format(tools=str(ROOT / "tools" / "fleet"),
+    return EGRESS.format(source=str(ROOT / "src"),
                          heartbeat=HEARTBEAT, stage=str(tmp_path / "stage"),
                          marker=str(tmp_path / "unlinks.txt"), after=after,
                          delay=float(delay), argv=argv,
@@ -233,7 +236,7 @@ def _egress_source(tmp_path: Path, mover: str, *, after: int | None,
 
 
 def _setup(tmp_path: Path, monkeypatch):
-    import stage_release
+    from prismabuild import stage_release
 
     monkeypatch.setattr(pool, "HEARTBEAT_S", HEARTBEAT)
     monkeypatch.setattr(pool, "POOL_MEMBER_STAT", _Disks(UNDER), raising=False)
@@ -242,7 +245,7 @@ def _setup(tmp_path: Path, monkeypatch):
     (tmp_path / "stage").mkdir(exist_ok=True)
     queue = pool.PoolQueue(tmp_path / "queue")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "stage") == "registered"
     mover = _staged_range(tmp_path, queue, cas)
     return queue, cas, mover, params, grace
@@ -470,9 +473,9 @@ def test_a_measured_egress_is_sealed_with_its_grace_and_its_pool(
     assert contention["stage_root"] == str(stage)
     assert contention["priced_bytes_per_s"] == pytest.approx(3 * MIB / priced)
     tags = params["placement"]["required_tags"]
-    assert {pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.POOL_CONTENTION_TAG,
-            pb.EGRESS_PROGRESS_TAG} <= set(tags)
-    assert pb.PROGRESS_CYCLE_TAG not in tags
+    assert {contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.POOL_CONTENTION_TAG,
+            contracts.EGRESS_PROGRESS_TAG} <= set(tags)
+    assert contracts.PROGRESS_CYCLE_TAG not in tags
     assert "dl380g10" in tags
     assert source["mover_progress"][mover_key]["basis"] == "landing"
 
@@ -509,10 +512,10 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
     """The record beside the lock, and what a reader can check of it."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
-    path = queue.stage_ownership_holder_path(stage)
-    assert path.parent == queue.root / pool.STAGE_OWNERSHIP_HOLDERS
+    path = queue.records.stage_ownership_holder_path(stage)
+    assert path.parent == queue.root / pool.record_store.STAGE_OWNERSHIP_HOLDERS
     assert queue.stage_ownership_holder(stage) == {
         "recorded": False, "live": None, "why": "no holder record"}
 
@@ -545,17 +548,7 @@ def test_a_stage_holder_names_itself_and_ends_with_its_process_or_claim(
 
 #: An egress wedged inside its own hold, before its drain: the stage's lock
 #: taken the way ``stage_release`` takes it, then nothing.
-HOLDER = textwrap.dedent('''
-    import sys, time
-    sys.path.insert(0, {tools!r})
-    import stage_release
-    from prismabuild import pool
-    queue = pool.PoolQueue({queue!r})
-    with stage_release._stage_ownership(queue, {stage!r}, role="egress"):
-        with open({marker!r}, "w") as stream:
-            stream.write("held")
-        time.sleep(3600)
-''')
+HOLDER = textwrap.dedent('\n    import sys, time\n    sys.path.insert(0, {source!r})\n    from prismabuild import stage_release\n    from prismabuild import pool\n    from prismabuild import staged_path\n    queue = pool.PoolQueue({queue!r})\n    with staged_path.ownership(queue, {stage!r}, role="egress"):\n        with open({marker!r}, "w") as stream:\n            stream.write("held")\n        time.sleep(3600)\n')
 
 
 def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
@@ -575,7 +568,7 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
     policy = {"schema": pb.PROGRESS_POLICY_SCHEMA_V1,
               "phases": [{"name": name, "grace_s": grace}
                          for name in ("snapshot", "drain", "release")]}
-    source = HOLDER.format(tools=str(ROOT / "tools" / "fleet"),
+    source = HOLDER.format(source=str(ROOT / "src"),
                            queue=str(tmp_path / "queue"),
                            stage=str(tmp_path / "stage"),
                            marker=str(tmp_path / "held.txt"))
@@ -618,8 +611,8 @@ def test_an_egress_wedged_in_its_own_hold_is_not_credited_for_it(
 MOVER_RESUME_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
-    sys.path.insert(0, {tools!r})
-    import stage_move
+    sys.path.insert(0, {source!r})
+    from prismabuild import stage_move
     from prismabuild import core as pb
     from prismabuild import pool
     queue = pool.PoolQueue({queue!r})
@@ -654,8 +647,8 @@ MOVER_RESUME_HOLD = textwrap.dedent('''
 MOVER_RESUME_PARSE_HOLD = textwrap.dedent('''
     import os, sys, time
     from pathlib import Path
-    sys.path.insert(0, {tools!r})
-    import stage_move
+    sys.path.insert(0, {source!r})
+    from prismabuild import stage_move
     from prismabuild import core as pb
     from prismabuild import pool
     queue = pool.PoolQueue({queue!r})
@@ -703,7 +696,7 @@ def test_a_mover_wedged_in_its_own_resume_census_is_not_credited_for_it(
     queue = pool.PoolQueue(tmp_path / "queue")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     source = MOVER_RESUME_HOLD.format(
-        tools=str(ROOT / "tools" / "fleet"), queue=str(tmp_path / "queue"),
+        source=str(ROOT / "src"), queue=str(tmp_path / "queue"),
         residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
         stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
     item = _claimed(queue, cas, tmp_path, "resume", source, {
@@ -770,7 +763,7 @@ def test_a_mover_wedged_in_its_own_resume_parse_needs_no_credit(
     queue = pool.PoolQueue(tmp_path / "queue")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     source = MOVER_RESUME_PARSE_HOLD.format(
-        tools=str(ROOT / "tools" / "fleet"), queue=str(tmp_path / "queue"),
+        source=str(ROOT / "src"), queue=str(tmp_path / "queue"),
         residency=str(tmp_path / "residency"), consumer=WAITING, tier=TIER,
         stage=str(tmp_path / "stage"), marker=str(tmp_path / "held.txt"))
     item = _claimed(queue, cas, tmp_path, "resume", source, {

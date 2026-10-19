@@ -62,7 +62,7 @@ import posixpath
 import sys
 import time
 
-sys.path.insert(0, str(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 try:
     from pbcanary_legs.common import (
         canonical_json,
@@ -516,7 +516,7 @@ class _StagedWindow:
                                  "checkpoints")
         path = os.path.join(directory, f"chunk-{index}.json")
         try:
-            self.pool_mod._write_json_atomic(Path(path), payload)
+            self.pool_mod.immutable_files.write_json_atomic(Path(path), payload)
         except OSError as exc:
             raise _StagedReadRefusal(
                 f"leg3 staged-read refusal: checkpoint not durable: {exc}") from exc

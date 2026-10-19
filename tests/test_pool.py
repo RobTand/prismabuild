@@ -1,6 +1,7 @@
 """The pull-queue transport, exercised on the primitives that can lose work."""
 
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 import os
@@ -30,30 +31,20 @@ KEY_A = uuid.uuid4().hex + uuid.uuid4().hex
 KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 @pytest.fixture()
 def plain_queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def test_pool_root_must_be_absolute(tmp_path: Path) -> None:
@@ -63,18 +54,17 @@ def test_pool_root_must_be_absolute(tmp_path: Path) -> None:
 
 def test_action_key_must_be_a_digest(plain_queue: pool.PoolQueue) -> None:
     with pytest.raises(pool.PoolContractError):
-        _publish(plain_queue, "short")
-
+        ActionRows(plain_queue).publish('short')
 
 
 def test_publish_then_claim_moves_between_directories(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    ActionRows(queue).publish(KEY_A)
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     item = queue.claim()
     assert item is not None and item["action_key"] == KEY_A
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
 
 
 def test_claim_returns_none_on_empty_queue(queue: pool.PoolQueue) -> None:
@@ -84,7 +74,7 @@ def test_claim_returns_none_on_empty_queue(queue: pool.PoolQueue) -> None:
 def test_exactly_one_of_many_threads_claims_an_item(queue: pool.PoolQueue) -> None:
     """The race the whole design rests on: rename is the arbiter."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     winners: list[object] = []
     barrier = threading.Barrier(8)
 
@@ -103,8 +93,8 @@ def test_exactly_one_of_many_threads_claims_an_item(queue: pool.PoolQueue) -> No
 
 
 def test_two_items_two_claimants_no_double_claim(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(KEY_A)
+    ActionRows(queue).publish(KEY_B)
     first = queue.claim()
     second = queue.claim()
     assert first is not None and second is not None
@@ -113,13 +103,13 @@ def test_two_items_two_claimants_no_double_claim(queue: pool.PoolQueue) -> None:
 
 
 def test_gpu_placement_is_respected(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A, needs_gpu=True)
+    ActionRows(queue).publish(KEY_A, needs_gpu=True)
     assert queue.claim(has_gpu=False) is None
     assert queue.claim(has_gpu=True) is not None
 
 
 def test_tag_placement_requires_every_tag(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A, tags=["gb10", "cuda"])
+    ActionRows(queue).publish(KEY_A, tags=['gb10', 'cuda'])
     assert queue.claim(tags=["gb10"]) is None
     assert queue.claim(tags=["gb10", "cuda", "extra"]) is not None
 
@@ -138,14 +128,14 @@ def test_priority_then_age_orders_the_queue(
 
     published = [300.0]
     real_now = pool._now
-    monkeypatch.setattr(pool, "_now", lambda: published[0])
+    FleetClock(source=lambda: published[0]).install(monkeypatch, scope="pool")
     key_oldest = "c" * 64
-    _publish(queue, key_oldest, priority=0)
+    ActionRows(queue).publish(key_oldest, priority=0)
     published[0] = 400.0
-    _publish(queue, KEY_B, priority=5)
+    ActionRows(queue).publish(KEY_B, priority=5)
     published[0] = 500.0
-    _publish(queue, KEY_A, priority=0)
-    monkeypatch.setattr(pool, "_now", real_now)
+    ActionRows(queue).publish(KEY_A, priority=0)
+    FleetClock(source=real_now).install(monkeypatch, scope="pool")
 
     assert queue.claim()["action_key"] == KEY_B         # the band outranks age
     assert queue.claim()["action_key"] == key_oldest    # then oldest first
@@ -153,20 +143,20 @@ def test_priority_then_age_orders_the_queue(
 
 
 def test_intent_is_written_before_the_claim(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
-    intent = json.loads(queue.item_path(pool.INTENT, KEY_A).read_bytes())
+    intent = json.loads(queue.records.item_path(pool.record_store.INTENT, KEY_A).read_bytes())
     assert intent["schema"] == pool.POOL_CLAIM_INTENT_SCHEMA_V1
     assert intent["action_key"] == KEY_A
 
 
 def test_stale_lease_is_requeued(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     assert queue.reap_stale(timeout_s=1e6) == []          # fresh lease: untouched
     assert queue.reap_stale(timeout_s=-1.0) == [KEY_A]    # expired: back to ready
-    assert queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
 
 
 def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
@@ -183,7 +173,7 @@ def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
     branch: the matching terminal generation concludes the stranded claim.
     """
 
-    _publish(queue, KEY_A, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'cpu': 1})
     claimed = queue.claim(capacity={"cpu": 1})
     assert claimed is not None
     terminal = dict(claimed)
@@ -197,16 +187,18 @@ def test_a_terminal_generation_is_not_resurrected_by_stale_reaping(
     )
     # Deliberately leave claimed + lease + reservation behind: this is the
     # observed NFS/supervisor aftermath, not a normal sequential ``finish``.
-    queue.item_path(pool.DONE, KEY_A).write_text(json.dumps(terminal))
+    queue.records.item_path(pool.record_store.DONE, KEY_A).write_text(json.dumps(terminal))
 
     assert queue.reap_stale(timeout_s=-1.0) == []
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().held_keys() == []
-    assert json.loads(queue.item_path(pool.DONE, KEY_A).read_text()) == terminal
+    assert json.loads(
+        queue.records.item_path(pool.record_store.DONE, KEY_A).read_text(),
+    ) == terminal
     dropped = list(
-        queue.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
+        queue.records.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
     )
     assert len(dropped) == 1
     assert json.loads(dropped[0].read_text())["terminal_status"] == "executed"
@@ -225,7 +217,7 @@ def test_a_late_copy_of_a_terminal_generation_cannot_be_claimed(
     ready copy and returns no work.
     """
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     claimed = queue.claim()
     assert claimed is not None
     assert queue.reap_stale(timeout_s=-1.0) == [KEY_A]
@@ -238,13 +230,15 @@ def test_a_late_copy_of_a_terminal_generation_cannot_be_claimed(
             "finished_unix": float(claimed["published_unix"]) + 1.0,
         }
     )
-    queue.item_path(pool.DONE, KEY_A).write_text(json.dumps(terminal))
+    queue.records.item_path(pool.record_store.DONE, KEY_A).write_text(json.dumps(terminal))
 
     assert queue.claim() is None
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert json.loads(queue.item_path(pool.DONE, KEY_A).read_text()) == terminal
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert json.loads(
+        queue.records.item_path(pool.record_store.DONE, KEY_A).read_text(),
+    ) == terminal
     dropped = list(
-        queue.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
+        queue.records.superseded_dir().glob(f"{KEY_A}.*.terminal-claim.json")
     )
     assert len(dropped) == 1
     assert json.loads(dropped[0].read_text())["status"] == "dropped"
@@ -255,13 +249,13 @@ def test_an_older_terminal_generation_does_not_block_a_fresh_submission(
 ) -> None:
     """The key names work; only ``published_unix`` names this request."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     first = queue.claim()
     assert first is not None
     queue.finish(KEY_A, status="executed")
 
-    _publish(queue, KEY_A)
-    fresh_path = queue.item_path(pool.READY, KEY_A)
+    ActionRows(queue).publish(KEY_A)
+    fresh_path = queue.records.item_path(pool.record_store.READY, KEY_A)
     fresh = json.loads(fresh_path.read_text())
     fresh["published_unix"] = float(first["published_unix"]) + 1.0
     fresh_path.write_text(json.dumps(fresh))
@@ -281,10 +275,10 @@ def test_a_claim_with_no_lease_at_all_is_stale(queue: pool.PoolQueue) -> None:
     claim record, which is what a real dead claimant's would be.
     """
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
-    queue.lease_path(KEY_A).unlink()
-    path = queue.item_path(pool.CLAIMED, KEY_A)
+    queue.records.lease_path(KEY_A).unlink()
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     record = json.loads(path.read_bytes())
     record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
     path.write_text(json.dumps(record))
@@ -295,12 +289,12 @@ def test_heartbeat_refresh_keeps_a_claim_alive(queue: pool.PoolQueue) -> None:
     """Assert the stored heartbeat advances, not that a derived age shrank --
     two ages sampled at different instants are not comparable."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     item = queue.claim()
-    first = json.loads(queue.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
+    first = json.loads(queue.records.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
     time.sleep(0.01)
     queue.write_lease(KEY_A, owner=str(item["claimed_by"]))
-    second = json.loads(queue.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
+    second = json.loads(queue.records.lease_path(KEY_A).read_bytes())["heartbeat_unix"]
     assert second > first
     assert queue.reap_stale(timeout_s=1.0) == []
 
@@ -309,53 +303,53 @@ def test_finish_routes_to_done_or_retry(queue: pool.PoolQueue) -> None:
     """Success is terminal; a first failure is a retry, not a verdict."""
 
     for key, status, state in (
-        (KEY_A, "executed", pool.DONE),
-        (KEY_B, "failed", pool.READY),
+        (KEY_A, "executed", pool.record_store.DONE),
+        (KEY_B, "failed", pool.record_store.READY),
     ):
-        _publish(queue, key)
+        ActionRows(queue).publish(key)
         queue.claim()
         queue.finish(key, status=status)
-        assert queue.item_path(state, key).exists()
-        assert not queue.item_path(pool.CLAIMED, key).exists()
-        assert not queue.lease_path(key).exists()
+        assert queue.records.item_path(state, key).exists()
+        assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
+        assert not queue.records.lease_path(key).exists()
 
 
 def test_a_failure_retries_until_its_attempts_are_spent(queue: pool.PoolQueue) -> None:
     """Three strikes, then terminal -- and the count survives the requeue."""
 
-    _publish(queue, KEY_A, max_attempts=3)
+    ActionRows(queue).publish(KEY_A, max_attempts=3)
     for attempt in (1, 2):
         assert queue.claim() is not None
         queue.finish(KEY_A, status="failed")
-        requeued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+        requeued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
         assert requeued["attempts"] == attempt
         # A requeued item must not carry the dead claimant's identity forward.
         assert "claimed_by" not in requeued
     assert queue.claim() is not None
     queue.finish(KEY_A, status="failed")
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_max_attempts_of_one_is_terminal_on_the_first_failure(
     queue: pool.PoolQueue,
 ) -> None:
-    _publish(queue, KEY_A, max_attempts=1)
+    ActionRows(queue).publish(KEY_A, max_attempts=1)
     queue.claim()
     queue.finish(KEY_A, status="failed")
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
 
 def test_cache_hit_counts_as_done_not_failed(queue: pool.PoolQueue) -> None:
     """A CAS hit is a successful outcome -- the work exists, it just already did."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     queue.finish(KEY_A, status="cache_hit")
-    assert queue.item_path(pool.DONE, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
 
 
-def test_worker_argv_matches_slurms_canonical_launch_minus_its_gate() -> None:
+def test_worker_argv_uses_canonical_run_local_launch() -> None:
     argv = pool.worker_argv(
         worker_script="/w.py", action_key=KEY_A, cas_root="/cas", checkout_root="/co"
     )
@@ -369,14 +363,13 @@ def test_worker_argv_matches_slurms_canonical_launch_minus_its_gate() -> None:
         "--checkout-root",
         "/co",
     ]
-    assert "--require-slurm-initial-start" not in argv
 
 
 def test_atomic_write_leaves_no_partial_file(
     queue: pool.PoolQueue, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "rec.json"
-    pool._write_json_atomic(target, {"schema": "x", "n": 1})
+    pool.immutable_files.write_json_atomic(target, {"schema": "x", "n": 1})
     assert json.loads(target.read_bytes())["n"] == 1
     assert not list(tmp_path.glob(".*tmp"))
 
@@ -388,7 +381,7 @@ def test_atomic_write_leaves_no_partial_file(
 
     monkeypatch.setattr(pool.materialize.os, "fsync", out_of_space)
     with pytest.raises(OSError):
-        pool._write_json_atomic(tmp_path / "torn.json", {"schema": "x", "n": 2})
+        pool.immutable_files.write_json_atomic(tmp_path / "torn.json", {"schema": "x", "n": 2})
 
     assert not (tmp_path / "torn.json").exists()   # nothing at the target name
     assert not list(tmp_path.glob(".*tmp"))        # and no scratch left behind
@@ -408,12 +401,12 @@ def test_serve_once_executes_and_records(queue: pool.PoolQueue, tmp_path: Path) 
         f"pathlib.Path({str(marker)!r}).write_text(' '.join(sys.argv[1:]))\n"
         "sys.exit(0)\n"
     )
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     outcome = queue.serve_once()
     assert outcome is not None and outcome["status"] == "executed"
     assert outcome["returncode"] == 0
     assert marker.read_text().startswith("run-local --action")
-    assert queue.item_path(pool.DONE, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
 
 
 def test_serve_once_records_a_failing_worker_as_failed(
@@ -421,10 +414,10 @@ def test_serve_once_records_a_failing_worker_as_failed(
 ) -> None:
     stub = tmp_path / "bad_worker.py"
     stub.write_text("import sys; sys.exit(3)\n")
-    _publish(queue, KEY_A, worker_script=str(stub), max_attempts=1)
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub), max_attempts=1)
     outcome = queue.serve_once()
     assert outcome["status"] == "failed" and outcome["returncode"] == 3
-    assert queue.item_path(pool.FAILED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
 
 def _test_checkout_snapshot(
@@ -732,7 +725,10 @@ def test_snapshot_execution_is_isolated_from_midrun_submitter_mutation(
     # ignored checkout_snapshot and used it. Persist the same claim identity
     # that execute's heartbeat validates.
     item["checkout_root"] = str(source)
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, item["action_key"]), item)
+    pool.immutable_files.write_json_atomic(
+        queue.records.item_path(pool.record_store.CLAIMED, item["action_key"]),
+        item,
+    )
     mutated: list[bool] = []
 
     def mutate_after_preflight() -> None:
@@ -775,12 +771,12 @@ def test_execute_refreshes_the_lease_across_a_slow_action(
 
     stub = tmp_path / "slow_worker.py"
     stub.write_text("import time; time.sleep(0.6)\n")
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
-    before = queue.lease_path(KEY_A).stat().st_mtime_ns
+    before = queue.records.lease_path(KEY_A).stat().st_mtime_ns
     outcome = queue.execute(item, heartbeat_s=0.15)
     assert outcome["status"] == "executed"
-    assert queue.lease_path(KEY_A).stat().st_mtime_ns > before
+    assert queue.records.lease_path(KEY_A).stat().st_mtime_ns > before
 
 
 def test_execute_times_out_and_kills_the_child(
@@ -788,7 +784,7 @@ def test_execute_times_out_and_kills_the_child(
 ) -> None:
     stub = tmp_path / "hang_worker.py"
     stub.write_text("import time; time.sleep(60)\n")
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     outcome = queue.execute(item, heartbeat_s=0.1, timeout_s=0.3)
     assert outcome["status"] == "timeout"
@@ -909,7 +905,7 @@ def test_execute_timeout_reaps_the_action_the_worker_launched(
 
     pidfile = tmp_path / "action.pid"
     stub = _relaying_worker(tmp_path / "relaying_worker.py", pidfile)
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     assert item is not None
     outcome = queue.execute(
@@ -944,7 +940,7 @@ def test_execute_timeout_returns_even_when_the_action_outlives_the_kill(
 
     pidfile = tmp_path / "action.pid"
     stub = _orphaning_worker(tmp_path / "orphaning_worker.py", pidfile)
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     assert item is not None
     outcome = queue.execute(
@@ -971,7 +967,7 @@ def test_execute_reaps_the_action_when_the_worker_itself_is_interrupted(
 
     pidfile = tmp_path / "action.pid"
     stub = _relaying_worker(tmp_path / "relaying_worker.py", pidfile)
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     assert item is not None
 
@@ -1077,7 +1073,7 @@ def test_timeout_bounds_a_real_worker_running_a_real_action(
     # writer cannot take is a field that loses the action, not just the note.
     queue.finish(key, status="timeout", detail=outcome)
     filed = json.loads(
-        queue.item_path(pool.FAILED, key).read_text(encoding="utf-8")
+        queue.records.item_path(pool.record_store.FAILED, key).read_text(encoding="utf-8")
     )
     assert filed["detail"]["launcher_returncode"] == 128 + signal.SIGTERM
     assert filed["detail"]["action_survived_kill"] is False
@@ -1092,7 +1088,7 @@ def test_timeout_bounds_a_real_worker_running_a_real_action(
 def test_a_crashing_execute_never_leaves_a_dangling_claim(
     queue: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
 
     def boom(*a: object, **k: object) -> None:
         raise RuntimeError("worker exploded")
@@ -1102,15 +1098,15 @@ def test_a_crashing_execute_never_leaves_a_dangling_claim(
         queue.serve_once()
     # The invariant is that the claim is gone, not where it went: an unexpected
     # crash still has retries left, so it is requeued rather than condemned.
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
 
 
 def test_reap_then_reclaim_is_the_self_healing_path(queue: pool.PoolQueue) -> None:
     """A dead box's work returns to the pool and another worker takes it."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     first = queue.claim(owner="dead-box:1")
     assert first is not None
     queue.reap_stale(timeout_s=-1.0)
@@ -1155,14 +1151,14 @@ def test_reap_does_not_steal_a_claim_made_moments_ago(tmp_path):
     key = item["action_key"]
 
     # Reproduce the window exactly: claimed, lease not yet written.
-    queue.lease_path(key).unlink()
+    queue.records.lease_path(key).unlink()
     assert queue.lease_age(key) is None
 
     assert queue.reap_stale() == []
     assert queue.claim(tags=(), has_gpu=False, owner="worker-2") is None
 
     # A claim old enough to be genuinely dead is still reaped.
-    stale = queue.item_path(pool.CLAIMED, key)
+    stale = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(stale.read_text())
     record["claimed_unix"] = record["claimed_unix"] - (pool.HEARTBEAT_S + 60.0)
     stale.write_text(json.dumps(record))
@@ -1217,34 +1213,34 @@ def test_capacity_is_not_oversubscribed_under_contention(
 
 
 def test_admission_refuses_when_the_box_is_full(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A, resources={"gpu": 1})
-    _publish(queue, KEY_B, resources={"gpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1})
+    ActionRows(queue).publish(KEY_B, resources={'gpu': 1})
     capacity = {"gpu": 1}
-    assert queue.claim(capacity=capacity) is not None
+    assert queue.claim(has_gpu=True, capacity=capacity) is not None
     # One token, one running action: the second is denied, and stays ready.
-    assert queue.claim(capacity=capacity) is None
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
 
 def test_finishing_an_action_returns_its_capacity(queue: pool.PoolQueue) -> None:
     """A reservation is held only while running -- the repro's first bug."""
 
-    _publish(queue, KEY_A, resources={"gpu": 1})
-    _publish(queue, KEY_B, resources={"gpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1})
+    ActionRows(queue).publish(KEY_B, resources={'gpu': 1})
     capacity = {"gpu": 1}
-    first = queue.claim(capacity=capacity)
+    first = queue.claim(has_gpu=True, capacity=capacity)
     assert first is not None
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
     queue.finish(KEY_A, status="executed")
     assert queue.ledger().available().get("gpu", 0) == 1
-    assert queue.claim(capacity=capacity) is not None
+    assert queue.claim(has_gpu=True, capacity=capacity) is not None
 
 
 def test_reaping_a_dead_claimant_returns_its_capacity(queue: pool.PoolQueue) -> None:
     """A reservation must not outlive its holder, or the box never recovers."""
 
-    _publish(queue, KEY_A, resources={"gpu": 1})
-    assert queue.claim(capacity={"gpu": 1}) is not None
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1})
+    assert queue.claim(has_gpu=True, capacity={"gpu": 1}) is not None
     assert queue.ledger().available().get("gpu", 0) == 0
     queue.reap_stale(timeout_s=-1.0)
     assert queue.ledger().available().get("gpu", 0) == 1
@@ -1253,14 +1249,14 @@ def test_reaping_a_dead_claimant_returns_its_capacity(queue: pool.PoolQueue) -> 
 def test_losing_the_claim_race_releases_the_tokens(queue: pool.PoolQueue) -> None:
     """Admission runs before the rename, so a loser must hold nothing."""
 
-    _publish(queue, KEY_A, resources={"gpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1})
     ledger = queue.ledger()
     ledger.ensure_capacity({"gpu": 1})
     # Simulate the race: the item vanishes between admission and the rename.
     original = os.rename
 
     def steal(src: object, dst: object) -> None:
-        if str(src).endswith(f"{KEY_A}.json") and pool.READY in str(src):
+        if str(src).endswith(f"{KEY_A}.json") and pool.record_store.READY in str(src):
             raise FileNotFoundError(src)
         original(src, dst)
 
@@ -1271,8 +1267,8 @@ def test_losing_the_claim_race_releases_the_tokens(queue: pool.PoolQueue) -> Non
 
 
 def test_denials_age_an_item_to_the_front(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(KEY_A)
+    ActionRows(queue).publish(KEY_B)
     queue.record_pass(KEY_B)
     assert [r["action_key"] for r in queue.ready_items()][0] == KEY_B
     assert queue.passes(KEY_B) == 1
@@ -1288,10 +1284,10 @@ def test_aging_reorders_within_a_priority_band_and_never_across_one(
     not a hint anyone can plan on.
     """
 
-    _publish(queue, KEY_B, priority=-10)          # background, published first
+    ActionRows(queue).publish(KEY_B, priority=-10)          # background, published first
     for _ in range(pool.STARVATION_FLOOR + 2):
         queue.record_pass(KEY_B)
-    _publish(queue, KEY_A, priority=0)            # fresh foreground
+    ActionRows(queue).publish(KEY_A, priority=0)            # fresh foreground
     assert [r["action_key"] for r in queue.ready_items()] == [KEY_A, KEY_B]
     assert queue.claim()["action_key"] == KEY_A
     assert queue.claim()["action_key"] == KEY_B
@@ -1312,18 +1308,18 @@ def test_a_starved_background_item_cannot_withhold_the_host_from_foreground_work
     foreground item has been tried.
     """
 
-    _publish(queue, KEY_B, priority=-10, resources={"gpu": 4})
+    ActionRows(queue).publish(KEY_B, priority=-10, resources={'gpu': 4})
     capacity = {"gpu": 4}
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
     assert ledger.acquire("0" * 64, {"gpu": 2}) is True     # KEY_B cannot fit now
     for _ in range(pool.STARVATION_FLOOR):
         queue.record_pass(KEY_B)
-    _publish(queue, KEY_A, priority=0, resources={"gpu": 1})
+    ActionRows(queue).publish(KEY_A, priority=0, resources={'gpu': 1})
 
-    taken = queue.claim(capacity=capacity)
+    taken = queue.claim(has_gpu=True, capacity=capacity)
     assert taken is not None and taken["action_key"] == KEY_A
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
 
 def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
@@ -1335,8 +1331,8 @@ def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
     being overtaken, or it never runs while the queue stays busy.
     """
 
-    _publish(queue, KEY_A, resources={"gpu": 4})      # the big, starved one
-    _publish(queue, KEY_B, resources={"gpu": 1})      # the small overtaker
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 4})      # the big, starved one
+    ActionRows(queue).publish(KEY_B, resources={'gpu': 1})      # the small overtaker
     capacity = {"gpu": 4}
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
@@ -1344,17 +1340,17 @@ def test_a_starved_item_withholds_the_host_instead_of_being_overtaken(
     assert ledger.acquire("0" * 64, {"gpu": 2}) is True
 
     for _ in range(pool.STARVATION_FLOOR - 1):
-        taken = queue.claim(capacity=capacity)
+        taken = queue.claim(has_gpu=True, capacity=capacity)
         assert taken is not None and taken["action_key"] == KEY_B
         queue.finish(KEY_B, status="executed")
-        queue.item_path(pool.DONE, KEY_B).unlink()
-        _publish(queue, KEY_B, resources={"gpu": 1})
+        queue.records.item_path(pool.record_store.DONE, KEY_B).unlink()
+        ActionRows(queue).publish(KEY_B, resources={'gpu': 1})
 
     assert queue.passes(KEY_A) >= pool.STARVATION_FLOOR - 1
     queue.record_pass(KEY_A)
     # Now the floor is reached: the host is withheld rather than handed to KEY_B.
-    assert queue.claim(capacity=capacity) is None
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
 
 def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
@@ -1362,11 +1358,11 @@ def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
 ) -> None:
     """Withholding a box for work it could never run is the deadlock, not the fix."""
 
-    _publish(queue, KEY_A, resources={"gpu": 99})     # never fits this host
-    _publish(queue, KEY_B, resources={"gpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 99})     # never fits this host
+    ActionRows(queue).publish(KEY_B, resources={'gpu': 1})
     for _ in range(pool.STARVATION_FLOOR + 2):
         queue.record_pass(KEY_A)
-    taken = queue.claim(capacity={"gpu": 2})
+    taken = queue.claim(has_gpu=True, capacity={"gpu": 2})
     assert taken is not None and taken["action_key"] == KEY_B
     local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
     denial = next(iter(pool.cpu_admission.read_json(local)["records"].values()))
@@ -1378,9 +1374,9 @@ def test_work_that_can_never_fit_here_does_not_deadlock_the_box(
 
 
 def test_a_claim_clears_its_own_denial_history(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A, resources={"gpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1})
     queue.record_pass(KEY_A)
-    assert queue.claim(capacity={"gpu": 1}) is not None
+    assert queue.claim(has_gpu=True, capacity={"gpu": 1}) is not None
     assert queue.passes(KEY_A) == 0
 
 
@@ -1389,12 +1385,11 @@ def test_admission_requires_explicit_capacity(
 ) -> None:
     """The plain API refuses execution without a declared host capacity."""
 
-    _publish(plain_queue, KEY_A, resources={"gpu": 99})
+    ActionRows(plain_queue).publish(KEY_A, resources={'gpu': 99})
     assert plain_queue.claim() is None
-    assert plain_queue.item_path(pool.READY, KEY_A).exists()
-    assert not plain_queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert plain_queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not plain_queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert not plain_queue.ledger().held_keys()
-
 
 
 def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
@@ -1408,17 +1403,17 @@ def test_reaping_a_foreign_claimant_returns_capacity_to_that_host(
     exits on max-idle, and it looks exactly like an empty queue.
     """
 
-    _publish(queue, KEY_A, resources={"gpu": 2})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 2})
     # Claim on the foreign box so its claim, lease and ledger all agree.
     with monkeypatch.context() as patch:
         patch.setattr(pool.socket, "gethostname", lambda: "other-box")
-        assert queue.claim(capacity={"gpu": 2}) is not None
+        assert queue.claim(has_gpu=True, capacity={"gpu": 2}) is not None
 
     queue.reap_stale(timeout_s=-1.0)
 
     assert queue.ledger("other-box").available().get("gpu", 0) == 2
     assert queue.ledger("other-box").held_keys() == []
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
@@ -1433,7 +1428,7 @@ def test_retire_free_capacity_lowers_the_offer_but_never_a_held_token(tmp_path):
     from prismabuild import pool
 
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     ledger = queue.ledger("box")
     ledger.ensure_capacity({"mem_gb": 16, "gpu": 2})
     assert ledger.capacity() == {"mem_gb": 16, "gpu": 2}
@@ -1526,10 +1521,10 @@ def test_a_reaper_that_loses_the_race_writes_no_keyless_stub(
     "gone".
     """
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     assert queue.claim() is not None
-    claimed_path = queue.item_path(pool.CLAIMED, KEY_A)
-    real_read = pool._read_json
+    claimed_path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
+    real_read = pool.record_store._read_json
 
     def vanishing_read(path: object) -> object:
         if pathlib.Path(str(path)) == claimed_path:
@@ -1537,10 +1532,10 @@ def test_a_reaper_that_loses_the_race_writes_no_keyless_stub(
             return None
         return real_read(path)
 
-    monkeypatch.setattr(pool, "_read_json", vanishing_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', vanishing_read)
 
     assert queue.reap_stale(timeout_s=-1.0) == []
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
 
 
 def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
@@ -1556,19 +1551,19 @@ def test_a_keyless_ready_record_is_filed_rather_than_left_to_starve(
     permanent resident into a defect somebody can see.
     """
 
-    _publish(queue, KEY_A)
-    stub = queue.item_path(pool.READY, KEY_B)
+    ActionRows(queue).publish(KEY_A)
+    stub = queue.records.item_path(pool.record_store.READY, KEY_B)
     stub.write_text(json.dumps({"claimed_host": "sparky", "attempts": 1}))
 
     assert queue.claim() is None                         # incomplete census
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert not queue.ledger().held_keys()
     assert queue.quarantine_orphans() == [KEY_B]
     assert queue.claim() is not None                      # KEY_A still runnable
     assert queue.quarantine_orphans() == []
     assert not stub.exists()
 
-    filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, KEY_B).read_text())
     assert filed["status"] == "orphaned_stub"
     assert filed["action_key"] == KEY_B
     assert "reap_stale" in filed["detail"]["reason"]
@@ -1597,7 +1592,6 @@ def test_an_unplaceable_item_is_knowable_before_it_is_published(
     assert plain_queue.offered_tags() == ["cpu", "dl380g10", "gb10", "sparky", "x86"]
 
 
-
 def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(plain_queue: pool.PoolQueue) -> None:
     """Tags alone would match; the offer has to carry the GPU fact too."""
 
@@ -1608,7 +1602,6 @@ def test_a_gpu_demand_is_not_placeable_on_a_cpu_box(plain_queue: pool.PoolQueue)
     assert plain_queue.placeable({"tags": ["x86"], "resources": {"mem_gb": 4}}) is True
 
 
-
 def test_a_demand_larger_than_any_box_is_refused_not_queued(
     plain_queue: pool.PoolQueue,
 ) -> None:
@@ -1617,7 +1610,6 @@ def test_a_demand_larger_than_any_box_is_refused_not_queued(
     plain_queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"gpu": 4, "mem_gb": 100})
     assert plain_queue.placeable({"tags": [], "resources": {"mem_gb": 400}}) is False
-
 
 
 def test_an_empty_registry_answers_unknown_rather_than_no(
@@ -1635,7 +1627,6 @@ def test_an_empty_registry_answers_unknown_rather_than_no(
     assert plain_queue.offered_tags() == []
 
 
-
 def test_a_stale_offer_does_not_vouch_for_a_dead_box(plain_queue: pool.PoolQueue) -> None:
     """An offer is a claim refreshed by its own box; expiry is what makes it one."""
 
@@ -1644,7 +1635,6 @@ def test_a_stale_offer_does_not_vouch_for_a_dead_box(plain_queue: pool.PoolQueue
     assert plain_queue.placeable({"tags": ["x86"]}, max_age_s=1e6) is True
     assert plain_queue.placeable({"tags": ["x86"]}, max_age_s=-1.0) is None
     assert plain_queue.offered_tags(max_age_s=-1.0) == []
-
 
 
 def test_finish_does_not_republish_a_payloadless_stub(
@@ -1661,14 +1651,14 @@ def test_finish_does_not_republish_a_payloadless_stub(
     lived was gone.  Six actions in the live queue are unrecoverable this way.
     """
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     assert queue.claim() is not None
-    queue.item_path(pool.CLAIMED, KEY_A).unlink()          # the reaper won
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()          # the reaper won
 
     landed = queue.finish(KEY_A, status="failed", detail={"exception": "boom"})
 
-    assert landed == queue.item_path(pool.FAILED, KEY_A)
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert landed == queue.records.item_path(pool.record_store.FAILED, KEY_A)
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
     filed = json.loads(landed.read_text())
     assert filed["status"] == "finish_lost_race"
     assert filed["detail"]["worker_detail"] == {"exception": "boom"}
@@ -1679,10 +1669,10 @@ def test_finish_losing_the_race_does_not_overwrite_the_winners_record(
 ) -> None:
     """Whatever the winner filed stands; the loser must not clobber it."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     assert queue.claim() is not None
-    queue.item_path(pool.CLAIMED, KEY_A).unlink()
-    winner = queue.item_path(pool.FAILED, KEY_A)
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).unlink()
+    winner = queue.records.item_path(pool.record_store.FAILED, KEY_A)
     winner.write_text(json.dumps({"action_key": KEY_A, "status": "the winner"}))
 
     queue.finish(KEY_A, status="failed")
@@ -1701,16 +1691,16 @@ def test_a_ready_record_a_worker_cannot_execute_is_quarantined(
     having taken a worker process down with it.
     """
 
-    _publish(queue, KEY_A)
-    stub = queue.item_path(pool.READY, KEY_B)
+    ActionRows(queue).publish(KEY_A)
+    stub = queue.records.item_path(pool.record_store.READY, KEY_B)
     stub.write_text(json.dumps({"action_key": KEY_B, "attempts": 0}))
 
     assert queue.quarantine_orphans() == [KEY_B]
-    filed = json.loads(queue.item_path(pool.FAILED, KEY_B).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, KEY_B).read_text())
     assert filed["status"] == "orphaned_stub"
     assert "worker_script" in filed["detail"]["reason"]
     # The healthy item is untouched.
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_lease_whose_record_is_gone_is_swept(tmp_path) -> None:
@@ -1725,10 +1715,10 @@ def test_a_lease_whose_record_is_gone_is_swept(tmp_path) -> None:
     from prismabuild import pool
 
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.ledger("box").ensure_capacity({"gpu": 1})
     assert queue.ledger("box").acquire(KEY_A, {"gpu": 1}) is True
-    lease = queue.lease_path(KEY_A)
+    lease = queue.records.lease_path(KEY_A)
     lease.parent.mkdir(parents=True, exist_ok=True)
     lease.write_text(json.dumps({
         "action_key": KEY_A, "host": "box", "pid": 1,
@@ -1747,8 +1737,8 @@ def test_a_lease_written_moments_ago_is_left_alone(tmp_path) -> None:
     from prismabuild import pool
 
     queue = pool.PoolQueue(tmp_path / "q")
-    queue.ensure_layout()
-    lease = queue.lease_path(KEY_B)
+    queue.records.ensure_layout()
+    lease = queue.records.lease_path(KEY_B)
     lease.parent.mkdir(parents=True, exist_ok=True)
     lease.write_text(json.dumps({"action_key": KEY_B, "heartbeat_unix": time.time()}))
 
@@ -1764,15 +1754,15 @@ def test_a_lease_beside_its_record_is_never_swept(tmp_path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "q"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    _publish(queue, KEY_A)
+    queue.records.ensure_layout()
+    ActionRows(queue).publish(KEY_A)
     assert queue.claim() is not None
-    old = json.loads(queue.lease_path(KEY_A).read_text())
+    old = json.loads(queue.records.lease_path(KEY_A).read_text())
     old["heartbeat_unix"] = time.time() - 10_000.0
-    queue.lease_path(KEY_A).write_text(json.dumps(old))
+    queue.records.lease_path(KEY_A).write_text(json.dumps(old))
 
     assert queue.sweep_widowed_leases(timeout_s=60.0) == []
-    assert queue.lease_path(KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
 
 
 def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
@@ -1792,8 +1782,8 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     place in that band.
     """
 
-    _publish(queue, KEY_A, resources={"gpu": 4})      # the big, starved one
-    _publish(queue, KEY_B, resources={"gpu": 1})      # the small overtaker
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 4})      # the big, starved one
+    ActionRows(queue).publish(KEY_B, resources={'gpu': 1})      # the small overtaker
     capacity = {"gpu": 4}
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
@@ -1802,25 +1792,26 @@ def test_the_withhold_expires_so_a_long_block_does_not_become_the_deadlock(
     for _ in range(pool.STARVATION_FLOOR):
         queue.record_pass(KEY_A)
     # Inside the ceiling: the host is withheld, exactly as before this change.
-    assert queue.claim(capacity=capacity) is None
-    assert queue.item_path(pool.READY, KEY_B).exists()
+    assert queue.claim(has_gpu=True, capacity=capacity) is None
+    assert queue.records.item_path(pool.record_store.READY, KEY_B).exists()
 
     # Age the block itself past the ceiling -- and only the block.  ``passes``
     # is untouched, which is the property under test.
-    record = json.loads(queue.passes_path(KEY_A).read_text())
+    record = json.loads(queue.records.passes_path(KEY_A).read_text())
     before = record["passes"]
     record["first_unix"] -= pool.WITHHOLD_CEILING_S + 1.0
-    queue.passes_path(KEY_A).write_text(json.dumps(record))
+    queue.records.passes_path(KEY_A).write_text(json.dumps(record))
     assert queue.withhold_age(KEY_A) > pool.WITHHOLD_CEILING_S
 
-    taken = queue.claim(capacity=capacity)
+    taken = queue.claim(has_gpu=True, capacity=capacity)
     assert taken is not None and taken["action_key"] == KEY_B, (
         "past the ceiling the box must stop being held shut for work it cannot admit"
     )
     assert queue.passes(KEY_A) >= before, (
         "the starved item must keep its passes, and so its place in the ordering"
     )
-    assert queue.item_path(pool.READY, KEY_A).exists(), "it is still queued, not dropped"
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists(
+    ), "it is still queued, not dropped"
 
 
 def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
@@ -1832,12 +1823,12 @@ def test_the_first_denial_stamp_is_the_age_of_the_block_not_of_the_last_denial(
     enough to starve an item is busy enough to re-deny it every few seconds.
     """
 
-    _publish(queue, KEY_A, resources={"gpu": 4})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 4})
     queue.record_pass(KEY_A)
-    stamped = json.loads(queue.passes_path(KEY_A).read_text())
+    stamped = json.loads(queue.records.passes_path(KEY_A).read_text())
     stamped["first_unix"] -= 600.0
     stamped["updated_unix"] -= 600.0
-    queue.passes_path(KEY_A).write_text(json.dumps(stamped))
+    queue.records.passes_path(KEY_A).write_text(json.dumps(stamped))
 
     queue.record_pass(KEY_A)          # denied again, right now
     assert queue.withhold_age(KEY_A) >= 600.0, (
@@ -1865,7 +1856,7 @@ def test_fixture_action_is_not_selected_by_an_unrelated_queue_cancellation(
     try:
         action_pid = _await_pid(pidfile)
         other = pool.PoolQueue(tmp_path / 'unrelated-queue')
-        _publish(other, 'a' * 64)
+        ActionRows(other).publish('a' * 64)
         census = pool.find_launcher_pids
         # Exercise the real key matching, but never let this regression signal
         # another agent's process if that agent also has an old fixture key.

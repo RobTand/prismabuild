@@ -1,0 +1,80 @@
+{
+  "capture_name": "election-and-data-capture-01",
+  "capture_report_sha256": "e14eda4157bbad7398eee8cb429f3223e6ca04fab1923f73c92746936c88e698",
+  "excluded_cases": [
+    "measurement-election/bounded",
+    "measurement-election/unbounded"
+  ],
+  "files": {
+    "goldens-data-and-retry.jsonl": "07a673e9a5a914e95c8da03c33df73fde85cb625f01793016f49aa1e86eafe87",
+    "historical-data-and-retry.jsonl": "ae08ac3ba2cbcecc021df9dea0bf62487b2ac4dab75d2a9deca25c949d5728c5"
+  },
+  "finished_at": "2026-10-16T22:18:51.560064+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [
+    {
+      "attestation_error": null,
+      "case": "measurement-election/bounded",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "No module named 'prismabuild.holder_census'",
+        "type": "ModuleNotFoundError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "measurement-election/bounded",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "No module named 'prismabuild.holder_census'",
+        "type": "ModuleNotFoundError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "measurement-election/unbounded",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "No module named 'prismabuild.holder_census'",
+        "type": "ModuleNotFoundError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "measurement-election/unbounded",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "No module named 'prismabuild.holder_census'",
+        "type": "ModuleNotFoundError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "writer",
+      "returncode": 3
+    }
+  ],
+  "selected_cases": [
+    "dc-data-plans/initial",
+    "dc-data-plans/replay",
+    "output-retry-stop/consumed"
+  ],
+  "source_git": {
+    "parents": [
+      "94703e498ba0f9aef6725f5c6c037b54adb3ced1"
+    ],
+    "snapshot": "8ae34382a2f1645d82719e0a7e62afd5791f85ea",
+    "tree": "7d14a83b7a592547922dbc9e77d006f0216d2e71"
+  },
+  "started_at": "2026-10-16T22:17:49.777263+00:00"
+}

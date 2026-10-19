@@ -8,6 +8,9 @@ order, ``--cpus`` where the row says ``demand.cpu``, tags the other way round
 -- because those are the differences a person actually types.
 """
 from __future__ import annotations
+from submission_support import patch_store
+
+from pbtest_shard_output import finish_submission
 
 import json
 from pathlib import Path
@@ -23,6 +26,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbcampaign  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue, _one_json_line  # noqa: E402
@@ -34,8 +38,8 @@ CAPACITY = {"cpu": 8, "mem_gb": 16, "gpu": 1}
 def fleet_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point every tool at one private fleet, as the boxes share one for real."""
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 
@@ -94,7 +98,9 @@ def test_gpu_budget_row_seals_the_same_action_as_pbrun(
     manifest = _manifest(tmp_path, [row])
     assert pbcampaign.main(["--transport", "pool", "--detach", manifest]) == 0
     campaign_key = _one_json_line(capsys.readouterr())["action_key"]
-    record = json.loads((queue.dir(pool.READY) / f"{campaign_key}.json").read_text())
+    record = json.loads(
+        (queue.records.dir(pool.record_store.READY) / f"{campaign_key}.json").read_text(),
+    )
     request = Path(record["cas_root"]) / "requests" / campaign_key[:2] / f"{campaign_key}.json"
     params = json.loads(request.read_text())["params"]
     assert params["gpu_memory_gb"] == float(budget)
@@ -129,7 +135,7 @@ def test_invalid_gpu_budget_refuses_manifest_before_any_submission(
     ])
     with pytest.raises(SystemExit, match="row 1: gpu_memory_gb"):
         pbcampaign.main(["--transport", "pool", "--detach", manifest])
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 @pytest.mark.parametrize("transport,fields,reason", [
@@ -148,7 +154,7 @@ def test_unsupported_gpu_budget_refuses_manifest_before_any_submission(
     ])
     with pytest.raises(SystemExit, match=f"row 1:.*{reason}"):
         pbcampaign.main(["--transport", transport, "--detach", manifest])
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_exclusive_row_implies_gpu_demand_for_memory_budget(tmp_path):
@@ -271,14 +277,14 @@ def test_re_running_the_same_manifest_runs_nothing(
     first_statuses = [line.split()[1] for line in first.splitlines()[1:]]
     assert len(first_statuses) == 2
     assert all(status in {"executed", "cache_hit"} for status in first_statuses)
-    published_before = len(list(queue.dir(pool.DONE).glob("*.json")))
+    published_before = len(list(queue.records.dir(pool.record_store.DONE).glob("*.json")))
 
     assert pbcampaign.main([manifest]) == 0
     again = capsys.readouterr().out
     assert [line.split()[1] for line in again.splitlines()[1:]] == [
         "cache_hit", "cache_hit"], again
-    assert not list(queue.dir(pool.READY).glob("*.json"))
-    assert len(list(queue.dir(pool.DONE).glob("*.json"))) == published_before
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
+    assert len(list(queue.records.dir(pool.record_store.DONE).glob("*.json"))) == published_before
 
 
 def test_detach_prints_the_keys_and_does_not_wait(
@@ -295,7 +301,7 @@ def test_detach_prints_the_keys_and_does_not_wait(
              if line.strip()]
     assert [line["status"] for line in lines] == ["submitted", "submitted"]
     assert len({line["action_key"] for line in lines}) == 2
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
 
 # --------------------------------------------------------------------------
@@ -317,7 +323,7 @@ def test_an_unknown_field_is_refused_before_anything_is_sealed(
         pbcampaign.main([manifest])
     assert "timeout" in str(raised.value)
     # Nothing was submitted: the refusal is at load, not at row two.
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_a_row_pbrun_refuses_does_not_stop_the_others(
@@ -336,7 +342,7 @@ def test_a_row_pbrun_refuses_does_not_stop_the_others(
     captured = capsys.readouterr()
     assert len([line for line in captured.out.splitlines() if line.strip()]) == 2
     assert "row 1 refused" in captured.err
-    assert len(list(queue.dir(pool.READY).glob("*.json"))) == 2
+    assert len(list(queue.records.dir(pool.record_store.READY).glob("*.json"))) == 2
 
 
 # --------------------------------------------------------------------------
@@ -359,12 +365,12 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
 
     seen: dict[str, list[str]] = {}
 
-    def fake_main() -> int:
-        seen["argv"] = list(sys.argv)
-        print(json.dumps({"action_key": "a" * 64, "status": "submitted"}))
-        return 0
+    def fake_submit(request, *, report, **kwargs):
+        seen["request"] = request
+        finish_submission(report)
+        return report
 
-    monkeypatch.setattr(pbrun, "main", fake_main)
+    monkeypatch.setattr(submit_core, 'submit_request', fake_submit)
     published = pbcampaign.submit_row(
         {
             "argv": ["/bin/bash", "-lc", "./probe.sh"],
@@ -378,10 +384,10 @@ def test_a_measurement_row_reaches_pbrun_with_every_flag_it_named(
     )
 
     assert published["status"] == "submitted"
-    argv = seen["argv"]
-    assert argv[argv.index("--host-class") + 1] == "gb10"
-    assert argv[argv.index("--max-attempts") + 1] == "1"
-    assert "--measurement" in argv and "--retry-safe" in argv
+    request = seen["request"]
+    assert request.host_class == "gb10"
+    assert request.max_attempts == 1
+    assert request.measurement and request.retry_safe
 
 
 def test_the_four_fields_are_one_pbrun_command_line_and_nothing_else() -> None:
@@ -417,7 +423,7 @@ def test_a_measurement_without_a_host_class_is_refused_before_anything_is_sealed
 
     assert "row 1" in str(raised.value)
     assert "--measurement requires --host-class" in str(raised.value)
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_a_host_class_row_is_refused_on_the_pull_queue(tmp_path: Path) -> None:

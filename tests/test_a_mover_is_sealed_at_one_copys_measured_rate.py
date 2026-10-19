@@ -19,6 +19,9 @@ over one copy the minimum bounds nothing.
 Everything runs on ``tmp_path`` queues and stage roots (#628).
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import argparse
 import hashlib
@@ -33,13 +36,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import action_edges, pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
     CONSUMER, PHASE_BYTES, READERS, TIER, _Cas, _manifest, _template)
 
 MANIFEST = "a" * 64
 OLDER, NEWER = "e" * 64, "f" * 64
 KIND = f"{storage_tiers.FILL_KIND}{storage_tiers.TIER_DEMAND_SEPARATOR}{TIER}"
+
+
+from fleet_world import FleetWorld
 
 
 def _landed(key: str, consumer: str, mb_s: float, *, unix: float,
@@ -235,6 +241,8 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
     """Seal one window through ``pbrun.residency_stage_rows`` at a stated offer."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(_manifest()))
@@ -248,21 +256,18 @@ def _seal(tmp_path: Path, queue: pool.PoolQueue, *, offer: int | None,
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = dict(pbrun.resolve_stage_tier(queue, None))
+    tier = dict(residency_plan.resolve_stage_tier(queue, None))
     tier["tokens"] = ({} if offer is None
                       else {**dict(tier.get("tokens") or {}),
                             storage_tiers.FILL_KIND: offer})
-    args = types.SimpleNamespace(
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3)
     for record in receipts:
         record["manifest_sha256"] = (digest if record["manifest_sha256"] == MANIFEST
                                      else record["manifest_sha256"])
-    return pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=_Cas(manifest_path), movement_receipts=receipts)
+    return residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=_Cas(manifest_path), movement_receipts=receipts, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
 
 
 def _fills(staged: dict[str, object]) -> set[int]:
@@ -275,12 +280,6 @@ def _fills(staged: dict[str, object]) -> set[int]:
     return {int(row["resources"][KIND]) for row in rows}
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
-
-
 @pytest.mark.parametrize("offer", [428, 214])
 def test_a_fresh_mover_is_sealed_at_the_measured_copy_not_the_offer(
         tmp_path: Path, offer: int) -> None:
@@ -289,7 +288,7 @@ def test_a_fresh_mover_is_sealed_at_the_measured_copy_not_the_offer(
     Before #909 it was sealed at ``min(440, offer)``: the whole offer.
     """
 
-    staged = _seal(tmp_path, _queue(tmp_path), offer=offer,
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=offer,
                    receipts=[dict(record) for record in WINDOWS])
     assert _fills(staged) == {116}
     source = staged["plan"]["demand_source"]            # type: ignore[index]
@@ -304,7 +303,7 @@ def test_a_one_copy_window_is_sealed_at_the_named_share(
 
     lone = _landed("1" * 64, NEWER, 47.0, unix=500.0)
     fleet = _fleet(FLEET_NEW, 138.0, unix=400.0, count=3)
-    staged = _seal(tmp_path, _queue(tmp_path), offer=428,
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=428,
                    receipts=[lone, *fleet])
     assert _fills(staged) == {138}
     measured = staged["plan"]["demand_source"]["fill_measured"]  # type: ignore[index]
@@ -315,7 +314,7 @@ def test_a_one_copy_window_is_sealed_at_the_named_share(
 
 def test_the_offer_still_caps_a_seal_admission_could_not_honour(
         tmp_path: Path) -> None:
-    staged = _seal(tmp_path, _queue(tmp_path), offer=100,
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=100,
                    receipts=[dict(record) for record in WINDOWS])
     assert _fills(staged) == {100}
     assert staged["plan"]["demand_source"]["fill"] == "tier-offer-cap"  # type: ignore[index]
@@ -325,7 +324,7 @@ def test_a_mover_with_nothing_measured_is_sealed_at_the_named_bound(
         tmp_path: Path) -> None:
     """No receipt prices a copy: the offer is the stated bound, and says so."""
 
-    staged = _seal(tmp_path, _queue(tmp_path), offer=428, receipts=[])
+    staged = _seal(tmp_path, FleetWorld(tmp_path).queue, offer=428, receipts=[])
     assert _fills(staged) == {428}
     source = staged["plan"]["demand_source"]            # type: ignore[index]
     assert source["fill"] == "tier-offer"
@@ -338,24 +337,26 @@ def test_a_mover_with_nothing_measured_is_sealed_at_the_named_bound(
 def test_the_submitters_declaration_reaches_the_plan(tmp_path: Path) -> None:
     import pbrun
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     staged = _seal(tmp_path, queue, offer=None, receipts=[])
     assert "reader" not in staged["plan"]           # undeclared: byte-identical
     args = argparse.Namespace(residency_prefetch_depth_gib=22,
                               residency_read_mb_s=21)
-    assert pbrun.reader_declaration(args) == {
+    assert residency_plan.reader_declaration(residency_plan.FilingOptions(
+        prefetch_depth_gib=args.residency_prefetch_depth_gib,
+        read_mb_s=args.residency_read_mb_s)) == {
         "prefetch_depth_bytes": 22 * storage_tiers.GIB, "read_mb_s": 21}
     # A deferred record filed before #909 restores a Namespace without them.
-    assert pbrun.reader_declaration(argparse.Namespace()) == {}
+    assert residency_plan.reader_declaration(residency_plan.FilingOptions()) == {}
 
 
 @pytest.mark.parametrize("depth,rate", [(-1, None), (None, 0), (True, None)])
 def test_a_malformed_declaration_is_refused_at_submission(depth, rate) -> None:
     import pbrun
 
-    with pytest.raises(SystemExit):
-        pbrun.reader_declaration(argparse.Namespace(
-            residency_prefetch_depth_gib=depth, residency_read_mb_s=rate))
+    with pytest.raises(submit_core.SubmissionRefused):
+        residency_plan.reader_declaration(residency_plan.FilingOptions(
+            prefetch_depth_gib=depth, read_mb_s=rate))
 
 
 def test_a_deferred_record_reads_with_or_without_the_declaration() -> None:

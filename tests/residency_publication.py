@@ -9,21 +9,22 @@ leaves -- the consumer's fragment, plus the mover's complete receipt, tied to
 each other by their entry counts -- so a fixture that means "landed" has to
 file both.
 
-This is the one place that shape is written down for tests, so a fixture
-saying "landed" cannot drift from what ``stage_move`` and ``ram_promote``
-file.  Nothing here touches production paths: it writes exactly the two
-records those two tools write on a clean finish.
+The fixture creates private sparse files, hashes their actual bytes and dates
+their live identities through ``staged_path.publish_vouch``. Its complete
+receipt describes exactly those published entries. The supplied manifest
+reference remains the caller's plan identity; this helper does not seal CAS.
 """
 from __future__ import annotations
 
 from pathlib import Path
 import sys
+import hashlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import pool, residency_map  # noqa: E402
+from prismabuild import pool, reader_lease, residency_map, staged_path  # noqa: E402
 
 
-def vouch_landed(
+def publish_landed_files(
     queue: pool.PoolQueue,
     *,
     consumer_action_key: str,
@@ -38,7 +39,7 @@ def vouch_landed(
     name: str = "shard",
     unix: float = 1000.0,
 ) -> None:
-    """File the fragment and the receipt one finished copy leaves.
+    """Create real sparse payloads and publish their dated pair and receipt.
 
     ``stage_root`` is the root the copy *landed on*: the plan's stage root
     for a stage mover, and the announced ram mountpoint for a promotion --
@@ -53,15 +54,25 @@ def vouch_landed(
     """
 
     root = Path(stage_root)
+    if not root.resolve().is_relative_to(queue.root.parent.resolve()):
+        raise ValueError('landed fixture files must stay in the private queue workspace')
     span = int(range_end_bytes) - int(range_start_bytes)
-    each = max(1, span // max(1, entries))
+    each, remainder = divmod(span, entries)
     named: dict[str, dict[str, object]] = {}
+    material: dict[str, dict[str, object]] = {}
     for index in range(entries):
-        declared = f"/in/{name}-{index}.bin"
-        named[residency_map.residency_map_key(declared, 0)] = {
-            "stage_path": str(root / "model" / f"{name}-{index}.bin"),
-            "bytes": each, "offset": 0, "sha256": f"{index:x}" * 64,
-        }
+        declared = f"/in/{name}-{range_start_bytes}-{index}.bin"
+        path = root / "model" / mover_action_key / f"{name}-{index}.bin"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        size = each + (remainder if index == entries - 1 else 0)
+        with path.open('wb') as stream:
+            stream.truncate(size)
+        with path.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        key = residency_map.residency_map_key(declared, 0)
+        named[key] = {"stage_path": str(path), "bytes": size,
+                      "offset": 0, "sha256": digest}
+        material[key] = {**named[key], 'file_id': reader_lease.stat_identity(str(path))}
     fragment: dict[str, object] = {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer_action_key,
@@ -71,7 +82,8 @@ def vouch_landed(
     }
     if epoch is not None:
         fragment["epoch"] = epoch
-    residency_map.write_fragment(queue.residency_fragment_root(), fragment)
+    staged_path.publish_vouch(queue.records.residency_fragment_root(), fragment,
+        generation=reader_lease.mint_generation(), material_entries=material)
     receipt: dict[str, object] = {
         "consumer_action_key": consumer_action_key,
         "tier_id": tier_id, "stage_root": str(root),

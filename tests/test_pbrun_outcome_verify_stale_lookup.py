@@ -4,7 +4,7 @@
 ending landed and its ``done/`` or ``failed/`` row read fine, then outcome
 verification failed with ``FileNotFoundError: [Errno 2] No such file or
 directory: '<action key>'`` and ``pbrun`` exited 74.  The name is the
-``attempts/<key>`` component that ``core._open_directory_nofollow`` opens
+``attempts/<key>`` component that ``immutable_files.open_directory_nofollow`` opens
 relative to the held ``attempts/`` descriptor.  The waiter's own poll looked
 that name up before the other box created it (``archived_generation_outcomes``
 walks ``attempts/<key>/<generation>`` on every poll that has no ending yet),
@@ -33,6 +33,7 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbtest  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -43,11 +44,11 @@ SUMMARY = "=========== 61 passed, 1 skipped in 70.40s ==========="
 
 @pytest.fixture()
 def queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> pool.PoolQueue:
-    monkeypatch.setattr(pbrun, "POLL_S", 0.01)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.01)
     made = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    made.ensure_layout()
+    made.records.ensure_layout()
     return made
 
 
@@ -57,7 +58,9 @@ def _landed(q: pool.PoolQueue, *, status: str = "executed",
 
     q.publish(action_key=KEY, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", max_attempts=1)
-    ready = json.loads(q.item_path(pool.READY, KEY).read_text(encoding="utf-8"))
+    ready = json.loads(
+        q.records.item_path(pool.record_store.READY, KEY).read_text(encoding="utf-8"),
+    )
     claim = q.claim()
     assert claim is not None and claim["action_key"] == KEY
     q.finish(KEY, status=status,
@@ -78,7 +81,7 @@ class StaleName:
 
     def __init__(self, q: pool.PoolQueue, monkeypatch: pytest.MonkeyPatch,
                  stale) -> None:
-        self.attempts = str(q.root / pool.ATTEMPTS)
+        self.attempts = str(q.root / pool.record_store.ATTEMPTS)
         self.listed = 0
         self.refused = 0
         self._stale = stale
@@ -124,14 +127,16 @@ def test_a_landed_ending_is_reported_when_the_key_is_stale_until_listed(
     # Stale in every forked reader until that reader lists attempts/.
     StaleName(queue, monkeypatch, lambda shim: shim.listed == 0)
 
-    rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    report = submit_core.action_client.ClientReport()
+    rc = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=30.0,
+        generation=generation, report=report)
     lines = _lines(capsys)
 
     assert rc == 0, lines
     # pbtest reports this shard with its own pytest summary, not as
     # OUTCOME UNOBSERVED.
-    assert pbtest.pytest_summary(lines) == SUMMARY
-    assert pbtest.unobserved_outcome(lines) is None
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
+    assert not isinstance(report.ending.verdict, submit_core.action_client.ClientUnavailable)
 
 
 def test_a_landed_ending_is_reported_after_one_enoent(
@@ -147,10 +152,10 @@ def test_a_landed_ending_is_reported_after_one_enoent(
         return calls["n"] == 1
 
     StaleName(queue, monkeypatch, once)
-    rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 0, lines
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
 
 
 def test_a_failed_ending_keeps_its_own_exit_status(
@@ -160,10 +165,10 @@ def test_a_failed_ending_keeps_its_own_exit_status(
 
     generation = _landed(queue, status="failed", returncode=1)
     StaleName(queue, monkeypatch, lambda shim: shim.listed == 0)
-    rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 1, lines
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
 
 
 def test_a_name_listed_but_still_stale_is_read_again_inside_the_wait(
@@ -180,10 +185,10 @@ def test_a_name_listed_but_still_stale_is_read_again_inside_the_wait(
     generation = _landed(queue)
     clears_at = time.monotonic() + 0.5
     StaleName(queue, monkeypatch, lambda _shim: time.monotonic() < clears_at)
-    rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
     assert rc == 0, lines
-    assert pbtest.pytest_summary(lines) == SUMMARY
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == SUMMARY
     assert any("not visible here yet" in line for line in lines), lines
 
 
@@ -194,10 +199,13 @@ def test_a_stale_name_at_zero_patience_stays_unobserved(
 
     generation = _landed(queue)
     StaleName(queue, monkeypatch, lambda _shim: True)
-    rc = pbrun.await_outcome(queue, KEY, wait_s=0, generation=generation)
+    report = submit_core.action_client.ClientReport()
+    rc = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=0,
+        generation=generation, report=report)
     lines = _lines(capsys)
-    assert rc == pbrun.RECORD_WRITE_FAILED_EXIT, lines
-    assert pbtest.unobserved_outcome(lines) == KEY[:12]
+    assert rc == submit_core.action_client.RECORD_WRITE_FAILED_EXIT, lines
+    assert isinstance(report.ending.verdict, submit_core.action_client.ClientUnavailable)
+    assert report.ending.verdict.action_key[:12] == KEY[:12]
 
 
 def test_an_attempt_that_is_really_missing_is_never_a_pass(
@@ -210,11 +218,11 @@ def test_an_attempt_that_is_really_missing_is_never_a_pass(
     """
 
     generation = _landed(queue)
-    shutil.rmtree(queue.root / pool.ATTEMPTS / KEY)
+    shutil.rmtree(queue.root / pool.record_store.ATTEMPTS / KEY)
     started = time.monotonic()
-    rc = pbrun.await_outcome(queue, KEY, wait_s=30.0, generation=generation)
+    rc = submit_core.action_client.report_pool_outcome(queue, KEY, wait_s=30.0, generation=generation)
     lines = _lines(capsys)
-    assert rc == pbrun.RECORD_WRITE_FAILED_EXIT, lines
+    assert rc == submit_core.action_client.RECORD_WRITE_FAILED_EXIT, lines
     assert time.monotonic() - started < 20.0
     assert any("FileNotFoundError" in line for line in lines), lines
-    assert pbtest.pytest_summary(lines) == ""
+    assert pbtest.pbtest_outcomes.pytest_summary(lines) == ""

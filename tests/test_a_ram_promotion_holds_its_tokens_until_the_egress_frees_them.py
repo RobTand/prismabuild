@@ -24,11 +24,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -38,7 +40,7 @@ RAM_TIER = "ram:dl380g10"
 GIB = storage_tiers.GIB
 CHUNK = 1 << 20
 #: The stage's (and the promotion's) name for the one whole-file entry.
-SHARD = stage_move.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
+SHARD = staged_path.stage_relative("/mnt/shared/model/shard-0.bin", 0, CHUNK,
                                   mount_prefix="/mnt/shared")
 
 
@@ -54,7 +56,7 @@ def _staged(tmp_path: Path) -> tuple[Path, Path, bytes]:
     (stage / SHARD).parent.mkdir(parents=True)
     (stage / SHARD).write_bytes(payload)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
         "mount_prefix": "/mnt/shared",
         "entries": [{"path": "/mnt/shared/model/shard-0.bin", "offset": 0,
@@ -81,7 +83,7 @@ def _args(tmp_path: Path, queue: pool.PoolQueue, *, stage: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(CHUNK),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
     ])
 
 
@@ -94,25 +96,22 @@ def _publish_stage(queue: pool.PoolQueue, stage: Path, payload: bytes
     tests file both, the way ``stage_move.move`` does in production.
     """
 
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     staged = stage / SHARD
     key = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
     digest = hashlib.sha256(payload).hexdigest()
-    residency_map.write_fragment(root, {
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": STAGE_MOVER,
         "tier_id": "prismabuild-stage:dl380g10", "stage_root": str(stage),
         "manifest_sha256": MANIFEST_SHA,
         "entries": {key: {"stage_path": str(staged), "bytes": len(payload),
-                          "sha256": digest, "offset": 0}}})
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=STAGE_MOVER,
-        tier_id="prismabuild-stage:dl380g10", stage_root=str(stage),
-        manifest_sha256=MANIFEST_SHA,
+                          "sha256": digest, "offset": 0}}},
         generation=reader_lease.mint_generation(),
-        entries={key: {"stage_path": str(staged), "bytes": len(payload),
+        material_entries={key: {"stage_path": str(staged), "bytes": len(payload),
                        "sha256": digest, "file_id": identity}})
 
 
@@ -125,7 +124,7 @@ def _epoch(ram: Path) -> str:
 def test_the_promotion_copies_the_staged_names_into_the_tmpfs(
         tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, payload = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
@@ -145,7 +144,7 @@ def test_the_promotion_copies_the_staged_names_into_the_tmpfs(
     assert staged_copy.read_bytes() == payload
     fragment = residency_map.validate_fragment(json.loads(
         residency_map.fragment_path(
-            queue.root / pool.RESIDENCY, CONSUMER, MOVER).read_text()))
+            queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).read_text()))
     assert fragment["tier_id"] == RAM_TIER
     assert fragment["stage_root"] == str(ram)
     assert fragment["epoch"] == epoch
@@ -159,7 +158,7 @@ def test_a_promotion_without_an_epoch_refuses_to_stage(tmp_path: Path) -> None:
     """No epoch, no promotion: a range nobody can place in time is not resident."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, _ = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()                      # no marker: the pre-bootstrap shape
@@ -171,7 +170,7 @@ def test_a_promotion_without_an_epoch_refuses_to_stage(tmp_path: Path) -> None:
     assert receipt["complete"] is False
     assert not (ram / "model").exists()
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
 
 
 def test_a_promotion_refuses_a_source_that_is_not_the_stage(
@@ -179,7 +178,7 @@ def test_a_promotion_refuses_a_source_that_is_not_the_stage(
     """Pool -> ram directly is the one road this refuses (#640's topology)."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, _ = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
@@ -196,7 +195,7 @@ def test_a_promotion_refuses_a_source_that_is_not_the_stage(
 def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
         tmp_path: Path) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage, manifest, payload = _staged(tmp_path)
     ram = tmp_path / "ram"
     ram.mkdir()
@@ -208,8 +207,9 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     # The claim files its tokens; the pin keeps them past finish, read off
     # the receipt exactly the way a stage mover's is.
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(MOVER, {"ram_gib": 1})
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(MOVER, {'ram_gib': 1})
     record = {"action_key": MOVER, "status": "executed", "residency": {
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
         "manifest_sha256": MANIFEST_SHA, "manifest_bytes": CHUNK,
@@ -218,13 +218,13 @@ def test_the_tokens_are_held_past_finish_and_returned_by_the_egress(
 
     # The egress is the only thing that may return them, because it is the
     # only thing that removes the bytes they stand for.
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=ram) == "registered"
-    egress = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    egress = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                  stage_root=str(ram))
 
     assert egress["complete"] is True
     assert not (ram / SHARD).exists()
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()

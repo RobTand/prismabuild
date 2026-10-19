@@ -25,6 +25,7 @@ not be dropped for not fitting yet (#1230 kept it only when it fit then).
 Nothing here touches the live queue, a real pool or a real device.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import hashlib
 from pathlib import Path
@@ -36,6 +37,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild import adaptive_cpu, adaptive_gpu, pool  # noqa: E402
+from gpu_capacity_fixture import idle_gpu_sample
+from claim_transition_fixture import held_transition
 
 T0 = 2_000_000.0
 GIB = adaptive_gpu.GIB
@@ -54,16 +57,6 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
 
 def _key_of(item):
     return None if item is None else item["action_key"]
-
-
-class _Unheld:
-    """What ``_transition_locked`` yields while another loop holds the key."""
-
-    def __enter__(self):
-        return False
-
-    def __exit__(self, *args):
-        return False
 
 
 def _release_when(monkeypatch, queue: pool.PoolQueue, key: str, reason_prefix: str,
@@ -112,9 +105,9 @@ def box(tmp_path: Path, monkeypatch):
         return shape, False, exclusive, int(demand.get("mem_gb", 0)) * GIB
 
     monkeypatch.setattr(adaptive_gpu, "action_contract", contract)
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 20, "interval_s": 1.})
+        "cpu_count": 20, "interval_s": 1.}
     sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(T0),
               "sampled_unix": T0, "complete": True, "attributed": True,
               "devices": [{"uuid": "GPU-1", "name": "NVIDIA GB10", "power_w": 15.,
@@ -124,9 +117,9 @@ def box(tmp_path: Path, monkeypatch):
               "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
               "memory_pressure_some": 0., "memory_pressure_full": 0.,
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(sample))
+    gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -155,7 +148,7 @@ def box(tmp_path: Path, monkeypatch):
     def claim():
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
-                                   tags=[HOST, "gb10"]))
+                                   tags=[HOST, "gb10"], cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler))
 
     return queue, clock, contracts, publish, tick, claim
 
@@ -212,7 +205,7 @@ def test_the_refused_exclusive_row_keeps_the_boundary_its_holder_releases(
         assert waited["evidence"]["gpu_row"] == ldlq[:12]
         assert waited["evidence"]["room"] == LDLQ
         assert waited["evidence"]["kept_for"] == verdict
-    assert queue.item_path(pool.READY, g2).exists()
+    assert queue.records.item_path(pool.record_store.READY, g2).exists()
 
     # The next pass decides the +1 row first, on the released GPU.
     tick()
@@ -239,27 +232,21 @@ def test_a_room_read_while_the_holder_held_binds_once_it_releases(
                   worker_script="/w.py", priority=1, resources=dict(LDLQ))
     queue.publish(action_key=lower, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", priority=-10, resources=dict(G2))
-    original = queue._transition_locked
-
-    def contested(key, **kwargs):
-        return _Unheld() if key == busy_row else original(key, **kwargs)
-
-    monkeypatch.setattr(queue, "_transition_locked", contested)
-    _release_when(monkeypatch, queue, busy_row, "transition_busy", holder)
-    claimed = queue.claim(capacity=capacity)
-    assert claimed is None, (
-        f"claimed {claimed and claimed['action_key'][:4]} past the busy +1 row "
-        "whose holder released after its room was read")
-    busy = _denial(queue, busy_row)
-    assert busy["reason"] == "transition_busy"
-    assert busy["evidence"]["gpu_room_kept"] == LDLQ
-    assert busy["evidence"]["gpu_room_binds_all"] is True
-    deferred = _denial(queue, lower)
-    assert deferred["reason"] == "deferred_for_ready_gpu_row"
-    assert deferred["evidence"]["gpu_row"] == busy_row[:12]
-    assert deferred["evidence"]["kept_for"] == "transition_busy"
-    monkeypatch.setattr(queue, "_transition_locked", original)
-    assert queue.claim(capacity=capacity)["action_key"] == busy_row
+    with held_transition(queue, busy_row):
+        _release_when(monkeypatch, queue, busy_row, "transition_busy", holder)
+        claimed = queue.claim(has_gpu=True, capacity=capacity)
+        assert claimed is None, (
+            f"claimed {claimed and claimed['action_key'][:4]} past the busy +1 row "
+            "whose holder released after its room was read")
+        busy = _denial(queue, busy_row)
+        assert busy["reason"] == "transition_busy"
+        assert busy["evidence"]["gpu_room_kept"] == LDLQ
+        assert busy["evidence"]["gpu_room_binds_all"] is True
+        deferred = _denial(queue, lower)
+        assert deferred["reason"] == "deferred_for_ready_gpu_row"
+        assert deferred["evidence"]["gpu_row"] == busy_row[:12]
+        assert deferred["evidence"]["kept_for"] == "transition_busy"
+    assert queue.claim(has_gpu=True, capacity=capacity)["action_key"] == busy_row
 
 
 def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
@@ -274,7 +261,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
     """
 
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     queue = pool.PoolQueue(tmp_path / "queue")
     ledger = queue.ledger()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 104}
@@ -289,7 +276,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
         queue.record_pass(row)
     now[0] += pool.WITHHOLD_CEILING_S + 1.0
     _release_when(monkeypatch, queue, row, "reservation_unavailable", holder)
-    claimed = queue.claim(capacity=capacity)
+    claimed = queue.claim(has_gpu=True, capacity=capacity)
     assert claimed is None, (
         f"claimed {claimed and claimed['action_key'][:4]} into the boundary "
         "the +1 row was refused for")
@@ -299,7 +286,7 @@ def test_a_token_shortage_past_its_ceiling_keeps_the_boundary(
     deferred = _denial(queue, lower)
     assert deferred["reason"] == "deferred_for_ready_gpu_row"
     assert deferred["evidence"]["kept_for"] == "reservation_unavailable_past_ceiling"
-    assert queue.claim(capacity=capacity)["action_key"] == row
+    assert queue.claim(has_gpu=True, capacity=capacity)["action_key"] == row
 
 
 def test_a_refused_room_binds_nothing_while_its_holder_still_holds(box) -> None:
@@ -370,29 +357,32 @@ def test_a_measured_refusal_with_the_gpu_free_does_not_defer_a_lower_gpu_row(
     tiers = {"preferred": list(range(cpus)), "fallback": []}
     capacity = {"cpu": cpus, "gpu": 1, "mem_gb": 120}
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     host = {"psi_some": 0.}
 
-    def sample(self):
+    def sample():
         return {"sampled_unix": now[0], "cpu_count": cpus, "interval_s": 1.,
                 "psi_some": host["psi_some"], "busy_cpus": 0.,
                 "per_cpu_busy": {str(cpu): 0. for cpu in range(cpus)}}
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", sample)
+    cpu_sampler = sample
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def publish(key, resources, **kw):
         now[0] += 0.001
         queue.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
                       checkout_root=kw.pop("checkout_root", "/co"),
-                      worker_script="/w.py", resources=resources, **kw)
+                      worker_script="/w.py", resources=resources,
+                      tags=kw.pop("tags", [pool.socket.gethostname()]), **kw)
         return key
 
     def claim():
-        item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+        item = queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity,
+                           cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                           gpu_sampler=idle_gpu_sample)
         return None if item is None else item["action_key"]
 
     # A CPU holder past the transient line with its declared end a day off.

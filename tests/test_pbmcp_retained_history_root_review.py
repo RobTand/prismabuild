@@ -14,7 +14,7 @@ def _rewrite(path, value):
 
 
 def _retained(queue):
-    row_path = queue.item_path(pool.WITHDRAWN, KEY)
+    row_path = queue.records.item_path(pool.record_store.WITHDRAWN, KEY)
     row = json.loads(row_path.read_text())
     attempt_path = queue.root / row['attempt_history_before_withdrawal'][0]['outcome']
     return row_path, row, attempt_path, json.loads(attempt_path.read_text())

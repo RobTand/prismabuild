@@ -11,7 +11,9 @@ import sys
 
 import pytest
 
-from test_pbtest_reports_whether_pytest_ran import _one_shard, pbtest
+from test_pbtest_reports_whether_pytest_ran import _one_shard
+from pbtest_shard_output import execution_reply
+from test_pbtest_reconciles_outcomes import pbtest
 
 
 BLOCKER = '''\
@@ -112,7 +114,7 @@ def test_timeout_reports_the_verified_test_population(
     output = blocked_shard(tmp_path, workers=workers, incomplete=incomplete)
     code, record = _one_shard(tmp_path, monkeypatch,
                              output + "\npbrun: timeout on dl380g10\n", 1,
-                             with_exit=True)
+                             with_exit=True, client_reply=execution_reply(output + "\npbrun: timeout on dl380g10\n", 1, timed_out=True))
     console = capsys.readouterr().out
     assert code == 1
     assert record["ran"] is False
@@ -149,7 +151,7 @@ def test_xdist_completion_precedes_worker_exit_hooks(tmp_path, monkeypatch, caps
     assert pbtest.pbtest_outcomes.parse(output) is None
     code, record = _one_shard(
         tmp_path, monkeypatch, output + "\npbrun: abcdef012345 timeout on dl380g10 in 10s\n",
-        1, with_exit=True)
+        1, with_exit=True, client_reply=execution_reply(output + "\npbrun: abcdef012345 timeout on dl380g10 in 10s\n", 1, timed_out=True))
     assert code == 1
     assert record["test_completion"]["status"] == "complete"
     assert record["ran"] is False
@@ -161,7 +163,7 @@ def test_early_stop_records_an_incomplete_population(tmp_path, monkeypatch, caps
     output = blocked_shard(tmp_path, workers=1, incomplete=False, stop_early=True)
     code, record = _one_shard(
         tmp_path, monkeypatch, output + "\npbrun: timeout on dl380g10\n", 1,
-        with_exit=True)
+        with_exit=True, client_reply=execution_reply(output + "\npbrun: timeout on dl380g10\n", 1, timed_out=True))
     assert code == 1
     completion = record["test_completion"]
     assert completion["status"] == "incomplete"
@@ -209,12 +211,12 @@ def test_timeout_after_summary_keeps_final_counts_and_names_the_exit_hang(
         import xdist
     output = blocked_shard(
         tmp_path, workers=workers, incomplete=False, exit_hook="unconfigure")
-    summary = pbtest.pytest_summary(output.splitlines())
+    summary = pbtest.pbtest_outcomes.pytest_summary(output.splitlines())
     assert summary.startswith("2 passed"), output
     assert pbtest.pbtest_outcomes.parse(output) is not None
     code, record = _one_shard(
         tmp_path, monkeypatch, output + "\npbrun: timeout on dl380g10\n", 1,
-        with_exit=True)
+        with_exit=True, client_reply=execution_reply(output + "\npbrun: timeout on dl380g10\n", 1, timed_out=True))
     console = capsys.readouterr().out
     assert code == 1
     assert record["ran"] is True

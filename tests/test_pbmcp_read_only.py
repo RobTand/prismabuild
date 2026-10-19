@@ -39,6 +39,7 @@ sys.path.insert(0, str(REPOSITORY / "tests"))
 import pbmcp  # noqa: E402
 import pbmcp_fixture as fx  # noqa: E402
 from prismabuild import adaptive_cpu, adaptive_snapshot  # noqa: E402
+from prismabuild import immutable_files  # noqa: E402
 
 SOURCE = REPOSITORY / "tools" / "fleet" / "pbmcp.py"
 
@@ -54,20 +55,26 @@ FORBIDDEN_OS = frozenset({
 })
 
 #: Methods that mutate, lock, or read a whole log, matched on the last
-#: component so that ``pool._write_json_atomic`` and a bare
-#: ``_write_json_atomic`` are both caught. ``attempt_outcomes`` and
-#: ``adopted_attempt_summary`` are here for the log reason rather than the
+#: component so that ``immutable_files.write_json_atomic`` and a Store
+#: ``replace_record_at`` are both caught. ``attempt_outcomes`` and
+#: ``attempt_ending`` are here for the log reason rather than the
 #: write reason: they read every stdout and stderr whole to verify a digest,
 #: which is right for a verifier and ruinous for a status call.
 FORBIDDEN_METHODS = frozenset({
     "flock", "lockf",
     "write_text", "write_bytes", "mkdir", "touch", "rmdir", "unlink",
     "symlink_to", "hardlink_to", "chmod", "rename", "replace",
-    "ensure_layout", "_transition_locked", "record_pass", "claim", "publish",
+    "ensure_layout", "action_transition_lock", "record_pass", "claim", "publish",
     "withdraw", "finish", "announce", "serve_once", "reap_stale",
-    "_write_json_atomic", "_atomic_publish", "_publish_immutable",
-    "_atomic_write_new_json", "publish_action_request", "publish_result",
-    "ingest_input", "attempt_outcomes", "adopted_attempt_summary",
+    "write_json_atomic", "write_bytes_atomic", "publish_exact", "publish_mutable",
+    "publish_immutable", "_publish_immutable",
+    "replace_record_at", "replace_stage_holder_at", "replace_reader_scope_at",
+    "replace_record_bytes_at", "file_publication_ending_at", "file_attempt_log_at",
+    "file_record_if_absent_at", "file_receipt_reconciliation_at", "replace_lane_item_at",
+    "file_lane_item_if_absent", "replace_cycle_at", "file_withdrawal_decision",
+    "file_residency_plan_at", "file_residency_supersession_at", "file_released_origin_index_at",
+    "write_new_json", "publish_action_request", "publish_result",
+    "ingest_input", "attempt_outcomes", "attempt_ending",
     "archived_preemption_outcomes",
 })
 
@@ -221,8 +228,8 @@ def test_every_tool_answers_with_every_write_replaced_by_a_refusal(
     def refuse(*args, **kwargs):
         raise _Refused("pbmcp reached a store writer")
 
-    monkeypatch.setattr(pbmcp.pool, "_write_json_atomic", refuse)
-    monkeypatch.setattr(pbmcp.pb, "_atomic_publish", refuse)
+    monkeypatch.setattr(pbmcp.pool.immutable_files, 'write_json_atomic', refuse)
+    monkeypatch.setattr(immutable_files, "publish_immutable", refuse)
 
     session = pbmcp.Session(queue_root=fleet.queue_root,
                            cas_root=fleet.cas_root, repo_link=fleet.repo_link)

@@ -99,7 +99,12 @@ so the sidecar is never mistaken for a generation.
 *   `--stage-only`: canary flags are refused (a staged generation is not
     live, so there is nothing to verify). Coordinator-activated
     generations are covered when the coordinator adopts the gate.
-*   `--activate-generation` (rollback): canary flags are refused.
+*   `--activate-generation` with `--installed-bootstrap ASSESSMENT` is the
+    amended-P exception. It runs a mandatory canary under the publication lock
+    for the selected sealed generation in either direction. Follow
+    [the installed-bootstrap cutover and rollback procedure](operating_prismabuild.md#cut-over-a174-with-the-installed-bootstrap),
+    including its image, runtime, staging and qualification prerequisites.
+*   Ordinary `--activate-generation` (rollback): canary flags are refused.
     Rollback restores bytes; it neither runs the canary nor rewrites the
     record. Re-verify by publishing, not by rolling back.
 *   `--dry-run` reports the canary intent (`enabled`/`disabled`) and
@@ -111,8 +116,13 @@ so the sidecar is never mistaken for a generation.
 
 1.  Read the rollout record's `detail`, then the driver's per-leg summary
     in its run namespace (`/mnt/shared/prismabuild-fleet/pb-canary/<run-id>/`).
-2.  The activation stands. Do not re-run publication to "clear" it; fix
-    forward and publish a new generation (which gets its own canary).
+2.  For an installed-bootstrap assessment, retain the pending intent, fences
+    and failed evidence. Retry the same selected-direction assessment after
+    resolving the failure. Never publish another generation to renew its grant.
+    A spent grant requires the explicit ordinary-admission assessment and reason
+    in the linked cutover procedure; reverse already selects that mode.
+    For ordinary publication, the activation stands. Do not re-run publication
+    to "clear" it; fix forward and publish a new generation with its own canary.
 3.  Rolling back to the previous generation with `--activate-generation`
     is a separate operator decision, never automatic. It leaves the
     failed record in place as history.

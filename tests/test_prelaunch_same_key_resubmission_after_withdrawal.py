@@ -13,6 +13,7 @@ Everything runs on a ``tmp_path`` queue through the real tier cycle.
 """
 from __future__ import annotations
 
+
 import json
 from pathlib import Path
 import sys
@@ -22,15 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, prelaunch_group, residency_plan  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _declared_plan, MANIFEST, TIER)
 from test_prelaunch_tier_publish_1594 import (  # noqa: E402
     _declared_movers, _live, _stage)
-import prelaunch_tier  # noqa: E402
+from prismabuild import prelaunch_tier  # noqa: E402
 from test_prelaunch_tier_gate_1594 import (  # noqa: E402
     _held, _units, _two_consumer_queue)
+from prismabuild import tier_holdings
 
 SPECS = [("source", 4, True, 4)]
 
@@ -43,7 +45,7 @@ def _group_files(queue, consumer: str) -> list[str]:
 
 
 def _holder_tokens(queue, holder: str) -> int:
-    return int(queue.tier_ledger(TIER).holder_tokens(holder).get("stage_gib", 0))
+    return int(queue.tier(TIER).holdings(holder).get('stage_gib', 0))
 
 
 def _cycles(queue, tiers, count: int) -> list[dict]:
@@ -66,7 +68,10 @@ def _committed_then_withdrawn(tmp_path):
     unit, movers = _declared_movers(queue, consumer)
     first = _cycles(queue, tiers, 10)
     assert _holder_tokens(queue, unit.holder) > 0 or any(
-        queue.item_path(pool.READY, mover).exists() for mover in movers), _names(first)
+        queue.records.item_path(pool.record_store.READY, mover).exists(
+        ) for mover in movers), _names(
+            first,
+        )
     assert "committed.json" in " ".join(_group_files(queue, consumer)), _names(first)
     queue.withdraw(consumer, reason="test: the owner withdrew the band", by="test")
     ended = _cycles(queue, tiers, 8)
@@ -87,16 +92,9 @@ def test_the_same_key_resubmitted_after_a_withdrawal_begins_its_group_again(
     before = _group_files(queue, consumer)
     _live(queue, plan, consumer, SPECS)             # the renewed publication, same key
     seen = _cycles(queue, tiers, 15)
-    state = {
-        "group files before the resubmission": before,
-        "group files after": _group_files(queue, consumer),
-        "holder tokens": _holder_tokens(queue, unit.holder),
-        "mover tokens": {mover[:8]: int(queue.tier_ledger(TIER).holder_tokens(mover)
-                                        .get("stage_gib", 0)) for mover in movers},
-        "events": sorted(set(_names(seen))),
-    }
-    published = any(queue.item_path(pool.READY, mover).exists()
-                    or queue.item_path(pool.CLAIMED, mover).exists()
+    state = {'group files before the resubmission': before, 'group files after': _group_files(queue, consumer), 'holder tokens': _holder_tokens(queue, unit.holder), 'mover tokens': {mover[:8]: int(queue.tier(TIER).holdings(mover).get('stage_gib', 0)) for mover in movers}, 'events': sorted(set(_names(seen)))}
+    published = any(queue.records.item_path(pool.record_store.READY, mover).exists()
+                    or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                     for mover in movers)
     assert _holder_tokens(queue, unit.holder) > 0 or published, json.dumps(state, indent=1)
 
@@ -116,22 +114,13 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     _live(queue, plan, consumer, SPECS)
     unit, movers = _declared_movers(queue, consumer)
     _cycles(queue, tiers, 10)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     for mover in movers[:-1]:
-        ledger.release(mover)
-    ledger.release(unit.holder)
-    before = {
-        "group files": _group_files(queue, consumer),
-        "holder tokens": _holder_tokens(queue, unit.holder),
-        "mover tokens": {m[:8]: int(ledger.holder_tokens(m).get("stage_gib", 0))
-                         for m in movers},
-    }
+        ledger.release_unspent(mover, authority=tier_holdings.Unspent.NEVER_STARTED)
+    ledger.release_unspent(unit.holder, authority=tier_holdings.Unspent.NEVER_STARTED)
+    before = {'group files': _group_files(queue, consumer), 'holder tokens': _holder_tokens(queue, unit.holder), 'mover tokens': {m[:8]: int(ledger.holdings(m).get('stage_gib', 0)) for m in movers}}
     seen = _cycles(queue, tiers, 15)
-    state = {"before": before, "group files after": _group_files(queue, consumer),
-             "holder tokens after": _holder_tokens(queue, unit.holder),
-             "mover tokens after": {m[:8]: int(ledger.holder_tokens(m).get("stage_gib", 0))
-                                    for m in movers},
-             "events": sorted(set(_names(seen)))}
+    state = {'before': before, 'group files after': _group_files(queue, consumer), 'holder tokens after': _holder_tokens(queue, unit.holder), 'mover tokens after': {m[:8]: int(ledger.holdings(m).get('stage_gib', 0)) for m in movers}, 'events': sorted(set(_names(seen)))}
     found = prelaunch_group.census(queue, TIER, unit.unit, unit.holder,
                                    int(unit.demand_gib), movers)
     state["census"] = {"h": found.h, "p": found.p, "m": found.m, "r": found.r}
@@ -142,30 +131,29 @@ def test_a_committed_group_whose_tokens_left_without_a_release_begins_again(
     state["uncovered movers"] = _uncovered(queue, movers, gib_of)
     assert state["uncovered movers"] == {}, json.dumps(state, indent=1)
     # The claim spends the restored fence and takes nothing more from the tier.
-    ready = [m for m in movers if queue.item_path(pool.READY, m).exists()]
-    free_before = ledger.available().get("stage_gib")
+    ready = [m for m in movers if queue.records.item_path(pool.record_store.READY, m).exists()]
+    free_before = ledger.free_supply().get('stage_gib')
     got = queue.claim(tags=["dl380g10"], owner="w-mover")
     state["claimed"] = None if got is None else str(got["action_key"])[-8:]
     assert got is not None and got["action_key"] in ready, json.dumps(state, indent=1)
-    assert ledger.available().get("stage_gib") == free_before, json.dumps(
-        dict(state, free_before=free_before,
-             free_after=ledger.available().get("stage_gib")), indent=1)
-    assert int(ledger.holder_tokens(got["action_key"]).get("stage_gib", 0)) == \
-        gib_of[got["action_key"]], json.dumps(state, indent=1)
+    assert ledger.free_supply().get('stage_gib') == free_before, json.dumps(dict(state, free_before=free_before, free_after=ledger.free_supply().get('stage_gib')), indent=1)
+    assert int(ledger.holdings(got['action_key']).get('stage_gib', 0)) == gib_of[got['action_key']], json.dumps(state, indent=1)
 
 
 def _row(queue, mover: str) -> dict:
-    return json.loads(queue.item_path(pool.READY, mover).read_text(encoding="utf-8"))
+    return json.loads(
+        queue.records.item_path(pool.record_store.READY, mover).read_text(encoding="utf-8"),
+    )
 
 
 def _uncovered(queue, movers, gib_of) -> dict[str, tuple]:
     """Every READY mover whose funding record does not cover its whole row."""
     out = {}
     for mover in movers:
-        if not queue.item_path(pool.READY, mover).exists():
+        if not queue.records.item_path(pool.record_store.READY, mover).exists():
             continue
-        covered = queue.funded_cover(TIER, _row(queue, mover), "stage_gib",
-                                     gib_of[mover])
+        covered = queue.funding.cover_window(TIER, _row(queue, mover), "stage_gib",
+                                     gib_of[mover]).credit
         if covered[0] != gib_of[mover]:
             out[mover[-8:]] = covered
     return out
@@ -178,9 +166,9 @@ def test_a_committed_unit_that_owns_nothing_still_obliges_its_peak(
     _cycles(queue, tiers, 10)
     unit = _units(queue, first)[0]
     assert "committed.json" in " ".join(_group_files(queue, first))
-    ledger = queue.tier_ledger(TIER)
-    for holder in list(ledger.held_keys()):          # complete token loss
-        ledger.release(holder)
+    ledger = queue.tier(TIER)
+    for holder in list(ledger.holders()):          # complete token loss
+        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
     assert _held(queue) == {} or not any(_held(queue).values())
     totals, detail = prelaunch_tier.obligations(_units(queue, first), _held(queue),
                                                 "stage_gib")
@@ -220,9 +208,9 @@ def test_a_rival_waits_while_a_committed_group_recovers_its_tokens(
     _cycles(queue, tiers, 10)
     unit = _units(queue, first)[0]
     gib_of = {leg["mover_key"]: int(leg["stage_gib"]) for leg in unit.legs}
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     for holder in [unit.holder] + list(gib_of):
-        ledger.release(holder)
+        ledger.release_unspent(holder, authority=tier_holdings.Unspent.NEVER_STARTED)
     rival_key = _hexkey("gate-rival")
     specs = [("p0", 40, True, 1), ("p1", 10, False, 1), ("p2", 10, False, 1)]
     _publish_ranked(queue, _declared_plan(queue, rival_key, specs, tag="rival"),

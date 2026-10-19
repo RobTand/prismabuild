@@ -27,7 +27,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -93,14 +94,14 @@ def fleet(tmp_path: Path):
     root = _clock_root(tmp_path)
     try:
         queue = pool.PoolQueue(root / "pb-queue")
-        queue.ensure_layout()
-        queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+        queue.records.ensure_layout()
+        queue.tier(TIER).mint({'stage_gib': 8})
         stage = root / "stage"
         stage.mkdir()
         stage = stage.resolve()
-        assert stage_release.register_stage_root(
+        assert staged_path.register_stage_root(
             queue, tier_id=TIER, stage_root=stage) == "registered"
-        yield queue, stage, queue.root / pool.RESIDENCY
+        yield queue, stage, queue.root / pool.record_store.RESIDENCY
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -158,14 +159,14 @@ def _land(queue: pool.PoolQueue, stage: Path, root: Path) -> list[Path]:
         "range_start_bytes": 0, "range_end_bytes": storage_tiers.GIB,
         "bytes_staged": storage_tiers.GIB, "complete": True})
     queue.finish(MOVER, status="executed")
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 1}
     return list(paths.values())
 
 
 def _between_the_hint_and_the_lock(monkeypatch, act) -> list[int]:
     """Run ``act`` once, after the egress's hint census, before its lock."""
 
-    original = stage_release._entry_fences
+    original = staged_path._entry_fences
     calls: list[int] = []
 
     def fences(*args, **kwargs):
@@ -174,12 +175,12 @@ def _between_the_hint_and_the_lock(monkeypatch, act) -> list[int]:
         calls.append(1)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "_entry_fences", fences)
+    monkeypatch.setattr(staged_path, '_entry_fences', fences)
     return calls
 
 
 def _evict(queue: pool.PoolQueue, stage: Path) -> dict[str, object]:
-    return stage_release.evict(
+    return staged_path.evict(
         queue, MOVER, consumer_action_key=CONSUMER, stage_root=str(stage),
         reason="beyond-horizon", whole=True)
 
@@ -206,7 +207,7 @@ def test_a_pin_filed_after_the_hint_declines_the_whole_egress(
     assert receipt["complete"] is False, receipt
     assert "pinned" in receipt["declined"], receipt
     assert all(path.exists() for path in paths), "a pinned range went"
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 1}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 1}
     assert residency_map.fragment_path(root, CONSUMER, MOVER).exists()
 
 
@@ -274,7 +275,7 @@ def test_the_receipt_records_the_census_before_the_lock_and_the_hold(
 
     assert receipt["complete"] is True, receipt
     assert receipt["entries_judged"] == 3
-    for field in stage_release.LOCK_SCOPE_FIELDS:
+    for field in staged_path.LOCK_SCOPE_FIELDS:
         assert isinstance(receipt[field], (int, float)), (field, receipt)
     assert receipt["unlink_s"] <= receipt["lock_held_s"]
     assert receipt["census_validate_s"] <= receipt["lock_held_s"]
@@ -292,14 +293,14 @@ def _orphan(stage: Path, name: str) -> Path:
 
 
 def _after_the_walk(monkeypatch, act) -> None:
-    original = stage_release._unattributed_candidates
+    original = staged_path._unattributed_candidates
 
     def candidates(*args, **kwargs):
         found = original(*args, **kwargs)
         act()
         return found
 
-    monkeypatch.setattr(stage_release, "_unattributed_candidates", candidates)
+    monkeypatch.setattr(staged_path, '_unattributed_candidates', candidates)
 
 
 def test_reconcile_leaves_a_file_that_changed_after_its_walk(
@@ -315,7 +316,7 @@ def test_reconcile_leaves_a_file_that_changed_after_its_walk(
             stream.write(b"\1")
 
     _after_the_walk(monkeypatch, grow)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
 
     assert changed.exists(), "a file that changed after the walk went"
@@ -339,7 +340,7 @@ def test_reconcile_keeps_a_file_a_fragment_names_after_its_walk(
                   {"/pool/named.bin": named})
 
     _after_the_walk(monkeypatch, vouch)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage),
                                       wanted={OTHER_MOVER})
 
@@ -362,7 +363,7 @@ def test_reconcile_skips_before_the_lock_while_a_mover_is_in_flight(
                              "tier_id": TIER, "manifest_sha256": MANIFEST,
                              "manifest_bytes": 8192,
                              "range_start_bytes": 0, "range_end_bytes": 8192})
-    assert stage_release.movers_in_flight(queue, tier_id=TIER) == {
+    assert staged_path.movers_in_flight(queue, tier_id=TIER) == {
         _key("in-flight")}
     asked: list[str] = []
     original = queue.stage_ownership_lock
@@ -372,7 +373,7 @@ def test_reconcile_skips_before_the_lock_while_a_mover_is_in_flight(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(queue, "stage_ownership_lock", lock)
-    receipt = stage_release.reconcile(queue, tier_id=TIER,
+    receipt = staged_path.reconcile(queue, tier_id=TIER,
                                       stage_root=str(stage), wanted=set())
 
     assert receipt["skipped"] == "movers_in_flight", receipt

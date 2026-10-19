@@ -20,6 +20,9 @@ key is a content hash, so a second campaign over the same manifest seals the
 same key, and a leftover ``done`` record must not read as "already staged".
 """
 from __future__ import annotations
+from submission_support import refusal_value
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import json
 import os
@@ -32,8 +35,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 TIER = "prismabuild-stage:dl380g10"
@@ -89,8 +93,8 @@ def _plan(queue: pool.PoolQueue, *, gib_per_phase: int = 2,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 5})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': 5})
     return q
 
 
@@ -155,15 +159,14 @@ def test_the_consumer_depends_on_its_first_phase_and_no_other(queue) -> None:
 def test_only_the_phases_the_free_tokens_cover_are_published(queue) -> None:
     """Five free GiB and two GiB a phase is two phases, not four."""
 
-    decision = residency_plan.window(
-        _plan(queue), accepted_phase=None, free_gib=5)
+    decision = residency_plan.ConsumerWindow(_plan(queue), None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=5)).decision
 
     assert [phase["phase"] for phase in decision["publish"]] == ["phase-0", "phase-1"]
     assert decision["evict"] == []
 
 
 def test_nothing_is_published_when_the_stage_is_full(queue) -> None:
-    decision = residency_plan.window(_plan(queue), accepted_phase=None, free_gib=1)
+    decision = residency_plan.ConsumerWindow(_plan(queue), None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=1)).decision
 
     assert decision["publish"] == []
 
@@ -174,8 +177,7 @@ def test_the_phase_the_consumer_is_reading_is_not_evicted(queue) -> None:
     plan = _plan(queue)
     staged = [_hexkey(f"mover{n}") for n in range(4)]
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-2", free_gib=0, published=staged, staged=staged)
+    decision = residency_plan.ConsumerWindow(plan, 'phase-2', residency_plan.LegObservation(published=staged, staged=staged), residency_plan.WindowBudget(free_gib=0)).decision
 
     assert [phase["phase"] for phase in decision["evict"]] == ["phase-0", "phase-1"]
 
@@ -186,8 +188,7 @@ def test_a_terminal_mover_that_holds_nothing_is_published_again(queue) -> None:
     plan = _plan(queue)
     # Everything staged once and already given back: nothing is pinned, so the
     # window must treat all four phases as work to do rather than as done.
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0", free_gib=4, published=[], staged=[])
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0', residency_plan.LegObservation(published=[], staged=[]), residency_plan.WindowBudget(free_gib=4)).decision
 
     assert [phase["phase"] for phase in decision["publish"]] == ["phase-0", "phase-1"]
 
@@ -216,8 +217,8 @@ def test_the_loop_publishes_the_window_the_ledger_can_hold(queue, tmp_path) -> N
 
     published = [event["phase"] for event in events if event["event"] == "mover-published"]
     assert published == ["phase-0", "phase-1"]
-    assert queue.item_path(pool.READY, _hexkey("mover0")).exists()
-    assert not queue.item_path(pool.READY, _hexkey("mover2")).exists()
+    assert queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("mover2")).exists()
 
 
 def test_a_stage_on_another_box_is_left_to_its_own_loop(queue, tmp_path) -> None:
@@ -231,11 +232,11 @@ def test_a_stage_on_another_box_is_left_to_its_own_loop(queue, tmp_path) -> None
             "mountpoint": str(tmp_path / "stage")}})
 
     assert events == []
-    assert not queue.item_path(pool.READY, _hexkey("mover0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("mover0")).exists()
 
 
 def _fragment(queue, mover: str, *, path: str, stage: Path) -> None:
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -253,7 +254,7 @@ def test_one_writer_merges_every_movers_fragment_into_one_map(queue, tmp_path) -
 
     written = tier_loop.compose_map(queue, CONSUMER)
 
-    assert written == queue.residency_map_path(CONSUMER)
+    assert written == queue.records.residency_map_path(CONSUMER)
     composed = residency_map.read_map(written)
     assert set(composed["entries"]) == {
         residency_map.residency_map_key("/pool/a.bin", 0),
@@ -267,14 +268,14 @@ def test_an_evicted_range_leaves_the_map_behind_it(queue, tmp_path) -> None:
     stage = tmp_path / "stage"
     _fragment(queue, _hexkey("mover0"), path="/pool/a.bin", stage=stage)
     tier_loop.compose_map(queue, CONSUMER)
-    assert queue.residency_map_path(CONSUMER).exists()
+    assert queue.records.residency_map_path(CONSUMER).exists()
 
     # What an egress does: the fragment goes when the bytes go.
     residency_map.fragment_path(
-        queue.residency_fragment_root(), CONSUMER, _hexkey("mover0")).unlink()
+        queue.records.residency_fragment_root(), CONSUMER, _hexkey("mover0")).unlink()
 
     assert tier_loop.compose_map(queue, CONSUMER) is None
-    assert not queue.residency_map_path(CONSUMER).exists()
+    assert not queue.records.residency_map_path(CONSUMER).exists()
 
 
 def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path) -> None:
@@ -282,13 +283,13 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     plan = _plan(queue)
     _claim_consumer(queue, plan)
     ahead = _hexkey("mover3")
     # Drive the ledger into the state a finished, pinned phase-3 mover leaves.
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(ahead, {"stage_gib": 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(ahead, {'stage_gib': 2})
     queue.record_move(ahead, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                               "stage_root": str(stage), "complete": True,
                               "bytes_staged": 2 * GIB})
@@ -296,16 +297,16 @@ def test_the_sweep_spares_a_window_the_consumer_has_not_reached(queue, tmp_path)
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
 
     assert swept == []
-    assert ledger.holder_tokens(ahead) == {"stage_gib": 2}
+    assert ledger.holdings(ahead) == {'stage_gib': 2}
 
 
 def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> None:
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     orphan = _hexkey("orphan")
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(orphan, {"stage_gib": 2})
+    ledger = queue.tier(TIER)
+    assert ledger.take(orphan, {'stage_gib': 2})
     queue.record_move(orphan, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                                "stage_root": str(stage), "complete": True,
                                "bytes_staged": 2 * GIB})
@@ -313,7 +314,7 @@ def test_the_sweep_takes_back_a_mover_no_live_plan_names(queue, tmp_path) -> Non
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
 
     assert [record["reason"] for record in swept] == ["orphan-sweep"]
-    assert ledger.holder_tokens(orphan) == {}
+    assert ledger.holdings(orphan) == {}
 
 
 # -- the channel the consumer reads the map through -------------------------
@@ -331,7 +332,7 @@ def test_the_launcher_names_the_map_only_when_there_is_one(queue, tmp_path) -> N
     tier_loop.compose_map(queue, CONSUMER)
 
     assert queue.residency_map_environment(item) == {
-        pb.RESIDENCY_MAP_ENV: str(queue.residency_map_path(CONSUMER))}
+        pb.RESIDENCY_MAP_ENV: str(queue.records.residency_map_path(CONSUMER))}
     # An ordinary action is launched exactly as it was before #583.
     assert queue.residency_map_environment({"action_key": CONSUMER}) == {}
 
@@ -394,9 +395,11 @@ def test_a_submission_cannot_stage_onto_a_tier_the_fleet_does_not_announce(
     """Discovered, never configured: the topology is Rob's to change."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    with pytest.raises(SystemExit, match="no box announces one"):
-        pbrun.resolve_stage_tier(queue, None)
+    with pytest.raises(submit_core.SubmissionRefused, match="no box announces one"):
+        residency_plan.resolve_stage_tier(queue, None)
 
 
 def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> None:
@@ -408,10 +411,10 @@ def test_more_than_one_stage_tier_is_the_operators_choice(queue, tmp_path) -> No
                              "host": host, "capacity_bytes": 1 << 40,
                              "mountpoint": str(tmp_path / "stage")})
 
-    with pytest.raises(SystemExit, match="--residency-tier"):
-        pbrun.resolve_stage_tier(queue, None)
+    with pytest.raises(submit_core.SubmissionRefused, match="--residency-tier"):
+        residency_plan.resolve_stage_tier(queue, None)
 
-    named = pbrun.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
+    named = residency_plan.resolve_stage_tier(queue, "prismabuild-stage:elsewhere")
     assert named["host"] == "elsewhere"
 
 
@@ -422,7 +425,7 @@ def test_one_announced_stage_tier_needs_no_flag(queue, tmp_path) -> None:
                          "tier_id": TIER, "tier": "stage", "host": "dl380g10",
                          "capacity_bytes": 1 << 40, "mountpoint": str(tmp_path / "stage")})
 
-    assert pbrun.resolve_stage_tier(queue, None)["tier_id"] == TIER
+    assert residency_plan.resolve_stage_tier(queue, None)["tier_id"] == TIER
 
 
 def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
@@ -440,7 +443,7 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["true"], "cwd": "/home/rob", "demand": {"cpu": 1},
                    "placement": {"required_tags": []},
                    "checkout_snapshot": {"input": {"sha256": "b" * 64}},
@@ -449,10 +452,10 @@ def test_two_ranges_of_one_manifest_seal_two_different_movers() -> None:
         "execution_scope": {"portability": "portable", "platform_key": None,
                             "host_class": None},
     }
-    first = pbrun.seal_movement_action(
+    first = submit_core.seal_movement(
         template, command=["/bin/true", "--range-start-bytes", "0"],
         demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="a.log")
-    second = pbrun.seal_movement_action(
+    second = submit_core.seal_movement(
         template, command=["/bin/true", "--range-start-bytes", "2048"],
         demand={STAGE_KIND: 2}, tags=["dl380g10"], log_name="b.log")
 
@@ -514,7 +517,7 @@ def test_a_submitter_takes_the_interpreter_off_the_tier_not_off_itself() -> None
     tier = {"tier_id": TIER, "mover_python": "/opt/pb/bin/python3",
             "mover_tools_root": "/mnt/shared/prismabuild-fleet/gen-7/tools"}
 
-    python, mover, egress = pbrun.movement_tools(tier)
+    python, mover, egress = submit_core.movement_tools(tier)
 
     assert python == "/opt/pb/bin/python3" != sys.executable
     assert mover == "/mnt/shared/prismabuild-fleet/gen-7/tools/stage_move.py"
@@ -533,6 +536,6 @@ def test_a_tier_that_announces_neither_is_refused_rather_than_guessed(
             "mover_tools_root": "/gen/tools"}
     del tier[missing]
 
-    with pytest.raises(SystemExit) as excinfo:
-        pbrun.movement_tools(tier)
+    with pytest.raises(submit_core.SubmissionRefused) as excinfo:
+        submit_core.movement_tools(tier)
     assert missing in str(excinfo.value) and TIER in str(excinfo.value)

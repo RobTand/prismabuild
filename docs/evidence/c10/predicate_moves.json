@@ -1,0 +1,21 @@
+{
+  "base": "578e54d0788c0f3b138f5dcf217e980322bb7726",
+  "moves": [
+    {
+      "path": "tests/test_prelaunch_ledger_primitives_1594.py",
+      "function": "test_a_partial_ram_split_moves_both_halves_by_the_moved_count",
+      "original": "assert tier.acquire(SRC, {'ram_gib': 6})",
+      "current": "assert pending is not None and tier.commit_take(SRC, pending) == 6",
+      "owner": "prismabuild.tier_holdings.TierLedger.begin_take/commit_take",
+      "reason": "The fixture seeds independent tier and host halves to test interruption and actual-count handover. Use the private claim lifecycle for the tier half; the existing separate host acquire and all mirror count assertions remain. The committed count equals the original six-token demand."
+    },
+    {
+      "path": "tests/test_prelaunch_ledger_primitives_1594.py",
+      "function": "test_a_failed_ram_host_half_is_named_not_swallowed",
+      "original": "assert tier.acquire(SRC, {'ram_gib': 6})",
+      "current": "assert pending is not None and tier.commit_take(SRC, pending) == 6",
+      "owner": "prismabuild.tier_holdings.TierLedger.begin_take/commit_take",
+      "reason": "The fixture seeds independent tier and host halves to test interruption and actual-count handover. Use the private claim lifecycle for the tier half; the existing separate host acquire and all mirror count assertions remain. The committed count equals the original six-token demand."
+    }
+  ]
+}

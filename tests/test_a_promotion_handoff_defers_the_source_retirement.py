@@ -51,11 +51,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -70,14 +72,11 @@ SIZE = 16 * 1024
 # Fixtures: a real staged range, and a real claimed promotion over its source.
 
 
+from fleet_world import FleetWorld
+
+
 def _payload() -> bytes:
     return bytes([index % 251 + 1 for index in range(SIZE)])
-
-
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
 
 
 def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
@@ -86,7 +85,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
     payload = _payload()
     (origin / "calib.bin").write_bytes(payload)
     body = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "promotion-handoff-fixture"},
         "mount_prefix": str(origin),
         "entries": [{"path": str(origin / "calib.bin"), "offset": 0,
@@ -120,7 +119,7 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -133,7 +132,7 @@ def _stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
 def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     fragments = residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, consumer)
+        queue.root / pool.record_store.RESIDENCY, consumer)
     entries = residency_map.compose(fragments)["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
     return Path(str(next(iter(entries.values()))["stage_path"]))
@@ -153,7 +152,7 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     manifest_input, _ = cas.ingest_input(
-        manifest, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        manifest, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     checkout = tmp_path / "promotion-checkout"
     checkout.mkdir(parents=True, exist_ok=True)
     (checkout / "task_code.py").write_text(
@@ -184,7 +183,7 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
     })
     key = str(action["action_key"])
     cas.publish_action_request(action)
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     row = claimed / f"{key}.json"
     row.write_text(json.dumps({
@@ -200,19 +199,18 @@ def _claim_promotion(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 def _charged(queue: pool.PoolQueue, mover: str = MOVER_A) -> None:
     """The stage tokens a mover holds for its landed bytes."""
 
-    queue.mint_tier_capacity(STAGE_TIER, {storage_tiers.STAGE_CAPACITY_KIND: 8})
-    assert queue.tier_ledger(STAGE_TIER).acquire(
-        mover, {storage_tiers.STAGE_CAPACITY_KIND: 1}) is True
+    queue.tier(STAGE_TIER).mint({storage_tiers.STAGE_CAPACITY_KIND: 8})
+    assert queue.tier(STAGE_TIER).take(mover, {storage_tiers.STAGE_CAPACITY_KIND: 1}) is True
 
 
 def _world(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path, str, Path]:
     """Queue, stage root, staged file, manifest sha, manifest path."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, _body = _manifest(tmp_path)
     stage = _stage_root(tmp_path)
     _stage(queue, tmp_path, manifest, manifest_sha, CONSUMER_A, MOVER_A)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=STAGE_TIER, stage_root=stage) == "registered"
     staged = _staged_path(queue, CONSUMER_A)
     assert staged.exists()
@@ -222,17 +220,17 @@ def _world(tmp_path: Path) -> tuple[pool.PoolQueue, Path, Path, str, Path]:
 
 def _fragment_path(queue: pool.PoolQueue, consumer: str, mover: str) -> Path:
     return residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
 
 
 def _material_path(queue: pool.PoolQueue, consumer: str, mover: str) -> Path:
     return reader_lease.material_path(
-        queue.root / pool.RESIDENCY, consumer, mover)
+        queue.root / pool.record_store.RESIDENCY, consumer, mover)
 
 
 def _evict(queue: pool.PoolQueue, stage: Path, *, mover: str = MOVER_A,
            consumer: str = CONSUMER_A) -> dict:
-    return stage_release.evict(queue, mover, consumer_action_key=consumer,
+    return staged_path.evict(queue, mover, consumer_action_key=consumer,
                                stage_root=str(stage))
 
 
@@ -244,13 +242,13 @@ def test_the_promotion_claim_is_recognized_through_the_real_helper(
         tmp_path: Path) -> None:
     queue, stage, staged, manifest_sha, manifest = _world(tmp_path)
 
-    paths, tainted = stage_release._claimed_source_paths(queue, stage)
+    paths, tainted = staged_path.claimed_source_paths(queue, stage)
     assert (paths, tainted) == (set(), []), (
         "no claim is filed yet, so no source leg is held")
 
     _claim_promotion(queue, tmp_path, manifest, manifest_sha)
 
-    paths, tainted = stage_release._claimed_source_paths(queue, stage)
+    paths, tainted = staged_path.claimed_source_paths(queue, stage)
     assert tainted == []
     # The staged source leg under its range name, and the bare name a stage
     # leg sealed before range-only naming may still hold (over-retained).
@@ -288,7 +286,7 @@ def test_an_egress_during_a_live_promotion_keeps_the_sources_proof(
     assert _material_path(queue, CONSUMER_A, MOVER_A).exists(), (
         "the surviving bytes lost their material sidecar")
     composed = residency_map.compose(residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, CONSUMER_A))["entries"]
+        queue.root / pool.record_store.RESIDENCY, CONSUMER_A))["entries"]
     assert [str(entry["stage_path"]) for entry in composed.values()] == [
         str(staged)], "the consumer's map must still name the staged range"
 
@@ -317,8 +315,7 @@ def test_an_egress_during_a_live_promotion_keeps_the_sources_charge(
     receipt = _evict(queue, stage)
 
     assert staged.exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}, (
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {storage_tiers.STAGE_CAPACITY_KIND: 1}, (
             "tokens came back free for bytes that never left the stage")
     assert receipt["tokens_released"] == 0
     assert receipt["tokens_decharged"] == 0
@@ -341,7 +338,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     receipt = _evict(queue, stage)
     assert receipt["entries_deferred"] == 1
     assert receipt["retiring"] is False
-    leases = reader_lease.leases_root(queue, queue.root / pool.RESIDENCY)
+    leases = reader_lease.leases_root(queue, queue.root / pool.record_store.RESIDENCY)
     marks, tainted = reader_lease.retiring_for(leases, MOVER_A)
     assert (marks, tainted) == ([], []), (
         "a handoff-only deferral must not close this generation")
@@ -362,14 +359,14 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
     ]))
     assert promotion.get("refusal") is None, promotion
     assert promotion["complete"] is True
-    assert (ram / stage_move.stage_relative(
+    assert (ram / staged_path.stage_relative(
         "/m/calib.bin", 0, SIZE, mount_prefix="/m")).read_bytes() == _payload()
 
     # The RAM fragment names the ram tier and the ram path: it can never
@@ -386,7 +383,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
     # Negative control: the mark this deferral deliberately did not write
     # would have refused that promotion.
     material = reader_lease.read_material(
-        queue.root / pool.RESIDENCY, CONSUMER_A, MOVER_A)
+        queue.root / pool.record_store.RESIDENCY, CONSUMER_A, MOVER_A)
     assert isinstance(material, dict)
     reader_lease.write_retiring(
         leases, consumer_action_key=CONSUMER_A, mover_action_key=MOVER_A,
@@ -406,7 +403,7 @@ def test_a_handoff_only_deferral_files_no_retiring_mark(
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -454,7 +451,7 @@ def test_the_retry_after_the_handoff_deletes_and_releases_exactly_once(
     assert _evict(queue, stage)["entries_deferred"] == 1
 
     row.unlink()                      # the promotion ends; the claim is gone
-    assert stage_release._claimed_source_paths(queue, stage) == (set(), [])
+    assert staged_path.claimed_source_paths(queue, stage) == (set(), [])
 
     retry = _evict(queue, stage)
     assert retry["complete"] is True, retry
@@ -466,13 +463,13 @@ def test_the_retry_after_the_handoff_deletes_and_releases_exactly_once(
     assert not staged.exists()
     assert not _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
     assert not _material_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {}
 
     again = _evict(queue, stage)      # no fragment left: a no-op, not a free
     assert again["complete"] is True
     assert again["entries_deleted"] == 0
     assert again["tokens_released"] == 0
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {}
 
 
 def test_the_retry_after_the_handoff_retains_for_a_real_co_owner(
@@ -497,7 +494,7 @@ def test_the_retry_after_the_handoff_retains_for_a_real_co_owner(
     assert MOVER_B[:12] in retry["shared_with"][0]
     assert staged.exists()
     assert not _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {}
 
     last = _evict(queue, stage, mover=MOVER_B, consumer=CONSUMER_B)
     assert last["complete"] is True
@@ -532,10 +529,10 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     assert proof.get("ok"), proof
     live, taint = reader_lease.live_for(
         queue, {os.path.normpath(str(staged))},
-        residency_root=queue.root / pool.RESIDENCY)
+        residency_root=queue.root / pool.record_store.RESIDENCY)
     assert taint == [] and live.get(os.path.normpath(str(staged))), (
         "the fixture must leave a real live pin, not a proof-only cover")
-    leases = reader_lease.leases_root(queue, queue.root / pool.RESIDENCY)
+    leases = reader_lease.leases_root(queue, queue.root / pool.record_store.RESIDENCY)
 
     during = _evict(queue, stage)
     assert during["entries_deferred"] == 1, during
@@ -544,8 +541,7 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     assert reader_lease.retiring_for(leases, MOVER_A) == ([], [])
     assert staged.exists()
     assert _fragment_path(queue, CONSUMER_A, MOVER_A).exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {storage_tiers.STAGE_CAPACITY_KIND: 1}
 
     row.unlink()
     after = _evict(queue, stage)
@@ -557,5 +553,4 @@ def test_a_pin_and_a_handoff_on_one_mover_both_defer(tmp_path: Path) -> None:
     assert tainted == [] and len(marks) == 1
     assert after["live_pins"] == [str(proof["pin_id"])]
     assert staged.exists()
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(MOVER_A) == {
-        storage_tiers.STAGE_CAPACITY_KIND: 1}
+    assert queue.tier(STAGE_TIER).holdings(MOVER_A) == {storage_tiers.STAGE_CAPACITY_KIND: 1}

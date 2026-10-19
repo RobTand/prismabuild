@@ -31,6 +31,8 @@ The seam values themselves (frontier leg, prior legs, chunked targets) are
 pinned by ``test_advance_needs_names_its_fence_target.py``.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
+
 
 import json
 from pathlib import Path
@@ -44,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
 from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 import residency_publication  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -72,14 +74,11 @@ def _row(key: str, resources: dict[str, int],
 
 
 def _queue(tmp_path: Path, *, stage_gib: int, ram_gib: int = 0) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 4, "mem_gb": 8},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 4, 'mem_gb': 8}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
     queue.ledger().ensure_capacity({"cpu": 4, "mem_gb": 8})
-    queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
+    queue.tier(TIER).mint({'stage_gib': stage_gib})
     if ram_gib:
-        queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
+        queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
         # A RAM fill's host half lands in the storage host's ledger (#1258).
         mint_storage_host_ledger(queue)
     return queue
@@ -132,7 +131,7 @@ def _plan(queue: pool.PoolQueue, phases: int, *, ram: bool = False,
         built.append(entry)
     return residency_plan.build_plan(
         consumer_action_key=consumer, tier_id=TIER,
-        stage_root="/stage/prewarm", manifest_sha256=digest,
+        stage_root=str(queue.root.parent / "stage"), manifest_sha256=digest,
         manifest_bytes=phases * span, phases=built,
         **({"ram_tier_id": RAM_TIER} if ram else {}))
 
@@ -172,7 +171,7 @@ def _assert_one_live_advance(queue: pool.PoolQueue, tier_id: str, kind: str,
     keeps a second copy of the same room.
     """
 
-    record = queue.read_funding(mover, tier_id)
+    record = queue.funding.read_window(mover, tier_id)
     assert isinstance(record, dict), f"no advance fence bound to {mover[:12]}"
     assert record.get("state") in ("reserved", "transferring"), record
     assert str(record.get("consumer_action_key")) == consumer, record
@@ -183,11 +182,10 @@ def _assert_one_live_advance(queue: pool.PoolQueue, tier_id: str, kind: str,
     assert int(record.get("range_end_bytes")) == end, record
     assert isinstance(record.get("generation"), str) and record["generation"]
     tokens = record.get("tokens")
-    held = {path.name for path in
-            (queue.tier_ledger(tier_id).held_dir / mover).glob("*-*")}
+    held = {path.name for path in (queue.tier(tier_id).paths.held / mover).glob('*-*')}
     assert isinstance(tokens, list) and tokens, record
     assert all(str(name) in held for name in tokens), (tokens, sorted(held))
-    assert window_credit.held_grants(queue.tier_ledger(tier_id)) == [], \
+    assert queue.tier(tier_id).held_grants() == [], \
         "the fence moved under the mover; no grant copy may remain"
 
 
@@ -199,7 +197,7 @@ def test_a_nonfinal_stage_window_fences_its_advance_before_its_cycle_ends(
     plan = _plan(queue, 3)
     _publish_consumer(queue, plan, CONSUMER)
     m0, m1, m2 = _movers(plan)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     events = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     published = _published(events, "mover-published")
@@ -213,41 +211,41 @@ def test_a_nonfinal_stage_window_fences_its_advance_before_its_cycle_ends(
     # bound to the advance's own queued row.
     _assert_one_live_advance(queue, TIER, "stage_gib", CONSUMER, plan, m1,
                              "phase-1", SPAN, 2 * SPAN)
-    assert int(ledger.holder_tokens(m1).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 2
+    assert int(ledger.holdings(m1).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 2
 
     # One fence per consumer/tier/leg: further cycles re-prove the same
     # reservation instead of taking a second one beside it.
     tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
-    assert int(ledger.holder_tokens(m1).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 2
-    assert window_credit.held_grants(ledger) == []
+    assert int(ledger.holdings(m1).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 2
+    assert ledger.held_grants() == []
 
     # It is a real funded claim, not merely a queued row: claiming the
     # advance consumes its own fence, so no new room leaves free.
-    before = ledger.available().get("stage_gib")
+    before = ledger.free_supply().get('stage_gib')
     ready = [item for item in queue.ready_items()
              if str(item.get("action_key")) == m1]
     got = queue.claim(tags=["dl380g10"], owner="w-832", ready=ready)
     assert got is not None and got["action_key"] == m1
-    assert (queue.read_funding(m1, TIER) or {}).get("state") == "consumed"
-    assert int(ledger.holder_tokens(m1).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == before
+    assert (queue.funding.read_window(m1, TIER) or {}).get("state") == "consumed"
+    assert int(ledger.holdings(m1).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == before
 
 
 def _claim_with_progress(queue: pool.PoolQueue, consumer: str, *,
                          phase: str) -> None:
     """Give a consumer an accepted phase, claiming it first when needed.
 
-    The lease is what the storage role trusts (``prewarm_loop.progress_phase``
+    The lease is what the storage role trusts (``RecordStore.accepted_progress_phase``
     checks the claim stamp against it), written the way
     ``tests/prewarm_fixture.py`` writes it.  A later phase on an already
     claimed consumer refreshes the same lease, as the consumer reading the
     next phase would.
     """
 
-    ready = queue.item_path(pool.READY, consumer)
-    claimed = queue.item_path(pool.CLAIMED, consumer)
+    ready = queue.records.item_path(pool.record_store.READY, consumer)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, consumer)
     if ready.exists():
         item = json.loads(ready.read_text())
         ready.unlink()
@@ -286,12 +284,12 @@ def test_an_adopted_head_moves_the_fence_to_the_next_unpublished_advance(
     queue = _queue(tmp_path, stage_gib=3)
     plan = _plan(queue, 4)
     _publish_consumer(queue, plan, CONSUMER)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     m0, m1, m2, m3 = _movers(plan)
 
     # The adopted-ahead range: the head's reservation is already under its own
     # key (adoption transfers the donor's pin) with no queue row.
-    assert ledger.acquire(m0, {"stage_gib": 1}) is True
+    assert ledger.take(m0, {'stage_gib': 1}) is True
     _claim_with_progress(queue, CONSUMER, phase="phase-0")
     published_state, staged_state = tier_loop._mover_state(queue, plan, TIER)
     assert m0 in published_state and m0 in staged_state
@@ -307,9 +305,9 @@ def test_an_adopted_head_moves_the_fence_to_the_next_unpublished_advance(
     # adopted range and not the leg already published.
     _assert_one_live_advance(queue, TIER, "stage_gib", CONSUMER, plan, m2,
                              "phase-2", 2 * SPAN, 3 * SPAN)
-    assert int(ledger.holder_tokens(m0).get("stage_gib", 0)) == 1
-    assert int(ledger.holder_tokens(m2).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 1
+    assert int(ledger.holdings(m0).get('stage_gib', 0)) == 1
+    assert int(ledger.holdings(m2).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 1
 
 
 def _drive_adopted_head_until_the_advance_publishes(
@@ -323,16 +321,16 @@ def _drive_adopted_head_until_the_advance_publishes(
     number of cycles that gated the consumer, and the events themselves.
     """
 
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     tiers = _tiers(tmp_path)
-    assert ledger.acquire(head, {"stage_gib": 1}) is True   # adopted head
+    assert ledger.take(head, {'stage_gib': 1}) is True   # adopted head
 
     first = tier_loop.residency_window(queue, tiers=tiers)
     assert successor in _published(first, "mover-published"), first
     assert advance not in _published(first, "mover-published"), first
 
-    assert ledger.acquire(successor, {"stage_gib": 1}) is True
-    queue.item_path(pool.READY, successor).unlink()
+    assert ledger.take(successor, {'stage_gib': 1}) is True
+    queue.records.item_path(pool.record_store.READY, successor).unlink()
     _claim_with_progress(queue, CONSUMER, phase="phase-0")
 
     gated_cycles = 0
@@ -368,7 +366,7 @@ def test_a_blind_advance_does_not_gate_the_row_that_would_bind_it(
     queue = _queue(tmp_path, stage_gib=3)
     plan = _plan(queue, 4)
     _publish_consumer(queue, plan, CONSUMER)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     m0, m1, m2, m3 = _movers(plan)
 
     outcome = _drive_adopted_head_until_the_advance_publishes(
@@ -394,7 +392,7 @@ def test_a_blind_advance_does_not_gate_the_row_that_would_bind_it(
         if m3 in later:
             break
     assert m3 in later, {"published": sorted(later)}
-    assert window_credit.held_grants(ledger) == []
+    assert ledger.held_grants() == []
 
 
 def test_a_deferred_blind_grant_binds_when_its_row_publishes(
@@ -442,21 +440,21 @@ def test_a_partial_blind_grant_permits_nothing(tmp_path: Path) -> None:
     queue = _queue(tmp_path, stage_gib=5)
     plan = _plan(queue, 4, per_phase=2, span=2 * GIB)
     _publish_consumer(queue, plan, CONSUMER)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     m0, m1, m2, m3 = _movers(plan)
     grant = window_credit.grant_key(CONSUMER, TIER, "mover_row", "phase-1")
-    assert ledger.acquire(grant, {"stage_gib": 1}) is True   # 1 of 2 GiB
+    assert ledger.take(grant, {'stage_gib': 1}) is True   # 1 of 2 GiB
 
     events = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
 
     assert not _published(events, "mover-published"), events
     gated = [entry for entry in events if entry.get("event") == "window-gated"]
     assert gated and gated[0]["reason"] == "joint-fit-stall", events
-    assert int(ledger.holder_tokens(grant).get("stage_gib", 0)) == 1
-    assert int(ledger.holder_tokens(m1).get("stage_gib", 0)) == 0
-    assert queue.read_funding(m1, TIER) is None
+    assert int(ledger.holdings(grant).get('stage_gib', 0)) == 1
+    assert int(ledger.holdings(m1).get('stage_gib', 0)) == 0
+    assert queue.funding.read_window(m1, TIER) is None
     assert [key for key in (m0, m1, m2, m3)
-            if queue.item_path(pool.READY, key).exists()] == []
+            if queue.records.item_path(pool.record_store.READY, key).exists()] == []
 
 
 def test_a_final_window_still_needs_no_advance_fence(tmp_path: Path) -> None:
@@ -465,20 +463,20 @@ def test_a_final_window_still_needs_no_advance_fence(tmp_path: Path) -> None:
     queue = _queue(tmp_path, stage_gib=3)
     plan = _plan(queue, 2)
     _publish_consumer(queue, plan, CONSUMER)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     m0, m1 = _movers(plan)
 
-    assert ledger.acquire(m0, {"stage_gib": 1}) is True
+    assert ledger.take(m0, {'stage_gib': 1}) is True
 
     events = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert m1 in _published(events, "mover-published"), events
     assert [entry for entry in events
             if entry.get("event") == "window-gated"] == [], events
 
-    assert queue.read_funding(m1, TIER) is None
-    assert int(ledger.holder_tokens(m1).get("stage_gib", 0)) == 0
-    assert window_credit.held_grants(ledger) == []
-    assert ledger.available().get("stage_gib") == 2
+    assert queue.funding.read_window(m1, TIER) is None
+    assert int(ledger.holdings(m1).get('stage_gib', 0)) == 0
+    assert ledger.held_grants() == []
+    assert ledger.free_supply().get('stage_gib') == 2
 
 
 def test_the_ram_window_fences_its_advance_before_the_promotion_runs(
@@ -497,15 +495,15 @@ def test_the_ram_window_fences_its_advance_before_the_promotion_runs(
     plan = _plan(queue, 3, ram=True)
     _publish_consumer(queue, plan, CONSUMER)
     r0, r1, r2 = _movers(plan, "ram_mover_row")
-    stage_ledger = queue.tier_ledger(TIER)
+    stage_ledger = queue.tier(TIER)
 
     # Two stage sources have landed (the fixture files what a finished copy
     # leaves: fragment plus complete receipt, with the booking still held).
     for ordinal, mover in ((0, _movers(plan)[0]), (1, _movers(plan)[1])):
-        assert stage_ledger.acquire(mover, {"stage_gib": 1}) is True
-        residency_publication.vouch_landed(
+        assert stage_ledger.take(mover, {'stage_gib': 1}) is True
+        residency_publication.publish_landed_files(
             queue, consumer_action_key=CONSUMER, mover_action_key=mover,
-            tier_id=TIER, stage_root="/stage/prewarm",
+            tier_id=TIER, stage_root=str(queue.root.parent / "stage"),
             manifest_sha256=str(plan["manifest_sha256"]),
             range_start_bytes=ordinal * SPAN,
             range_end_bytes=(ordinal + 1) * SPAN)
@@ -520,14 +518,13 @@ def test_the_ram_window_fences_its_advance_before_the_promotion_runs(
     # The ram advance's room is held under the promotion's own row.
     _assert_one_live_advance(queue, RAM_TIER, "ram_gib", CONSUMER, plan, r1,
                              "phase-1", SPAN, 2 * SPAN)
-    ram_ledger = queue.tier_ledger(RAM_TIER)
-    assert int(ram_ledger.holder_tokens(r1).get("ram_gib", 0)) == 1
-    assert ram_ledger.available().get("ram_gib") == 2
+    ram_ledger = queue.tier(RAM_TIER)
+    assert int(ram_ledger.holdings(r1).get('ram_gib', 0)) == 1
+    assert ram_ledger.free_supply().get('ram_gib') == 2
     # The stage pins the promotions read from are untouched by the fence.
-    assert int(stage_ledger.holder_tokens(_movers(plan)[0]).get(
-        "stage_gib", 0)) == 1
+    assert int(stage_ledger.holdings(_movers(plan)[0]).get('stage_gib', 0)) == 1
 
     tier_loop.ram_residency_window(queue, tiers=_ram_tiers(tmp_path))
-    assert int(ram_ledger.holder_tokens(r1).get("ram_gib", 0)) == 1
-    assert ram_ledger.available().get("ram_gib") == 2
-    assert window_credit.held_grants(ram_ledger) == []
+    assert int(ram_ledger.holdings(r1).get('ram_gib', 0)) == 1
+    assert ram_ledger.free_supply().get('ram_gib') == 2
+    assert ram_ledger.held_grants() == []

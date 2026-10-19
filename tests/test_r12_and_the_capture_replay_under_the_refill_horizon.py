@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim_shortage, _cycle, _fixture_queue, _land)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -108,14 +108,14 @@ def _consumer(queue: pool.PoolQueue, consumer: str, plan: dict[str, object], *,
 def _claim(queue: pool.PoolQueue, consumer: str, *, phase: str,
            claimed_unix: float, reported_unix: float,
            gpu_budget: int | None = None) -> None:
-    source = queue.item_path(pool.READY, consumer)
+    source = queue.records.item_path(pool.record_store.READY, consumer)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": consumer, "claimed_unix": claimed_unix,
                  "claimed_by": "replay-fixture", "claimed_host": "dl380g10"})
     if gpu_budget is not None:
         item["gpu_admission"] = {"gpu_memory_budget_bytes": gpu_budget}
-    queue.item_path(pool.CLAIMED, consumer).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, consumer).write_text(json.dumps(item))
     queue.write_lease(
         consumer, owner="replay-fixture", claim_snapshot=item,
         progress_observation={
@@ -162,13 +162,12 @@ def _capture(queue: pool.PoolQueue) -> dict[str, object]:
 
 
 def _r12_held(queue: pool.PoolQueue) -> dict[str, int]:
-    ledger = queue.tier_ledger(TIER)
-    return {name: int(ledger.holder_tokens(_mover("r12", name)).get("stage_gib", 0))
-            for name in LANDED}
+    ledger = queue.tier(TIER)
+    return {name: int(ledger.holdings(_mover('r12', name)).get('stage_gib', 0)) for name in LANDED}
 
 
 def _free(queue: pool.PoolQueue) -> int:
-    return int(queue.tier_ledger(TIER).available().get("stage_gib", 0))
+    return int(queue.tier(TIER).free_supply().get('stage_gib', 0))
 
 
 def test_r12s_horizon_is_the_docstring_arithmetic(tmp_path: Path) -> None:
@@ -222,7 +221,7 @@ def test_the_captures_lead_claims_after_r12s_farthest_range_goes(
     assert sum(held.values()) == 506
     assert _claim_shortage(queue, str(lead["action_key"]), 3) is None
     for name in DATA["r12"]["ready_rows"]:
-        assert queue.item_path(pool.READY, _mover("r12", name)).exists()
+        assert queue.records.item_path(pool.record_store.READY, _mover("r12", name)).exists()
     assert_ledger_matches_the_stage(queue)
 
 
@@ -254,7 +253,7 @@ def test_the_captures_layer_3_publishes_on_the_cycle_that_sees_its_report(
 
     _cycle(queue, stage, gib=CAPACITY + 6)
 
-    assert queue.item_path(pool.READY, layer_3).exists()
+    assert queue.records.item_path(pool.record_store.READY, layer_3).exists()
     held = _r12_held(queue)
     assert [name for name in LANDED if not held[name]] == ["chain-019"]
     assert _claim_shortage(queue, layer_3, 14) is None
@@ -288,7 +287,7 @@ def test_the_captures_layer_3_publishes_after_its_lead_is_given_back(
 
     _cycle(queue, stage, gib=CAPACITY)
 
-    assert queue.item_path(pool.READY, layer_3).exists()
+    assert queue.records.item_path(pool.record_store.READY, layer_3).exists()
     held = _r12_held(queue)
     assert [name for name in LANDED if not held[name]] == ["chain-019"]
     assert sum(held.values()) == 506
@@ -348,7 +347,7 @@ def _r12_shaped(queue: pool.PoolQueue, stage: Path, shift: float, name: str, *,
 def _landing(queue: pool.PoolQueue, key: str) -> dict[str, object]:
     from prismabuild import residency_map
     return residency_map.read_landing(residency_map.landing_path(
-        queue.residency_fragment_root(), key))
+        queue.records.residency_fragment_root(), key))
 
 
 def test_three_r12_consumers_publish_an_expected_landing_for_every_queued_range(
@@ -449,11 +448,14 @@ def test_a_finished_copy_that_is_not_resident_is_labelled_as_such(
     finished = _mover("threec", "chain-042")
     row = next(phase["mover_row"] for phase in plan["phases"]  # type: ignore[union-attr]
                if phase["name"] == "chain-042")
-    queue.item_path(pool.DONE, finished).parent.mkdir(parents=True, exist_ok=True)
-    queue.item_path(pool.DONE, finished).write_text(json.dumps(
+    queue.records.item_path(pool.record_store.DONE, finished).parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    queue.records.item_path(pool.record_store.DONE, finished).write_text(json.dumps(
         {**dict(row), "status": "done"}))
     if holds:
-        assert queue.tier_ledger(TIER).acquire(finished, {"stage_gib": 22})
+        assert queue.tier(TIER).take(finished, {'stage_gib': 22})
 
     _cycle(queue, stage, gib=capacity)
 
@@ -489,7 +491,7 @@ def test_a_third_r12_newcomer_waits_on_the_joint_commitment_by_name(
 
     _cycle(queue, stage, gib=capacity)
 
-    record = json.loads(queue.tier_commitment_path(TIER).read_text())
+    record = json.loads(queue.records.tier_commitment_path(TIER).read_text())
     waiting = {entry["consumer"]: entry for entry in record["waiting"]}
     assert waiting[THREE["c"]]["reason"] == "joint-commitment-stall"
     terms = waiting[THREE["c"]]["terms"]
@@ -500,4 +502,4 @@ def test_a_third_r12_newcomer_waits_on_the_joint_commitment_by_name(
     assert named.get(THREE["a"], 0) >= 220 and named.get(THREE["b"], 0) >= 220
     assert waiting[THREE["c"]]["shortfall_gib"] > 0
     lead = str(plan["phases"][0]["mover_row"]["action_key"])     # type: ignore[index]
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()

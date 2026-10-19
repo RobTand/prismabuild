@@ -35,21 +35,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, residency_map  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     CAPTURE, CAPTURE_MANIFEST, CAPTURE_NAMES, NEWCOMER, NEWCOMER_MANIFEST,
     _capture, _claim_shortage, _cycle, _fixture_queue, _mover, _plan,
     _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     assert_ledger_matches_the_stage)
+from prismabuild import staged_path
 
 
 def _egress(queue: pool.PoolQueue, stage: Path, ordinals: range) -> None:
     """Run the capture's egresses: every passed range given back."""
 
     for ordinal in ordinals:
-        receipt = stage_release.evict(
+        receipt = staged_path.evict(
             queue, _mover("capture", ordinal), consumer_action_key=CAPTURE,
             stage_root=str(stage))
         assert receipt["complete"], receipt
@@ -85,7 +86,7 @@ def test_a_running_consumers_map_outlives_the_gap_before_its_next_range(
     queue, stage = _fixture_queue(tmp_path, capacity)
     _capture(queue, stage, landed=(0, 1, 2, 3))
     _cycle(queue, stage, gib=capacity)
-    path = queue.residency_map_path(CAPTURE)
+    path = queue.records.residency_map_path(CAPTURE)
     before = residency_map.read_map(path)
     assert len(before["entries"]) == 4                     # type: ignore[arg-type]
 
@@ -111,12 +112,12 @@ def test_the_kept_map_names_the_next_range_once_it_lands(
     _cycle(queue, stage, gib=capacity)
     _egress(queue, stage, range(4))
     _cycle(queue, stage, gib=capacity)
-    path = queue.residency_map_path(CAPTURE)
+    path = queue.records.residency_map_path(CAPTURE)
     assert residency_map.read_map(path)["entries"] == {}
 
     from test_a_consumer_stages_only_to_its_refill_horizon import _land
     layer_3 = plan["phases"][4]                            # type: ignore[index]
-    queue.item_path(pool.READY, _mover("capture", 4)).unlink()
+    queue.records.item_path(pool.record_store.READY, _mover("capture", 4)).unlink()
     _land(queue, stage, consumer=CAPTURE, manifest=CAPTURE_MANIFEST,
           mover=_mover("capture", 4), name=CAPTURE_NAMES[4],
           start=int(layer_3["start_bytes"]), end=int(layer_3["end_bytes"]),
@@ -145,11 +146,11 @@ def test_a_consumer_that_is_no_longer_running_loses_its_empty_map(
     _cycle(queue, stage, gib=capacity)
     _egress(queue, stage, range(4))
     _cycle(queue, stage, gib=capacity)
-    path = queue.residency_map_path(CAPTURE)
+    path = queue.records.residency_map_path(CAPTURE)
     assert path.exists()
 
-    claimed = queue.item_path(pool.CLAIMED, CAPTURE)
-    claimed.rename(queue.item_path(pool.READY, CAPTURE))
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, CAPTURE)
+    claimed.rename(queue.records.item_path(pool.record_store.READY, CAPTURE))
     _cycle(queue, stage, gib=capacity)
 
     assert not path.exists()
@@ -166,7 +167,7 @@ def test_a_ready_consumer_with_nothing_staged_still_has_no_map(
     _publish_consumer(queue, NEWCOMER, plan, manifest=NEWCOMER_MANIFEST)
     _cycle(queue, stage, gib=capacity)
 
-    assert not queue.residency_map_path(NEWCOMER).exists()
+    assert not queue.records.residency_map_path(NEWCOMER).exists()
 
 
 # ---------------------------------------------------------- the admission
@@ -214,7 +215,7 @@ def test_a_running_consumer_is_not_regated_after_its_first_range_is_egressed(
              if event.get("event") == "window-gated"
              and event.get("consumer") == CAPTURE]
     assert gated == []
-    assert queue.item_path(pool.READY, layer_3).exists()
+    assert queue.records.item_path(pool.record_store.READY, layer_3).exists()
     assert _claim_shortage(queue, layer_3, 14) is None
 
 
@@ -244,8 +245,8 @@ def test_a_newcomer_cannot_take_the_room_a_running_consumers_current_needs(
 
     _cycle(queue, stage, gib=capacity)
 
-    assert queue.item_path(pool.READY, _mover("capture", 4)).exists()
-    assert not queue.item_path(pool.READY, lead).exists()
+    assert queue.records.item_path(pool.record_store.READY, _mover("capture", 4)).exists()
+    assert not queue.records.item_path(pool.record_store.READY, lead).exists()
     gated = [event for event in _events(capsys)
              if event.get("event") == "window-gated"
              and event.get("consumer") == NEWCOMER]

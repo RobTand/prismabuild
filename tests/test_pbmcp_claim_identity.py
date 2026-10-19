@@ -16,7 +16,7 @@ def test_symlinked_checkout_finds_the_producers_claim(tmp_path):
     fleet = fx.build(tmp_path)
     link = tmp_path / "checkout-alias"
     link.symlink_to(fleet.checkout, target_is_directory=True)
-    path = fleet.queue.item_path("done", fx.DONE_KEY)
+    path = fleet.queue.records.item_path("done", fx.DONE_KEY)
     record = json.loads(path.read_text())
     record["checkout_root"] = str(link)
     path.write_text(json.dumps(record))

@@ -12,9 +12,10 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from prismabuild import pool  # noqa: E402
+from prismabuild import endings, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -27,13 +28,12 @@ LEGACY_KEY = "d" * 64
 HUGE = ("chatter line %06d\n" * 500_000) % tuple(range(500_000)) + "FINAL-MARKER\n"
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    made = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    made.ensure_layout()
-    return made
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def test_a_huge_stdout_stays_readable_in_the_ending(queue):
@@ -45,14 +45,14 @@ def test_a_huge_stdout_stays_readable_in_the_ending(queue):
                  detail={"returncode": 0, "stdout": HUGE},
                  claim_snapshot=claim)
 
-    rows = pbstatus.read_endings(queue.root)
+    rows = fleet_census.endings(queue.root)
     mine = next(row for row in rows if row.get("action_key") == KEY)
     assert not mine.get("unreadable"), mine.get("unreadable")
 
     record = json.loads(
-        queue.item_path(pool.DONE, KEY).read_text(encoding="utf-8"))
+        queue.records.item_path(pool.record_store.DONE, KEY).read_text(encoding="utf-8"))
     detail = record["detail"]
-    assert len(detail["stdout"].encode("utf-8")) <= pool.TERMINAL_STREAM_TAIL_BYTES
+    assert len(detail["stdout"].encode("utf-8")) <= endings.TERMINAL_STREAM_TAIL_BYTES
     assert detail["stdout"].endswith("FINAL-MARKER\n")
     assert detail["stdout_bytes"] == len(HUGE.encode("utf-8"))
     assert detail["stdout_truncated"] is True
@@ -83,7 +83,7 @@ def test_pbstatus_degrades_one_legacy_oversized_record_per_row(tmp_path):
     (root / "done" / f"{KEY}.json").write_text(json.dumps(small))
     (root / "done" / f"{LEGACY_KEY}.json").write_text(json.dumps(legacy))
 
-    rows = pbstatus.read_endings(root)
+    rows = fleet_census.endings(root)
     assert len(rows) == 2
     good = next(row for row in rows if row.get("action_key") == KEY)
     bad = next(row for row in rows if row.get("action_key") == LEGACY_KEY)

@@ -23,7 +23,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64
@@ -38,13 +39,13 @@ def held_mover(tmp_path: Path):
     """A complete mover still holding its tokens, whose plan no longer names it."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     shard = stage / "model-00007-of-00120.safetensors"
     shard.write_bytes(b"\0" * 8192)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
@@ -57,9 +58,9 @@ def held_mover(tmp_path: Path):
         "tier_id": TIER, "consumer_action_key": CONSUMER, "complete": True,
         "bytes_staged": 8192, "range_start_bytes": 0, "range_end_bytes": 8192,
         "stage_root": str(stage), "unix": 10.0})
-    ledger = queue.tier_ledger(TIER)
-    ledger.ensure_capacity({"stage_gib": 4})
-    assert ledger.acquire(MOVER, {"stage_gib": 1})
+    ledger = queue.tier(TIER)
+    ledger.grow_supply({'stage_gib': 4})
+    assert ledger.take(MOVER, {'stage_gib': 1})
     return queue, stage, shard
 
 
@@ -106,7 +107,7 @@ def test_the_reconciliation_is_skipped_when_the_held_set_cannot_be_read(
 
     assert shard.exists(), f"a held mover's bytes were reconciled away: {events}"
     assert not [event for event in events
-                if event.get("event") == stage_release.UNATTRIBUTED_EVENT
+                if event.get("event") == staged_path.UNATTRIBUTED_EVENT
                 and event.get("entries_deleted")], events
     skipped = [event for event in events if event.get("event") == SKIPPED_EVENT]
     assert len(skipped) == 1, events
@@ -119,7 +120,7 @@ def test_the_reconciliation_is_skipped_when_the_held_set_cannot_be_read(
     assert record["complete"] is False
 
     state["armed"] = False
-    assert MOVER in queue.tier_ledger(TIER).held_keys()
+    assert MOVER in queue.tier(TIER).holders()
 
 
 def test_a_tier_whose_ledger_cannot_be_read_at_all_is_skipped_on_the_record(
@@ -141,4 +142,4 @@ def test_a_tier_whose_ledger_cannot_be_read_at_all_is_skipped_on_the_record(
     assert record["complete"] is False
 
     state["armed"] = False
-    assert MOVER in queue.tier_ledger(TIER).held_keys()
+    assert MOVER in queue.tier(TIER).holders()

@@ -1,0 +1,27 @@
+{
+  "capture_name": "state-cpu-sample-capture-02",
+  "capture_report_sha256": "24f0bfb487ccf308c0b7b459b2f2c3794a92dba2a00546b8052cff706b7fb265",
+  "excluded_cases": [],
+  "files": {
+    "goldens-adaptive-sample.jsonl": "5022f1533d164fc903a2fc532a19253c0bd3d086b8b0f9578116b1cf677d51b6",
+    "historical-adaptive-sample.jsonl": "8a9bd71c9a2e2ea5196651db3b9fd45354988624265d2ba6bac4fc8066a4b68e"
+  },
+  "finished_at": "2026-10-17T00:21:32.074500+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "state-cpu-sample/cached",
+    "state-cpu-sample/fresh"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "6c06ec2f21b040742f208c72dc916ee21ef8147f",
+    "tree": "a72a78af9ea6b6071c1dbf1c45f864e1aeeee36a"
+  },
+  "started_at": "2026-10-17T00:21:04.750274+00:00"
+}

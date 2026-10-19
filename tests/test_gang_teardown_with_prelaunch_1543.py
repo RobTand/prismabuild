@@ -38,7 +38,7 @@ def test_a_prelaunch_gang_with_a_dead_member_is_torn_down(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "dead-prelaunch",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     first, second = keys
@@ -61,14 +61,14 @@ def test_a_prelaunch_gang_with_a_dead_member_is_torn_down(
     assert _gang.teardown(queue, group) is None, "one reading must not tear the gang down"
 
     # The reading stands for the window and the proof still agrees.
-    clock[0] += _gang.TERMINAL_CONFIRM_S
+    clock.now += _gang.TERMINAL_CONFIRM_S
     assert gclaim("sparklina") is None
     torn = _gang.teardown(queue, group)
     assert torn is not None and "residency_lead_terminal" in str(torn.get("reason")), torn
     queue.sweep_gangs()
     for key in keys:
-        assert queue.item_path(pool.WITHDRAWN, key).exists(), key
-        assert not queue.item_path(pool.READY, key).exists(), key
+        assert queue.records.item_path(pool.record_store.WITHDRAWN, key).exists(), key
+        assert not queue.records.item_path(pool.record_store.READY, key).exists(), key
 
 
 def test_a_shape_refused_member_is_never_a_terminal_reading(
@@ -77,7 +77,7 @@ def test_a_shape_refused_member_is_never_a_terminal_reading(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-dead",
                    declare_manifest=True, declare_plan=False)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     first, second = keys
     _fail_lead(queue, clock, monkeypatch, leads[0], _consumer_sha(queue, first))
 
@@ -86,8 +86,8 @@ def test_a_shape_refused_member_is_never_a_terminal_reading(
         refused = denial(first, "sparklina")
         assert refused["reason"] == "residency_prelaunch_undeclared", refused
         assert not _gang.terminal_mark_path(queue, group, first).exists()
-        clock[0] += _gang.TERMINAL_CONFIRM_S
+        clock.now += _gang.TERMINAL_CONFIRM_S
     assert _gang.teardown(queue, group) is None
     queue.sweep_gangs()
-    assert queue.item_path(pool.READY, first).exists()
-    assert queue.item_path(pool.READY, second).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, second).exists()

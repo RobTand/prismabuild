@@ -32,11 +32,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 SIZE = base.SIZE
 NAMES = base.NAMES
@@ -53,7 +56,7 @@ GRACE = 0.5
 def staged_name(name: str) -> str:
     """Where the stage mover stages the whole ``SIZE``-byte source ``name``."""
 
-    return stage_move.stage_relative(f"/m/{name}", 0, SIZE, mount_prefix="/m")
+    return staged_path.stage_relative(f"/m/{name}", 0, SIZE, mount_prefix="/m")
 
 
 def _identity(path: Path) -> dict[str, int]:
@@ -87,7 +90,7 @@ def _entries(stage: Path) -> dict[str, dict[str, object]]:
 def _fragment(queue, stage, consumer, mover) -> None:
     """One real fragment through the supported writer, matching the sidecar."""
 
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -106,7 +109,7 @@ def _write_sidecar(queue, stage, consumer, mover, entries, *,
                    manifest_sha256: str = "a" * 64,
                    generation: str = "a" * 32) -> None:
     reader_lease.write_material(
-        queue.root / pool.RESIDENCY, consumer_action_key=consumer,
+        queue.root / pool.record_store.RESIDENCY, consumer_action_key=consumer,
         mover_action_key=mover, tier_id=tier_id,
         stage_root=str(stage) if stage_root is None else stage_root,
         manifest_sha256=manifest_sha256, generation=generation,
@@ -114,8 +117,8 @@ def _write_sidecar(queue, stage, consumer, mover, entries, *,
 
 
 def _charge(queue, mover: str, tokens: int = 1) -> None:
-    queue.mint_tier_capacity(TIER, {"stage_gib": tokens})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": tokens}) is True
+    queue.tier(TIER).mint({'stage_gib': tokens})
+    assert queue.tier(TIER).take(mover, {'stage_gib': tokens}) is True
 
 
 def _stage(stage: Path, name: str, payload: bytes) -> Path:
@@ -134,7 +137,7 @@ def _stage(stage: Path, name: str, payload: bytes) -> Path:
             if name.endswith(later) else stage / staged_name(name))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    os.setxattr(path, base.prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                 f"/originals/{name}@0".encode())
     return path
 
@@ -204,10 +207,10 @@ def _kept(queue, stage, consumer, mover) -> None:
 
     assert all((stage / staged_name(name)).exists() for name in NAMES)
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
-    assert mover in queue.tier_ledger(TIER).held_keys()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
+    assert mover in queue.tier(TIER).holders()
 
 
 def _successor_manifest(tmp_path: Path, payloads: dict[str, bytes]):
@@ -225,11 +228,11 @@ def _successor_manifest(tmp_path: Path, payloads: dict[str, bytes]):
         digests[name] = digest
         entries.append({"path": str(source), "offset": 0, "bytes": SIZE,
                         "sha256": digest})
-    manifest = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
                 "annotations": {}, "mount_prefix": str(mount),
                 "entries": entries, "entry_count": len(entries),
                 "total_bytes": len(entries) * SIZE}
-    raw = pb._canonical_file_bytes(pb.validate_data_manifest(manifest))
+    raw = pb._canonical_file_bytes(manifest_codec.validate_data_manifest(manifest))
     manifest_digest = hashlib.sha256(raw).hexdigest()
     path = tmp_path / "manifest.json"
     path.write_bytes(raw)
@@ -245,7 +248,7 @@ def _successor_args(queue, stage, cas, copier, successor, path, digest,
         "--manifest", str(path), "--manifest-sha256", digest,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(len(entries) * SIZE),
-        "--residency-root", str(queue.residency_fragment_root()),
+        "--residency-root", str(queue.records.residency_fragment_root()),
         "--readers", "1", "--max-readers", "1", "--unpaced"])
 
 
@@ -285,20 +288,20 @@ def test_housekeeping_retires_the_stale_owner_and_the_successor_reads(
                              computed=None, source_id=None,
                              heal=True)[0] == "refuse", (
         "the stale owner must block the shared publisher")
-    assert mover in queue.tier_ledger(TIER).held_keys()
+    assert mover in queue.tier(TIER).holders()
 
     receipts = _sweep(queue, stage)
     assert _retired(receipts, mover), (
         f"stale-material DONE owner {mover[:12]} with {consumer[:12]} was "
         f"not retired by ordinary housekeeping: {receipts}")
     assert not residency_map.fragment_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
+        queue.records.residency_fragment_root(), consumer, mover).exists()
     assert not reader_lease.material_path(
-        queue.residency_fragment_root(), consumer, mover).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+        queue.records.residency_fragment_root(), consumer, mover).exists()
+    assert queue.tier(TIER).holdings(mover) == {}
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {name: b"x" * SIZE for name in NAMES}
     path, manifest_digest, entries, digests = _successor_manifest(
         tmp_path, payloads)
@@ -347,8 +350,8 @@ def test_a_mixed_fragment_lets_the_successor_publish_the_stale_path(
         f"the coherent destination's bytes did not survive ordinary "
         f"housekeeping: {receipts}")
 
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", GRACE)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.02)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', GRACE)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.02)
     payloads = {NAMES[0]: OLD_PAYLOAD, NAMES[1]: b"x" * SIZE}
     path, manifest_digest, entries, digests = _successor_manifest(
         tmp_path, payloads)
@@ -391,7 +394,7 @@ def test_unknown_or_foreign_material_retains(fleet, damage):
     consumer, mover = stale_owner(fleet, material=False, charged=True)
     if damage == "corrupt":
         path = reader_lease.material_path(
-            queue.residency_fragment_root(), consumer, mover)
+            queue.records.residency_fragment_root(), consumer, mover)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
     elif damage == "no-mention":
@@ -467,7 +470,7 @@ def test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes(tmp_path):
     handoff._claim_promotion(queue, tmp_path, manifest, manifest_sha)
     replacement = staged.with_name(staged.name + ".later")
     replacement.write_bytes(NEW_PAYLOAD)
-    os.setxattr(replacement, base.prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(replacement, stage_marks.STAGE_SOURCE_XATTR,
                 b"/originals/calib.bin@0")
     os.replace(replacement, staged)
     for key, status in ((handoff.CONSUMER_A, "failed"),
@@ -492,10 +495,9 @@ def test_a_live_promotion_handoff_keeps_the_owner_and_its_bytes(tmp_path):
     assert not retired, receipts
     assert staged.exists()
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), handoff.CONSUMER_A,
+        queue.records.residency_fragment_root(), handoff.CONSUMER_A,
         handoff.MOVER_A).exists()
     assert reader_lease.material_path(
-        queue.residency_fragment_root(), handoff.CONSUMER_A,
+        queue.records.residency_fragment_root(), handoff.CONSUMER_A,
         handoff.MOVER_A).exists()
-    assert handoff.MOVER_A in queue.tier_ledger(
-        handoff.STAGE_TIER).held_keys()
+    assert handoff.MOVER_A in queue.tier(handoff.STAGE_TIER).holders()

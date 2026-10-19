@@ -31,6 +31,7 @@ from test_pool import _materialization_item
 from prismabuild import checkout_recovery as recovery
 from prismabuild import core as pb
 from prismabuild import materialize, pool
+from prismabuild import immutable_files
 
 
 OWNER = "test-pb1465-exact-orphan-recovery"
@@ -72,6 +73,19 @@ def _snapshot(root: Path, *, ignored: str | None = None) -> dict[str, object]:
         else:
             result[relative] = ("special", identity)
     return result
+
+
+def _snapshot_delta(before, after):
+    delta = {}
+    for root in before.keys() | after.keys():
+        old, new = before.get(root, {}), after.get(root, {})
+        if old != new:
+            delta[root] = {
+                name: (old.get(name), new.get(name))
+                for name in old.keys() | new.keys()
+                if old.get(name) != new.get(name)
+            }
+    return delta
 
 
 def _json(path: Path, value: object) -> None:
@@ -189,7 +203,29 @@ def make_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
+    publishers = []
+    publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
+
+    def publish_and_track(local, shared):
+        child = publish_snapshot(local, shared)
+        if child is not None:
+            publishers.append(child)
+        return child
+
+    monkeypatch.setattr(pool.cpu_admission.adaptive_snapshot, "publish", publish_and_track)
+    claim_unsettled = queue.queue.claim
+
+    def settled_claim(*args, **kwargs):
+        try:
+            return claim_unsettled(*args, **kwargs)
+        finally:
+            # Real admission returns before its diagnostic copy. This fixture
+            # compares the whole queue, so settle only the children it started.
+            while publishers:
+                assert publishers.pop(0).wait(timeout=10) == 0
+
+    monkeypatch.setattr(queue.queue, "claim", settled_claim)
     worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
     unrelated = hashlib.sha256(str(tmp_path).encode()).hexdigest()
     queue.publish(action_key=unrelated, cas_root=protected_root / "active-cas",
@@ -294,7 +330,7 @@ def _planned(case: RecoveryCase, **kwargs: object) -> dict[str, object]:
     assert plan["schema"] == PLAN_SCHEMA, json.dumps(plan, sort_keys=True)
     assert plan["complete"] is True and plan["status"] == "planned", plan
     assert case.cleanup_calls == []
-    assert case.preserved() == before
+    assert case.preserved() == before, _snapshot_delta(before, case.preserved())
     return plan
 
 
@@ -456,7 +492,6 @@ def test_32_distinct_banked_checkouts_are_supported_but_33_are_not(make_case):
     assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
-
 @pytest.mark.parametrize("fault", [
     "missing-terminal", "malformed-terminal", "wrong-key", "missing-key",
     "missing-generation", "boolean-generation", "nonfinite-generation",
@@ -521,7 +556,7 @@ def test_missing_or_conflicting_action_snapshot_and_ending_proof_keeps_original(
              "-qm", "not the sealed commit")
         case.bank()
     else:
-        sibling = case.queue.item_path(pool.DONE, case.key)
+        sibling = case.queue.records.item_path(pool.record_store.DONE, case.key)
         if fault == "tied-endings":
             _json(sibling, json.loads(case.terminal_path.read_text()))
         else:
@@ -529,17 +564,17 @@ def test_missing_or_conflicting_action_snapshot_and_ending_proof_keeps_original(
     _refused(case, case.prepare)
 
 
-@pytest.mark.parametrize("state", [pool.READY, pool.CLAIMED, "lease"])
+@pytest.mark.parametrize("state", [pool.record_store.READY, pool.record_store.CLAIMED, "lease"])
 def test_live_queue_owner_or_lease_refuses_even_beside_complete_terminal(case, state):
     if state == "lease":
-        _json(case.queue.lease_path(case.key), {
+        _json(case.queue.records.lease_path(case.key), {
             "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": case.key,
             "owner": "still-live", "host": pool.socket.gethostname(),
             "heartbeat_unix": pool._now(), "pid": os.getpid(),
             "published_unix": case.claim["published_unix"],
         })
     else:
-        _json(case.queue.item_path(state, case.key), case.claim)
+        _json(case.queue.records.item_path(state, case.key), case.claim)
     _refused(case, case.prepare)
 
 
@@ -791,9 +826,9 @@ def test_apply_revalidates_every_plan_identity_and_lifetime_before_deletion(case
         else:
             _terminal(case, lambda value: value.update(status="changed-after-root-go"))
     elif fault in ("ready", "claimed"):
-        _json(case.queue.item_path(fault, case.key), case.claim)
+        _json(case.queue.records.item_path(fault, case.key), case.claim)
     elif fault == "lease":
-        _json(case.queue.lease_path(case.key), {"schema": pool.POOL_LEASE_SCHEMA_V1,
+        _json(case.queue.records.lease_path(case.key), {"schema": pool.POOL_LEASE_SCHEMA_V1,
               "action_key": case.key, "heartbeat_unix": pool._now(), "pid": 101})
     else:
         process = _process(case)
@@ -1013,7 +1048,7 @@ def test_apply_holds_every_selected_transition_lock_through_the_cleanup_owner(ma
     plan = first.prepare(entries=[first.entry, second.entry])
     assert plan["complete"] is True, plan
     active: set[str] = set()
-    actual_lock = first.queue.queue._transition_locked
+    actual_lock = first.queue.queue.action_transition_lock
     actual_cleanup = materialize._cleanup_execution_checkout
 
     @contextmanager
@@ -1030,7 +1065,7 @@ def test_apply_holds_every_selected_transition_lock_through_the_cleanup_owner(ma
         assert active == {first.key, second.key}
         return actual_cleanup(base, temporary, item)
 
-    monkeypatch.setattr(first.queue.queue, "_transition_locked", tracked_lock)
+    monkeypatch.setattr(first.queue.queue, "action_transition_lock", tracked_lock)
     monkeypatch.setattr(materialize, "_cleanup_execution_checkout", locked_cleanup)
     result = first.apply(plan)
     assert result["complete"] is True, result
@@ -1262,7 +1297,7 @@ def test_busy_real_transition_lock_refuses_without_waiting_or_cleanup(case):
         sys.executable, "-c",
         "import sys; from prismabuild.pool import PoolQueue; "
         "q=PoolQueue(sys.argv[1]); "
-        "hold=q._transition_locked(sys.argv[2]); hold.__enter__(); "
+        "hold=q.action_transition_lock(sys.argv[2]); hold.__enter__(); "
         "print('held', flush=True); sys.stdin.readline(); hold.__exit__(None,None,None)",
         str(case.queue.root), case.key,
     ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1283,7 +1318,7 @@ def test_busy_real_transition_lock_refuses_without_waiting_or_cleanup(case):
                                   "hidepid", "unreadable", "malformed", "empty"])
 def test_real_kernel_mount_census_cannot_hide_external_banks_or_processes(case, monkeypatch, fault):
     path = Path("/proc") / str(os.getpid()) / "mountinfo"
-    actual_reader = pb._read_regular_file_nofollow
+    actual_reader = pb.immutable_files._read_file
     selected = case.directory
     if fault == "same-device-native-bank":
         selected = case.checkout / "native"
@@ -1307,7 +1342,7 @@ def test_real_kernel_mount_census_cannot_hide_external_banks_or_processes(case, 
             return payload
         return actual_reader(candidate, **options)
 
-    monkeypatch.setattr(pb, "_read_regular_file_nofollow", mount_census)
+    monkeypatch.setattr(pb.immutable_files, '_read_file', mount_census)
     _refused(case, case.prepare)
 
 
@@ -1333,10 +1368,6 @@ def test_recovery_authority_itself_must_never_be_inside_a_selected_deletion_root
     # refusal must come from bounded deletion ownership, not an omitted bank.
     case.bank()
     _refused(case, lambda: recovery.prepare_checkout_recovery(queue, [case.entry], **options))
-
-
-
-
 
 
 _NATIVE_HOLDER_CODE = r"""
@@ -1604,7 +1635,6 @@ def test_real_unrelated_closed_fd_mapping_does_not_block_the_exact_orphan(case, 
     assert {path: _snapshot(Path(path)) for path in protected} == protected
 
 
-
 @pytest.mark.parametrize("fault", [
     "empty", "truncated-line", "truncated-complete-record", "malformed", "overlap",
     "bad-device", "bad-inode", "missing-path", "zero-inode-file", "bad-permissions",
@@ -1679,7 +1709,7 @@ def test_mapping_metadata_bounds_are_not_masked_by_tree_or_json_authority_limits
     else:
         # Leave the two valid maps records within the limit. Change only the
         # mapping-directory budget after the real maps parser has run.
-        actual_open = pb._open_directory_nofollow
+        actual_open = immutable_files.open_directory_nofollow
 
         def smaller_map_directory_budget(path, **options):
             result = actual_open(path, **options)
@@ -1687,7 +1717,7 @@ def test_mapping_metadata_bounds_are_not_masked_by_tree_or_json_authority_limits
                 monkeypatch.setattr(recovery, "MAX_PROCESS_MAPS", 1)
             return result
 
-        monkeypatch.setattr(pb, "_open_directory_nofollow", smaller_map_directory_budget)
+        monkeypatch.setattr(immutable_files, "open_directory_nofollow", smaller_map_directory_budget)
     result = _refused(case, case.prepare)
     expected = "map_files" if bound == "map-files-count" else "maps"
     assert any(expected in error and ("bound" in error or "byte" in error)
@@ -1706,8 +1736,8 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                                    expected=(report["dev"], report["ino"]))
         _planned(case, proc_root=Path("/proc"))
         process = Path("/proc") / str(holder.pid)
-        actual_read = pb._read_regular_file_nofollow
-        actual_open = pb._open_directory_nofollow
+        actual_read = pb.immutable_files._read_file
+        actual_open = immutable_files.open_directory_nofollow
         actual_readlink = recovery.os.readlink
         map_directory = (process / "map_files").stat()
         map_reads = 0
@@ -1758,8 +1788,8 @@ def test_real_process_mapping_metadata_failure_is_not_proof_of_death(case, monke
                     raise FileNotFoundError("real process map_files link qualification disappearance")
             return actual_readlink(path, dir_fd=dir_fd)
 
-        monkeypatch.setattr(pb, "_read_regular_file_nofollow", failed_mapping_read)
-        monkeypatch.setattr(pb, "_open_directory_nofollow", failed_mapping_directory)
+        monkeypatch.setattr(pb.immutable_files, '_read_file', failed_mapping_read)
+        monkeypatch.setattr(immutable_files, "open_directory_nofollow", failed_mapping_directory)
         monkeypatch.setattr(recovery.os, "readlink", failed_mapping_link)
         result = _refused(case, lambda: case.prepare(proc_root=Path("/proc")))
         assert map_reads > 0
@@ -1807,7 +1837,7 @@ def test_pid_or_mapping_lifetime_change_after_mapping_read_refuses_without_clean
     assert any("changed" in error for error in result["errors"]), result
     after = case.preserved()
     after.pop(str(case.proc_root))
-    assert after == before
+    assert after == before, _snapshot_delta(before, after)
 
 
 def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_exception(case):
@@ -1817,7 +1847,6 @@ def test_an_empty_userspace_process_cannot_claim_the_kernel_thread_mapping_excep
     (process / "map_files" / "1000-2000").unlink()
     result = _refused(case, case.prepare)
     assert any("executable census incomplete" in error for error in result["errors"]), result
-
 
 
 @pytest.mark.parametrize("drift", ["start-time", "pid-directory"])

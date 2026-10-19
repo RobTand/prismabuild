@@ -8,9 +8,17 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runtime_paths import generation_root
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root
 sys.path.insert(0, str(generation_root(__file__) / "src"))
-from prismabuild import core, resident_sets
+from prismabuild import core, resident_sets, submission
+from prismabuild.submission_frontend import store_for
+from prismabuild.submission_types import SubmissionRefused
+
+
+from prismabuild import data_manifest as manifest_codec
 
 
 def timestamp(value):
@@ -20,46 +28,22 @@ def timestamp(value):
     return parsed.astimezone(timezone.utc).timestamp()
 
 
-def movement_template(set_id, checkout):
-    import pbrun
-    return pbrun.freeze_action_template(
-        command=["pbresident", "publish", set_id], cwd=Path(checkout).resolve(),
-        logical_cwd=str(Path(checkout).resolve()), demand={"cpu": 1, "mem_gb": 1},
-        placement={"required_tags": []}, variables={"PATH": "/usr/bin:/bin"},
-        determinism="stochastic", retry_policy={"max_attempts": 3, "retry_safe": True},
-        host_class=None, measurement=False, transport="pool", pool_measurement_class=False,
-        data_manifest_path=None, checkout_snapshot_max_bytes=pbrun.CHECKOUT_SNAPSHOT_MAX_BYTES,
-        snapshot_refs=(), exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
-        progress=None, profile=None)
-
-
 def submit_copies(store, set_id, *, policy_path, checkout):
     """Freeze through the existing submitter, then use its movement builder."""
-    from prismabuild import local_resident, pool
+    from prismabuild import pool
     queue = pool.PoolQueue(store.queue_root)
-    record = store.read(set_id)
-    tiers = queue.tiers()
-    by_host = {row["host"]: row for row in tiers if row.get("tier_id", "").startswith("local:")}
-    for host in record["hosts"]:
-        if host not in by_host:
-            raise ValueError(f"local tier has not announced its movement tools on {host}")
-    template = movement_template(set_id, checkout)
-    return local_resident.publish_actions(template, store, set_id, tiers, policy_path=policy_path)
+    return submission.dispatch_resident(store, set_id, queue.tiers(),
+        checkout=checkout, policy_path=policy_path, store=store_for(__file__))
 
 
 def submit_adoption(store, set_id, *, host, source, policy_path, checkout):
-    from prismabuild import local_resident, pool
+    from prismabuild import pool
     queue = pool.PoolQueue(store.queue_root)
     tiers = {row["host"]: row for row in queue.tiers() if row.get("tier_id", "").startswith("local:")}
     if host not in store.read(set_id)["hosts"] or host not in tiers:
         raise ValueError("adoption host must be declared and announce its local tier")
-    template = movement_template(set_id, checkout)
-    action = local_resident.movement_action(template, store, set_id, tiers[host], policy_path=policy_path, operation="adopt", source=source)
-    template["cas"].publish_action_request(action)
-    row = local_resident.movement_row(action, template["cas"], tiers[host])
-    store.update_movements(set_id, host, {"adopt": row})
-    queue.publish(**row, recompute=True, refuse_if_live=True)
-    return row
+    return submission.adopt_resident(store, set_id, tiers[host],
+        checkout=checkout, policy_path=policy_path, source=source, store=store_for(__file__))
 
 
 
@@ -119,7 +103,7 @@ def main(argv=None):
     store = resident_sets.ResidentSets(args.pool_root)
     try:
         if args.command == "publish":
-            manifest, _ = core.read_data_manifest(args.manifest)
+            manifest, _ = manifest_codec.read_data_manifest(args.manifest)
             result = store.publish(manifest=manifest, canonical_root=args.canonical_root,
                 hosts=args.hosts.split(","), lease=lease_from_args(args), created_by=args.created_by)
             result["movements"] = submit_copies(store, result["set_id"], policy_path=args.policy, checkout=args.checkout)
@@ -137,7 +121,7 @@ def main(argv=None):
                 renewal_ceiling_s=policy["renewal_ceiling_s"])
         else:
             result = store.release(args.set_id, by=args.by)
-    except (ValueError, OSError, core.ActionContractError) as exc:
+    except (ValueError, OSError, core.ActionContractError, SubmissionRefused) as exc:
         print(f"pbresident: {exc}", file=sys.stderr)
         return 2
     print(core.sorted_json(result))

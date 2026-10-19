@@ -16,7 +16,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "fleet"))
 
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 OWN = "a" * 64
 OTHER = "b" * 16
@@ -28,11 +29,11 @@ class _Stub:
     #: The census is the publisher's own method; the stub carries its
     #: state (#1028).  Instance state: every census call below is its own
     #: range decision.
-    _range_partial_census = stage_move._StagedPublisher._range_partial_census
+    _range_partial_census = staged_path.StagedPublisher._range_partial_census
 
     def __init__(self) -> None:
         self._range_lock = threading.Lock()
-        self._range_partials = {}
+        self._partial_names = stage_move.kept_reads.DirectoryCaptures()
 
 
 def _previous_implementation(mover: str, destination: Path) -> list[str] | None:
@@ -57,7 +58,7 @@ def _previous_implementation(mover: str, destination: Path) -> list[str] | None:
 
 
 def _census(destination: Path) -> list[str] | None:
-    return stage_move._StagedPublisher._inflight_partials(_Stub(), destination)
+    return staged_path.StagedPublisher._inflight_partials(_Stub(), destination)
 
 
 @pytest.fixture()

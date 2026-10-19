@@ -20,7 +20,7 @@ if str(_FLEET) not in sys.path:
     sys.path.insert(0, str(_FLEET))
 
 import shape_gate  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 from prismabuild import pool  # noqa: E402
 

@@ -52,7 +52,9 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool, resource_scope  # noqa: E402
 
+
 import pbmetrics  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from test_pool_resource_scope import _process, scoped  # noqa: E402,F401
@@ -78,7 +80,7 @@ def _fails_cleanup(monkeypatch, exc):
 
 
 def _claimed_record(queue, key):
-    return json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+    return json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
 
 
 # --------------------------------------------------------------------------
@@ -109,7 +111,7 @@ def test_the_claim_and_its_tokens_survive_an_unprovable_cleanup(scoped, monkeypa
 
     queue.finish(key, status="done", detail={"status": "done", "returncode": 0})
 
-    assert queue.item_path(pool.CLAIMED, key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, key).exists()
     assert queue.ledger().held() != {}
 
 
@@ -223,7 +225,7 @@ def _pinned_status(scoped_fixture, monkeypatch):
 def test_pbstatus_says_how_hard_and_for_how_long(scoped, monkeypatch):
     queue, key = _pinned_status(scoped, monkeypatch)
 
-    rows = {job["action_key"]: job for job in pbstatus.read_pool(queue.root)["jobs"]}
+    rows = {job["action_key"]: job for job in fleet_census.action_rows(queue.root).value["jobs"]}
     row = rows[key]
 
     assert row["cleanup_pending"] is True
@@ -254,7 +256,7 @@ def test_a_claim_pinned_before_the_stamp_existed_reports_no_age(scoped, monkeypa
     # it must be counted -- but its age is unknown, and emitting 0 would say
     # "just started" about a cleanup that may have been stuck for hours.
     queue, key = _pinned_status(scoped, monkeypatch)
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(path.read_text())
     del record["container_cleanup_first_failed_unix"]
     path.write_text(json.dumps(record))

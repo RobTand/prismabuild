@@ -18,9 +18,10 @@ def recorder(directory, host, power):
 
 
 def config(monkeypatch, tmp_path, boxes):
-    path = tmp_path / "fleet_boxes.json"
+    path = tmp_path / "tools/fleet_boxes.json"
+    path.parent.mkdir(exist_ok=True)
     path.write_text(json.dumps({"boxes": boxes}))
-    monkeypatch.setattr(box_window, "_FLEET_CONFIG_PATHS", (path,), raising=False)
+    monkeypatch.setattr(box_window, "_ROOT", tmp_path)
 
 
 @pytest.mark.parametrize("host", ["sparklina", "gx10-6b77"])
@@ -40,8 +41,7 @@ def test_both_explicit_names_cover_the_same_recorders(monkeypatch, tmp_path, hos
 
 
 def test_no_config_keeps_only_the_exact_hostname(monkeypatch, tmp_path):
-    monkeypatch.setattr(box_window, "_FLEET_CONFIG_PATHS",
-                        (tmp_path / "missing",), raising=False)
+    monkeypatch.setattr(box_window, "_ROOT", tmp_path / "missing")
     expected = recorder(tmp_path, "sparklina", 10)
     recorder(tmp_path, "gx10-6b77", 999)
     assert box_window._csv_files(tmp_path, "sparklina", START, START) == [expected]

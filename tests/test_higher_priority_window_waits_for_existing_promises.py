@@ -23,8 +23,8 @@ def cycle(queue, tmp_path):
 
 def test_higher_priority_lead_claims_after_old_promises_drain_without_refill(tmp_path):
     queue = base._queue(tmp_path, capacity_gib=60)
-    ledger = queue.tier_ledger(base.TIER)
-    assert ledger.acquire('e' * 64, {'stage_gib': 15})
+    ledger = queue.tier(base.TIER)
+    assert ledger.take('e' * 64, {'stage_gib': 15})
     low = publish_consumer(queue, '1' * 64, gib=3, priority=-10)
     high = publish_consumer(queue, 'f' * 64, gib=18, priority=-5)
     old = []
@@ -37,28 +37,36 @@ def test_higher_priority_lead_claims_after_old_promises_drain_without_refill(tmp
                              'range_start_bytes': 0, 'range_end_bytes': 3 * base.GIB}}
         queue.publish(**row)
         old.append(key)
-    assert ledger.available()['stage_gib'] == 45
+    assert ledger.free_supply()['stage_gib'] == 45
     cycle(queue, tmp_path)
-    assert not queue.item_path(base.pool.READY, high).exists()
-    assert not queue.item_path(base.pool.READY, low).exists(), 'new low-priority credit refilled ahead of waiting high priority'
-    assert all(queue.item_path(base.pool.READY, key).exists() for key in old)
+    assert not queue.records.item_path(base.pool.record_store.READY, high).exists()
+    assert not queue.records.item_path(base.pool.record_store.READY, low).exists(
+    ), 'new low-priority credit refilled ahead of waiting high priority'
+    assert all(queue.records.item_path(base.pool.record_store.READY, key).exists() for key in old)
     for key in old:
-        row = base.pool._read_json(queue.item_path(base.pool.READY, key))
+        row = base.pool.record_store.value_or_raise(
+            queue.records.item(base.pool.record_store.READY, key),
+        )
         claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='drain-existing',
                               capacity={'cpu': 4, 'mem_gb': 4})
         assert claimed and claimed['action_key'] == key
         queue.finish(key, status='executed', detail={'returncode': 0})
         cycle(queue, tmp_path)
-        if queue.item_path(base.pool.READY, high).exists():
+        if queue.records.item_path(base.pool.record_store.READY, high).exists():
             break
-        assert not queue.item_path(base.pool.READY, low).exists()
-    assert queue.item_path(base.pool.READY, high).exists()
-    row = base.pool._read_json(queue.item_path(base.pool.READY, high))
+        assert not queue.records.item_path(base.pool.record_store.READY, low).exists()
+    assert queue.records.item_path(base.pool.record_store.READY, high).exists()
+    row = base.pool.record_store.value_or_raise(
+        queue.records.item(base.pool.record_store.READY, high),
+    )
     claimed = queue.claim(ready=[row], tags=['dl380g10'], owner='native-lead',
                           capacity={'cpu': 4, 'mem_gb': 4})
     assert claimed and claimed['action_key'] == high
-    assert ledger.holder_tokens(high)['stage_gib'] == 18
-    assert all(not queue.item_path(base.pool.WITHDRAWN, key).exists() for key in old)
+    assert ledger.holdings(high)['stage_gib'] == 18
+    assert all(
+        (not queue.records.item_path(base.pool.record_store.WITHDRAWN, key).exists(
+        ) for key in old),
+    )
 
 
 def test_permanently_oversized_higher_priority_does_not_block_small_window(tmp_path):
@@ -66,15 +74,15 @@ def test_permanently_oversized_higher_priority_does_not_block_small_window(tmp_p
     low = publish_consumer(queue, '1' * 64, gib=3, priority=-10)
     high = publish_consumer(queue, 'f' * 64, gib=18, priority=-5)
     cycle(queue, tmp_path)
-    assert queue.item_path(base.pool.READY, low).exists()
-    assert not queue.item_path(base.pool.READY, high).exists()
+    assert queue.records.item_path(base.pool.record_store.READY, low).exists()
+    assert not queue.records.item_path(base.pool.record_store.READY, high).exists()
 
 
 def test_equal_priority_retains_existing_backfill(tmp_path):
     queue = base._queue(tmp_path, capacity_gib=20)
-    assert queue.tier_ledger(base.TIER).acquire('e' * 64, {'stage_gib': 5})
+    assert queue.tier(base.TIER).take('e' * 64, {'stage_gib': 5})
     large = publish_consumer(queue, '1' * 64, gib=18, priority=-5)
     small = publish_consumer(queue, 'f' * 64, gib=3, priority=-5)
     cycle(queue, tmp_path)
-    assert not queue.item_path(base.pool.READY, large).exists()
-    assert queue.item_path(base.pool.READY, small).exists()
+    assert not queue.records.item_path(base.pool.record_store.READY, large).exists()
+    assert queue.records.item_path(base.pool.record_store.READY, small).exists()

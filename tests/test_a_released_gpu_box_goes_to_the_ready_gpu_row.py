@@ -27,10 +27,12 @@ that demands no GPU is admitted only if the GPU row still fits afterwards.
 CPU work that fits beside it is still admitted, and nothing is evicted.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 from contextlib import contextmanager
 import hashlib
 import json
+import socket
 from pathlib import Path
 import sys
 
@@ -38,7 +40,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src")]
-from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
+from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
+from gpu_capacity_fixture import idle_gpu_sample
 
 T0 = 4_000_000.0
 #: sparky's offer, 2026-09-25.
@@ -55,6 +58,10 @@ SHARD = {"cpu": 2, "mem_gb": 8}
 #: A CPU-only demand that fits beside the GPU row.
 SMALL = {"cpu": 2, "mem_gb": 5}
 BAND = -10
+PROGRESS_CAPABILITIES = (contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG)
+
+
+from fleet_world import FleetWorld
 
 
 def _key(seed: str) -> str:
@@ -64,7 +71,7 @@ def _key(seed: str) -> str:
 @pytest.fixture()
 def clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -76,16 +83,15 @@ def generation_actions(monkeypatch):
 
 @pytest.fixture()
 def idle_host(clock, monkeypatch):
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
-        "psi_some": 0., "busy_cpus": 0.})
+        "psi_some": 0., "busy_cpus": 0.}
+    return cpu_sampler
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _sealed(tmp_path: Path, name: str, *, progress: bool = False,
@@ -120,10 +126,16 @@ def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     # A distinct publish time per row, so the ready order within a band is
     # the order this file publishes in, then the denial count.
     clock[0] += 0.001
-    q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
-              checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources,
-              priority=kw.pop("priority", BAND), **kw)
+    ActionRows(q).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script='/w.py',
+        resources=resources,
+        priority=kw.pop('priority', BAND),
+        tags=kw.pop('tags', [socket.gethostname()]),
+        **kw,
+    )
     return key
 
 
@@ -133,10 +145,13 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claimer(q: pool.PoolQueue, *, adaptive: bool):
+def _claimer(q: pool.PoolQueue, *, adaptive: bool, cpu_sampler):
     def claim() -> str | None:
-        item = (q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
-                if adaptive else q.claim(capacity=CAPACITY))
+        item = (q.claim(has_gpu=True, capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
+                        tags=[socket.gethostname(), *PROGRESS_CAPABILITIES],
+                        cpu_sampler=cpu_sampler, gpu_sampler=idle_gpu_sample)
+                if adaptive else q.claim(has_gpu=True, capacity=CAPACITY,
+                    tags=[socket.gethostname(), *PROGRESS_CAPABILITIES], cpu_sampler=cpu_sampler))
         return None if item is None else str(item["action_key"])
     return claim
 
@@ -186,7 +201,7 @@ def test_a_released_gpu_goes_to_the_ready_gpu_row_not_the_cpu_row_ahead_of_it(
     the row's residency lead was not yet resident.
     """
 
-    claim = _claimer(queue, adaptive=adaptive)
+    claim = _claimer(queue, adaptive=adaptive, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     if order == "published-first":
         shard = _publish(queue, clock, _key("shard"), SHARD)
@@ -208,10 +223,10 @@ def test_a_released_gpu_goes_to_the_ready_gpu_row_not_the_cpu_row_ahead_of_it(
     queue.finish(holder, status="executed")
     assert claim() == gpu_row, (
         "a CPU-only row took the room the ready GPU row needs on the released GPU")
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
     # The shard does not fit beside the row, and nothing is evicted.
     assert claim() is None
-    assert queue.item_path(pool.CLAIMED, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, gpu_row).exists()
 
 
 @pytest.mark.parametrize("adaptive", [False, True], ids=["ledger", "adaptive_cpu"])
@@ -224,7 +239,7 @@ def test_a_gpu_row_whose_lock_is_busy_still_keeps_its_room(
     word on it was ``_starved``, so no withhold is on file to carry.
     """
 
-    claim = _claimer(queue, adaptive=adaptive)
+    claim = _claimer(queue, adaptive=adaptive, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     gpu_row = _publish(queue, clock, _key("row-001"), GPU_ROW)
     shard = _publish(queue, clock, _key("shard"), SHARD)
@@ -239,7 +254,7 @@ def test_a_gpu_row_whose_lock_is_busy_still_keeps_its_room(
         assert claim() is None, (
             "a CPU-only row took the released GPU's room while the ready GPU "
             "row's lock was busy")
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
     denial = _denial(queue, shard)
     assert denial["reason"] == "deferred_for_ready_gpu_row"
     assert denial["evidence"]["gpu_row"] == gpu_row[:12]
@@ -263,7 +278,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
     it keeps, not its own evaluation, is what stops the shard.
     """
 
-    claim = _claimer(queue, adaptive=True)
+    claim = _claimer(queue, adaptive=True, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     shard = _publish(queue, clock, _key("shard"), SHARD)
     key, cas_root, checkout = _sealed(tmp_path, "row-001", variables={
@@ -273,7 +288,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
                        cas_root=cas_root, checkout_root=checkout)
     # Fixture concession: the produced-output reference ``publish`` writes
     # for a Stage B row, which is what makes the claim ask for its allowance.
-    path = queue.item_path(pool.READY, gpu_row)
+    path = queue.records.item_path(pool.record_store.READY, gpu_row)
     record = json.loads(path.read_text())
     record["produced_output"] = {"schema": "prismabuild.produced_output_ref.v1",
                                  "template_id": "fixture", "template_sha256": "0" * 64}
@@ -287,7 +302,7 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
     assert _denial(queue, shard)["evidence"]["room"]["mem_gb"] == 97
     assert claim() == gpu_row
     assert queue.ledger().holder_tokens(gpu_row).get("mem_gb") == 97
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
 
 
 @pytest.mark.parametrize(("demand", "measured_slots"), [
@@ -297,13 +312,13 @@ def test_the_room_is_the_demand_the_claim_charges_with_its_export_allowance(
 def test_a_gpu_producers_room_and_claim_omit_an_allowance_that_exceeds_capacity(
         queue, clock, idle_host, tmp_path, monkeypatch, demand, measured_slots):
     """A busy producer keeps only the room its next claim actually charges."""
-    claim = _claimer(queue, adaptive=True)
+    claim = _claimer(queue, adaptive=True, cpu_sampler=idle_host)
     key, cas_root, checkout = _sealed(tmp_path, "producer-boundary", variables={
         adaptive_cpu.SPOOL_ROOT_ENV: str(tmp_path / "spool")})
     producer = _publish(queue, clock, key, demand,
                         cas_root=cas_root, checkout_root=checkout)
     # Use the produced-output reference from the existing room fixture.
-    path = queue.item_path(pool.READY, producer)
+    path = queue.records.item_path(pool.record_store.READY, producer)
     row = json.loads(path.read_text())
     row["produced_output"] = {"schema": "prismabuild.produced_output_ref.v1",
                              "template_id": "fixture", "template_sha256": "0" * 64}
@@ -343,7 +358,7 @@ def test_cpu_work_that_fits_beside_the_gpu_row_is_still_admitted(
     the row's.  Behind a row whose lock is busy, it claims on the same pass.
     """
 
-    claim = _claimer(queue, adaptive=adaptive)
+    claim = _claimer(queue, adaptive=adaptive, cpu_sampler=idle_host)
     holder = _holder(queue, clock, tmp_path, claim)
     if busy:
         gpu_row = _publish(queue, clock, _key("row-001"), GPU_ROW)
@@ -386,7 +401,8 @@ def test_cpu_work_is_not_held_for_a_gpu_row_that_cannot_take_the_box(
 
     capacity = dict(CAPACITY, mem_gb=120)
     claim = lambda: (lambda item: None if item is None else item["action_key"])(  # noqa: E731
-        queue.claim(capacity=capacity, tags=["gb10"]))
+        queue.claim(has_gpu=True, capacity=capacity,
+                    tags=["gb10", socket.gethostname(), *PROGRESS_CAPABILITIES]))
     if case == "gpu-held":
         holder_key, cas_root, checkout = _sealed(tmp_path, "gpu-holder", progress=True)
         _publish(queue, clock, holder_key, {"cpu": 2, "gpu": 1, "mem_gb": 10},

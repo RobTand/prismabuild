@@ -19,8 +19,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
-import prewarm_loop, stage_move  # noqa: E402
+from prismabuild import prewarm_loop, stage_move  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 
 MIB = 1 << 20
 
@@ -38,7 +39,7 @@ def _window(tmp_path: Path, entries: int, entry_bytes: int):
         listed.append({"path": str(source), "offset": 0, "bytes": entry_bytes,
                        "sha256": hashlib.sha256(payload).hexdigest()})
     total = entries * entry_bytes
-    manifest = {"schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {},
                 "annotations": {"phases": [{"name": "layer-0", "bytes": total,
                                             "cumulative_bytes": total}]},
                 "mount_prefix": str(mount), "entries": listed,

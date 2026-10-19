@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-TAG = "local-dependency-v1"
+from .contracts import LOCAL_DEPENDENCY_TAG as TAG
 
 
 def normalize(requirements: object) -> dict[str, str]:

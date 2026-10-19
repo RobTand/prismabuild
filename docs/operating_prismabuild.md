@@ -1145,16 +1145,27 @@ already finished, and exited 75.
 | 2 | `pbrun --withdraw` matched no submission, matched more than one, or every `scancel` refused. `pbwait` was given a key that is empty, that matches no record, or that matches more than one. Also argparse's own usage error. |
 | 74 | A filesystem or record-persistence error prevented `pbrun` or `pbwait` from completing the operation. The diagnostic distinguishes a known accepted job from an unverified submission, and says whether a withdrawal reached `scancel`. A wait that ends while its last terminal-record read was unavailable is also 74, not 75: nothing was read, so the work may already be done. Read the named `pb-queue` record or run `pbwait` again. `pbtest` reports such a shard as `OUTCOME UNOBSERVED`, not as files that did not run. |
 | 75 | No verdict yet. The wait ended before the work did, or `sbatch` stopped answering and the controller could not say whether it took the job. Nothing was cancelled and nothing was filed. |
+| 76 | The exact publication being watched was superseded. Both publication identities are reported. This ends the publication wait without an execution, receipt or cleanup verdict and grants no successor-follow or automatic resubmission. |
 | 143 | The action was withdrawn. 128 + SIGTERM, the signal a withdrawal sends. |
 
-Those four codes are `pbrun`'s own, and a run never gets to speak them. A run
-whose recorded status is 2, 74, 75 or 143 is reported as 1, with its real
+Those five nonzero codes are `pbrun`'s own, and a run never gets to speak them. A run
+whose recorded status is 2, 74, 75, 76 or 143 is reported as 1, with its real
 number on a line of its own and under `detail.returncode` in the record. Every
 other status reaches the caller unchanged: a run that exits 7 exits 7. The case
 this exists for is 143. `core._sigterm_unwinds_this_process` raises
 `SystemExit(128 + signum)`, so any SIGTERM that is not a withdrawal leaves 143
 in the record, and a caller reading that was told an operator had made a
 decision that nothing on disk records.
+
+Supersession is exact to the original `(action_key, published_unix)`. The queue
+retains an immutable typed decision with the verified successor item when an
+older claim's retry or unstarted release collides with a newer publication.
+`pbwait --json` reports `status: superseded`, original `published_unix` and
+`superseded_by_published_unix`; its execution and receipt fields are absent or
+null. Same-generation retries do not create this ending. Existing preemption
+lineage following remains unchanged. Old untyped dropped evidence does not
+grant a supersession verdict, and old clients do not gain the new behavior
+merely because a newer worker writes these decisions.
 
 Exit 1 is the worker launcher's status, not the command's own exit code. A
 command that exits 7 makes the worker refuse to publish a receipt, and both
@@ -1637,12 +1648,18 @@ use `--detach`, then `pbwait` on the keys it printed.
 | --- | --- |
 | 0 | Every row's work is done. A cache hit counts as done. |
 | 1 | A row was refused before submission, a row's work failed, or the manifest did not load. |
+| 74 | An outcome or actual slot-occupancy observation was unavailable. No new submission is authorized by that uncertainty. |
 | 75 | Nothing failed, and at least one row was still running or remained `not_submitted` when `--wait-s` ran out. Under `--max-inflight`, this includes a row whose worker-offer discovery was still timing out. |
+| 76 | An exact submitted publication was superseded. Under `--max-inflight`, further publication stops and the suffix stays `not_submitted`. Any successor work or old claim cleanup retains its actual occupancy. |
 
 A refusal outranks a failure and a failure outranks a wait, so 75 means the
 work is still out there and the keys are still worth waiting on. Under
 `--detach` the campaign returns 0, or 1 if any row was refused; it does not
 wait, so it never returns 75.
+
+For observed rows, an observation error outranks an ordinary failure, which
+outranks supersession, which outranks waiting. Supersession never cancels
+existing work, follows the successor, or releases capacity on its own.
 
 ## Fan a test suite out
 
@@ -1650,6 +1667,14 @@ wait, so it never returns 75.
 
     python3 /mnt/shared/prismabuild-fleet/repo/tools/pbtest.py --checkout /home/rob/prismabuild \
         --python /home/rob/venvs/pb-cpu/bin/python --shards 20 tests
+
+Root proof runtime capture uses `CAPTURE_DEMAND` in
+`tests/proof_container_runtime.py`: one CPU, four GiB and zero GPUs. Submit it
+with that exact demand, native threads 1, priority -10 and the existing
+480-second hard deadline. Preserve the assigned CPU affinity and all four
+120-second phase stall allowances. The independent retained-data auditor keeps
+its separate two-CPU, four-GiB demand. See the
+[root proof runtime contract](design.md#root-proof-runtime-qualification).
 
 Each shard is one `pbrun` action, so the checkout travels through the CAS and
 the interpreter is an absolute `python*` executable on eligible target workers.
@@ -1884,6 +1909,18 @@ when reports must remain accessible after checkout cleanup. PB does not
 automatically collect arbitrary plugin reports into the CAS; verify their
 payloads separately. Use a new directory per invocation when retaining
 different runs. File discovery and partitioning remain PB's responsibility.
+
+With `--json PATH`, `pbtest` also publishes `PATH.progress.json` atomically.
+It counts completed submission clients, not passing tests or verified receipts.
+The final list report remains authoritative. Mergeq binds the companion to each
+launch UUID, entrypoint and generation; it does not count human shard lines or
+classify runtime refusal from prose. A refused interpreter can leave a typed
+terminal companion without a final report. A missing/malformed report otherwise
+leaves the independently requested file population unobserved.
+`pbmergeq` requires its selected `pbtest` generation to provide both verdict and
+progress contracts, so upgrade these co-published tools together. Older running
+`pbmergeq` instances continue using newer `pbtest` generations because the
+outcome records and human output remain compatible.
 
 Each shard prints its pytest terminal summary, and `--json` records the same
 text plus a `ran` flag. `ran` is true when pytest reported a terminal summary
@@ -3315,7 +3352,7 @@ not prove current participation or simulate either quorum.
 
 For a barrier, first stage the committed generation through an admitted PB action:
 
-    tools/fleet/publish_runtime.py --stage-only
+    tools/fleet/publish_runtime.py --stage-only --shape-gate-action <passing-final-commit-shape-action>
 
 This performs the import probe and seals the candidate, prints its generation
 name, and leaves `repo` unchanged. Then run the authorized control-plane step
@@ -3335,13 +3372,23 @@ roster both participate; fresh offers resolve their host aliases. An unavailable
 ambiguous or undeclared host prevents arming.
 
 An armed epoch closes local durable admission gates, lets existing actions finish,
-and waits for all worker and prewarm processes to park. Every host must publish
+and waits for worker loops, one-shot workers, prewarm, tier and localtier to park
+or exit. Metrics may continue. Every host must publish
 its epoch-bound `drained` record before `repo` moves. Every host must then prove
-its privileged clients are healthy and its supervisor, workers and prewarmer use
-the chosen immutable generation before the coordinator writes `resume`. Each
+its privileged clients are healthy and its supervisor, workers and any observed
+storage roles use the chosen immutable generation before the coordinator writes `resume`. Each
 host rechecks local proof before release. Inspect `pbstatus`'s `rollout` section,
 local updater status and `rollout/epochs/<epoch>/` for the pending phase and
 missing hosts. A terminal record appears only after every host acknowledges resume.
+
+The deployed `a17477b2b206` updater checks only workers and prewarm and does not
+load the proof leaf. The first adoption of the five-role proof must therefore
+stop tier and localtier separately and retain their process evidence before
+using that old drain check. Keep those roles stopped until the new installed
+proof is active. Its first bridge tick may install the new updater before the
+proof leaf; proof remains unavailable until the next tick supplies the leaf.
+Record both installed identities before relying on the five-role check. This
+source change does not authorize or perform that rollout.
 
 A wait expiry returns 75 and retains the epoch and all unreleased holds. Continue
 that same epoch, without editing or deleting its evidence:
@@ -4902,3 +4949,488 @@ that worker/core/pool/storage/reader SDK bytes are unchanged. The staged generat
 must be complete, sealed and sourced from reviewed merged code. Do not move the
 live `repo` pointer or restart roles for this client selection; runtime activation
 still requires its ordinary idle-queue checks.
+
+## Cut over a174 with the installed bootstrap
+
+This procedure implements amended P. It needs verified final-source corpus and
+root crash/reverse receipts before host mutation. The implementation worker's
+non-root gate does not supply those root receipts. Keep ordinary producers and
+all publication automation paused, including old publishers. Use an idle queue
+boundary for publication. Existing actions finish normally. Keep both sealed
+generations, host journals, lock inodes, initialized markers and all leaves.
+
+Run the coordinator as rob on **sparky or sparklina**, where the qualified GPU
+canary image is available. Enroll exactly sparky, gx10-6b77 with alias sparklina,
+and dl380g10. The broker, supervisor and storage roles continue running. Do not
+use the old a174 publisher to bypass a pending-bootstrap refusal. Do not execute
+Python from NFS as root.
+
+Before starting, obtain the master's final native root, corpus, combined-suite
+and shape-gate receipts. The shape action must pass `tests/gate_campaign_shape.py`
+on the exact clean final commit. Stage that commit before reserving bootstrap,
+using the published PB client. Set `R` to that checkout, `SHAPE_ACTION` to the
+verified full shape key, and `PREDEPLOY_PY` to
+`/home/rob/venvs/pb-cpu/bin/python3.14`. This infrastructure interpreter was
+observed as native Python 3.14.4 on x86 in the worker gates. Reconfirm its full
+runtime identity, required imports and current eligible offer in the master's
+final qualification. A path on the coordinator is not an eligible-worker proof.
+Do not substitute the absent coordinator `python3.12` link or provision a venv
+while consumers use it.
+
+```bash
+set -euo pipefail
+R=/home/rob/wt/reviewed-release
+SHAPE_ACTION=REVIEWED_FULL_SHAPE_ACTION_KEY
+PREDEPLOY_PY=/home/rob/venvs/pb-cpu/bin/python3.14
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+    --cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
+    --env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+    -- "$PREDEPLOY_PY" tools/fleet/publish_runtime.py --stage-only \
+    --rollout rolling --rollout-reason 'stage the qualified amended P candidate only' \
+    --shape-gate-action "$SHAPE_ACTION"
+```
+
+Retain that action's logs, terminal flags and verified CAS receipt. Set `G` below
+to the exact sealed generation it printed. Staging performs an admitted import
+probe and never activates. It needs no canary flag. Do not restage after a
+bootstrap reservation; ordinary staging/publication then refuses the pending
+intent. Staging's existing exemption from automatic reader-transition checking
+is limited to sealing bytes. Only the later explicit installed-bootstrap
+assessment authorizes this cutover.
+
+The coordinator needs authenticated noninteractive SSH, trusted host keys and
+existing `sudo -n` authority on all three enrolled hosts. The admitted predeploy
+worker needs the same SSH access for fresh root challenges; verify that execution
+route during final qualification. Do not forward new credentials or widen sudo
+rules during cutover. Root maintenance, inventory and external pointer control
+are the authorized bootstrap operations. Staging, runtime probes, predeploy,
+root tests and canary legs still require PB admission. There is no test-admission
+exception and no permission to stop brokers, serving roles or active work.
+
+Before activation, set and export `PBCANARY_GPU_IMAGE` to the master's qualified
+`repository@sha256:<64 hex>` campaign image. It must already be available on the
+GPU coordinator and eligible canary workers and provide CUDA-enabled torch and
+`python3`. Confirm the full driver and all four legs exist in `R`, the published
+pbrun/pbwait clients and CAS/queue are reachable, and the staged-read tier path
+can serve leg 3's reader leases. Record image identity and the final canary
+qualification action keys. Missing image, driver, open admission or staging
+coverage stops the operation; it is not a canary skip.
+
+Set these operator-selected paths to the reviewed release checkout, staged sealed
+generation, evidence directory and reviewed operation ID. `qualification-actions.json`
+is a JSON array of full successful PB keys covering all eight native record
+compatibility files and both registered bootstrap root files on the final source.
+The separately sealed `qualification-index.json` declares the exact required files
+and node IDs, final source hashes, and approved native root profiles. Copy its
+reviewed bytes to `$E/qualification-index.json` and keep it read-only. The verifier
+compares CAS outcomes to that independent population, checks the fixed root runner
+and profile, and binds each approved command to the exact executed `task.argv`
+through the standard capture recipe. Its `corpus_routes` maps each corpus machine
+to an approved `commands` array of exact argv lists, sealed from the reviewed
+submission recipes before their results. Retain the complete command, including
+any pbtest recorder program. Cwd must be the snapshot root and the snapshot input
+must occur in the attested action. A supplied `passed` field is not accepted.
+
+Commit every native profile and every attested source-map key to the final Git
+tree before sealing that commit and collecting the independent index. This
+includes `qualification_dependencies.json`, generated by the preparation owner,
+and the complete profile paths. Generated-only snapshot files fail the final
+Git-blob comparison. Both native lanes must attest identical final Git bytes for
+shared source names. If their dependency manifests differ, stop for the master's
+artifact reconciliation before final qualification. The four frozen runtime
+helpers must not be edited to bypass this check. The independent collection index
+and these final artifacts are master prerequisites, not supplied worker evidence.
+
+```bash
+set -euo pipefail
+R=/home/rob/wt/reviewed-release
+G=/mnt/shared/prismabuild-fleet/runtime-generations/REVIEWED_FINAL_GENERATION
+OLD=/mnt/shared/prismabuild-fleet/runtime-generations/a17477b2b206-1791745175-65dffa700dfb
+E=/mnt/shared/prismabuild-cutover/REVIEWED_OPERATION_ID
+ID=REVIEWED_OPERATION_ID
+PBCANARY_GPU_IMAGE=REVIEWED_REPOSITORY@sha256:REVIEWED_64_HEX_DIGEST
+export PBCANARY_GPU_IMAGE
+export PYTHONPATH="$R/src"
+mkdir -p "$E"
+python3 -m prismabuild.installed_bootstrap inventory --out "$E/inventory"
+python3 -m prismabuild.installed_bootstrap plan --id "$ID" \
+	--source "$OLD" --target "$G" --inventory "$E/inventory/inventory.json" \
+	--actions "$E/qualification-actions.json" --qualification-index "$E/qualification-index.json" \
+	--designation "$R/docs/compatibility_rollback_designation.json" --out "$E/forward"
+PLAN_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/forward/plan.json")
+ACTIVE_PLAN_SHA=$PLAN_SHA
+python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
+	--rollout-reason 'reviewed amended P, unchanged broker and two-way record corpus' \
+	--reserve-installed-bootstrap "$E/forward/assessment.json"
+```
+
+Inventory uses fixed read-only SSH/sudo commands. Review the generated plan,
+exact sealed receipts, all four service equalities, boot IDs, broker PID/start
+identities, enrollment digests and upgrade.lock inodes. A changed boot or broker
+requires new observation and qualification assessment; do not edit a pending
+intent to make a changed fact match. The reservation precedes the first root
+preparation. If interrupted, retain the pending marker and resume the same plan.
+
+Install the independently retained code and local plan with fixed file-install
+commands. The unprivileged shell opens NFS inputs. Root's `install` reads the
+pipe and root later executes only `/opt/prismabuild-bootstrap`. Both config
+files preserve the enrollment except for selecting the pinned sealed directory.
+The final reader's local leaves are separate from the four live paths.
+
+```bash
+set -euo pipefail
+stage_host() {
+	local host=$1
+	key=$host
+	if [ "$host" = sparklina ]; then key=gx10-6b77; fi
+	B=/opt/prismabuild-bootstrap/$ID
+	ssh -oBatchMode=yes -oStrictHostKeyChecking=yes "$host" \
+		sudo -n /usr/bin/install -d -o root -g root -m 0755 "$B" "$B/reader"
+	cat "$G/tools/bootstrap_client.py" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/bootstrap_client.py"
+	cat "$G/tools/upgrade_client.py" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/reader/upgrade_client.py"
+	for leaf in digest_primitives.py generation_receipt.py park_proof.py; do
+		cat "$G/src/prismabuild/$leaf" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/reader/$leaf"
+	done
+	cat "$E/forward/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
+	for file in source-config.json target-config.json source-receipt.json target-receipt.json; do
+		cat "$E/forward/$key/$file" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/$file"
+	done
+	ssh "$host" sudo -n /usr/bin/sha256sum "$B/bootstrap_client.py" "$B/reader/upgrade_client.py" \
+		"$B/reader/digest_primitives.py" "$B/reader/generation_receipt.py" "$B/reader/park_proof.py" > "$E/$host-staged.sha256"
+	python3 - "$E/forward/plan.json" "$E/$host-staged.sha256" <<'PYCODE'
+import json, pathlib, sys
+plan = json.load(open(sys.argv[1]))
+expected = {name: plan['target_files'][name] for name in ('upgrade_client.py', 'digest_primitives.py', 'generation_receipt.py', 'park_proof.py')}
+expected['bootstrap_client.py'] = plan['tool_sha256']
+actual = {pathlib.Path(path).name: digest for digest, path in (line.split() for line in open(sys.argv[2]))}
+assert actual == expected, actual
+PYCODE
+}
+stage_host sparky
+stage_host sparklina
+stage_host dl380g10
+```
+
+Each host staging call compares every reported code hash with the reviewed plan
+before continuing to the next host. Stop immediately on any failed command.
+Do not overwrite a preexisting operation directory with different bytes. The
+helper checks the tool, private reader, receipt and enrollment identities again.
+Then prepare each host. It creates persistent conditions for both upgrader units,
+stops the timer, waits for the oneshot's natural exit and acquires the existing
+upgrade.lock. Its independent journal and backup precede all live replacement.
+It uses the existing full-map copy in private staging, then renames only the
+three leaves and updater, fsyncing both directories at each boundary.
+
+```bash
+set -euo pipefail
+prepare_host() {
+	local host=$1
+	ssh -oBatchMode=yes -oStrictHostKeyChecking=yes "$host" sudo -n /usr/bin/python3 -I \
+		"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" prepare --id "$ID" --plan-sha256 "$PLAN_SHA"
+}
+prepare_host sparky
+prepare_host sparklina
+prepare_host dl380g10
+```
+
+Rerunning `prepare` reconciles a partial installation with its original backup.
+An automatic journal, unresolved epoch, changed service byte, unsafe custody or
+unavailable shared reservation refuses. Leave fences in place. Never run the
+final `Upgrader.run()` against the still-old pointer.
+
+Run fresh window/predeploy validation through published PB using the final
+checkout's normal qualification route and `compat_predeploy.py qualify
+--installed-bootstrap "$E/forward/assessment.json"`, with a new census directory,
+the exact current live-plus-a174 window, designation, generation store, sealed
+candidate and output path. This is test/qualification work and remains admitted.
+It verifies the exact rollback bytes and default 300-second census age. Default
+predeploy without the explicit assessment still refuses the automatic transition.
+Saved census freshness never replaces the publisher's new authenticated round.
+
+For predeploy, capture the window and run qualification with these admitted
+commands after preparing the hosts. `pbrun` supplies ordinary CPU admission;
+its child executes the named script directly.
+
+```bash
+set -euo pipefail
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- "$PREDEPLOY_PY" tests/compat/support/compat_predeploy.py \
+	capture --out "$E/window-census"
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 300 --wait-s 600 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- "$PREDEPLOY_PY" tests/compat/support/compat_sources.py capture \
+	--status "$E/window-census/status.json" --generations "${G%/*}" \
+	--rollback-generation "${OLD##*/}" --rollback-commit a17477b2b206adf79d89e65c7b9d09584f0bfa34 \
+	--git-root "$R" --out "$E/window"
+python3 /mnt/shared/prismabuild-fleet/repo/tools/pbrun.py --cwd "$R" \
+	--cpus 1 --demand mem_gb=2 --priority -10 --timeout-s 600 --wait-s 900 \
+	--env OMP_NUM_THREADS=1 --env MKL_NUM_THREADS=1 --env OPENBLAS_NUM_THREADS=1 \
+	-- "$PREDEPLOY_PY" tests/compat/support/compat_predeploy.py qualify \
+	--census-dir "$E/predeploy-census" --window "$E/window/window.json" \
+	--designation "$R/docs/compatibility_rollback_designation.json" --generations "${G%/*}" \
+	--candidate "$G" --out "$E/predeploy.json" --installed-bootstrap "$E/forward/assessment.json"
+```
+
+
+Activate externally from the GPU coordinator. This is control-plane work outside
+an admitted action. The pointer move does not require a broker restart. Existing
+actions finish under their claiming generation; roles rotate at their boundaries.
+
+```bash
+set -euo pipefail
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${G##*/}" \
+	--rollout rolling --rollout-reason 'qualified installed final reader; unchanged broker; amended P' \
+	--installed-bootstrap "$E/forward/assessment.json"
+```
+
+The publisher holds the publication lock while obtaining new root responses,
+activating, observing real process convergence and running the mandatory canary.
+A convergence wait, missing host, failed canary or typed `not_run` leaves the
+pending intent intact. Rerun the same activation command after resolving the
+observation; it keeps the original a174 source. Do not publish a new generation
+to obtain another canary grant. Inspect every canary leg's full keys, immutable
+logs, terminal physical flags and verified CAS receipts. A spent grant is not
+renewable by this procedure.
+
+Acceptance requires exactly one selected-generation supervisor, selected worker
+loops and every observed serving role, fresh matching worker offers, unchanged
+healthy broker, safe installed reader/leaf custody and no automatic journal.
+dl380g10 must show selected tier, prewarm and metrics roles. A stale or blocked
+old role keeps the operation pending. An unrelated matching script basename also
+keeps it pending: diagnostics include exact PID, starttime, argv and path/error.
+Treat that as an observation issue; it grants no permission to terminate a job. Open admission is required for the canary;
+a foreign maintenance holder must be resolved through its existing owner/CAS
+protocol. This tool never releases a hold.
+
+After the publisher archives `bootstrap-$ID-forward.accepted.json`, install its
+matching root-local release decision and remove only this operation's fences.
+The helper restores the timer only if originally active. Existing masks and
+unit enablement remain unchanged.
+
+```bash
+set -euo pipefail
+python3 - "$E/forward/plan.json" "${G%/*/*}/rollout/bootstrap-$ID-forward.accepted.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, pathlib, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); accepted = json.load(open(sys.argv[2]))
+assert not pathlib.Path(sys.argv[3]).exists()
+assert accepted['state'] == 'accepted' and accepted['direction'] == 'forward'
+assert accepted['id'] == plan['id'] and accepted['source'] == plan['source'] and accepted['target'] == plan['target']
+assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
+python3 -c 'import json,sys; print(json.dumps({"plan_sha256":sys.argv[1],"direction":"forward"}))' "$PLAN_SHA" > "$E/forward/accepted.json"
+release_forward_host() {
+	local host=$1
+	B=/opt/prismabuild-bootstrap/$ID
+	cat "$E/forward/accepted.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/accepted.json"
+	ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" unfence --id "$ID" --plan-sha256 "$PLAN_SHA"
+	ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
+}
+release_forward_host sparky
+release_forward_host sparklina
+release_forward_host dl380g10
+```
+
+Observe an actual subsequent updater tick reporting `current` on every host.
+Resume producers only after that readback and the recorded fleet acceptance.
+Retain every artifact and journal. Celestia adopts the final submitter clients
+separately; it is not a broker/upgrader participant.
+
+### Restore the operator-designated a174 updater
+
+The designation says `mode: operator-restoration` and
+`automatic_reachability: false`. Its a174 directory, commit, raw receipt and
+content-map pins remain exact. An ordinary rolling reverse command is still
+refused. No bridge was invented. Keep all three final leaves installed.
+
+Pause producers and publication automation again. Let outstanding actions and
+canary lineages finish normally. Select exactly one entry branch below. Both
+preserve the original intent, plan identity, backups and all three leaves.
+
+**After accepted forward:** require the matching accepted archive and no pending
+intent before reserving reverse. A host reboot since forward acceptance is a
+normal rollback entry: install its reverse plan, run `reconcile-boot` on that
+host, then restore. Reconciliation fences again and retains the prior backup.
+
+```bash
+set -euo pipefail
+python3 - "$E/forward/plan.json" "${G%/*/*}/rollout/bootstrap-$ID-forward.accepted.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, pathlib, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); accepted = json.load(open(sys.argv[2]))
+assert not pathlib.Path(sys.argv[3]).exists()
+assert accepted['state'] == 'accepted' and accepted['direction'] == 'forward'
+assert accepted['id'] == plan['id'] and accepted['source'] == plan['source'] and accepted['target'] == plan['target']
+assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
+python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
+REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
+ACTIVE_PLAN_SHA=$REVERSE_SHA
+python3 "$R/tools/fleet/publish_runtime.py" --rollout rolling \
+    --rollout-reason 'qualified operator restoration; retain all leaves' \
+    --reserve-installed-bootstrap "$E/reverse/assessment.json"
+```
+
+**Interrupted forward:** verify the existing pending intent. This branch makes
+no reservation and needs no forward acceptance archive. Reverse activation
+selects restore under the publication lock only for this exact ID, original
+forward-plan hash and source/target pair. Its durable `direction_decision`
+retains the previous pending intent and the reverse-plan hash. Once selected,
+retry the reverse assessment; returning to forward through this marker refuses.
+If any host has an
+incomplete installation, reinstall its original forward plan, reconcile a
+changed boot as below, and finish `prepare` there before this branch. That
+establishes the complete retained-leaf closure needed for restoration.
+
+```bash
+set -euo pipefail
+python3 - "$E/forward/plan.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); pending = json.load(open(sys.argv[2]))
+assert pending['id'] == plan['id'] and pending['source'] == plan['source'] and pending['target'] == plan['target']
+assert pending['direction'] == 'forward' and pending['state'] != 'accepted'
+assert pending['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
+python3 -m prismabuild.installed_bootstrap reverse --assessment "$E/forward/assessment.json" --out "$E/reverse"
+REVERSE_SHA=$(python3 -c 'import json,sys; from prismabuild.digest_primitives import canonical_sha256; print(canonical_sha256(json.load(open(sys.argv[1]))))' "$E/reverse/plan.json")
+ACTIVE_PLAN_SHA=$REVERSE_SHA
+```
+
+**Continue either branch:** install the reverse plan and restore one host at a
+time. Each command must succeed before the next host. The explicit
+`reconcile-boot --if-needed` step follows the reverse-plan copy on every host.
+It verifies an unchanged/already reconciled boot without rewriting; a changed
+boot follows the full root reconciliation path before restore. Retain its
+output. Do not edit the original boot IDs.
+
+```bash
+set -euo pipefail
+restore_host() {
+    local host=$1
+    local B=/opt/prismabuild-bootstrap/$ID
+    cat "$E/reverse/plan.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/plan.json"
+    ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" reconcile-boot --if-needed --id "$ID" --plan-sha256 "$REVERSE_SHA"
+    ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" restore --id "$ID" --plan-sha256 "$REVERSE_SHA"
+    ssh "$host" sudo -n /usr/bin/sha256sum /opt/prismabuild-resource-broker/upgrade_client.py
+}
+restore_host sparky
+restore_host sparklina
+restore_host dl380g10
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${OLD##*/}" \
+    --rollout rolling --rollout-reason 'operator-restored journaled a174 updater with retained leaves' \
+    --installed-bootstrap "$E/reverse/assessment.json"
+```
+
+After reverse acceptance, verify the archive before generating its root-local
+release decision. The helper checks selected and installed bytes before release.
+
+```bash
+set -euo pipefail
+python3 - "$E/reverse/plan.json" "${G%/*/*}/rollout/bootstrap-$ID-restore.accepted.json" "${G%/*/*}/rollout/pending-bootstrap.json" <<'PYCODE'
+import json, pathlib, sys
+from prismabuild.digest_primitives import canonical_sha256
+plan = json.load(open(sys.argv[1])); accepted = json.load(open(sys.argv[2]))
+assert not pathlib.Path(sys.argv[3]).exists()
+assert accepted['state'] == 'accepted' and accepted['direction'] == 'restore'
+assert accepted['id'] == plan['id'] and accepted['source'] == plan['source'] and accepted['target'] == plan['target']
+assert accepted['forward_plan_sha256'] == canonical_sha256({**plan, 'direction': 'forward'})
+PYCODE
+python3 -c 'import json,sys; print(json.dumps({"plan_sha256":sys.argv[1],"direction":"restore"}))' "$REVERSE_SHA" > "$E/reverse/accepted.json"
+release_reverse_host() {
+    local host=$1
+    local B=/opt/prismabuild-bootstrap/$ID
+    cat "$E/reverse/accepted.json" | ssh "$host" sudo -n /usr/bin/install -o root -g root -m 0644 /dev/stdin "$B/accepted.json"
+    ssh "$host" sudo -n /usr/bin/python3 -I "$B/bootstrap_client.py" unfence --id "$ID" --plan-sha256 "$REVERSE_SHA"
+    ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
+}
+release_reverse_host sparky
+release_reverse_host sparklina
+release_reverse_host dl380g10
+```
+
+Observe actual a174 `current` ticks and source-generation roles/offers. Keep
+receipt and proof leaves, independent recovery code, failed canary evidence and
+both generation directories. This procedure removes no broker authority,
+automatic journal, initialized marker or permanent lock.
+
+The publication lock protects a new live-window census and new authenticated root
+challenges immediately before activation. Unknown live writers, ambiguous
+same-commit generations, active broker scopes, or any ready/claimed row refuse
+the pointer move. A saved root transcript remains audit data; the publisher never
+loads it as authority. Accepted decisions name the root transcripts and verified
+canary sidecar digest. Each root response is a bounded observation, not a host
+lease. A reboot after a host replies can precede pointer movement. Durable
+fences and the complete installed closure contain that interval; post-move fresh
+convergence detects the changed boot and leaves acceptance pending. Reconcile
+the affected host and retry the selected direction. Exact timing, repeated reboot
+and physical durability evidence remain part of the master's root qualification.
+
+The reverse assessment generated above records `canary_admission: ordinary`
+and its reason. That canary uses normal PB admission and a separate nonce-named
+sidecar, preserving the old generation's spent publication grant and history.
+For a spent forward grant, explicitly record the ordinary mode and reason in a
+new assessment copy, preserving the original plan and qualification keys:
+
+```bash
+set -euo pipefail
+python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); v["canary_admission"]="ordinary"; v["ordinary_canary_reason"]=sys.argv[3]; json.dump(v,open(sys.argv[2],"x"),indent=2)' \
+	"$E/forward/assessment.json" "$E/forward/ordinary-assessment.json" \
+	'operator-reviewed continuation of the retained spent canary; normal admission'
+python3 "$R/tools/fleet/publish_runtime.py" --activate-generation "${G##*/}" \
+	--rollout rolling --rollout-reason 'same bootstrap intent; explicit ordinary canary continuation' \
+	--installed-bootstrap "$E/forward/ordinary-assessment.json"
+```
+
+Wait for outstanding canary actions to settle first. Retain their keys and
+receipts. The ordinary mode grants no queue priority or admission exemption.
+
+If a host reboots during an unfinished bootstrap, retain the original plan and
+all backups. Reconcile only after the same qualified native interpreter, lock
+inode and unchanged broker files are available. The standard broker service may
+have restarted during boot; the helper records its new identity after health
+and loaded-hash checks. It performs no broker start or admission operation.
+
+```bash
+set -euo pipefail
+# ACTIVE_PLAN_SHA was set by the selected forward or reverse entry branch.
+ssh sparky sudo -n /usr/bin/python3 -I \
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$ACTIVE_PLAN_SHA"
+ssh sparklina sudo -n /usr/bin/python3 -I \
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$ACTIVE_PLAN_SHA"
+ssh dl380g10 sudo -n /usr/bin/python3 -I \
+	"/opt/prismabuild-bootstrap/$ID/bootstrap_client.py" reconcile-boot --id "$ID" --plan-sha256 "$ACTIVE_PLAN_SHA"
+```
+
+Run that command only on hosts whose boot changed. Then resume their interrupted
+`prepare` or `restore` and the same publisher assessment. Reconciliation changes
+root-local evidence, not the original intent or backup. An interpreter change or
+lost permanent lock requires separate repair and qualification.
+
+After boot, the broker may retain its normal `client-upgrade` boot hold. Once the
+pointer names the intended generation and root observations prove its exact
+installed closure, run the existing installed updater once to perform its owned
+current-client handshake. Keep its timer/service fences installed. It must report
+`current`, perform no replacement, and preserve foreign holds. Do not run this
+command against a mismatched pointer.
+
+```bash
+set -euo pipefail
+current_host() {
+	local host=$1
+	ssh "$host" sudo -n /usr/bin/python3 -I /opt/prismabuild-resource-broker/upgrade_client.py \
+		--config /etc/prismabuild/client-upgrade.json
+	ssh "$host" sudo -n /usr/bin/cat /var/lib/prismabuild-client-upgrade/status.json
+}
+current_host sparky
+current_host sparklina
+current_host dl380g10
+```
+
+Then resume the pending publisher command for convergence and canary verification.
+The helper itself never opens the gate. Qualified runtime identities are copied
+from verified root receipts into the plan and checked before host preparation;
+changing the plan's runtime list is not a qualification route.

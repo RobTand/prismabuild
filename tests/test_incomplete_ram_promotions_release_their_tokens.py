@@ -28,8 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -44,15 +45,16 @@ ENTRY_KEY = residency_map.residency_map_key("/mnt/shared/model/shard-0.bin", 0)
 ENTRY_SHA = "b" * 64
 
 
+from fleet_world import FleetWorld
+
+
 def _hexkey(seed: str) -> str:
     return (seed.encode().hex() * 64)[:64]
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _ram_root(tmp_path: Path, queue: pool.PoolQueue) -> Path:
@@ -60,7 +62,7 @@ def _ram_root(tmp_path: Path, queue: pool.PoolQueue) -> Path:
 
     ram = tmp_path / "ram"
     ram.mkdir(exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=str(ram)) == "registered"
     return ram
 
@@ -71,8 +73,9 @@ def _tiers(ram: Path) -> dict[str, dict[str, object]]:
 
 
 def _hold(queue: pool.PoolQueue, key: str, gib: int) -> None:
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(key, {"ram_gib": gib})
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(key, {'ram_gib': gib})
 
 
 def _file_partial(tmp_path: Path, queue: pool.PoolQueue, *, mover: str,
@@ -88,7 +91,7 @@ def _file_partial(tmp_path: Path, queue: pool.PoolQueue, *, mover: str,
     target = ram / "model" / "shard-0.bin"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(b"x" * 4096)
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": RAM_TIER, "stage_root": str(ram), "epoch": EPOCH,
@@ -136,9 +139,9 @@ def test_a_half_landed_promotion_returns_its_tokens_and_its_files(
     assert events[0]["receipt_errors"] == [
         "shard-1.bin: [Errno 28] No space left on device"]
     assert events[0]["tokens_released"] == 2
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
     assert not (ram / "model" / "shard-0.bin").exists()
 
 
@@ -158,7 +161,7 @@ def test_a_refused_promotion_with_no_fragment_still_returns_its_tokens(
 
     assert [event["event"] for event in events] == [
         "ram-mover-incomplete-released"]
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
 
 
 def test_a_clean_landing_is_occupancy_not_stranding(
@@ -175,9 +178,9 @@ def test_a_clean_landing_is_occupancy_not_stranding(
         queue, tiers=_tiers(ram))
 
     assert events == []
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {'ram_gib': 2}
     assert residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()
 
 
 def test_queued_and_running_promotions_are_not_judged(
@@ -189,8 +192,8 @@ def test_queued_and_running_promotions_are_not_judged(
     ram = _ram_root(tmp_path, queue)
     _hold(queue, MOVER, 2)
     _hold(queue, OTHER, 2)
-    queue.item_path(pool.READY, MOVER).write_text("{}")
-    queue.item_path(pool.CLAIMED, OTHER).write_text("{}")
+    queue.records.item_path(pool.record_store.READY, MOVER).write_text("{}")
+    queue.records.item_path(pool.record_store.CLAIMED, OTHER).write_text("{}")
     _receipt(queue, MOVER, staged_gib=0, complete=False,
              errors=["shard-0.bin: [Errno 28] No space left on device"])
 
@@ -198,8 +201,8 @@ def test_queued_and_running_promotions_are_not_judged(
         queue, tiers=_tiers(ram))
 
     assert events == []
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(OTHER) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {'ram_gib': 2}
+    assert queue.tier(RAM_TIER).holdings(OTHER) == {'ram_gib': 2}
 
 
 def test_a_holder_with_no_receipt_keeps_its_tokens(
@@ -213,7 +216,7 @@ def test_a_holder_with_no_receipt_keeps_its_tokens(
         queue, tiers=_tiers(ram))
 
     assert events == []
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {'ram_gib': 2}
 
 
 def _row(key: str, resources: dict[str, int], queue: pool.PoolQueue) -> dict:
@@ -298,6 +301,6 @@ def test_the_cycle_releases_a_live_consumer_stranded_promotion(
     assert not [line for line in lines
                 if line.get("event") == "stage-orphan-evicted"
                 and MOVER in json.dumps(line)]
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(RAM_TIER).holdings(MOVER) == {}
     assert not residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, CONSUMER, MOVER).exists()
+        queue.root / pool.record_store.RESIDENCY, CONSUMER, MOVER).exists()

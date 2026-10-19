@@ -9,44 +9,40 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'tools' / 'fleet')]
-from prismabuild import core as pb, pool, slurm_lane
+from prismabuild import action_wait, core as pb, pool, slurm_lane
 import pbrun
+from prismabuild import submission as submit_core
 import pbwait
 from test_slurm_lane import fleet, _runnable_action
-import fleet_submit
+from prismabuild import fleet_submit
 
 
 @pytest.mark.parametrize('waiter', ['pbrun', 'pbwait'])
 def test_corruption_landing_during_pool_wait_ends_the_wait(tmp_path, monkeypatch, capsys, waiter):
     q = pool.PoolQueue(tmp_path / 'queue')
-    q.ensure_layout()
+    q.records.ensure_layout()
     key = 'a' * 64
-    q.item_path(pool.READY, key).write_text(json.dumps({'action_key': key, 'published_unix': 1.0}))
+    q.records.item_path(pool.record_store.READY, key).write_text(
+        json.dumps({'action_key': key, 'published_unix': 1.0}),
+    )
     sleeps = []
     def land(_):
         sleeps.append(1)
-        q.item_path(pool.FAILED, key).write_text('{')
+        q.records.item_path(pool.record_store.FAILED, key).write_text('{')
         if len(sleeps) > 1:
             pytest.fail('wait polled again after a malformed terminal record landed')
-    # ``pbrun.time`` is the standard-library module, which the bounded reader
-    # also uses for its private cleanup grace. Replace only pbrun's polling
+    # The bounded reader also uses the standard-library time module for its
+    # private cleanup grace. Replace only the await owner's polling
     # clock so this fixture lands corruption between parent observations rather
     # than teaching a child reaper to write terminal records.
     monkeypatch.setattr(
-        pbrun, 'time',
+        action_wait, 'time',
         SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
     )
     if waiter == 'pbrun':
-        assert pbrun.await_outcome(q, key, wait_s=60, generation=1.0) == 1
+        assert submit_core.action_client.report_pool_outcome(q, key, wait_s=60, generation=1.0) == 1
         assert 'not valid JSON' in capsys.readouterr().err
     else:
-        # ``pbwait`` now owns its bounded observations in its own parent loop;
-        # land the malformed ending between those passes rather than through
-        # pbrun's former synchronous inner wait.
-        monkeypatch.setattr(
-            pbwait, 'time',
-            SimpleNamespace(monotonic=time.monotonic, time=time.time, sleep=land),
-        )
         row = pbwait.wait_one(q, key, cas=pb.PrismaBuildCAS(tmp_path / 'cas'), deadline=time.monotonic() + 60)
         assert row['status'] == 'unreadable'
         assert 'not valid JSON' in row['note']
@@ -59,7 +55,7 @@ def _submitted(tmp_path, monkeypatch):
     action = _runnable_action(tmp_path, cas)
     request = cas.publish_action_request(action)
     q = pool.PoolQueue(tmp_path / 'queue')
-    q.ensure_layout()
+    q.records.ensure_layout()
     fleet_submit.submit(action, cas=cas, request_path=request, transport='slurm', queue_root=q.root)
     return q, cas, action
 
@@ -67,17 +63,23 @@ def _submitted(tmp_path, monkeypatch):
 def test_lane_can_heal_a_malformed_terminal_record(tmp_path, monkeypatch, fleet):
     q, cas, action = _submitted(tmp_path, monkeypatch)
     key = action['action_key']
-    q.item_path(pool.FAILED, key).write_text('{')
-    publish = slurm_lane._publish_json_if_absent
+    q.records.item_path(pool.record_store.FAILED, key).write_text('{')
+    publish = slurm_lane.record_store.RecordStore.file_lane_item_if_absent
     attempts = []
     def bounded_publish(*args, **kwargs):
         attempts.append(1)
         assert len(attempts) <= 3, 'malformed existing record caused a publication loop'
         return publish(*args, **kwargs)
-    monkeypatch.setattr(slurm_lane, '_publish_json_if_absent', bounded_publish)
+    monkeypatch.setattr(
+        slurm_lane.record_store.RecordStore,
+        'file_lane_item_if_absent',
+        bounded_publish,
+    )
     rows = pbwait.wait_for_keys(q, [key], cas=cas, wait_s=1, poll_s=0)
     assert rows[0]['status'] == 'failed'
-    assert json.loads(q.item_path(pool.FAILED, key).read_text())['status'] == 'failed'
+    assert json.loads(
+        q.records.item_path(pool.record_store.FAILED, key).read_text(),
+    )['status'] == 'failed'
 
 
 @pytest.mark.parametrize('receipt', [False, True])
@@ -86,7 +88,7 @@ def test_pbwait_reports_an_unwritable_ending(tmp_path, monkeypatch, fleet, capsy
     key = action['action_key']
     if receipt:
         monkeypatch.setattr(cas, 'lookup', lambda _: {'result': 'present'})
-    directory = q.dir(pool.DONE if receipt else pool.FAILED)
+    directory = q.records.dir(pool.record_store.DONE if receipt else pool.record_store.FAILED)
     directory.chmod(0o555)
     try:
         rows = pbwait.wait_for_keys(q, [key], cas=cas, wait_s=1, poll_s=0)
@@ -94,7 +96,7 @@ def test_pbwait_reports_an_unwritable_ending(tmp_path, monkeypatch, fleet, capsy
         directory.chmod(0o755)
     assert rows[0]['status'] == 'record_error'
     assert rows[0]['job'].isdigit()
-    assert pbwait.verdict(rows) == pbrun.RECORD_WRITE_FAILED_EXIT
+    assert pbwait.verdict(rows) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     assert 'Permission denied' in rows[0]['note']
     assert 'pbwait.py' in capsys.readouterr().err
 
@@ -104,12 +106,12 @@ def test_withdraw_write_failure_reports_whether_cancel_was_sent(tmp_path, monkey
     q, cas, action = _submitted(tmp_path, monkeypatch)
     key = action['action_key']
     cancelled = []
-    monkeypatch.setattr(pbrun, '_jobs_to_cancel', lambda key, job_id, **kw: [job_id])
+    monkeypatch.setattr(submit_core, '_jobs_to_cancel', lambda key, job_id, **kw: [job_id])
     monkeypatch.setattr(slurm_lane, 'cancel', lambda job, **kw: cancelled.append(job) or True)
     def refuse(*args, **kwargs):
         raise PermissionError(13, 'Permission denied', str(q.root / 'withdrawn' / '.record.tmp'))
-    monkeypatch.setattr(pbrun, '_file_slurm_withdrawal' if stage == 'before' else '_stamp_scancel_accepted', refuse)
-    assert pbrun.withdraw_slurm_main([key], queue_root=q.root) == pbrun.RECORD_WRITE_FAILED_EXIT
+    monkeypatch.setattr(submit_core, '_file_slurm_withdrawal' if stage == 'before' else '_stamp_scancel_accepted', refuse)
+    assert submit_core.withdraw_slurm_main([key], queue_root=q.root, store=pbrun.configured_store(), display=pbrun.render_submission) == submit_core.action_client.RECORD_WRITE_FAILED_EXIT
     err = capsys.readouterr().err
     assert bool(cancelled) == (stage == 'after')
     assert ('no cancellation was sent' if stage == 'before' else 'scancel accepted') in err

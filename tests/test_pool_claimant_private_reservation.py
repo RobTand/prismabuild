@@ -8,6 +8,7 @@ action was then admitted on capacity the winner was already executing against.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -23,22 +24,12 @@ KEY_A = "a" * 64
 KEY_B = "b" * 64
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
-
-
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources={"cpu": 1},
-        **kw,
-    )
+    return FleetWorld(tmp_path).queue
 
 
 def test_losing_same_key_claimant_keeps_the_winners_tokens(
@@ -46,7 +37,13 @@ def test_losing_same_key_claimant_keeps_the_winners_tokens(
 ) -> None:
     """The issue #60 interleaving, asserting the reservation that must survive."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     original_intent = queue._write_claim_intent
     observed: dict[str, object] = {}
 
@@ -74,10 +71,16 @@ def test_losing_same_key_claimant_keeps_the_winners_tokens(
     assert queue.ledger().available() == {}
 
     # And a second action is refused on a box whose only token is spoken for.
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(
+        KEY_B,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     other = queue.claim(owner="other-action", capacity={"cpu": 1})
     assert other is None
-    assert len(list(queue.dir(pool.CLAIMED).glob("*.json"))) == 1
+    assert len(list(queue.records.dir(pool.record_store.CLAIMED).glob("*.json"))) == 1
 
 
 def test_a_crashed_claimants_private_tokens_are_swept(
@@ -169,7 +172,13 @@ def test_a_swept_claimant_does_not_run_unreserved(
 ) -> None:
     """A commit that lost its tokens puts the item back rather than run it."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     original_commit = pool.ResourceLedger.commit_acquire
 
     def commit(self: pool.ResourceLedger, action_key: str, handle: str) -> int:
@@ -181,8 +190,8 @@ def test_a_swept_claimant_does_not_run_unreserved(
         claimed = queue.claim(owner="swept", capacity={"cpu": 1})
 
     assert claimed is None
-    assert queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.ledger().held() == {}
     assert queue.ledger().available() == {"cpu": 1}
     # The item is intact, so the next poll claims it normally.

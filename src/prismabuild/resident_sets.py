@@ -16,6 +16,8 @@ import tempfile
 import time
 
 from . import core, posix_lock
+from . import data_manifest as manifest_codec
+from . import immutable_files
 
 SET_SCHEMA = "prismabuild.resident_set.v1"
 COPY_SCHEMA = "prismabuild.resident_copy.v1"
@@ -99,7 +101,7 @@ def directory_files(root):
 
 
 def validate_set_manifest(manifest, canonical_root):
-    normalized = core.validate_data_manifest(manifest)
+    normalized = manifest_codec.validate_data_manifest(manifest)
     root = Path(canonical_root)
     if not root.is_absolute() or str(root) != canonical_root or root == Path("/"):
         raise ValueError("canonical_root must be a normalized absolute directory")
@@ -266,7 +268,7 @@ class ResidentSets:
             queue = pool.PoolQueue(self.queue_root)
             acquired = local_tier.reserve(queue, set_id, hosts, manifest["total_bytes"])
             try:
-                core._atomic_publish(path, core.compact_ascii_json_bytes(record) + b"\n")
+                immutable_files.publish_immutable(path, core.compact_ascii_json_bytes(record) + b"\n")
                 self._append_lease(set_id, {"event": "published", "lease": lease, "unix": now, "by": created_by})
                 for host in hosts:
                     self.write_copy(set_id, host, {"state": "absent", "local_root": None,

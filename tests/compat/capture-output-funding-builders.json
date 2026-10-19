@@ -1,0 +1,27 @@
+{
+  "capture_name": "funding-builders-02-capture",
+  "capture_report_sha256": "ded53a927f8e38c9a401d7a0ca2f36d72bb8d1f27fbe50413f0fb06246be60c2",
+  "excluded_cases": [],
+  "files": {
+    "goldens-output-funding-builders.jsonl": "643e251b19e3367742289e2e8ee5f43e90df7d3f7b00a5e92b083c8e534b6122",
+    "historical-output-funding-builders.jsonl": "b7813611b99b87594b6c52cca75ea6490acfea98eed65528043ec28812dc7533"
+  },
+  "finished_at": "2026-10-17T00:46:02.852656+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "q-output-funding/fund-direct",
+    "q-output-funding/stage-intent"
+  ],
+  "source_git": {
+    "parents": [
+      "fe4adef9f7577b9110a8c7e51a77a3b7045e996e"
+    ],
+    "snapshot": "660742d6233dc65bee079abe54b61f6fd3f7fb4b",
+    "tree": "6c6fbd736d06c23d81a9234556d4f2fef22dfd72"
+  },
+  "started_at": "2026-10-17T00:45:33.550788+00:00"
+}

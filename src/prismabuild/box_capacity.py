@@ -35,13 +35,15 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import json
-import math
 import os
 from pathlib import Path
 import subprocess
 import time
 
 from . import adaptive_gpu
+from .gpu_sample_facts import (GPU_MEMORY_DOMAINS, SCHEMA as GPU_CAPACITY_SCHEMA,
+                               ObservationFailure, nonnegative_float, offer_header,
+                               offer_inventory)
 
 #: Memory the box keeps for itself rather than offering the queue its last
 #: byte.  Carried over from the ``--honest-memory`` flag this replaces.
@@ -54,9 +56,7 @@ DEFAULT_SAMPLES = 3
 
 MEMINFO = Path("/proc/meminfo")
 PROC = Path("/proc")
-GPU_CAPACITY_SCHEMA = "prismabuild.gpu_capacity.v1"
 GPU_SAMPLE_MAX_AGE_S = 5.0
-GPU_MEMORY_DOMAINS = frozenset(("shared_system", "discrete"))
 
 #: Sentinel for "read this from the box".  ``None`` is a real answer -- it means
 #: the reading was attempted and failed -- so it cannot double as "unset".
@@ -74,86 +74,15 @@ def trusted_gpu_sample() -> Mapping[str, object] | None:
     return value if isinstance(value, Mapping) and value else None
 
 
-def _number(value: object, *, positive: bool = False) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(number) or number < 0.0 or positive and number <= 0.0:
-        return None
-    return number
-
-
-def _gpu_evidence(
-    sample: object, *, now: float | None = None,
-) -> tuple[list[Mapping[str, object]], list[object], list[object], str | None]:
-    """Validate the admission fields a worker consumes from one snapshot."""
-
-    if not isinstance(sample, Mapping):
-        return [], [], [], "missing trusted GPU capacity snapshot"
-    if (sample.get("schema") != GPU_CAPACITY_SCHEMA
-            or sample.get("complete") is not True
-            or sample.get("attributed") is not True):
-        return [], [], [], "incomplete or unattributed GPU capacity snapshot"
-    sampled = _number(sample.get("sampled_unix"), positive=True)
-    current = time.time() if now is None else float(now)
-    if sampled is None or not 0.0 <= current - sampled <= GPU_SAMPLE_MAX_AGE_S:
-        return [], [], [], "stale or future GPU capacity snapshot"
-    devices = sample.get("devices")
-    foreign = sample.get("foreign_processes")
-    jobs = sample.get("jobs")
-    if (not isinstance(devices, list) or not devices
-            or not isinstance(foreign, list) or not isinstance(jobs, list)):
-        return [], [], [], "malformed GPU device or attribution inventory"
-    host_total = _number(sample.get("host_total_bytes"), positive=True)
-    host_available = _number(sample.get("host_available_bytes"))
-    if host_total is None or host_available is None or host_available > host_total:
-        return [], [], [], "invalid host memory bounds in GPU snapshot"
-    for key in ("memory_pressure_some", "memory_pressure_full",
-                "cpu_pressure_some", "cpu_pressure_full"):
-        pressure = _number(sample.get(key))
-        if pressure is None or pressure > 100.0:
-            return [], [], [], f"invalid {key} in GPU snapshot"
-    identities: set[str] = set()
-    typed_devices: list[Mapping[str, object]] = []
-    for device in devices:
-        if not isinstance(device, Mapping):
-            return [], [], [], "malformed GPU device record"
-        identity = device.get("uuid")
-        domain = device.get("memory_domain")
-        total = _number(device.get("memory_total_bytes"), positive=True)
-        free = _number(device.get("memory_free_bytes"))
-        used = _number(device.get("memory_used_bytes"))
-        if (not isinstance(identity, str) or not identity.startswith("GPU-")
-                or identity in identities or domain not in GPU_MEMORY_DOMAINS):
-            return [], [], [], "unknown GPU identity, memory domain or bounds"
-        raw_memory = tuple(device.get(f"memory_{kind}_bytes")
-                           for kind in ("total", "free", "used"))
-        if domain == "discrete":
-            # Framebuffer counters are the admission budget for a discrete
-            # device, so every counter and their joint bound must be known.
-            if (total is None or free is None or used is None
-                    or free > total or used > total or free + used > total):
-                return [], [], [], "unknown GPU identity, memory domain or bounds"
-        elif any(value is not None for value in raw_memory):
-            # GB10 normally reports N/A for all three counters because the GPU
-            # uses host RAM. If a future driver reports them, accept only a
-            # complete internally bounded set; host memory remains authoritative.
-            if (total is None or free is None or used is None
-                    or free > total or used > total or free + used > total):
-                return [], [], [], "unknown GPU identity, memory domain or bounds"
-        identities.add(identity)
-        typed_devices.append(device)
-    return typed_devices, foreign, jobs, None
-
-
 def physical_gpu_count(sample: object, *, now: float | None = None) -> int:
     """Physical devices in one fresh trusted snapshot; zero means unknown."""
 
-    devices, _foreign, _jobs, error = _gpu_evidence(sample, now=now)
-    return 0 if error is not None else len(devices)
+    header = offer_header(sample)
+    if isinstance(header, ObservationFailure):
+        return 0
+    current = time.time() if now is None else float(now)
+    inventory = offer_inventory(header, now=current, max_age_s=GPU_SAMPLE_MAX_AGE_S)
+    return 0 if isinstance(inventory, ObservationFailure) else len(inventory.devices)
 
 
 def mem_available_gb() -> int | None:
@@ -351,18 +280,24 @@ def observe(
     if wanted.get("gpu", 0) > 0:
         if gpu_sample is _READ:
             gpu_sample = trusted_gpu_sample()
-        devices, foreign_processes, jobs, error = _gpu_evidence(
-            gpu_sample, now=now)
-        detail["gpu_capacity_trusted"] = error is None
-        if error is not None:
-            detail["gpu_capacity_error"] = error
+        header = offer_header(gpu_sample)
+        if isinstance(header, ObservationFailure):
+            inventory = header
+        else:
+            gpu_current = time.time() if now is None else float(now)
+            inventory = offer_inventory(header, now=gpu_current, max_age_s=GPU_SAMPLE_MAX_AGE_S)
+        detail["gpu_capacity_trusted"] = not isinstance(inventory, ObservationFailure)
+        if isinstance(inventory, ObservationFailure):
+            detail["gpu_capacity_error"] = inventory.reason
             capacity["gpu"] = 0
         else:
+            devices, foreign_processes, jobs = (inventory.devices, inventory.foreign_processes,
+                                               inventory.jobs)
             domains = [str(device["memory_domain"]) for device in devices]
             def memory_sum(kind: str) -> int | None:
                 values = [device.get(f"memory_{kind}_bytes") for device in devices]
                 return (sum(int(value) for value in values)
-                        if all(_number(value) is not None for value in values)
+                        if all(nonnegative_float(value) is not None for value in values)
                         else None)
             detail.update({
                 "physical_gpus": len(devices),
@@ -401,10 +336,10 @@ def observe(
             measured_fractions = []
             references: list[tuple[float, object]] = []
             for device in devices:
-                power = _number(device.get("power_w"))
+                power = nonnegative_float(device.get("power_w"))
                 watts, scope, _ = adaptive_gpu.reporting_power_reference(
                     device, gpu_state if isinstance(gpu_state, Mapping) else {})
-                reference = _number(watts, positive=True)
+                reference = nonnegative_float(watts, positive=True)
                 if power is None or reference is None:
                     break
                 references.append((reference, scope))

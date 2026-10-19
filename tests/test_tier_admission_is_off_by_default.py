@@ -17,6 +17,7 @@ reads, writes or touches the live queue.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import errno
 from pathlib import Path
@@ -26,7 +27,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prismabuild import pool  # noqa: E402
+from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import tier_holdings
 
 KEY = "c" * 64
 #: The live row's demand, tags and GPU flag, 2026-09-17.
@@ -34,29 +36,25 @@ CAMPAIGN_RESOURCES = {"cpu": 6, "gpu": 1, "mem_gb": 101}
 CAMPAIGN_TAGS = ["progress-helper-v1", "progress-v1", "sparky"]
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
-
-
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources=resources,
-        **kw,
-    )
+    return FleetWorld(tmp_path).queue
 
 
 def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     queue: pool.PoolQueue,
 ) -> None:
-    _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
-    item = pool._read_json(queue.item_path(pool.READY, KEY))
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 2},
+    )
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None and "residency" not in item
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 2, "mem_gb": 4})
@@ -69,13 +67,13 @@ def test_an_item_without_tier_demand_never_touches_a_tier_ledger(
     assert queue.ledger().held() == {"cpu": 1, "mem_gb": 2}
     # No tier ledger was created by admission: the root exists because
     # ``ensure_layout`` makes it, and it is empty.
-    assert queue.tier_ids() == []
-    assert queue.tier_holdings(KEY) == {}
+    assert tier_holdings.ids(queue.records) == []
+    assert tier_holdings.for_action(queue, KEY) == {}
 
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
-    assert queue.tier_ids() == []
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    assert tier_holdings.ids(queue.records) == []
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
     assert "tier_reservations" not in done and "residency_verdict" not in done
 
@@ -84,27 +82,57 @@ def test_the_running_campaigns_shape_still_admits(queue: pool.PoolQueue) -> None
     """The sealed GLM-5.3-Flash prepare's exact demand claims unchanged.
 
     An admission change that refused or re-placed a running action would be a
-    defect, not a feature.  The live row is reproduced field for field on a
-    sparky-shaped worker; it claims, reserves on the host ledger only, and
-    concludes.
+    defect, not a feature. The live demand, tags and GPU flag are reproduced
+    with a sealed prepare policy on a sparky-shaped worker; it claims,
+    reserves on the host ledger only, and concludes.
     """
 
-    _publish(queue, KEY, CAMPAIGN_RESOURCES, tags=CAMPAIGN_TAGS, needs_gpu=True,
-             max_attempts=1, retry_safe=False)
+    checkout = queue.root / "co"
+    checkout.mkdir()
+    (checkout / "task.py").write_text("raise SystemExit(0)\n")
+    action = pb.seal_action({
+        "schema": pb.ACTION_SCHEMA_V2,
+        "task": {"definition_id": "tests/tier-campaign-prepare",
+                 "definition_version": "v1", "task_class": "generation",
+                 "determinism": "deterministic", "artifact_family": "generic",
+                 "artifact_kind": "generic", "argv": [sys.executable, "task.py"],
+                 "working_directory": ".", "result_path": "result"},
+        "inputs": [], "code_closure": pb.build_code_closure(checkout, ["task.py"]),
+        "params": {pb.PROGRESS_PARAM: {
+            "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
+            "phases": [{"name": "prepare", "grace_s": 600}]}},
+        "environment": {"variables": {}, "toolchain": {}},
+        "execution_scope": {"portability": "portable", "platform_key": None,
+                            "host_class": None},
+    })
+    cas = pb.PrismaBuildCAS(queue.root / "cas")
+    cas.publish_action_request(action)
+    key = str(action["action_key"])
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=CAMPAIGN_RESOURCES,
+        tags=CAMPAIGN_TAGS,
+        needs_gpu=True,
+        max_attempts=1,
+        retry_safe=False,
+    )
     claimed = queue.claim(
         owner="sparky-worker-0",
         capacity={"cpu": 20, "gpu": 1, "mem_gb": 121},
         tags=CAMPAIGN_TAGS,
         has_gpu=True,
     )
-    assert claimed is not None and claimed["action_key"] == KEY
+    assert claimed is not None and claimed["action_key"] == key
     assert claimed["resources"] == CAMPAIGN_RESOURCES
     assert claimed["reserved_on"] == pool.socket.gethostname()
     assert "tier_reservations" not in claimed
     assert "residency_verdict" not in claimed
     assert queue.ledger().held() == CAMPAIGN_RESOURCES
-    assert queue.tier_ids() == []
-    queue.finish(KEY, status="executed", claim_snapshot=claimed)
+    assert tier_holdings.ids(queue.records) == []
+    queue.finish(key, status="executed", claim_snapshot=claimed)
     assert queue.ledger().held() == {}
 
 
@@ -113,8 +141,14 @@ def test_the_residency_gate_is_inert_without_a_residency_block(
 ) -> None:
     """The gate reads one absent field and says so; it cannot refuse anything."""
 
-    _publish(queue, KEY, {"cpu": 1})
-    item = pool._read_json(queue.item_path(pool.READY, KEY))
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, KEY))
     assert item is not None
     assert queue.residency_verdict(item) == {"state": "not_requested"}
     # ...and on a record that predates the field entirely.
@@ -130,22 +164,24 @@ def _tier_reads_fail(monkeypatch: pytest.MonkeyPatch, queue: pool.PoolQueue) -> 
     test that broke both would not show which one the conclusion depends on.
     """
 
-    real = pool._scan
-    target = (queue.root / pool.TIER_RESERVATIONS).resolve()
+    real = pool.immutable_files.scan_optional
+    target = (queue.root / pool.record_store.TIER_RESERVATIONS).resolve()
 
     def scan(directory: Path):
         if Path(directory).resolve() == target:
             raise OSError(errno.ESTALE, "stale NFS file handle")
         return real(directory)
 
-    monkeypatch.setattr(pool, "_scan", scan)
+    monkeypatch.setattr(pool.immutable_files, 'scan_optional', scan)
 
 
 def _uncontain(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutate the driver: put back the unguarded scan the fix contains."""
 
-    monkeypatch.setattr(pool.PoolQueue, "tier_ids", lambda self: sorted(
-        directory.name for directory in pool._scan(self.root / pool.TIER_RESERVATIONS)
+    monkeypatch.setattr(tier_holdings, "ids", lambda self: sorted(
+        directory.name for directory in pool.immutable_files.scan_optional(
+            self.root / pool.record_store.TIER_RESERVATIONS,
+        )
         if directory.is_dir() and not directory.name.startswith(".")))
 
 
@@ -158,22 +194,28 @@ def test_an_unreadable_tier_root_does_not_cost_an_action_its_outcome(
     touches while the feature is off.
     """
 
-    _publish(queue, KEY, {"cpu": 1, "mem_gb": 2})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 2},
+    )
     claimed = queue.claim(owner="worker", capacity={"cpu": 2, "mem_gb": 4})
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
 
     queue.finish(KEY, status="executed", claim_snapshot=claimed)
 
-    done = pool._read_json(queue.item_path(pool.DONE, KEY))
+    done = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY))
     assert done is not None and done["status"] == "executed"
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
-    assert not queue.lease_path(KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
+    assert not queue.records.lease_path(KEY).exists()
     # The host tokens went back: the host ledger was never the broken one.
     assert queue.ledger().held() == {}
     # And the helpers answer emptily rather than raising.
-    assert queue.tier_ids() == []
-    assert queue.release_tier_reservations(KEY) == 0
+    assert tier_holdings.ids(queue.records) == []
+    assert tier_holdings.release_unspent_all(queue, KEY, authority=tier_holdings.Unspent.NEVER_STARTED) == 0
 
 
 def test_without_the_containment_that_finish_loses_the_outcome(
@@ -181,7 +223,13 @@ def test_without_the_containment_that_finish_loses_the_outcome(
 ) -> None:
     """The bite test: the unguarded scan is what costs the ending."""
 
-    _publish(queue, KEY, {"cpu": 1})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)
@@ -190,9 +238,11 @@ def test_without_the_containment_that_finish_loses_the_outcome(
     with pytest.raises(OSError):
         queue.finish(KEY, status="executed", claim_snapshot=claimed)
     # Claim entombed, lease gone, and no outcome filed anywhere.
-    assert pool._read_json(queue.item_path(pool.DONE, KEY)) is None
-    assert pool._read_json(queue.item_path(pool.FAILED, KEY)) is None
-    assert not queue.lease_path(KEY).exists()
+    assert pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, KEY)) is None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.FAILED, KEY),
+    ) is None
+    assert not queue.records.lease_path(KEY).exists()
 
 
 def test_an_unreadable_tier_root_does_not_abort_a_reaper_cycle(
@@ -202,7 +252,13 @@ def test_an_unreadable_tier_root_does_not_abort_a_reaper_cycle(
     would stop the poll on every box for as long as it persisted.
     """
 
-    _publish(queue, KEY, {"cpu": 1})
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
     assert claimed is not None
     _tier_reads_fail(monkeypatch, queue)

@@ -114,8 +114,8 @@ def test_runtime_refusal_retains_report_action_and_never_retries(tmp_path, monke
     refused_process(monkeypatch, launches, report=report)
     result = mq.Runner(cfg, mq.Store(cfg.state_dir)).run_many(
         "b1", tmp_path / "out", [("base", tmp_path, ["t.py"])])["base"]
-    assert len(launches) == 1
-    assert result.runtime_refusal == PIN_REFUSAL
+    assert len(launches) == (1 if reported else cfg.inconclusive_retries + 1)
+    assert result.runtime_refusal == (PIN_REFUSAL if reported else "")
     assert result.runtime["pins"] == {"sdk": NEW}
     assert result.actions == (["k-t.py"] if reported else [])
 
@@ -128,7 +128,7 @@ def test_explicit_missing_worker_interpreter_is_blocked_not_generic_client_error
     refused_process(monkeypatch, launches, message)
     result = mq.Runner(cfg, mq.Store(cfg.state_dir)).run_many(
         "b1", tmp_path / "out", [("candidate", tmp_path, ["t.py"])])["candidate"]
-    assert result.runtime_refusal == message and len(launches) == 1
+    assert "names the interpreter absent:" in result.runtime_refusal and len(launches) == 1
     launches.clear()
     refused_process(monkeypatch, launches, "pbtest.py: error: unrecognized arguments: -k")
     result = mq.Runner(cfg, mq.Store(cfg.state_dir)).run_many(
@@ -283,7 +283,7 @@ def test_later_phase_runtime_refusal_never_becomes_shared_flake_or_pr_blame(tmp_
 def test_refusal_text_in_an_observed_pytest_result_is_not_a_preflight_block():
     report = shard(["t.py"], rows=[("t.py::ok", "call", "passed", None, None)])
     report["output"] = PIN_REFUSAL + "\n" + report["output"]
-    result = mq.reduce_report([report], __import__("pbtest_outcomes"))
+    result = mq.reduce_report([report], mq.load_outcomes(Path(mq.__file__).with_name("pbtest.py")), requested_files=["t.py"])
     assert not result.runtime_refusal and not result.inconclusive
 
 

@@ -1,6 +1,6 @@
 """Action edges: a consumer submitted before the producer it reads (#913).
 
-A consumer's key covers its data manifest (``core.validate_data_manifest``),
+A consumer's key covers its data manifest (``data_manifest.validate_data_manifest``),
 and a manifest entry names a path and a positive byte count.  A handoff's
 paths and sizes exist only once its producer has committed them (#912), so a
 consumer that reads a handoff cannot be keyed before its producer runs.
@@ -31,6 +31,10 @@ the directories are created on first use, and no other path reads them.
 """
 
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+
+from . import immutable_files
 
 from collections.abc import Mapping, Sequence
 import hashlib
@@ -39,7 +43,9 @@ import os
 from pathlib import Path
 
 from . import core as pb
+from . import data_manifest as manifest_codec
 from . import produced_output as po
+from .record_store import Absent, Moving, Present, QueueRow, RecordStore, Unknown
 
 DEFERRED_SUBDIR = "deferred"
 RELEASES_SUBDIR = "deferred-releases"
@@ -114,15 +120,15 @@ def _canonical(value: object) -> bytes:
 
 def _hex64(value: object, *, where: str) -> str:
     try:
-        return po._hex64(value, where=where)
-    except po.ProducedOutputError as exc:
+        return oc.output_key(value, where=where)
+    except oc.ProducedOutputError as exc:
         raise ActionEdgeError(str(exc)) from None
 
 
 def _name(value: object, *, where: str) -> str:
     try:
-        return po._name(value, where=where)
-    except po.ProducedOutputError as exc:
+        return oc.output_name(value, where=where)
+    except oc.ProducedOutputError as exc:
         raise ActionEdgeError(str(exc)) from None
 
 
@@ -181,7 +187,12 @@ def _file(path: Path, value: Mapping[str, object], *, where: str) -> None:
 
     raw = _canonical(value) + b"\n"
     try:
-        pool_mod._publish_immutable(path, raw, where=where)
+        immutable_files.publish_exact(
+            path,
+            raw,
+            where=where,
+            conflict_error=pool_mod.PoolContractError,
+        )
     except pool_mod.PoolContractError as exc:
         raise ActionEdgeError(str(exc)) from None
 
@@ -475,9 +486,8 @@ def request_wrapper(cas_root: str | Path, key: str, *, where: str) -> str:
     """
 
     request = Path(cas_root) / "requests" / key[:2] / f"{key}.json"
-    raw = pb._read_regular_file_nofollow(
-        request, where=where, require_readonly=True, max_bytes=16 * 1024 * 1024)
-    action = pb.validate_action(pb._decode_strict_json(raw, where=where))
+    raw = immutable_files.read_immutable_file(request, where=where, max_bytes=16 * 1024 * 1024)
+    action = pb.validate_action(pb.digest_primitives.decode_strict_json(raw, where=where))
     if action["action_key"] != key:
         raise ValueError(f"{where}: request does not match its address")
     if action["task"]["definition_id"] != "fleet/pbrun":
@@ -621,7 +631,15 @@ def check_supersession(queue, old: str, *, new: str, new_kind: str
                 f"{old[:12]} is already released; supersede the key it was "
                 "released as once that key has failed")
     else:
-        state, _record = po._key_generation(queue, old)
+        match RecordStore(queue.root).standing(old):
+            case Present(QueueRow(state, _record)):
+                pass
+            case Present(Moving()):
+                state = "moving"
+            case Absent():
+                state = "absent"
+            case Unknown():
+                state = "unknown"
         if state not in ("failed", "withdrawn"):
             raise ActionEdgeError(
                 f"{old[:12]} cannot be superseded: its latest generation is "
@@ -718,12 +736,12 @@ def producer_kind(queue, producer: str) -> str:
     producer = _hex64(producer, where="--after producer")
     if read_deferred(queue.root, producer) is not None:
         return PRODUCER_PENDING
-    state, _record = po._key_generation(queue, producer)
-    if state == "absent":
+    standing = RecordStore(queue.root).standing(producer)
+    if isinstance(standing, Absent):
         raise ActionEdgeError(
             f"--after {producer[:12]}: no action or deferred submission with "
             "this key is filed in the queue")
-    if state == "unknown":
+    if isinstance(standing, Unknown):
         raise ActionEdgeError(
             f"--after {producer[:12]}: the queue cannot say what this key is")
     return PRODUCER_KEY
@@ -735,9 +753,10 @@ def declared_template_id(cas_root: str | Path, action_key: str) -> str | None:
     key = _hex64(action_key, where="producer key")
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
     try:
-        raw = pb._read_regular_file_nofollow(request, where="producer request")
+        raw = immutable_files.read_stable_file(request, where="producer request")
         action = pb.validate_action(
-            pb._decode_strict_json(raw, where="producer request"))
+            pb.digest_primitives.decode_strict_json(raw, where="producer request"),
+        )
     except FileNotFoundError:
         return None
     except (pb.PrismaBuildError, ValueError, OSError) as exc:
@@ -753,10 +772,10 @@ def declared_template_id(cas_root: str | Path, action_key: str) -> str | None:
 def require_write_only_template(queue_root: str | Path, template_id: str) -> None:
     """Refuse an edge whose template is not filed as write-only."""
 
-    path = (Path(queue_root) / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    path = (Path(queue_root) / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
             / f"{_name(template_id, where='template id')}.json")
     try:
-        template = po.validate_template(json.loads(path.read_text()))
+        template = oc.validate_template(json.loads(path.read_text()))
     except FileNotFoundError:
         raise ActionEdgeError(
             f"template {template_id!r} is not filed; its producer declares it "
@@ -782,7 +801,7 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
     is not reclaimed.  ``None`` when there is none or more than one.
     """
 
-    scopes = (Path(queue_root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scopes = (bl.scopes_root(queue_root)
               / _hex64(producer_key, where="producer key"))
     try:
         names = sorted(os.listdir(scopes))
@@ -797,20 +816,19 @@ def committed_attempt(queue_root: str | Path, producer_key: str,
             continue
         scope = scopes / name
         try:
-            instance = po.validate_instance(json.loads(
-                (scope / "instance.json").read_text()))
+            instance = oc.validate_instance(json.loads(
+                bl.BatchLedger.at_scope(scope).instance_path.read_text()))
             if (instance["template_id"] != template_id
-                    or po.instance_dir(queue_root, instance) != scope):
+                    or bl.scope_dir(queue_root, instance) != scope):
                 continue
-            batches = po._read_commitments(scope / "commitments.json")["batches"]
+            batches = bl.BatchLedger.at_scope(scope).entries()
         except FileNotFoundError:
             continue
         except (OSError, ValueError) as exc:
             raise ActionEdgeUnreadable(
                 f"producer instance {name} unreadable: {exc}") from None
-        if any(isinstance(entry, Mapping) and entry.get("origin_only") is True
-               and not entry.get("origin_reclaimed")
-               for entry in batches.values()):
+        if any(isinstance(entry, bl.BatchFacets) and entry.kind == "origin"
+               and not entry.origin_reclaimed for entry in batches.values()):
             attempt = instance["owner_attempt"]
             assert isinstance(attempt, dict)
             found.append(str(attempt["nonce"]))
@@ -854,12 +872,20 @@ def resolve_producer(queue, producer: str, kind: str,
                 current, current_kind = str(published["action_key"]), PRODUCER_KEY
                 continue
             return {"state": "pending", "key": None, "nonce": None, "path": path}
-        state, record = po._key_generation(queue, current)
+        match RecordStore(queue.root).standing(current):
+            case Present(QueueRow(state, record)):
+                pass
+            case Present(Moving()):
+                state, record = "moving", None
+            case Absent():
+                state, record = "absent", None
+            case Unknown():
+                state, record = "unknown", None
         if state in ("claimed", "ready", "moving"):
             return {"state": "live", "key": current, "nonce": None, "path": path}
         if state == "done":
             assert record is not None
-            nonce = po._record_nonce(record)
+            nonce = bl.record_nonce(record)
             if record.get("status") == "executed" and nonce:
                 return {"state": "done", "key": current, "nonce": nonce,
                         "path": path}
@@ -887,11 +913,10 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     changed.
     """
 
-    scope = (Path(queue_root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
-             / producer_key / f"{template_id}.{nonce}")
+    scope = bl.attempt_scope(queue_root, producer_key, template_id, nonce)
     try:
-        instance = po.validate_instance(json.loads(
-            (scope / "instance.json").read_text()))
+        instance = oc.validate_instance(json.loads(
+            bl.BatchLedger.at_scope(scope).instance_path.read_text()))
     except FileNotFoundError:
         raise ActionEdgeError(
             f"producer-committed-nothing: attempt {nonce[:8]} of "
@@ -899,21 +924,18 @@ def committed_batch_refs(queue_root: str | Path, *, producer_key: str,
     except (OSError, ValueError) as exc:
         raise ActionEdgeError(f"producer instance unreadable: {exc}") from None
     try:
-        commitments = po._read_commitments(
-            po._commitments_path(queue_root, instance))
-    except po.ProducedOutputError as exc:
+        commitments = bl.BatchLedger.for_instance(queue_root, instance).entries()
+    except oc.ProducedOutputError as exc:
         raise ActionEdgeError(f"producer commitments unreadable: {exc}") from None
     refs: list[dict[str, object]] = []
-    for batch_id, entry in sorted(commitments["batches"].items()):
-        if not isinstance(entry, Mapping) or entry.get("origin_only") is not True:
+    for batch_id, entry in sorted(commitments.items()):
+        if not isinstance(entry, bl.BatchFacets) or entry.kind != 'origin':
             continue
-        refs.append(po.origin_batch_ref(
-            instance, batch_id=batch_id,
-            manifest_digest=str(entry.get("manifest_digest"))))
+        refs.append(oc.origin_batch_ref(instance, batch_id=batch_id, manifest_digest=str(entry.manifest)))
     try:
         # One commitments write for every re-pin these checks make (#1111).
         po.load_origin_batches(queue_root, refs)
-    except po.ProducedOutputError as exc:
+    except oc.ProducedOutputError as exc:
         raise ActionEdgeError(str(exc)) from None
     if not refs:
         raise ActionEdgeError(
@@ -940,27 +962,27 @@ def merged_manifest(static: Mapping[str, object] | None,
     if any, then the resolved ones.
     """
 
-    checked_batches = pb.validate_data_manifest(batches)
+    checked_batches = manifest_codec.validate_data_manifest(batches)
     if static is None:
         return checked_batches
-    checked_static = pb.validate_data_manifest(static)
-    if checked_static["schema"] != pb.DATA_MANIFEST_SCHEMA_V1:
+    checked_static = manifest_codec.validate_data_manifest(static)
+    if checked_static["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V1:
         raise ActionEdgeError(
             "a deferred consumer's static manifest must be data_manifest.v1")
     static_notes = dict(checked_static["annotations"])
     batch_notes = checked_batches["annotations"]
     static_total = int(checked_static["total_bytes"])
     annotations = {key: value for key, value in static_notes.items()
-                   if key not in ("phases", po.ORIGIN_BATCHES_ANNOTATION)}
+                   if key not in ("phases", oc.ORIGIN_BATCHES_ANNOTATION)}
     static_phases = static_notes.get("phases")
     if static_phases is not None:
         shifted = [{**phase,
                     "cumulative_bytes": int(phase["cumulative_bytes"]) + static_total}
                    for phase in batch_notes["phases"]]
         annotations["phases"] = [*static_phases, *shifted]
-    annotations[po.ORIGIN_BATCHES_ANNOTATION] = [
-        *(static_notes.get(po.ORIGIN_BATCHES_ANNOTATION) or []),
-        *batch_notes[po.ORIGIN_BATCHES_ANNOTATION]]
+    annotations[oc.ORIGIN_BATCHES_ANNOTATION] = [
+        *(static_notes.get(oc.ORIGIN_BATCHES_ANNOTATION) or []),
+        *batch_notes[oc.ORIGIN_BATCHES_ANNOTATION]]
     prefix = os.path.commonpath([str(checked_static["mount_prefix"]),
                                  str(checked_batches["mount_prefix"])])
     if prefix == "/":
@@ -968,8 +990,8 @@ def merged_manifest(static: Mapping[str, object] | None,
             "the static manifest and the committed batches share no directory "
             "below / to mount")
     entries = [*checked_static["entries"], *checked_batches["entries"]]
-    return pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+    return manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "prismabuild.action_edges.merged_manifest"},
         "mount_prefix": prefix,
         "entries": entries,
@@ -994,18 +1016,18 @@ def after_slots(static: Mapping[str, object],
     plan order; raises `ActionEdgeError` naming what does not fit.
     """
 
-    checked = pb.validate_data_manifest(static)
-    if checked["schema"] != pb.DATA_MANIFEST_SCHEMA_V2:
+    checked = manifest_codec.validate_data_manifest(static)
+    if checked["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         raise ActionEdgeError("--after slots need a data_manifest.v2")
     notes = checked["annotations"]
-    if po.ORIGIN_BATCHES_ANNOTATION in notes:
+    if oc.ORIGIN_BATCHES_ANNOTATION in notes:
         raise ActionEdgeError(
             f"a deferred v2 plan places its batches through "
-            f"{po.ORIGIN_SLOTS_ANNOTATION}, not {po.ORIGIN_BATCHES_ANNOTATION}")
+            f"{oc.ORIGIN_SLOTS_ANNOTATION}, not {oc.ORIGIN_BATCHES_ANNOTATION}")
     try:
-        wanted = po._slot_phases(checked, notes.get(po.ORIGIN_SLOTS_ANNOTATION),
-                                 where=po.ORIGIN_SLOTS_ANNOTATION)
-    except po.ProducedOutputError as exc:
+        wanted = po._slot_phases(checked, notes.get(oc.ORIGIN_SLOTS_ANNOTATION),
+                                 where=oc.ORIGIN_SLOTS_ANNOTATION)
+    except oc.ProducedOutputError as exc:
         raise ActionEdgeError(
             f"a deferred v2 plan must name the phase each --after edge fills: "
             f"{exc}") from None
@@ -1063,14 +1085,14 @@ def place_after_slots(queue_root: str | Path, static: Mapping[str, object],
             template_id=str(item["template_id"]))
         for item in producers}
     notes = {key: value for key, value in dict(static["annotations"]).items()
-             if key != po.ORIGIN_SLOTS_ANNOTATION}
+             if key != oc.ORIGIN_SLOTS_ANNOTATION}
     try:
         return po.place_origin_batches(
             queue_root, {**static, "annotations": notes},
             [{"phase": slot["phase"],
               "refs": by_edge[(slot["producer"], slot["template_id"])]}
              for slot in slots])
-    except po.ProducedOutputError as exc:
+    except oc.ProducedOutputError as exc:
         raise ActionEdgeError(str(exc)) from None
 
 

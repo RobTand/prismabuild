@@ -20,6 +20,7 @@ promotion row -> claim -> ram_promote.promote; then stage_release.evict.  Runs
 under pbtest at priority -10; never executed locally.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import hashlib
 import json
@@ -34,9 +35,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
 import prismabuild.core as pb  # noqa: E402
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 RAM_TIER = "ram:dl380g10"
@@ -52,7 +55,7 @@ HOST_CAP = {"cpu": 8, "mem_gb": 16}
 WORKER = "worker:1:abcd0001"
 SOURCE_NAME = "layer.bin"
 #: Where the stage mover (and the promotion) name the one whole-file entry.
-STAGED_NAME = stage_move.stage_relative(f"/m/{SOURCE_NAME}", 0, MIB,
+STAGED_NAME = staged_path.stage_relative(f"/m/{SOURCE_NAME}", 0, MIB,
                                         mount_prefix="/m")
 
 
@@ -62,7 +65,7 @@ def _manifest(tmp_path: Path) -> tuple[dict, Path]:
     payload = hashlib.sha256(b"promotion-handoff-source").digest() * (MIB // 32)
     (pool_dir / SOURCE_NAME).write_bytes(payload)
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "promotion-handoff-regression"},
         "mount_prefix": str(pool_dir),
         "entries": [{"path": str(pool_dir / SOURCE_NAME), "offset": 0,
@@ -79,23 +82,14 @@ def _manifest(tmp_path: Path) -> tuple[dict, Path]:
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 8})
-    queue.mint_tier_capacity(RAM_TIER, {RAM_KIND: 4})
+    queue.records.ensure_layout()
+    queue.tier(TIER).mint({KIND: 8})
+    queue.tier(RAM_TIER).mint({RAM_KIND: 4})
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     return queue, stage
-
-
-def _publish(queue: pool.PoolQueue, key: str, resources: dict,
-             residency: dict) -> None:
-    queue.publish(action_key=key, cas_root=str(queue.root / "cas"),
-                  checkout_root=str(queue.root / "co"),
-                  worker_script=str(queue.root / "worker.py"),
-                  resources=resources, residency=residency,
-                  max_attempts=1, retry_safe=False)
 
 
 def _claim(queue: pool.PoolQueue, key: str) -> None:
@@ -117,7 +111,7 @@ def _move_args(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(size),
         "--manifest", str(manifest_path),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2", "--max-readers", "2", "--unpaced",
     ])
@@ -127,11 +121,23 @@ def _stage_mover(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
                  mover: str, consumer: str, size: int) -> dict:
     """The actual mover lifecycle: publish -> claim -> copy -> finish."""
 
-    _publish(queue, mover,
-             {"cpu": 1, "mem_gb": 1, f"{KIND}@{TIER}": 1},
-             {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-              "manifest_sha256": MANIFEST_SHA, "manifest_bytes": size,
-              "range_start_bytes": 0, "range_end_bytes": size})
+    ActionRows(queue).publish(
+        mover,
+        cas_root=str(queue.root / 'cas'),
+        checkout_root=str(queue.root / 'co'),
+        worker_script=str(queue.root / 'worker.py'),
+        resources={'cpu': 1, 'mem_gb': 1, f'{KIND}@{TIER}': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST_SHA,
+            'manifest_bytes': size,
+            'range_start_bytes': 0,
+            'range_end_bytes': size,
+        },
+        max_attempts=1,
+        retry_safe=False,
+    )
     _claim(queue, mover)
     receipt = stage_move.move(
         _move_args(queue, stage, manifest_path, mover, consumer, size))
@@ -162,7 +168,7 @@ def _promotion_claim(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
                    "--range-end-bytes", str(size)]
     cas = pb.PrismaBuildCAS(queue.root / "cas")
     manifest_input, _ = cas.ingest_input(
-        manifest_path, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        manifest_path, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     checkout = manifest_path.parent / "promotion-checkout"
     checkout.mkdir(parents=True, exist_ok=True)
     (checkout / "task_code.py").write_text(
@@ -186,11 +192,23 @@ def _promotion_claim(queue: pool.PoolQueue, stage: Path, manifest_path: Path,
     key = str(action["action_key"])
     cas.publish_action_request(action)
     digest = str(manifest_input["sha256"])
-    _publish(queue, key,
-             {"cpu": 1, "mem_gb": 1, f"{RAM_KIND}@{RAM_TIER}": 1},
-             {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": RAM_TIER,
-              "manifest_sha256": digest, "manifest_bytes": size,
-              "range_start_bytes": 0, "range_end_bytes": size})
+    ActionRows(queue).publish(
+        key,
+        cas_root=str(queue.root / 'cas'),
+        checkout_root=str(queue.root / 'co'),
+        worker_script=str(queue.root / 'worker.py'),
+        resources={'cpu': 1, 'mem_gb': 1, f'{RAM_KIND}@{RAM_TIER}': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': RAM_TIER,
+            'manifest_sha256': digest,
+            'manifest_bytes': size,
+            'range_start_bytes': 0,
+            'range_end_bytes': size,
+        },
+        max_attempts=1,
+        retry_safe=False,
+    )
     _claim(queue, key)
     return key, digest
 
@@ -210,7 +228,7 @@ def _promote(queue: pool.PoolQueue, stage: Path, ram: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(size),
         "--action-key", key,
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
     ])
@@ -221,7 +239,7 @@ def _promote(queue: pool.PoolQueue, stage: Path, ram: Path,
 
 
 def _paths(queue: pool.PoolQueue, consumer: str, mover: str) -> dict:
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     return {
         "residency": residency,
         "fragment": residency_map.fragment_path(residency, consumer, mover),
@@ -244,14 +262,14 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     assert staged.exists() and paths["fragment"].exists()
     assert paths["material"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
 
     # Egress while the promotion's claim is live: a pending copy handoff, so
     # the whole document and its charge stay.  Not shared, not freed.
-    first = stage_release.evict(queue, MOVER_A,
+    first = staged_path.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert first["complete"] is False, first
@@ -267,7 +285,7 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert paths["material"].exists(), "its material date must survive"
     assert not paths["retiring"].exists(), (
         "no retiring mark while the handoff still has to prove its source")
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1, (
+    assert ledger.holdings(MOVER_A).get(KIND) == 1, (
         "no early free credit while the handoff still holds the source")
 
     # No mark closes the generation, so the proof-only acquire the promotion
@@ -293,9 +311,9 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
 
     # The promotion's action concludes: the claim goes, the handoff ends.
     queue.finish(promo, status="executed")
-    assert not (queue.dir(pool.CLAIMED) / f"{promo}.json").exists()
+    assert not (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").exists()
 
-    second = stage_release.evict(queue, MOVER_A,
+    second = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert second["complete"] is True, second
@@ -306,17 +324,17 @@ def test_egress_during_a_promotion_defers_the_source_until_the_handoff_ends(
     assert not paths["fragment"].exists()
     assert not paths["material"].exists()
     assert not paths["retiring"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
 
     # Idempotent: the concluded egress cannot free or decharge a second time.
-    third = stage_release.evict(queue, MOVER_A,
+    third = staged_path.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert third["complete"] is True, third
     assert third["entries_deleted"] == 0, third
     assert third["tokens_released"] == 0, third
     assert third["tokens_decharged"] == 0, third
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
 
 
 def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
@@ -343,11 +361,11 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     paths_a = _paths(queue, CONSUMER_A, MOVER_A)
     paths_b = _paths(queue, CONSUMER_B, MOVER_B)
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
 
     # The claim is live and the promotion has not acquired yet: the handoff
     # outranks B's shared skip, so A keeps its own proof and full charge.
-    during = stage_release.evict(queue, MOVER_A,
+    during = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert during["complete"] is False, during
@@ -359,8 +377,8 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     assert staged.exists()
     assert paths_a["fragment"].exists() and paths_a["material"].exists()
     assert paths_b["fragment"].exists() and paths_b["material"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
 
     # The real promotion proves its own consumer's source cover before it
     # copies: with A's retained fragment it completes, and the cover names A
@@ -373,7 +391,7 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
 
     # The handoff ends; now the ordinary shared settlement applies.
     queue.finish(promo, status="executed")
-    shared = stage_release.evict(queue, MOVER_A,
+    shared = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert shared["complete"] is True, shared
@@ -385,17 +403,17 @@ def test_a_pending_handoff_outranks_a_same_path_co_owner_until_it_ends(
     assert staged.exists()
     assert paths_b["fragment"].exists()
     assert not paths_a["fragment"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND, 0) == 0
-    assert ledger.holder_tokens(MOVER_B).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_B).get(KIND) == 1
 
-    last = stage_release.evict(queue, MOVER_B,
+    last = staged_path.evict(queue, MOVER_B,
                                consumer_action_key=CONSUMER_B,
                                stage_root=str(stage))
     assert last["complete"] is True, last
     assert last["entries_deleted"] == 1, last
     assert last["tokens_released"] == 1, last
     assert not staged.exists()
-    assert ledger.holder_tokens(MOVER_B).get(KIND, 0) == 0
+    assert ledger.holdings(MOVER_B).get(KIND, 0) == 0
 
 
 def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
@@ -410,8 +428,8 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     promo, _ = _promotion_claim(queue, stage, manifest_path, CONSUMER_A, MIB)
 
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
-    first = stage_release.evict(queue, MOVER_A,
+    ledger = queue.tier(TIER)
+    first = staged_path.evict(queue, MOVER_A,
                                 consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert first["complete"] is False, first
@@ -419,10 +437,10 @@ def test_a_handoff_without_material_retains_bytes_fragment_and_charge(
     assert first["retiring"] is False, first
     assert first["tokens_released"] == 0, first
     assert staged.exists() and paths["fragment"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1
 
-    (queue.dir(pool.CLAIMED) / f"{promo}.json").unlink()
-    second = stage_release.evict(queue, MOVER_A,
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{promo}.json").unlink()
+    second = staged_path.evict(queue, MOVER_A,
                                  consumer_action_key=CONSUMER_A,
                                  stage_root=str(stage))
     assert second["complete"] is True, second
@@ -444,8 +462,8 @@ def test_a_malformed_promotion_claim_taints_and_retains(
 
     paths = _paths(queue, CONSUMER_A, MOVER_A)
     staged = stage / STAGED_NAME
-    ledger = queue.tier_ledger(TIER)
-    receipt = stage_release.evict(queue, MOVER_A,
+    ledger = queue.tier(TIER)
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert receipt["complete"] is False, receipt
@@ -454,4 +472,4 @@ def test_a_malformed_promotion_claim_taints_and_retains(
                for error in receipt["errors"]), receipt
     assert staged.exists() and paths["fragment"].exists()
     assert paths["material"].exists()
-    assert ledger.holder_tokens(MOVER_A).get(KIND) == 1
+    assert ledger.holdings(MOVER_A).get(KIND) == 1

@@ -18,6 +18,7 @@ at all, was accepted.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 from pathlib import Path
 import subprocess
@@ -32,7 +33,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import materialize  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 
 
 def _git(root: Path, *args: str) -> str:
@@ -101,7 +102,7 @@ def _producer_action(checkout: Path) -> dict:
 def sealed(tmp_path: Path) -> tuple[dict, pb.PrismaBuildCAS, Path]:
     """One Tessera action re-sealed around a snapshot, as the lane does."""
 
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     checkout = _producer_checkout(tmp_path)
     action, _ = fleet_submit.seal_checkout_into_action(

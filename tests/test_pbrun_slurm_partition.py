@@ -6,6 +6,7 @@ an agent submits: GPU work, untagged CPU work, CPU work pinned to a box, and
 CPU work asserted portable with ``--anywhere``.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 from pathlib import Path
 import sys
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import slurm_lane as sl  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 class _NoReceipt:
@@ -36,14 +38,14 @@ def _lane_kwargs(monkeypatch: pytest.MonkeyPatch, *, tags, demand,
     def record(action, **kwargs):
         raise _Captured(kwargs)
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", record)
+    monkeypatch.setattr(submit_core.slurm_lane, "run", record)
     with pytest.raises(_Captured) as raised:
-        pbrun.slurm_outcome(
+        submit_core.slurm_outcome(
             {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=list(tags), demand=dict(demand), exclusive=exclusive,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
             **extra,
-        )
+        store=pbrun.configured_store(), display=pbrun.render_submission)
     return raised.value.kwargs
 
 
@@ -90,12 +92,12 @@ def test_an_exclusive_action_asking_for_more_than_one_device_is_refused(
     harmless while every box has one device and silently wrong the day a
     two-GPU box joins, so it is refused where the caller can still read it."""
 
-    with pytest.raises(SystemExit) as refused:
-        pbrun.slurm_outcome(
+    with pytest.raises(submit_core.SubmissionRefused) as refused:
+        submit_core.slurm_outcome(
             {"action_key": "0" * 64}, cas=_NoReceipt(), request_path="request.json",
             tags=[], demand={"gpu": 2, "mem_gb": 16}, exclusive=True,
             timeout_s=60.0, wait_s=60.0, retry_safe=False, max_attempts=1,
-        )
+        store=pbrun.configured_store(), display=pbrun.render_submission)
     message = str(refused.value)
     assert "--exclusive --gpu-capacity 2" in message
     assert "--gres=gpu:1" in message

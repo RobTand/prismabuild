@@ -59,6 +59,7 @@ import argparse
 import contextlib
 import gzip
 import hashlib
+import importlib.util
 import io
 import itertools
 import json
@@ -73,12 +74,21 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 
 from prismabuild import box_capacity  # noqa: E402
+from prismabuild.submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+from prismabuild import submission
+
+
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 
@@ -171,8 +181,8 @@ def table_from_manifest(manifest: Mapping[str, object], *,
     anything but identity.
     """
 
-    normalized = pb.validate_data_manifest(manifest)
-    if normalized["schema"] != pb.DATA_MANIFEST_SCHEMA_V2:
+    normalized = manifest_codec.validate_data_manifest(manifest)
+    if normalized["schema"] != manifest_codec.DATA_MANIFEST_SCHEMA_V2:
         raise ValueError("a shape table is taken from a v2 manifest's read plan")
     files: dict[str, int] = {}
     rows: list[list[int]] = []
@@ -200,10 +210,14 @@ def table_from_manifest(manifest: Mapping[str, object], *,
 
 
 def table_bytes(table: Mapping[str, object]) -> bytes:
-    """The committed encoding: canonical JSON in one gzip member, mtime 0."""
+    """The committed encoding: canonical JSON, gzip mtime 0 and OS 255.
+
+    Some Python versions let zlib supply its platform-dependent gzip OS byte.
+    """
 
     raw = json.dumps(table, sort_keys=True, separators=(",", ":")).encode()
-    return gzip.compress(raw, compresslevel=9, mtime=0)
+    encoded = gzip.compress(raw, compresslevel=9, mtime=0)
+    return encoded[:9] + b"\xff" + encoded[10:]
 
 
 def read_table(path: str | Path) -> dict[str, object]:
@@ -367,7 +381,7 @@ def build_manifest(shape: Mapping[str, object], paths: Sequence[str],
                        "entry_indices": list(phase["entry_indices"]),
                        "bytes": size, "cumulative_bytes": cumulative})
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
         "produced_by": {"tool": "shape_gate",
                         "table_manifest_sha256":
                             str(shape["source"]["manifest_sha256"])},  # type: ignore[index]
@@ -378,7 +392,7 @@ def build_manifest(shape: Mapping[str, object], paths: Sequence[str],
         "total_bytes": sum(int(entry["bytes"]) for entry in entries),
         "read_plan": {"phases": phases, "read_bytes": cumulative},
     }
-    pb.validate_data_manifest(manifest)
+    manifest_codec.validate_data_manifest(manifest)
     return manifest
 
 
@@ -539,20 +553,14 @@ class ShapeGate:
                  host_profile: Mapping[str, object] = HOST_PROFILE,
                  require_chunk_edge: bool = True,
                  seed: int = 965) -> None:
-        import pbrun
-        import tier_loop
+        from prismabuild import tier_cycle as tier_loop
 
         if storage_tiers.GIB * int(shape["scale"]) != 1 << 30:     # type: ignore[arg-type]
             raise ShapeGateFailure(
                 "unit_mismatch",
                 f"storage_tiers.GIB is {storage_tiers.GIB}, but a shape scaled by "
                 f"{shape['scale']} needs {(1 << 30) // int(shape['scale'])}")  # type: ignore[arg-type]
-        if Path(pbrun.SH) != Path(shared_root):
-            raise ShapeGateFailure(
-                "shared_root_mismatch",
-                f"pbrun seals against {pbrun.SH}, not {shared_root}; a mover "
-                f"sealed there would run against another queue")
-        self.pbrun = pbrun
+        self.store = store_for(__file__, root=shared_root)
         self.tier_loop = tier_loop
         self.require_chunk_edge = require_chunk_edge
         self.shape = shape
@@ -713,7 +721,6 @@ class ShapeGate:
         ``seal_action_from_template`` adds them for a released consumer.
         """
 
-        pbrun = self.pbrun
         snapshot = {"id": pb.PBRUN_CHECKOUT_SNAPSHOT_INPUT_ID,
                     "sha256": hashlib.sha256(b"shape-gate-checkout").hexdigest(),
                     "bytes": 4096}
@@ -726,7 +733,7 @@ class ShapeGate:
                      "artifact_family": "generic", "artifact_kind": "generic",
                      "working_directory": "."},
             "inputs": [snapshot],
-            "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+            "code_closure": submission.build_stamp_closure("pbrun.stamp", "{}"),
             "params": {"command": ["true"], "cwd": str(self.root),
                        "demand": {"cpu": 1, "mem_gb": 1},
                        "placement": {"required_tags": []},
@@ -749,41 +756,44 @@ class ShapeGate:
         and publishes the consumer's row.
         """
 
-        raw = gzip.compress(pb._canonical_file_bytes(manifest), mtime=0)
-        manifest_input, _ = self.cas.ingest_bytes(
-            raw, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
-        self.manifest_sha256 = str(manifest_input["sha256"])
-        summary = {"input": dict(manifest_input),
-                   "mount_prefix": manifest["mount_prefix"],
-                   "entry_count": manifest["entry_count"],
-                   "total_bytes": manifest["total_bytes"],
-                   "schema": pb.DATA_MANIFEST_SCHEMA_V2,
-                   "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
-                   "content_encoding": "gzip"}
-        template = self._template()
-        action = self.pbrun.seal_action_from_template(
-            template, command=["true"], extra_inputs=[manifest_input],
-            extra_params={"data_manifest": summary})
-        sealed = {**template,
-                  "params": {**template["params"], "data_manifest": summary},  # type: ignore[dict-item]
-                  "inputs": [*template["inputs"], manifest_input]}  # type: ignore[misc]
-        self.cas.publish_action_request(action)
-        key = str(action["action_key"])
-        args = self.pbrun.parse_args(
-            ["--residency", "stage", "--priority", "-10", "--", "true"])
+        args = SubmissionRequest(cwd=str(self.root), residency="stage", priority=-10,
+                                 command=("true",), detach=True)
+        with submission.write_window(args, store=self.store):
+            raw = gzip.compress(pb._canonical_file_bytes(manifest), mtime=0)
+            manifest_input, _ = self.cas.ingest_bytes(
+                raw, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+            self.manifest_sha256 = str(manifest_input["sha256"])
+            summary = {"input": dict(manifest_input),
+                       "mount_prefix": manifest["mount_prefix"],
+                       "entry_count": manifest["entry_count"],
+                       "total_bytes": manifest["total_bytes"],
+                       "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
+                       "read_bytes": manifest["read_plan"]["read_bytes"],  # type: ignore[index]
+                       "content_encoding": "gzip"}
+            template = {**self._template(), "cas": self.cas}
+            action = submission.seal(
+                template, command=["true"], extra_inputs=[manifest_input],
+                extra_params={"data_manifest": summary})
+            sealed = {**template,
+                      "params": {**template["params"], "data_manifest": summary},  # type: ignore[dict-item]
+                      "inputs": [*template["inputs"], manifest_input]}  # type: ignore[misc]
+            key = str(action["action_key"])
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            self.pbrun.publish_consumer_row(
-                self.queue, action, sealed, key=key, args=args, cas=self.cas)
+            result = submission.submit_action(action, template=sealed, request=args,
+                store=self.store, display=lambda event: render_submission(event)
+                    if event.channel == "stderr" else None)
+            if isinstance(result, SubmissionRefused):
+                raise result
         self.submit_log = stderr.getvalue()
         return key
 
     # -- the worker -------------------------------------------------------
 
     def _movement_module(self, tool: str):
-        import ram_promote
-        import stage_move
-        import stage_release
+        from prismabuild import ram_promote
+        from prismabuild import stage_move
+        from prismabuild import stage_release
 
         return {"stage_move.py": stage_move, "ram_promote.py": ram_promote,
                 "stage_release.py": stage_release}[tool]
@@ -879,7 +889,9 @@ class ShapeGate:
         return dict(got)
 
     def _report(self, phase: str, units: int) -> None:
-        claimed = pool._read_json(self.queue.item_path(pool.CLAIMED, self.consumer))
+        claimed = pool.record_store.value_or_raise(
+            self.queue.records.item(pool.record_store.CLAIMED, self.consumer),
+        )
         self.queue.write_lease(
             self.consumer, owner=self.reader_owner,
             claim_snapshot=claimed if isinstance(claimed, dict) else None,
@@ -897,7 +909,7 @@ class ShapeGate:
 
         try:
             mapping = residency_map.read_map(
-                self.queue.residency_map_path(self.consumer))
+                self.queue.records.residency_map_path(self.consumer))
         except (OSError, ValueError):
             return None
         if mapping.get("ram_tier_id") != self.ram_tier_id:
@@ -913,7 +925,7 @@ class ShapeGate:
         """Read one phase strictly: map, cover, pin, open, hash, release."""
 
         epoch = str(mapping.get("ram_epoch") or "")
-        root = self.queue.root / pool.RESIDENCY
+        root = self.queue.root / pool.record_store.RESIDENCY
         indices = list(self.phases[phase_index]["entry_indices"])
         entries = [self.manifest["entries"][index] for index in indices]  # type: ignore[index]
         keys = [residency_map.residency_map_key(str(entry["path"]), int(entry["offset"]))
@@ -1021,7 +1033,7 @@ class ShapeGate:
         for directory in (self.stage_dir, self.ram_dir):
             directory.mkdir(parents=True, exist_ok=True)
         self._host_facts()
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         # What the storage host's worker loops offer.  The tier loop reads
         # this record for the RAM admission's worker demand, and the claim
         # reads it for placement.
@@ -1229,36 +1241,20 @@ def resolve_action_key(queue_root: Path, key: str) -> tuple[str, Path]:
     return matches[0].stem, matches[0]
 
 
-def judge_outcomes(outcomes: Mapping[str, object] | None, *, where: str) -> None:
-    """Refuse unless ``outcomes`` ran every reference table and all passed.
+_OUTCOMES_PATH = Path(__file__).parent.resolve() / "pbtest_outcomes.py"
 
-    ``outcomes`` is a shard's ``pbtest_outcomes`` record.  The collection must
-    be exactly :func:`reference_nodes` -- a run filtered to one table, or one
-    that ran something else as well, is not this commit's gate -- and each
-    node's only reported outcome must be ``passed``.
-    """
 
-    if not isinstance(outcomes, Mapping) or outcomes.get("collect_only"):
-        raise ShapeGateFailure(
-            "receipt_refused",
-            f"{where}'s log carries no pbtest outcome record of a run; the "
-            f"gate runs through pbtest")
-    expected = reference_nodes()
-    collected = sorted(str(node) for node in outcomes.get("collected") or ())
-    if collected != expected:
-        raise ShapeGateFailure(
-            "receipt_refused",
-            f"{where} collected {collected}, not the reference set {expected}")
-    verdicts: dict[str, set[str]] = {}
-    for report in outcomes.get("reports") or ():              # type: ignore[union-attr]
-        verdicts.setdefault(str(report[0]), set()).add(str(report[2]))
-    failing = {node: sorted(verdicts.get(node, set())) for node in expected
-               if verdicts.get(node) != {"passed"}}
-    if failing or outcomes.get("uncounted"):
-        raise ShapeGateFailure(
-            "receipt_refused",
-            f"{where}: not every reference table passed: {failing}"
-            f"{'; uncounted outcomes' if outcomes.get('uncounted') else ''}")
+def judge_gate_log(log: str, *, where: str) -> None:
+    spec = importlib.util.spec_from_file_location(__name__ + "_outcomes", _OUTCOMES_PATH)
+    outcomes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(outcomes)
+    files = [REFERENCE_TEST.split("::", 1)[0]]
+    verdict = outcomes.judge_shards([{"shard": 0, "files": files,
+        "returncode": 0, "output": log, "timed_out": False}],
+        requested_files=files, required_nodes=reference_nodes())
+    if not verdict["green"]:
+        raise ShapeGateFailure("receipt_refused", where + ": " + "; ".join(
+            p["message"] for p in verdict["problems"]))
 
 
 def closure_stamp_only(changed: Sequence[str], subdirectory: str) -> list[str]:
@@ -1308,10 +1304,8 @@ def verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
 
 def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
                          queue_root: Path, cas_root: Path) -> dict[str, object]:
-    import pbtest_outcomes
-
     key, terminal = resolve_action_key(queue_root, action_key)
-    done = pool._read_json(terminal)
+    done = pool.record_store.read_document(terminal)
     detail = done.get("detail") if isinstance(done, dict) else None
     if (not isinstance(done, dict) or done.get("status") != "executed"
             or not isinstance(detail, dict) or detail.get("returncode") != 0):
@@ -1352,7 +1346,7 @@ def _verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,
         raise ShapeGateFailure("receipt_refused",
                                f"{key[:12]} has no verified CAS receipt")
     log = cas.result_path(receipt, action).read_text(errors="replace")
-    judge_outcomes(pbtest_outcomes.parse(log), where=key[:12])
+    judge_gate_log(log, where=key[:12])
     return {"verdict": "passed", "action_key": key,
             "tables": sorted(REFERENCE_TABLES),
             "finished_host": done.get("finished_host"),

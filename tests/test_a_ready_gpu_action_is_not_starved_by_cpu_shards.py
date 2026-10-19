@@ -17,6 +17,7 @@ holder that runs for hours or a day (R12, a progress-governed campaign action
 with no total timeout) must not hold the box shut for anyone.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 import importlib.util
@@ -28,8 +29,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
-from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
+from prismabuild import adaptive_cpu, contracts, core as pb, pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
+from prismabuild import drain_policy
+from gpu_capacity_fixture import idle_gpu_sample
 
 #: Loaded the same way the ``pbtest`` test files load it: a fresh module
 #: object per test file, not ``sys.modules``'s cached one, so a monkeypatch
@@ -52,6 +56,9 @@ CPU_SHARD_SEALED_END_S = pbtest.shard_ceiling(
     ceilings={"sparky": 86400.0, "sparklina": 86400.0})
 
 
+from fleet_world import FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -61,7 +68,7 @@ def clock(monkeypatch):
     now = [T0]
     # One clock for the pool and the adaptive controller.  ``adaptive_cpu.time``
     # is the ``time`` module, so this also covers the controller's ``now``.
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -73,18 +80,22 @@ def generation_actions(monkeypatch):
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     # A distinct publish time per item, so the ready order is the order the
     # fixture publishes in rather than a digest tie-break.
     clock[0] += 0.001
-    q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
-              checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources, **kw)
+    ActionRows(q).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script='/w.py',
+        resources=resources,
+        tags=kw.pop('tags', [pool.socket.gethostname()]),
+        **kw,
+    )
     return key
 
 
@@ -125,10 +136,13 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claim(q, capacity, *, adaptive, tiers=None):
+def _claim(q, capacity, *, adaptive, tiers=None, cpu_sampler=None, has_gpu=False):
     if not adaptive:
-        return q.claim(capacity=capacity)
-    return q.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True)
+        return q.claim(has_gpu=has_gpu, tags=[pool.socket.gethostname()],
+                       capacity=capacity, cpu_sampler=cpu_sampler)
+    return q.claim(has_gpu=has_gpu, tags=[pool.socket.gethostname()], capacity=capacity,
+                   cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                   gpu_sampler=idle_gpu_sample if has_gpu else None)
 
 
 def _key_of(item):
@@ -141,12 +155,12 @@ def _key_of(item):
 def _twenty_cpu_gpu_box(queue, clock, monkeypatch, *, adaptive):
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.,
-        "psi_some": 0., "busy_cpus": 0.})
+        "psi_some": 0., "busy_cpus": 0.}
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=adaptive, tiers=tiers, cpu_sampler=cpu_sampler, has_gpu=True))
 
     # A multi-hour GPU holder, and a GPU action that has waited behind it
     # long enough that its own first-denial clock is past the ceiling.
@@ -176,7 +190,8 @@ def test_a_multi_hour_gpu_holder_does_not_hold_the_box_shut_for_cpu_work(
     shard = _publish(queue, clock, _key("shard"), {"cpu": 2, "mem_gb": 4})
     assert claim() == shard
     denial = _denial(queue, waiting)
-    assert denial["reason"] == "reservation_unavailable_starved"
+    assert denial["reason"] == ("adaptive_gpu_refused_starved" if adaptive
+                                else "reservation_unavailable_starved")
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
     [named] = denial["evidence"]["starved"]["holders"]
     assert named["action_key"] == holder[:12] and named["bound"] == "long"
@@ -224,7 +239,7 @@ def test_a_gpu_action_behind_2cpu_shards_is_admitted_within_one_shard_lifetime(
                                 else "reservation_unavailable_withholding")
     assert denial["evidence"]["withhold"]["why"] == "drains_soon"
     assert denial["evidence"]["withhold"]["gpu_first"] is True
-    assert all(queue.item_path(pool.READY, key).exists() for key in stream)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in stream)
 
     # One shard lifetime later the first shard finishes, and the action runs.
     clock[0] = T0 + 30
@@ -249,11 +264,12 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     """
 
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 104}
+    tags = [pool.socket.gethostname(), contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG]
     r12, cas_root, checkout = _sealed(tmp_path, "r12", progress=True)
     clock[0] = T0 - 36_000
     _publish(queue, clock, r12, {"cpu": 9, "gpu": 1, "mem_gb": 100},
              cas_root=cas_root, checkout_root=checkout)
-    assert _key_of(queue.claim(capacity=capacity)) == r12
+    assert _key_of(queue.claim(has_gpu=True, tags=tags, capacity=capacity)) == r12
 
     clock[0] = T0
     shard = _publish(queue, clock, _key("12gb-shard"), {"cpu": 1, "mem_gb": 12})
@@ -262,7 +278,7 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
         queue.record_pass(shard)
     assert queue.withhold_age(shard) <= pool.WITHHOLD_CEILING_S
 
-    assert _key_of(queue.claim(capacity=capacity)) == small, (
+    assert _key_of(queue.claim(has_gpu=True, tags=tags, capacity=capacity)) == small, (
         "a day-long holder held the box shut for a shard that cannot fit beside it")
     assert queue.holder_bound(r12)["bound"] == "unbounded"
     denial = _denial(queue, shard)
@@ -275,7 +291,7 @@ def test_a_progress_governed_unbounded_holder_never_holds_the_box_shut(
     assert named["requested_timeout_s"] is None
     assert named["age_s"] == pytest.approx(36_000.0, abs=1.0)
     assert queue.passes(shard) == pool.STARVATION_FLOOR
-    assert queue.item_path(pool.READY, shard).exists()
+    assert queue.records.item_path(pool.record_store.READY, shard).exists()
 
 
 @pytest.mark.parametrize("timeout_s,expected_bound", [(86_400, "long"), (2_500, "transient")],
@@ -294,15 +310,15 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     holder, cas_root, checkout = _sealed(tmp_path, "bounded", timeout_s=timeout_s)
     clock[0] = T0 - 2000
@@ -328,7 +344,7 @@ def test_a_measurement_behind_a_bounded_holder_reads_the_declared_end(
     assert isinstance(claimed_unix, float)
     assert verdict["drain_until_unix"] == pytest.approx(max(
         claimed_unix + timeout_s, clock[0] + pool.WITHHOLD_CEILING_S))
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
     clock[0] = verdict["drain_until_unix"] + 1
     assert claim() == behind
     expired = _denial(queue, measurement)["evidence"]["withhold"]
@@ -355,14 +371,14 @@ def _gpu_action_behind_a_shard(queue, clock, tmp_path: Path, *, timeout_s, age_s
     clock[0] = T0 - age_s
     _publish(queue, clock, shard, {"cpu": 2, "mem_gb": 4},
              cas_root=cas_root, checkout_root=checkout)
-    assert _key_of(queue.claim(capacity=capacity)) == shard
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == shard
     clock[0] = T0 - 1
     gpu_action = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1, "mem_gb": 4})
     behind = _publish(queue, clock, _key("behind"), {"cpu": 1, "mem_gb": 1})
     # ``_publish`` steps the clock; the shard was claimed ``age_s`` before T0
     # to within that step, and the claim pass below runs at T0 exactly.
     clock[0] = T0
-    return (lambda: _key_of(queue.claim(capacity=capacity))), shard, gpu_action, behind
+    return (lambda: _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity))), shard, gpu_action, behind
 
 
 def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longer(
@@ -389,7 +405,7 @@ def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longe
     assert bound["bound"] == "transient"
     assert bound["governed_by"] == "deadline"
     assert bound["requested_timeout_s"] == SHARD_DEADLINE_S
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
     clock[0] = T0 + 2
     assert claim() == behind, (
@@ -399,7 +415,7 @@ def test_a_gpu_action_withholds_behind_a_sealed_shard_until_its_end_and_no_longe
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
     [named] = denial["evidence"]["starved"]["holders"]
     assert named["action_key"] == shard[:12] and named["bound"] == "overdue"
-    assert queue.item_path(pool.READY, gpu_action).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_action).exists()
 
 
 @pytest.mark.parametrize("timeout_s,age_s,withholds,bound", [
@@ -496,7 +512,7 @@ def test_a_pbtest_cpu_shards_sealed_end_reads_transient_at_every_age(
         f"shard's {CPU_SHARD_SEALED_END_S:g}s declared life): a same-band CPU "
         "shard claimed the box out from under it, reproducing #1123")
     assert _denial(queue, gpu_action)["reason"] == "reservation_unavailable_withholding"
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
 
 # -- the measurement's exclusive need ----------------------------------------
@@ -516,15 +532,15 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     first = _publish(queue, clock, _key("holder"), {"cpu": 1, "mem_gb": 1})
     assert claim() == first
@@ -535,7 +551,7 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     # #1185 protects a measurement before the ordinary starvation floor.
     assert queue.passes(measurement) == 0
     assert claim() is None, "the measurement never withheld against a shard stream"
-    assert all(queue.item_path(pool.READY, key).exists() for key in shards)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in shards)
     denial = _denial(queue, measurement)
     assert denial["reason"] == "adaptive_cpu_refused_withholding"
     assert denial["evidence"]["decision"]["reason"] == "measurement_host_not_idle"
@@ -545,7 +561,9 @@ def test_a_measurement_withholds_while_its_holders_drain_and_through_their_tail(
     # The holders are gone; the sample still carries their load.
     assert claim() is None
     assert _denial(queue, measurement)["evidence"]["withhold"]["why"] == "holder_tail"
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     carried = queue._carried_withhold(queue._host_denial_records(), item,
                                      host=queue.ledger().base.name, now=clock[0])
@@ -572,15 +590,15 @@ def test_load_the_pool_does_not_own_never_withholds_a_measurement(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 2.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     _publish(queue, clock, measurement, {"cpu": 1, "mem_gb": 1})
     for _ in range(pool.STARVATION_FLOOR - 1):
@@ -603,15 +621,15 @@ def test_a_holder_tail_is_bounded_by_one_sample_window(
     capacity = {"cpu": 8, "mem_gb": 16}
     tiers = {"preferred": list(range(8)), "fallback": []}
     state = {"busy_cpus": 0.}
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "cpu_count": 8, "interval_s": 1.,
-        "psi_some": 0., **state})
+        "psi_some": 0., **state}
     measurement = _key("measurement")
     monkeypatch.setattr(adaptive_cpu, "action_identity",
                         lambda item: ("shape", item["action_key"] == measurement))
 
     def claim():
-        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers))
+        return _key_of(_claim(queue, capacity, adaptive=True, tiers=tiers, cpu_sampler=cpu_sampler))
 
     holder = _publish(queue, clock, _key("holder"), {"cpu": 1, "mem_gb": 1})
     assert claim() == holder
@@ -643,31 +661,35 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     ledger = queue.ledger()
     ledger.ensure_capacity(capacity)
     first = _publish(queue, clock, _key("first"), {"cpu": 1})
-    assert _key_of(queue.claim(capacity=capacity)) == first
+    assert _key_of(queue.claim(tags=[pool.socket.gethostname()], capacity=capacity)) == first
     waiting = _publish(queue, clock, _key("waiting"), {"cpu": 4})
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(waiting)
 
     def verdict():
-        answer = queue._withhold_verdict(waiting, ledger=ledger, need={"cpu": 4},
+        observed = queue._observe_drain(waiting, ledger=ledger, need={"cpu": 4},
                                          mode="tokens")
-        queue.record_pass(waiting)
+        queue._drain_accounting.stage(waiting, observed.notes)
+        if isinstance(observed, pool.drain_policy.DrainFailure):
+            raise observed.error
+        answer = observed.verdict
+        queue.record_pass(waiting, drain_notes=queue._drain_accounting.for_key(waiting))
         return answer
 
     assert verdict()["withhold"] is True
-    epoch = json.loads(queue.passes_path(waiting).read_text())["epoch_unix"]
+    epoch = json.loads(queue.records.passes_path(waiting).read_text())["epoch_unix"]
 
     # Higher-priority work ahead of it refills the box, young every time.
     clock[0] += pool.WITHHOLD_CEILING_S - 10
     refill = _publish(queue, clock, _key("refill-0"), {"cpu": 1}, priority=5)
-    assert _key_of(queue.claim(capacity=capacity)) == refill
+    assert _key_of(queue.claim(tags=[pool.socket.gethostname()], capacity=capacity)) == refill
     queue.finish(first, status="executed")
     assert verdict()["withhold"] is True, "inside the episode the veto stands"
     clock[0] += 20
     answer = verdict()
     assert answer["withhold"] is False and answer["why"] == "refilled_past_ceiling"
     assert answer["refills"] == [refill[:12]]
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert record["epoch_unix"] == epoch and record["expired_unix"] == clock[0]
 
     # Work claimed after the expiry is not a refill of that veto; the episode
@@ -675,10 +697,10 @@ def test_a_veto_that_keeps_being_refilled_expires(queue: pool.PoolQueue, clock) 
     queue.finish(refill, status="executed")
     clock[0] += 1
     later = _publish(queue, clock, _key("later"), {"cpu": 1}, priority=5)
-    assert _key_of(queue.claim(capacity=capacity)) == later
+    assert _key_of(queue.claim(tags=[pool.socket.gethostname()], capacity=capacity)) == later
     answer = verdict()
     assert answer["withhold"] is True and answer["why"] == "drains_soon"
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert record["epoch_unix"] == clock[0] and "expired_unix" not in record
 
 
@@ -692,22 +714,22 @@ def test_a_gpu_action_withholds_on_its_first_denial_when_the_gpu_is_free(
 
     capacity = {"cpu": 4, "gpu": 1}
     shard = _publish(queue, clock, _key("shard"), {"cpu": 2})
-    assert _key_of(queue.claim(capacity=capacity)) == shard
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == shard
     gpu_action = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1})
     cpu_only = _publish(queue, clock, _key("cpu-only"), {"cpu": 1})
-    assert queue.claim(capacity=capacity) is None
+    assert queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity) is None
     assert queue.passes(gpu_action) == 1
     assert _denial(queue, gpu_action)["evidence"]["withhold"]["gpu_first"] is True
-    assert queue.item_path(pool.READY, cpu_only).exists()
+    assert queue.records.item_path(pool.record_store.READY, cpu_only).exists()
 
 
 def test_a_cpu_only_action_still_waits_for_the_floor(queue: pool.PoolQueue, clock) -> None:
     capacity = {"cpu": 4, "gpu": 1}
     shard = _publish(queue, clock, _key("shard"), {"cpu": 2})
-    assert _key_of(queue.claim(capacity=capacity)) == shard
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == shard
     _publish(queue, clock, _key("big"), {"cpu": 4})
     small = _publish(queue, clock, _key("small"), {"cpu": 1})
-    assert _key_of(queue.claim(capacity=capacity)) == small
+    assert _key_of(queue.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=capacity)) == small
 
 
 @pytest.mark.parametrize("sample,gpu_first,foreign", [
@@ -725,12 +747,16 @@ def test_gpu_first_needs_a_clean_fresh_gpu_sample(
     ledger.ensure_capacity({"cpu": 4, "gpu": 1})
     assert ledger.acquire(_key("shard"), {"cpu": 2}) is True
     waiting = _publish(queue, clock, _key("gpu-action"), {"cpu": 4, "gpu": 1})
-    answer = queue._withhold_verdict(waiting, ledger=ledger, need={"cpu": 4, "gpu": 1},
+    observed = queue._observe_drain(waiting, ledger=ledger, need={"cpu": 4, "gpu": 1},
                                      mode="tokens", gpu_sample=sample)
-    queue.record_pass(waiting)
+    queue._drain_accounting.stage(waiting, observed.notes)
+    if isinstance(observed, pool.drain_policy.DrainFailure):
+        raise observed.error
+    answer = observed.verdict
+    queue.record_pass(waiting, drain_notes=queue._drain_accounting.for_key(waiting))
     assert answer["gpu_first"] is gpu_first
     assert answer["eligible"] is gpu_first
-    record = json.loads(queue.passes_path(waiting).read_text())
+    record = json.loads(queue.records.passes_path(waiting).read_text())
     assert ("foreign_unix" in record) is foreign
 
 
@@ -782,7 +808,7 @@ def test_gpu_first_needs_a_clean_fresh_gpu_sample(
 def test_only_refusals_draining_resolves_are_eligible_to_withhold(
     source, decision, measurement, demand, expected,
 ) -> None:
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         source, decision, demand=demand, measurement=measurement,
         cpu_count=20) == expected
 
@@ -795,8 +821,12 @@ def test_a_usage_refusal_with_the_tokens_free_is_not_a_shortage(
     waiting = _publish(queue, clock, _key("waiting"), {"cpu": 2})
     for _ in range(pool.STARVATION_FLOOR):
         queue.record_pass(waiting)
-    answer = queue._withhold_verdict(waiting, ledger=ledger, need={"cpu": 2},
+    observed = queue._observe_drain(waiting, ledger=ledger, need={"cpu": 2},
                                      mode="tokens", adaptive=True)
+    queue._drain_accounting.stage(waiting, observed.notes)
+    if isinstance(observed, pool.drain_policy.DrainFailure):
+        raise observed.error
+    answer = observed.verdict
     assert answer["withhold"] is False and answer["why"] == "not_a_token_shortage"
 
 
@@ -820,7 +850,7 @@ def test_pbstatus_lists_starved_ready_items_with_the_holders_they_named() -> Non
         {"state": "CLAIMED", "action_key_prefix": "cccccccccccc", "admission_denials": [
             {"host": "sparky", "reason": "reservation_unavailable_starved", "evidence": {}}]},
     ]
-    rows = pbstatus._starvation_starved(jobs)
+    rows = fleet_census._starvation_starved(jobs)
     assert [(row["action_key_prefix"], row["host"], row["why"]) for row in rows] == [
         ("aaaaaaaaaaaa", "sparky", "holder_does_not_drain_soon"),
         ("bbbbbbbbbbbb", "sparky", "refilled_past_ceiling")]

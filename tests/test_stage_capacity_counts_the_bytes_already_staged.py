@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import tier_holdings
 
 TIER = "prismabuild-stage:dl380g10"
 GIB = storage_tiers.GIB
@@ -60,21 +61,21 @@ def _landed(queue, mover, gib, *, complete=True):
 
 def test_staged_bytes_are_capacity_not_a_deduction(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     first = _cycle(queue, tmp_path, 600 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.capacity()[KIND] == 600
+    ledger = queue.tier(TIER)
+    assert ledger.mint_supply()[KIND] == 600
     assert first["tokens"][KIND] == 600
     assert first["held_gib"] == 0
     assert first["writable_gib"] == 600
 
     # A mover staged 200 GiB, said so, and keeps its tokens; ZFS now reports
     # 400 GiB writable.  The pool still has 600 GiB of stage in it.
-    assert ledger.acquire(MOVER, {KIND: 200})
+    assert ledger.take(MOVER, {KIND: 200})
     _landed(queue, MOVER, 200)
     second = _cycle(queue, tmp_path, 400 * GIB)
-    assert ledger.capacity()[KIND] == 600, ledger.capacity()
-    assert ledger.available()[KIND] == 400, ledger.available()
+    assert ledger.mint_supply()[KIND] == 600, ledger.mint_supply()
+    assert ledger.free_supply()[KIND] == 400, ledger.free_supply()
     assert second["tokens"][KIND] == 600
     assert second["held_gib"] == 200
     assert second["landed_gib"] == 200
@@ -91,14 +92,14 @@ def test_an_in_flight_reservation_is_not_free_supply(tmp_path):
     window (#623).  The supply is 600 and 200 of it is spoken for.
     """
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {KIND: 200})          # claimed, copying, no receipt
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {KIND: 200})          # claimed, copying, no receipt
 
     record = _cycle(queue, tmp_path, 600 * GIB)
-    assert ledger.capacity()[KIND] == 600, ledger.capacity()
-    assert ledger.available()[KIND] == 400, ledger.available()
+    assert ledger.mint_supply()[KIND] == 600, ledger.mint_supply()
+    assert ledger.free_supply()[KIND] == 400, ledger.free_supply()
     assert record["in_flight_gib"] == 200
     assert record["landed_gib"] == 0
     assert record["held_gib"] == 200
@@ -107,55 +108,55 @@ def test_an_in_flight_reservation_is_not_free_supply(tmp_path):
     # The loop cannot know how much this copy will still write, so the whole
     # reservation stays a deduction: 300 free, never 500.
     record = _cycle(queue, tmp_path, 500 * GIB)
-    assert ledger.capacity()[KIND] == 500
-    assert ledger.available()[KIND] == 300, ledger.available()
+    assert ledger.mint_supply()[KIND] == 500
+    assert ledger.free_supply()[KIND] == 300, ledger.free_supply()
 
     # Landed: the receipt is complete, ZFS says 400, the pool has 600 in it.
     _landed(queue, MOVER, 200)
     record = _cycle(queue, tmp_path, 400 * GIB)
-    assert ledger.capacity()[KIND] == 600
-    assert ledger.available()[KIND] == 400
+    assert ledger.mint_supply()[KIND] == 600
+    assert ledger.free_supply()[KIND] == 400
     assert record["landed_gib"] == 200 and record["in_flight_gib"] == 0
 
 
 def test_a_copy_that_fell_short_is_still_in_flight(tmp_path):
     """An incomplete receipt pins nothing; until its tokens go, they deduct."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {KIND: 200})
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {KIND: 200})
     _landed(queue, MOVER, 200, complete=False)
     record = _cycle(queue, tmp_path, 580 * GIB)
     assert record["in_flight_gib"] == 200 and record["landed_gib"] == 0
-    assert ledger.capacity()[KIND] == 580
-    assert ledger.available()[KIND] == 380
+    assert ledger.mint_supply()[KIND] == 580
+    assert ledger.free_supply()[KIND] == 380
 
 
 def test_writable_below_the_in_flight_reservation_mints_without_raising(tmp_path):
     """Late in a copy ZFS reports less than the copy still holds; free is 0, not an error."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {KIND: 200})
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {KIND: 200})
     record = _cycle(queue, tmp_path, 50 * GIB)
     assert record["in_flight_gib"] == 200
-    assert ledger.available().get(KIND, 0) <= 0, ledger.available()
+    assert ledger.free_supply().get(KIND, 0) <= 0, ledger.free_supply()
 
 
 def test_a_release_returns_the_supply_to_what_zfs_reports(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _cycle(queue, tmp_path, 600 * GIB)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {KIND: 200})
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {KIND: 200})
     _landed(queue, MOVER, 200)
     _cycle(queue, tmp_path, 400 * GIB)
-    ledger.release(MOVER)                      # the egress deleted the bytes
+    ledger.release_unspent(MOVER, authority=tier_holdings.Unspent.NEVER_STARTED)                      # the egress deleted the bytes
     record = _cycle(queue, tmp_path, 600 * GIB)
-    assert ledger.capacity()[KIND] == 600
-    assert ledger.available()[KIND] == 600
+    assert ledger.mint_supply()[KIND] == 600
+    assert ledger.free_supply()[KIND] == 600
     assert record["held_gib"] == 0
 
 
@@ -163,7 +164,7 @@ def test_a_record_without_a_writable_source_is_minted_as_before(tmp_path):
     """A fake or legacy record that does not say ``zfs available`` is not
     reinterpreted: its capacity is taken as the whole supply, as it was."""
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def discover(**_kwargs):
         return {TIER: {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
@@ -172,9 +173,9 @@ def test_a_record_without_a_writable_source_is_minted_as_before(tmp_path):
                        "capacity_bytes": 600 * GIB}}
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {KIND: 200})
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {KIND: 200})
     record = tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                              receipts=tier_loop.ReceiptCache(), discover=discover)[0]
-    assert ledger.capacity()[KIND] == 600
+    assert ledger.mint_supply()[KIND] == 600
     assert "capacity_basis" not in record

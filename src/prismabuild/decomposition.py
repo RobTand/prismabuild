@@ -31,8 +31,8 @@ Three properties make that safe, and this module exists to hold them:
   limits.  It does not emit one oversized opaque child, and it does not quietly
   relax a limit the producer declared.
 
-Nothing here reaches the network, the queue or a GPU.  The partitioner is
-arithmetic over the roster, which is what makes its determinism testable.
+The partitioner is arithmetic over the roster. Record helpers read the
+caller's CAS namespace and preserve the frozen membership used on recovery.
 
 Estimates are planning hints bound into the plan's identity, not measured speed
 claims.  Qualification measures what the resulting execution actually costs.
@@ -41,10 +41,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import hashlib
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import core as pb
+from . import data_manifest as manifest_codec
+from . import immutable_files
+from .submission_types import common_fields, request_options
 from .core import ActionContractError, canonical_sha256
 # The two sealed variables that carry container ownership.  Named here so the
 # frozen half a parent is keyed on can refuse to contain them: ownership is a
@@ -55,6 +59,7 @@ __all__ = [
     "ActionContractError",
     "BATCH_ENVELOPE_SCHEMA_V1",
     "CHILD_RESULT_MANIFEST_SCHEMA_V1",
+    "DECOMPOSITIONS",
     "FROZEN_COMMON_SCHEMA_V1",
     "GROUP_RECEIPT_SCHEMA_V1",
     "LOGICAL_BATCH_PARAM",
@@ -66,31 +71,42 @@ __all__ = [
     "PLAN_SCHEMA_V1",
     "PUBLICATION_INDEX_SCHEMA_V1",
     "RESULT_MANIFEST_INPUT_ID",
+    "MissingChildResult",
+    "RecordError",
+    "ChildResult",
+    "DataPlans",
     "TASK_BATCH_INPUT_ID",
     "ROSTER_BATCH_POLICY_SCHEMA_V1",
     "TASK_BATCH_PLACEHOLDER",
     "batch_envelope",
     "child_result_manifest_path",
     "document_bytes",
+    "record_dir",
+    "read_membership",
+    "read_child_request",
+    "child_result",
+    "child_result_for_key",
     "document_sha256",
     "write_document",
     "build_plan",
+    "complete_group",
     "freeze_common",
+    "freeze_plan",
     "logical_batch_param",
     "parent_key",
     "partition_roster",
-    "publication_index",
+    "publish_children",
     "resolve_task_batch",
     "validate_batch_policy",
     "validate_common_spec",
     "validate_frozen_common",
     "validate_logical_request",
-    "validate_child_result_manifest",
-    "validate_publication_index",
-    "validate_plan",
     "validate_roster",
     "verify_exact_cover",
 ]
+
+DECOMPOSITIONS = "decompositions"
+_MAX_CHILD_RESULT_BYTES = 1024 * 1024
 
 LOGICAL_REQUEST_SCHEMA_V1 = "prismabuild.logical_request.v1"
 LOGICAL_TASK_ROSTER_SCHEMA_V1 = "prismabuild.logical_task_roster.v1"
@@ -145,16 +161,8 @@ _POLICY_KEYS = frozenset(
 _REQUIRED_COMMON_KEYS = frozenset({
     "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
 })
-_COMMON_KEYS = frozenset({
-    "argv", "cwd", "demand", "gpu_memory_gb", "data_manifest", "env",
-    # Policies every child shares. Submission priority and --as-sealed-by are
-    # excluded: the former is a queue hint and the latter names one complete
-    # action, whereas a logical parent deliberately becomes many children.
-    "timeout_s", "progress_phases", "progress_cycle", "profile",
-    "retry_safe", "max_attempts", "tags", "snapshot_ref",
-    "deterministic", "no_default_env", "exclusive", "gpu_capacity",
-    "measurement", "host_class", "anywhere", "here",
-})
+_COMMON_KEYS = common_fields()
+
 _REQUEST_KEYS = frozenset({"schema", "common", "roster", "batch_policy"})
 _FROZEN_COMMON_KEYS = frozenset({"schema", "argv", "action_common"})
 #: The half of a sealed action that a decomposition does not vary.  Exactly
@@ -352,11 +360,10 @@ def _validate_batch_argv(value: object, *, where: str) -> list[str]:
     return argv
 
 
-_COMMON_BOOLEAN_POLICY_KEYS = frozenset({
-    "progress_cycle", "retry_safe", "deterministic", "no_default_env",
-    "exclusive", "measurement", "anywhere", "here",
-})
-_COMMON_LIST_POLICY_KEYS = frozenset({"progress_phases", "tags", "snapshot_ref"})
+_COMMON_BOOLEAN_POLICY_KEYS = frozenset(option.name for option in request_options()
+    if option.kind == "switch" and option.name in _COMMON_KEYS)
+_COMMON_LIST_POLICY_KEYS = frozenset(option.name for option in request_options()
+    if option.kind == "repeat" and option.name in _COMMON_KEYS)
 
 
 def _validate_common_policies(common: Mapping[str, object]) -> dict[str, Any]:
@@ -402,6 +409,8 @@ def _validate_common_policies(common: Mapping[str, object]) -> dict[str, Any]:
             policies[key] = pb._nonnegative_integer(
                 common[key], where=f"common spec {key}"
             )
+    for key in common.keys() - _REQUIRED_COMMON_KEYS - policies.keys():
+        policies[key] = pb._normalize_json_value(common[key], where=f"common spec {key}")
     return policies
 
 
@@ -479,7 +488,7 @@ def validate_task_data_policy(value: object) -> dict[str, Any]:
         pb._fail("task data mover CPU/readers and memory must be positive")
     prefix = pb._text(policy["mount_prefix"], where="task data mount prefix")
     # Delegate path and manifest normalization to the ordinary data contract.
-    pb.validate_data_manifest({"schema": pb.DATA_MANIFEST_SCHEMA_V1,
+    manifest_codec.validate_data_manifest({"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {}, "annotations": {}, "mount_prefix": prefix,
         "entries": [{"path": prefix + "/validation", "offset": 0, "bytes": 1, "sha256": None}],
         "entry_count": 1, "total_bytes": 1})
@@ -524,8 +533,8 @@ def task_data_manifest(policy: Mapping[str, Any], envelope: Mapping[str, Any]) -
                 if isinstance(path, str) and not path.startswith("/"):
                     entry = {**entry, "path": policy["mount_prefix"] + "/" + path}
             expanded.append(entry)
-        checked = pb.validate_data_manifest({
-            "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+        checked = manifest_codec.validate_data_manifest({
+            "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
             "mount_prefix": policy["mount_prefix"], "entries": expanded,
             "entry_count": len(reads),
             "total_bytes": sum(entry.get("bytes", 0) for entry in reads
@@ -541,8 +550,8 @@ def task_data_manifest(policy: Mapping[str, Any], envelope: Mapping[str, Any]) -
     total = sum(entry["bytes"] for entry in entries)
     if not entries:
         return None
-    return pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+    return manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "prismabuild.decomposition",
                         "parent_key": envelope.get("parent_key"),
                         "plan_key": envelope.get("plan_key"),
@@ -785,7 +794,7 @@ def build_plan(
     return {**blueprint, "plan_key": canonical_sha256(blueprint)}
 
 
-def validate_plan(value: object) -> dict[str, Any]:
+def _validate_plan(value: object) -> dict[str, Any]:
     """Re-check a plan read back from storage, key included.
 
     Recovery reuses published plan bytes instead of re-deriving a partition, so
@@ -952,7 +961,7 @@ def logical_batch_param(
     return PreparedBatches(request, plan).membership(child_ordinal)
 
 
-def publication_index(
+def _publication_index(
     plan: Mapping[str, Any],
     *,
     batch_input_digests: Sequence[str],
@@ -987,7 +996,7 @@ def publication_index(
     }
 
 
-def validate_publication_index(value: object, plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _validate_publication_index(value: object, plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Re-check a publication index read back from storage (#1666).
 
     Recovery and the coordinator's stall watch reuse published bytes instead
@@ -1044,6 +1053,463 @@ def validate_publication_index(value: object, plan: Mapping[str, Any] | None = N
                 "decomposition publication index names "
                 f"{len(keys)} children for a plan with {len(plan['partitions'])} batches")
     return result
+
+
+def record_dir(cas_root: str | Path, parent_key: str) -> Path:
+    """The retained plan and publication namespace for one logical parent."""
+    return Path(cas_root) / DECOMPOSITIONS / parent_key[:2] / parent_key
+
+
+class ChildResult(NamedTuple):
+    receipt: Mapping[str, object]
+    manifest: Mapping[str, object]
+
+
+class RecordError(Exception):
+    """A retained decomposition record cannot be read or adopted."""
+
+
+class MissingChildResult(RecordError):
+    """A group cannot close while this child has no durable result."""
+
+    def __init__(self, ordinal: int, count: int):
+        self.ordinal = ordinal
+        self.count = count
+        super().__init__(f"child {ordinal} of {count} has no receipt")
+
+
+def _stored_record(path: Path) -> object | None:
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RecordError(f"cannot read {path}: {exc}") from None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise RecordError(
+            f"{path} is published but is not JSON: {exc}.  It is immutable, "
+            f"so this is damage rather than drift; move it aside deliberately "
+            f"before re-running this campaign"
+        ) from None
+
+
+def _validate_data_plans(stored, plan, children):
+    if (not isinstance(stored, dict) or set(stored) != {"schema", "parent_key", "plan_key", "children"}
+            or stored["schema"] != "prismabuild.decomposed_data_plans.v1"
+            or stored["parent_key"] != plan["parent_key"] or stored["plan_key"] != plan["plan_key"]
+            or not isinstance(stored["children"], list) or len(stored["children"]) != len(children)):
+        raise RecordError("decomposed data-plan record is corrupt or belongs to another plan")
+    for child, row in zip(children, stored["children"]):
+        if not isinstance(row, dict) or set(row) != {"action_key", "plan"} or row["action_key"] != child["action_key"]:
+            raise RecordError("decomposed data-plan child identity differs from the frozen publication")
+        yield child, row
+
+
+class DataPlans:
+    """One immutable decomposition data-plan record and its recovery protocol."""
+
+    def __init__(self, cas_root: str | Path, plan: Mapping[str, Any]):
+        self.path = record_dir(cas_root, plan["parent_key"]) / "data-plans.json"
+        self.plan = plan
+
+    def capture(self):
+        return _stored_record(self.path)
+
+    def freeze(self, rows):
+        proposed = {"schema": "prismabuild.decomposed_data_plans.v1",
+                    "parent_key": self.plan["parent_key"], "plan_key": self.plan["plan_key"],
+                    "children": rows}
+        if immutable_files.publish_immutable(self.path, document_bytes(proposed)):
+            return proposed
+        return _stored_record(self.path)
+
+    def rows_for_children(self, stored, children):
+        return _validate_data_plans(stored, self.plan, children)
+
+
+def freeze_plan(request, frozen_common, *, cas_root: str | Path) -> dict:
+    """Read first, derive only if absent, and adopt the first valid writer."""
+
+    key = parent_key(
+        frozen_common, request["roster"], request["batch_policy"])
+    path = record_dir(cas_root, key) / "plan.json"
+    stored = _stored_record(path)
+    if stored is None:
+        plan = build_plan(request, frozen_common)
+        if not immutable_files.publish_immutable(path, document_bytes(plan)):
+            stored = _stored_record(path)
+        else:
+            return plan
+    plan = _validate_plan(stored)
+    if plan["parent_key"] != key:
+        raise RecordError(
+            f"the plan published at {path} is keyed on parent "
+            f"{plan['parent_key'][:12]}, not on {key[:12]}"
+        )
+    return plan
+
+
+def publish_children(
+    plan: Mapping[str, Any], *, cas_root: str | Path,
+    batch_input_digests: Sequence[str], child_action_keys: Sequence[str],
+) -> None:
+    """Freeze this plan's authorized children, refusing a different first writer."""
+
+    index = _publication_index(
+        plan, batch_input_digests=batch_input_digests,
+        child_action_keys=child_action_keys)
+    path = record_dir(cas_root, plan["parent_key"]) / "publication.json"
+    raw = document_bytes(index)
+    stored = _stored_record(path)
+    if stored is None:
+        if immutable_files.publish_immutable(path, raw):
+            return
+        stored = _stored_record(path)
+    if document_bytes(stored) != raw:
+        raise RecordError(
+            f"the publication index at {path} names different children than "
+            f"this run sealed.  The index is a function of the plan and the "
+            f"roster, so nothing that can legitimately vary produced this; "
+            f"read both before touching either"
+        )
+
+
+def _publish_group_receipt(receipt, *, cas, parent_key: str) -> Path:
+    path = record_dir(cas.root, parent_key) / "group.json"
+    raw = document_bytes(receipt)
+    stored = _stored_record(path)
+    if stored is None:
+        if immutable_files.publish_immutable(path, raw):
+            return path
+        stored = _stored_record(path)
+    if document_bytes(stored) != raw:
+        raise RecordError(
+            f"the group receipt at {path} is not the one this run verified.  "
+            f"It is a function of the plan and of immutable child receipts, so "
+            f"nothing that can legitimately vary produced this; read both "
+            f"before touching either"
+        )
+    return path
+
+
+def complete_group(request, plan, children, *, cas) -> tuple[dict, Path]:
+    """Verify the frozen group's exact cover and publish its one receipt."""
+
+    if len(children) != len(plan["partitions"]):
+        raise RecordError(
+            f"the plan names {len(plan['partitions'])} children, but "
+            f"the group carries {len(children)} sealed actions"
+        )
+    index_path = record_dir(cas.root, plan["parent_key"]) / "publication.json"
+    index = _stored_record(index_path)
+    child_keys = [str(child["action_key"]) for child in children]
+    if (not isinstance(index, dict)
+            or index.get("parent_key") != plan["parent_key"]
+            or index.get("plan_key") != plan["plan_key"]
+            or index.get("child_action_keys") != child_keys):
+        raise RecordError(
+            f"the group children do not match the frozen publication "
+            f"index at {index_path}"
+        )
+    index = _validate_publication_index(index, plan)
+    manifests = []
+    child_evidence = []
+    prepared_batches = PreparedBatches(request, plan)
+    for ordinal, child in enumerate(children):
+        expected_batch = prepared_batches.membership(ordinal)
+        params = child.get("params")
+        if (not isinstance(params, dict)
+                or params.get(LOGICAL_BATCH_PARAM) != expected_batch):
+            raise RecordError(
+                f"child {ordinal} does not seal the plan's exact batch "
+                f"membership and identity"
+            )
+        document = _read_child_result_document(cas, child)
+        if document is None:
+            raise MissingChildResult(ordinal, len(children))
+        child_receipt, manifest = document
+        if manifest is None:
+            raise MissingChildResult(ordinal, len(children))
+        checked = _validate_child_result_manifest(manifest)
+        if checked["child_ordinal"] != ordinal:
+            raise RecordError(
+                f"child {ordinal}'s receipt carries a result manifest for "
+                f"ordinal {checked['child_ordinal']}"
+            )
+        manifests.append(manifest)
+        child_evidence.append({
+            "action_key": child_keys[ordinal],
+            "receipt_sha256": document_sha256(child_receipt),
+        })
+    receipt = {
+        **verify_exact_cover(request, plan, manifests),
+        "children": child_evidence,
+    }
+    path = _publish_group_receipt(
+        receipt, cas=cas, parent_key=plan["parent_key"])
+    return receipt, path
+
+
+def read_membership(
+        cas_root: object, *, parent_key: str, plan_key: str,
+        stop_after_invalid_plan: bool = False,
+) -> dict[str, object]:
+    """The stored plan and publication this batch must match (#1666).
+
+    Read from the coordinator's CAS beside the sealed requests, through
+    the native plan and publication validators: the ordinal of a child
+    is its position in ``child_action_keys``, and its task set is the
+    plan's partition there. A missing or unreadable store refuses the
+    credit rather than guessing membership from queue rows. The reporter
+    stops after a refused plan; queue diagnosis still captures both documents.
+    """
+
+    if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+        return {"plan": None, "publication": None,
+                "unreadable": ["the coordinator's claim names no CAS"]}
+    root = Path(str(cas_root))
+    unreadable: list[str] = []
+    plan_doc: Mapping[str, object] | None = None
+    index: Mapping[str, object] | None = None
+    for name in ("plan.json", "publication.json"):
+        if name == "publication.json" and stop_after_invalid_plan:
+            if plan_doc is None:
+                return {"plan": None, "publication": None, "unreadable": unreadable}
+            if (str(plan_doc.get("parent_key")) != parent_key
+                    or str(plan_doc.get("plan_key")) != plan_key):
+                return {"plan": None, "publication": None,
+                        "unreadable": ["the stored plan names another parent or plan"]}
+        path = record_dir(root, parent_key) / name
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            unreadable.append(f"{name} is missing at {path}")
+            continue
+        except OSError as exc:
+            unreadable.append(f"{name} is unreadable: {exc!r}")
+            continue
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            unreadable.append(f"{name} is not JSON: {exc!r}")
+            continue
+        if name == "plan.json":
+            try:
+                plan_doc = _validate_plan(value)
+            except (ValueError, pb.ActionContractError) as exc:
+                unreadable.append(f"plan.json is invalid: {exc}")
+        else:
+            try:
+                index = _validate_publication_index(value)
+            except (ValueError, pb.ActionContractError) as exc:
+                unreadable.append(f"publication.json is invalid: {exc}")
+    if plan_doc is not None:
+        if (str(plan_doc.get("parent_key")) != parent_key
+                or str(plan_doc.get("plan_key")) != plan_key):
+            unreadable.append(
+                "the stored plan names another parent or plan")
+            plan_doc = None
+    if index is not None:
+        if (str(index.get("parent_key")) != parent_key
+                or str(index.get("plan_key")) != plan_key):
+            unreadable.append(
+                "the stored publication names another parent or plan")
+            index = None
+        elif (plan_doc is not None and len(index.get("child_action_keys") or ())  # type: ignore[union-attr]
+                != len(plan_doc.get("partitions") or ())):  # type: ignore[union-attr]
+            unreadable.append(
+                "the stored publication covers another child count "
+                "than the stored plan")
+            index = None
+    if plan_doc is None or index is None:
+        if not unreadable:
+            unreadable.append("the stored plan or publication did not read")
+        return {"plan": None, "publication": None, "unreadable": unreadable}
+    return {"plan": plan_doc, "publication": index, "unreadable": []}
+
+
+def child_result_for_key(
+    cas, child_key: str, *, parent_key: str, plan_key: str,
+    supplied_requests: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Read an expected child's native request, bound membership, and result."""
+
+    try:
+        request = cas.read_action_request(child_key)
+    except (OSError, ValueError):
+        return None
+    supplied = supplied_requests.get(child_key)
+    if supplied is not None and supplied != request:
+        return None
+    if request is None:
+        return None
+    if str(request.get("action_key") or "") != child_key:
+        return None
+    params = request.get("params")
+    batch = (params.get("logical_batch")
+             if isinstance(params, Mapping) else None)
+    if (not isinstance(batch, Mapping)
+            or batch.get("parent_key") != parent_key
+            or batch.get("plan_key") != plan_key):
+        return None
+    try:
+        membership = read_membership(
+            cas.root, parent_key=parent_key, plan_key=plan_key,
+            stop_after_invalid_plan=True)
+    except AttributeError:
+        return None
+    if membership["unreadable"]:
+        return None
+    plan_doc, index = membership["plan"], membership["publication"]
+    try:
+        result = child_result(
+            cas, request, child_key=child_key,
+            plan=plan_doc, publication=index)
+    except Exception:  # noqa: BLE001 -- unreadable or tampered CAS is not durable
+        return None
+    if result is None:
+        return None
+    return dict(result.manifest)
+
+
+def read_child_request(
+        child_key: str, *, cas_root: object,
+        parent_key: str, plan_key: str,
+        plan: Mapping[str, object],
+        publication: Mapping[str, object],
+) -> tuple[dict[str, object] | None, str]:
+    """The child's sealed request when it carries the exact membership."""
+
+    if (len(child_key) != 64
+            or any(ch not in "0123456789abcdef" for ch in child_key)):
+        return None, "not an action key"
+    if not isinstance(cas_root, (str, Path)) or not str(cas_root):
+        return None, "the coordinator's claim names no CAS"
+    path = Path(str(cas_root)) / "requests" / child_key[:2] / f"{child_key}.json"
+    try:
+        raw = immutable_files.read_stable_file(path, where="child action request")
+        request = pb.validate_action(
+            pb.digest_primitives.decode_strict_json(raw, where="child action request"),
+        )
+    except FileNotFoundError:
+        return None, "no sealed request in the coordinator's CAS"
+    except (OSError, ValueError, RecursionError, pb.ActionContractError,
+            pb.CASTamperError, pb.CASUnavailableError) as exc:
+        return None, f"request unreadable: {type(exc).__name__}"
+    params = request.get("params")
+    batch = (params.get("logical_batch")  # type: ignore[union-attr]
+             if isinstance(params, Mapping) else None)
+    if not isinstance(batch, Mapping):
+        return None, "its sealed params carry no logical_batch"
+    if (request.get("action_key") != child_key
+            or batch.get("parent_key") != parent_key
+            or batch.get("plan_key") != plan_key):
+        return None, "its sealed logical_batch names another batch"
+    ordinal = batch.get("child_ordinal")
+    if (not isinstance(ordinal, int) or isinstance(ordinal, bool)
+            or not isinstance(batch.get("ordered_task_ids"), list)):
+        return None, "its sealed logical_batch carries no ordinal membership"
+    keys = publication.get("child_action_keys")
+    partitions = plan.get("partitions")
+    if not isinstance(keys, list) or not isinstance(partitions, list):
+        return None, "the stored publication names no children"
+    if not 0 <= ordinal < len(keys) or keys[ordinal] != child_key:
+        return None, (
+            "its sealed ordinal is not its position in the stored "
+            "publication")
+    if not 0 <= ordinal < len(partitions):
+        return None, "its sealed ordinal is outside the stored plan"
+    if list(partitions[ordinal]) != list(batch.get("ordered_task_ids")):  # type: ignore[union-attr]
+        return None, (
+            "its sealed task set differs from the stored plan's "
+            "partition")
+    return request, ""
+
+
+def _read_child_result_document(
+    cas, request: Mapping[str, object],
+) -> tuple[Mapping[str, object], object] | None:
+    """Read a native receipt and its bounded, strictly decoded JSON value."""
+
+    receipt = cas._lookup_receipt_only(pb.validate_action(request))
+    if receipt is None:
+        return None
+    result = receipt["result"]
+    assert isinstance(result, Mapping)
+    payload = cas.read_declared_blob(
+        result, max_bytes=_MAX_CHILD_RESULT_BYTES, where="child result manifest")
+    return (receipt, pb.digest_primitives.decode_strict_json(
+        payload,
+        where="child result manifest",
+    ))
+
+
+def child_result(
+        cas, request: Mapping[str, object], *,
+        child_key: str,
+        plan: Mapping[str, object],
+        publication: Mapping[str, object],
+) -> ChildResult | None:
+    """Verify one child's durable result through the native CAS (#1666).
+
+    Verifies the receipt, the result blob digest and manifest membership:
+    the receipt names this action, the blob digest matches its name, the
+    manifest validates and carries this child's exact membership. Exact
+    means all four hold: the manifest names the sealed request's parent
+    and plan, its ordinal equals the child's position in the publication's
+    ``child_action_keys``, and its task set equals the plan's partition at
+    that ordinal. A child with several tasks still counts one unit.
+    Returns the verified receipt and manifest, or ``None`` when the child has
+    no verified durable result. A receipted JSON null is an invalid manifest
+    and raises the native ActionContractError. Unreadable or tampered bytes
+    retain their native CAS failures.
+    """
+
+    document = _read_child_result_document(cas, request)
+    if document is None:
+        return None
+    receipt, value = document
+    key = child_key
+    manifest = _validate_child_result_manifest(value)
+    params = request.get("params")
+    batch = (params.get("logical_batch")  # type: ignore[union-attr]
+             if isinstance(params, Mapping) else None)
+    if not isinstance(batch, Mapping):
+        return None
+    if (manifest["parent_key"] != batch.get("parent_key")
+            or manifest["plan_key"] != batch.get("plan_key")):
+        return None
+    if (not key or not isinstance(batch.get("child_ordinal"), int)
+            or isinstance(batch.get("child_ordinal"), bool)):
+        return None
+    if manifest["child_ordinal"] != batch.get("child_ordinal"):
+        return None
+    tasks = batch.get("ordered_task_ids")
+    if (not isinstance(tasks, list) or not tasks
+            or any(not isinstance(entry, str) for entry in tasks)):
+        return None
+    try:
+        checked_plan = _validate_plan(plan)
+        checked_index = _validate_publication_index(
+            publication, checked_plan)
+    except (ValueError, pb.ActionContractError):
+        return None
+    if (manifest["parent_key"] != checked_plan["parent_key"]
+            or manifest["plan_key"] != checked_plan["plan_key"]):
+        return None
+    ordinal = int(batch.get("child_ordinal"))
+    if not 0 <= ordinal < len(checked_index["child_action_keys"]):
+        return None
+    if checked_index["child_action_keys"][ordinal] != key:
+        return None
+    if list(checked_plan["partitions"][ordinal]) != list(tasks):
+        return None
+    manifest_tasks = [entry["task_id"] for entry in manifest["results"]]
+    if sorted(manifest_tasks) != sorted(tasks) or len(set(manifest_tasks)) != len(tasks):
+        return None
+    return ChildResult(receipt, manifest)
 
 
 # --------------------------------------------------------------------------
@@ -1264,7 +1730,7 @@ def partition_roster(
 # --------------------------------------------------------------------------
 
 
-def validate_child_result_manifest(value: object) -> dict[str, Any]:
+def _validate_child_result_manifest(value: object) -> dict[str, Any]:
     """Canonicalize what one child says it measured.
 
     The child's declared result is this manifest, not its log: a launcher log
@@ -1340,7 +1806,7 @@ def verify_exact_cover(
     answered: dict[str, int] = {}
     validated: list[dict[str, Any]] = []
     for manifest in manifests:
-        checked = validate_child_result_manifest(manifest)
+        checked = _validate_child_result_manifest(manifest)
         ordinal = checked["child_ordinal"]
         if not 0 <= ordinal < len(partitions):
             pb._fail(

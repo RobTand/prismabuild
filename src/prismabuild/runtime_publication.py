@@ -41,11 +41,13 @@ import time
 
 if __package__:
     from .digest_primitives import new_sha256, raw_sha256, sorted_json
+    from .generation_receipt import GenerationReceipt
 else:
     # The root installer ships the same digest owner beside this program.
     # Isolated Python does not add the script directory to its import path.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from digest_primitives import new_sha256, raw_sha256, sorted_json
+    from generation_receipt import GenerationReceipt
 
 PROTECTED_GENERATION_STORE = Path("/opt/prismabuild/movement-generations")
 PUBLICATION_RECORD = "MOVEMENT_PUBLICATION.json"
@@ -75,7 +77,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}")
 _GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: Verified generation copies and members, keyed by what their files look like
 #: now (device, inode, ctime, size), so an administrator's change is seen.
-_ROOTS: dict[tuple, tuple[dict, str]] = {}
+_ROOTS: dict[tuple, tuple[GenerationReceipt, str]] = {}
 _MEMBERS: set[tuple] = set()
 _RECEIPT_SHA: dict[tuple, str] = {}
 
@@ -115,21 +117,26 @@ def _regular_bytes(path: Path) -> bytes:
         return stream.read()
 
 
-def _receipt(raw: bytes, generation: str) -> dict:
-    value = json.loads(raw)
-    if (not isinstance(value, dict) or value.get("schema") != RUNTIME_SCHEMA
-            or value.get("generation") != generation
-            or re.fullmatch(r"[0-9a-f]{40}", str(value.get("commit", ""))) is None
-            or not isinstance(value.get("files"), dict) or not value["files"]):
-        raise ValueError("invalid runtime publication receipt")
-    for name, digest in value["files"].items():
+def _publication_receipt(raw: bytes, generation: str) -> GenerationReceipt:
+    captured = GenerationReceipt.capture(raw)
+    try:
+        value = captured.require_generation(generation)
+        captured.require_commit()
+        if not captured.files:
+            raise ValueError("empty generation manifest")
+    except ValueError as exc:
+        raise ValueError("invalid runtime publication receipt") from exc
+    for name in captured.files:
         parts = PurePosixPath(name).parts
         if (not parts or name != "/".join(parts) or name.startswith("/")
                 or any(part in (".", "..") for part in parts)
-                or name in ("RUNTIME_VERSION.json", PUBLICATION_RECORD)
-                or not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None):
+                or name in ("RUNTIME_VERSION.json", PUBLICATION_RECORD)):
             raise ValueError("invalid runtime publication member")
-    return value
+        try:
+            captured.member_digest(name)
+        except ValueError as exc:
+            raise ValueError("invalid runtime publication member") from exc
+    return captured
 
 
 def _receipt_sha256(path: Path) -> str:
@@ -192,7 +199,7 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
     raw = _regular_bytes(source / "RUNTIME_VERSION.json")
     if raw_sha256(raw) != receipt_sha256:
         raise ValueError("runtime receipt differs from the selected digest")
-    receipt = _receipt(raw, source.name)
+    receipt = _publication_receipt(raw, source.name)
     store = PROTECTED_GENERATION_STORE
     # Reject unsafe existing ancestors before creating anything under them.
     ancestor = store
@@ -215,13 +222,13 @@ def publish_generation(source: Path, *, receipt_sha256: str) -> Path:
         _sweep_staging(store)
         stage = Path(tempfile.mkdtemp(prefix=".publication-", dir=store))
         try:
-            for name, expected in receipt["files"].items():
+            for name in receipt.files:
                 member = source / name
                 # Every source component must be literal, not a symlink or alias.
                 if member.resolve(strict=True) != member:
                     raise ValueError(f"runtime member is a symlink: {name}")
                 data = _regular_bytes(member)
-                if raw_sha256(data) != expected:
+                if not receipt.matches_bytes(name, data):
                     raise ValueError(f"runtime member digest differs: {name}")
                 copied = stage / name
                 _create_directories(copied.parent)
@@ -448,7 +455,7 @@ def spelled_member(path: object) -> bool:
     return _tool_shape(relative)
 
 
-def _published_root(root: Path) -> tuple[dict, str] | None:
+def _published_root(root: Path) -> tuple[GenerationReceipt, str] | None:
     """The receipt and its digest for a protected copy whose authority record holds."""
     record_path = root / PUBLICATION_RECORD
     receipt_path = root / "RUNTIME_VERSION.json"
@@ -467,7 +474,7 @@ def _published_root(root: Path) -> tuple[dict, str] | None:
                 or authority.get("generation") != root.name
                 or authority.get("receipt_sha256") != digest):
             return None
-        _ROOTS[key] = (_receipt(raw, root.name), digest)
+        _ROOTS[key] = (_publication_receipt(raw, root.name), digest)
     return _ROOTS[key]
 
 def protected_published_unix(generation: str) -> float | None:
@@ -501,10 +508,11 @@ def published_member(path: Path) -> Path | None:
         published = _published_root(PROTECTED_GENERATION_STORE / relative[0])
         if published is None or resolved.stat().st_mode & 0o222:
             return None
-        expected = published[0]["files"].get("/".join(relative[1:]))
+        member = "/".join(relative[1:])
+        expected = published[0].files.get(member)
         key = (str(resolved), _stamp(resolved), expected)
         if key not in _MEMBERS:
-            if expected != raw_sha256(_regular_bytes(resolved)):
+            if not published[0].matches_bytes(member, _regular_bytes(resolved)):
                 return None
             _MEMBERS.add(key)
         return resolved

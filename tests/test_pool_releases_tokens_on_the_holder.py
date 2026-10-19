@@ -28,6 +28,7 @@ are one box.
 Issue #261.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -60,14 +61,6 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     return pool.PoolQueue(tmp_path / "queue")
 
 
-def _publish(q: pool.PoolQueue) -> None:
-    q.publish(
-        action_key=KEY, cas_root=q.root / "cas", checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py", resources=DEMAND,
-        max_attempts=1, retry_safe=True,
-    )
-
-
 def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     """Claim on ``HELD_BY`` and die before the claimed record is rewritten.
 
@@ -78,8 +71,8 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     which is exactly what ``claim`` leaves when it is interrupted there.
     """
 
-    claimed_path = q.item_path(pool.CLAIMED, KEY)
-    real = pool._write_json_atomic
+    claimed_path = q.records.item_path(pool.record_store.CLAIMED, KEY)
+    real = pool.immutable_files.write_json_atomic
 
     def dies_before_naming_itself(path, payload):
         if Path(path) == claimed_path and "claimed_host" in payload:
@@ -87,7 +80,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
         return real(path, payload)
 
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
-        with mock.patch.object(pool, "_write_json_atomic",
+        with mock.patch.object(pool.immutable_files, 'write_json_atomic',
                                dies_before_naming_itself):
             with pytest.raises(_ClaimantDied):
                 q.claim(owner=f"{HELD_BY}:1:abcd1234", capacity=DEMAND)
@@ -96,7 +89,7 @@ def _lose_the_record_rewrite(q: pool.PoolQueue) -> None:
     # window has moved and the assertions below are about something else.
     record = json.loads(claimed_path.read_text())
     assert "claimed_host" not in record, "claim named its box after all"
-    assert not q.lease_path(KEY).exists(), "a lease means the rewrite landed"
+    assert not q.records.lease_path(KEY).exists(), "a lease means the rewrite landed"
     assert q.ledger(HELD_BY).held() == DEMAND, (
         "the claimant committed no tokens; there is nothing to misplace")
     assert q.claim_intent_host(KEY, record) == HELD_BY
@@ -117,7 +110,7 @@ def _reap_here(q: pool.PoolQueue) -> list[str]:
 
 
 def _same_generation_record(q: pool.PoolQueue) -> dict:
-    published = json.loads(q.item_path(pool.CLAIMED, KEY).read_text())
+    published = json.loads(q.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     return {"action_key": KEY, "published_unix": published["published_unix"]}
 
 
@@ -126,7 +119,15 @@ def test_the_holders_tokens_come_back_to_the_holder(
 ) -> None:
     """The release names the box that committed the tokens."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
 
     assert _reap_here(queue) == [KEY]
@@ -148,7 +149,15 @@ def test_the_reaper_gains_no_capacity_it_never_had(
     minting the reaper the capacity the issue believed it had gained.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     before = queue.ledger().capacity()
 
@@ -180,9 +189,17 @@ def test_the_ledger_closes_the_case_the_marker_could_not(
     ``resolve_claim_holder`` read it first.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
-    queue.item_path(pool.INTENT, KEY).unlink()
+    queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
 
     _reap_here(queue)
 
@@ -201,9 +218,17 @@ def test_with_no_evidence_at_all_no_holder_is_invented(
     answer must stay "nobody said", never the box that happens to be asking.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
-    queue.item_path(pool.INTENT, KEY).unlink()
+    queue.records.item_path(pool.record_store.INTENT, KEY).unlink()
     assert queue.ledger(HELD_BY).release(KEY) == 1
 
     _reap_here(queue)
@@ -217,15 +242,23 @@ def test_a_claim_already_filed_elsewhere_still_credits_its_holder(
 ) -> None:
     """The terminal-claim branch releases against the same resolved holder."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     filed = _same_generation_record(queue)
     filed["status"] = "executed"
-    pool._write_json_atomic(queue.item_path(pool.DONE, KEY), filed)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.DONE, KEY), filed)
 
     _reap_here(queue)
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger(HELD_BY).held() == {}
     assert queue.ledger(HELD_BY).available() == DEMAND
 
@@ -235,15 +268,23 @@ def test_a_withdrawn_claim_still_credits_its_holder(
 ) -> None:
     """The withdrawal branch releases against the same resolved holder."""
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
     marker = _same_generation_record(queue)
     marker["withdrawn_unix"] = pool._now()
-    pool._write_json_atomic(queue.item_path(pool.WITHDRAWN, KEY), marker)
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.WITHDRAWN, KEY), marker)
 
     _reap_here(queue)
 
-    assert not queue.item_path(pool.CLAIMED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY).exists()
     assert queue.ledger(HELD_BY).held() == {}
     assert queue.ledger(HELD_BY).available() == DEMAND
 
@@ -259,15 +300,23 @@ def test_the_record_and_the_ledger_name_the_same_box(
     that being expressible.
     """
 
-    _publish(queue)
+    ActionRows(queue).publish(
+        KEY,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources=DEMAND,
+        max_attempts=1,
+        retry_safe=True,
+    )
     _lose_the_record_rewrite(queue)
 
     _reap_here(queue)
 
-    requeued = json.loads(queue.item_path(pool.READY, KEY).read_text())
+    requeued = json.loads(queue.records.item_path(pool.record_store.READY, KEY).read_text())
     superseded = [
         json.loads(path.read_text())
-        for path in sorted(queue.superseded_dir().glob("*.json"))
+        for path in sorted(queue.records.superseded_dir().glob("*.json"))
     ]
     named = {record.get("claimed_host") for record in superseded}
     assert named == {HELD_BY}, f"superseded filings name {named}"

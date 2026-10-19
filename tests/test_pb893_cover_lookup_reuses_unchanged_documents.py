@@ -41,6 +41,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import staged_path
 from prismabuild import residency_map, reader_lease  # noqa: E402
 import pb893_reference as reference  # noqa: E402
 
@@ -76,15 +77,14 @@ def _publish(root: Path, stage: Path, mover: str, keys: dict[str, str],
                       "sha256": digest,
                       "file_id": {"ino": 7, "size": 512, "mtime_ns": 1,
                                   "ctime_ns": 1}}
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
-        generation=generation, entries=dated)
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": MANIFEST, "entries": staged})
+        "manifest_sha256": MANIFEST, "entries": staged},
+        generation=generation,
+        material_entries=dated)
 
 
 @pytest.fixture()

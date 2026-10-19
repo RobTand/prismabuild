@@ -21,6 +21,8 @@ a liveness it invented.
 """
 
 from __future__ import annotations
+from prismabuild import census as fleet_census
+import pbstatus
 
 import subprocess
 import sys
@@ -252,7 +254,7 @@ def test_pbstatus_says_a_child_is_silent_and_says_when_it_cannot_tell(
                     "stderr_bytes": 0, "last_output_unix": now - 3600,
                     **({} if child is None else {"child": child})}}
 
-    noisy = pbstatus._execution_observation(
+    noisy = fleet_census._execution_observation(
         claim, lease({"source": "resource-scope-cgroup", "pids": [1286583],
                       "pid_count": 1, "alive": True, "silent_s": 3595.0,
                       "cpu_seconds": 300.0}), now=now)
@@ -261,5 +263,5 @@ def test_pbstatus_says_a_child_is_silent_and_says_when_it_cannot_tell(
     assert "silent 3595s" in noisy["note"]
     assert "cpu 300s" in noisy["note"]
 
-    blind = pbstatus._execution_observation(claim, lease(None), now=now)
+    blind = fleet_census._execution_observation(claim, lease(None), now=now)
     assert "child unobserved" in blind["note"]

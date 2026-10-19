@@ -7,6 +7,7 @@ import pytest
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 from test_measurement_unmeasured_timeout import _unmeasured, FAIRNESS_BOUND_S
 from prismabuild import pool
+from prismabuild import drain_policy
 
 
 @pytest.mark.parametrize("baseline", [None, {"basis": "unknown", "exceeds": True}],
@@ -14,7 +15,9 @@ from prismabuild import pool
 def test_incomplete_legacy_baseline_proof_is_not_measured(fleet, baseline):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     holder, measurement, first, started = _unmeasured(fleet)
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     assert isinstance(item, dict)
     records = copy.deepcopy(queue._host_denial_records())
     stamp = item["published_unix"]
@@ -34,8 +37,8 @@ def test_incomplete_legacy_baseline_proof_is_not_measured(fleet, baseline):
     verdict["drain_until_unix"] = first["measurement_drain_until_unix"]
     verdict.pop("unmeasured_until_unix", None)
     verdict.pop("measurement_unmeasured", None)
-    assert queue._carried_withhold(records, item, host="sparklina", now=clock[0]) is None
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue._carried_withhold(records, item, host="sparklina", now=clock.now) is None
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 def test_expired_unknown_does_not_reserve_a_physically_free_gpu(fleet):
@@ -49,8 +52,8 @@ def test_expired_unknown_does_not_reserve_a_physically_free_gpu(fleet):
     if result is None:
         assert denial(measurement)["evidence"]["withhold"]["withhold"] is False
     assert result == backfill
-    assert queue.item_path(pool.READY, measurement).exists()
-    assert queue.item_path(pool.CLAIMED, holder).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, holder).exists()
 
 
 def _tail_decision():
@@ -65,8 +68,8 @@ def test_known_holder_tail_is_not_an_invented_measured_baseline(seen):
     decision = _tail_decision()
     decision["baseline"]["holders_seen_unix"] = seen
     assert "basis" not in decision["baseline"]
-    assert pool._measurement_holder_tail_refusal(decision)
-    assert not pool._measurement_unmeasured_refusal("adaptive_cpu_refused", decision)
+    assert drain_policy.holder_tail_refusal(decision)
+    assert not drain_policy.unmeasured_refusal("adaptive_cpu_refused", decision)
 
 
 @pytest.mark.parametrize("section,field,value", [
@@ -83,12 +86,12 @@ def test_known_holder_tail_is_not_an_invented_measured_baseline(seen):
 def test_malformed_holder_tail_does_not_authorize_protection(section, field, value):
     decision = _tail_decision()
     decision[section][field] = value
-    assert not pool._measurement_holder_tail_refusal(decision)
+    assert not drain_policy.holder_tail_refusal(decision)
 
 
 def test_stale_or_missing_holder_tail_proof_remains_unknown():
     decision = _tail_decision()
     decision["fresh"] = False
-    assert not pool._measurement_holder_tail_refusal(decision)
-    assert not pool._measurement_holder_tail_refusal(None)
-    assert not pool._measurement_holder_tail_refusal({"fresh": True})
+    assert not drain_policy.holder_tail_refusal(decision)
+    assert not drain_policy.holder_tail_refusal(None)
+    assert not drain_policy.holder_tail_refusal({"fresh": True})

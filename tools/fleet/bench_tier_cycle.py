@@ -88,7 +88,8 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import residency_plan, storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = bench_stage_adopt.TIER
 HOST = "dl380g10"
@@ -154,18 +155,16 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str, mover: str,
             f"/pool/{consumer[:8]}/phase-{ordinal}/part-{index}.bin", 0)] = {
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
-    root = queue.residency_fragment_root()
-    residency_map.write_fragment(root, {
+    assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
+    root = queue.records.residency_fragment_root()
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
-        "entries": entries})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
+        "entries": entries},
         generation="a" * 32,
-        entries={key: {**dict(mention),  # type: ignore[dict-item]
+        material_entries={key: {**dict(mention),  # type: ignore[dict-item]
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}  # type: ignore[index]
                  for key, mention in entries.items()})
@@ -179,7 +178,7 @@ def _land(queue: pool.PoolQueue, stage: Path, *, consumer: str, mover: str,
 
 
 def _terminal(queue: pool.PoolQueue, state: str, count: int) -> None:
-    directory = queue.dir(state)
+    directory = queue.records.dir(state)
     status = {"done": "executed", "failed": "failed",
               "withdrawn": "withdrawn"}[state]
     for index in range(count):
@@ -202,7 +201,7 @@ def build_filed_plans(queue: pool.PoolQueue, stage: Path, *,
 
     if not plans:
         return {}
-    directory = queue.dir(pool.DONE)
+    directory = queue.records.dir(pool.record_store.DONE)
     for index in range(plans):
         consumer = _key(f"filedplan{index}")
         plan = _plan(queue, consumer, stage, phases=phases)
@@ -216,7 +215,7 @@ def build_filed_plans(queue: pool.PoolQueue, stage: Path, *,
 def _receipts(queue: pool.PoolQueue, count: int) -> None:
     """Terminal movers' receipts: the fill history every cycle folds."""
 
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     directory.mkdir(parents=True, exist_ok=True)
     now = time.time()
     for index in range(count):
@@ -251,12 +250,12 @@ def _publish_consumer(queue: pool.PoolQueue, consumer: str,
 
 
 def _claim(queue: pool.PoolQueue, key: str) -> None:
-    source = queue.item_path(pool.READY, key)
+    source = queue.records.item_path(pool.record_store.READY, key)
     item = json.loads(source.read_text())
     source.unlink()
     item.update({"action_key": key, "claimed_unix": time.time(),
                  "claimed_by": "bench", "claimed_host": HOST})
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(item))
     queue.write_lease(key, owner="bench", claim_snapshot=item)
 
 
@@ -292,8 +291,8 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
     counts: collections.Counter = collections.Counter()
     if pairs <= 0:
         return {}
-    root = queue.residency_fragment_root()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2 * pairs})
+    root = queue.records.residency_fragment_root()
+    queue.tier(TIER).mint({'stage_gib': 2 * pairs})
     for pair in range(pairs):
         mentions: dict[str, dict[str, object]] = {}
         for index in range(entries):
@@ -318,16 +317,14 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
             mover = _key(f"dead{pair}{side}:mover")
             _dead_action(queue, consumer, "failed")
             _dead_action(queue, mover, "executed")
-            reader_lease.write_material(
-                root, consumer_action_key=consumer, mover_action_key=mover,
-                tier_id=TIER, stage_root=str(stage),
-                manifest_sha256=MANIFEST, generation="b" * 32,
-                entries=mentions)
-            residency_map.write_fragment(root, {
+            staged_path.publish_vouch(
+                root, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": consumer, "mover_action_key": mover,
                 "tier_id": TIER, "stage_root": str(stage),
-                "manifest_sha256": MANIFEST, "entries": fragment_entries})
+                "manifest_sha256": MANIFEST, "entries": fragment_entries},
+                generation="b" * 32,
+                material_entries=mentions)
             queue.record_move(mover, {
                 "consumer_action_key": consumer, "tier_id": TIER,
                 "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -338,7 +335,7 @@ def build_dead_owners(queue: pool.PoolQueue, stage: Path, *, pairs: int,
                 "complete": True, "seconds": 20.0,
                 "unix": time.time() - 3600.0})
             if charged:
-                assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1})
+                assert queue.tier(TIER).take(mover, {'stage_gib': 1})
             else:
                 counts["dead_owners_uncharged"] += 1
             counts["dead_owners"] += 1
@@ -360,7 +357,7 @@ def build_no_range_claims(queue: pool.PoolQueue, count: int) -> dict[str, int]:
         key = _key(f"no-range{index}")
         queue.publish(**_row(queue, key, {"cpu": 1, "mem_gb": 1}))
         _claim(queue, key)
-        claimed = queue.item_path(pool.CLAIMED, key)
+        claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
         item = json.loads(claimed.read_text())
         item["resources"] = {"cpu": 1, "mem_gb": 1,
                              f"fill_mb_s_pool_side@{TIER}": 510}
@@ -432,18 +429,16 @@ def _land_shared(queue: pool.PoolQueue, stage: Path, *, vouch_as: str,
             f"/pool/{SHARED_MANIFEST[:8]}/phase-{ordinal}/part-{index}.bin",
             0)] = {"stage_path": str(path), "bytes": size, "offset": 0,
                    "sha256": DIGEST}
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": phase_gib})
-    root = queue.residency_fragment_root()
-    residency_map.write_fragment(root, {
+    assert queue.tier(TIER).take(mover, {'stage_gib': phase_gib})
+    root = queue.records.residency_fragment_root()
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": vouch_as, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": SHARED_MANIFEST, "entries": entries})
-    reader_lease.write_material(
-        root, consumer_action_key=vouch_as, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=SHARED_MANIFEST,
+        "manifest_sha256": SHARED_MANIFEST, "entries": entries},
         generation="a" * 32,
-        entries={key: {**dict(mention),  # type: ignore[dict-item]
+        material_entries={key: {**dict(mention),  # type: ignore[dict-item]
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}  # type: ignore[index]
                  for key, mention in entries.items()})
@@ -508,7 +503,7 @@ def build_shared_consumers(queue: pool.PoolQueue, stage: Path, *,
             landed_movers.add(mover)
             counts["shared_ranges_landed"] += 1
         _claim(queue, consumer)
-        claimed = queue.item_path(pool.CLAIMED, consumer)
+        claimed = queue.records.item_path(pool.record_store.CLAIMED, consumer)
         item = json.loads(claimed.read_text())
         item["claimed_host"] = hosts[index % len(hosts)] if hosts else HOST
         claimed.write_text(json.dumps(item))
@@ -531,8 +526,8 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
         queue, stage, pairs=getattr(args, "dead_owner_pairs", 0),
         entries=getattr(args, "dead_entries", 1680),
         charged=not getattr(args, "dead_owners_uncharged", False)))
-    for state, count in ((pool.DONE, args.done), (pool.FAILED, args.failed),
-                         (pool.WITHDRAWN, args.withdrawn)):
+    for state, count in ((pool.record_store.DONE, args.done), (pool.record_store.FAILED, args.failed),
+                         (pool.record_store.WITHDRAWN, args.withdrawn)):
         _terminal(queue, state, count)
         counts[state] = count
     _receipts(queue, args.receipts)
@@ -540,13 +535,13 @@ def build_queue(queue: pool.PoolQueue, stage: Path, args) -> dict[str, int]:
     counts.update(build_filed_plans(
         queue, stage, plans=getattr(args, "filed_plans", 0),
         phases=getattr(args, "plan_phases", 128)))
-    passes = queue.root / pool.PASSES
+    passes = queue.root / pool.record_store.PASSES
     passes.mkdir(parents=True, exist_ok=True)
     for index in range(args.passes):
         (passes / f"{_key(f'passes{index}')}.json").write_text(
             json.dumps({"passes": 1 + index % 5}) + "\n")
     counts["passes"] = args.passes
-    queue.mint_tier_capacity(TIER, {"stage_gib": 700})
+    queue.tier(TIER).mint({'stage_gib': 700})
     for index in range(args.live_consumers):
         consumer = _key(f"live{index}")
         plan = _plan(queue, consumer, stage, phases=args.phases)
@@ -594,7 +589,7 @@ def _tier_record(stage: Path) -> dict[str, object]:
 def run_cycles(args) -> int:
     """The child: cycles against the built queue, timed one by one."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
 
     work = Path(args.work)
     queue = pool.PoolQueue(work / "pb-queue")
@@ -617,7 +612,7 @@ def run_cycles(args) -> int:
             if isinstance(held, (int, float)):
                 swept["lock_held_s"] = swept.get("lock_held_s", 0.0) + held
                 swept["holds"] = swept.get("holds", 0) + 1
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT:
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT:
                 swept["stale_receipts"] = swept.get("stale_receipts", 0) + 1
         return out
 
@@ -845,10 +840,10 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     queue = pool.PoolQueue(work / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = work / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     built = time.monotonic()
     shape = build_queue(queue, stage, args)

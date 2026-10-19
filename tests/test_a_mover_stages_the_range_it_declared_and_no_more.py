@@ -24,9 +24,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.residency_map as rm  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -42,7 +44,7 @@ def _write(path: Path, payload: bytes) -> dict[str, object]:
 
 def _manifest(mount: Path, entries: list[dict[str, object]]) -> dict[str, object]:
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
         "mount_prefix": str(mount),
         "entries": entries,
@@ -79,7 +81,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
         "--max-readers", "2",
@@ -93,7 +95,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
 def _staged(stage: Path, relative: str, size: int) -> Path:
     """Where the mover stages the whole ``size``-byte source ``relative``."""
 
-    return stage / stage_move.stage_relative(
+    return stage / staged_path.stage_relative(
         f"/m/{relative}", 0, size, mount_prefix="/m")
 
 def _three_files(tmp_path: Path) -> tuple[Path, list[dict[str, object]]]:
@@ -170,7 +172,7 @@ def test_two_ranges_of_one_file_get_names_of_their_own(tmp_path: Path) -> None:
     assert (stage / "shard.bin.pbrange" / "2048-2048").read_bytes() == payload[2048:]
     # Two movers, two fragments, one composed map with both ranges.
     composed = rm.compose(rm.read_fragments(
-        tmp_path / "queue" / pool.RESIDENCY, CONSUMER))
+        tmp_path / "queue" / pool.record_store.RESIDENCY, CONSUMER))
     assert set(composed["entries"]) == {
         rm.residency_map_key(str(mount / "shard.bin"), 0),
         rm.residency_map_key(str(mount / "shard.bin"), 2048),
@@ -259,18 +261,18 @@ def test_the_receipt_is_filed_where_the_tier_loop_reads_it(tmp_path: Path) -> No
     mount, entries = _three_files(tmp_path)
     args = _args(tmp_path, _manifest(mount, entries), start=0, end=4096)
     queue = pool.PoolQueue(Path(args.pool_root))
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     receipt = stage_move.move(args)
     path = queue.record_move(MOVER, receipt)
 
-    assert path == queue.root / pool.MOVERS / f"{MOVER}.json"
+    assert path == queue.root / pool.record_store.MOVERS / f"{MOVER}.json"
     read = queue.move_record(MOVER)
     assert read is not None
     assert read["schema"] == pool.POOL_MOVE_SCHEMA_V1
     assert read["bytes_staged"] == 4096
     # A record of another schema is not this one, however well-formed.
-    pool._write_json_atomic(path, {**read, "schema": "something.else.v1"})
+    pool.immutable_files.write_json_atomic(path, {**read, "schema": "something.else.v1"})
     assert queue.move_record(MOVER) is None
 
 
@@ -364,7 +366,7 @@ def test_a_second_movers_bad_copy_never_destroys_the_first_ones_good_one(
     # A's copy is untouched, and A's fragment still resolves to it.
     assert staged.read_bytes() == b"a" * 4096
     composed = rm.compose([rm.read_fragments(
-        tmp_path / "queue" / pool.RESIDENCY, CONSUMER)[0]])
+        tmp_path / "queue" / pool.record_store.RESIDENCY, CONSUMER)[0]])
     resolved = rm.lookup(composed, str(mount / "shard.bin"), 0)
     assert resolved is not None and Path(resolved["stage_path"]).exists()
 

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _fixture_queue)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -83,7 +83,7 @@ def test_the_basis_is_still_the_memory_reservation() -> None:
 
 
 def _set_domain(queue: pool.PoolQueue, key: str, domain: str) -> None:
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     item = json.loads(path.read_text())
     item["gpu_admission"]["memory_domain"] = domain
     path.write_text(json.dumps(item))

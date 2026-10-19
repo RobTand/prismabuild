@@ -33,9 +33,10 @@ import test_a_divergent_staged_copy_never_loops_its_mover as loop  # noqa: E402
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, residency_map, residency_plan  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
-BOUND = stage_move.UNPROVEN_ENDING_RUNS
+BOUND = staged_path.UNPROVEN_ENDING_RUNS
 
 
 def _unprovable(fleet, tmp_path, monkeypatch, cause: str):
@@ -50,7 +51,7 @@ def _unprovable(fleet, tmp_path, monkeypatch, cause: str):
     world = loop._World(fleet, tmp_path, monkeypatch, order)
     if cause == "unreadable-fragment":
         path = residency_map.fragment_path(
-            queue.residency_fragment_root(), base._key(), base._key())
+            queue.records.residency_fragment_root(), base._key(), base._key())
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not json")
     return world, consumer, mover, loop._staged(stage, loop._divergent(order))
@@ -62,7 +63,7 @@ def test_an_unprovable_ending_is_terminal_at_the_bound(
     """RED on the base source: the window republishes the mover forever."""
 
     queue, _stage, _ = fleet
-    monkeypatch.setattr(stage_move, "UNPROVEN_ENDING_MIN_SPAN_S", 0.0)
+    monkeypatch.setattr(staged_path, 'UNPROVEN_ENDING_MIN_SPAN_S', 0.0)
     world, consumer, mover, path = _unprovable(fleet, tmp_path, monkeypatch,
                                                cause)
     before = os.stat(path)
@@ -83,7 +84,7 @@ def test_an_unprovable_ending_is_terminal_at_the_bound(
         f"#1004 item 2 loop: run {BOUND} of an unprovable ending exited rc "
         f"{rc} with refusal={receipt.get('refusal')!r}, "
         f"unproven={receipt.get('unproven')}")
-    assert receipt["refusal"] == stage_move.STAGED_DESTINATION_UNPROVEN
+    assert receipt["refusal"] == staged_path.STAGED_DESTINATION_UNPROVEN
     assert receipt["complete"] is False
     block = receipt["unproven"]
     assert block["runs"] == BOUND and block["terminal"] is True
@@ -106,7 +107,7 @@ def test_an_unprovable_ending_is_terminal_at_the_bound(
     assert receipt["plan_superseded"] is True
     marker = residency_plan.superseded(queue, world.plan)
     assert marker is not None and marker["movers"] == [world.copier]
-    assert marker["reason"].startswith(stage_move.STAGED_DESTINATION_UNPROVEN)
+    assert marker["reason"].startswith(staged_path.STAGED_DESTINATION_UNPROVEN)
     for key in (world.successor, world.copier):
         assert key in marker["reason"], (key, marker["reason"])
     if cause == "no-outcome":
@@ -117,7 +118,7 @@ def test_an_unprovable_ending_is_terminal_at_the_bound(
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino,
                                                  before.st_mtime_ns)
     assert path.read_bytes() == loop.OLD
-    assert queue.tier_ledger(loop.TIER).holder_tokens(world.copier) == {}
+    assert queue.tier(loop.TIER).holdings(world.copier) == {}
 
 
 def test_the_bound_waits_out_the_mounts_visibility_span(
@@ -140,7 +141,7 @@ def test_an_ending_that_settles_by_itself_is_never_counted(
     """A queued mover or a lease outliving its record ends by itself."""
 
     queue, _stage, _ = fleet
-    monkeypatch.setattr(stage_move, "UNPROVEN_ENDING_MIN_SPAN_S", 0.0)
+    monkeypatch.setattr(staged_path, 'UNPROVEN_ENDING_MIN_SPAN_S', 0.0)
     consumer, mover = loop._old_owner(fleet, "failed")
     world = loop._World(fleet, tmp_path, monkeypatch, "last")
     if cause == "mover-queued":
@@ -148,7 +149,7 @@ def test_an_ending_that_settles_by_itself_is_never_counted(
                       worker_script="/w.py", resources={"cpu": 1},
                       max_attempts=1, recompute=True, tags=["nowhere"])
     else:
-        queue.lease_path(consumer).write_text("{}")
+        queue.records.lease_path(consumer).write_text("{}")
     for _run in range(BOUND + 1):
         rc, receipt = world.run()
         assert rc == 0 and receipt.get("refusal") is None, (
@@ -168,23 +169,23 @@ def test_changed_evidence_starts_the_count_again() -> None:
              "record", "settles": False}
     seen = [{"stage_path": "/stage/a", "declared_sha256": None,
              "why": owner["why"], "owners": [owner], "settles": False}]
-    first = stage_move.unproven_streak(None, seen, now=1000.0)
+    first = staged_path.unproven_streak(None, seen, now=1000.0)
     assert first["runs"] == 1 and first["first_unix"] == 1000.0
-    second = stage_move.unproven_streak({"unproven": first}, seen, now=1100.0)
+    second = staged_path.unproven_streak({"unproven": first}, seen, now=1100.0)
     assert second["runs"] == 2 and second["first_unix"] == 1000.0
     # Another name of the same owner is the same evidence.
     moved = [dict(seen[0], stage_path="/stage/b")]
-    assert stage_move.unproven_streak(
+    assert staged_path.unproven_streak(
         {"unproven": second}, moved, now=1200.0)["runs"] == 3
     other = [dict(seen[0], owners=[dict(owner, why="two outcome records")])]
-    assert stage_move.unproven_streak(
+    assert staged_path.unproven_streak(
         {"unproven": second}, other, now=1200.0)["runs"] == 1
     # A run whose cause settles counts zero, and so restarts the next count.
     settling = [dict(seen[0], settles=True,
                      owners=[dict(owner, settles=True)])]
-    zero = stage_move.unproven_streak({"unproven": second}, settling,
+    zero = staged_path.unproven_streak({"unproven": second}, settling,
                                       now=1200.0)
     assert zero["runs"] == 0 and zero["evidence"] is None
-    assert stage_move.unproven_streak({"unproven": zero}, seen,
+    assert staged_path.unproven_streak({"unproven": zero}, seen,
                                       now=1300.0)["runs"] == 1
-    assert stage_move.unproven_streak(None, [], now=1.0) is None
+    assert staged_path.unproven_streak(None, [], now=1.0) is None

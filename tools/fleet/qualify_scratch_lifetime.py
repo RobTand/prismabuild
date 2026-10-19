@@ -37,7 +37,7 @@ from pathlib import Path
 from contextlib import ExitStack
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from prismabuild import client, local_scratch, pool  # noqa: E402
+from prismabuild import client, local_scratch, pool, scratch_lifetime  # noqa: E402
 
 
 def _harness(argv=None):
@@ -71,14 +71,14 @@ def _harness(argv=None):
 
 def _live_claim(queue_root: str, key: str) -> dict:
     queue = pool.PoolQueue(Path(queue_root))
-    record = pool._read_json(queue.item_path(pool.CLAIMED, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, key))
     if record is None:
         raise SystemExit("own claim is not in claimed state")
     return record
 
 
 def _bound_leaf(record, *, root_env: str, name: str) -> tuple[Path, dict]:
-    field = record.get(local_scratch.SCRATCH_LIFETIME_FIELD)
+    field = record.get(scratch_lifetime.SCRATCH_LIFETIME_FIELD)
     if not isinstance(field, dict):
         raise SystemExit("own claim carries no lifetime record")
     for entry in field.get("entries", []):
@@ -209,7 +209,7 @@ def main(argv=None) -> int:
     identity = entry.get("identity")
     if not identity:
         raise SystemExit("registered leaf has no committed identity")
-    local_scratch._check_registered_scratch_directory(
+    scratch_lifetime._check_registered_scratch_directory(
         {k: entry["declaration"][k] for k in entry["declaration"]}, identity)
     payload = leaf / "payload-marker.txt"
     payload.write_text(f"{key}\n", encoding="utf-8")

@@ -29,6 +29,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from prismabuild import adaptive_cpu, adaptive_gpu, pool  # noqa: E402
+from prismabuild import drain_policy
 
 T0 = 2_000_000.0
 GIB = adaptive_gpu.GIB
@@ -89,18 +90,18 @@ def box(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     monkeypatch.setattr(adaptive_gpu, "action_contract", lambda item, demand: (
         "shape", False, False, int(demand.get("mem_gb", 0)) * GIB))
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 20, "interval_s": 1.})
+        "cpu_count": 20, "interval_s": 1.}
     sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(T0),
               "sampled_unix": T0, "complete": True, "attributed": True,
               "devices": [_device()],
               "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
               "memory_pressure_some": 0., "memory_pressure_full": 0.,
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(sample))
+    gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -132,7 +133,9 @@ def box(tmp_path: Path, monkeypatch):
     def claim():
         return _key_of(queue.claim(capacity=capacity, cpu_tiers=tiers,
                                    adaptive_cpu=True, has_gpu=True,
-                                   tags=[pool.socket.gethostname()]))
+                                   tags=[pool.socket.gethostname()],
+                                   cpu_sampler=cpu_sampler,
+                                   gpu_sampler=gpu_sampler))
 
     return queue, clock, sample, publish, tick, claim
 
@@ -168,7 +171,7 @@ def test_a_row_refused_for_broker_jobs_withholds_the_whole_box(box) -> None:
     withhold = denial["evidence"]["withhold"]
     assert withhold["mode"] == "exclusive" and withhold["why"] == "drains_soon"
     assert "withheld_kinds" not in denial["evidence"], "a broker-job drain is the whole box"
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
     # The shard leaves; the host is empty and the exception admits the row.
     queue.finish(shard, status="executed", detail={})
@@ -223,8 +226,8 @@ def test_a_row_refused_for_a_gpu_holder_withholds_gpu_rows_then_the_box(box) -> 
     assert exception["exception_reason"] == "broker_jobs_present"
     withhold = denial["evidence"]["withhold"]
     assert withhold["mode"] == "exclusive" and withhold["why"] == "drains_soon"
-    assert queue.item_path(pool.READY, late).exists()
-    assert queue.item_path(pool.READY, gpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, late).exists()
+    assert queue.records.item_path(pool.record_store.READY, gpu_row).exists()
 
     queue.finish(cpu_row, status="executed", detail={})
     tick()
@@ -339,7 +342,7 @@ def _refusal(exception) -> dict:
 def test_only_occupancy_on_an_idle_sw_capped_gb10_drains(
     exception, measurement: bool, expected,
 ) -> None:
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_gpu_refused", _refusal(exception), demand={"gpu": 1},
         measurement=measurement, cpu_count=20) == expected
 
@@ -356,4 +359,4 @@ def test_the_exception_itself_is_unchanged_by_the_drain_question() -> None:
 def test_the_drain_table_names_exactly_the_occupancy_reasons() -> None:
     """The pool's drain table and the exception's occupancy reasons are one set:
     a reason the helper accepts but the table lacks would drop to "overtaken"."""
-    assert set(pool.DRAIN_SW_CAP_IDLE) == set(adaptive_gpu.SW_CAP_OCCUPANCY_REASONS)
+    assert set(drain_policy.DRAIN_SW_CAP_IDLE) == set(adaptive_gpu.SW_CAP_OCCUPANCY_REASONS)

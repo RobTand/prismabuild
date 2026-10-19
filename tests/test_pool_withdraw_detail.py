@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -39,7 +40,7 @@ def retried(tmp_path: Path) -> pool.PoolQueue:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=KEY,
         cas_root=str(tmp_path / "cas"),
@@ -55,7 +56,7 @@ def retried(tmp_path: Path) -> pool.PoolQueue:
         detail={"returncode": 3, "stdout": "", "stderr": "boom\n"},
         claim_snapshot=item,
     )
-    assert requeued == queue.item_path(pool.READY, KEY)
+    assert requeued == queue.records.item_path(pool.record_store.READY, KEY)
     assert queue.claim() is not None
     return queue
 
@@ -74,7 +75,7 @@ def test_the_withdrawn_record_does_not_carry_the_failed_attempts_detail(
 
     retried.withdraw(KEY, by="rob", reason="not needed", signal_child=False)
     filed = json.loads(
-        retried.item_path(pool.WITHDRAWN, KEY).read_text(encoding="utf-8")
+        retried.records.item_path(pool.record_store.WITHDRAWN, KEY).read_text(encoding="utf-8")
     )
 
     assert filed["status"] == "withdrawn"
@@ -94,10 +95,10 @@ def test_pbrun_does_not_print_the_failed_attempts_stderr_for_a_withdrawal(
 
     retried.withdraw(KEY, by="rob", reason="not needed", signal_child=False)
 
-    code = pbrun.await_outcome(retried, KEY, wait_s=1.0)
+    code = submit_core.action_client.report_pool_outcome(retried, KEY, wait_s=1.0)
     printed = capsys.readouterr()
 
-    assert code == pbrun.WITHDRAWN_EXIT
+    assert code == submit_core.action_client.WITHDRAWN_EXIT
     assert "withdrawn by rob" in printed.err
     assert "boom" not in printed.err
     assert "boom" not in printed.out

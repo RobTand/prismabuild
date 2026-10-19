@@ -31,7 +31,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, reader_lease  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "e" * 64
@@ -51,11 +52,11 @@ def _fresh_store():
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
-    return queue, stage, queue.root / pool.RESIDENCY
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    return queue, stage, queue.root / pool.record_store.RESIDENCY
 
 
 @pytest.fixture()
@@ -88,7 +89,7 @@ def _key(index: int) -> str:
 
 
 def _publish(root: Path, stage: Path, indices, *, fill: int = 0) -> str:
-    """One publication of ``indices``: fragment first, then its sidecar."""
+    """Publish ``indices`` through the production material-before-fragment owner."""
 
     fragment, material = {}, {}
     for index in indices:
@@ -103,16 +104,15 @@ def _publish(root: Path, stage: Path, indices, *, fill: int = 0) -> str:
         assert identity is not None
         material[_key(index)] = {"stage_path": str(staged), "bytes": 512,
                                  "sha256": digest, "file_id": identity}
-    residency_map.write_fragment(root, {
+    generation = reader_lease.mint_generation()
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage),
-        "manifest_sha256": MANIFEST, "entries": fragment})
-    generation = reader_lease.mint_generation()
-    reader_lease.write_material(
-        root, consumer_action_key=CONSUMER, mover_action_key=MOVER,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
-        generation=generation, entries=material)
+        "manifest_sha256": MANIFEST, "entries": fragment},
+        generation=generation,
+        material_entries=material)
     return generation
 
 

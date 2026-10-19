@@ -32,6 +32,10 @@ member devices); the export runs through ``PoolQueue.execute`` as in
 ``test_produced_spool``.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+from submission_support import patch_store
 
 import hashlib
 import json
@@ -50,7 +54,8 @@ from prismabuild import core, pool, produced_output as po  # noqa: E402
 from prismabuild import produced_spool as ps, reader_lease  # noqa: E402
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import stage_move  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
     TIER, _announce_tier, _detach_key, _tier_cycle,
@@ -69,8 +74,8 @@ READ_BACK_SHA256_BEFORE_912 = (
 def _template(prefix: Path) -> dict:
     """A write-only template: every tier's minimum and window are zero."""
 
-    return po.validate_template({
-        "schema": po.TEMPLATE_SCHEMA_V1,
+    return oc.validate_template({
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": "write-only-integ-v1",
         "output_prefix": str(prefix),
@@ -86,7 +91,7 @@ def _template(prefix: Path) -> dict:
 
 def _read_back_body() -> dict:
     return {
-        "schema": po.TEMPLATE_SCHEMA_V1, "version": 1,
+        "schema": oc.TEMPLATE_SCHEMA_V1, "version": 1,
         "template_id": "pinned-v1", "output_prefix": "/srv/pb-outputs",
         "slots": {"s0": {"class": "payload"}},
         "durable_maxima": {"payload_max_bytes": 1 << 20,
@@ -99,22 +104,19 @@ def _read_back_body() -> dict:
 
 
 def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {KIND: 4})
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
+    queue.tier(TIER).mint({KIND: 4})
     return queue
 
 
 def _descriptor(instance: dict, template: dict, path: Path, payload: bytes,
                 *, digest: bool = True) -> dict:
-    return po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
+    return oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0",
         "artifact_class": "payload", "path": str(path),
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest() if digest else None,
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": instance["owner_action_key"],
         "owner_attempt": dict(instance["owner_attempt"]),
     }, template, instance)
@@ -122,7 +124,7 @@ def _descriptor(instance: dict, template: dict, path: Path, payload: bytes,
 
 def _prewrite(queue, instance, template, batch_id: str, paths: list[Path],
               size: int) -> dict:
-    return po.require_prewrite(
+    return bl.BatchLedger.reserve(
         queue, instance, template, batch_id=batch_id, tier=TIER,
         class_bytes={"payload": size, "checkpoint": 0, "temp": 0},
         paths=[str(path) for path in paths])
@@ -141,7 +143,7 @@ def _direct_batch(queue, template, seed: str, *, batch_id: str = "b1",
     if not path.exists():
         path.write_bytes(payload)
     descriptor = _descriptor(instance, template, path, path.read_bytes())
-    committed = po.commit_origin_batch(queue, instance, template, [descriptor],
+    committed = bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                        batch_id=batch_id)
     assert committed["ok"], committed
     return instance, path, descriptor, committed
@@ -204,8 +206,8 @@ def _exported(spool: ps.ProducedSpool, payload: bytes) -> tuple[Path, dict]:
 
 
 def _queued_rows(queue: pool.PoolQueue) -> set[str]:
-    return {path.stem for state in (pool.READY, pool.CLAIMED)
-            for path in queue.dir(state).glob("*.json")}
+    return {path.stem for state in (pool.record_store.READY, pool.record_store.CLAIMED)
+            for path in queue.records.dir(state).glob("*.json")}
 
 
 # -- admission ---------------------------------------------------------------
@@ -214,32 +216,32 @@ def _queued_rows(queue: pool.PoolQueue) -> set[str]:
 def test_a_write_only_template_declares_no_window_and_refuses_one(
         tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
-    assert po.is_write_only(template)
+    assert oc.is_write_only(template)
     assert template["working_demands"] == {
         TIER: {"minimum_gib": 0, "window_gib": 0}}
-    assert po.owner_demand_terms(template) == {}
+    assert oc.owner_demand_terms(template) == {}
     body = {key: value for key, value in template.items()}
     body["working_demands"] = {TIER: {"minimum_gib": 0, "window_gib": 1}}
-    with pytest.raises(po.ProducedOutputError, match="write-only template"):
-        po.validate_template(body)
+    with pytest.raises(oc.ProducedOutputError, match="write-only template"):
+        oc.validate_template(body)
     body["working_demands"] = {TIER: {"minimum_gib": 0, "window_gib": 0}}
     body["write_only"] = "yes"
-    with pytest.raises(po.ProducedOutputError):
-        po.validate_template(body)
+    with pytest.raises(oc.ProducedOutputError):
+        oc.validate_template(body)
 
 
 def test_the_producer_admission_charges_no_stage_window(tmp_path: Path) -> None:
     template = _template(tmp_path / "canonical")
     queue = _queue(tmp_path)
-    ledger = queue.tier_ledger(TIER)
-    before = (ledger.capacity(), ledger.available())
+    ledger = queue.tier(TIER)
+    before = (ledger.mint_supply(), ledger.free_supply())
     owner = fx._hexkey("wo-admission")
     instance = fx._bind(queue, template, owner)
-    claimed = pool._read_json(queue.item_path(pool.CLAIMED, owner))
+    claimed = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, owner))
     assert claimed["resources"] == {"cpu": 1, "mem_gb": 1}
-    assert (ledger.capacity(), ledger.available()) == before
-    assert ledger.available() == ledger.capacity()
-    assert ledger.holder_tokens(owner) == {}
+    assert (ledger.mint_supply(), ledger.free_supply()) == before
+    assert ledger.free_supply() == ledger.mint_supply()
+    assert ledger.holdings(owner) == {}
     assert po.admit_funded_window(
         queue, instance, template, need_gib_per_tier={TIER: 1},
     )["refusal"] == "template-is-write-only"
@@ -260,8 +262,8 @@ def test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite(
         tmp_path: Path) -> None:
     spool = _spool_producer(tmp_path)
     queue = spool.queue
-    ledger = queue.tier_ledger(TIER)
-    before = ledger.available()
+    ledger = queue.tier(TIER)
+    before = ledger.free_supply()
     payload = b"write-only batch bytes"
     destination, descriptor = _exported(spool, payload)
 
@@ -270,16 +272,16 @@ def test_the_write_only_producer_commits_at_its_origin_and_keeps_no_prewrite(
     assert committed["ok"] is True, committed
     assert committed["origin_only"] is True and committed["tier"] == TIER
     assert destination.read_bytes() == payload
-    prewrites = po._prewrites_dir(queue.root, spool.instance)
+    prewrites = bl.prewrites_dir(queue.root, spool.instance)
     assert not list(prewrites.glob("*.prewrite.json")), (
         "the commit consumes the prewrite")
-    record = json.loads((queue.root / "residency" / po.OUTPUT_BATCHES_SUBDIR
-                         / po.instance_namespace(spool.instance)
+    record = json.loads((queue.root / "residency" / oc.OUTPUT_BATCHES_SUBDIR
+                         / oc.instance_namespace(spool.instance)
                          / "b1.json").read_text())
     assert record["origin_only"] is True and record["mover_key"] is None
-    assert ledger.available() == before, "no stage token moved"
+    assert ledger.free_supply() == before, "no stage token moved"
     assert _queued_rows(queue) == {spool.owner}, "no mover was published"
-    assert committed["ref"] == po.origin_batch_ref(
+    assert committed["ref"] == oc.origin_batch_ref(
         spool.instance, batch_id="b1",
         manifest_digest=committed["manifest_digest"])
 
@@ -315,16 +317,16 @@ def test_the_staged_paths_refuse_a_write_only_template_and_the_origin_checks_bit
                             )["refusal"] == "template-is-write-only"
 
     unhashed = _descriptor(instance, template, path, payload, digest=False)
-    assert po.commit_origin_batch(queue, instance, template, [unhashed],
+    assert bl.BatchLedger.commit_origin(queue, instance, template, [unhashed],
                                   batch_id="b1"
                                   )["refusal"] == "origin-batch-needs-sha256"
     identity = reader_lease.portable_identity(os.lstat(path))
     wrong = {str(path): dict(identity, ino=identity["ino"] + 1)}
-    assert po.commit_origin_batch(queue, instance, template, [descriptor],
+    assert bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                   batch_id="b1", landed=wrong
                                   )["refusal"] == "origin-is-not-the-landed-copy"
     right = {str(path): identity}
-    assert po.commit_origin_batch(queue, instance, template, [descriptor],
+    assert bl.BatchLedger.commit_origin(queue, instance, template, [descriptor],
                                   batch_id="b1", landed=right)["ok"]
     assert po.ensure_batch_materialized(
         queue, instance, template, batch_id="b1", cas_root=tmp_path / "cas",
@@ -335,7 +337,7 @@ def test_the_staged_paths_refuse_a_write_only_template_and_the_origin_checks_bit
     read_back = fx._template(str(other / "outputs"))
     other_queue = fx._queue(other)
     other_instance = fx._bind(other_queue, read_back, fx._hexkey("rb-owner"))
-    assert po.commit_origin_batch(other_queue, other_instance, read_back, [],
+    assert bl.BatchLedger.commit_origin(other_queue, other_instance, read_back, [],
                                   batch_id="b1"
                                   )["refusal"] == "template-reads-back"
 
@@ -349,9 +351,9 @@ def test_an_origin_only_batch_reads_as_never_staged_and_owns_its_path_until_recl
 
     assert po.retire_batch(queue, instance, template, "b1",
                            stage_root=str(tmp_path / "stage"),
-                           residency_root=queue.root / pool.RESIDENCY) == {
+                           residency_root=queue.root / pool.record_store.RESIDENCY) == {
         "ok": True, "batch_id": "b1", "origin_only": True, "staged": False}
-    state = po.materialization_state(queue, instance, template, batch_id="b1")
+    state = bl.BatchLedger.materialization(queue, instance, template, batch_id="b1")
     assert state["ok"] is True and state["stage_retired"] is True
     assert state["mover_key"] == "" and state["funding_state"] == "origin-only"
     events = po.recover_batches(queue, instance, template)
@@ -365,12 +367,12 @@ def test_an_origin_only_batch_reads_as_never_staged_and_owns_its_path_until_recl
     # The origin stays owned: a consumer may have declared it.
     again = _prewrite(queue, instance, template, "b2", [path], 32)
     assert again["refusal"] == "prewrite-path-owned-by-live-batch"
-    assert po.reclaim_origin(queue, instance, template, batch_id="b1"
+    assert bl.BatchLedger.reclaim(queue, instance, template, batch_id="b1"
                              )["refusal"] == "origin-present-retain"
     path.unlink()
-    assert po.reclaim_origin(queue, instance, template, batch_id="b1")["ok"]
+    assert bl.BatchLedger.reclaim(queue, instance, template, batch_id="b1")["ok"]
     assert _prewrite(queue, instance, template, "b2", [path], 32)["ok"]
-    with pytest.raises(po.ProducedOutputError, match="origin-batch-reclaimed"):
+    with pytest.raises(oc.ProducedOutputError, match="origin-batch-reclaimed"):
         po.origin_batch_manifest(queue.root, [committed["ref"]])
 
 
@@ -388,7 +390,7 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     queue.finish(spool.owner, status="executed")
 
     manifest = po.origin_batch_manifest(queue.root, [committed["ref"]])
-    assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [
+    assert manifest["annotations"][oc.ORIGIN_BATCHES_ANNOTATION] == [
         committed["ref"]]
     manifest_path = tmp_path / "consumer-manifest.json"
     manifest_path.write_text(json.dumps(manifest))
@@ -396,8 +398,8 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
@@ -411,7 +413,8 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     plan = residency_plan.read(queue, consumer)
     assert plan is not None and len(plan["phases"]) == 1
     lead = str(plan["phases"][0]["mover_row"]["action_key"])
-    assert queue.item_path(pool.READY, lead).exists(), "the cycle published the lead"
+    assert queue.records.item_path(pool.record_store.READY, lead).exists(
+    ), "the cycle published the lead"
     request = json.loads((tmp_path / "cas" / "requests" / lead[:2]
                           / f"{lead}.json").read_text())
     command = request["params"]["command"]
@@ -426,7 +429,7 @@ def test_a_later_action_declares_the_batch_stages_it_and_reads_it(
     # range, before it composes that consumer's map.
     _tier_cycle(queue, tmp_path / "stage")
 
-    composed = rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, consumer))
+    composed = rm.compose(rm.read_fragments(queue.root / pool.record_store.RESIDENCY, consumer))
     staged = composed["entries"][rm.residency_map_key(str(destination), 0)]
     assert Path(staged["stage_path"]).read_bytes() == payload
     assert staged["sha256"] == hashlib.sha256(payload).hexdigest()
@@ -439,7 +442,7 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     _instance, path, _desc, committed = _direct_batch(queue, template, "wo-tamper")
     ref = committed["ref"]
     manifest = po.origin_batch_manifest(queue.root, [ref])
-    check = pbrun.require_declared_origin_batches
+    check = submit_core.require_declared_origin_batches
     assert check(manifest, transport="pool", queue_root=queue.root) is None
 
     def tampered(**changes):
@@ -449,21 +452,21 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
 
     entries = json.loads(json.dumps(manifest["entries"]))
     entries[0]["sha256"] = "0" * 64
-    with pytest.raises(SystemExit, match="entries is not what"):
+    with pytest.raises(submit_core.SubmissionRefused, match="entries is not what"):
         check(tampered(entries=entries), transport="pool", queue_root=queue.root)
-    with pytest.raises(SystemExit, match="mount_prefix is not what"):
+    with pytest.raises(submit_core.SubmissionRefused, match="mount_prefix is not what"):
         check(tampered(mount_prefix=str(tmp_path)), transport="pool",
               queue_root=queue.root)
     annotations = dict(manifest["annotations"])
-    annotations[po.ORIGIN_BATCHES_ANNOTATION] = [dict(ref, manifest_digest="1" * 64)]
-    with pytest.raises(SystemExit, match="origin-batch-mismatch"):
+    annotations[oc.ORIGIN_BATCHES_ANNOTATION] = [dict(ref, manifest_digest="1" * 64)]
+    with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-mismatch"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
-    annotations[po.ORIGIN_BATCHES_ANNOTATION] = [ref, ref]
-    with pytest.raises(SystemExit, match="names a batch twice"):
+    annotations[oc.ORIGIN_BATCHES_ANNOTATION] = [ref, ref]
+    with pytest.raises(submit_core.SubmissionRefused, match="names a batch twice"):
         check(tampered(annotations=annotations), transport="pool",
               queue_root=queue.root)
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         check(manifest, transport="slurm", queue_root=queue.root)
 
     # Through the real submission: freeze reads the declared batches.
@@ -473,20 +476,20 @@ def test_submission_refuses_a_manifest_its_declared_batches_do_not_describe(
     queue.announce(host="sparky", tags=["sparky", "gb10"], has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(sys, "argv", [
         "pbrun.py", "--cwd", str(work), "--wait-s", "0.01", "--detach",
         "--data-manifest", str(manifest_path), "--residency", "stage",
         "--", "/bin/bash", "-lc", "true"])
-    with pytest.raises(SystemExit, match=po.ORIGIN_BATCHES_ANNOTATION):
+    with pytest.raises(SystemExit, match=oc.ORIGIN_BATCHES_ANNOTATION):
         pbrun.main()
 
     # The origin rewritten after its commit, same length: the batch no longer
     # names the file that is there.
     path.write_bytes(b"X" * len(path.read_bytes()))
-    with pytest.raises(SystemExit, match="origin-batch-changed"):
+    with pytest.raises(submit_core.SubmissionRefused, match="origin-batch-changed"):
         check(manifest, transport="pool", queue_root=queue.root)
 
 
@@ -506,7 +509,7 @@ def test_two_batches_over_one_origin_path_cannot_be_declared_together(
     _i2, same, _d2, second = _direct_batch(queue, template, "wo-second",
                                            name=path.name)
     assert same == path
-    with pytest.raises(po.ProducedOutputError, match="twice"):
+    with pytest.raises(oc.ProducedOutputError, match="twice"):
         po.origin_batch_manifest(queue.root, [first["ref"], second["ref"]])
 
 
@@ -514,13 +517,13 @@ def test_two_batches_over_one_origin_path_cannot_be_declared_together(
 
 
 def test_a_template_without_write_only_is_the_template_it_was() -> None:
-    validated = po.validate_template(_read_back_body())
+    validated = oc.validate_template(_read_back_body())
     assert "write_only" not in validated
-    assert not po.is_write_only(validated)
-    assert po.template_sha256(validated) == READ_BACK_SHA256_BEFORE_912
-    explicit = po.validate_template(dict(_read_back_body(), write_only=False))
-    assert po.template_sha256(explicit) == READ_BACK_SHA256_BEFORE_912
-    assert po.owner_demand_terms(validated) == {
+    assert not oc.is_write_only(validated)
+    assert oc.template_sha256(validated) == READ_BACK_SHA256_BEFORE_912
+    explicit = oc.validate_template(dict(_read_back_body(), write_only=False))
+    assert oc.template_sha256(explicit) == READ_BACK_SHA256_BEFORE_912
+    assert oc.owner_demand_terms(validated) == {
         "stage_gib@prismabuild-stage:dl380g10": 2}
 
 
@@ -533,5 +536,5 @@ def test_a_manifest_that_declares_no_batches_is_never_checked_against_the_queue(
     for manifest in ({}, {"annotations": None},
                      {"annotations": {"phases": [{"name": "p", "bytes": 1,
                                                   "cumulative_bytes": 1}]}}):
-        assert pbrun.require_declared_origin_batches(
+        assert submit_core.require_declared_origin_batches(
             manifest, transport="slurm", queue_root=tmp_path / "absent") is None

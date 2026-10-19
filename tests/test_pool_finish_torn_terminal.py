@@ -40,7 +40,7 @@ def lost(tmp_path: Path) -> tuple[pool.PoolQueue, dict]:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=KEY,
         cas_root=str(tmp_path / "cas"),
@@ -51,9 +51,9 @@ def lost(tmp_path: Path) -> tuple[pool.PoolQueue, dict]:
     assert item is not None
     # The reaper's half: the claim is gone and a terminal stands in its place.
     # Torn, which is what a foreign writer or a half-landed copy leaves.
-    queue.item_path(pool.CLAIMED, KEY).unlink()
-    queue.lease_path(KEY).unlink(missing_ok=True)
-    queue.item_path(pool.FAILED, KEY).write_text(
+    queue.records.item_path(pool.record_store.CLAIMED, KEY).unlink()
+    queue.records.lease_path(KEY).unlink(missing_ok=True)
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(
         '{"action_key": "' + KEY + '", "status": "fail', encoding="utf-8"
     )
     return queue, item
@@ -76,11 +76,11 @@ def test_a_torn_terminal_does_not_raise_out_of_finish(
         KEY, status="executed", detail={"returncode": 0}, claim_snapshot=item
     )
 
-    assert filed == queue.item_path(pool.FAILED, KEY)
-    assert not queue.item_path(pool.DONE, KEY).exists()
+    assert filed == queue.records.item_path(pool.record_store.FAILED, KEY)
+    assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()
     # Untouched: the operator's reader reports it unreadable, and a repair
     # that guessed at its content would be inventing an ending.
-    assert queue.item_path(pool.FAILED, KEY).read_text(
+    assert queue.records.item_path(pool.record_store.FAILED, KEY).read_text(
         encoding="utf-8").endswith('"status": "fail')
 
 
@@ -92,7 +92,7 @@ def test_a_readable_terminal_still_decides(lost: tuple[pool.PoolQueue, dict]) ->
     """
 
     queue, item = lost
-    queue.item_path(pool.FAILED, KEY).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.FAILED, KEY).write_text(json.dumps({
         "action_key": KEY,
         "status": "failed",
         "published_unix": item["published_unix"],
@@ -102,5 +102,5 @@ def test_a_readable_terminal_still_decides(lost: tuple[pool.PoolQueue, dict]) ->
         KEY, status="executed", detail={"returncode": 0}, claim_snapshot=item
     )
 
-    assert filed == queue.item_path(pool.FAILED, KEY)
-    assert not queue.item_path(pool.DONE, KEY).exists()
+    assert filed == queue.records.item_path(pool.record_store.FAILED, KEY)
+    assert not queue.records.item_path(pool.record_store.DONE, KEY).exists()

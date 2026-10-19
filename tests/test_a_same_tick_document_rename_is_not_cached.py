@@ -13,7 +13,7 @@ fence.
 #1062 closed that hole for the parent-directory stamps and #1045 for the
 co-owner fragments (the census memo keeps only a version older than a clock
 read taken before the open).  These tests hold the owner's own fragment and
-material to the same rule (``stage_move._keepable_version``): a document
+material to the same rule (``kept_reads.filesystem_trust.file_version``): a document
 whose ctime is not strictly before a coarse clock read taken before its
 ``lstat`` is not installed, the owner takes one extra uncached pass, and a
 document older than that read still installs and hits.
@@ -42,7 +42,8 @@ import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 import test_a_same_tick_rename_is_not_cached as tick  # noqa: E402
 from prismabuild import reader_lease, residency_map  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 TICK_NS = tick.TICK_NS
@@ -53,9 +54,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 class _Version:
@@ -71,7 +72,7 @@ class _Version:
 
 
 def _documents(queue, consumer: str, mover: str) -> dict[str, Path]:
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     return {"fragment": residency_map.fragment_path(root, consumer, mover),
             "material": reader_lease.material_path(root, consumer, mover)}
 

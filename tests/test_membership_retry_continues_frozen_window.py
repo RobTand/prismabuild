@@ -37,13 +37,16 @@ from prismabuild import (  # noqa: E402
     residency_plan,
     storage_tiers,
 )
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
 MANIFEST = "cd" * 32
 GIB = 1 << 30
 SPAN = 2 * GIB
+
+
+from fleet_world import FleetWorld
 
 
 def _hexkey(seed: str) -> str:
@@ -59,9 +62,7 @@ EGRESS1 = _hexkey("r12egress1")
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _sealed_shape(monkeypatch) -> None:
@@ -121,7 +122,7 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, mover: str,
         "tier_id": TIER, "manifest_sha256": MANIFEST,
         "range_start_bytes": start, "range_end_bytes": start + SPAN,
         "bytes_staged": SPAN, "complete": True, "errors": []})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(tmp_path / "stage"),
@@ -130,7 +131,7 @@ def _land(queue: pool.PoolQueue, tmp_path: Path, mover: str,
             "stage_path": str(tmp_path / "stage" / "a.bin"),
             "bytes": 4096, "offset": 0, "sha256": "a" * 64}}})
     queue.finish(mover, status="executed", detail={}, claim_snapshot=snap)
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(mover) == {'stage_gib': 2}
 
 
 def test_consumer_handoff_keeps_later_phases_publishable(
@@ -142,7 +143,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -163,7 +164,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     # are what this file proves.
 
     _land(queue, tmp_path, MOVER0, host)
-    assert tier_loop.compose_map(queue, CONSUMER) == queue.residency_map_path(
+    assert tier_loop.compose_map(queue, CONSUMER) == queue.records.residency_map_path(
         CONSUMER)
     snap_a = queue.claim(tags=["x86"], owner=f"{host}:1:ca",
                          capacity={"cpu": 4, "mem_gb": 16})
@@ -190,14 +191,14 @@ def test_consumer_handoff_keeps_later_phases_publishable(
 
     # Fund and tick: the later mover must publish (never on a retired
     # plan), then run to completion and hand the consumer back.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     tick1 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     # MOVER1 already published at tick0 under joint-fit; the handoff must
     # keep it ready, not retire the plan.
-    assert queue.item_path(pool.READY, MOVER1).exists()
+    assert queue.records.item_path(pool.record_store.READY, MOVER1).exists()
     assert not [e for e in tick1
                 if e["event"] == "residency-plan-superseded"]
-    ready1 = json.loads(queue.item_path(pool.READY, MOVER1).read_text())
+    ready1 = json.loads(queue.records.item_path(pool.record_store.READY, MOVER1).read_text())
     assert ready1["residency"]["range_start_bytes"] == SPAN
     assert ready1["recompute"] is True
     mover1_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER1]
@@ -212,7 +213,7 @@ def test_consumer_handoff_keeps_later_phases_publishable(
     queue.finish(MOVER1, status="executed", detail={},
                  claim_snapshot=snap_m1)
     assert json.loads(
-        queue.item_path(pool.DONE, MOVER1).read_text())["status"] == "executed"
+        queue.records.item_path(pool.record_store.DONE, MOVER1).read_text())["status"] == "executed"
     snap_b = queue.claim(tags=["x86"], owner=f"{host}:1:cb",
                          capacity={"cpu": 4, "mem_gb": 16})
     assert snap_b is not None and int(snap_b["attempts"]) == 1
@@ -226,7 +227,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
     _sealed_shape(monkeypatch)
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -262,7 +263,7 @@ def test_mover_handoff_is_not_read_as_operator_cancellation(
                  claim_snapshot=snap_m)
     queue.publish(**requeue["arguments"],
                   preempted_claim=requeue["snapshot"], handoff_by=owner)
-    ready = json.loads(queue.item_path(pool.READY, MOVER0).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, MOVER0).read_text())
     assert ready["residency"]["range_end_bytes"] == SPAN
     assert ready["recompute"] is True
     mover0_ready = [r for r in queue.ready_items() if r.get("action_key") == MOVER0]
@@ -279,7 +280,7 @@ def test_operator_cancellation_still_stops_publication(
     """The control: an actual operator cancellation retires the window
     and later phases never publish."""
     _sealed_shape(monkeypatch)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     plan = _plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -302,6 +303,6 @@ def test_operator_cancellation_still_stops_publication(
     assert [e for e in tick1
             if e["event"] == "residency-plan-superseded"]
     assert residency_plan.superseded(queue, plan) is not None
-    queue.mint_tier_capacity(TIER, {"stage_gib": 4})
+    queue.tier(TIER).mint({'stage_gib': 4})
     tick2 = tier_loop.residency_window(queue, tiers=_tiers(tmp_path))
     assert not [e for e in tick2 if e["event"] == "mover-published"]

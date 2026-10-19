@@ -19,6 +19,7 @@ now withholds while those holders drain soon.  Busy CPUs no holder holds are
 load the pool does not own, which no drain clears, so they still do not.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 import hashlib
 import json
@@ -30,6 +31,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src")]
 from prismabuild import adaptive_cpu, core as pb, pool  # noqa: E402
+from prismabuild import drain_policy
+from gpu_capacity_fixture import idle_gpu_sample
 
 T0 = 3_000_000.0
 CPUS = 20
@@ -41,6 +44,9 @@ CAPACITY = {"cpu": CPUS, "gpu": 1, "mem_gb": 120}
 SHARD_TIMEOUT_S = 1800
 
 
+from fleet_world import FleetWorld
+
+
 def _key(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
@@ -48,7 +54,7 @@ def _key(seed: str) -> str:
 @pytest.fixture()
 def clock(monkeypatch):
     now = [T0]
-    monkeypatch.setattr(pool, "_now", lambda: now[0])
+    FleetClock(source=lambda: now[0]).install(monkeypatch, scope="pool")
     monkeypatch.setattr(adaptive_cpu.time, "time", lambda: now[0])
     return now
 
@@ -64,28 +70,31 @@ def host(clock, monkeypatch):
 
     state: dict[str, object] = {"psi_some": 0., "busy": {}}
 
-    def sample(self):
+    def sample():
         busy = {cpu: float(state["busy"].get(cpu, 0.)) for cpu in range(CPUS)}  # type: ignore[union-attr]
         return {"sampled_unix": clock[0], "cpu_count": CPUS, "interval_s": 1.,
                 "psi_some": state["psi_some"], "busy_cpus": sum(busy.values()),
                 "per_cpu_busy": {str(cpu): value for cpu, value in busy.items()}}
 
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", sample)
-    return state
+    return state, sample
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _publish(q: pool.PoolQueue, clock, key: str, resources, **kw) -> str:
     clock[0] += 0.001
-    q.publish(action_key=key, cas_root=kw.pop("cas_root", "/cas"),
-              checkout_root=kw.pop("checkout_root", "/co"),
-              worker_script="/w.py", resources=resources, **kw)
+    ActionRows(q).publish(
+        key,
+        cas_root=kw.pop('cas_root', '/cas'),
+        checkout_root=kw.pop('checkout_root', '/co'),
+        worker_script='/w.py',
+        resources=resources,
+        tags=kw.pop('tags', [pool.socket.gethostname()]),
+        **kw,
+    )
     return key
 
 
@@ -117,12 +126,14 @@ def _denial(q: pool.PoolQueue, key: str) -> dict:
     return next(value for value in records.values() if value["action_key"] == key)
 
 
-def _claim(q: pool.PoolQueue) -> str | None:
-    item = q.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+def _claim(q: pool.PoolQueue, cpu_sampler) -> str | None:
+    item = q.claim(has_gpu=True, tags=[pool.socket.gethostname()], capacity=CAPACITY,
+                   cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler,
+                   gpu_sampler=idle_gpu_sample)
     return None if item is None else item["action_key"]
 
 
-def _box_with_shards(queue, clock, host, tmp_path: Path):
+def _box_with_shards(queue, clock, host, tmp_path: Path, cpu_sampler):
     """Three claimed 2-CPU shards, sealed with pbtest's 1800 s deadline."""
 
     shards = []
@@ -130,7 +141,7 @@ def _box_with_shards(queue, clock, host, tmp_path: Path):
         key, cas_root, checkout = _sealed(tmp_path, f"shard-{n}", timeout_s=SHARD_TIMEOUT_S)
         _publish(queue, clock, key, {"cpu": 2, "mem_gb": 5},
                  cas_root=cas_root, checkout_root=checkout)
-        assert _claim(queue) == key
+        assert _claim(queue, cpu_sampler=cpu_sampler) == key
         shards.append(key)
     return shards
 
@@ -159,8 +170,9 @@ def test_a_gpu_row_refused_on_held_cpus_withholds_until_they_drain(
     CPU-only row published after it is not admitted.  When that shard
     finishes, the row claims.
     """
+    host, cpu_sampler = host
 
-    shards = _box_with_shards(queue, clock, host, tmp_path)
+    shards = _box_with_shards(queue, clock, host, tmp_path, cpu_sampler=cpu_sampler)
     predicted = queue.ledger().free_cpu_allocation(9, TIERS)
     assert predicted is not None
     # The row's last two CPUs, not the CPU-only row's first two: that row's
@@ -175,7 +187,7 @@ def test_a_gpu_row_refused_on_held_cpus_withholds_until_they_drain(
     gpu_row = _publish(queue, clock, _key("stage-b-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96})
     cpu_row = _publish(queue, clock, _key("next-shard"), {"cpu": 2, "mem_gb": 5})
 
-    assert _claim(queue) is None, (
+    assert _claim(queue, cpu_sampler=cpu_sampler) is None, (
         "a CPU-only row overtook a GPU row refused only on CPUs pool holders hold")
     denial = _denial(queue, gpu_row)
     assert denial["reason"] == "adaptive_cpu_refused_withholding"
@@ -188,19 +200,19 @@ def test_a_gpu_row_refused_on_held_cpus_withholds_until_they_drain(
     assert verdict["why"] == "drains_soon"
     assert verdict["gpu_first"] is True
     assert queue.passes(gpu_row) == 1
-    assert queue.item_path(pool.READY, cpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, cpu_row).exists()
     assert queue.holder_bound(shards[-1])["bound"] == "transient"
 
     # While the shard on its CPUs runs, the row keeps withholding.
     clock[0] += 30
-    assert _claim(queue) is None
+    assert _claim(queue, cpu_sampler=cpu_sampler) is None
     assert _denial(queue, gpu_row)["reason"] == "adaptive_cpu_refused_withholding"
-    assert queue.item_path(pool.READY, cpu_row).exists()
+    assert queue.records.item_path(pool.record_store.READY, cpu_row).exists()
 
     # The shard on the row's CPUs drains, and the row claims.
     clock[0] += 30
     queue.finish(shards[-1], status="executed")
-    assert _claim(queue) == gpu_row
+    assert _claim(queue, cpu_sampler=cpu_sampler) == gpu_row
 
 
 def test_a_held_cpu_holder_that_does_not_drain_soon_is_not_withheld_for(
@@ -212,12 +224,13 @@ def test_a_held_cpu_holder_that_does_not_drain_soon_is_not_withheld_for(
     declared end a day off, so the row keeps its place, is denied starved and
     names that holder, and the CPU-only row behind it is admitted.
     """
+    host, cpu_sampler = host
 
     key, cas_root, checkout = _sealed(tmp_path, "long-shard", timeout_s=86_400)
     clock[0] = T0 - 2 * pool.WITHHOLD_CEILING_S
     _publish(queue, clock, key, {"cpu": 2, "mem_gb": 5},
              cas_root=cas_root, checkout_root=checkout)
-    assert _claim(queue) == key
+    assert _claim(queue, cpu_sampler=cpu_sampler) == key
     clock[0] = T0
     predicted = queue.ledger().free_cpu_allocation(9, TIERS)
     assert predicted is not None
@@ -228,7 +241,7 @@ def test_a_held_cpu_holder_that_does_not_drain_soon_is_not_withheld_for(
     gpu_row = _publish(queue, clock, _key("stage-b-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96})
     cpu_row = _publish(queue, clock, _key("next-shard"), {"cpu": 2, "mem_gb": 5})
 
-    assert _claim(queue) == cpu_row
+    assert _claim(queue, cpu_sampler=cpu_sampler) == cpu_row
     denial = _denial(queue, gpu_row)
     assert denial["reason"] == "adaptive_cpu_refused_starved"
     assert denial["evidence"]["starved"]["why"] == "holder_does_not_drain_soon"
@@ -248,8 +261,9 @@ def test_busy_cpus_no_pool_holder_holds_do_not_withhold(
     that also names held CPUs is the same: draining the holders would still
     leave the foreign CPU busy.
     """
+    host, cpu_sampler = host
 
-    shards = _box_with_shards(queue, clock, host, tmp_path)
+    shards = _box_with_shards(queue, clock, host, tmp_path, cpu_sampler=cpu_sampler)
     predicted = queue.ledger().free_cpu_allocation(9, TIERS)
     assert predicted is not None
     foreign = predicted[-1]
@@ -262,7 +276,8 @@ def test_busy_cpus_no_pool_holder_holds_do_not_withhold(
     gpu_row = _publish(queue, clock, _key("stage-b-row"), {"cpu": 9, "gpu": 1, "mem_gb": 96})
     cpu_row = _publish(queue, clock, _key("next-shard"), {"cpu": 2, "mem_gb": 5})
 
-    assert _claim(queue) == cpu_row, "a row withheld its box for load no drain clears"
+    assert _claim(queue,
+    cpu_sampler=cpu_sampler) == cpu_row, "a row withheld its box for load no drain clears"
     denial = _denial(queue, gpu_row)
     assert denial["reason"] == "adaptive_cpu_refused"
     decision = denial["evidence"]["decision"]
@@ -280,7 +295,7 @@ def test_busy_cpus_no_pool_holder_holds_do_not_withhold(
     ({"reason": "host_pressure", "held_cpus": [], "foreign_cpus": []}, (None, False)),
 ], ids=["pre-1160-record", "held-only", "foreign-only", "held-and-foreign", "neither"])
 def test_the_drain_mapping_reads_held_and_foreign_cpus(decision, expected) -> None:
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_cpu_refused", decision, demand={"cpu": 9, "gpu": 1},
         measurement=False, cpu_count=CPUS) == expected
 
@@ -289,6 +304,6 @@ def test_an_exclusive_host_pressure_need_keeps_the_exclusive_drain() -> None:
     """A measurement's host_pressure still needs the host quiet, not its CPUs."""
 
     decision = {"reason": "host_pressure", "held_cpus": [3], "foreign_cpus": []}
-    assert pool._adaptive_refusal_drains(
+    assert drain_policy.refusal_mode(
         "adaptive_cpu_refused", decision, demand={"cpu": 2},
         measurement=True, cpu_count=CPUS) == ("exclusive", False)

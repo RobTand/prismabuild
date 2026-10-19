@@ -5,6 +5,7 @@ but the copy is a preference, never admission: a fit host without one
 still claims, and a row without a set keeps the prior order exactly.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 import secrets
@@ -16,7 +17,9 @@ from types import SimpleNamespace
 import pytest
 
 from prismabuild import _gang, core as pb, pool, resident_sets as rs
+from prismabuild import data_manifest as manifest_codec
 from admitted_queue_fixture import AdmittedQueueFixture
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_resident_sets_records import source as resident_source
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
@@ -57,9 +60,9 @@ def _rewrite_body(store, set_id, body, *, rehash=False):
 def _resident_world(tmp_path, *, resident_host="zhost", lease_now=100, hosts=HOSTS):
     """A queue with a two-host set; a resident copy only where asked."""
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for host in hosts:
-        queue.mint_tier_capacity("local:" + host, {"local_gib": 1})
+        queue.tier('local:' + host).mint({'local_gib': 1})
     root, manifest = resident_source(tmp_path)
     store = rs.ResidentSets(tmp_path / "queue")
     record = store.publish(manifest=manifest, canonical_root=str(root),
@@ -79,18 +82,17 @@ def _announce(queue, host):
                    capacity={"cpu": 4, "mem_gb": 16})
 
 
-def _publish(queue, key, **kwargs):
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", resources={"cpu": 1, "mem_gb": 1},
-                  tags=["x86"], **kwargs)
-
-
 def test_offer_sort_puts_the_resident_host_first(tmp_path):
     queue, store, set_id = _resident_world(tmp_path)
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "a" * 64, resident_set=set_id)
-    item = json.loads(queue.item_path(pool.READY, "a" * 64).read_text())
+    ActionRows(queue).publish(
+        'a' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        tags=['x86'],
+        resident_set=set_id,
+    )
+    item = json.loads(queue.records.item_path(pool.record_store.READY, "a" * 64).read_text())
     assert queue.placeable_hosts(item) == ["zhost", "ahost"]
 
 
@@ -99,11 +101,14 @@ def test_a_row_without_a_set_keeps_the_prior_order(tmp_path, monkeypatch, set_va
     queue, store, set_id = _resident_world(tmp_path)
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "b" * 64)
-    item = json.loads(queue.item_path(pool.READY, "b" * 64).read_text())
+    ActionRows(queue).publish('b' * 64, resources={'cpu': 1, 'mem_gb': 1}, tags=['x86'])
+    item = json.loads(queue.records.item_path(pool.record_store.READY, "b" * 64).read_text())
     if set_value is not None:
         item["resident_set"] = set_value
-        pool._write_json_atomic(queue.item_path(pool.READY, "b" * 64), item)
+        pool.immutable_files.write_json_atomic(
+            queue.records.item_path(pool.record_store.READY, "b" * 64),
+            item,
+        )
 
     def unexpected_read(*args):
         pytest.fail("a plain row read resident metadata")
@@ -123,7 +128,7 @@ def test_a_row_with_a_set_but_no_copy_keeps_order_and_still_claims(tmp_path):
     queue.publish(action_key="d" * 64, cas_root="/cas", checkout_root="/co",
                   worker_script="/w.py", resources={"cpu": 1, "mem_gb": 1},
                   resident_set=set_id)
-    item = json.loads(queue.item_path(pool.READY, "d" * 64).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, "d" * 64).read_text())
     assert queue.placeable_hosts(item) == ["ahost", "zhost"]
     admitted = AdmittedQueueFixture(queue, capacity={"cpu": 1, "mem_gb": 2},
                                     default_demand={"cpu": 1, "mem_gb": 1})
@@ -135,8 +140,13 @@ def test_a_row_with_a_set_but_no_copy_keeps_order_and_still_claims(tmp_path):
 def _assert_fallback(queue, set_id, monkeypatch):
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "f" * 64, resident_set=set_id)
-    item = pool._read_json(queue.item_path(pool.READY, "f" * 64))
+    ActionRows(queue).publish(
+        'f' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        tags=['x86'],
+        resident_set=set_id,
+    )
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, "f" * 64))
     assert queue.resident_copy_hosts(set_id) == set()
     assert queue.placeable_hosts(item) == list(HOSTS)
     monkeypatch.setattr(pool.socket, "gethostname", lambda: "ahost")
@@ -209,7 +219,7 @@ def test_digest_matching_bad_manifest_allows_fallback(tmp_path, monkeypatch, dam
         body["canonical_root"] = prefix
         manifest["mount_prefix"] = prefix + "canonical"
         entry["path"] = prefix + "canonical/weights"
-        pb.validate_data_manifest(manifest)
+        manifest_codec.validate_data_manifest(manifest)
         assert Path(entry["path"]).is_relative_to(Path(prefix))
     set_id = _rewrite_body(store, set_id, body, rehash=True)
     _assert_fallback(queue, set_id, monkeypatch)
@@ -219,8 +229,8 @@ def test_digest_matching_bad_manifest_allows_fallback(tmp_path, monkeypatch, dam
 def test_root_spelling_never_confers_preference(tmp_path, root):
     queue = pool.PoolQueue(tmp_path / "queue")
     store = rs.ResidentSets(queue.root)
-    manifest = pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+    manifest = manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
         "mount_prefix": root + "canonical", "entry_count": 1, "total_bytes": 7,
         "entries": [{"path": root + "canonical/weights", "offset": 0,
                      "bytes": 7, "sha256": "a" * 64}],
@@ -335,25 +345,27 @@ def resident_gang(fleet, tmp_path, monkeypatch):
     """An idle two-host gang fleet with a set resident only on sparky."""
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
     for host in GHOSTS:
-        queue.mint_tier_capacity("local:" + host, {"local_gib": 1})
+        queue.tier('local:' + host).mint({'local_gib': 1})
         queue.announce(host=host, tags=["gb10", host, _gang.TAG], has_gpu=True,
                        capacity=dict(CAPACITY))
     root, manifest = resident_source(tmp_path)
     store = rs.ResidentSets(queue.root)
     record = store.publish(manifest=manifest, canonical_root=str(root),
                            hosts=list(GHOSTS),
-                           lease={"until": clock[0] + 3600, "hard_max": clock[0] + 7200},
-                           created_by="test", now=clock[0])
+                           lease={"until": clock.now + 3600, "hard_max": clock.now + 7200},
+                           created_by="test", now=clock.now)
     set_id = record["set_id"]
     store.write_copy(set_id, "sparky", {"state": "resident", "local_root": "/tmp/x",
                                         "verification": [], "bytes": 7,
-                                        "completed_unix": clock[0]})
+                                        "completed_unix": clock.now})
 
     def gclaim(host, *, advance=0.01):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         tick(advance)
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                             has_gpu=True, tags=["gb10", host, _gang.TAG])
+                             has_gpu=True, tags=["gb10", host, _gang.TAG],
+                             cpu_sampler=lambda: cpu_sample(clock, readings),
+                             gpu_sampler=lambda: gpu_sample(sample, readings))
         return None if result is None else result["action_key"]
 
     def members(name, *, resident_set=True, tags=None):
@@ -363,7 +375,7 @@ def resident_gang(fleet, tmp_path, monkeypatch):
         checkout = tmp_path / "checkout"
         rows = []
         for index in range(2):
-            clock[0] += 0.001
+            clock.now += 0.001
             gang = {"group": group, "size": 2, "index": index}
             action = pb.seal_action({
                 "schema": pb.ACTION_SCHEMA_V2,
@@ -385,7 +397,9 @@ def resident_gang(fleet, tmp_path, monkeypatch):
                           resources={"cpu": 2, "gpu": 1, "mem_gb": 100},
                           needs_gpu=True, tags=tags or ["gb10"], priority=0, gang=gang,
                           max_attempts=1, resident_set=set_id if resident_set else None)
-            rows.append(pool._read_json(queue.item_path(pool.READY, key)))
+            rows.append(
+                pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)),
+            )
         _gang.publish_group(queue, group, rows)
         return group, [row["action_key"] for row in rows]
 
@@ -437,8 +451,13 @@ def test_resident_hold_ignores_a_future_publish_stamp(tmp_path, published):
     queue, store, set_id = _resident_world(tmp_path, lease_now=100)
     for host in HOSTS:
         _announce(queue, host)
-    _publish(queue, "e" * 64, resident_set=set_id)
-    item = json.loads(queue.item_path(pool.READY, "e" * 64).read_text())
+    ActionRows(queue).publish(
+        'e' * 64,
+        resources={'cpu': 1, 'mem_gb': 1},
+        tags=['x86'],
+        resident_set=set_id,
+    )
+    item = json.loads(queue.records.item_path(pool.record_store.READY, "e" * 64).read_text())
     record = {"group": "f" * 32, "size": 2}
     entry = {"index": 0, "action_key": "e" * 64}
     live = queue.offers()
@@ -457,18 +476,20 @@ def test_resident_hold_ignores_a_future_publish_stamp(tmp_path, published):
 def test_gang_deadline_is_publication_based_and_expires_exactly(resident_gang, monkeypatch):
     queue, clock, tick, gclaim, denial, members = resident_gang
     group, (first, second) = members("resident-deadline")
-    published = pool._read_json(queue.item_path(pool.READY, first))["published_unix"]
+    published = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, first),
+    )["published_unix"]
     assert pool.RESIDENT_COPY_PREFER_S == 30.0
     deadline = published + pool.RESIDENT_COPY_PREFER_S
     for now in (published + 1, published + 10, deadline - 0.001, deadline - 0.001):
-        clock[0] = now
+        clock.now = now
         assert gclaim("sparklina", advance=0) is None
         evidence = denial(first, "sparklina")
         assert evidence["reason"] == "deferred_for_resident_copy"
         assert evidence["evidence"]["wait_remaining_s"] == pytest.approx(deadline - now)
         assert _gang.elections(queue, group, 2) == {}
         assert not list(_gang.state_dir(queue, group).glob("ready-*.json"))
-    clock[0] = deadline
+    clock.now = deadline
     assert gclaim("sparklina", advance=0) is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"
@@ -486,7 +507,7 @@ def test_gang_without_a_valid_matching_copy_elects_immediately(resident_gang, ki
     queue, clock, tick, gclaim, denial, members = resident_gang
     group, (first, second) = members("no-locality-wait", resident_set=kind != "no-set",
                                      tags=["sparklina"] if kind == "ineligible-copy" else None)
-    item = pool._read_json(queue.item_path(pool.READY, first))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, first))
     if kind not in {"no-set", "ineligible-copy"}:
         store = rs.ResidentSets(queue.root)
         set_id = item["resident_set"]
@@ -501,10 +522,10 @@ def test_gang_without_a_valid_matching_copy_elects_immediately(resident_gang, ki
             body["manifest"]["annotations"]["bad"] = float("nan")
             damaged_id = _rewrite_body(store, set_id, body, rehash=True)
             for key in (first, second):
-                path = queue.item_path(pool.READY, key)
-                row = pool._read_json(path)
+                path = queue.records.item_path(pool.record_store.READY, key)
+                row = pool.record_store.read_document(path)
                 row["resident_set"] = damaged_id
-                pool._write_json_atomic(path, row)
+                pool.immutable_files.write_json_atomic(path, row)
     assert gclaim("sparklina", advance=0) is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     assert _gang.elections(queue, group, 2)[0]["host"] == "sparklina"

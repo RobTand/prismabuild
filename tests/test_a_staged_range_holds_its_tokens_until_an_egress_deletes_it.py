@@ -15,6 +15,7 @@ operation, an error in the deletes keeps the tokens, and a mover no live item
 names any more is swept.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import errno
 import json
@@ -26,7 +27,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, pool, residency_map, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_holdings
+from prismabuild import staged_path
 
 MOVER = "1" * 64
 CONSUMER = "2" * 64
@@ -40,14 +43,9 @@ DIGEST = "1" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
-
-
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw) -> None:
-    q.publish(action_key=key, cas_root=q.root / "cas", checkout_root=q.root / "co",
-              worker_script=q.root / "worker.py", resources=resources, **kw)
 
 
 def _residency(**overrides) -> dict[str, object]:
@@ -64,8 +62,16 @@ def _residency(**overrides) -> dict[str, object]:
 
 
 def _claim_mover(q: pool.PoolQueue, *, host: str = "dl380g10") -> dict[str, object]:
-    _publish(q, MOVER, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2},
-             residency=_residency(), max_attempts=1, retry_safe=False)
+    ActionRows(q).publish(
+        MOVER,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+    )
     claimed = q.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=[host])
     assert claimed is not None and claimed["action_key"] == MOVER
     return claimed
@@ -89,7 +95,7 @@ def _receipt(q: pool.PoolQueue, *, staged: int = 2 * storage_tiers.GIB,
 
 
 def _held(q: pool.PoolQueue) -> dict[str, int]:
-    return q.tier_ledger(TIER).holder_tokens(MOVER)
+    return q.tier(TIER).holdings(MOVER)
 
 
 def _denial(q: pool.PoolQueue, key: str) -> dict[str, object] | None:
@@ -114,7 +120,7 @@ def test_a_mover_that_staged_its_range_keeps_its_tier_tokens(queue) -> None:
     # The host's tokens go: the box is free for other work the instant the
     # copy stops.  Only the tier's stay.
     assert queue.ledger("dl380g10").holder_tokens(MOVER) == {}
-    assert (queue.root / pool.DONE / f"{MOVER}.json").exists()
+    assert (queue.root / pool.record_store.DONE / f"{MOVER}.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -156,12 +162,18 @@ def test_a_receipt_for_another_tier_does_not_pin_this_one(queue) -> None:
 def test_an_ordinary_action_is_unaffected(queue) -> None:
     """No residency block, no pin, and no new read on the way out."""
 
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+    )
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None
     queue.finish(CONSUMER, status="executed")
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
-    assert queue.tier_ledger(TIER).holder_tokens(CONSUMER) == {}
+    assert queue.tier(TIER).holdings(CONSUMER) == {}
 
 
 # ------------------------------------------------------------- the gate
@@ -177,7 +189,7 @@ def _compose_map(queue, *, consumer: str = CONSUMER) -> Path:
     """The composed map, which admission requires as well as the pin."""
 
     return residency_map.write_map(
-        queue.residency_map_path(consumer),
+        queue.records.residency_map_path(consumer),
         residency_map.compose([{
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": consumer, "mover_action_key": MOVER,
@@ -192,10 +204,20 @@ def _compose_map(queue, *, consumer: str = CONSUMER) -> Path:
 def test_a_consumer_is_admitted_on_a_lead_that_holds_its_bytes(queue) -> None:
     _finished_pinned_mover(queue)
     _compose_map(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
 
@@ -214,10 +236,20 @@ def test_a_pinned_range_with_no_composed_map_is_refused(queue) -> None:
     """
 
     _finished_pinned_mover(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
     denial = _denial(queue, CONSUMER)
@@ -247,11 +279,21 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
 
     _finished_pinned_mover(queue)
     _compose_map(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
-    real = pool.PoolQueue.residency_map_path
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
+    real = pool.record_store.RecordStore.residency_map_path
 
     class _StalledPath:
         def __init__(self, path: Path) -> None:
@@ -263,7 +305,7 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
         def exists(self) -> bool:
             raise OSError(errno.ESTALE, "Stale file handle")
 
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path',
                         lambda self, key: _StalledPath(real(self, key)))
 
     # The claim returns, rather than raising out of the scan...
@@ -272,13 +314,13 @@ def test_a_stalled_mount_denies_instead_of_escaping_the_claim_scan(
     assert denial is not None and denial["reason"] == "residency_map_unreadable"
     verdict = denial["evidence"]["residency"]
     assert "Stale file handle" in verdict["error"]
-    assert verdict["map_path"] == str(real(queue, CONSUMER))
+    assert verdict["map_path"] == str(real(queue.records, CONSUMER))
     # ...and it is a stall, not a verdict: nothing aged, nothing taken.
     assert queue.passes(CONSUMER) == 0
     assert queue.ledger("dl380g10").holder_tokens(CONSUMER) == {}
 
     # The mount comes back and the same item is admitted, unchanged.
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path", real)
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path', real)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == CONSUMER
     assert claimed["residency_verdict"]["state"] == "resident"
@@ -289,7 +331,7 @@ def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
 ) -> None:
     """The launcher stats the same file, and must not die on it either."""
 
-    real = pool.PoolQueue.residency_map_path
+    real = pool.record_store.RecordStore.residency_map_path
 
     class _StalledPath:
         def __str__(self) -> str:
@@ -298,7 +340,7 @@ def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
         def exists(self) -> bool:
             raise OSError(errno.EIO, "Input/output error")
 
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path",
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path',
                         lambda self, key: _StalledPath())
     item = {"action_key": CONSUMER, "residency": {"leads": [MOVER]}}
 
@@ -306,7 +348,7 @@ def test_a_stalled_mount_leaves_the_map_out_of_the_launch_environment(
     # read a map it cannot open would decide it had been staged and then read
     # the pool anyway, which is the difference the receipt cannot show.
     assert queue.residency_map_environment(item) == {}
-    monkeypatch.setattr(pool.PoolQueue, "residency_map_path", real)
+    monkeypatch.setattr(pool.record_store.RecordStore, 'residency_map_path', real)
 
 
 def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
@@ -315,10 +357,20 @@ def test_a_lead_that_finished_holding_nothing_is_refused(queue) -> None:
     _claim_mover(queue)
     _receipt(queue, staged=0)
     queue.finish(MOVER, status="executed")
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
 
@@ -336,11 +388,21 @@ def test_a_lead_whose_bytes_an_egress_took_back_is_refused_again(queue) -> None:
     """The gate reads the ledger, so residency can be lost as well as gained."""
 
     _finished_pinned_mover(queue)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
-    queue.release_tier_reservations(MOVER)
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
+    tier_holdings.egress_all(queue, MOVER)
 
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"]) is None
     # Terminal too: the bytes are gone and only a republished mover brings
@@ -354,11 +416,20 @@ def test_a_block_that_names_no_tier_reads_as_it_did_before(queue) -> None:
     _claim_mover(queue)
     _receipt(queue)
     queue.finish(MOVER, status="executed")
-    queue.release_tier_reservations(MOVER)
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    tier_holdings.egress_all(queue, MOVER)
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     _compose_map(queue)
     claimed = queue.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
@@ -386,7 +457,7 @@ def test_reclaim_will_not_quietly_unpin_a_staged_range(queue) -> None:
 def _staged_files(tmp_path: Path, queue: pool.PoolQueue, count: int = 3) -> Path:
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     entries = {}
     for index in range(count):
         path = stage / "sub" / f"part-{index}.bin"
@@ -394,7 +465,7 @@ def _staged_files(tmp_path: Path, queue: pool.PoolQueue, count: int = 3) -> Path
         path.write_bytes(b"x" * 16)
         entries[residency_map.residency_map_key(f"/mnt/shared/part-{index}", 0)] = {
             "stage_path": str(path), "bytes": 16, "offset": 0, "sha256": DIGEST}
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -409,7 +480,7 @@ def test_an_egress_deletes_the_bytes_and_returns_the_tokens(queue, tmp_path) -> 
     queue.finish(MOVER, status="executed")
     assert _held(queue) == {"stage_gib": 2}
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is True
@@ -419,7 +490,7 @@ def test_an_egress_deletes_the_bytes_and_returns_the_tokens(queue, tmp_path) -> 
     assert not list(stage.rglob("*.bin"))
     # The directories the range left behind go too, but never the stage itself.
     assert not (stage / "sub").exists() and stage.exists()
-    assert residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER) == []
+    assert residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER) == []
 
 
 def test_a_second_egress_of_the_same_range_is_a_no_op(queue, tmp_path) -> None:
@@ -429,10 +500,10 @@ def test_a_second_egress_of_the_same_range_is_a_no_op(queue, tmp_path) -> None:
     _claim_mover(queue)
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
-    stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                         stage_root=str(stage))
 
-    again = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    again = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                 stage_root=str(stage))
 
     assert again["complete"] is True
@@ -452,13 +523,13 @@ def test_bytes_that_could_not_be_deleted_keep_their_tokens(queue, tmp_path,
     monkeypatch.setattr(stage_release.os, "unlink",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("EROFS")))
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is False and receipt["errors"]
     assert receipt["tokens_released"] == 0
     assert _held(queue) == {"stage_gib": 2}
-    assert residency_map.read_fragments(queue.root / pool.RESIDENCY, CONSUMER) != []
+    assert residency_map.read_fragments(queue.root / pool.record_store.RESIDENCY, CONSUMER) != []
 
 
 def test_a_fragment_that_cannot_be_read_keeps_its_tokens(queue, tmp_path) -> None:
@@ -475,9 +546,9 @@ def test_a_fragment_that_cannot_be_read_keeps_its_tokens(queue, tmp_path) -> Non
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
     # Mutate what the driver reads, not the code that reads it.
-    (queue.root / pool.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text("{not json")
+    (queue.root / pool.record_store.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text("{not json")
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is False and receipt["errors"]
@@ -492,11 +563,11 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     outside = tmp_path / "not-the-stage.bin"
     outside.write_bytes(b"keep me")
-    (queue.root / pool.RESIDENCY / CONSUMER).mkdir(parents=True)
-    (queue.root / pool.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text(json.dumps({
+    (queue.root / pool.record_store.RESIDENCY / CONSUMER).mkdir(parents=True)
+    (queue.root / pool.record_store.RESIDENCY / CONSUMER / f"{MOVER}.json").write_text(json.dumps({
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -504,7 +575,7 @@ def test_a_fragment_naming_a_path_outside_the_stage_never_reaches_the_unlink(
             "stage_path": str(outside), "bytes": 7, "offset": 0,
             "sha256": DIGEST}}}))
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is False
@@ -516,12 +587,12 @@ def test_a_missing_fragment_still_returns_the_tokens(queue, tmp_path) -> None:
 
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     _claim_mover(queue)
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["complete"] is True and receipt["tokens_released"] == 2
@@ -551,10 +622,20 @@ def test_a_mover_a_ready_consumer_still_names_is_left_alone(queue, tmp_path) -> 
     _claim_mover(queue)
     _receipt(queue, stage_root=stage)
     queue.finish(MOVER, status="executed")
-    _publish(queue, CONSUMER, {"cpu": 1, "mem_gb": 1},
-             residency={"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": TIER,
-                        "manifest_sha256": MANIFEST, "manifest_bytes": 1 << 40,
-                        "leads": [MOVER]})
+    ActionRows(queue).publish(
+        CONSUMER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        residency={
+            'schema': pool.RESIDENCY_SCHEMA_V1,
+            'tier_id': TIER,
+            'manifest_sha256': MANIFEST,
+            'manifest_bytes': 1 << 40,
+            'leads': [MOVER],
+        },
+    )
 
     assert stage_release.sweep(queue, stage_roots={TIER: str(stage)}) == []
     assert _held(queue) == {"stage_gib": 2}

@@ -17,6 +17,7 @@ without fleet contact:
   ``--summary-dir`` flags exist on the driver.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import hashlib
 import inspect
@@ -33,6 +34,7 @@ if str(FLEET_DIR) not in sys.path:
 
 import pbcanary  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from pbcanary_legs import leg1, leg2, leg3, leg4  # noqa: E402
 from pbcanary_verdict import PRECONDITION_MARKERS, verdict  # noqa: E402
 
@@ -423,11 +425,11 @@ def _sealed_pbrun_params(
         sealed.append(body)
         raise _PbrunSealed()
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
-    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core.pb, "seal_action", _stop)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd, **_context: tmp_path)
     monkeypatch.setattr(
-        pbrun, "build_git_checkout_snapshot",
+        submit_core, 'snapshot_checkout',
         lambda *_a, **_kw: {"input": {"id": "test"}},
     )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", *pbrun_argv[2:]])

@@ -24,12 +24,14 @@ finished through the real ``PoolQueue``, as in
 ``test_consumed_origin_retirement``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+from prismabuild import pool as c13_pool
 
 import collections
 import json
 from pathlib import Path
 import sys
-import time
 
 import pytest
 
@@ -38,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
-from prismabuild import produced_output as po  # noqa: E402
+from kept_read_clock import after_paths  # noqa: E402
+from prismabuild import kept_reads, produced_output as po  # noqa: E402
 from test_consumed_origin_retirement import (  # noqa: E402
     _bind_owner, _publish_consumer, _run_consumer,
 )
@@ -46,7 +49,7 @@ from test_write_only_produced_output import (  # noqa: E402
     _descriptor, _prewrite, _queue, _template,
 )
 
-CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
+CONSUMED = oc.ORIGIN_LIFETIME_CONSUMED
 
 
 @pytest.fixture(autouse=True)
@@ -73,8 +76,8 @@ class _World:
             path, ref = self._commit(batch_id)
             self.paths[batch_id] = path
             self.refs[batch_id] = ref
-        self.commitments = po._commitments_path(self.queue.root, self.instance)
-        self.admission = po._read_commitments(self.commitments)["admission"]
+        self.commitments = bl.BatchLedger.for_instance(self.queue.root, self.instance).path
+        self.admission = bl.BatchLedger(self.commitments).capture()["admission"]
 
     def _commit(self, batch_id: str,
                 payload: bytes = b"handoff bytes") -> tuple[Path, dict]:
@@ -83,7 +86,7 @@ class _World:
                          [path], len(payload))["ok"]
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
-        committed = po.commit_origin_batch(
+        committed = bl.BatchLedger.commit_origin(
             self.queue, self.instance, self.template,
             [_descriptor(self.instance, self.template, path, payload)],
             batch_id=batch_id, lifetime=CONSUMED)
@@ -91,7 +94,7 @@ class _World:
         return path, dict(committed["ref"])
 
     def entry(self, batch_id: str) -> dict:
-        return po._read_commitments(self.commitments)["batches"][batch_id]
+        return bl.BatchLedger(self.commitments).capture()["batches"][batch_id]
 
     def replace(self, change) -> None:
         """Rewrite the commitments under the ownership lock, in place."""
@@ -100,13 +103,14 @@ class _World:
                 str(self.instance["output_prefix"])):
             change(self.commitments)
 
-    def settle(self) -> None:
-        """Let one clock tick pass, so a version may be kept (#1045)."""
-
-        time.sleep(0.05)
-
     def tick(self) -> list[dict]:
         return po.origin_retirement_tick(self.queue)
+
+
+@pytest.fixture(autouse=True)
+def _fleet_file_versions():
+    with kept_reads.file_version_scope():
+        yield
 
 
 def _version_keepable(path: Path) -> bool:
@@ -118,9 +122,8 @@ def _version_keepable(path: Path) -> bool:
     for one re-reads by design, and the count assertions below do not apply.
     """
 
-    trusted = po._trusted_version_facilities()
-    return (trusted is not None
-            and trusted[0](path.stat(), trusted[1]()) is not None)
+    fence = kept_reads.filesystem_trust.file_fence()
+    return kept_reads.filesystem_trust.file_version(path.stat(), fence, path=path) is not None
 
 
 class _Reads:
@@ -130,20 +133,21 @@ class _Reads:
                  commitments: Path) -> None:
         self.commitments = Path(commitments)
         self.counts: collections.Counter = collections.Counter()
-        real_read = po._read_commitments
-        real_order = po._output_prefix_lock_order
+        real_read = bl.BatchLedger.capture
+        real_order = bl._output_prefix_lock_order
 
-        def read(path, *args, **kwargs):
+        def read(ledger, *args, **kwargs):
+            path = ledger.path
             if Path(path) == self.commitments:
                 self.counts["commitments_read"] += 1
-            return real_read(path, *args, **kwargs)
+            return real_read(ledger, *args, **kwargs)
 
         def order(own, templates):
             self.counts["lock_order"] += 1
             return real_order(own, templates)
 
-        monkeypatch.setattr(po, "_read_commitments", read)
-        monkeypatch.setattr(po, "_output_prefix_lock_order", order)
+        monkeypatch.setattr(bl.BatchLedger, 'capture', read)
+        monkeypatch.setattr(bl, '_output_prefix_lock_order', order)
 
 
 def test_a_quiet_scope_parses_its_commitments_once(tmp_path: Path,
@@ -153,7 +157,7 @@ def test_a_quiet_scope_parses_its_commitments_once(tmp_path: Path,
 
     world = _World(tmp_path, batches=5)
     world.queue.finish(world.owner, status="executed")
-    world.settle()
+    after_paths(monkeypatch, world.commitments)
     if not _version_keepable(world.commitments):
         pytest.skip("this host's filesystem cannot vouch for a file version")
     reads = _Reads(monkeypatch, world.commitments)
@@ -163,7 +167,7 @@ def test_a_quiet_scope_parses_its_commitments_once(tmp_path: Path,
     assert reads.counts["commitments_read"] == 1, dict(reads.counts)
     assert reads.counts["lock_order"] == 1, dict(reads.counts)
     assert all(path.exists() for path in world.paths.values())
-    assert po._read_commitments(world.commitments)["admission"] == world.admission
+    assert bl.BatchLedger(world.commitments).capture()["admission"] == world.admission
 
 
 def test_a_consumer_declared_between_cycles_retires_its_batch(
@@ -181,11 +185,11 @@ def test_a_consumer_declared_between_cycles_retires_its_batch(
     events = world.tick()
 
     assert [(event["event"], event["ref"]["batch_id"]) for event in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "b0")]
+        (oc.ORIGIN_RETIRED_EVENT, "b0")]
     assert events[0]["ref"] == world.refs["b0"]
     assert not world.paths["b0"].exists()
     assert all(world.paths[batch_id].exists() for batch_id in ("b1", "b2"))
-    assert po._read_commitments(world.commitments)["admission"] == world.admission
+    assert bl.BatchLedger(world.commitments).capture()["admission"] == world.admission
     assert world.tick() == []
 
 
@@ -201,7 +205,7 @@ def test_a_stall_reports_once_and_retires_when_the_consumer_succeeds(
     first = world.tick()
 
     assert [(event["event"], event["consumers"]) for event in first] == [
-        (po.ORIGIN_RETIREMENT_STALLED_EVENT,
+        (oc.ORIGIN_RETIREMENT_STALLED_EVENT,
          [{"action_key": consumer, "state": "failed"}])]
     assert world.entry("b0")["retirement_report"]
     assert world.paths["b0"].exists()
@@ -212,7 +216,7 @@ def test_a_stall_reports_once_and_retires_when_the_consumer_succeeds(
     _publish_consumer(world.queue, consumer)
     _run_consumer(world.queue, consumer, "executed")
     events = world.tick()
-    assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]
+    assert [event["event"] for event in events] == [oc.ORIGIN_RETIRED_EVENT]
     assert not world.paths["b0"].exists()
 
 
@@ -243,7 +247,7 @@ def test_a_replacement_between_batches_is_read(tmp_path: Path,
 
     assert calls == ["b0", "b1"]
     assert [(event["event"], event["ref"]["batch_id"]) for event in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "b0")]
+        (oc.ORIGIN_RETIRED_EVENT, "b0")]
     assert not world.paths["b0"].exists()
     assert world.paths["b1"].exists(), "the replacement's answer decides"
     assert world.entry("b1")["origin_only"] is False
@@ -273,8 +277,8 @@ def test_a_corrupt_replacement_between_batches_refuses(tmp_path: Path,
     assert [(event["event"],
              None if event.get("ref") is None
              else event["ref"]["batch_id"]) for event in events] == [
-        (po.ORIGIN_RETIRED_EVENT, "b0"),
-        (po.ORIGIN_RETIREMENT_REFUSED_EVENT, None)]
+        (oc.ORIGIN_RETIRED_EVENT, "b0"),
+        (oc.ORIGIN_RETIREMENT_REFUSED_EVENT, None)]
     assert "corrupt" in events[1]["reason"], events[1]
     assert not world.paths["b0"].exists()
     assert world.paths["b1"].exists()
@@ -285,37 +289,38 @@ def test_a_failed_write_leaves_no_cached_mutation(tmp_path: Path,
                                                   ) -> None:
     world = _World(tmp_path, batches=1)
     world.queue.finish(world.owner, status="failed")
-    real_write = po._write_commitments
+    real_write = bl.BatchLedger.file
     failed: list[bool] = []
 
-    def write(path, record):
+    def write(ledger, record):
+        path = ledger.path
         if Path(path) == world.commitments and not failed:
             failed.append(True)
-            raise po.ProducedOutputError("commitments write failed: test")
-        return real_write(path, record)
+            raise oc.ProducedOutputError("commitments write failed: test")
+        return real_write(ledger, record)
 
-    monkeypatch.setattr(po, "_write_commitments", write)
+    monkeypatch.setattr(bl.BatchLedger, 'file', write)
     events = world.tick()
 
     assert failed
     refused = [event for event in events
-               if event["event"] == po.ORIGIN_RETIREMENT_REFUSED_EVENT]
+               if event["event"] == oc.ORIGIN_RETIREMENT_REFUSED_EVENT]
     assert len(refused) == 1 and "commitments write failed" in refused[0]["reason"]
     assert world.paths["b0"].exists()
     assert not world.entry("b0").get("retiring")
     assert not world.entry("b0").get("origin_reclaimed")
-    scope = po.instance_dir(world.queue.root, world.instance)
-    assert not po._TickReads(world.queue).batches(scope)["b0"].get("retiring")
+    scope = bl.scope_dir(world.queue.root, world.instance)
+    assert not bl.LedgerReads(world.queue, lease_timeout_s=c13_pool.LEASE_TIMEOUT_S).batches(scope)["b0"].get("retiring")
 
-    monkeypatch.setattr(po, "_write_commitments", real_write)
+    monkeypatch.setattr(bl.BatchLedger, 'file', real_write)
     events = world.tick()
-    assert [event["event"] for event in events] == [po.ORIGIN_RETIRED_EVENT]
+    assert [event["event"] for event in events] == [oc.ORIGIN_RETIRED_EVENT]
     assert not world.paths["b0"].exists()
 
 
 def test_the_lock_order_is_kept_until_the_listing_changes(tmp_path: Path
                                                           ) -> None:
-    reads = po._TickReads(_queue(tmp_path))
+    reads = bl.LedgerReads(_queue(tmp_path), lease_timeout_s=c13_pool.LEASE_TIMEOUT_S)
     listing = {"a": {"output_prefix": "/p/own"}}
 
     first = reads.lock_order("/p/own", listing)

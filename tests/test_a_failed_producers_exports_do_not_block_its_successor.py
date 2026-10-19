@@ -26,6 +26,8 @@ Everything runs on a synthetic origin prefix, spool and queue under
 ``tmp_path``.  Nothing reads or writes a real stage, origin or queue.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 from pathlib import Path
@@ -33,6 +35,7 @@ from pathlib import Path
 import test_prepaid_writer_integration as fx
 from test_produced_spool import claim_export, prepare, world
 from prismabuild import core, pool, produced_output as po, produced_spool as ps
+from prismabuild.record_store import Present, RecordStore
 
 
 # -- the two attempts -----------------------------------------------------------
@@ -77,14 +80,16 @@ def _retry(spool):
 
     q = spool.queue
     control = fx._broker_control(q, spool.owner)
-    claimed = pool._read_json(q.item_path(pool.CLAIMED, spool.owner))
+    claimed = pool.record_store.value_or_raise(
+        q.records.item(pool.record_store.CLAIMED, spool.owner),
+    )
     instance = po.bind_instance(q, spool.template, owner_action_key=spool.owner,
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": spool.owner,
                                      "PRISMABUILD_ACTION_NONCE": control["nonce"],
                                      "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(q.root, instance)
-    assert po.admit_instance(q, instance, spool.template)["ok"]
-    assert po._producer_attempt_state(q, spool.instance) == "dead"
+    bl.declare_instance(q.root, instance)
+    assert bl.BatchLedger.admit(q, instance, spool.template)["ok"]
+    assert bl.producer_attempt_state(q, spool.instance) == "dead"
     return ps.ProducedSpool(q, instance, spool.template, cas_root=spool.cas_root,
                             root=spool.root, max_bytes=spool.max_bytes)
 
@@ -98,7 +103,7 @@ def _new_key(spool, label):
     q = spool.queue
     q.withdraw(spool.owner, reason="test: the producer failed")
     q.finish(spool.owner, status="failed")
-    assert po._producer_attempt_state(q, spool.instance) == "dead"
+    assert bl.producer_attempt_state(q, spool.instance) == "dead"
     cas, request = po._read_producer_request(spool.cas_root, spool.owner)
     request.pop("action_key")
     request["environment"]["variables"]["PB_TEST_PRODUCER"] = label
@@ -114,11 +119,13 @@ def _new_key(spool, label):
 def _fail_export(spool, key):
     """Fail an export row until no attempt of it is left to run."""
 
-    while po._mover_live_state(spool.queue, key) == pool.READY:
+    while (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.record_store.READY):
         claimed = spool.queue.claim(owner="export-fails", tags=[spool.host])
         assert claimed["action_key"] == key
         spool.queue.finish(key, status="failed")
-    assert po._mover_live_state(spool.queue, key) == pool.FAILED
+    assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.record_store.FAILED)
 
 
 def _proof(spool, batch, index=0):
@@ -258,7 +265,8 @@ def test_a_live_export_of_another_group_does_not_hold_the_destination(tmp_path):
 
     answer = _try_export(second, "b39")
 
-    assert po._mover_live_state(first.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(first.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.record_store.CLAIMED)
     assert answer["ok"], f"another group's live export holds this path: {answer}"
     assert destination.read_bytes() == payload
 
@@ -290,7 +298,8 @@ def test_a_failed_groups_export_that_may_still_run_holds_the_destination(tmp_pat
     first = world(tmp_path)
     destination, running = _landed(first, "b39", b"landed by a live export",
                                    finish=False)
-    assert po._mover_live_state(first.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(first.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.record_store.CLAIMED)
     second = _retry(first)
     _source, _destination, entries = prepare(second, batch="b39",
                                              payload=b"the successor's bytes")
@@ -310,11 +319,11 @@ def test_a_committed_file_is_adopted_with_its_bytes_and_never_replaced(tmp_path)
     first = world(tmp_path)
     payload = b"committed before the attempt died"
     destination, _ = _landed(first, "b39", payload)
-    descriptor = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
+    descriptor = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
         "path": str(destination), "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": first.owner, "owner_attempt": first.instance["owner_attempt"]},
         first.template, first.instance)
     batch = po.publish_prepaid_batch(first.queue, first.instance, first.template,
@@ -358,7 +367,8 @@ def test_every_dead_attempt_in_a_retry_chain_is_asked_about_its_export(tmp_path,
     claimed = second.queue.claim(owner="a-worker-that-is-still-copying", tags=[second.host])
     assert claimed["action_key"] == running["export_key"]
     third = _new_key(second, "resubmit-2")
-    assert po._mover_live_state(third.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(third.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.record_store.CLAIMED)
     _source, _destination, entries = prepare(third, batch="b39", payload=b"key C's bytes")
     handle = third.submit_group("b39", entries)
     claim_export(third, handle)

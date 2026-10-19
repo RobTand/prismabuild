@@ -31,10 +31,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, residency_map  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "2" * 64
@@ -52,7 +54,7 @@ def _staged(stage: Path, name: str) -> Path:
     this file follows the naming rule instead of restating it.
     """
 
-    return stage / stage_move.stage_relative(
+    return stage / staged_path.stage_relative(
         f"/originals/{name}", 0, SIZE, mount_prefix="/originals")
 
 
@@ -60,7 +62,7 @@ def _manifest_blob(cas_root: Path, mount: Path) -> str:
     """A real v1 manifest in the CAS, addressed by its own digest."""
 
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {}, "annotations": {},
         "mount_prefix": str(mount),
         "entry_count": len(NAMES), "total_bytes": SPAN,
@@ -107,7 +109,7 @@ def _seal_action(cas: pb.PrismaBuildCAS, checkout: Path, *, command: object,
     tests below change what a request *seals* instead of pretending to.
     """
 
-    manifest_input = {"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+    manifest_input = {"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                       "sha256": digest, "bytes": 1024}
     params: dict[str, object] = {
         "cwd": ".",
@@ -173,10 +175,10 @@ def _file_receipts(queue: pool.PoolQueue, stage: Path, digest: str, *,
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     cas_root = tmp_path / "cas"
     cas_root.mkdir()
     cas = pb.PrismaBuildCAS(cas_root)
@@ -194,7 +196,6 @@ def fleet(tmp_path: Path):
                           command=_egress_command(stage, mover=head),
                           digest=digest, mount=originals)
     _file_receipts(queue, stage, digest, head=head, egress=egress)
-    stage_release._manifest_layout_cache.clear()
     return queue, stage, cas_root, digest, originals, checkout, head, egress
 
 
@@ -204,7 +205,7 @@ def _recover(fleet, *, apply: bool = False, **kwargs):
               "egress_action_key": egress, "cas_root": str(cas),
               "apply": apply}
     params.update(kwargs)
-    got = stage_release.recover_orphaned_range(queue, **params)
+    got = staged_path.recover_orphaned_range(queue, **params)
     print(json.dumps(got, indent=1, sort_keys=True, default=str))
     return got
 
@@ -245,7 +246,6 @@ def _reseal(fleet, *, seal_digest: str | None = None,
                               digest=seal_digest, mount=mount)
     _file_receipts(queue, stage, receipt_digest, head=head_key,
                    egress=egress_key, entries=entries, end=end)
-    stage_release._manifest_layout_cache.clear()
     return head_key, egress_key
 
 
@@ -267,14 +267,14 @@ def _stage_copy(stage: Path, name: str, *, marked: bool = True) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\0" * SIZE)
     if marked:
-        os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR,
+        os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR,
                     f"/originals/{name}@0".encode())
     return path
 
 
 def _live_fragment(queue: pool.PoolQueue, stage: Path, names: list[str],
                    digest: str) -> None:
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": LIVE_CONSUMER, "mover_action_key": LIVE_MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": digest,
@@ -319,7 +319,7 @@ def test_an_egress_receipt_filed_with_its_own_schema_is_evidence(
     queue, stage, *_rest = fleet
     _populate(stage)
     key = fleet[7]
-    record = json.loads(queue.move_path(key).read_text())
+    record = json.loads(queue.records.move_path(key).read_text())
     queue.record_move(key, {**record, "schema": pool.POOL_EGRESS_SCHEMA_V1})
     assert queue.move_record(key)["schema"] == pool.POOL_EGRESS_SCHEMA_V1
 
@@ -375,7 +375,7 @@ def test_every_ownership_census_retains_what_it_names(
         monkeypatch.setattr(getattr(stage_release, module), name,
                             lambda *a, **k: (held, []))
     else:
-        monkeypatch.setattr(stage_release, census, lambda *a, **k: (held, []))
+        monkeypatch.setattr(staged_path, {'_claimed_paths': 'claimed_paths', '_claimed_source_paths': 'claimed_source_paths'}.get(census, census), lambda *a, **k: (held, []))
 
     got = _recover(fleet, apply=True)
     assert _staged(stage, NAMES[0]).exists()
@@ -407,7 +407,7 @@ def test_a_pre_range_bare_name_is_retained_and_named(fleet) -> None:
     _queue, stage, *_rest = fleet
     legacy = stage / NAMES[0]
     legacy.write_bytes(b"\0" * SIZE)
-    os.setxattr(legacy, prewarm_loop.STAGE_SOURCE_XATTR,
+    os.setxattr(legacy, stage_marks.STAGE_SOURCE_XATTR,
                 f"/originals/{NAMES[0]}@0".encode())
     for name in NAMES[1:]:
         _stage_copy(stage, name)
@@ -448,7 +448,7 @@ def test_a_fragment_that_cannot_be_validated_refuses_the_whole_pass(
 
     queue, stage, *_rest = fleet
     _populate(stage)
-    corrupt = (queue.root / pool.RESIDENCY / LIVE_CONSUMER
+    corrupt = (queue.root / pool.record_store.RESIDENCY / LIVE_CONSUMER
                / f"{LIVE_MOVER}.json")
     corrupt.parent.mkdir(parents=True)
     corrupt.write_text('{"schema": "prismaquant.prismabuild.residency_map')
@@ -490,7 +490,7 @@ def test_an_unreadable_census_refuses_before_mutating(
         monkeypatch.setattr(getattr(stage_release, module), name,
                             lambda *a, **k: (empty, ["unreadable"]))
     else:
-        monkeypatch.setattr(stage_release, census,
+        monkeypatch.setattr(staged_path, {'_claimed_paths': 'claimed_paths', '_claimed_source_paths': 'claimed_source_paths'}.get(census, census),
                             lambda *a, **k: (empty, ["unreadable"]))
 
     got = _recover(fleet, apply=True)
@@ -574,7 +574,7 @@ def test_nothing_happens_while_a_mover_could_be_writing(fleet) -> None:
                              "manifest_sha256": "a" * 64,
                              "manifest_bytes": SIZE, "tier_id": TIER,
                              "range_start_bytes": 0, "range_end_bytes": SIZE})
-    assert stage_release.movers_in_flight(queue, tier_id=TIER) == {LIVE_MOVER}
+    assert staged_path.movers_in_flight(queue, tier_id=TIER) == {LIVE_MOVER}
 
     got = _recover(fleet, apply=True)
     assert got["skipped"] == "movers_in_flight"
@@ -599,7 +599,7 @@ def test_an_absent_receipt_is_no_evidence_at_all(fleet, which: str) -> None:
 
     queue, stage, *_rest = fleet
     _populate(stage)
-    queue.move_path(fleet[6] if which == "head" else fleet[7]).unlink()
+    queue.records.move_path(fleet[6] if which == "head" else fleet[7]).unlink()
 
     got = _recover(fleet, apply=True)
     assert got["complete"] is False and got["entries_retired"] == 0
@@ -621,9 +621,9 @@ def test_a_receipt_filed_under_another_actions_key_is_refused(
     queue, stage, _cas, _digest, _originals, *_rest = fleet
     _populate(stage)
     key = fleet[6] if which == "head" else fleet[7]
-    record = json.loads(queue.move_path(key).read_text())
+    record = json.loads(queue.records.move_path(key).read_text())
     record["action_key"] = "7" * 64
-    queue.move_path(key).write_text(json.dumps(record))
+    queue.records.move_path(key).write_text(json.dumps(record))
 
     got = _recover(fleet, apply=True)
     assert got["complete"] is False
@@ -728,7 +728,7 @@ def test_a_foreign_stage_root_is_refused_before_anything_else(
     _populate(fleet[1])
     got = _recover(fleet, apply=True, stage_root=str(foreign))
     assert got["complete"] is False
-    assert got["event"] == stage_release.STAGE_ROOT_REFUSED_EVENT
+    assert got["event"] == staged_path.STAGE_ROOT_REFUSED_EVENT
     assert _intact(fleet)
 
 
@@ -946,7 +946,7 @@ def test_a_request_that_does_not_validate_under_its_key_is_refused(
         "action_key": head,
         "params": {"command": _head_command(stage),
                    "data_manifest": {"input": {
-                       "id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+                       "id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                        "sha256": digest, "bytes": 1024},
                        "mount_prefix": "/unused",
                        "entry_count": len(NAMES)}}}))

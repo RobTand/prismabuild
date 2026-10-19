@@ -46,7 +46,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 GIB = storage_tiers.GIB
@@ -65,6 +65,9 @@ PROBE = 259
 #: Six ready 259 movers fit this fixture's host box several times over, so a
 #: denied claim can only be the fill ledger's answer.
 HOST = {"cpu": 32, "mem_gb": 48}
+
+
+from fleet_world import FleetWorld
 
 
 def _poisoned_receipt(ceiling: float = ARCHIVED_CEILING, *,
@@ -120,12 +123,6 @@ def _receipt(*, unix: float, action_key: str, delivered: float,
     }
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
-
-
 def _cycle(queue: pool.PoolQueue, receipts=None) -> dict[str, object]:
     """One real tier cycle over this queue's receipts and ready work."""
 
@@ -165,7 +162,7 @@ def _frozen_queue(tmp_path: Path, ceiling: float = ARCHIVED_CEILING,
                   *, sharers: int | None = 1) -> pool.PoolQueue:
     """The freeze shape: a stale ceiling and six ready movers priced above it."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move(POISONED_KEY, _poisoned_receipt(ceiling, sharers=sharers))
     for key in MOVERS:
         _ready_mover(queue, key, PROBE)
@@ -186,7 +183,7 @@ def _copy_ended(queue: pool.PoolQueue, key: str) -> None:
     """
 
     queue._release_reservation(key, host=socket.gethostname(), keep_tier=True)
-    assert FILL not in queue.tier_ledger(TIER).holder_tokens(key)
+    assert FILL not in queue.tier(TIER).holdings(key)
 
 
 @pytest.mark.parametrize("ceiling", [ARCHIVED_CEILING, LIVE_CEILING])
@@ -204,7 +201,7 @@ def test_a_stale_ceiling_no_longer_freezes_movers_priced_above_it(
     assert first is not None
     assert first["action_key"] in {key * 64 for key in MOVERS}
     assert _claim(queue) is None
-    assert queue.tier_ledger(TIER).available()[FILL] == int(ceiling)
+    assert queue.tier(TIER).free_supply()[FILL] == int(ceiling)
 
     # The offer is the larger of the fold's historical increment (3.5 here)
     # and the queued floor, and the announced supply names the selection.
@@ -234,7 +231,7 @@ def test_no_priceable_history_and_no_ready_demand_offer_the_plain_ceiling(
     """Nothing invents a size: the fold cannot price a reader and no mover is
     queued, so the offer is exactly the measured ceiling."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move(POISONED_KEY, _poisoned_receipt(ceiling, sharers=None))
 
     record = _cycle(queue)
@@ -268,7 +265,7 @@ def test_no_ready_demand_keeps_the_fold_offer(tmp_path):
     """'No ready demand means exactly the measured ceiling' is superseded: the
     #707 fold offer (ceiling + median single-reader share) is the fallback."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move("1" * 64, _receipt(unix=100.0, action_key="1" * 64,
                                          delivered=120.0, sealed=166,
                                          achieved=120.0))
@@ -287,7 +284,7 @@ def test_no_ready_demand_keeps_the_fold_offer(tmp_path):
 
 
 def test_a_larger_fold_offer_is_retained_over_a_smaller_queued_floor(tmp_path):
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move("1" * 64, _receipt(unix=100.0, action_key="1" * 64,
                                          delivered=120.0, sealed=166,
                                          achieved=120.0))
@@ -355,7 +352,7 @@ def test_two_readers_below_the_ceiling_refute_it_together(tmp_path):
     pool doing more than the ceiling claimed, measured from admitted work.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     # A priced seed: one reader's share is 150, so the historical offer is
     # 450 and the queued floor (466) is the larger and selected.
     queue.record_move("f" * 64, _receipt(unix=100.0, action_key="f" * 64,
@@ -442,7 +439,7 @@ def test_a_best_after_the_ceiling_does_not_refreeze_the_probe(tmp_path):
     as the ceiling branch it replaced.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     queue.record_move("1" * 64, _receipt(unix=100.0, action_key="1" * 64,
                                          delivered=522.0, sealed=166,
                                          achieved=130.0, seconds=100.0))

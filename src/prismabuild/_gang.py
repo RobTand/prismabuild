@@ -21,15 +21,19 @@ State lives under ``pb-queue/gangs/``: ``<group>.json`` (immutable record),
 """
 from __future__ import annotations
 
+from . import immutable_files
+
+
 from collections.abc import Mapping
+from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
 import uuid
 
-from . import core
+from . import contracts, core
 
-TAG = "gang-v1"
+TAG = contracts.GANG_TAG
 GANGS = "gangs"
 GROUP_SCHEMA = "prismabuild.gang_group.v1"
 ELECT_SCHEMA = "prismabuild.gang_election.v1"
@@ -96,13 +100,16 @@ def state_dir(queue, group: str) -> Path:
 
 def _gang_read(path: Path, *, optional: bool = True) -> dict | None:
     try:
-        raw = core._read_regular_file_nofollow(path, where="gang record",
-                                               max_bytes=MAX_RECORD_BYTES)
+        raw = immutable_files.read_stable_file(
+            path,
+            where="gang record",
+            max_bytes=MAX_RECORD_BYTES,
+        )
     except FileNotFoundError:
         if optional:
             return None
         raise
-    value = core._decode_strict_json(raw, where="gang record")
+    value = core.digest_primitives.decode_strict_json(raw, where="gang record")
     if not isinstance(value, dict):
         raise GangContractError(f"non-object gang record: {path}")
     return value
@@ -113,7 +120,7 @@ def _link_new(path: Path, payload: Mapping[str, object]) -> bool:
     from . import pool
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}")
-    pool._write_json_atomic(temporary, payload)
+    immutable_files.write_json_atomic(temporary, payload)
     try:
         os.link(temporary, path)
         return True
@@ -218,7 +225,7 @@ def elect_gang_member(queue, record: Mapping[str, object], entry: Mapping[str, o
 def mark_ready(queue, record: Mapping[str, object], entry: Mapping[str, object],
                host: str, now: float) -> None:
     from . import pool
-    pool._write_json_atomic(
+    immutable_files.write_json_atomic(
         state_dir(queue, str(record["group"])) / f"ready-{entry['index']}.json",
         {"schema": READY_SCHEMA, "group": record["group"], "index": entry["index"],
          "action_key": entry["action_key"], "host": host, "ready_unix": float(now)})
@@ -233,7 +240,9 @@ def sibling_readiness(queue, record: Mapping[str, object], entry: Mapping[str, o
     for other in record["members"]:  # type: ignore[union-attr]
         if other["index"] == entry["index"]:
             continue
-        claimed = _gang_read(queue.item_path(pool.CLAIMED, other["action_key"]))
+        claimed = _gang_read(
+            queue.records.item_path(pool.record_store.CLAIMED, other["action_key"]),
+        )
         if (claimed is not None and claimed.get("action_key") == other["action_key"]
                 and float(claimed.get("published_unix", math.nan)) == float(other["published_unix"])):
             other_host = claimed.get("claimed_host")
@@ -335,7 +344,7 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
     from . import pool
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        mark = pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES)
+        mark = pool.record_store.read_confirmed_document(path, max_bytes=MAX_RECORD_BYTES)
     except (GangContractError, OSError, ValueError, core.PrismaBuildError):
         mark = None
     stamp = mark.get("first_seen_unix") if isinstance(mark, Mapping) else None
@@ -344,7 +353,7 @@ def note_terminal(queue, group: str, key: str, signature: str, *, now: float,
             and isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
             and 0 <= now - float(stamp)):
         return now - float(stamp) >= confirm_s
-    pool._write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
+    immutable_files.write_json_atomic(path, {"schema": TERMINAL_SCHEMA, "group": group,
                                    "member": key, "signature": signature,
                                    "first_seen_unix": float(now)})
     return False
@@ -364,7 +373,7 @@ def clear_terminal(queue, group: str, key: str) -> bool:
         if group not in os.listdir(root(queue)):
             return True
         path.unlink(missing_ok=True)
-        return pool._read_json_confirmed(path, max_bytes=MAX_RECORD_BYTES) is None
+        return pool.record_store.read_confirmed_document(path, max_bytes=MAX_RECORD_BYTES) is None
     except (OSError, core.PrismaBuildError):
         return False
 
@@ -386,16 +395,53 @@ def rank(record: Mapping[str, object]) -> tuple[int, float, str]:
     return (-int(record["priority"]), first, str(record["group"]))  # type: ignore[call-overload]
 
 
+@dataclass(frozen=True)
+class RankedBehind:
+    election: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class ElectionPosition:
+    mine: Mapping[str, object] | None
+    sibling_here: bool
+    needs_election: bool
+
+
+def election_position(elections, record, declaration, *, host) -> RankedBehind | ElectionPosition:
+    standing = {election["index"]: election
+                for election in elections.values()
+                if election["group"] == declaration["group"]}
+    mine = standing.get(declaration["index"])
+    sibling_here = any(election["host"] == host
+                       for index, election in standing.items()
+                       if index != declaration["index"])
+    ours = {host, *(election["host"] for election in standing.values())}
+    my_rank = list(rank(record))
+    ahead = sorted(
+        (election for election in elections.values()
+         if election["group"] != declaration["group"] and election["host"] in ours
+         and election["rank"] < my_rank),
+        key=lambda election: election["rank"])
+    if ahead:
+        return RankedBehind(ahead[0])
+    return ElectionPosition(mine, sibling_here, mine is None and not sibling_here)
+
+
+def elected_elsewhere(mine, *, host) -> bool:
+    return mine is None or mine["host"] != host
+
+
 def member_states(queue, record: Mapping[str, object]) -> dict[int, str]:
     """Every member's exact-generation state: claimed, done, failed, withdrawn, ready."""
     from . import pool
     states: dict[int, str] = {}
     for other in record["members"]:  # type: ignore[union-attr]
         state = "absent"
-        for name, directory in (("claimed", pool.CLAIMED), ("done", pool.DONE),
-                                ("failed", pool.FAILED), ("withdrawn", pool.WITHDRAWN),
-                                ("ready", pool.READY)):
-            row = _gang_read(queue.item_path(directory, other["action_key"]))
+        for observation in queue.records.gang_member_slots(other["action_key"]):
+            if isinstance(observation.result, pool.record_store.Unknown):
+                raise GangContractError(f"non-object gang record: {observation.address.path}")
+            row = pool.record_store.value_or_raise(observation.result)
+            name = observation.address.state
             if (row is not None and row.get("action_key") == other["action_key"]
                     and float(row.get("published_unix", other["published_unix"]))
                     == float(other["published_unix"])):
@@ -428,7 +474,7 @@ def backfill_holders(queue, election: Mapping[str, object]) -> dict[str, dict]:
     from . import pool
     found = {}
     for key in queue.ledger(str(election["host"])).held_keys():
-        holder = _gang_read(queue.item_path(pool.CLAIMED, key))
+        holder = _gang_read(queue.records.item_path(pool.record_store.CLAIMED, key))
         if (holder is not None and holder.get("claimed_host") == election["host"]
                 and backfill_matches(holder, election)):
             found[key] = holder
@@ -444,7 +490,7 @@ def backfill_reclaiming(queue, record: Mapping[str, object]) -> bool:
 def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
     """Close loans while sharing the member's update exclusion with observations."""
     from . import pool
-    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+    with queue.action_transition_lock(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
         path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
@@ -452,7 +498,7 @@ def begin_backfill_reclaim(queue, election: Mapping[str, object]) -> bool:
         if standing is None:
             return False
         standing["backfill_reclaiming"] = True
-        pool._write_json_atomic(path, standing)
+        immutable_files.write_json_atomic(path, standing)
         return True
 
 
@@ -485,7 +531,7 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
     completed release or replace the original request timestamp.
     """
     from . import pool
-    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+    with queue.action_transition_lock(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
         path = state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json"
@@ -505,15 +551,14 @@ def note_backfill_preemption(queue, election: Mapping[str, object], timing: Mapp
         else:
             observations.append(dict(timing))
         standing["backfill_preemptions"] = observations
-        pool._write_json_atomic(path, standing)
+        immutable_files.write_json_atomic(path, standing)
         return True
-
 
 
 def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
     """Snapshot under member exclusion; merge finished observations under it too."""
     from . import pool
-    with queue._transition_locked(str(election["action_key"]), blocking=False) as acquired:
+    with queue.action_transition_lock(str(election["action_key"]), blocking=False) as acquired:
         if not acquired:
             return False
         standing = _gang_read(state_dir(queue, str(election["group"])) / f"elect-{election['index']}.json")
@@ -523,11 +568,13 @@ def observe_backfill_releases(queue, election: Mapping[str, object]) -> bool:
     for timing in (standing or {}).get("backfill_preemptions", []):
         if timing.get("tokens_returned_unix") is not None:
             continue
-        archive = queue.superseded_dir() / (
+        archive = queue.records.superseded_dir() / (
             f"{timing['holder']}.{timing['generation']}.withdrawn-finish.json")
         finished = _gang_read(archive)
         if finished is None:
-            finished = _gang_read(queue.item_path(pool.WITHDRAWN, str(timing["holder"])))
+            finished = _gang_read(
+                queue.records.item_path(pool.record_store.WITHDRAWN, str(timing["holder"])),
+            )
         release = (finished or {}).get("gang_backfill_release")
         if (isinstance(release, Mapping) and release.get("generation") == timing["generation"]
                 and release.get("tokens_returned_unix") is not None):

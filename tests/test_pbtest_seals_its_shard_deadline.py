@@ -40,6 +40,7 @@ pbtest = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pbtest)                      # type: ignore[union-attr]
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from prismabuild import pool, pytest_test_bound  # noqa: E402
 from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
 
@@ -57,9 +58,9 @@ class _FinishedProcess(ShardProcess):
 def _announce(**ceilings: tuple[list[str], float | None]) -> Path:
     """Publish one live offer per host into the queue ``pbrun`` submits to."""
 
-    root = pbrun.SH / "pb-queue"
+    root = pbrun.configured_store().root / "pb-queue"
     queue = pool.PoolQueue(root)
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for host, (tags, ceiling) in ceilings.items():
         queue.announce(host=host, tags=tags, has_gpu=False,
                        capacity={"cpu": 8, "mem_gb": 16},

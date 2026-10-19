@@ -4,6 +4,8 @@ import sys
 
 import pytest
 
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import core as pb, pool
 
 
@@ -18,10 +20,24 @@ def fleet(tmp_path, monkeypatch, request):
     host = request.param
     monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
     queue = pool.PoolQueue(tmp_path / "queue")
-    worker_tags = [host, "gb10", pb.INTERPRETER_TAG, pb.CONTAINER_IMAGE_TAG]
-    queue.announce(host=host, tags=worker_tags, has_gpu=True,
-                   capacity=CAPACITY, observed_capacity=CAPACITY,
-                   interpreters=[sys.executable], observed_images=[])
+    worker_tags = [host, "gb10", contracts.INTERPRETER_TAG, contracts.CONTAINER_IMAGE_TAG]
+    queue.announce(
+        host=host,
+        tags=worker_tags,
+        has_gpu=True,
+        capacity=CAPACITY,
+        observed_capacity=CAPACITY,
+        capabilities=capability_eligibility.OfferCapabilities(
+            interpreters=capability_eligibility.InterpreterAnswers.from_observed(
+                [sys.executable],
+                None,
+            ),
+            images=capability_eligibility.ImageAnswers.from_observed(
+                [],
+                None,
+            ),
+        ),
+    )
 
     def publish(key, *, gpu=False, tags=None, resources=None, priority=0, **fields):
         queue.publish(
@@ -85,7 +101,7 @@ def test_ready_gpu_keeps_portable_cpu_back_without_taking_its_lock(fleet, monkey
     assert claim() is None
     assert acquired_keys == [GPU_KEY]
     assert reason_transitions == []  # no unlocked reason-ring writer either
-    assert not queue.passes_path(CPU_KEY).exists()
+    assert not queue.records.passes_path(CPU_KEY).exists()
     assert not queue.ledger().held_keys()
 
 
@@ -99,7 +115,7 @@ def test_spark_pinned_cpu_is_unaffected(fleet, pin):
     publish(GPU_KEY, gpu=True)
     claimed = claim()
     assert claimed and claimed["action_key"] == CPU_KEY
-    assert queue.item_path(pool.READY, GPU_KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
 
 
 @pytest.mark.parametrize("ineligible", [
@@ -129,7 +145,7 @@ def test_ineligible_ready_gpu_does_not_starve_cpu(fleet, ineligible, tmp_path):
         claimed = claim()
         assert claimed and claimed["action_key"] == key
         queue.finish(key, status="executed")
-        assert queue.item_path(pool.READY, GPU_KEY).exists()
+        assert queue.records.item_path(pool.record_store.READY, GPU_KEY).exists()
 
 
 def test_non_gpu_host_is_unaffected(fleet, monkeypatch):

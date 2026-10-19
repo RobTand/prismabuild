@@ -1,7 +1,7 @@
 """The pid named as holding admission must be holding *this* lock.
 
-``_holder_of`` reads ``/proc/locks`` to answer "who is in there", which is the
-one question a refusal has to answer for an operator.  It matched on the inode
+``flock_owner.holder_pid`` reads ``/proc/locks`` to answer "who is in there",
+the one question a refusal has to answer for an operator.  It matched on the inode
 number alone, and an inode number is only unique within a filesystem: any other
 mount with a lock on the same inode number could be reported as the holder of
 this one.
@@ -38,7 +38,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from prismabuild import adaptive_cpu
+from prismabuild import flock_owner
 
 
 @pytest.fixture
@@ -64,13 +64,13 @@ def _proc_locks(monkeypatch, text):
             return io.StringIO(text)
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(adaptive_cpu, 'open', fake_open, raising=False)
+    monkeypatch.setattr(flock_owner, 'open', fake_open, raising=False)
 
 
 def test_the_real_holder_is_named(held):
     """Against the kernel's own ``/proc/locks``, not a fixture."""
 
-    assert adaptive_cpu._holder_of(held) == os.getpid()
+    assert flock_owner.holder_pid(held) == os.getpid()
 
 
 def test_a_lock_on_another_device_is_not_our_holder(held, monkeypatch):
@@ -94,7 +94,7 @@ def test_a_lock_on_another_device_is_not_our_holder(held, monkeypatch):
                 f'1: FLOCK  ADVISORY  WRITE 4242 {elsewhere} 0 EOF\n'
                 f'2: FLOCK  ADVISORY  WRITE 4243 {ours} 0 EOF\n')
 
-    assert adaptive_cpu._holder_of(held) == 4243, (
+    assert flock_owner.holder_pid(held) == 4243, (
         'a lock on another filesystem was named as holding this one')
 
 
@@ -113,7 +113,7 @@ def test_a_subvolumes_own_device_does_not_hide_the_holder(held, monkeypatch):
     _proc_locks(monkeypatch,
                 f'1: FLOCK  ADVISORY  WRITE 4242 {superblock} 0 EOF\n')
 
-    assert adaptive_cpu._holder_of(held) == 4242, (
+    assert flock_owner.holder_pid(held) == 4242, (
         'the holder of a lock on a btrfs subvolume was not named')
 
 
@@ -132,7 +132,7 @@ def test_an_inode_two_mounts_disagree_about_names_nobody(held, monkeypatch):
                 f'1: FLOCK  ADVISORY  WRITE 4242 {first} 0 EOF\n'
                 f'2: FLOCK  ADVISORY  WRITE 4243 {second} 0 EOF\n')
 
-    assert adaptive_cpu._holder_of(held) is None, (
+    assert flock_owner.holder_pid(held) is None, (
         'one of two look-alikes was named as the holder')
 
 
@@ -149,7 +149,7 @@ def test_the_device_is_matched_by_value_not_by_padding(held, monkeypatch):
     _proc_locks(monkeypatch, f'1: FLOCK  ADVISORY  WRITE 4242 '
                              f'{unpadded}:{info.st_ino} 0 EOF\n')
 
-    assert adaptive_cpu._holder_of(held) == 4242, (
+    assert flock_owner.holder_pid(held) == 4242, (
         'the holder was missed because the device was spelled differently')
 
 
@@ -163,8 +163,22 @@ def test_a_waiter_is_never_named_as_the_holder(held, monkeypatch):
                 f'1: FLOCK  ADVISORY  WRITE 4242 {where} 0 EOF\n'
                 f'1: -> FLOCK  ADVISORY  WRITE 9999 {where} 0 EOF\n')
 
-    assert adaptive_cpu._holder_of(held) == 4242, (
+    assert flock_owner.holder_pid(held) == 4242, (
         'the process queued behind the lock was reported as holding it')
+
+
+def test_an_ofd_lock_does_not_hide_the_flock_holder(held, monkeypatch):
+    """An OFD row on the same inode is not a second flock candidate."""
+
+    info = os.fstat(held)
+    where = (f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}'
+             f':{info.st_ino}')
+    _proc_locks(monkeypatch,
+                f'1: OFDLCK  ADVISORY  WRITE -1 {where} 0 EOF\n'
+                f'2: FLOCK  ADVISORY  WRITE 4242 {where} 0 EOF\n')
+
+    assert flock_owner.holder_pid(held) == 4242, (
+        'an OFD row hid the positive flock holder on the same inode')
 
 
 @pytest.mark.parametrize('field', ['', 'garbage', '00:33', 'zz:33:6884',
@@ -175,4 +189,4 @@ def test_an_unparsable_device_field_is_skipped_not_raised(held, monkeypatch,
 
     _proc_locks(monkeypatch, f'1: FLOCK  ADVISORY  WRITE 4242 {field} 0 EOF\n')
 
-    assert adaptive_cpu._holder_of(held) is None
+    assert flock_owner.holder_pid(held) is None

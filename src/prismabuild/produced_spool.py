@@ -9,6 +9,8 @@ acknowledgement recorded.  So does a read-back owner for a group it reads back
 from this spool and never publishes (#1034).
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import argparse
 from contextlib import contextmanager
@@ -24,6 +26,8 @@ import time
 
 from . import core, movement_actions, pool, produced_output as po, reader_lease
 from . import adaptive_cpu, filesystem_capacity, resource_scope, runtime_publication, storage_tiers
+from . import immutable_files
+from .record_store import Absent, Present, QueueRow, RecordStore, Unknown
 
 API_VERSION = 1
 ROOT_ENV = "PRISMABUILD_PRODUCED_SPOOL_ROOT"
@@ -188,12 +192,20 @@ def _check_repins(proof):
 @contextmanager
 def _parent(path, *, create=False):
     path = Path(path)
-    descriptor = core._open_directory_nofollow(
+    descriptor = immutable_files.open_directory_nofollow(
         path.parent, where="produced spool parent", create=create, mode=0o700)
     try:
-        core._assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(
+            descriptor,
+            path.parent,
+            where="produced spool parent",
+        )
         yield descriptor
-        core._assert_directory_identity(descriptor, path.parent, where="produced spool parent")
+        immutable_files.assert_directory_identity(
+            descriptor,
+            path.parent,
+            where="produced spool parent",
+        )
     finally:
         os.close(descriptor)
 
@@ -215,7 +227,7 @@ def _read(path, *, expected_sha256=None):
                         recorded=reader_lease.portable_identity(before), observed=after)
         if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
             raise SpoolError("sealed spool record changed")
-        body = core._decode_strict_json(raw, where="spool record")
+        body = core.digest_primitives.decode_strict_json(raw, where="spool record")
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -250,7 +262,11 @@ def _lock(path):
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise SpoolError("spool lock is not regular")
             fcntl.flock(descriptor, fcntl.LOCK_EX)
-            core._assert_directory_identity(directory, path.parent, where="locked spool parent")
+            immutable_files.assert_directory_identity(
+                directory,
+                path.parent,
+                where="locked spool parent",
+            )
             yield
         finally:
             os.close(descriptor)
@@ -453,7 +469,7 @@ class ProducedSpool:
     def __init__(self, queue, instance, template, *, cas_root, root,
                  max_bytes=32 << 30):
         self.queue = queue
-        self.template, self.instance = po._require_bound_contract(template, instance)
+        self.template, self.instance = oc.bound_output_contract(template, instance)
         self.owner = str(self.instance["owner_action_key"])
         self.cas_root = str(cas_root)
         self.max_bytes = _positive(max_bytes, "max_bytes")
@@ -472,7 +488,9 @@ class ProducedSpool:
         #: Whether this producer's exports reserve fill and pace by default.
         self.paced_export = paced == "1"
         self._live()
-        row = pool._read_json(queue.item_path(pool.CLAIMED, self.owner)) or {}
+        row = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, self.owner),
+        ) or {}
         self.host = str(row.get("claimed_host") or "")
         if not self.host:
             raise SpoolError("source host is unknown")
@@ -495,16 +513,16 @@ class ProducedSpool:
                     f"reserves {kind}={held}")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         _local_disk(self.root)
-        self.directory = _path(self.root / po.instance_namespace(self.instance), self.root)
+        self.directory = _path(self.root / oc.instance_namespace(self.instance), self.root)
         self.directory.mkdir(exist_ok=True, mode=0o700)
 
     def _live(self):
-        refusal = po._require_live_owner(self.queue, self.instance)
+        refusal = bl.require_live_owner(self.queue, self.instance)
         if refusal:
             raise SpoolError(str(refusal))
 
     def _group(self, batch_id):
-        po._name(batch_id, where="spool batch_id")
+        oc.output_name(batch_id, where="spool batch_id")
         return _path(self.directory / batch_id, self.directory)
 
     def _reservation(self, group):
@@ -524,12 +542,11 @@ class ProducedSpool:
     def reserve_group(self, batch_id, ceiling_bytes):
         self._live()
         _positive(ceiling_bytes, "ceiling_bytes")
-        prewrite = po._read_prewrite(po._prewrites_dir(
-            self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
-        if (prewrite is None or prewrite.get("owner_action_key") != self.owner
-                or prewrite.get("owner_attempt") != self.instance["owner_attempt"]):
+        prewrite = bl.BatchLedger.for_instance(self.queue.root, self.instance).prewrite(batch_id)
+        if (prewrite is None or prewrite.owner != self.owner
+                or prewrite.attempt != self.instance["owner_attempt"]):
             raise SpoolError("canonical prewrite must own the group before local allocation")
-        if ceiling_bytes > sum(prewrite["class_bytes"].values()):
+        if ceiling_bytes > sum(prewrite.class_bytes.values()):
             raise SpoolError("local ceiling exceeds the canonical prewrite budget")
         group = self._group(batch_id)
         with _lock(self.directory / ".reservation.lock"):
@@ -594,8 +611,7 @@ class ProducedSpool:
                         != [entry["artifact_class"] for entry in manifest["entries"]]):
                     raise SpoolError("export replay changed its artifact class")
                 return self._publish(old)
-            prewrite = po._read_prewrite(po._prewrites_dir(
-                self.queue.root, self.instance) / f"{batch_id}.prewrite.json")
+            prewrite = bl.BatchLedger.for_instance(self.queue.root, self.instance).prewrite(batch_id)
             if prewrite is None:
                 raise SpoolError("canonical prewrite disappeared before export")
             if not isinstance(entries, (list, tuple)) or not entries:
@@ -608,7 +624,7 @@ class ProducedSpool:
                 source = _path(entry["source_path"], group / "payload")
                 destination = _path(entry["destination_path"], Path(self.template["output_prefix"]))
                 temporary = Path(str(destination) + ".tmp")
-                if str(destination) not in prewrite["paths"] or str(temporary) not in prewrite["paths"]:
+                if str(destination) not in prewrite.paths or str(temporary) not in prewrite.paths:
                     raise SpoolError("destination and temporary must be owned by the canonical prewrite")
                 if destination in seen:
                     raise SpoolError("duplicate canonical destination")
@@ -627,24 +643,24 @@ class ProducedSpool:
                     raise SpoolError("export artifact class must be payload or checkpoint")
                 class_bytes[artifact_class] += size
                 digest = entry.get("sha256")
-                po._hex64(digest, where="spool sha256")
+                oc.output_key(digest, where="spool sha256")
                 checked.append({"source_path": str(source), "destination_path": str(destination),
                                 "bytes": size, "sha256": digest, "source_identity": identity,
                                 "artifact_class": artifact_class})
-            if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+            if any(class_bytes[key] > prewrite.class_bytes[key] for key in class_bytes):
                 raise SpoolError("export exceeds its canonical artifact class budget")
             if sum(entry["bytes"] for entry in checked) > reservation["ceiling_bytes"]:
                 raise SpoolError("local group exceeded its reserved byte ceiling")
             actual = {path for path in (group / "payload").rglob("*") if not path.is_dir()}
             if actual != sources:
                 raise SpoolError("local group contains unaccounted payloads or temporaries")
-            declared = {str(path) for path in prewrite["paths"] if not str(path).endswith(".tmp")}
+            declared = {str(path) for path in prewrite.paths if not str(path).endswith(".tmp")}
             if {entry["destination_path"] for entry in checked} != declared:
                 raise SpoolError("export group does not cover the canonical prewrite")
             # Price only new opted-in work, after entry validation but before
             # manifest/CAS publication.  The payload and prewrite remain
             # reserved for a retry; old sealed requests replay above unchanged.
-            tier_id = str(prewrite.get("tier") or "")
+            tier_id = str(prewrite.tier or "")
             fill = (export_fill(self.queue, tier_id, self.owner)
                     if paced and tier_id else None)
             if paced and fill is None:
@@ -691,8 +707,8 @@ class ProducedSpool:
         if not launch.get("ok"):
             raise SpoolError(str(launch))
         key = record["export_key"]
-        state = po._mover_live_state(self.queue, key)
-        if state == "absent":
+        mover = RecordStore(self.queue.root).mover(key)
+        if isinstance(mover, Absent):
             # The row carries exactly the demand the action sealed, so a
             # reservation priced at seal time is the one admission charges.
             self.queue.publish(action_key=key, cas_root=self.cas_root,
@@ -700,9 +716,10 @@ class ProducedSpool:
                 resources=dict(record["action"]["params"]["demand"]), tags=[self.host],
                 max_attempts=3, retry_safe=True, priority=launch["priority"],
                 dependent_of=self.owner, refuse_withdrawn=True)
-        elif state in {"failed", "withdrawn"}:
+        elif (isinstance(mover, Present)
+              and mover.value.state in {"failed", "withdrawn"}):
             return {"ok": False, "complete": False, "export_key": key,
-                    "refusal": f"export-{state}"}
+                    "refusal": f"export-{mover.value.state}"}
         return {"ok": True, "complete": False, "export_key": key}
 
     def poll_group(self, batch_id):
@@ -751,14 +768,15 @@ class ProducedSpool:
             except (SpoolError, reader_lease.ReaderLeaseError) as exc:
                 return {"ok": False, "complete": False, "refusal": str(exc)}
             return {"ok": True, "complete": True, "export_key": key}
-        state = po._mover_live_state(self.queue, key)
-        if state in {"failed", "withdrawn", "done"}:
+        mover = RecordStore(self.queue.root).mover(key)
+        if (isinstance(mover, Present)
+                and mover.value.state in {"failed", "withdrawn", "done"}):
             return {"ok": False, "complete": False, "export_key": key,
-                    "refusal": f"export-{state}-without-ack"}
+                    "refusal": f"export-{mover.value.state}-without-ack"}
         return {"ok": True, "complete": False, "export_key": key}
 
     def commit_origin_group(self, batch_id, descriptors, *,
-                            lifetime=po.ORIGIN_LIFETIME_RETAIN):
+                            lifetime=oc.ORIGIN_LIFETIME_RETAIN):
         """Commit one exported group as a batch at its origin (#912, #1034).
 
         A write-only template's group is a handoff a later action stages.  A
@@ -770,7 +788,7 @@ class ProducedSpool:
         retried export can still replace a landed copy, so an identity taken
         then may not be the one that lasts.  The descriptors must name
         exactly the files the export landed, with their sizes and digests,
-        and `produced_output.commit_origin_batch` commits them against the
+        and `batch_ledger.BatchLedger.commit_origin` commits them against the
         identities the receipt recorded.  ``lifetime`` is that commit's
         (#914): ``retain`` by default, or ``consumed`` for a handoff that PB
         retires once its declared consumers succeed.  Returns that commit's
@@ -787,7 +805,7 @@ class ProducedSpool:
             manifest = _read(group / "manifest.json",
                              expected_sha256=record["manifest_sha256"])
             receipt = _read(group / "receipt.json")
-            sealed = [po.validate_descriptor(desc, self.template, self.instance)
+            sealed = [oc.validate_descriptor(desc, self.template, self.instance)
                       for desc in descriptors]
             exported = sorted((str(entry["destination_path"]), int(entry["bytes"]),
                                str(entry["sha256"])) for entry in manifest["entries"])
@@ -804,7 +822,7 @@ class ProducedSpool:
                            for proof in receipt["entries"]
                            for repin in proof.get("repinned", [])
                            if repin["where"] == "poll"]
-        answer = po.commit_origin_batch(self.queue, self.instance, self.template,
+        answer = bl.BatchLedger.commit_origin(self.queue, self.instance, self.template,
                                         sealed, batch_id=batch_id, landed=landed,
                                         lifetime=lifetime)
         if answer.get("ok") and not answer.get("duplicate") and poll_repins:
@@ -1041,32 +1059,12 @@ def check_export_receipt(receipt, manifest, record):
 
 
 def _live_rows(queue):
-    """Every ready and claimed record, by key, read fail-closed.
-
-    `pool.Queue.live_records`'s census, except that a record which cannot
-    be read refuses instead of being skipped: the answer decides whether a
-    file may be deleted, and an unread row may be the export that writes
-    it.  A record that moved between the listing and the read is skipped:
-    the caller takes this twice, so a row that stays live is seen once.
-    """
-
-    rows = {}
-    for state in (pool.READY, pool.CLAIMED):
-        directory = queue.dir(state)
-        try:
-            names = sorted(os.listdir(directory))
-        except OSError as exc:
-            raise SpoolError(f"unknown-retain: {state} rows: {exc}") from None
-        for name in names:
-            if not name.endswith(".json") or name.startswith("."):
-                continue
-            try:
-                record = pool._read_json(directory / name)
-            except (OSError, ValueError, pool.PoolContractError) as exc:
-                raise SpoolError(f"unknown-retain: {state}/{name}: {exc}") from None
-            if isinstance(record, dict):
-                rows[name[:-len(".json")]] = (state, record)
-    return rows
+    capture = queue.records.retention_live_rows()
+    if capture.issues:
+        issue = capture.issues[0]
+        raise SpoolError(f"unknown-retain: {issue.reason}: {issue.error}") from None
+    return {row.address.action_key: (row.address.state, row.result.value)
+            for row in capture.rows}
 
 
 def _export_attempt(queue, record, key, owner):
@@ -1177,9 +1175,9 @@ class _OtherClaims:
     where the files are met.  Who else names a path is answered from the
     #1053 records, read once per export and only once a present file needs
     it: the attempts of every template whose output prefix overlaps this
-    one's (`_template_attempts`), less this export's own; each one's
-    committed and prewritten paths (`_attempt_owned_paths`); and its state
-    (`_attempt_state`).  A path's claims decide:
+    one's (`bl.template_attempts`), less this export's own; each one's
+    committed and prewritten paths (`bl._capture_attempt_paths`); and its state
+    (`bl.attempt_state`).  A path's claims decide:
 
     * none: nobody's file, refused as before;
     * any attempt that is live, or whose state is unknown: refused;
@@ -1233,30 +1231,11 @@ class _OtherClaims:
         for entry in self.manifest["entries"]:
             wanted.update((str(entry["destination_path"]),
                            str(entry["destination_path"]) + ".tmp"))
-        own = (str(instance["owner_action_key"]), str(instance["template_id"]),
-               str(instance["owner_attempt"]["nonce"]))
-        reads = po._TickReads(self.queue)
-        claims = {}
         try:
-            attempts = po._template_attempts(
-                self.queue.root, po._overlapping_template_ids(self.queue.root, template))
-            for owner, template_id, nonce in attempts:
-                if (owner, template_id, nonce) == own:
-                    continue
-                _version, committed, prewritten = reads.owned(
-                    po._attempt_scope(self.queue.root, owner, template_id, nonce))
-                named = [(kind, path, batch_id)
-                         for kind, owned in (("batch", committed), ("prewrite", prewritten))
-                         for path, batch_id in sorted(owned.items()) if path in wanted]
-                if not named:
-                    continue
-                state = po._attempt_state(reads.generation(owner), nonce)
-                for kind, path, batch_id in named:
-                    claims.setdefault(path, []).append({
-                        "owner_action_key": owner, "owner_nonce": nonce,
-                        "template_id": template_id, "owner_kind": kind,
-                        "owner_batch_id": batch_id, "owner_state": state})
-        except (po.ProducedOutputError, OSError, ValueError) as exc:
+            claims = bl.spool_claims(
+                self.queue, instance, template, wanted,
+                lease_timeout_s=pool.LEASE_TIMEOUT_S)
+        except (oc.ProducedOutputError, OSError, ValueError) as exc:
             reason = str(exc)
             if not reason.startswith("unknown-retain"):
                 reason = f"unknown-retain: {reason}"
@@ -1276,7 +1255,7 @@ class _OtherClaims:
         if not claims:
             raise SpoolError(f"{refusal}: no attempt's records name {path}")
         for claim in claims:
-            if claim["owner_state"] not in po._ENDED_ATTEMPT_STATES:
+            if claim["owner_state"] not in oc.ENDED_ATTEMPT_STATES:
                 raise SpoolError(f"{refusal}: {path} is named by {_claim_text(claim)}")
         committed = [claim for claim in claims
                      if claim["owner_kind"] == "batch" or claim["owner_state"] == "succeeded"]
@@ -1498,7 +1477,7 @@ def _export_entry(group, entry, index, manifest_sha256, pacer=None, others=None)
             proof.update(ready_identity=_identity(temporary, directory=destination_parent),
                          sha256=digest.hexdigest())
             _write(proof_path, proof)
-            core._assert_directory_identity(destination_parent, destination.parent,
+            immutable_files.assert_directory_identity(destination_parent, destination.parent,
                                              where="canonical export parent")
             os.link(temporary.name, destination.name,
                     src_dir_fd=destination_parent, dst_dir_fd=destination_parent,
@@ -1529,7 +1508,9 @@ def export_group(queue, manifest_path, manifest_sha256, export_key, *,
         record = _export_record(group, manifest["owner"])
         if record is None or record.get("export_key") != export_key or record.get("manifest_sha256") != manifest_sha256:
             raise SpoolError("export action does not own this local group")
-        claim = pool._read_json(queue.item_path(pool.CLAIMED, export_key)) or {}
+        claim = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, export_key),
+        ) or {}
         if claim.get("claimed_host") != manifest["host"]:
             raise SpoolError("export is not claimed on the source host")
         try:
@@ -1553,18 +1534,17 @@ def _export_claimed_group(queue, group, manifest, record, manifest_sha256, expor
         if _check_receipt(receipt, manifest, record, repin="export"):
             _write(group / "receipt.json", receipt)
         return {"ok": True, "duplicate": True, "entries": len(receipt["entries"])}
-    prewrite = po._read_prewrite(po._prewrites_dir(queue.root, manifest["instance"]) /
-                                f"{manifest['batch_id']}.prewrite.json")
-    if (prewrite is None or prewrite.get("owner_action_key") != manifest["owner"]
-            or prewrite.get("owner_attempt") != manifest["instance"]["owner_attempt"]):
+    prewrite = bl.BatchLedger.for_instance(queue.root, manifest['instance']).prewrite(manifest['batch_id'])
+    if (prewrite is None or prewrite.owner != manifest["owner"]
+            or prewrite.attempt != manifest["instance"]["owner_attempt"]):
         raise SpoolError("canonical prewrite authority is absent or changed")
     class_bytes = {"payload": 0, "checkpoint": 0}
     for entry in manifest["entries"]:
         destination = _path(entry["destination_path"], Path(manifest["template"]["output_prefix"]))
-        if str(destination) not in prewrite["paths"] or str(destination) + ".tmp" not in prewrite["paths"]:
+        if str(destination) not in prewrite.paths or str(destination) + ".tmp" not in prewrite.paths:
             raise SpoolError("canonical export path is not owned")
         class_bytes[entry["artifact_class"]] += entry["bytes"]
-    if any(class_bytes[key] > prewrite["class_bytes"][key] for key in class_bytes):
+    if any(class_bytes[key] > prewrite.class_bytes[key] for key in class_bytes):
         raise SpoolError("canonical artifact class budget changed or exceeded")
     pacer = ExportPacer(pace_mb_s) if pace_mb_s is not None else None
     others = _OtherClaims(queue, manifest, export_key, group)
@@ -1760,10 +1740,10 @@ def declared_roots(queue, cas_root):
     per process.  Returns ``(roots, errors)``.
     """
 
-    scopes = Path(queue.root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scopes = bl.scopes_root(queue.root)
     errors = []
     try:
-        owners = po._scope_owners(scopes)
+        owners = bl.scope_owners(scopes)
     except FileNotFoundError:
         owners = []
     except OSError as exc:
@@ -1795,25 +1775,25 @@ def _namespace_instance(queue, directory, groups):
     for group in groups:
         manifest = _read(group / "manifest.json")
         if manifest is not None and isinstance(manifest.get("instance"), dict):
-            instance = po.validate_instance(manifest["instance"])
-            if po.instance_namespace(instance) == directory.name:
+            instance = oc.validate_instance(manifest["instance"])
+            if oc.instance_namespace(instance) == directory.name:
                 return instance
         reservation = _read(group / "reservation.json")
         if reservation is not None and owner is None:
             owner = reservation.get("owner")
     if not isinstance(owner, str) or len(owner) != 64:
         return None
-    scopes = Path(queue.root) / "residency" / po.OUTPUT_SCOPES_SUBDIR
+    scopes = bl.scopes_root(queue.root)
     try:
-        paths = po._owner_instance_paths(scopes / owner)
+        paths = bl.owner_instance_paths(scopes / owner)
     except OSError:
         return None
     for path in paths:
         try:
-            instance = po.validate_instance(json.loads(path.read_text()))
-        except (OSError, ValueError, po.ProducedOutputError):
+            instance = oc.validate_instance(json.loads(path.read_text()))
+        except (OSError, ValueError, oc.ProducedOutputError):
             continue
-        if po.instance_namespace(instance) == directory.name:
+        if oc.instance_namespace(instance) == directory.name:
             return instance
     return None
 
@@ -1910,11 +1890,17 @@ def _retire_group(queue, directory, group, owner):
                            "export_key": record["export_key"],
                            "bytes": released["payload_bytes"]}
             else:
-                state = po._mover_live_state(queue, record["export_key"])
-                if state in (pool.READY, pool.CLAIMED):
+                match RecordStore(queue.root).mover(record["export_key"]):
+                    case Present(QueueRow(state, _row)):
+                        pass
+                    case Absent():
+                        state = "absent"
+                    case Unknown():
+                        state = "unknown"
+                if state in (pool.record_store.READY, pool.record_store.CLAIMED):
                     return {"batch_id": name, "kept": f"export-{state}",
                             "export_key": record["export_key"]}
-                if state not in (pool.FAILED, pool.WITHDRAWN, "absent"):
+                if state not in (pool.record_store.FAILED, pool.record_store.WITHDRAWN, "absent"):
                     return {"batch_id": name, "kept": f"export-{state}-without-ack",
                             "export_key": record["export_key"]}
                 outcome = {"batch_id": name, "discarded": f"export-{state}",
@@ -1935,7 +1921,7 @@ def _retire_group(queue, directory, group, owner):
 def retire_namespace(queue, directory):
     """Retire one namespace whose owner attempt ended, or say why not.
 
-    The owner attempt has ended when ``produced_output._producer_attempt_state``
+    The owner attempt has ended when ``batch_ledger.producer_attempt_state``
     reads ``dead`` or ``succeeded``: its latest generation is terminal, or a
     retry under a new nonce holds the claim.  A new attempt writes a new
     namespace (the nonce is in its name) and never reads this one, so the
@@ -1955,15 +1941,15 @@ def retire_namespace(queue, directory):
         groups = sorted(Path(entry.path) for entry in entries
                         if entry.is_dir(follow_symlinks=False))
         instance = _namespace_instance(queue, directory, groups)
-    except (OSError, SpoolError, po.ProducedOutputError, ValueError) as exc:
+    except (OSError, SpoolError, oc.ProducedOutputError, ValueError) as exc:
         return {**result, "kept": f"unreadable: {exc}"}
     if instance is None:
         return {**result, "kept": "unattributed: no manifest or filed instance names it"}
     owner = str(instance["owner_action_key"])
     result.update(owner=owner, owner_attempt=dict(instance["owner_attempt"]))
-    state = po._producer_attempt_state(queue, instance)
+    state = bl.producer_attempt_state(queue, instance)
     result["attempt_state"] = state
-    if state not in po._ENDED_ATTEMPT_STATES:
+    if state not in oc.ENDED_ATTEMPT_STATES:
         return {**result, "kept": f"owner-attempt-{state}"}
     released, discarded, kept = [], [], []
     held = 0.0

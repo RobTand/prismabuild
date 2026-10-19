@@ -11,6 +11,7 @@ had; what this adds is the ability for an action that will take twenty-four
 cores to say so.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 from pathlib import Path
 import subprocess
@@ -21,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun
+from prismabuild import submission as submit_core
 
 
 class _Stop(Exception):
@@ -46,12 +48,12 @@ def _demand(argv, monkeypatch, tmp_path):
         captured.append(body)
         raise _Stop()
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
-    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core.pb, "seal_action", _stop)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd, **_context: tmp_path)
     monkeypatch.setattr(
-        pbrun,
-        "build_git_checkout_snapshot",
+        submit_core,
+        'snapshot_checkout',
         lambda *_args, **_kwargs: {"input": {"id": "test"}},
     )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path), *argv])
@@ -99,8 +101,8 @@ def test_pbrun_accepts_every_resource_the_live_fleet_ledgers(monkeypatch, tmp_pa
     ("cpu=many", "resource 'cpu' needs an integer count"),
 ])
 def test_pbrun_names_malformed_demand(text, message):
-    with pytest.raises(SystemExit, match=message):
-        pbrun._parse_demand(text)
+    with pytest.raises(submit_core.SubmissionRefused, match=message):
+        submit_core._parse_demand(text)
 
 
 def test_zero_cores_is_refused(monkeypatch, tmp_path):

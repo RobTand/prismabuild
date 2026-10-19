@@ -53,13 +53,12 @@ KEY_B = uuid.uuid4().hex + uuid.uuid4().hex
 ELSEWHERE = f"not-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 
 
+from fleet_world import ActionRows, Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 @pytest.fixture()
@@ -86,14 +85,7 @@ def pidfile(tmp_path: Path):
             pass
 
 
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        **kw,
-    )
+
 
 
 def _old_bytes(q: pool.PoolQueue, monkeypatch) -> pool.PoolQueue:
@@ -127,17 +119,17 @@ def _strand_a_requeue(q: pool.PoolQueue, key: str, monkeypatch) -> dict:
     the withdrawn generation's ``published_unix`` on it.
     """
 
-    held = json.loads(q.item_path(pool.CLAIMED, key).read_text())
+    held = json.loads(q.records.item_path(pool.record_store.CLAIMED, key).read_text())
     q.withdraw(key, signal_child=False)
-    q.item_path(pool.CLAIMED, key).write_text(json.dumps(held))
+    q.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(held))
     _old_bytes(q, monkeypatch).finish(key, status="failed", detail={})
-    stranded = q.item_path(pool.READY, key)
+    stranded = q.records.item_path(pool.record_store.READY, key)
     assert stranded.exists(), "the retry branch really did write one back"
     return json.loads(stranded.read_text())
 
 
 def _superseded(q: pool.PoolQueue, key: str) -> list[dict]:
-    directory = q.dir(pool.WITHDRAWN) / "superseded"
+    directory = q.records.dir(pool.record_store.WITHDRAWN) / "superseded"
     if not directory.is_dir():
         return []
     return [json.loads(path.read_text())
@@ -211,13 +203,13 @@ def _run_in_background(queue: pool.PoolQueue, item, **kw):
 def test_a_withdrawn_action_is_not_a_failed_one(queue: pool.PoolQueue) -> None:
     """The failure record must not say the fleet is broken when it is not."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     result = queue.withdraw(KEY_A, reason="four suites, one box", by="rob@sparky")
-    assert result["status"] == "withdrawn" and result["state"] == pool.READY
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.FAILED, KEY_A).exists()
-    assert not queue.item_path(pool.DONE, KEY_A).exists()
-    filed = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    assert result["status"] == "withdrawn" and result["state"] == pool.record_store.READY
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
+    filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     assert filed["status"] == "withdrawn"
     assert filed["reason"] == "four suites, one box"
     assert filed["withdrawn_by"] == "rob@sparky"
@@ -236,13 +228,13 @@ def test_a_withdrawn_action_is_never_claimed_again(
     and that the record is FILED rather than made to disappear.
     """
 
-    _publish(queue, KEY_A, max_attempts=3)
+    ActionRows(queue).publish(KEY_A, max_attempts=3)
     generation = queue.claim()["published_unix"]
     stranded = _strand_a_requeue(queue, KEY_A, monkeypatch)
     assert stranded["published_unix"] == generation
 
     assert queue.claim() is None
-    assert not queue.item_path(pool.READY, KEY_A).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists(), (
         "the stranded record is dropped, not left at the head of ready")
     dropped = [r for r in _superseded(queue, KEY_A) if r.get("status") == "dropped"]
     assert dropped and dropped[0]["published_unix"] == generation, (
@@ -261,15 +253,15 @@ def test_a_withdrawn_item_is_dropped_before_a_claim_is_even_attempted(
     queue should not be making on every poll.
     """
 
-    _publish(queue, KEY_A, resources={"cpu": 1}, max_attempts=3)
+    ActionRows(queue).publish(KEY_A, resources={'cpu': 1}, max_attempts=3)
     queue.claim(capacity={"cpu": 2})
     _strand_a_requeue(queue, KEY_A, monkeypatch)
     # The first claim -- the one that got as far as running -- left its own
     # intent behind, and intent is not cleared on success.  Clear it so what is
     # asserted below is this claim's behaviour and not that one's dropping.
-    queue.item_path(pool.INTENT, KEY_A).unlink(missing_ok=True)
+    queue.records.item_path(pool.record_store.INTENT, KEY_A).unlink(missing_ok=True)
     assert queue.claim(capacity={"cpu": 2}) is None
-    assert not queue.item_path(pool.INTENT, KEY_A).exists(), (
+    assert not queue.records.item_path(pool.record_store.INTENT, KEY_A).exists(), (
         "the item reached the claim path instead of being dropped by the scan")
     assert queue.ledger().available() == {"cpu": 2}, "no token was ever taken"
 
@@ -289,64 +281,64 @@ def test_a_withdrawal_landing_inside_the_claim_still_wins(
     real_rename = pool.os.rename
 
     def rename_after_the_marker_lands(src, dst, *args, **kwargs):
-        if str(src).endswith(f"{KEY_A}.json") and f"/{pool.READY}/" in str(src):
+        if str(src).endswith(f"{KEY_A}.json") and f"/{pool.record_store.READY}/" in str(src):
             # Exactly what ``withdraw`` does first, and nothing it does after:
             # the item is still in ``ready`` when this rename runs.
-            pool._write_json_atomic(
-                queue.item_path(pool.WITHDRAWN, KEY_A),
+            pool.immutable_files.write_json_atomic(
+                queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A),
                 {"action_key": KEY_A, "status": "withdrawn"})
         return real_rename(src, dst, *args, **kwargs)
 
-    _publish(queue, KEY_A, resources={"cpu": 1})
+    ActionRows(queue).publish(KEY_A, resources={'cpu': 1})
     monkeypatch.setattr(pool.os, "rename", rename_after_the_marker_lands)
     assert queue.claim(capacity={"cpu": 2}) is None
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.ledger().available() == {"cpu": 2}, "the tokens went back"
 
 
 def test_finish_after_a_withdrawal_files_nothing_new(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     queue.withdraw(KEY_A)
     landed = queue.finish(KEY_A, status="failed", detail={"returncode": -15})
-    assert landed == queue.item_path(pool.WITHDRAWN, KEY_A)
-    for state in (pool.DONE, pool.FAILED, pool.READY, pool.CLAIMED):
-        assert not queue.item_path(state, KEY_A).exists(), state
-    assert not queue.lease_path(KEY_A).exists()
+    assert landed == queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A)
+    for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.READY, pool.record_store.CLAIMED):
+        assert not queue.records.item_path(state, KEY_A).exists(), state
+    assert not queue.records.lease_path(KEY_A).exists()
 
 
 def test_finish_cannot_retry_what_was_withdrawn(queue: pool.PoolQueue) -> None:
     """The specific outcome the ``max_attempts`` rewrite existed to prevent."""
 
-    _publish(queue, KEY_A, max_attempts=3)
+    ActionRows(queue).publish(KEY_A, max_attempts=3)
     queue.claim()
     queue.withdraw(KEY_A)
     queue.finish(KEY_A, status="failed")
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.claim() is None
 
 
 def test_withdrawal_retains_claim_bytes_for_the_marker_aware_worker(queue):
-    _publish(queue, KEY_A, max_attempts=3)
+    ActionRows(queue).publish(KEY_A, max_attempts=3)
     queue.claim()
-    path = queue.item_path(pool.CLAIMED, KEY_A)
+    path = queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     before = path.read_bytes()
     result = queue.withdraw(KEY_A, signal_child=False)
     assert result["released"] == 0
     assert path.read_bytes() == before
     queue.finish(KEY_A, status="failed", detail={"returncode": -15})
-    assert not queue.item_path(pool.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
     assert queue.withdrawn_keys() == frozenset([KEY_A])
 
 
 def test_marker_aware_reaper_concludes_the_cancelled_claim(queue):
-    _publish(queue, KEY_A, max_attempts=3)
+    ActionRows(queue).publish(KEY_A, max_attempts=3)
     queue.claim()
     queue.withdraw(KEY_A, signal_child=False)
     queue.reap_stale(timeout_s=-1)
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.item_path(pool.WITHDRAWN, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
 
 
 def test_a_completed_action_that_lost_its_claim_is_filed_under_done(
@@ -364,12 +356,12 @@ def test_a_completed_action_that_lost_its_claim_is_filed_under_done(
     """
 
     executed = queue.finish(KEY_A, status="executed", detail={"returncode": 0})
-    assert executed == queue.item_path(pool.DONE, KEY_A)
+    assert executed == queue.records.item_path(pool.record_store.DONE, KEY_A)
     assert json.loads(executed.read_text())["status"] == "executed"
 
     other = KEY_B
     failed = queue.finish(other, status="failed", detail={"returncode": 1})
-    assert failed == queue.item_path(pool.FAILED, other)
+    assert failed == queue.records.item_path(pool.record_store.FAILED, other)
     assert json.loads(failed.read_text())["status"] == "finish_lost_race"
 
 
@@ -378,15 +370,15 @@ def test_a_withdrawn_claim_is_not_requeued_by_the_reaper(
 ) -> None:
     """A withdrawal that died mid-verb must not be undone by self-healing."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     # Withdraw without the cleanup: marker written, claimed record still there
     # and its lease stale.  That is what a box dying inside ``withdraw`` leaves.
     queue.withdraw(KEY_A, signal_child=False)
     # Expire the actual claim's lease, preserving its ownership generation.
     assert queue.reap_stale(timeout_s=-1.0) == []
-    assert not queue.item_path(pool.READY, KEY_A).exists()
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
 
 
 # -- capacity ----------------------------------------------------------------
@@ -395,8 +387,8 @@ def test_a_withdrawn_claim_is_not_requeued_by_the_reaper(
 def test_a_withdrawal_returns_the_capacity_the_action_held(
     queue: pool.PoolQueue
 ) -> None:
-    _publish(queue, KEY_A, resources={"gpu": 1, "mem_gb": 8})
-    queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1, 'mem_gb': 8})
+    queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     assert queue.ledger().available() == {}
     result = queue.withdraw(KEY_A)
     assert result["released"] == 0
@@ -413,13 +405,13 @@ def test_capacity_goes_back_to_the_claiming_host_not_the_operators(
     foreign = queue.ledger(ELSEWHERE)
     foreign.ensure_capacity({"gpu": 2})
     assert foreign.acquire(KEY_A, {"gpu": 2}) is True
-    _publish(queue, KEY_A, resources={"gpu": 2})
-    claimed = queue.item_path(pool.READY, KEY_A).read_text()
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 2})
+    claimed = queue.records.item_path(pool.record_store.READY, KEY_A).read_text()
     record = json.loads(claimed)
     record.update({"claimed_host": ELSEWHERE, "claimed_by": f"{ELSEWHERE}:1:x",
                    "claimed_unix": time.time()})
-    queue.item_path(pool.READY, KEY_A).unlink()
-    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.READY, KEY_A).unlink()
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(record))
     result = queue.withdraw(KEY_A)
     # The operator's box cannot signal the holder, so the release is the
     # holder's to make and this reports where it is pending. Releasing here
@@ -431,9 +423,9 @@ def test_capacity_goes_back_to_the_claiming_host_not_the_operators(
     # returns the tokens -- and to the claiming host's ledger, not this one.
     # The claim has no lease, so age it past the reaper's grace for a fresh
     # claim; on the fleet a holder that never acknowledged is long past it.
-    pending = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    pending = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text())
     pending["claimed_unix"] = time.time() - 2 * pool.HEARTBEAT_S
-    queue.item_path(pool.CLAIMED, KEY_A).write_text(json.dumps(pending))
+    queue.records.item_path(pool.record_store.CLAIMED, KEY_A).write_text(json.dumps(pending))
     assert queue.reap_stale(timeout_s=-1) == []
     assert foreign.available() == {"gpu": 2}
     assert foreign.held_keys() == []
@@ -444,11 +436,11 @@ def test_capacity_goes_back_to_the_claiming_host_not_the_operators(
 
 
 def test_withdrawing_twice_keeps_the_first_decision(queue: pool.PoolQueue) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     first = queue.withdraw(KEY_A, reason="the real reason", by="rob@sparky")
-    filed = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     second = queue.withdraw(KEY_A, reason="a later, worse reason")
-    again = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    again = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     assert first["status"] == "withdrawn"
     assert second["status"] == "already_withdrawn"
     assert again == filed, "the record of the decision is not rewritten"
@@ -457,12 +449,12 @@ def test_withdrawing_twice_keeps_the_first_decision(queue: pool.PoolQueue) -> No
 def test_withdrawing_a_finished_action_says_so_rather_than_raising(
     queue: pool.PoolQueue
 ) -> None:
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     queue.finish(KEY_A, status="executed")
     result = queue.withdraw(KEY_A)
-    assert result["status"] == "already_finished" and result["state"] == pool.DONE
-    assert not queue.item_path(pool.WITHDRAWN, KEY_A).exists()
+    assert result["status"] == "already_finished" and result["state"] == pool.record_store.DONE
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).exists()
 
 
 def test_withdrawing_something_the_queue_never_had_is_refused(
@@ -478,14 +470,14 @@ def test_withdrawing_something_the_queue_never_had_is_refused(
 def test_a_key_prefix_is_enough_to_name_an_action(queue: pool.PoolQueue) -> None:
     """Twelve characters is what every log line and every submit prints."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     assert queue.find_key(KEY_A[:12]) == KEY_A
     assert queue.find_key(KEY_A) == KEY_A
 
 
 def test_an_ambiguous_prefix_is_refused_not_guessed(queue: pool.PoolQueue) -> None:
-    _publish(queue, "ab" + "c" * 62)
-    _publish(queue, "ab" + "d" * 62)
+    ActionRows(queue).publish('ab' + 'c' * 62)
+    ActionRows(queue).publish('ab' + 'd' * 62)
     with pytest.raises(pool.PoolContractError) as caught:
         queue.find_key("ab")
     assert "names 2 actions" in str(caught.value)
@@ -498,11 +490,11 @@ def test_a_prefix_that_is_not_a_digest_is_a_typo_not_a_glob(
 ) -> None:
     """The match is a glob, and a key is hex; ``*`` must not mean "all of them"."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     for typo in ("*", "nosuchkey", "[a-b]", ""):
         with pytest.raises(pool.PoolContractError):
             queue.find_key(typo)
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_a_prefix_still_resolves_after_the_action_is_terminal(
@@ -510,7 +502,7 @@ def test_a_prefix_still_resolves_after_the_action_is_terminal(
 ) -> None:
     """So the operator is told "already finished", not "no such action"."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
     queue.finish(KEY_A, status="executed")
     assert queue.find_key(KEY_A[:12]) == KEY_A
@@ -531,12 +523,12 @@ def test_the_worker_stops_its_own_action_group_after_withdrawal(
     """
 
     stub = _grandchild_launcher(tmp_path, pidfile)
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     # The claiming worker owns the process handle and stops its own payload.
     thread, outcome = _run_in_background(queue, item, heartbeat_s=0.1)
     grandchild = _await_pid(pidfile)
-    assert _await(lambda: (json.loads(queue.lease_path(KEY_A).read_text())
+    assert _await(lambda: (json.loads(queue.records.lease_path(KEY_A).read_text())
                            .get("child_pid") is not None))
 
     result = queue.withdraw(KEY_A, reason="stop it")
@@ -583,12 +575,11 @@ def test_withdrawal_reaps_an_owned_container_before_releasing_capacity(
     )
 
     owner = "c" * 64
-    _publish(queue, KEY_A, worker_script=str(stub),
-             resources={"gpu": 1, "mem_gb": 8})
-    queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub), resources={'gpu': 1, 'mem_gb': 8})
+    queued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     queued["container_owner"] = owner
-    queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
-    item = queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    queue.records.item_path(pool.record_store.READY, KEY_A).write_text(json.dumps(queued))
+    item = queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -631,11 +622,11 @@ def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
     queue: pool.PoolQueue, monkeypatch
 ) -> None:
     owner = "e" * 64
-    _publish(queue, KEY_A, resources={"gpu": 1, "mem_gb": 8})
-    queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1, 'mem_gb': 8})
+    queued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     queued["container_owner"] = owner
-    queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
-    queue.claim(capacity={"gpu": 1, "mem_gb": 8})
+    queue.records.item_path(pool.record_store.READY, KEY_A).write_text(json.dumps(queued))
+    queue.claim(has_gpu=True, capacity={"gpu": 1, "mem_gb": 8})
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -650,9 +641,9 @@ def test_withdrawal_keeps_the_claim_and_tokens_when_container_cleanup_fails(
     assert result["released"] == 0
     assert result["container_cleanup"]["deferred"] is True
     queue.finish(KEY_A, status="withdrawn")
-    pending = pool._read_json(queue.item_path(pool.CLAIMED, KEY_A))
+    pending = pool.record_store.value_or_raise(queue.records.item(pool.record_store.CLAIMED, KEY_A))
     assert pending["container_cleanup_pending"]["remaining"] == ["stuck-container"]
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     assert queue.ledger().held_keys() == [KEY_A]
 
 
@@ -660,11 +651,11 @@ def test_finish_keeps_capacity_while_an_owned_container_survives(
     queue: pool.PoolQueue, monkeypatch
 ) -> None:
     owner = "f" * 64
-    _publish(queue, KEY_A, resources={"gpu": 1})
-    queued = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    ActionRows(queue).publish(KEY_A, resources={'gpu': 1})
+    queued = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     queued["container_owner"] = owner
-    queue.item_path(pool.READY, KEY_A).write_text(json.dumps(queued))
-    claimed = queue.claim(capacity={"gpu": 1})
+    queue.records.item_path(pool.record_store.READY, KEY_A).write_text(json.dumps(queued))
+    claimed = queue.claim(has_gpu=True, capacity={"gpu": 1})
     marker = queue.root / "container-owners" / f"{owner}.used"
     marker.parent.mkdir(parents=True)
     marker.write_text(owner)
@@ -676,11 +667,11 @@ def test_finish_keeps_capacity_while_an_owned_container_survives(
     destination = queue.finish(
         KEY_A, status="executed", claim_snapshot=claimed)
 
-    assert destination == queue.item_path(pool.CLAIMED, KEY_A)
+    assert destination == queue.records.item_path(pool.record_store.CLAIMED, KEY_A)
     pending = json.loads(destination.read_text())
     assert pending["container_cleanup_pending"]["remaining"] == ["stuck-container"]
     assert queue.ledger().held_keys() == [KEY_A]
-    assert not queue.item_path(pool.DONE, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.DONE, KEY_A).exists()
 
 
 def test_a_withdrawal_from_another_box_still_stops_the_action(
@@ -689,7 +680,7 @@ def test_a_withdrawal_from_another_box_still_stops_the_action(
     """No signal can cross a box, so the worker watches for the marker itself."""
 
     stub = _grandchild_launcher(tmp_path, pidfile)
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     thread, outcome = _run_in_background(queue, item, heartbeat_s=0.2)
     grandchild = _await_pid(pidfile)
@@ -713,15 +704,15 @@ def test_worker_without_child_pid_stops_cooperatively_without_key_scan(
     monkeypatch.setattr(pool, "find_launcher_pids", forbidden)
 
     stub = _grandchild_launcher(tmp_path, pidfile)
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     thread, outcome = _run_in_background(queue, item, heartbeat_s=0.1)
     grandchild = _await_pid(pidfile)
 
     # What a pre-withdrawal worker's lease looks like.
-    lease = json.loads(queue.lease_path(KEY_A).read_text())
+    lease = json.loads(queue.records.lease_path(KEY_A).read_text())
     launcher = lease.pop("child_pid")
-    queue.lease_path(KEY_A).write_text(json.dumps(lease))
+    queue.records.lease_path(KEY_A).write_text(json.dumps(lease))
 
     result = queue.withdraw(KEY_A)
 
@@ -751,7 +742,7 @@ def test_a_withdrawn_action_is_never_started(
     marker = tmp_path / "it_ran"
     stub = tmp_path / "eager_worker.py"
     stub.write_text(f"import pathlib; pathlib.Path({str(marker)!r}).write_text('x')\n")
-    _publish(queue, KEY_A, worker_script=str(stub))
+    ActionRows(queue).publish(KEY_A, worker_script=str(stub))
     item = queue.claim()
     queue.withdraw(KEY_A)
     outcome = queue.execute(item)
@@ -774,11 +765,11 @@ def test_a_recycled_pid_is_not_signalled(queue: pool.PoolQueue) -> None:
 
     assert pool.launcher_owns_action(os.getpid(), KEY_A) is False
     assert pool.launcher_owns_action(2 ** 30, KEY_A) is False
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(KEY_A)
     queue.claim()
-    lease = json.loads(queue.lease_path(KEY_A).read_text())
+    lease = json.loads(queue.records.lease_path(KEY_A).read_text())
     lease["child_pid"] = os.getpid()          # this test process, not an action
-    queue.lease_path(KEY_A).write_text(json.dumps(lease))
+    queue.records.lease_path(KEY_A).write_text(json.dumps(lease))
     assert queue.withdraw(KEY_A)["signalled"] is None
 
 

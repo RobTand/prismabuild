@@ -35,7 +35,7 @@ def test_a_non_draining_gpu_refusal_releases_cpu_across_passes(fleet, fault, rea
                       mem_gb=8, tags=["gb10"])
         assert claim() == cpu, denial(cpu)
         queue.finish(cpu, status="executed")
-        assert queue.item_path(pool.READY, gpu).exists()
+        assert queue.records.item_path(pool.record_store.READY, gpu).exists()
 
 
 def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
@@ -49,7 +49,9 @@ def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
     gpu = publish("measurement-on-sky", measurement=True, priority=0,
                   cpu=8, gpu=1, mem_gb=48, tags=["gb10"])
     assert claim("sparky") is None
-    selected = reservation.selection(pool._read_json(queue.passes_path(gpu)) or {})
+    selected = reservation.selection(
+        pool.record_store.read_document(queue.records.passes_path(gpu)) or {},
+    )
     assert selected is not None and selected["host"] == "sparky"
     assert claim("sparklina") is None
     refused = denial(gpu, "sparklina")
@@ -60,7 +62,7 @@ def test_a_measurement_elected_on_the_other_host_does_not_veto_cpu_here(fleet):
                       cpu=4, gpu=0, mem_gb=8, tags=["gb10"])
         assert claim("sparklina") == cpu, denial(cpu, "sparklina")
         queue.finish(cpu, status="executed")
-        assert queue.item_path(pool.READY, gpu).exists()
+        assert queue.records.item_path(pool.record_store.READY, gpu).exists()
         assert queue.ledger("sparky").held_keys() == [sky_holder]
 
 
@@ -100,3 +102,36 @@ def test_an_elsewhere_gang_verdict_releases_only_its_recorded_host():
     }}
     assert pool.PoolQueue._ready_gpu_refused_here(item, records, host="sparklina")
     assert not pool.PoolQueue._ready_gpu_refused_here(item, records, host="sparky")
+
+
+@pytest.mark.parametrize("lead_state,reason", [
+    pytest.param("absent", "residency_lead_not_resident", id="unfiled-lead"),
+    pytest.param("failed", "residency_lead_terminal", id="failed-lead"),
+])
+def test_a_gpu_waiting_on_its_residency_lead_releases_cpu_admission(
+        fleet, lead_state, reason):
+    queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    lead = "e" * 64
+    if lead_state == "failed":
+        lead = publish("failed-lead", cpu=1, gpu=0, mem_gb=1, max_attempts=1)
+        assert claim() == lead
+        queue.finish(lead, status="failed")
+    gpu = publish("gpu-waiting-on-lead", cpu=4, gpu=1, mem_gb=104,
+        priority=0, tags=["gb10"], residency={
+            "schema": pool.RESIDENCY_SCHEMA_V1, "manifest_sha256": "a" * 64,
+            "manifest_bytes": 4096, "leads": [lead]})
+    assert claim() is None
+    refused = denial(gpu)
+    assert refused["reason"] == reason, refused
+    assert refused["evidence"]["residency"]["pending"] == [
+        {"lead": lead, "status": lead_state}]
+
+    for index in range(3):
+        cpu = publish(f"cpu-beside-unlanded-lead-{index}", priority=1,
+            cpu=1, gpu=0, mem_gb=3, tags=["gb10"])
+        admitted = claim()
+        if admitted is None:
+            assert denial(cpu)["reason"] == "deferred_for_ready_gpu", denial(cpu)
+        assert admitted == cpu, denial(cpu)
+        queue.finish(cpu, status="executed")
+        assert queue.records.item_path(pool.READY, gpu).exists()

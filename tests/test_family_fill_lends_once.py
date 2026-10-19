@@ -33,12 +33,13 @@ import test_prepaid_writer_integration as fx
 import test_produced_spool as sp
 import test_produced_spool_paced_export as paced
 from prismabuild import pool
+from prismabuild import tier_holdings
 
 
 def _landing_report(queue, mover: str, *, started: float) -> None:
     """Write the mover's own live landing report (#1090) as stage_move does."""
 
-    path = queue.consumer_events_dir(mover) / pool.MOVER_LANDING_REPORT
+    path = queue.records.consumer_events_dir(mover) / pool.record_store.MOVER_LANDING_REPORT
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "schema": pool.MOVER_LANDING_SCHEMA_V1, "copied_bytes": 5,
@@ -52,14 +53,14 @@ def test_a_borrow_records_which_lenders_were_mid_copy(tmp_path, monkeypatch) -> 
 
     spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
-    ledger = queue.tier_ledger(fx.TIER)
-    assert ledger.acquire(fam.MOVER, {fam.FILL: 4})
-    assert ledger.acquire(fam.EGRESS, {fam.FILL: 3})
+    ledger = queue.tier(fx.TIER)
+    assert ledger.take(fam.MOVER, {fam.FILL: 4})
+    assert ledger.take(fam.EGRESS, {fam.FILL: 3})
     _landing_report(queue, fam.MOVER, started=2000.)
     export_key = fam._paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    claim = al._claim(queue, spool.host)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == export_key
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["borrowed"] == fam.OFFER and borrow["taken_free"] == 0
@@ -79,13 +80,13 @@ def test_a_report_from_before_the_lenders_claim_is_not_mid_copy(
     _landing_report(queue, fam.MOVER, started=2000.)
     # The strict census still needs the publication generation of this
     # historical tier holder; only its claim time predates the report.
-    pool._write_json_atomic(queue.item_path(pool.CLAIMED, fam.MOVER),
+    pool.immutable_files.write_json_atomic(queue.records.item_path(pool.record_store.CLAIMED, fam.MOVER),
                             {"action_key": fam.MOVER, "claimed_unix": 3000.,
                              "published_unix": 2999., "cas_root": str(spool.cas_root)})
     export_key = fam._paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
 
-    claim = al._claim(queue, spool.host)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == export_key
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["lenders_mid_copy"] == []
@@ -98,7 +99,7 @@ def _announce_fill(queue, mb_s: int) -> None:
     path = Path(queue.root) / "tiers" / f"{fx.TIER}.json"
     record = json.loads(path.read_text())
     record["tokens"] = {fx.KIND: 4, fam.FILL: mb_s}
-    pool._write_json_atomic(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
 
 
 def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
@@ -114,17 +115,17 @@ def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
     spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
     paced.offer_fill(queue, 100)
-    ledger = queue.tier_ledger(fx.TIER)
-    held = int(ledger.available().get(fam.FILL, 0))
+    ledger = queue.tier(fx.TIER)
+    held = int(ledger.free_supply().get(fam.FILL, 0))
     assert held >= 100
-    assert ledger.acquire(fam.MOVER, {fam.FILL: held})
-    assert ledger.available().get(fam.FILL, 0) == 0
+    assert ledger.take(fam.MOVER, {fam.FILL: held})
+    assert ledger.free_supply().get(fam.FILL, 0) == 0
 
     _announce_fill(queue, 30)
     first = al._export(spool, "g0")
     assert paced.sealed(spool, "g0")["params"]["demand"][paced.FILL_DEMAND] == 30
-    al._running(spool, monkeypatch, psi=0.)
-    claim = al._claim(queue, spool.host)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == first
     borrow = claim["tier_fill_borrowed"][fx.TIER]
     assert borrow["borrowed"] == 30 and borrow["taken_free"] == 0
@@ -133,21 +134,21 @@ def test_a_borrow_draws_only_what_it_took(tmp_path, monkeypatch) -> None:
 
     second = al._export(spool, "g1")
     assert paced.sealed(spool, "g1")["params"]["demand"][paced.FILL_DEMAND] == 30
-    again = al._claim(queue, spool.host)
+    again = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert again is not None and again["action_key"] == second
     assert again["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
 
     _announce_fill(queue, 50)
     third = al._export(spool, "g2")
     assert paced.sealed(spool, "g2")["params"]["demand"][paced.FILL_DEMAND] == 50
-    assert al._claim(queue, spool.host) is None
+    assert al._claim(queue, spool.host, cpu_sampler=cpu_sampler) is None
     denial = al._denial(queue, third)
     assert denial["reason"] == "tier_reservation_unavailable", denial
     shortage = denial["evidence"]["tier_shortage"]
     assert shortage["family_fill"] == "not_enough_family_fill", shortage
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    fourth = al._claim(queue, spool.host)
+    fourth = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert fourth is not None and fourth["action_key"] == third
     assert fourth["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 50}
 
@@ -161,12 +162,12 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     queue = spool.queue
     fam._hold_fill(queue, fam.MOVER)
     first = fam._paced_export(spool)
-    al._running(spool, monkeypatch, psi=0.)
-    claim = al._claim(queue, spool.host)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == first
 
     second = al._export(spool, "g1")
-    again = al._claim(queue, spool.host)
+    again = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     if again is not None:
         raise AssertionError(
             "a second concurrent export must not borrow fill a live borrow "
@@ -177,9 +178,9 @@ def test_a_lender_cannot_fund_two_borrows_at_once(tmp_path, monkeypatch) -> None
     assert shortage["family_fill"] == "not_enough_family_fill", shortage
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    third = al._claim(queue, spool.host)
+    third = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert third is not None and third["action_key"] == second
-    ended = pool._read_json(queue.item_path(pool.DONE, first))
+    ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, first))
     assert ended["tier_fill_borrowed"][fx.TIER]["borrowed"] == fam.OFFER
 
 
@@ -197,30 +198,30 @@ def test_an_end_flags_a_release_below_the_combined_draws(
     spool, _cas = fam._paced_producer(tmp_path, monkeypatch)
     queue = spool.queue
     paced.offer_fill(queue, 100)
-    ledger = queue.tier_ledger(fx.TIER)
-    held = int(ledger.available().get(fam.FILL, 0))
+    ledger = queue.tier(fx.TIER)
+    held = int(ledger.free_supply().get(fam.FILL, 0))
     assert held >= 100
-    assert ledger.acquire(fam.MOVER, {fam.FILL: held})
-    assert ledger.available().get(fam.FILL, 0) == 0
+    assert ledger.take(fam.MOVER, {fam.FILL: held})
+    assert ledger.free_supply().get(fam.FILL, 0) == 0
 
     _announce_fill(queue, 30)
     first = al._export(spool, "g0")
     second = al._export(spool, "g1")
-    al._running(spool, monkeypatch, psi=0.)
-    claim = al._claim(queue, spool.host)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+    claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert claim is not None and claim["action_key"] == first
     assert claim["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
-    other = al._claim(queue, spool.host)
+    other = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
     assert other is not None and other["action_key"] == second
     assert other["tier_fill_borrowed"][fx.TIER]["lent"] == {fam.MOVER: 30}
 
     # The lender keeps only half of what the two live borrows drew.
-    assert ledger.release(fam.MOVER) == held
-    assert ledger.acquire(fam.MOVER, {fam.FILL: 50})
-    assert ledger.holder_tokens(fam.MOVER).get(fam.FILL) == 50
+    assert ledger.release_unspent(fam.MOVER, authority=tier_holdings.Unspent.NEVER_STARTED) == held
+    assert ledger.take(fam.MOVER, {fam.FILL: 50})
+    assert ledger.holdings(fam.MOVER).get(fam.FILL) == 50
 
     queue.finish(first, status="executed", claim_snapshot=claim)
-    ended = pool._read_json(queue.item_path(pool.DONE, first))
+    ended = pool.record_store.value_or_raise(queue.records.item(pool.record_store.DONE, first))
     entry = ended["tier_fill_borrowed"][fx.TIER]
     assert entry["lenders_released_before_end"] == [fam.MOVER], entry
     assert entry["overcommit_mb_s"] == 10, entry

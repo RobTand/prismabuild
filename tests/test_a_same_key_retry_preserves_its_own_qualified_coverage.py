@@ -27,6 +27,7 @@ than the previous prefix.  The grace is shortened for the retry only --
 the assertions are about which proof survives, never about the duration.
 """
 from __future__ import annotations
+from prismabuild import manifest_layout
 
 import hashlib
 import json
@@ -42,7 +43,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.reader_lease as reader_lease  # noqa: E402
 import prismabuild.residency_map as residency_map  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import kept_reads
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -57,7 +60,7 @@ def _staged(stage: Path, name: str) -> Path:
     """Where the mover stages the whole source ``name`` (one of ``SIZES``)."""
 
     names = ["shard-1.bin", "sub/shard-2.bin", "shard-3.bin"]
-    return stage / stage_move.stage_relative(
+    return stage / staged_path.stage_relative(
         f"/m/{name}", 0, SIZES[names.index(name)], mount_prefix="/m")
 
 
@@ -95,7 +98,7 @@ def _args(tmp_path: Path, manifest: dict[str, object]):
         "--range-start-bytes", "0",
         "--range-end-bytes", str(TOTAL),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "1",
         "--max-readers", "1",
@@ -194,7 +197,7 @@ def test_a_partial_retry_never_publishes_below_its_own_qualified_prefix(
     _interrupted_first_attempt(fleet)
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
     opened = _count_source_opens(monkeypatch, fleet[2])
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     suffix = _staged(Path(args.stage_root), "sub/shard-2.bin")
     inode_before = suffix.stat().st_ino
 
@@ -221,7 +224,7 @@ def test_a_repeated_partial_retry_keeps_its_coverage(fleet, monkeypatch) -> None
 
     _tmp, args, mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
 
     (mount / "shard-3.bin").write_bytes(b"c" * (SIZES[2] // 2))
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
@@ -254,8 +257,8 @@ def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
 
     manifest = stage_move.load_manifest(
         Path(args.cas_root), args.action_key, args.manifest)
-    entries = stage_move.prewarm_loop.manifest_read_entries(manifest)
-    window = stage_move.prewarm_loop.entries_between(
+    entries = manifest_layout.read_entries(manifest)
+    window = manifest_layout.entries_between(
         entries, int(args.range_start_bytes), int(args.range_end_bytes))
     queue = pool.PoolQueue(Path(args.pool_root))
     return queue, dict(
@@ -265,10 +268,12 @@ def _resume_kwargs(args) -> tuple[pool.PoolQueue, dict[str, object]]:
         manifest_sha256=str(args.manifest_sha256),
         residency_root=Path(args.residency_root), window=window,
         mount_prefix=str(manifest["mount_prefix"]),
-        named_once=frozenset(stage_move.paths_named_once(entries)))
+        named_once=frozenset(staged_path.paths_named_once(entries)))
 
 
-@pytest.mark.parametrize("filesystem", ["zfs", "nfs4"])
+@pytest.mark.parametrize("filesystem", [
+    "zfs", "nfs4", pytest.param(None, id="local-unmapped-device"),
+])
 def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
         fleet, monkeypatch, filesystem) -> None:
     """The pre-lock parse of a same-key retry's own fragment never holds
@@ -290,9 +295,8 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     # worker's scratch filesystem (Btrfs subvolume devices can be unknown).
     fragment = residency_map.fragment_path(Path(args.residency_root), CONSUMER, MOVER)
     material = reader_lease.material_path(Path(args.residency_root), CONSUMER, MOVER)
-    fence = max(fragment.stat().st_ctime_ns, material.stat().st_ctime_ns) + 1
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda _device: filesystem)
-    monkeypatch.setattr(stage_move, "_version_fence", lambda: fence)
+    kwargs['trust'] = validated_resume_trust(
+        monkeypatch, [fragment, material], filesystem)
 
     parsing = threading.Event()
     release = threading.Event()
@@ -328,7 +332,7 @@ def test_the_resume_parse_does_not_hold_the_stage_ownership_lock(
     assert not worker.is_alive()
     # Unchanged mature local evidence reuses the parse; remote evidence is
     # deliberately parsed fresh under the lock even at identical metadata.
-    assert calls == ([1] if filesystem == "zfs" else [1, 1])
+    assert calls == ([1, 1] if filesystem == "nfs4" else [1])
     staged, _sidecar, _generation = outcome["result"]
     assert set(staged) == set(keys[:2])
 
@@ -340,7 +344,7 @@ def test_a_fragment_changed_between_the_pre_lock_parse_and_the_lock_is_reread(
     The pre-lock parse is a hint, exactly as the egress's own pre-lock
     census is (#988): the pass under the lock re-checks the file's #761
     version and re-parses whenever it changed
-    (:class:`stage_release._CensusMemo`'s promise, applied here to the
+    (:class:`kept_reads.CensusMemo`'s promise, applied here to the
     mover's own resume).  The fragment is rewritten -- a different digest
     for one already-covered entry -- while the pre-lock parse is paused on
     the *old* bytes, and the resumed coverage must carry the rewritten one.
@@ -420,18 +424,14 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
             return repeated
         return observed
 
-    def filesystem(_device):
-        if trust in ("same-tick", "no-clock"):
-            return "zfs"
-        if trust == "trust-lost":
-            return "nfs4" if changed else "zfs"
-        return None if trust == "unknown" else trust
-
+    from record_store_trust import ObservedTrust
+    resume_trust = ObservedTrust()
+    resume_trust.available = trust not in ("nfs4", "unknown")
+    resume_trust.fence = (
+        None if trust == "no-clock" else repeated.st_ctime_ns
+        if trust == "same-tick" else repeated.st_ctime_ns + 1)
+    kwargs["trust"] = resume_trust
     monkeypatch.setattr(stage_move.os, "fstat", observed_fstat)
-    monkeypatch.setattr(stage_move, "_filesystem_type", filesystem)
-    monkeypatch.setattr(stage_move, "_version_fence", lambda: (
-        None if trust == "no-clock" else
-        repeated.st_ctime_ns if trust == "same-tick" else repeated.st_ctime_ns + 1))
     real_ownership = queue.recorded_stage_ownership
     new_digest = "5" * 64
 
@@ -446,6 +446,8 @@ def test_resume_rechecks_untrusted_matching_metadata(fleet, monkeypatch, trust, 
         fragment.write_bytes(replacement)
         assert fragment.stat().st_size == repeated.st_size
         changed = True
+        if trust == "trust-lost":
+            resume_trust.available = False
         with real_ownership(*positional, **keywords) as granted:
             yield granted
 
@@ -472,7 +474,7 @@ def test_changed_prior_bytes_fail_closed_and_are_never_replaced(
 
     _tmp, args, mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     tampered_payload = b"b" * SIZES[1] + b"X"
     _staged(Path(args.stage_root), "sub/shard-2.bin").write_bytes(
         tampered_payload)
@@ -493,7 +495,7 @@ def test_a_corrupt_prior_sidecar_preserves_vouches_but_dates_nothing(
 
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     reader_lease.material_path(
         Path(args.residency_root), CONSUMER, MOVER).write_text("not json")
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
@@ -540,7 +542,7 @@ def test_a_corrupt_own_fragment_with_a_new_destination_refuses_everything(
 
     _tmp, args, _mount, _entries, _keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     fragment = residency_map.fragment_path(
         Path(args.residency_root), CONSUMER, MOVER)
     corrupt_bytes = b'{"schema": "prismaquant.prismabuild.resi'
@@ -572,7 +574,7 @@ def test_a_conflicting_own_fragment_refuses_and_keeps_the_record(
 
     _tmp, args, _mount, _entries, _keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     fragment = residency_map.fragment_path(
         Path(args.residency_root), CONSUMER, MOVER)
     document = json.loads(fragment.read_bytes())
@@ -593,7 +595,7 @@ def test_a_conflicting_extent_in_the_own_fragment_refuses(
 
     _tmp, args, _mount, entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     fragment = residency_map.fragment_path(
         Path(args.residency_root), CONSUMER, MOVER)
     document = json.loads(fragment.read_bytes())
@@ -620,7 +622,7 @@ def test_conflicting_own_material_headers_refuse(
 
     _tmp, args, _mount, _entries, _keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     sidecar = reader_lease.material_path(
         Path(args.residency_root), CONSUMER, MOVER)
     document = json.loads(sidecar.read_bytes())
@@ -652,7 +654,7 @@ def test_concurrent_publications_keep_the_preserved_prefix(
 
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     monkeypatch.setattr(stage_move, "FRAGMENT_PUBLISH_S", 0.0)
     args.max_readers = 2
     documents = _Recorder(monkeypatch, residency_map, "write_fragment")
@@ -701,7 +703,7 @@ def test_a_live_pin_on_a_resumed_entry_stays_valid_as_new_material_lands(
 
     _tmp, args, _mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     queue, pin = _pin(fleet)
     assert pin["ok"], pin
     prior = _material(args)
@@ -738,7 +740,7 @@ def test_an_all_adopted_resume_keeps_the_material_generation(
 
     _tmp, args, mount, _entries, keys, _names = fleet
     _interrupted_first_attempt(fleet)
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.2)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.2)
     queue, pin = _pin(fleet)
     assert pin["ok"], pin
     prior_generation = _material(args)["generation"]
@@ -771,3 +773,62 @@ def test_an_all_adopted_resume_keeps_the_material_generation(
             b"b" * SIZES[1]).hexdigest()}},
         residency_root=Path(args.residency_root))
     assert again.get("ok") is True and again.get("duplicate") is True, again
+
+
+def validated_resume_trust(monkeypatch, paths, filesystem):
+    infos = [path.stat() for path in paths]
+    assert infos and len({info.st_dev for info in infos}) == 1
+    info = infos[0]
+    fence = max(item.st_ctime_ns for item in infos) + 1
+    descriptor = os.open(paths[0], os.O_PATH | os.O_CLOEXEC)
+    try:
+        current = os.fstat(descriptor)
+        assert kept_reads.metadata_version(current) == kept_reads.metadata_version(info)
+        with open(f'/proc/self/fdinfo/{descriptor}') as stream:
+            fdinfo = stream.read(65537)
+        assert len(fdinfo) <= 65536 and fdinfo.endswith('\n')
+        mounts = [line.split(':', 1)[1].strip() for line in fdinfo.splitlines()
+                  if line.startswith('mnt_id:')]
+        assert len(mounts) == 1 and mounts[0].isdigit()
+        mount_id = int(mounts[0])
+    finally:
+        os.close(descriptor)
+    native_proc = kept_reads._proc_mount_text
+    original = native_proc(kept_reads._MOUNTINFO, kept_reads._MOUNTINFO_MAX_BYTES)
+    rows = [line.split() for line in original.splitlines()]
+    assert any(int(row[0]) == mount_id for row in rows)
+    devices = {row[2] for row in rows}
+    actual = f'{os.major(info.st_dev)}:{os.minor(info.st_dev)}'
+    unused_minor = 1
+    while f'0:{unused_minor}' in devices or f'0:{unused_minor}' == actual:
+        unused_minor += 1
+    unused = f'0:{unused_minor}'
+    target_type = filesystem if filesystem is not None else 'btrfs'
+    for row in rows:
+        suffix = len(row) - 4
+        assert row[suffix] == '-'
+        if int(row[0]) == mount_id or row[2] == actual:
+            row[2] = unused if filesystem is None else actual
+            row[suffix + 1] = target_type
+    table = '\n'.join(' '.join(row) for row in rows) + '\n'
+    def proc_text(path, limit):
+        if path == kept_reads._MOUNTINFO:
+            assert len(table.encode()) <= limit
+            return table
+        return native_proc(path, limit)
+    # Supply raw mount-table bytes and isolate the derived cache. The real
+    # parser must validate that table before the public operation can prove
+    # the actual descriptor/mount-ID/namespace/watch/final-path identity.
+    monkeypatch.setattr(kept_reads, '_proc_mount_text', proc_text)
+    monkeypatch.setattr(kept_reads, '_filesystem_types', {})
+    class MatureNativeTrust(kept_reads.LinuxFilesystemTrust):
+        def file_fence(self):
+            return fence
+    trust = MatureNativeTrust()
+    for path, observed in zip(paths, infos):
+        version = trust.file_version(observed, fence, path=path)
+        assert version == (None if filesystem == 'nfs4'
+                           else kept_reads.metadata_version(observed))
+    assert kept_reads._filesystem_types.get(kept_reads._MOUNT_TABLE_KEY) == 'validated'
+    assert (info.st_dev not in kept_reads._filesystem_types) == (filesystem is None)
+    return trust

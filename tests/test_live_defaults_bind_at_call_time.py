@@ -13,6 +13,7 @@ The sweep here holds every fleet tool to the rule; the second test drives the
 call that leaked.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import importlib
 import inspect
@@ -28,7 +29,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 
 from test_slurm_lane import _paper_action  # noqa: E402
 
@@ -38,7 +39,8 @@ LIVE_MOUNT = "/mnt/shared"
 #: The fleet tools whose module attributes ``conftest`` repoints, plus every
 #: other tool an operator runs.  Each is already imported by its own tests.
 FLEET_TOOLS = (
-    "fleet_submit", "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
+    pytest.param("prismabuild.fleet_submit", id="fleet_submit"),
+    "pool_reset", "pbrun", "pbstatus", "pbsweep", "pbwait",
     "pbcampaign", "pbmcp",
     "pbtest", "worker_loop", "supervise", "require_pool", "seal_and_publish",
 )
@@ -91,5 +93,5 @@ def test_submit_without_a_queue_root_lands_under_the_repointed_root(
 
     key = str(action["action_key"])
     assert submission.transport == "pool"
-    assert (root / "pb-queue" / pool.READY / f"{key}.json").is_file()
+    assert (root / "pb-queue" / pool.record_store.READY / f"{key}.json").is_file()
     assert Path(submission.where).is_relative_to(root)

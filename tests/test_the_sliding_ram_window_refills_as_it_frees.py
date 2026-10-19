@@ -118,11 +118,7 @@ def test_a_chunk_sized_hole_admits_the_next_chunk_while_the_phase_reads() -> Non
 
     plan = _build([_chunked_phase(0, 0), _chunked_phase(1, 6 * GIB)])
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=4, capacity_gib=8,
-        published=[_hexkey("rampromote0c0"), _hexkey("rampromote0c1")],
-        staged=[_hexkey("rampromote0c0"), _hexkey("rampromote0c1")],
-        mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_hexkey('rampromote0c0'), _hexkey('rampromote0c1')], staged=[_hexkey('rampromote0c0'), _hexkey('rampromote0c1')], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=4, capacity_gib=8)).decision
 
     assert [(entry["phase"], entry["chunk_index"])
             for entry in decision["publish"]] == [
@@ -138,11 +134,7 @@ def test_the_phase_granular_shape_stalls_where_chunks_slide() -> None:
 
     plan = _build([_whole_phase(0, 0), _whole_phase(1, 6 * GIB)])
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=2, capacity_gib=8,
-        published=[_hexkey("rampromote0")],
-        staged=[_hexkey("rampromote0")],
-        mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_hexkey('rampromote0')], staged=[_hexkey('rampromote0')], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=2, capacity_gib=8)).decision
 
     assert decision["publish"] == []
     stall = decision["stall"]
@@ -158,11 +150,7 @@ def test_a_whole_phase_plan_decides_byte_identically_to_today() -> None:
 
     plan = _build([_whole_phase(0, 0), _whole_phase(1, 6 * GIB)])
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0001", free_gib=6, capacity_gib=12,
-        published=[_hexkey("rampromote0")],
-        staged=[_hexkey("rampromote0")],
-        mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0001', residency_plan.LegObservation(published=[_hexkey('rampromote0')], staged=[_hexkey('rampromote0')], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=6, capacity_gib=12)).decision
 
     phase0 = plan["phases"][0]  # type: ignore[index]
     phase1 = plan["phases"][1]  # type: ignore[index]

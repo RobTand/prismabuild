@@ -10,6 +10,7 @@ of 188, so no mover could be admitted and every stage-fed consumer waited on a
 lead that could not land (#636).
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -19,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 MOVER = "1" * 64
 CONSUMER = "2" * 64
@@ -33,14 +34,9 @@ MANIFEST = "9" * 64
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8, storage_tiers.FILL_KIND: 200})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': 8, storage_tiers.FILL_KIND: 200})
     return q
-
-
-def _publish(q: pool.PoolQueue, key: str, resources: dict[str, int], **kw) -> None:
-    q.publish(action_key=key, cas_root=q.root / "cas", checkout_root=q.root / "co",
-              worker_script=q.root / "worker.py", resources=resources, **kw)
 
 
 def _residency() -> dict[str, object]:
@@ -52,8 +48,16 @@ def _residency() -> dict[str, object]:
 
 
 def _claim_mover(q: pool.PoolQueue, key: str = MOVER) -> dict[str, object]:
-    _publish(q, key, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, FILL_KIND: 188},
-             residency=_residency(), max_attempts=1, retry_safe=False)
+    ActionRows(q).publish(
+        key,
+        cas_root=q.root / 'cas',
+        checkout_root=q.root / 'co',
+        worker_script=q.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2, FILL_KIND: 188},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+    )
     claimed = q.claim(capacity={"cpu": 4, "mem_gb": 8}, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == key
     return claimed
@@ -63,21 +67,28 @@ def test_a_mover_that_kept_its_pin_still_returns_its_bandwidth(
     queue: pool.PoolQueue,
 ) -> None:
     claimed = _claim_mover(queue)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(MOVER) == {"stage_gib": 2,
-                                           storage_tiers.FILL_KIND: 188}
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(MOVER) == {'stage_gib': 2, storage_tiers.FILL_KIND: 188}
 
     queue._release_reservation(MOVER, host="dl380g10", keep_tier=True)
 
     # The bytes are on the device, so the occupancy stays charged to this key.
     # The copy has stopped, so the rate does not.
-    assert ledger.holder_tokens(MOVER) == {"stage_gib": 2}
-    assert ledger.held() == {"stage_gib": 2}
+    assert ledger.holdings(MOVER) == {'stage_gib': 2}
+    assert ledger.holdings() == {'stage_gib': 2}
     assert claimed["action_key"] == MOVER
 
     # And the next mover, which asks for the same 188, can now be admitted.
-    _publish(queue, OTHER, {"cpu": 1, "mem_gb": 1, STAGE_KIND: 2, FILL_KIND: 188},
-             residency=_residency(), max_attempts=1, retry_safe=False)
+    ActionRows(queue).publish(
+        OTHER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1, STAGE_KIND: 2, FILL_KIND: 188},
+        residency=_residency(),
+        max_attempts=1,
+        retry_safe=False,
+    )
     assert queue.claim(capacity={"cpu": 4, "mem_gb": 8},
                        tags=["dl380g10"]) is not None
 
@@ -89,7 +100,7 @@ def test_releasing_everything_still_releases_everything(
 
     _claim_mover(queue)
     queue._release_reservation(MOVER, host="dl380g10", keep_tier=False)
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {}
+    assert queue.tier(TIER).holdings(MOVER) == {}
 
 
 def test_the_cycle_reclaims_a_rate_no_live_copy_is_drawing(
@@ -102,10 +113,9 @@ def test_the_cycle_reclaims_a_rate_no_live_copy_is_drawing(
     """
 
     _claim_mover(queue)
-    ledger = queue.tier_ledger(TIER)
-    queue.transfer_tier_reservation(TIER, MOVER, OTHER)
-    assert ledger.holder_tokens(OTHER) == {"stage_gib": 2,
-                                           storage_tiers.FILL_KIND: 188}
+    ledger = queue.tier(TIER)
+    queue.tier(TIER).handover(MOVER, OTHER)
+    assert ledger.holdings(OTHER) == {'stage_gib': 2, storage_tiers.FILL_KIND: 188}
 
     events = tier_loop.reclaim_idle_rates(queue)
 
@@ -113,7 +123,7 @@ def test_the_cycle_reclaims_a_rate_no_live_copy_is_drawing(
     assert events[0]["released"] == 188
     assert events[0]["rates"] == {storage_tiers.FILL_KIND: 188}
     assert events[0]["tier_id"] == TIER
-    assert ledger.holder_tokens(OTHER) == {"stage_gib": 2}
+    assert ledger.holdings(OTHER) == {'stage_gib': 2}
     # Idempotent: a second cycle has nothing left to say.
     assert tier_loop.reclaim_idle_rates(queue) == []
 
@@ -125,5 +135,4 @@ def test_the_cycle_leaves_a_running_copys_rate_alone(
 
     _claim_mover(queue)
     assert tier_loop.reclaim_idle_rates(queue) == []
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {
-        "stage_gib": 2, storage_tiers.FILL_KIND: 188}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2, storage_tiers.FILL_KIND: 188}

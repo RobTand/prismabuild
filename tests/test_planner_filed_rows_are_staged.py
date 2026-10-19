@@ -28,10 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 from prewarm_fixture import Fleet  # noqa: E402
-import manifest_promotion  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import manifest_promotion  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -92,10 +92,10 @@ def _planner_row(fleet: Fleet, seed: str, *,
 
     files = [fleet.file(f"{seed}.safetensors", 4 * MIB)]
     key = fleet.action(seed, files, progress_phases=progress_phases)
-    fleet.queue.mint_tier_capacity(TIER, {"stage_gib": 16})
+    fleet.queue.tier(TIER).mint({'stage_gib': 16})
     plan = _plan(fleet.queue, key)
     residency_plan.freeze(fleet.queue, plan)
-    item = json.loads(fleet.queue.item_path(pool.READY, key).read_text())
+    item = json.loads(fleet.queue.records.item_path(pool.record_store.READY, key).read_text())
     assert "residency" not in item      # the planner's row stays bare
     return key, plan
 
@@ -103,10 +103,10 @@ def _planner_row(fleet: Fleet, seed: str, *,
 def _claim(fleet: Fleet, key: str, *, claimed_unix: float = 1000.0) -> None:
     """Move the ready record into ``claimed/`` as a claim leaves it."""
 
-    ready = fleet.queue.item_path(pool.READY, key)
+    ready = fleet.queue.records.item_path(pool.record_store.READY, key)
     item = json.loads(ready.read_text())
     item.update({"claimed_by": "sparklina", "claimed_unix": claimed_unix})
-    claimed = fleet.queue.item_path(pool.CLAIMED, key)
+    claimed = fleet.queue.records.item_path(pool.record_store.CLAIMED, key)
     claimed.parent.mkdir(parents=True, exist_ok=True)
     claimed.write_text(json.dumps(item))
     ready.unlink()
@@ -124,7 +124,7 @@ def test_a_claimed_planner_row_is_one_consumer_not_two_with_its_lease(tmp_path):
     fleet = Fleet(tmp_path)
     key, _plan_ = _planner_row(fleet, "row-lease")
     _claim(fleet, key)
-    fleet.queue.lease_path(key).write_text(json.dumps({
+    fleet.queue.records.lease_path(key).write_text(json.dumps({
         "schema": pool.POOL_LEASE_SCHEMA_V1, "action_key": key,
         "owner": "sparklina", "claimed_unix": 1000.0,
         "heartbeat_unix": 1000.0}))
@@ -165,9 +165,9 @@ def test_the_window_stages_a_planner_rows_first_phase_before_its_claim(tmp_path)
                  if e["event"] == "mover-published" and e["consumer"] == key]
     lead = residency_plan.leads_for(plan)[0]
     assert lead in published, events
-    assert fleet.queue.item_path(pool.READY, lead).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, lead).exists()
     # Still ready: staging happened ahead of the claim, not because of it.
-    assert fleet.queue.item_path(pool.READY, key).exists()
+    assert fleet.queue.records.item_path(pool.record_store.READY, key).exists()
 
 
 def test_the_sweep_counts_a_planner_rows_movers_as_wanted(tmp_path):
@@ -201,8 +201,7 @@ def test_a_post_read_progress_phase_places_the_consumer_in_its_last_read_phase(
     order = ["startup", *READ_PHASES, "pricing", "finalize"]
     key, _plan_ = _planner_row(fleet, "row-linear", progress_phases=order)
     _claim(fleet, key)
-    monkeypatch.setattr(prewarm_loop, "progress_phase", lambda _q, k, _c: (
-        {"phase": "pricing", "reported_unix": 1100.0} if k == key else None))
+    monkeypatch.setattr(pool.record_store.RecordStore, 'accepted_progress_phase', lambda _q, k, _c: {'phase': 'pricing', 'reported_unix': 1100.0} if k == key else None)
 
     consumer = {c["action_key"]: c for c in tier_loop.live_consumers(fleet.queue)}[key]
 
@@ -217,8 +216,7 @@ def test_without_the_contract_a_report_reads_as_it_always_did(tmp_path, monkeypa
     key, _plan_ = _planner_row(fleet, "row-pact",
                                progress_phases=["startup", "pricing", "finalize"])
     _claim(fleet, key)
-    monkeypatch.setattr(prewarm_loop, "progress_phase", lambda _q, k, _c: (
-        {"phase": "pricing", "reported_unix": 1100.0} if k == key else None))
+    monkeypatch.setattr(pool.record_store.RecordStore, 'accepted_progress_phase', lambda _q, k, _c: {'phase': 'pricing', 'reported_unix': 1100.0} if k == key else None)
 
     consumer = {c["action_key"]: c for c in tier_loop.live_consumers(fleet.queue)}[key]
 
@@ -255,10 +253,8 @@ def test_a_placed_report_evicts_behind_and_republishes_nothing(tmp_path):
 
     fleet = Fleet(tmp_path)
     _key, plan = _planner_row(fleet, "row-churn")
-    unplaced = residency_plan.window(plan, accepted_phase="pricing", free_gib=16,
-                                     capacity_gib=16, published=(), staged=())
-    placed = residency_plan.window(plan, accepted_phase="phase-2", free_gib=16,
-                                   capacity_gib=16, published=(), staged=())
+    unplaced = residency_plan.ConsumerWindow(plan, 'pricing', residency_plan.LegObservation(published=(), staged=()), residency_plan.WindowBudget(free_gib=16, capacity_gib=16)).decision
+    placed = residency_plan.ConsumerWindow(plan, 'phase-2', residency_plan.LegObservation(published=(), staged=()), residency_plan.WindowBudget(free_gib=16, capacity_gib=16)).decision
 
     assert [entry["phase"] for entry in unplaced["publish"]][:1] == ["phase-0"]
     assert [entry["phase"] for entry in placed["publish"]] == ["phase-2"]
@@ -283,7 +279,7 @@ def test_the_receipt_says_landed_when_the_verdict_reads_resident(tmp_path, monke
 
     tier = fleet.queue.prewarm(key)["tier"]
     assert tier["status"] == "landed"
-    assert tier["consumer_state"] == pool.READY
+    assert tier["consumer_state"] == pool.record_store.READY
     assert tier["observed_unix"] == 5000.0
     assert tier["phases"] == 3                  # the planner's fields survive
     assert asked and asked[0]["leads"] == residency_plan.leads_for(_plan_)
@@ -296,7 +292,7 @@ def test_a_claim_before_the_landing_is_said_so(tmp_path, monkeypatch):
         "destination": manifest_promotion.TIER_RECEIPT_DESTINATION,
         "status": "planned", "phases": 3}})
     _claim(fleet, key, claimed_unix=4000.0)
-    monkeypatch.setattr(prewarm_loop, "progress_phase", lambda *_a: None)
+    monkeypatch.setattr(pool.record_store.RecordStore, 'accepted_progress_phase', lambda *_a: None)
     monkeypatch.setattr(fleet.queue, "residency_verdict",
                         lambda item: {"state": "lead_not_resident"})
 

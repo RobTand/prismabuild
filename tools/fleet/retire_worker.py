@@ -62,7 +62,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import pool  # noqa: E402
@@ -99,10 +102,10 @@ def _announced(record: dict | None) -> float | None:
 def claim_holding(queue, host: str) -> str | None:
     """The action key of a claimed item that names ``host``, if any."""
 
-    directory = queue.dir(pool.CLAIMED)
-    if not directory.is_dir():
+    directory = queue.records.dir(pool.record_store.CLAIMED)
+    if not queue.records.state_directory_present(pool.record_store.CLAIMED):
         return None
-    for path in sorted(directory.glob("*.json")):
+    for path in queue.records.json_slot_paths(pool.record_store.CLAIMED):
         record = _read(path)
         if record is None:
             continue
@@ -169,7 +172,7 @@ def _archive_existing(destination: Path) -> Path | None:
 def retire(queue, host: str, *, now: float) -> tuple[int, str]:
     """Move the record aside, and put it back if the checks went stale."""
 
-    source = queue.root / pool.WORKERS / f"{host}.json"
+    source = queue.root / pool.record_store.WORKERS / f"{host}.json"
     record = _read(source)
     if record is None:
         return 1, f"no worker record for {host}"
@@ -201,7 +204,7 @@ def retire(queue, host: str, *, now: float) -> tuple[int, str]:
 
 def restore(queue, host: str) -> tuple[int, str]:
     source = queue.root / RETIRED / f"{host}.json"
-    destination = queue.root / pool.WORKERS / f"{host}.json"
+    destination = queue.root / pool.record_store.WORKERS / f"{host}.json"
     if not source.exists():
         return 1, f"no retired record for {host}"
     if destination.exists():
@@ -244,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         print(message)
         return code
 
-    source = queue.root / pool.WORKERS / f"{args.host}.json"
+    source = queue.root / pool.record_store.WORKERS / f"{args.host}.json"
     record = _read(source)
     if record is None:
         print(f"no worker record for {args.host}")

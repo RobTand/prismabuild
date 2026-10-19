@@ -23,8 +23,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, storage_tiers  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 
 CONSUMER = "c" * 64
 MOVER = "a" * 64
@@ -43,7 +44,7 @@ def _write(path: Path, payload: bytes) -> dict[str, object]:
 
 def _manifest(mount: Path, entries: list[dict[str, object]]) -> dict[str, object]:
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "test"},
         "mount_prefix": str(mount),
         "entries": entries,
@@ -57,7 +58,7 @@ def _fleet(tmp_path: Path, primarycache: str) -> pool.PoolQueue:
     """A queue whose stage tier announces what ZFS said about its dataset."""
 
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": TIER, "host": "dl380g10", "tier": "stage",
@@ -84,7 +85,7 @@ def _args(tmp_path: Path, manifest: dict, *, start: int, end: int, **overrides):
         "--range-start-bytes", str(start),
         "--range-end-bytes", str(end),
         "--manifest", str(manifest_path),
-        "--residency-root", str(tmp_path / "queue" / pool.RESIDENCY),
+        "--residency-root", str(tmp_path / "queue" / pool.record_store.RESIDENCY),
         "--block", str(1 << 16),
         "--readers", "2",
         "--max-readers", "2",

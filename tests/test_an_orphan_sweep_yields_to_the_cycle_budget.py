@@ -26,6 +26,7 @@ Every fixture is a temp stage root registered to a temp queue (never a real
 /stage or /ram), and the staged files are sparse.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -42,8 +43,10 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_uncharged_dead_owners_give_room_under_pressure as unc  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import pool, storage_tiers  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_holdings
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = unc.TIER
 #: The unit kind the sweep asks the budget for.  Read softly, so that a tree
@@ -83,13 +86,13 @@ class _Sweeps:
         self.fleet = fleet
         self.queue, self.stage, _ = fleet
         self.clock = FakeClock()
-        monkeypatch.setattr(pool, "_now", self.clock)
+        FleetClock(source=self.clock).install(monkeypatch, scope="pool")
         self.liveness = tier_loop.Liveness(
             interval_s=INTERVAL_S, bound_s=BOUND_S, poll_s=POLL_S)
         #: Every orphan eviction, in order: ``(mover, record age at start)``.
         self.evicted: list[tuple[str, float | None]] = []
         self._held = 0
-        real_evict = stage_release.evict
+        real_evict = staged_path.evict
 
         def evict(queue, mover, *args, **kwargs):
             if kwargs.get("reason") in REASONS:
@@ -97,7 +100,7 @@ class _Sweeps:
                 self.clock.now += EVICT_S
             return real_evict(queue, mover, *args, **kwargs)
 
-        monkeypatch.setattr(stage_release, "evict", evict)
+        monkeypatch.setattr(staged_path, 'evict', evict)
 
     def owner(self, name: str, unix: float, *, charged: bool = False,
               ) -> tuple[str, str]:
@@ -108,23 +111,23 @@ class _Sweeps:
         # ``dead_owner`` mints the tier to the new owner's size, which would
         # retire the token an earlier charged owner holds: mint it to all.
         held = self._held
-        real_mint = self.queue.mint_tier_capacity
-        self.queue.mint_tier_capacity = lambda tier, tokens: real_mint(
+        real_mint = tier_holdings.TierLedger.mint
+        tier_holdings.TierLedger.mint = lambda tier, tokens: real_mint(
             tier, {kind: count + held for kind, count in tokens.items()})
         try:
             made = unc.dead_owner(self.fleet, [name], unix=unix, charged=True)
         finally:
-            del self.queue.mint_tier_capacity
+            tier_holdings.TierLedger.mint = real_mint
         self._held += 1
         return made
 
     def record(self) -> dict[str, object]:
-        return json.loads(self.queue.tier_record_path(TIER).read_text())
+        return json.loads(self.queue.records.tier_record_path(TIER).read_text())
 
     def age(self) -> float | None:
         """The tier record's age as a reader computes it; none unannounced."""
 
-        path = self.queue.tier_record_path(TIER)
+        path = self.queue.records.tier_record_path(TIER)
         if not path.exists():
             return None
         return self.clock() - float(self.record()["announced_unix"])
@@ -152,10 +155,10 @@ class _Sweeps:
 
 @pytest.fixture(autouse=True)
 def _fresh_process_state():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     stage_release.reset_holder_reports()
 
 
@@ -259,18 +262,18 @@ def test_the_beyond_horizon_pass_yields_to_the_cycle_budget(
     import test_a_consumer_stages_only_to_its_refill_horizon as hz
 
     clock = FakeClock()
-    monkeypatch.setattr(pool, "_now", clock)
-    real_evict = stage_release.evict
+    FleetClock(source=clock).install(monkeypatch, scope="pool")
+    real_evict = staged_path.evict
     ages: list[float] = []
 
     def evict(queue, mover, *args, **kwargs):
         if kwargs.get("reason") == "beyond-horizon":
-            record = json.loads(queue.tier_record_path(hz.TIER).read_text())
+            record = json.loads(queue.records.tier_record_path(hz.TIER).read_text())
             ages.append(clock() - float(record["announced_unix"]))
             clock.now += EVICT_S
         return real_evict(queue, mover, *args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "evict", evict)
+    monkeypatch.setattr(staged_path, 'evict', evict)
     capacity = hz.PHASE_GIB * hz.WIDE + sum(hz.CAPTURE_SIZES[:4]) + 1
     queue, stage = hz._fixture_queue(tmp_path, capacity)
     hz._reader(queue, stage, landed=tuple(range(hz.WIDE)), phases=hz.WIDE)

@@ -1,4 +1,5 @@
 """Pool status uses the active queue even without SLURM executables."""
+from submission_support import patch_store
 import json
 from pathlib import Path
 import sys
@@ -10,7 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
+import upgrade_client
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -53,7 +56,7 @@ def controlled_readers(monkeypatch, controlled_clock):
         "recommended_kib": None, "bdi": None, "source": None,
         "warning": False, "note": "fixture has no NFS client mount",
     })
-    monkeypatch.setattr(pbstatus, "read_rollout_summary", lambda *args: {
+    monkeypatch.setattr(upgrade_client, "read_rollout_summary", lambda *args: {
         "state": "idle", "epoch": None, "pending_phase": None,
         "outstanding_hosts": [], "failed_hosts": [],
     })
@@ -68,18 +71,33 @@ def live_pool(tmp_path, monkeypatch, controlled_clock):
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 32, "gpu": 2},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    for host, key, demand in [
-        ("cpu-box", "a" * 64, {"cpu": 4, "mem_gb": 8}),
-        ("gpu-box", "b" * 64, {"cpu": 2, "gpu": 1, "mem_gb": 16}),
-    ]:
-        monkeypatch.setattr(pool.socket, "gethostname", lambda host=host: host)
-        queue.announce(host=host, tags=[host], has_gpu="gpu" in demand,
-                       capacity=demand, observed_capacity=demand)
-        queue.publish(action_key=key, cas_root=tmp_path / "cas",
-                      checkout_root=tmp_path, worker_script=ROOT / "tools/prismabuild_worker.py",
-                      resources=demand, tags=[host], needs_gpu="gpu" in demand)
-        assert queue.claim(tags=[host], has_gpu="gpu" in demand, owner=host)
+    queue.records.ensure_layout()
+    publishers = []
+    publish_snapshot = pool.cpu_admission.adaptive_snapshot.publish
+
+    def publish_and_track(local, shared):
+        child = publish_snapshot(local, shared)
+        if child is not None:
+            publishers.append(child)
+        return child
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool.cpu_admission.adaptive_snapshot, "publish", publish_and_track)
+        try:
+            for host, key, demand in [
+                ("cpu-box", "a" * 64, {"cpu": 4, "mem_gb": 8}),
+                ("gpu-box", "b" * 64, {"cpu": 2, "gpu": 1, "mem_gb": 16}),
+            ]:
+                monkeypatch.setattr(pool.socket, "gethostname", lambda host=host: host)
+                queue.announce(host=host, tags=[host], has_gpu="gpu" in demand,
+                               capacity=demand, observed_capacity=demand)
+                queue.publish(action_key=key, cas_root=tmp_path / "cas",
+                              checkout_root=tmp_path, worker_script=ROOT / "tools/prismabuild_worker.py",
+                              resources=demand, tags=[host], needs_gpu="gpu" in demand)
+                assert queue.claim(tags=[host], has_gpu="gpu" in demand, owner=host)
+        finally:
+            for publisher in publishers:
+                assert publisher.wait(timeout=10) == 0
     return queue
 
 
@@ -102,7 +120,7 @@ def test_ready_pool_jobs_report_placement_and_admission_passes(live_pool, tmp_pa
                       worker_script=ROOT / "tools/prismabuild_worker.py",
                       resources={"cpu": 2, "mem_gb": 4}, tags=["cpu-box"])
     live_pool.record_pass(key)
-    result = pbstatus.read_pool(live_pool.root)
+    result = fleet_census.action_rows(live_pool.root).value
     row = next(j for j in result['jobs'] if j['action_key'] == key)
     assert row['state'] == 'READY' and row['placeable_hosts'] == ['cpu-box']
     assert row['admission_passes'] == 1 and row['admission_wait_s'] >= 0
@@ -118,12 +136,13 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
     denial_path.parent.mkdir(parents=True, exist_ok=True)
     denial_path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {"fixture": {
         "action_key": key, "published_unix": json.loads(
-            live_pool.item_path(pool.READY, key).read_text())["published_unix"],
+            live_pool.records.item_path(pool.record_store.READY, key).read_text(
+            ))["published_unix"],
         "host": "cpu-box", "reason": "adaptive_cpu_refused",
         "evidence": {"cpu_sample": {"busy_cpus": 3.9, "psi_some": 0.2}},
         "denied_unix": controlled_clock.time(),
     }}}))
-    row = next(job for job in pbstatus.read_pool(live_pool.root)["jobs"]
+    row = next(job for job in fleet_census.action_rows(live_pool.root).value["jobs"]
                if job["action_key"] == key)
     assert row["admission_denials"][0]["host"] == "cpu-box"
     assert row["admission_denials"][0]["reason"] == "adaptive_cpu_refused"
@@ -133,15 +152,15 @@ def test_ready_pool_job_exposes_its_latest_per_host_denial(live_pool, tmp_path, 
 
 def test_stale_offer_and_lease_are_retained_as_uncertain(live_pool, controlled_clock):
     controlled_clock.advance(max(pool.OFFER_TIMEOUT_S, pool.LEASE_TIMEOUT_S) + 1)
-    offer = live_pool.root / pool.WORKERS / 'cpu-box.json'
+    offer = live_pool.root / pool.record_store.WORKERS / 'cpu-box.json'
     record = json.loads(offer.read_text())
     record['announced_unix'] = controlled_clock.time()
     offer.write_text(json.dumps(record))
-    lease = live_pool.lease_path('a' * 64)
+    lease = live_pool.records.lease_path('a' * 64)
     record = json.loads(lease.read_text())
     record['heartbeat_unix'] = controlled_clock.time()
     lease.write_text(json.dumps(record))
-    result = pbstatus.read_pool(live_pool.root)
+    result = fleet_census.action_rows(live_pool.root).value
     node = next(n for n in result['nodes'] if n['node'] == 'gpu-box')
     job = next(j for j in result['jobs'] if j['action_key'] == 'b' * 64)
     assert node['state'] == 'stale' and not node['healthy']
@@ -164,10 +183,10 @@ def test_pool_freshness_uses_the_completed_census(
         directory = live_pool.ledger(host).base / "adaptive"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": started}))
-    original_records, original_read = pbstatus._pool_records, pool._read_json
+    original_records, original_read = fleet_census._pool_records, pool.record_store._read_json
 
-    def stalled_records(directory):
-        result = original_records(directory)
+    def stalled_records(directory, *, reader=None):
+        result = original_records(directory, reader=reader)
         if directory.name == stall_at and controlled_clock.time() == started:
             controlled_clock.advance(1000)
         return result
@@ -176,14 +195,14 @@ def test_pool_freshness_uses_the_completed_census(
         result = original_read(path, **kwargs)
         selected = ((stall_at == "admission" and path.name == "cpu-sample.json")
                     or (stall_at == "lease" and path.suffix == ".lease")
-                    or (stall_at == "passes" and path.parent.name == pool.PASSES))
+                    or (stall_at == "passes" and path.parent.name == pool.record_store.PASSES))
         if selected and controlled_clock.time() == started:
             controlled_clock.advance(1000)
         return result
 
-    monkeypatch.setattr(pbstatus, "_pool_records", stalled_records)
-    monkeypatch.setattr(pool, "_read_json", stalled_read)
-    result = pbstatus.read_pool(live_pool.root)
+    monkeypatch.setattr(fleet_census, "_pool_records", stalled_records)
+    monkeypatch.setattr(pool.record_store, '_read_json', stalled_read)
+    result = fleet_census.action_rows(live_pool.root).value
     assert result["queue"]["sampled_unix"] == started + 1000
     assert result["queue"]["live_workers"] == 0
     for node in result["nodes"]:
@@ -207,18 +226,18 @@ def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
                       worker_script=ROOT / "tools/prismabuild_worker.py")
     denied = {
         "admission": live_pool.ledger("cpu-box").base / "adaptive" / "cpu-sample.json",
-        "lease": live_pool.lease_path("a" * 64),
-        "passes": live_pool.passes_path(key),
+        "lease": live_pool.records.lease_path("a" * 64),
+        "passes": live_pool.records.passes_path(key),
     }[sidecar]
-    original_read = pool._read_json
+    original_read = pool.record_store._read_json
 
     def unreadable(path, **kwargs):
         if path == denied:
             raise PermissionError("fixture sidecar denied")
         return original_read(path, **kwargs)
 
-    monkeypatch.setattr(pool, "_read_json", unreadable)
-    result = pbstatus.read_pool(live_pool.root)
+    monkeypatch.setattr(pool.record_store, '_read_json', unreadable)
+    result = fleet_census.action_rows(live_pool.root).value
     if sidecar == "admission":
         node = next(n for n in result["nodes"] if n["node"] == "cpu-box")
         assert node["admission"]["cpu"]["state"] == "unavailable"
@@ -236,26 +255,26 @@ def test_census_sidecar_errors_keep_the_affected_evidence_unknown(
 def test_empty_pool_is_distinct_from_missing_or_unreadable_state(tmp_path, monkeypatch):
     root = tmp_path / 'empty'
     queue = pool.PoolQueue(root)
-    queue.ensure_layout()
-    assert pbstatus.read_pool(root)['queue']['empty'] is True
+    queue.records.ensure_layout()
+    assert fleet_census.action_rows(root).value['queue']['empty'] is True
     missing = tmp_path / 'missing'
-    result = pbstatus.read_pool(missing)
+    result = fleet_census.action_rows(missing).value
     assert result['queue']['empty'] is None and result['queue']['ready'] is None
     assert not missing.exists()
     original = pbstatus.os.scandir
     def denied(path):
-        if not isinstance(path, int) and Path(path) == queue.dir(pool.CLAIMED):
+        if not isinstance(path, int) and Path(path) == queue.records.dir(pool.record_store.CLAIMED):
             raise PermissionError('permission denied')
         return original(path)
     monkeypatch.setattr(pbstatus.os, 'scandir', denied)
-    result = pbstatus.read_pool(root)
+    result = fleet_census.action_rows(root).value
     assert result['queue']['empty'] is None and result['queue']['claimed'] is None
     assert any('permission denied' in note for note in result['notes'])
 
 
 def test_malformed_active_records_remain_visible_without_hiding_valid_jobs(live_pool):
-    live_pool.item_path(pool.READY, 'c' * 64).write_text('{')
-    result = pbstatus.read_pool(live_pool.root)
+    live_pool.records.item_path(pool.record_store.READY, 'c' * 64).write_text('{')
+    result = fleet_census.action_rows(live_pool.root).value
     assert result['queue']['ready'] is None and result['queue']['empty'] is None
     assert len(result['jobs']) == 3
     assert next(j for j in result['jobs'] if j['action_key'] == 'c' * 64)['state'] == 'UNREADABLE'
@@ -276,7 +295,7 @@ def test_pool_status_reads_shared_admission_evidence_without_writing(
     controlled_clock.advance(sample_age)
     paths = [p for p in live_pool.root.rglob('*') if p.is_file()]
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
-    result = pbstatus.read_pool(live_pool.root)
+    result = fleet_census.action_rows(live_pool.root).value
     node = next(n for n in result['nodes'] if n['node'] == 'gpu-box')
     assert node['admission']['gpu']['state'] == expected_state
     assert node['admission']['gpu']['age_s'] == sample_age
@@ -300,10 +319,11 @@ def test_explicit_transport_overrides_environment(live_pool, monkeypatch, capsys
 
 
 def test_deployed_transport_default_is_used(tmp_path, monkeypatch, capsys):
-    import fleet_submit
+    from prismabuild import fleet_submit
     monkeypatch.delenv('PRISMABUILD_TRANSPORT', raising=False)
     (tmp_path / 'RUNTIME_VERSION.json').write_text(json.dumps({'default_transport': 'slurm'}))
-    monkeypatch.setattr(fleet_submit, 'RUNTIME_ROOT', tmp_path)
+    from submission_support import patch_store
+    patch_store(monkeypatch, client=fleet_submit, runtime_version=tmp_path / 'RUNTIME_VERSION.json')
     monkeypatch.setattr(pbstatus, 'read_nodes', lambda **kw: ([], None))
     monkeypatch.setattr(pbstatus, 'read_jobs', lambda **kw: [])
     pbstatus.main(['--json', '--queue-root', str(tmp_path / 'queue')])
@@ -323,11 +343,11 @@ def test_pool_text_names_jobs_and_unavailable_state(live_pool, capsys, tmp_path)
 
 
 def test_bad_worker_offer_does_not_hide_other_workers_or_jobs(live_pool):
-    path = live_pool.root / pool.WORKERS / 'cpu-box.json'
+    path = live_pool.root / pool.record_store.WORKERS / 'cpu-box.json'
     record = json.loads(path.read_text())
     record['capacity']['cpu'] = 'unknown'
     path.write_text(json.dumps(record))
-    result = pbstatus.read_pool(live_pool.root)
+    result = fleet_census.action_rows(live_pool.root).value
     assert next(n for n in result['nodes'] if n['node'] == 'cpu-box')['state'] == 'unreadable'
     assert next(n for n in result['nodes'] if n['node'] == 'gpu-box')['healthy']
     assert len(result['jobs']) == 2
@@ -335,7 +355,7 @@ def test_bad_worker_offer_does_not_hide_other_workers_or_jobs(live_pool):
 
 def test_nonregular_queue_entry_is_unreadable_without_opening(live_pool):
     import os
-    os.mkfifo(live_pool.item_path(pool.READY, 'c' * 64))
-    result = pbstatus.read_pool(live_pool.root)
+    os.mkfifo(live_pool.records.item_path(pool.record_store.READY, 'c' * 64))
+    result = fleet_census.action_rows(live_pool.root).value
     assert result['queue']['ready'] is None
     assert any('not a regular' in note for note in result['notes'])

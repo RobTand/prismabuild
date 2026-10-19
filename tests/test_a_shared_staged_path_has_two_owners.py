@@ -25,11 +25,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
+from prismabuild import manifest_layout
 from prismabuild import pool, reader_lease, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_release  # noqa: E402
-from stage_move import _Copier  # noqa: E402
-import ram_promote  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild.stage_move import _Copier  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
@@ -64,10 +66,10 @@ def _fragment(root: Path, stage: Path, consumer: str, mover: str,
 @pytest.fixture()
 def fleet(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -78,13 +80,13 @@ def test_one_owners_egress_leaves_the_other_owners_bytes(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     _fragment(root, stage, CONSUMER_B, MOVER_B,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
 
-    first = stage_release.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
+    first = staged_path.evict(queue, MOVER_A, consumer_action_key=CONSUMER_A,
                                 stage_root=str(stage))
     assert shared.exists(), (
         "mover B still vouches for this file; A's egress must not unlink it")
@@ -93,7 +95,7 @@ def test_one_owners_egress_leaves_the_other_owners_bytes(fleet) -> None:
     assert first["entries_deleted"] == 0
     assert MOVER_B[:12] in first["shared_with"][0]
 
-    second = stage_release.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
+    second = staged_path.evict(queue, MOVER_B, consumer_action_key=CONSUMER_B,
                                  stage_root=str(stage))
     assert not shared.exists()
     assert second["complete"] is True
@@ -133,7 +135,7 @@ def test_a_split_range_promotes_from_its_staged_shard_path(tmp_path: Path) -> No
     manifest = _split_manifest(pool_dir)
     manifest_path.write_text(json.dumps(manifest))
 
-    entries = prewarm_loop.manifest_read_entries(manifest)
+    entries = manifest_layout.read_entries(manifest)
     stage_copier = _Copier(
         mounts=prewarm_loop.MountMap([f"/mnt/shared={pool_dir}"]),
         pacer=None, stage_root=stage, mount_prefix="/mnt/shared",
@@ -145,18 +147,16 @@ def test_a_split_range_promotes_from_its_staged_shard_path(tmp_path: Path) -> No
     # What the stage mover filed before this promotion was ever published:
     # the promotion proves its source window against published material.
     residency = tmp_path / "residency"
-    residency_map.write_fragment(residency, {
+    staged_path.publish_vouch(
+        residency, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER_A, "mover_action_key": MOVER_B,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": "0" * 64,
         "entries": stage_copier.staged,
-    })
-    reader_lease.write_material(
-        residency, consumer_action_key=CONSUMER_A, mover_action_key=MOVER_B,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256="0" * 64,
+    },
         generation=reader_lease.mint_generation(),
-        entries=stage_copier.sidecar)
+        material_entries=stage_copier.sidecar)
 
     args = ram_promote.build_parser().parse_args([
         "--pool-root", str(tmp_path / "pool-root"),
@@ -186,14 +186,14 @@ def _shared_pair(tmp_path: Path):
     """Two consumers, two movers, one staged file; returns (queue, stage, file)."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     _fragment(root, stage, CONSUMER_B, MOVER_B,
@@ -219,7 +219,7 @@ def test_dual_egress_deletes_exactly_once(tmp_path: Path) -> None:
 
         def run(which, mover, consumer):
             barrier.wait(timeout=60)
-            receipt = stage_release.evict(
+            receipt = staged_path.evict(
                 queue, mover, consumer_action_key=consumer,
                 stage_root=str(stage))
             order.append((which, receipt))
@@ -240,7 +240,7 @@ def test_dual_egress_deletes_exactly_once(tmp_path: Path) -> None:
         assert by_which["b"]["complete"] is True
         assert (by_which["a"]["entries_deleted"]
                 + by_which["b"]["entries_deleted"]) == 1
-        root = queue.root / pool.RESIDENCY
+        root = queue.root / pool.record_store.RESIDENCY
         assert list((root / CONSUMER_A).glob("*.json")) == []
         assert list((root / CONSUMER_B).glob("*.json")) == []
 
@@ -271,7 +271,7 @@ def _write_claimed_copy_shape(queue: pool.PoolQueue, cas: Path, key: str,
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     record: dict[str, object] = {
         "action_key": key,
@@ -311,14 +311,14 @@ def test_a_claimed_copy_without_a_fragment_still_owns_its_paths(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
     manifest = _one_entry_manifest()
     _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 0, 4096)
 
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()
@@ -339,7 +339,7 @@ def test_a_copy_start_waits_out_an_in_progress_egress_snapshot(tmp_path: Path) -
     import threading
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     order: list[str] = []
@@ -371,7 +371,7 @@ def test_the_ownership_lock_excludes_another_process(tmp_path: Path) -> None:
     if os.name != "posix":
         pytest.skip("POSIX locks need fork")
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
 
@@ -397,11 +397,11 @@ def test_ownership_scan_scales_with_fragments_not_entries(tmp_path: Path) -> Non
     import time
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
-    root = queue.root / pool.RESIDENCY
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    root = queue.root / pool.record_store.RESIDENCY
     target = stage / "wanted.bin"
     target.write_bytes(b"\0" * 1024)
     for consumer in range(40):
@@ -423,7 +423,7 @@ def test_ownership_scan_scales_with_fragments_not_entries(tmp_path: Path) -> Non
               "/mnt/shared/wanted.bin", target, 1024)
     wanted = {str(target)}
     started = time.monotonic()
-    owners, tainted = stage_release._fragment_owners(
+    owners, tainted = staged_path.fragment_owners(
         root, wanted, except_consumer=CONSUMER_A, except_mover=MOVER_A)
     elapsed = time.monotonic() - started
     assert tainted == []
@@ -432,7 +432,7 @@ def test_ownership_scan_scales_with_fragments_not_entries(tmp_path: Path) -> Non
     _fragment(root, stage, CONSUMER_B, MOVER_B,
               "/mnt/shared/wanted.bin", target, 1024)
     started = time.monotonic()
-    owners, tainted = stage_release._fragment_owners(
+    owners, tainted = staged_path.fragment_owners(
         root, wanted, except_consumer=CONSUMER_A, except_mover=MOVER_A)
     elapsed = time.monotonic() - started
     assert tainted == []
@@ -463,7 +463,7 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -472,7 +472,7 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     consumer_c = "d" * 64
     _write_claimed_copy_shape(queue, cas, mover_c, manifest, 0, 4096)
 
-    real_claimed_paths = stage_release._claimed_paths_attributed
+    real_claimed_paths = staged_path.claimed_paths_attributed
     read_first = threading.Event()
     flipped = threading.Event()
     owned = threading.Event()
@@ -497,11 +497,11 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
         assert flipped.wait(timeout=60), "flip never ran: deadlock"
         return result
 
-    monkeypatch.setattr(stage_release, "_claimed_paths_attributed", rendezvous)
+    monkeypatch.setattr(staged_path, 'claimed_paths_attributed', rendezvous)
     outcome: list[dict] = []
 
     def egress() -> None:
-        outcome.append(stage_release.evict(
+        outcome.append(staged_path.evict(
             queue, MOVER_A, consumer_action_key=CONSUMER_A,
             stage_root=str(stage)))
 
@@ -512,7 +512,7 @@ def test_a_claim_to_fragment_handoff_between_the_two_reads_is_covered(fleet,
     # record is gone, exactly as a finishing worker does it.
     _fragment(root, stage, consumer_c, mover_c,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
-    (queue.dir(pool.CLAIMED) / f"{mover_c}.json").unlink()
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{mover_c}.json").unlink()
     flipped.set()
     thread.join(timeout=120)
     assert not thread.is_alive()
@@ -536,7 +536,7 @@ def test_each_claim_resolves_its_own_cas_root(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     manifest = _one_entry_manifest()
@@ -546,7 +546,7 @@ def test_each_claim_resolves_its_own_cas_root(fleet) -> None:
     mover_c = "3" * 64
     _write_claimed_copy_shape(queue, cas2, mover_c, manifest, 0, 4096)
 
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()
@@ -568,7 +568,7 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -583,16 +583,16 @@ def test_malformed_claim_shapes_fail_the_pass_closed(fleet) -> None:
                               command="not-a-list")
     # The mover's own tokens are held: a tainted pass must retain bytes AND
     # tokens, releasing nothing it cannot account for.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
-    assert queue.tier_ledger(TIER).acquire(MOVER_A, {"stage_gib": 2}) is True
+    queue.tier(TIER).mint({'stage_gib': 8})
+    assert queue.tier(TIER).take(MOVER_A, {'stage_gib': 2}) is True
 
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()
     assert receipt["complete"] is False
     assert receipt["entries_deleted"] == 0
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER_A) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER_A) == {'stage_gib': 2}
     assert any("malformed resources" in error for error in receipt["errors"])
     # An identified mover whose sealed argv carries no range flags is refused
     # with the reason the pass files today; the pass still fails closed.
@@ -607,7 +607,7 @@ def test_a_rootless_claim_reads_the_default_not_a_sibling_root(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     manifest = _one_entry_manifest()
@@ -618,7 +618,7 @@ def test_a_rootless_claim_reads_the_default_not_a_sibling_root(fleet) -> None:
     _write_claimed_copy_shape(queue, default_cas, mover_c, manifest, 0, 4096,
                               rootless=True)
 
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()
@@ -661,7 +661,7 @@ def test_an_explicit_override_beats_a_conflicting_record_root(fleet) -> None:
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{MOVER_B}.json").write_text(json_module.dumps(request))
 
-    paths, tainted = stage_release._claimed_paths(queue, TIER, override_cas)
+    paths, tainted = staged_path.claimed_paths(queue, TIER, override_cas)
     assert tainted == []
     # Both spellings of the override's one entry: the range name, and the
     # bare name a mover sealed before range-only naming may still write.
@@ -675,14 +675,14 @@ def test_an_inverted_range_is_undeterminable_not_unowned(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
     manifest = _one_entry_manifest()
     _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 4096, 0)
 
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()
@@ -700,18 +700,18 @@ def test_a_claim_missing_resources_cannot_establish_non_mover(fleet) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
     manifest = _one_entry_manifest()
     _write_claimed_copy_shape(queue, cas, MOVER_B, manifest, 0, 4096)
-    record_path = queue.dir(pool.CLAIMED) / f"{MOVER_B}.json"
+    record_path = queue.records.dir(pool.record_store.CLAIMED) / f"{MOVER_B}.json"
     record = json_module.loads(record_path.read_text())
     del record["resources"]
     record_path.write_text(json_module.dumps(record))
 
-    receipt = stage_release.evict(queue, MOVER_A,
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()
@@ -726,7 +726,7 @@ def test_an_uncuttable_window_taints(fleet, monkeypatch) -> None:
     shared = stage / "model" / "layer.safetensors"
     shared.parent.mkdir(parents=True)
     shared.write_bytes(b"\0" * 4096)
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     _fragment(root, stage, CONSUMER_A, MOVER_A,
               "/mnt/shared/model/layer.safetensors", shared, 4096)
     cas = queue.root.parent / "cas"
@@ -736,8 +736,8 @@ def test_an_uncuttable_window_taints(fleet, monkeypatch) -> None:
     def boom(*args, **kwargs):
         raise ValueError("cut refused")
 
-    monkeypatch.setattr(prewarm_loop, "entries_between", boom)
-    receipt = stage_release.evict(queue, MOVER_A,
+    monkeypatch.setattr(manifest_layout, "entries_between", boom)
+    receipt = staged_path.evict(queue, MOVER_A,
                                   consumer_action_key=CONSUMER_A,
                                   stage_root=str(stage))
     assert shared.exists()

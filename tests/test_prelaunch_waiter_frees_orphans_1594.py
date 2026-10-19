@@ -12,6 +12,7 @@ cycle (nothing here touches a live queue or a real stage mount).
 """
 from __future__ import annotations
 
+
 from pathlib import Path
 import sys
 
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, prelaunch_group, residency_plan  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     PHASE_GIB, STAGE_KIND, TIER, _claim_with_progress, _cycle, _row,
     _stage_range, _tier_record)
@@ -29,6 +30,7 @@ from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import _declared_plan  # noqa: E402
 from test_prelaunch_tier_module_1594 import _mover_row as _leg_row  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import GIB  # noqa: E402
+from prismabuild import staged_path
 
 CAPACITY = 20
 WITHDRAWN = "1" * 64
@@ -48,8 +50,8 @@ def _orphans(queue, stage, count: int) -> list[str]:
 
 
 def _held_orphans(queue, movers: list[str]) -> int:
-    ledger = queue.tier_ledger(TIER)
-    return sum(1 for mover in movers if ledger.holder_tokens(mover))
+    ledger = queue.tier(TIER)
+    return sum((1 for mover in movers if ledger.holdings(mover)))
 
 
 def _prefix_tokens(queue, consumer, plan) -> int:
@@ -59,12 +61,10 @@ def _prefix_tokens(queue, consumer, plan) -> int:
     once the group splits, the leg movers hold them (the tokens move, none is
     freed in between).  Another unit's group is not this prefix.
     """
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     holder = prelaunch_group.holder_name(
         consumer, TIER, residency_plan.prelaunch_phase_names(plan))
-    return (int(ledger.holder_tokens(holder).get("stage_gib", 0))
-            + sum(int(ledger.holder_tokens(lead).get("stage_gib", 0))
-                  for lead in residency_plan.leads_for(plan)))
+    return (int(ledger.holdings(holder).get('stage_gib', 0)) + sum((int(ledger.holdings(lead).get('stage_gib', 0)) for lead in residency_plan.leads_for(plan))))
 
 
 def test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans(
@@ -72,14 +72,13 @@ def test_a_declared_waiter_that_fits_the_tier_gets_room_from_orphans(
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)       # 14 of 20 held, 6 free
     consumer = _hexkey("waiter")
     plan = _declared_plan(queue, consumer,
                           [("p0", 10, True, 1), ("p1", 1, False, 1)], tag="w")
     _live(queue, plan, consumer)             # peak 11: above free, within 20
-    assert queue.tier_ledger(TIER).available()["stage_gib"] == (
-        CAPACITY - 7 * PHASE_GIB)
+    assert queue.tier(TIER).free_supply()['stage_gib'] == CAPACITY - 7 * PHASE_GIB
     assert _prefix_tokens(queue, consumer, plan) == 0
     for _ in range(6):
         _cycle(queue, stage, gib=CAPACITY)
@@ -92,7 +91,7 @@ def test_a_declared_waiter_above_the_tier_takes_nothing(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)
     consumer = _hexkey("too-big")
     plan = _declared_plan(queue, consumer,
@@ -110,7 +109,7 @@ def test_control_an_undeclared_waiter_of_the_same_size_gets_room_from_orphans(
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)
     consumer = _hexkey("streaming-waiter")
     plan = _declared_plan(queue, consumer,
@@ -140,7 +139,7 @@ def test_the_relief_counts_queued_demand_the_gate_counts(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 7)       # 14 of 20 held, 6 free
     _queued_row(queue, 4)
     consumer = _hexkey("waiter-with-queue")
@@ -167,7 +166,7 @@ def _funded_next(queue, stage, movers_below: int = 3) -> int:
     _live(queue, plan, reader)
     _cycle(queue, stage, gib=CAPACITY)                   # admit: fence s1
     first = residency_plan.leads_for(plan)[0]
-    queue.item_path(pool.READY, first).unlink()          # its copy lands...
+    queue.records.item_path(pool.record_store.READY, first).unlink()          # its copy lands...
     _stage_range(queue, mover=first, consumer=reader, stage=stage, ordinal=8,
                  manifest="d" * 64)
     _claim_with_progress(queue, reader, phase="s0")      # ...and is being read
@@ -175,7 +174,7 @@ def _funded_next(queue, stage, movers_below: int = 3) -> int:
         _cycle(queue, stage, gib=CAPACITY)                # publish s1, hand off
     nxt = next(item for item in queue.ready_items()
                if "stage_gib@" + TIER in " ".join(item.get("resources") or {}))
-    covered, _generation = queue.funded_cover(TIER, nxt, "stage_gib", 4)
+    covered, _generation = queue.funding.cover_window(TIER, nxt, "stage_gib", 4).credit
     assert covered == 4, "the fixture's queued row is not funded"
     return 4
 
@@ -192,7 +191,7 @@ def test_funded_queued_demand_is_not_new_money_for_the_relief(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 3)
     _funded_next(queue, stage)
     waiter = _hexkey("waiter-beside-funded-row")
@@ -219,7 +218,7 @@ def test_a_live_declared_prefix_is_not_counted_as_evictable(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     movers = _orphans(queue, stage, 2)
     live = _hexkey("live-declared")
     live_plan = _declared_plan(queue, live,
@@ -247,11 +246,11 @@ def test_the_pressure_census_receives_the_declared_keys(
     (a claimed reader, landed chunks, a landing rate) returned no candidate at
     all, so no behavioural P2 regression exists here yet.
     """
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     _orphans(queue, stage, 2)
     live = _hexkey("live-declared-2")
     live_plan = _declared_plan(queue, live,

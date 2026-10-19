@@ -59,7 +59,8 @@ sys.path.insert(0, str(HERE.parents[1] / "src"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 import bench_stage_adopt  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:bench"
 RAM_TIER = "ram:bench"
@@ -113,7 +114,7 @@ def stage(work: Path, queue: pool.PoolQueue, window: dict[str, object],
         "--manifest-sha256", str(window["sha256"]),
         "--range-start-bytes", "0", "--range-end-bytes", str(window["bytes"]),
         "--manifest", str(window["path"]),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--readers", str(workers), "--max-readers", str(workers),
         "--warm-after-copy", "never", "--unpaced",
     ])
@@ -133,14 +134,14 @@ def promote_argv(work: Path, queue: pool.PoolQueue, window: dict[str, object],
             "--manifest-sha256", str(window["sha256"]),
             "--range-start-bytes", "0", "--range-end-bytes", str(window["bytes"]),
             "--manifest", str(window["path"]),
-            "--residency-root", str(queue.root / pool.RESIDENCY),
+            "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
             "--readers", str(workers), "--max-readers", str(workers),
             "--receipt", str(receipt)]
 
 
 def ram_paths(work: Path, window: dict[str, object]) -> list[Path]:
     body = window["body"]
-    return [work / "ram" / stage_move.stage_relative(
+    return [work / "ram" / staged_path.stage_relative(
                 str(entry["path"]), 0, int(entry["bytes"]),
                 mount_prefix=str(body["mount_prefix"]))
             for entry in body["entries"]]
@@ -269,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         setup_started = time.monotonic()
         queue = pool.PoolQueue(work / "pb-queue")
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         window = make_range(work, args.entries, args.entry_mib * MIB)
         stage(work, queue, window, args.workers)
         (work / "ram").mkdir()
@@ -285,9 +286,9 @@ def main(argv: list[str] | None = None) -> int:
         published = identities(paths)
 
         # What a kill before the end-of-range records leaves.
-        residence = queue.root / pool.RESIDENCY
-        residency_map.fragment_path(residence, CONSUMER, RAM_MOVER).unlink()
-        reader_lease.material_path(residence, CONSUMER, RAM_MOVER).unlink()
+        residence = queue.root / pool.record_store.RESIDENCY
+        staged_path.withdraw_vouch(None, residence, CONSUMER, RAM_MOVER,
+                                   missing_ok=False)
 
         restart = run_promotion(args, work, out, queue, window, "restart")
         after = identities(paths)
@@ -299,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
             if old is not None and new is not None
             and not reader_lease.file_id_matches(old, new))
 
-        grace = getattr(stage_move, "_PUBLISH_GRACE_S", None)
+        grace = getattr(staged_path, '_PUBLISH_GRACE_S', None)
         result = {
             "schema": "prismabuild.bench.ram_promote_restart.v1",
             "host": socket.gethostname(),

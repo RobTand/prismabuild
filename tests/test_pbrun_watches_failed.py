@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun
+from prismabuild import submission as submit_core
 
 
 class _Queue:
@@ -27,18 +28,13 @@ class _Queue:
 
     def __init__(self, root: Path):
         self.root = root
+        self.records = pbrun.pool.record_store.RecordStore(root)
         for name in ("ready", "claimed", "done", "failed"):
             (root / name).mkdir(parents=True, exist_ok=True)
 
-    def item_path(self, state: str, key: str) -> Path:
-        return self.root / state / f"{key}.json"
-
-    def withdrawal_decisions(self, key: str) -> list:
-        return []
-
 
 def _file(queue: _Queue, state: str, key: str, payload: dict) -> None:
-    queue.item_path(state, key).write_text(json.dumps(payload), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path(state, key), payload)
 
 
 OUTCOME = {
@@ -52,8 +48,8 @@ OUTCOME = {
 
 def _wait(monkeypatch, capsys, queue: _Queue, key: str, wait_s: float = 5.0):
     """Drive only pbrun's terminal-outcome half, with the queue already filed."""
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
-    return pbrun.await_outcome(queue, key, wait_s=wait_s)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001, raising=False)
+    return submit_core.action_client.report_pool_outcome(queue, key, wait_s=wait_s)
 
 
 def test_a_failed_action_is_reported_not_waited_out(monkeypatch, capsys, tmp_path):

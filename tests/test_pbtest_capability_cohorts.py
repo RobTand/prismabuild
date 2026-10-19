@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 
 import pytest
@@ -31,9 +32,11 @@ from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 
-TAG = dependency_digest.DEPENDENCY_DIGEST_TAG
+TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 8, "mem_gb": 16}
 MARKED = (
     "import pytest\n\n"
@@ -69,12 +72,21 @@ def _config(checkout: Path, tmp_path: Path, *, sha: str | None = None,
 def _stub_queue(tmp_path: Path, monkeypatch, *, answers=(), absent=(),
                 capability=True):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     tags = [TAG, "x86"] if capability else ["cpu"]
-    queue.announce(host="fenced-box", tags=tags, has_gpu=False,
-                   capacity=dict(CAPACITY),
-                   dependency_files=(list(answers) or None) if capability else None,
-                   dependency_files_absent=list(absent) or None)
+    queue.announce(
+        host="fenced-box",
+        tags=tags,
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                (list(answers) or None) if capability else None,
+                list(absent) or None,
+            ),
+        ),
+    )
     monkeypatch.setattr(pbtest, "fleet_queue", lambda: queue)
     return queue
 
@@ -82,6 +94,7 @@ def _stub_queue(tmp_path: Path, monkeypatch, *, answers=(), absent=(),
 def _checkout(tmp_path: Path, *, marked=2, plain=2):
     checkout = tmp_path / "checkout"
     (checkout / "tests").mkdir(parents=True)
+    (checkout / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     for index in range(plain):
         (checkout / "tests" / f"test_plain_{index}.py").write_text(
             PLAIN, encoding="utf-8")
@@ -103,7 +116,7 @@ def _dispatch(tmp_path: Path, monkeypatch, checkout, extra, *, shards=4,
         if real:
             # The child, not pbrun: the sealed program runs inside this
             # already-admitted test action (the dependency-pins pattern).
-            argv, environment = admitted_child(command)
+            argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
             return original(argv, cwd=checkout, env=environment, **kwargs)
         return _FinishedProcess(command)
 
@@ -327,7 +340,14 @@ def test_an_unused_config_leaves_the_dispatch_byte_identical(
     calls: list[list[str]] = []
 
     def _popen(command, **kwargs):
-        calls.append(list(command))
+        declaration = list(command)
+        if "--client-events-fd" in declaration:
+            slot = declaration.index("--client-events-fd") + 1
+            report_fd = int(declaration[slot])
+            assert report_fd in kwargs["pass_fds"]
+            assert stat.S_ISFIFO(os.fstat(report_fd).st_mode)
+            declaration[slot] = "<client-events-pipe>"
+        calls.append(declaration)
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)

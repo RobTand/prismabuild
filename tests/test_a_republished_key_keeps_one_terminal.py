@@ -16,6 +16,7 @@ key that then fails leaves only ``failed/``.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 from pathlib import Path
@@ -32,13 +33,12 @@ from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 KEY = "b" * 64
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    value = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    value.ensure_layout()
-    return value
+    return FleetWorld(tmp_path, queue_name='queue', admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def _run(queue: pool.PoolQueue, status: str) -> tuple[Path, dict]:
@@ -51,22 +51,22 @@ def _run(queue: pool.PoolQueue, status: str) -> tuple[Path, dict]:
 
 
 def _terminals(queue: pool.PoolQueue) -> list[str]:
-    return [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
-            if queue.item_path(state, KEY).exists()]
+    return [state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
+            if queue.records.item_path(state, KEY).exists()]
 
 
 @pytest.mark.parametrize("first,second,retired,kept", [
-    ("failed", "executed", pool.FAILED, pool.DONE),
-    ("executed", "failed", pool.DONE, pool.FAILED),
+    ("failed", "executed", pool.record_store.FAILED, pool.record_store.DONE),
+    ("executed", "failed", pool.record_store.DONE, pool.record_store.FAILED),
 ])
 def test_the_later_generation_retires_the_earlier_terminal(
         queue: pool.PoolQueue, first, second, retired, kept) -> None:
     first_path, first_claim = _run(queue, first)
-    assert first_path == queue.item_path(retired, KEY)
+    assert first_path == queue.records.item_path(retired, KEY)
     earlier = json.loads(first_path.read_text())
 
     second_path, second_claim = _run(queue, second)
-    assert second_path == queue.item_path(kept, KEY)
+    assert second_path == queue.records.item_path(kept, KEY)
     assert first_claim["published_unix"] != second_claim["published_unix"]
 
     # One key, one terminal record.
@@ -88,7 +88,7 @@ def test_the_later_generation_retires_the_earlier_terminal(
     # The earlier record is archived whole, where no ``<key>.json`` lookup
     # reads it.
     archived = Path(superseded["superseded_path"])
-    assert archived.parent == queue.superseded_dir()
+    assert archived.parent == queue.records.superseded_dir()
     assert archived.name.startswith(f"{KEY}.")
     assert not archived.name == f"{KEY}.json"
     kept_record = json.loads(archived.read_text())
@@ -98,7 +98,7 @@ def test_the_later_generation_retires_the_earlier_terminal(
         "published_unix"]
 
     # The ambiguity is what made the reclaim refuse; it no longer does.
-    if kept == pool.DONE:
+    if kept == pool.record_store.DONE:
         queue.reclaim_terminal_reservation(KEY)
 
 
@@ -107,7 +107,7 @@ def test_a_same_state_republish_is_unchanged(queue: pool.PoolQueue) -> None:
 
     _run(queue, "failed")
     path, claimed = _run(queue, "failed")
-    assert _terminals(queue) == [pool.FAILED]
+    assert _terminals(queue) == [pool.record_store.FAILED]
     terminal = json.loads(path.read_text())
     assert terminal["published_unix"] == claimed["published_unix"]
     assert "supersedes_terminal" not in terminal
@@ -121,7 +121,7 @@ def test_a_republish_alone_retires_nothing(queue: pool.PoolQueue) -> None:
     queue.publish(action_key=KEY, cas_root="/cas", checkout_root="/checkout",
                   worker_script="/worker.py", max_attempts=1)
     assert first_path.exists()
-    assert queue.item_path(pool.READY, KEY).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY).exists()
 
 
 def test_a_waiter_on_the_earlier_generation_still_reads_its_ending(
@@ -130,18 +130,20 @@ def test_a_waiter_on_the_earlier_generation_still_reads_its_ending(
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     _first_path, first = _run(queue, "failed")
     _second_path, second = _run(queue, "executed")
-    assert not queue.item_path(pool.FAILED, KEY).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY).exists()
 
-    landed, generation = pbrun.outcome_poll(
+    landed, generation = submit_core.action_wait.outcome_poll(
         queue, KEY, float(first["published_unix"]))
     assert landed is not None and generation == float(first["published_unix"])
     assert landed[1]["status"] == "failed"
     assert landed[1]["published_unix"] == first["published_unix"]
 
-    newer, _ = pbrun.outcome_poll(queue, KEY, float(second["published_unix"]))
+    newer, _ = submit_core.action_wait.outcome_poll(queue, KEY, float(second["published_unix"]))
     assert newer is not None and newer[1]["status"] == "executed"
 
 
@@ -157,6 +159,6 @@ def test_an_unreadable_earlier_terminal_never_fails_the_conclusion(
     # Damaged after the claim, which reads it first (and refuses it).
     first_path.write_text("{not json")
     second_path = queue.finish(KEY, status="executed", detail={})
-    assert second_path == queue.item_path(pool.DONE, KEY)
+    assert second_path == queue.records.item_path(pool.record_store.DONE, KEY)
     assert "supersedes_terminal" not in json.loads(second_path.read_text())
     assert first_path.read_text() == "{not json"

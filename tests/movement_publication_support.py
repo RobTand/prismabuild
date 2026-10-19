@@ -20,6 +20,7 @@ import stat
 import pytest
 
 from prismabuild import resource_scope, runtime_publication as publication
+from generation_fixture import generation_receipt
 
 SCRIPTS = ("stage_move.py", "ram_promote.py", "stage_release.py", "produced_export.py",
            "local_resident.py")
@@ -59,9 +60,7 @@ def retained_generation(parent: Path, name: str = GENERATION, *, scripts=SCRIPTS
     dependency.chmod(0o444)
     files["src/prismabuild/helper.py"] = hashlib.sha256(dependency.read_bytes()).hexdigest()
     receipt = root / "RUNTIME_VERSION.json"
-    receipt.write_text(json.dumps({
-        "schema": publication.RUNTIME_SCHEMA, "generation": name, "commit": commit,
-        "files": files}))
+    receipt.write_text(json.dumps(generation_receipt(name, commit, files)))
     receipt.chmod(0o444)
     seal(root)
     return root

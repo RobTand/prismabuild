@@ -31,8 +31,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 GIB = storage_tiers.GIB
@@ -121,7 +121,7 @@ def test_the_live_receipt_shape_mints_no_fill_and_says_so(tmp_path):
     """The receipts that shipped, through the real cycle: no token, no label."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     for index in range(3):
         queue.record_move(str(index) * 64, {
             "tier_id": TIER, "complete": True, "seconds": 44.5,
@@ -148,7 +148,7 @@ def test_the_live_receipt_shape_mints_no_fill_and_says_so(tmp_path):
 
 def test_a_receipt_carrying_the_pool_side_field_mints_the_measured_token(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.record_move("a" * 64, {
         "tier_id": TIER, "complete": True, "seconds": 44.5,
         "disk_pacing": {**LIVE_PACING, "mean_pool_read_mb_s": 166.0},

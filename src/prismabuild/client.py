@@ -3,8 +3,11 @@
 A client of PrismaBuild -- any program that runs as a PrismaBuild action, or
 that prepares work for one -- reaches PrismaBuild through the fleet tools
 (``pbrun``, ``pbtest``, ``pbcampaign``), the progress helper
-(:mod:`prismabuild.progress`), and this module.  Everything else under
-``prismabuild`` is internal and may change in any release without notice.
+(:mod:`prismabuild.progress`), and this module. The documented module-level
+exceptions are ``produced_output.batch_record`` and ``batch_records`` with
+their batch state constants and ``ProducedOutputError`` (#955), and
+``produced_spool.check_export_receipt`` (#1286). Other names outside these
+published surfaces are internal and may change in any release without notice.
 
 This module is versioned.  :data:`SDK_VERSION` names the contract, and
 ``tests/test_client_sdk_surface.py`` pins every name below: the set of names,
@@ -69,11 +72,18 @@ it.
 """
 
 from __future__ import annotations
+from . import batch_ledger as bl
+from . import output_contract as oc
+
+from . import scratch_lifetime
 
 from collections.abc import Mapping
 
+from . import manifest_layout
 from . import action_result as _action_result
+from . import contracts as _contracts
 from . import core as _core
+from . import data_manifest as manifest_codec
 from . import local_scratch as _local_scratch
 from . import pool as _pool
 from . import produced_output as _produced_output
@@ -99,18 +109,18 @@ containment_certificate_ok = _reader_lease.containment_certificate_ok
 
 # -- the sealed data manifest ------------------------------------------------
 
-DATA_MANIFEST_MAX_BYTES = _core.DATA_MANIFEST_MAX_BYTES
-read_data_manifest = _core.read_data_manifest
-manifest_read_entries = _storage_tiers.manifest_read_entries
+DATA_MANIFEST_MAX_BYTES = manifest_codec.DATA_MANIFEST_MAX_BYTES
+read_data_manifest = manifest_codec.read_data_manifest
+manifest_read_entries = manifest_layout.manifest_read_entries
 
 # -- the queue ---------------------------------------------------------------
 
 PoolQueue = _pool.PoolQueue
 #: The queue state of an action a worker has claimed and is running.
-CLAIMED = _pool.CLAIMED
+CLAIMED = _pool.record_store.CLAIMED
 #: The queue subdirectory residency maps, fragments and landing records live
 #: under: ``Path(queue.root) / RESIDENCY``.
-RESIDENCY = _pool.RESIDENCY
+RESIDENCY = _pool.record_store.RESIDENCY
 #: The schema of the terminal record the pool files when an action ends.
 POOL_OUTCOME_SCHEMA_V1 = _pool.POOL_OUTCOME_SCHEMA_V1
 
@@ -125,61 +135,42 @@ def read_claimed_record(queue, action_key: str) -> dict[str, object] | None:
     mount is never read as "not claimed" (#1267).
     """
 
-    path = queue.item_path(_pool.CLAIMED, action_key)
-    try:
-        present = path.exists()
-    except OSError:
-        present = True          # a stat that cannot answer is not "absent"
-    if not present:
-        return None
-    record = _pool._read_json(path)
-    if record is None:
-        try:
-            if not path.exists():
-                # Completed between the stat and the read: the row moved to
-                # done/, which is "not claimed", not a torn write (#1271).
-                return None
-        except OSError:
-            pass
-        # ``_read_json`` answers ``None`` for absent and for empty; only the
-        # absent is "not claimed".  An empty row is a torn write or a broken
-        # mount holding an opinion, and the reader that asked by key holds no
-        # evidence the directory is live -- the same reason ``_read_json``
-        # keeps single-key callers loud.
-        raise _pool.PoolContractError(
-            f"claimed record is empty (torn write or broken mount?): {path}")
-    return record
+    return _pool.record_store.value_or_raise(queue.records.claimed_for_action(action_key))
 
 
 # -- produced output ---------------------------------------------------------
 
-TEMPLATE_SCHEMA_V1 = _produced_output.TEMPLATE_SCHEMA_V1
-DESCRIPTOR_SCHEMA_V2 = _produced_output.DESCRIPTOR_SCHEMA_V2
+TEMPLATE_SCHEMA_V1 = oc.TEMPLATE_SCHEMA_V1
+DESCRIPTOR_SCHEMA_V2 = oc.DESCRIPTOR_SCHEMA_V2
 declared_template = _produced_output.declared_template
-validate_template = _produced_output.validate_template
+validate_template = oc.validate_template
 bind_declared_instance = _produced_output.bind_declared_instance
-declare_instance = _produced_output.declare_instance
-admit_instance = _produced_output.admit_instance
-validate_instance = _produced_output.validate_instance
-instance_dir = _produced_output.instance_dir
-checked_instance_maxima = _produced_output.checked_instance_maxima
-owner_demand_terms = _produced_output.owner_demand_terms
+declare_instance = bl.declare_instance
+admit_instance = bl.BatchLedger.admit
+validate_instance = oc.validate_instance
+instance_dir = bl.scope_dir
+checked_instance_maxima = oc.checked_instance_maxima
+owner_demand_terms = oc.owner_demand_terms
 admit_funded_window = _produced_output.admit_funded_window
 refill_window = _produced_output.refill_window
-require_prewrite = _produced_output.require_prewrite
-abort_prewrite = _produced_output.abort_prewrite
-validate_descriptor = _produced_output.validate_descriptor
-output_manifest_sha256 = _produced_output.output_manifest_sha256
-batch_namespace = _produced_output.batch_namespace
-output_fragment_root = _produced_output.output_fragment_root
+require_prewrite = bl.BatchLedger.reserve
+abort_prewrite = bl.BatchLedger.abort
+validate_descriptor = oc.validate_descriptor
+output_manifest_sha256 = oc.output_manifest_sha256
+batch_namespace = oc.batch_namespace
+output_fragment_root = bl.output_fragment_root
 publish_prepaid_batch = _produced_output.publish_prepaid_batch
 commit_batch = _produced_output.commit_batch
-commit_origin_batch = _produced_output.commit_origin_batch
+commit_origin_batch = bl.BatchLedger.commit_origin
 retire_batch = _produced_output.retire_batch
-reclaim_origin = _produced_output.reclaim_origin
+reclaim_origin = bl.BatchLedger.reclaim
 recover_batches = _produced_output.recover_batches
-due_mover_rows = _produced_output.due_mover_rows
-materialization_state = _produced_output.materialization_state
+def due_mover_rows(queue, instance: Mapping[str, object],
+                   template: Mapping[str, object]) -> list[dict[str, object]]:
+    """Prepare due batch movers using the queue residency contract."""
+    return bl.BatchLedger.due_mover_rows(
+        queue, instance, template, residency_schema=_pool.RESIDENCY_SCHEMA_V1)
+materialization_state = bl.BatchLedger.materialization
 ensure_batch_materialized = _produced_output.ensure_batch_materialized
 safe_release_instance = _produced_output.safe_release_instance
 
@@ -226,18 +217,18 @@ record_ephemeral_scratch_declarations = _local_scratch.record_ephemeral_scratch_
 #: The capability tag the pool derives from sealed lifetime intent. A worker
 #: that offers it runs this tree's registration and cleanup code; an older
 #: worker offers no such tag and cannot claim versioned lifetime actions.
-SCRATCH_LIFETIME_TAG = _local_scratch.SCRATCH_LIFETIME_TAG
+SCRATCH_LIFETIME_TAG = _contracts.SCRATCH_LIFETIME_TAG
 #: The schema of the sealed selection :func:`build_scratch_lifetime_selection`
 #: returns for ``PRISMABUILD_EPHEMERAL_SCRATCH_DECLARATIONS``.
-SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1
+SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = scratch_lifetime.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1
 #: The schema of the durable registration the pool files in the claim/lease.
-SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = _local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1
+SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = scratch_lifetime.SCRATCH_LIFETIME_RECORD_SCHEMA_V1
 #: The claim field that carries the durable registration.
-SCRATCH_LIFETIME_FIELD = _local_scratch.SCRATCH_LIFETIME_FIELD
+SCRATCH_LIFETIME_FIELD = scratch_lifetime.SCRATCH_LIFETIME_FIELD
 #: The sealed variable that carries the versioned selection.
 SCRATCH_LIFETIME_DECLARATIONS_ENV = _local_scratch.DECLARATIONS_ENV
 #: Build one versioned scratch-lifetime selection for the sealed environment.
-build_scratch_lifetime_selection = _local_scratch.build_scratch_lifetime_selection
+build_scratch_lifetime_selection = scratch_lifetime.build_scratch_lifetime_selection
 
 # -- receipts ----------------------------------------------------------------
 
@@ -342,7 +333,7 @@ DECOMPOSITION_TAG = "decomposition-v1"
 #: rather than by probing files or attributes.
 CAPABILITIES = frozenset({
     READER_LEASE_TAG,
-    _core.PROGRESS_TAG,
+    _contracts.PROGRESS_TAG,
     DECOMPOSITION_TAG,
     VERIFIED_ACTION_RESULT_TAG,
     NATIVE_PRODUCER_CONTEXT_TAG,

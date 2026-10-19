@@ -13,6 +13,7 @@ discarded, and a group whose export is ready or claimed is kept byte for
 byte.  Every retirement is a line in ``produced-spool-retirements``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
 
 import hashlib
 import json
@@ -23,6 +24,8 @@ import test_prepaid_writer_integration as fx
 from test_produced_spool import claim_export, prepare, world
 from prismabuild import pool, produced_spool as ps
 import worker_loop
+from prismabuild import role_session
+from prismabuild.record_store import Present, RecordStore
 
 
 def _tree(root: Path) -> dict[str, tuple]:
@@ -60,18 +63,20 @@ def _failed(spool, batch, payload):
     _source, _destination, entries = prepare(spool, batch=batch, payload=payload)
     handle = spool.submit_group(batch, entries)
     key = handle["export_key"]
-    while ps.po._mover_live_state(spool.queue, key) == pool.READY:
+    while (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.record_store.READY):
         claimed = spool.queue.claim(owner="export-fails", tags=[spool.host])
         assert claimed is not None and claimed["action_key"] == key
         spool.queue.finish(key, status="failed")
-    assert ps.po._mover_live_state(spool.queue, key) == pool.FAILED
+    assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(key), Present)
+            and mover_row.value.state == pool.record_store.FAILED)
     return handle
 
 
 def _withdraw_owner(spool):
     spool.queue.withdraw(spool.owner, reason="test: the producer was withdrawn")
     spool.queue.finish(spool.owner, status="failed")
-    assert ps.po._producer_attempt_state(spool.queue, spool.instance) == "dead"
+    assert bl.producer_attempt_state(spool.queue, spool.instance) == "dead"
 
 
 def test_a_withdrawn_owners_acknowledged_and_failed_groups_are_retired(tmp_path):
@@ -134,7 +139,8 @@ def test_a_claimed_export_is_never_touched(tmp_path):
     running = spool.submit_group("b2", entries)
     claim_export(spool, running)
     _withdraw_owner(spool)
-    assert ps.po._mover_live_state(spool.queue, running["export_key"]) == pool.CLAIMED
+    assert (isinstance(mover_row := RecordStore(spool.queue.root).mover(running["export_key"]), Present)
+            and mover_row.value.state == pool.record_store.CLAIMED)
     group = spool.directory / "b2"
     before = _tree(group)
 
@@ -157,7 +163,7 @@ def test_a_finished_owners_released_records_are_removed(tmp_path):
     _acknowledged(spool, "b1", b"acknowledged")
     assert spool.release_group("b1")["ok"]
     spool.queue.finish(spool.owner, status="executed")
-    assert ps.po._producer_attempt_state(spool.queue, spool.instance) == "succeeded"
+    assert bl.producer_attempt_state(spool.queue, spool.instance) == "succeeded"
     ps.retirement_tick(spool.queue, spool.cas_root, host="spool-host")
     assert not spool.directory.exists()
     record = ps.retirement_records(spool.queue)["retirements"][0]
@@ -166,7 +172,7 @@ def test_a_finished_owners_released_records_are_removed(tmp_path):
 
 
 def test_the_worker_loop_ticks_once_per_interval_on_one_loop(tmp_path, monkeypatch):
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
     calls = []
     monkeypatch.setattr(ps, "retirement_tick",
                         lambda queue, cas_root, host: calls.append(host) or {"ok": True})
@@ -181,7 +187,7 @@ def test_the_worker_loop_ticks_once_per_interval_on_one_loop(tmp_path, monkeypat
 
 
 def test_a_tick_that_raises_is_recorded_beside_the_ticks(tmp_path, monkeypatch):
-    monkeypatch.setattr(worker_loop, "ROLE_LOCK_ROOT", tmp_path / "roles")
+    monkeypatch.setattr(role_session, "ROLE_LOCK_ROOT", tmp_path / "roles")
 
     def broken(queue, cas_root, host):
         raise OSError(5, "spool root unreadable")

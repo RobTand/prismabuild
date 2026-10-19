@@ -8,7 +8,7 @@ the two authorities that already exist rather than adding a scheduler:
   durable maintenance state (root-owned persistent JSON; restart replays it,
   and the boot hold keeps the fence closed until client verification).
 - execution fence: the broker-owned volatile gate mirror
-  (``worker_loop.MAINTENANCE_GATE``) with ``changed_unix`` naming the drain
+  (``role_session.MAINTENANCE_GATE``) with ``changed_unix`` naming the drain
   epoch, and ``PARKED_ROOT`` exact-loop markers.
 - running work: the existing withdrawal ladder (``PoolQueue.withdraw``),
   the budget-preserving ``PoolQueue.plan_requeue`` + ``publish`` handoff, and
@@ -50,7 +50,10 @@ from typing import Any, Callable
 
 TOOL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_DIR))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 REPO_ROOT = generation_root(__file__)
 #: Layout root holding RUNTIME_VERSION.json: the published generation in
@@ -61,10 +64,12 @@ RUNTIME_ROOT = REPO_ROOT
 SRC_ROOT = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
-import fleet_roster  # noqa: E402
-from prismabuild import pool as pool_module  # noqa: E402
+from prismabuild import fleet_roster, reader_lease, pool as pool_module  # noqa: E402
 import resource_broker as broker_mod  # noqa: E402
-import worker_loop  # noqa: E402
+from prismabuild import park_proof, role_session  # noqa: E402
+from prismabuild.park_proof import (  # noqa: E402
+    expected_markers, parked_markers, read_gate,
+)
 
 SCHEMA = "prismaquant.prismabuild.fleet_membership.v1"
 
@@ -82,22 +87,9 @@ def _utc() -> float:
 def gate_paths(gate: Path | str | None = None) -> tuple[Path, Path]:
     """(gate file, parked root) for an explicit or default gate location."""
     if gate is None:
-        return worker_loop.MAINTENANCE_GATE, worker_loop.PARKED_ROOT
+        return role_session.MAINTENANCE_GATE, role_session.PARKED_ROOT
     gate_path = Path(gate)
     return gate_path, gate_path.parent / "rollout" / "parked"
-
-
-def read_gate(gate_path: Path) -> dict[str, Any] | None:
-    """Open gate (None) or the drain in force; unreadable parses as draining."""
-    try:
-        value = json.loads(gate_path.read_text())
-    except FileNotFoundError:
-        return {"draining": True, "reason": "maintenance gate not initialized"}
-    except (OSError, ValueError):
-        return {"draining": True}
-    if not isinstance(value, dict):
-        return {"draining": True}
-    return None if value.get("draining") is False else value
 
 
 def gate_epoch(gate: dict[str, Any] | None) -> Any:
@@ -107,11 +99,11 @@ def gate_epoch(gate: dict[str, Any] | None) -> Any:
     return gate.get("changed_unix")
 
 
-def gate_key(gate: dict[str, Any] | None) -> str:
-    """Filename-safe drain identity shared with the loop's park markers."""
+def gate_label(gate: dict[str, Any] | None) -> str:
+    """The open-state label or a closed gate's filename-safe drain key."""
     if gate is None:
         return "open"
-    return worker_loop._gate_key(gate)
+    return park_proof.gate_key(gate)
 
 
 def local_host() -> str:
@@ -158,38 +150,19 @@ def supervisor_incarnation() -> tuple[str | None, str | None]:
     _, _, rest = line.rpartition(")")
     fields = rest.split()
     starttime = fields[19] if len(fields) > 19 else "unknown"
-    return f"{host}:supervisor-{pid}:{starttime}", None
+    identity = park_proof.process_identity(pid, starttime)
+    if isinstance(identity, park_proof.ProofUnknown):
+        return None, f"supervisor pid {pid} identity unknown: {identity.reason}"
+    return f"{host}:supervisor-{identity.pid}:{identity.starttime}", None
 
 
-def roster_entry(host: str, roster_path: Path | None = None) -> dict[str, Any] | None:
-    """Raw roster entry for ``host`` (alias-aware), or None when unreadable."""
-    candidates: list[Path] = []
-    if roster_path is not None:
-        candidates = [Path(roster_path)]
-    else:
-        candidates = [
-            REPO_ROOT / "tools" / "fleet" / "fleet_boxes.json",
-            TOOL_DIR / "fleet_boxes.json",
-        ]
-    for path in candidates:
-        try:
-            boxes = json.loads(path.read_text())["boxes"]
-        except (OSError, ValueError, KeyError):
-            continue
-        if not isinstance(boxes, dict):
-            continue
-        if host in boxes and isinstance(boxes[host], dict):
-            return dict(boxes[host])
-        aliases = [
-            (name, shape)
-            for name, shape in boxes.items()
-            if isinstance(shape, dict) and shape.get("_alias") == host
-        ]
-        if len(aliases) > 1:
-            raise ValueError(f"ambiguous fleet hostname alias {host}: {path}")
-        if aliases:
-            return dict(aliases[0][1])
-    return None
+def roster_entry(host: str, roster_path: Path | None = None) -> fleet_roster.Box | None:
+    """Captured roster entry for ``host`` (alias-aware), or None when unreadable."""
+    box = fleet_roster.Roster.for_host(
+        host, paths=(roster_path,) if roster_path is not None else (),
+        roots=() if roster_path is not None else (REPO_ROOT,),
+        modules=() if roster_path is not None else (__file__,))
+    return box
 
 
 def roster_loop_args(host: str, roster_path: Path | None = None) -> list[str]:
@@ -200,7 +173,7 @@ def roster_loop_args(host: str, roster_path: Path | None = None) -> list[str]:
         raise ValueError(str(exc))
     if entry is None:
         raise ValueError(f"no fleet_boxes.json entry for {host}")
-    return [str(a) for a in (entry.get("args") or [])]
+    return entry.loop_args
 
 
 def check_roster_active(host: str, roster_path: Path | None = None) -> tuple[bool, str]:
@@ -212,7 +185,7 @@ def check_roster_active(host: str, roster_path: Path | None = None) -> tuple[boo
     if entry is None:
         return False, f"no fleet_boxes.json entry for {host}"
     try:
-        status, detail = fleet_roster.box_status(host, entry)
+        status, detail = fleet_roster.box_status(host, entry.entry)
     except fleet_roster.RosterPresenceError as exc:
         return False, f"cannot establish roster presence: {exc}"
     if status in fleet_roster.ABSENT:
@@ -263,75 +236,15 @@ def broker_call_func(
 
     return broker_call(dict(payload))
 
-#: Reader-lease containment identifiers (documented in the reader-lifetime
-#: API brief; imported from ``prismabuild.reader_lease`` when that lane has
-#: merged, else these documented fallback values with the source recorded).
-_READER_ATTESTATION_SCHEMA_FALLBACK = (
-    "prismaquant.prismabuild.reader_scope_attestation.v1")
-_READER_ATTESTATIONS_SUBDIR_FALLBACK = "broker-attestations"
-_READER_LEASES_SUBDIR_FALLBACK = "leases"
-_READER_RESIDENCY_SUBDIR_FALLBACK = "residency"
-
-
-def _reader_lease():
-    """The reader-lease module when its lane has merged, else None.
-
-    No vendoring, no parallel reimplementation: enumeration, validation,
-    and release run through the owning module whenever it is importable.
-    """
-    try:
-        from prismabuild import reader_lease as module  # noqa: E402
-    except ImportError:
-        return None
-    return module
-
-
-def _leases_roots(queue: pool_module.PoolQueue,
-                  residency_roots=None) -> list[Path]:
-    module = _reader_lease()
-    roots = [Path(queue.root) / _READER_RESIDENCY_SUBDIR_FALLBACK
-             / _READER_LEASES_SUBDIR_FALLBACK]
-    for extra in residency_roots or []:
-        sub = _READER_LEASES_SUBDIR_FALLBACK
-        if module is not None:
-            try:
-                return_roots = [Path(module.leases_root(queue, extra))]
-            except (OSError, ValueError, AttributeError):
-                return_roots = [Path(extra) / sub]
-            roots.extend(return_roots)
-        else:
-            roots.append(Path(extra) / sub)
-    return roots
-
 
 def reader_refs_census(queue: pool_module.PoolQueue, host: str,
                        residency_roots=None) -> tuple[list[dict[str, Any]], str]:
-    """This host's reader refs and how the answer was established.
-
-    Returns (refs, state) where state is ``drained-absent`` (no leases
-    namespace at all — provable without the module), ``enumerated`` (real
-    census through the owning module), or ``unknown-needs-reader-lease``
-    (pins may exist but cannot be enumerated here). Directory presence is
-    never read as drained: consumer pins may sit under it.
-    """
-    module = _reader_lease()
-    if module is not None:
-        try:
-            refs = module.refs_for_holder(queue, host)
-        except (OSError, ValueError) as exc:
-            return [], f"unknown-refs-unreadable: {exc}"
-        return ([dict(r) for r in refs], "enumerated")
-    for root in _leases_roots(queue, residency_roots):
-        try:
-            if not root.exists():
-                continue
-            consumers = [e for e in os.scandir(root) if e.is_dir()]
-        except OSError as exc:
-            return [], f"unknown-leases-unreadable: {root}: {exc}"
-        if consumers:
-            return [], ("unknown-needs-reader-lease: pins may exist under "
-                        f"{root}")
-    return [], "drained-absent"
+    """Enumerate reader refs through the required owner; unreadable stays unknown."""
+    try:
+        refs = reader_lease.refs_for_holder(queue, host)
+    except (OSError, ValueError) as exc:
+        return [], f"unknown-refs-unreadable: {exc}"
+    return ([dict(r) for r in refs], "enumerated")
 
 
 def reader_refs_gate(queue: pool_module.PoolQueue, host: str,
@@ -340,16 +253,14 @@ def reader_refs_gate(queue: pool_module.PoolQueue, host: str,
 
     Consumer side only: attestation writing and ref reclaim are the lease
     worker's automatic production path (PR #730); this lane only consumes
-    the proof. Drained when the leases namespace is provably absent, or
-    when an enumerated census names no refs for this host. Anything else —
+    the proof. The required owner must enumerate no refs for this host,
+    including an absent namespace. Anything else retains the fence:
     refs remaining (their automatic path drains them; resign waits) or an
     unprovable namespace — retains the fence with the reason. Never
     reported drained on heartbeat loss, missing reads, or another host's
     refs.
     """
     refs, state = reader_refs_census(queue, host, residency_roots)
-    if state == "drained-absent":
-        return True, state, {"refs": []}
     if state == "enumerated":
         if not refs:
             return True, "refs-drained", {"refs": []}
@@ -366,28 +277,20 @@ def claimed_census(
     """(owned claim snapshots, unknown paths). Malformed is unknown, never empty."""
     owned: list[dict[str, Any]] = []
     unknown: list[str] = []
-    claimed_dir = queue.dir(pool_module.CLAIMED)
-    if not claimed_dir.is_dir():
-        return [], [f"claimed directory unreadable: {claimed_dir}"]
-    try:
-        # An unreadable census is unknown, never an empty set of claims.
-        # Path.glob suppresses directory errors; materialize the names
-        # with scandir so resignation retains its gate on an I/O failure.
-        with os.scandir(claimed_dir) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json"))
-    except OSError as exc:
-        return [], [f"claimed directory not listable: {exc}"]
-    paths = [claimed_dir / name for name in names]
-    for path in paths:
-        try:
-            record = json.loads(path.read_text())
-        except (OSError, ValueError) as exc:
-            unknown.append(f"{path.name}: unreadable ({exc})")
+    for observation in queue.records.membership_claims():
+        path = observation.address.path
+        result = observation.result
+        if isinstance(result, pool_module.record_store.Unknown):
+            if result.reason == "claimed-directory-unreadable":
+                return [], [f"claimed directory unreadable: {path}"]
+            if result.reason == "claimed-directory-unlistable":
+                return [], [f"claimed directory not listable: {result.error}"]
+            if result.error is not None:
+                unknown.append(f"{path.name}: unreadable ({result.error})")
+            else:
+                unknown.append(f"{path.name}: non-object record")
             continue
-        if not isinstance(record, dict):
-            unknown.append(f"{path.name}: non-object record")
-            continue
+        record = result.value
         action_key = record.get("action_key")
         if not isinstance(action_key, str) or len(action_key) != 64:
             unknown.append(f"{path.name}: bad action key")
@@ -395,7 +298,7 @@ def claimed_census(
         mine = record.get("claimed_host") == host
         if not mine:
             try:
-                lease = json.loads(queue.lease_path(action_key).read_text())
+                lease = queue.records.text_lease(action_key)
             except (OSError, ValueError) as exc:
                 unknown.append(f"{path.name}: lease unreadable ({exc})")
                 continue
@@ -419,49 +322,14 @@ def claimed_census(
 def live_loop_census(
     live: list[tuple[int, str]] | None = None,
 ) -> tuple[list[tuple[int, str]], str | None]:
-    """((pid, starttime) loops, unknown reason). Failure is unknown, not []."""
+    """Selected work/storage processes, or an unknown census reason."""
     if live is not None:
         return list(live), None
     try:
-        import supervise
-
-        pids = list(supervise._live_loops())
-    except (ImportError, OSError) as exc:
-        return [], f"loop census unavailable: {exc}"
-    census: list[tuple[int, str]] = []
-    for pid in pids:
-        try:
-            line = Path(f"/proc/{pid}/stat").read_text()
-        except OSError as exc:
-            return [], f"loop pid {pid} not observable: {exc}"
-        _, _, rest = line.rpartition(")")
-        fields = rest.split()
-        starttime = fields[19] if len(fields) > 19 else "unknown"
-        census.append((pid, starttime))
-    return census, None
-
-
-def parked_markers(parked_root: Path, gate: dict[str, Any] | None) -> list[Path]:
-    """Markers naming exactly this drain epoch (old epochs never count)."""
-    if gate is None:
-        return []
-    key = gate_key(gate)
-    if not parked_root.is_dir():
-        return []
-    try:
-        return sorted(p for p in parked_root.glob(f"*-{key}") if p.is_file())
-    except OSError:
-        return []
-
-
-def expected_markers(
-    census: list[tuple[int, str]], gate: dict[str, Any] | None
-) -> set[str]:
-    """Full marker names each live loop must post (pid + starttime + epoch)."""
-    if gate is None:
-        return set()
-    key = gate_key(gate)
-    return {f"{pid}-{starttime}-{key}" for pid, starttime in census}
+        return park_proof.select_processes(
+            park_proof.proc_census(), park_proof.MEMBER_LOOPS), None
+    except (OSError, ValueError) as exc:
+        return [], f"work/storage census unavailable: {exc}"
 
 
 def terminal_of(
@@ -479,22 +347,25 @@ def terminal_of(
     the filed ``withdrawn/`` decision of this generation as the terminal.
     """
     key = str(snapshot["action_key"])
-    for state in (pool_module.DONE, pool_module.FAILED):
+    for state in (pool_module.record_store.DONE, pool_module.record_store.FAILED):
         try:
-            record = json.loads(queue.item_path(state, key).read_text())
+            record = queue.records.text_item(state, key)
         except (OSError, ValueError):
             continue
         if isinstance(record, dict) and _terminal_matches(record, snapshot):
-            return ("done" if state == pool_module.DONE else "failed", record)
+            return ("done" if state == pool_module.record_store.DONE else "failed", record)
     try:
-        claimed_gone = not queue.item_path(pool_module.CLAIMED, key).exists()
+        claimed_gone = not bool(
+            pool_module.record_store.value_or_raise(
+                queue.records.item_presence(pool_module.record_store.CLAIMED, key),
+            ),
+        )
     except OSError:
         return None
     if not claimed_gone:
         return None
     try:
-        withdrawn = json.loads(
-            queue.item_path(pool_module.WITHDRAWN, key).read_text())
+        withdrawn = queue.records.text_item(pool_module.record_store.WITHDRAWN, key)
     except (OSError, ValueError):
         return None
     if (isinstance(withdrawn, dict)
@@ -596,9 +467,11 @@ def check_shared_mount(
         entry = roster_entry(host, roster_path)
     except ValueError as exc:
         return False, {"mount": mount, "reason": str(exc)}
-    roles = entry.get("roles") if isinstance(entry, dict) else None
-    serves_files = isinstance(roles, dict) and bool(
-        set(roles) & {"storage", "tiers"})
+    try:
+        roles = entry.roles if entry is not None else {}
+    except ValueError as exc:
+        return False, {"mount": mount, "reason": str(exc)}
+    serves_files = bool(set(roles) & {"storage", "tiers"})
     fstype = str(mount.get("fstype"))
     if fstype in ("nfs", "nfs4"):
         shared = True
@@ -768,7 +641,11 @@ def _resign_withdraw(queue_root: str, action_key: str, reason: str, by: str,
 def _resign_claimed_exists(queue_root: str, action_key: str) -> bool:
     """Whether a claim still occupies CLAIMED (holder-concluded check)."""
     queue = pool_module.PoolQueue(Path(queue_root))
-    return queue.item_path(pool_module.CLAIMED, action_key).exists()
+    return bool(
+        pool_module.record_store.value_or_raise(
+            queue.records.item_presence(pool_module.record_store.CLAIMED, action_key),
+        ),
+    )
 
 
 def _resign_terminal_of(queue_root: str,
@@ -874,7 +751,8 @@ def qualify_host(
     receipt = (Path(runtime_root) if runtime_root is not None
                else RUNTIME_ROOT) / "RUNTIME_VERSION.json"
     try:
-        commit = json.loads(receipt.read_text()).get("commit") or ""
+        from prismabuild.generation_receipt import GenerationReceipt
+        commit = GenerationReceipt.capture(receipt.read_text()).document.get("commit") or ""
     except (OSError, ValueError):
         commit = ""
     checks["runtime_commit"] = commit
@@ -1176,8 +1054,8 @@ def resign(
         return {"status": "refused", "phase": "maintenance_begin", "host": host,
                 "owner": owner, "reason": "gate open after begin",
                 "broker": began}
-    epoch = gate_epoch(gate_now)
-    key = gate_key(gate_now)
+    drain = park_proof.drain_identity(gate_now)
+    key = gate_label(gate_now)
     if queue_root is None:
         return {"status": "resigning", "host": host, "owner": owner,
                 "gate_key": key,
@@ -1199,7 +1077,14 @@ def resign(
         # anyone else's drain, or a supervisor replacement, ends this
         # resignation's authority to declare completeness.
         gate_check = read_gate(gate_path)
-        if gate_check is None or gate_epoch(gate_check) != epoch:
+        current_drain = park_proof.drain_identity(gate_check)
+        if isinstance(drain, park_proof.ProofUnknown):
+            pending_note = f"maintenance gate identity unknown: {drain.reason}"
+            break
+        if isinstance(current_drain, park_proof.ProofUnknown):
+            pending_note = f"maintenance gate identity unknown: {current_drain.reason}"
+            break
+        if current_drain != drain:
             pending_note = "gate epoch moved under this resignation; stopping"
             break
         incarnation, incarnation_error = supervisor_incarnation()
@@ -1319,9 +1204,8 @@ def resign(
                 scopes = (broker_now.get("active_scopes")
                           if isinstance(broker_now, dict) else None)
                 census, census_error = live_loop_census(live)
-                parked = parked_markers(parked_root, gate_now)
+                parked = parked_markers(parked_root, gate_check)
                 parked_names = {p.name for p in parked}
-                acks = expected_markers(census, gate_now) <= parked_names
                 # Proof census: owned claims UNION handled-but-no-longer-claimed
                 # attempts. A handled attempt whose claim left (finished,
                 # entombed, reaped) still owes its exact terminal proof;
@@ -1389,7 +1273,7 @@ def resign(
                         else:
                             pending_note = ("attempts without exact terminal: "
                                             + ", ".join(missing))
-                    elif not isinstance(scopes, int):
+                    elif type(scopes) is not int:
                         armed = False
                         pending_note = f"broker scope census unknown: {broker_now}"
                     elif scopes != 0:
@@ -1404,17 +1288,21 @@ def resign(
                         refs_drained = refs_pack["drained"]
                         refs_state = refs_pack["state"]
                         refs_detail = refs_pack["detail"]
+                        acks = park_proof.acknowledgements(
+                            processes=census, markers=parked_names,
+                            gate_before=gate_check, gate_after=read_gate(gate_path))
                         if not refs_drained:
                             armed = False
                             pending_note = (
                                 f"reader refs not drained: {refs_state}; "
                                 f"{refs_detail}")
-                        elif not acks:
+                        elif not acks.complete:
                             armed = False
-                            want = sorted(expected_markers(census, gate_now))
-                            pending_note = ("parked acks incomplete "
-                                            f"({len(parked_names & set(want))}/{len(want)} "
-                                            f"for epoch {key})")
+                            pending_note = (
+                                "parked acks unknown: " + "; ".join(acks.unknown)
+                                if acks.unknown else "parked acks incomplete "
+                                f"({len(census) - len(acks.unparked)}/{len(census)} "
+                                f"for epoch {key})")
                         else:
                             # Bracketed proof: acks complete in this round AND the
                             # previous one, with an identical live set and epoch
@@ -1498,8 +1386,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
     if not key:
         return out
     try:
-        live = json.loads(queue.item_path(
-            pool_module.WITHDRAWN, key).read_text())
+        live = queue.records.text_item(pool_module.record_store.WITHDRAWN, key)
     except (OSError, ValueError):
         live = None
     decision = None
@@ -1508,7 +1395,7 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
         decision, out["decision_live"] = live, True
     else:
         try:
-            candidates = queue.withdrawal_decisions(key)
+            candidates = queue.records.withdrawal_decisions(key)
         except (OSError, ValueError, pool_module.PoolContractError):
             candidates = []
         for _, candidate in candidates:
@@ -1518,25 +1405,17 @@ def lineage_status(queue: pool_module.PoolQueue, snapshot: dict[str, Any],
                 decision = candidate
                 break
     out["decision"] = decision
-    try:
-        ready_raw: str | None = queue.item_path(
-            pool_module.READY, key).read_text()
-    except FileNotFoundError:
-        ready_raw = None  # proven absence: the slot is free
-    except OSError as exc:
-        # Unreadable is not absent: planning a publication over this
-        # would clobber an occupant no reader can see. Retain and block.
+    observation = queue.records.successor_document(key)
+    if isinstance(observation, pool_module.record_store.Absent):
+        return out
+    if isinstance(observation, pool_module.record_store.Unknown):
         out["successor_unknown"] = True
-        out["successor_unknown_error"] = f"{type(exc).__name__}: {exc}"
+        exc = observation.error
+        out["successor_unknown_error"] = (
+            f"corrupt ready record: {exc}" if observation.reason == "successor-corrupt"
+            else f"{type(exc).__name__}: {exc}")
         return out
-    if ready_raw is None:
-        return out
-    try:
-        ready = json.loads(ready_raw)
-    except ValueError as exc:
-        out["successor_unknown"] = True
-        out["successor_unknown_error"] = f"corrupt ready record: {exc}"
-        return out
+    ready = observation.value
     if not isinstance(ready, dict):
         out["successor_unknown"] = True
         out["successor_unknown_error"] = "ready record is not an object"
@@ -1691,8 +1570,8 @@ def resume_owed(
     """
     owed: list[dict[str, Any]] = []
     skipped: list[str] = []
-    directory = queue.dir(pool_module.WITHDRAWN)
-    if not directory.is_dir():
+    directory = queue.records.dir(pool_module.record_store.WITHDRAWN)
+    if not queue.records.state_directory_present(pool_module.record_store.WITHDRAWN):
         return [], [f"withdrawn directory unreadable: {directory}"]
     try:
         # Materialize with os.scandir, not Path.glob: the stdlib glob
@@ -1701,15 +1580,12 @@ def resume_owed(
         # so a permission-denied census would read as "nothing owed" and
         # JOIN would open the gate over unknown rows. scandir preserves
         # the error and the caller below fails closed on it.
-        with os.scandir(directory) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json"))
+        paths = queue.records.required_slot_paths(pool_module.record_store.WITHDRAWN)
     except OSError as exc:
         return [], [f"withdrawn directory not listable: {exc}"]
-    paths = [directory / name for name in names]
     for path in paths:
         try:
-            record = json.loads(path.read_text())
+            record = queue.records.text_document_at(path)
         except (OSError, ValueError) as exc:
             skipped.append(f"{path.name}: unreadable ({exc})")
             continue
@@ -1954,7 +1830,7 @@ def status(
         "roster_active": active,
         "roster_detail": roster_detail,
         "gate": gate_now,
-        "gate_key": gate_key(gate_now),
+        "gate_key": gate_label(gate_now),
         "parked_markers": len(parked_markers(parked_root, gate_now)),
         "live_loops": len(census),
         "loop_census": ("unknown" if census_error is not None

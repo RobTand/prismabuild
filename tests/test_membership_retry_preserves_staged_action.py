@@ -36,7 +36,7 @@ from prismabuild import (  # noqa: E402
     residency_plan,
     storage_tiers,
 )
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -57,8 +57,8 @@ EGRESS = _hexkey("r11egress0")
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
 
 
@@ -130,7 +130,7 @@ def _resign_handoff(queue: pool.PoolQueue, key: str, snap: dict,
                  claim_snapshot=snap)
     queue.publish(**plan["arguments"], preempted_claim=plan["snapshot"],
                   handoff_by=owner)
-    ready = json.loads(queue.item_path(pool.READY, key).read_text())
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     return withdrawn, ready
 
 
@@ -143,7 +143,7 @@ def test_mover_retry_preserves_range_tier_recompute_and_claim(
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
     _stage(queue, tmp_path)
-    original = json.loads(queue.item_path(pool.READY, MOVER).read_text())
+    original = json.loads(queue.records.item_path(pool.record_store.READY, MOVER).read_text())
     assert original["residency"]["range_start_bytes"] == 0
     assert original["residency"]["range_end_bytes"] == SPAN
     assert original["recompute"] is True
@@ -168,7 +168,7 @@ def test_mover_retry_preserves_range_tier_recompute_and_claim(
                          capacity={"cpu": 4, "mem_gb": 16})
     assert snap_b is not None and int(snap_b["attempts"]) == 1
     assert "tier_reservations" in snap_b
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
 
 
 def test_consumer_retry_preserves_leads_and_lead_gate(
@@ -181,7 +181,7 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
     host = socket.gethostname()
     owner = f"{host}:supervisor-9:8"
     _stage(queue, tmp_path)
-    original = json.loads(queue.item_path(pool.READY, CONSUMER).read_text())
+    original = json.loads(queue.records.item_path(pool.record_store.READY, CONSUMER).read_text())
 
     # The gate holds before the bytes land: ordinary work would claim.
     assert queue.claim(tags=["x86"], owner=f"{host}:1:probe",
@@ -196,7 +196,7 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
         "tier_id": TIER, "manifest_sha256": MANIFEST,
         "range_start_bytes": 0, "range_end_bytes": SPAN,
         "bytes_staged": SPAN, "complete": True, "errors": []})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(tmp_path / "stage"),
@@ -206,8 +206,8 @@ def test_consumer_retry_preserves_leads_and_lead_gate(
             "bytes": 4096, "offset": 0, "sha256": "a" * 64}}})
     queue.finish(MOVER, status="executed", detail={}, claim_snapshot=snap_m)
     # The pin holds: tokens stand for bytes still on the stage.
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
-    assert tier_loop.compose_map(queue, CONSUMER) == queue.residency_map_path(
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
+    assert tier_loop.compose_map(queue, CONSUMER) == queue.records.residency_map_path(
         CONSUMER)
 
     snap_a = queue.claim(tags=["x86"], owner=f"{host}:1:ca",

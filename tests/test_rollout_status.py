@@ -47,7 +47,7 @@ def test_summary_names_the_epoch_phase_and_only_missing_hosts(tmp_path):
     repo, old, new = _runtime(tmp_path)
     _intent(repo, old, new)
 
-    summary = pbstatus.read_rollout_summary(repo)
+    summary = upgrade.read_rollout_summary(repo)
 
     assert summary["state"] == "active"
     assert summary["epoch"] == "a" * 32
@@ -59,9 +59,9 @@ def test_summary_names_the_epoch_phase_and_only_missing_hosts(tmp_path):
 def test_no_epoch_is_normal_idle_and_mcp_reuses_the_summary(tmp_path):
     repo, _old, _new = _runtime(tmp_path)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
-    assert pbstatus.read_rollout_summary(repo) == {
+    assert upgrade.read_rollout_summary(repo) == {
         "state": "idle", "epoch": None, "pending_phase": None,
         "outstanding_hosts": [], "failed_hosts": []}
     runtime = pbmcp.Session(queue_root=queue.root, cas_root=tmp_path / "cas",

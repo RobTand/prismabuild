@@ -34,10 +34,10 @@ lane in `slurm_lane.py` (`pbrun --transport slurm`): one `sbatch` per sealed
 action, the CAS receipt as the verdict, and a terminal record filed into the
 same `pb-queue/done|failed|withdrawn` directories the pool's readers already
 read. It has run against a real `slurmctld` and `slurmd` in a privileged
-container on sparky (`fleet/slurm/smoke/`). `slurm.py` is the earlier
-durable-state SLURM adapter, superseded by the lane and retained until
-Phase 3 of the migration; `dagster.py` needs Dagster, absent here. `pool.py`
-is the transport that runs today — a pull-queue on the shared NFS mount,
+container on sparky (`fleet/slurm/smoke/`). Rob authorized retirement of the
+earlier durable-state SLURM adapter and the Dagster adapter on 2026-10-16;
+their modules and optional extras are removed. The lane remains supported.
+`pool.py` is the transport that runs today — a pull-queue on the shared NFS mount,
 executing the *same* canonical worker argv SLURM would have submitted, so a
 result does not depend on which transport delivered it.
 
@@ -175,8 +175,6 @@ not a dependency: this package imports nothing from prismaquant.
 
     src/prismabuild/core.py       action keys, CAS, local execution
     src/prismabuild/slurm_lane.py the thin SLURM lane: submit one sealed action, wait, file its ending
-    src/prismabuild/slurm.py      earlier SLURM adapter, superseded by the lane (retired in Phase 3)
-    src/prismabuild/dagster.py    Dagster transport (inert here)
     src/prismabuild/pool.py       shared-FS pull queue (the one that runs today)
     tools/fleet/slurm_job.py      node side of the lane: materialize, run, publish the receipt
     fleet/slurm/                  SLURM configuration, install/verify/cutover/rollback scripts, the smoke

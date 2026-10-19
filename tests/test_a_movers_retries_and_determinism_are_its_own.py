@@ -28,6 +28,8 @@ re-stage fixture is the prepaid writer integration's real mover run through
 row is outside what is under test.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import submission as submit_core
 
 import json
 import os
@@ -44,7 +46,7 @@ sys.path.insert(0, str(REPO / "tests"))
 
 from prismabuild import movement_actions, pool, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
 from test_a_stage_mover_declares_the_cpu_and_retries_it_owns import (  # noqa: E402
     CONSUMER, TIER, _seal,
 )
@@ -53,6 +55,7 @@ from test_prepaid_writer_integration import (  # noqa: E402
     _prewrite, _producer_request, _queue, _template,
 )
 import test_prepaid_writer_integration as prepaid  # noqa: E402
+from prismabuild import staged_path
 
 CAPACITY = {"cpu": 8, "mem_gb": 16}
 
@@ -71,7 +74,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
     residency = mover_row["residency"]
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     entries = {}
     for index in range(2):
         path = stage / "sub" / f"part-{index}.bin"
@@ -79,7 +82,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
         path.write_bytes(b"x" * 16)
         entries[residency_map.residency_map_key(f"/mnt/shared/part-{index}", 0)] = {
             "stage_path": str(path), "bytes": 16, "offset": 0, "sha256": "1" * 64}
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": namespace, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -97,7 +100,7 @@ def _stage_the_movers_range(queue: pool.PoolQueue, tmp_path: Path,
         "range_end_bytes": residency["range_end_bytes"],
         "bytes_staged": span, "complete": True})
     queue.finish(mover, status="executed")
-    assert queue.tier_ledger(TIER).holder_tokens(mover), "the staged range is pinned"
+    assert queue.tier(TIER).holdings(mover), "the staged range is pinned"
     return stage
 
 
@@ -106,14 +109,14 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
     """The acceptance fixture: one injected failure, a retry, bytes released."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue)          # the consumer allows one attempt
     phase = staged["plan"]["phases"][0]
     mover_row, egress_row = phase["mover_row"], phase["egress_row"]
     mover, egress = str(mover_row["action_key"]), str(egress_row["action_key"])
     stage = _stage_the_movers_range(queue, tmp_path, mover_row,
                                     staged["cas"].actions[mover])
-    held = queue.tier_ledger(TIER).holder_tokens(mover)
+    held = queue.tier(TIER).holdings(mover)
 
     queue.publish(**egress_row)
     claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
@@ -128,27 +131,27 @@ def test_the_egress_of_a_single_attempt_consumer_retries_and_releases(
 
     with monkeypatch.context() as patch:
         patch.setattr(stage_release.os, "unlink", busy_dataset)
-        first = stage_release.evict(queue, mover, consumer_action_key=CONSUMER,
+        first = staged_path.evict(queue, mover, consumer_action_key=CONSUMER,
                                     stage_root=str(stage))
     assert first["complete"] is False and first["tokens_released"] == 0, json.dumps(first, default=str)
     queue.finish(egress, status="failed")
 
-    assert queue.item_path(pool.READY, egress).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, egress).exists(), (
         "one transient failure must not end the egress: it is retry-safe "
         "with its own attempt bound")
-    assert not queue.item_path(pool.FAILED, egress).exists()
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == held
+    assert not queue.records.item_path(pool.record_store.FAILED, egress).exists()
+    assert queue.tier(TIER).holdings(mover) == held
 
     claimed = queue.claim(capacity=CAPACITY, tags=["dl380g10"])
     assert claimed is not None and claimed["action_key"] == egress
-    second = stage_release.evict(queue, mover, consumer_action_key=CONSUMER,
+    second = staged_path.evict(queue, mover, consumer_action_key=CONSUMER,
                                  stage_root=str(stage))
     queue.finish(egress, status="executed")
 
     assert second["complete"] is True and second["entries_deleted"] == 2
-    assert queue.tier_ledger(TIER).holder_tokens(mover) == {}
+    assert queue.tier(TIER).holdings(mover) == {}
     assert not list(stage.rglob("*.bin"))
-    assert queue.item_path(pool.DONE, egress).exists()
+    assert queue.records.item_path(pool.record_store.DONE, egress).exists()
 
 
 @pytest.mark.parametrize("node", ["mover_row", "egress_row"])
@@ -156,7 +159,7 @@ def test_every_movement_node_seals_its_own_retry_policy(tmp_path, node) -> None:
     """Row and sealed body agree, and neither is the consumer's one attempt."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     staged = _seal(tmp_path, queue, residency_mover_max_attempts=4)
     row = staged["plan"]["phases"][0][node]
     body = staged["cas"].actions[str(row["action_key"])]
@@ -168,6 +171,8 @@ def test_a_movement_node_without_a_policy_never_takes_its_consumers() -> None:
     """The shared construction's default is a mover's, for every lane."""
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     template = {
         "marker_root": Path("/home/rob/tmp/markers"),
@@ -177,7 +182,7 @@ def test_a_movement_node_without_a_policy_never_takes_its_consumers() -> None:
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "working_directory": "."},
         "inputs": [],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"cwd": "/home/rob",
                    "retry_policy": {"max_attempts": 1, "retry_safe": False}},
         "environment": {"variables": {"PATH": "/usr/bin"}, "toolchain": {}},
@@ -222,7 +227,7 @@ def test_under_a_deterministic_consumer_a_restage_copies_again(tmp_path) -> None
 
     claimed = _claim_mover(q, "w-restage")
     assert claimed["action_key"] == mover
-    row = pool._read_json(q.item_path(pool.CLAIMED, mover))
+    row = pool.record_store.value_or_raise(q.records.item(pool.record_store.CLAIMED, mover))
     assert isinstance(row, dict)
     first = _execute_mover(q, cas_root, mover, tmp_path / "mover-checkout")
     assert first["complete"] is True, first
@@ -231,8 +236,8 @@ def test_under_a_deterministic_consumer_a_restage_copies_again(tmp_path) -> None
     q.finish(mover, status="executed")
     retired = po.retire_batch(q, inst, template, "b1",
                               stage_root=str(stage_root),
-                              residency_root=po.output_fragment_root(
-                                  q.root / pool.RESIDENCY))
+                              residency_root=bl.output_fragment_root(
+                                  q.root / pool.record_store.RESIDENCY))
     assert retired.get("ok") is True, json.dumps(retired, default=str)
     assert not staged.exists(), "the egress evicted the staged bytes"
 

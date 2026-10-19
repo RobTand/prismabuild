@@ -469,12 +469,13 @@ def test_the_installed_program_runs_standalone_and_refuses_a_submitter(tmp_path)
     import shutil
     import subprocess
     import sys
-    from prismabuild import digest_primitives
+    from prismabuild import digest_primitives, generation_receipt
     if os.geteuid() == 0:
         pytest.skip("the refusal is for a submitter")
     installed = tmp_path / "runtime_publication.py"
     shutil.copyfile(PROGRAM, installed)
     shutil.copyfile(digest_primitives.__file__, tmp_path / "digest_primitives.py")
+    shutil.copyfile(generation_receipt.__file__, tmp_path / "generation_receipt.py")
     done = subprocess.run([sys.executable, "-I", str(installed), "--config", "/nonexistent"],
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 2, (done.stdout, done.stderr)

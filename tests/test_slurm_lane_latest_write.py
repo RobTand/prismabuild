@@ -24,7 +24,7 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 
 from prismabuild import slurm_lane as sl  # noqa: E402
-from prismabuild import materialize as mz  # noqa: E402
+from prismabuild import immutable_files as mz  # noqa: E402
 
 
 def test_two_writers_sharing_a_pid_both_publish_a_whole_file(
@@ -46,11 +46,11 @@ def test_two_writers_sharing_a_pid_both_publish_a_whole_file(
             # The other box, inside this box's rename: it writes its own temp
             # file and renames it into place before this one lands.
             reentered = True
-            mz._write_json_atomic(path, second, trailing_newline=True)
+            mz.write_json_atomic(path, second, trailing_newline=True)
         return real_replace(source, destination)
 
     monkeypatch.setattr(os, "replace", replace)
-    mz._write_json_atomic(path, first, trailing_newline=True)
+    mz.write_json_atomic(path, first, trailing_newline=True)
 
     assert reentered, "the interleaved writer never ran"
     landed = json.loads(path.read_text(encoding="utf-8"))
@@ -76,7 +76,7 @@ def test_the_written_bytes_reach_the_disk_before_the_rename(
         os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd))[1]
     )
     path = tmp_path / "lane" / "latest.json"
-    mz._write_json_atomic(
+    mz.write_json_atomic(
         path, {"schema": sl.SUBMISSION_SCHEMA_V1, "job_id": "7"},
         trailing_newline=True,
     )

@@ -5,7 +5,7 @@ snapshot of what it read (`_TickReads`).  Two paths re-read it:
 
 1. The #914 retirement asked `_producer_attempt_state` for every due
    consumed batch that no consumer declared, and that reads the owner key
-   (`_key_generation`, itself two directory walks) afresh each time.  A
+   (`RecordStore.standing`, itself two directory walks) afresh each time. A
    running producer that commits consumed batches ahead of their consumers
    cost one owner-key read per batch per cycle, a round trip each on NFS.
 2. The #949 sweep of an ended attempt's prewrites and the #914 retirement of
@@ -25,6 +25,8 @@ Fixture concessions: owners are published, claimed and finished through the
 real ``PoolQueue``; run with the ``nobroker_plugin`` like the #914 tests.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import collections
 from pathlib import Path
@@ -37,13 +39,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
-from prismabuild import pool, produced_output as po  # noqa: E402
+from kept_read_clock import after_paths  # noqa: E402
+from prismabuild import kept_reads, pool, produced_output as po  # noqa: E402
+from prismabuild.record_store import RecordStore  # noqa: E402
 from test_consumed_origin_retirement import _bind_owner  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     _descriptor, _prewrite, _queue, _template)
 
-CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
-RETAIN = po.ORIGIN_LIFETIME_RETAIN
+CONSUMED = oc.ORIGIN_LIFETIME_CONSUMED
+RETAIN = oc.ORIGIN_LIFETIME_RETAIN
 
 
 def _commit(queue, template, instance, batch_id: str, *,
@@ -55,7 +59,7 @@ def _commit(queue, template, instance, batch_id: str, *,
                      len(payload))["ok"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    got = po.commit_origin_batch(
+    got = bl.BatchLedger.commit_origin(
         queue, instance, template,
         [_descriptor(instance, template, path, payload)],
         batch_id=batch_id, lifetime=lifetime)
@@ -68,15 +72,18 @@ class _Reads:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.counts: collections.Counter = collections.Counter()
-        for name, which in (("_key_generation", 1), ("_read_commitments", 0),
-                            ("_read_prewrite", 0)):
-            real = getattr(po, name)
+        for owner, name, which in ((RecordStore, "standing", 1),
+                                   (bl.BatchLedger, "capture", 0),
+                                   (bl, "read_prewrite", 0)):
+            real = getattr(owner, name)
 
             def counted(*args, _real=real, _name=name, _which=which, **kw):
-                self.counts[(_name, str(args[_which]))] += 1
+                subject = args[_which].path if _name == "capture" else args[_which]
+                label = {"capture": "_read_commitments", "read_prewrite": "_read_prewrite"}.get(_name, _name)
+                self.counts[(label, str(subject))] += 1
                 return _real(*args, **kw)
 
-            monkeypatch.setattr(po, name, counted)
+            monkeypatch.setattr(owner, name, counted)
 
     def of(self, name: str, subject: object) -> int:
         return self.counts[(name, str(subject))]
@@ -86,15 +93,20 @@ class _Reads:
 
 
 def _scope(queue, instance) -> Path:
-    return po.instance_dir(queue.root, instance)
+    return bl.scope_dir(queue.root, instance)
+
+
+@pytest.fixture(autouse=True)
+def _fleet_file_versions():
+    with kept_reads.file_version_scope():
+        yield
 
 
 def _version_keepable(path: Path) -> bool:
     """Whether this host can vouch for a version of this file (#1045)."""
 
-    trusted = po._trusted_version_facilities()
-    return (trusted is not None
-            and trusted[0](path.stat(), trusted[1]()) is not None)
+    fence = kept_reads.filesystem_trust.file_fence()
+    return kept_reads.filesystem_trust.file_version(path.stat(), fence, path=path) is not None
 
 
 def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
@@ -110,12 +122,12 @@ def test_a_running_producers_key_is_read_once_for_all_its_due_batches(
 
     assert po.origin_retirement_tick(queue) == []
 
-    assert reads.of("_key_generation", owner) == 1
+    assert reads.of("standing", owner) == 1
     assert all(path.exists() for path in paths), "a live producer keeps them"
     # The next cycle reads it again: a snapshot is one cycle's.
     reads.reset()
     assert po.origin_retirement_tick(queue) == []
-    assert reads.of("_key_generation", owner) == 1
+    assert reads.of("standing", owner) == 1
 
 
 def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
@@ -141,23 +153,24 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     assert _prewrite(queue, ended, template, "b1", [planned], 4)["ok"]
     planned.write_bytes(b"left")
     queue.finish(ended["owner_action_key"], status="failed")
-    assert queue.item_path(pool.FAILED, ended["owner_action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, ended["owner_action_key"]).exists()
+    sibling_scope = _scope(queue, sibling)
+    after_paths(monkeypatch, sibling_scope / "commitments.json")
     reads = _Reads(monkeypatch)
 
     events = po.origin_retirement_tick(queue)
 
     assert sorted(event["event"] for event in events) == sorted([
-        po.ORIGIN_RETIRED_EVENT, "output-prewrite-orphaned"])
+        oc.ORIGIN_RETIRED_EVENT, "output-prewrite-orphaned"])
     assert not handoff.exists() and planned.exists()
     # Each owner key once.
-    assert reads.of("_key_generation", ended["owner_action_key"]) == 1
-    assert reads.of("_key_generation", sibling["owner_action_key"]) == 1
+    assert reads.of("standing", ended["owner_action_key"]) == 1
+    assert reads.of("standing", sibling["owner_action_key"]) == 1
     # Each sibling record once where the host can vouch for its version:
     # the tick's scan parse is reused (`_TickReads.batches`, #992).  On a
     # filesystem that cannot (a network mount), that parse is not kept
-    # (`stage_move._keepable_version`), so `owned` reads the document once
+    # (`kept_reads.filesystem_trust.file_version`), so `owned` reads the document once
     # for itself after the scan read it: two, never one per asker.
-    sibling_scope = _scope(queue, sibling)
     expected = 1 if _version_keepable(sibling_scope / "commitments.json") else 2
     assert reads.of("_read_commitments",
                     sibling_scope / "commitments.json") == expected
@@ -166,6 +179,6 @@ def test_an_ended_attempts_sweep_and_retirement_share_one_snapshot(
     # The next cycle reads each again, once.
     reads.reset()
     po.origin_retirement_tick(queue)
-    assert reads.of("_key_generation", sibling["owner_action_key"]) == 1
+    assert reads.of("standing", sibling["owner_action_key"]) == 1
     assert reads.of("_read_commitments",
                     sibling_scope / "commitments.json") == expected

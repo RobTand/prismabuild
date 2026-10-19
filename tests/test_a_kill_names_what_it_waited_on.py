@@ -17,6 +17,8 @@ denial cache, and timestamps (#983 pattern 4):
 The fixtures below are those three shapes at test size.
 """
 from __future__ import annotations
+from prismabuild import census as fleet_census
+import pbstatus
 
 import fcntl
 import os
@@ -29,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import adaptive_cpu, adaptive_snapshot, pool, residency_plan, storage_tiers  # noqa: E402,E501
 import test_progress_keeps_a_working_action_alive as progress_fx  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 #: Up to four CPUs, so the adaptive path has a CPU map to decide against, but
 #: never more than this process inherited (#1506).  The claim refuses a CPU
@@ -78,14 +80,14 @@ def _publish_export(queue: pool.PoolQueue, owner: str, seed: str) -> dict:
                   checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
                   resources=dict(EXPORT_DEMAND), tags=[socket.gethostname()],
                   dependent_of=owner)
-    record = pool._read_json(queue.item_path(pool.READY, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert record is not None
     return record
 
 
 def _claim_pass(queue: pool.PoolQueue) -> dict | None:
     # Reuse the holder's immutable map when this fixture really executes.
-    tiers = pool._read_json(queue.ledger().base / "cpu-map.json")
+    tiers = pool.record_store.read_document(queue.ledger().base / "cpu-map.json")
     return queue.claim(capacity=CAPACITY, tags=[socket.gethostname()],
                        cpu_tiers=CPU_TIERS if tiers is None else tiers,
                        adaptive_cpu=True)
@@ -198,11 +200,11 @@ def test_an_unchanged_reason_writes_nothing(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     item = _publish_export(queue, _hexkey("owner"), "steady")
     queue.record_denial(item, "host_pressure")
-    path = queue.denial_transitions_path(str(item["action_key"]))
+    path = queue.records.denial_transitions_path(str(item["action_key"]))
     before = path.stat().st_mtime_ns
     writes = []
-    real = pool._write_json_atomic
-    monkeypatch.setattr(pool, "_write_json_atomic",
+    real = pool.immutable_files.write_json_atomic
+    monkeypatch.setattr(pool.immutable_files, 'write_json_atomic',
                         lambda target, value: (writes.append(Path(target)), real(target, value)))
 
     for _ in range(50):
@@ -256,13 +258,15 @@ def test_a_retired_keys_ring_is_swept_and_a_live_ones_is_kept(tmp_path):
     for item in (live, gone):
         queue.record_denial(item, "host_pressure")
     gone_key = str(gone["action_key"])
-    Path(queue.item_path(pool.READY, gone_key)).rename(queue.item_path(pool.FAILED, gone_key))
+    Path(queue.records.item_path(pool.record_store.READY, gone_key)).rename(
+        queue.records.item_path(pool.record_store.FAILED, gone_key),
+    )
 
     rows = queue.sweep_denial_transitions({str(live["action_key"])})
 
     assert rows == [{"action_key": gone_key, "pruned": True, "reason": "terminal"}]
     assert queue.denial_transitions(str(live["action_key"]))
-    assert not queue.denial_transitions_path(gone_key).exists()
+    assert not queue.records.denial_transitions_path(gone_key).exists()
 
 
 def test_a_retired_consumers_event_directory_is_swept_and_a_planned_ones_is_kept(tmp_path):
@@ -276,25 +280,30 @@ def test_a_retired_consumers_event_directory_is_swept_and_a_planned_ones_is_kept
     queue = pool.PoolQueue(tmp_path / "queue")
     gone, planned, live = _hexkey("gone"), _hexkey("planned"), _hexkey("live")
     for key in (gone, planned, live):
-        directory = queue.consumer_events_dir(key)
+        directory = queue.records.consumer_events_dir(key)
         directory.mkdir(parents=True)
         (directory / "sparky.jsonl").write_text('{"event": "window-stalled"}\n')
-    queue.item_path(pool.FAILED, gone).parent.mkdir(parents=True, exist_ok=True)
-    queue.item_path(pool.FAILED, gone).write_text("{}")
-    queue.item_path(pool.FAILED, planned).write_text("{}")
-    queue.residency_plan_path(planned).parent.mkdir(parents=True, exist_ok=True)
-    queue.residency_plan_path(planned).write_text("{}")
+    queue.records.item_path(pool.record_store.FAILED, gone).parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    queue.records.item_path(pool.record_store.FAILED, gone).write_text("{}")
+    queue.records.item_path(pool.record_store.FAILED, planned).write_text("{}")
+    queue.records.residency_plan_path(planned).parent.mkdir(parents=True, exist_ok=True)
+    queue.records.residency_plan_path(planned).write_text("{}")
 
     rows = queue.sweep_consumer_events({live})
 
     assert rows == [{"action_key": gone, "pruned": True, "reason": "terminal"}]
-    assert not queue.consumer_events_dir(gone).exists()
-    assert queue.consumer_events_dir(planned).exists()
-    assert queue.consumer_events_dir(live).exists()
+    assert not queue.records.consumer_events_dir(gone).exists()
+    assert queue.records.consumer_events_dir(planned).exists()
+    assert queue.records.consumer_events_dir(live).exists()
 
 
 def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, monkeypatch):
     """The runbook's one command: the producer, its export, why, and since when."""
+
+    from prismabuild import census as fleet_census
 
     import pbstatus
 
@@ -315,7 +324,7 @@ def test_pbstatus_starvation_reads_a_starved_producer_in_one_place(tmp_path, mon
     adaptive_snapshot.copy_snapshot(adaptive_cpu.local_state_base(ledger.base),
                                     ledger.base / "adaptive")
 
-    blob = pbstatus.read_starvation(queue.root)
+    blob = fleet_census.starvation(queue.root)
 
     [entry] = [row for row in blob["claimed_dependents"] if row["action_key"] == owner]
     [row] = entry["dependents"]
@@ -335,8 +344,8 @@ def test_a_window_stalled_verdict_is_readable_from_the_consumers_event_file(
     import test_the_window_stops_when_the_consumer_releases_nothing as stall_fx
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    queue.mint_tier_capacity(stall_fx.TIER, {"stage_gib": stall_fx.STAGE_CAPACITY_GIB})
+    queue.records.ensure_layout()
+    queue.tier(stall_fx.TIER).mint({'stage_gib': stall_fx.STAGE_CAPACITY_GIB})
     plan = stall_fx._plan(queue)
     residency_plan.freeze(queue, plan)
     queue.publish(
@@ -415,4 +424,4 @@ def test_reaping_the_plan_retires_the_consumers_event_file(tmp_path):
     tier_loop._emit(queue, "dl380g10", {"event": "residency-plan-reaped",
                                         "consumer": consumer, "tier_id": "t"})
 
-    assert not queue.consumer_events_dir(consumer).exists()
+    assert not queue.records.consumer_events_dir(consumer).exists()

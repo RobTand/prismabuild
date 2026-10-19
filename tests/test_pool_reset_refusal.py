@@ -32,7 +32,7 @@ sys.stderr.write("pbrun: live code closure differs from the action-pinned closur
 raise SystemExit(2)
 """
 
-ACK = {"schema": pool_reset.pbrun.DETACH_SCHEMA_V1, "action_key": "c" * 64,
+ACK = {"schema": pool_reset.submission.action_client.DETACH_SCHEMA_V1, "action_key": "c" * 64,
        "transport": "pool", "status": "submitted", "published_unix": 123.0}
 ACCEPTS = "import json; print(" + repr(json.dumps(ACK)) + ")\n"
 
@@ -75,7 +75,7 @@ def fleet(tmp_path: Path) -> dict:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(queue_root), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=key,
         cas_root=str(cas_root),
@@ -88,7 +88,7 @@ def fleet(tmp_path: Path) -> dict:
         key, status="failed",
         detail={"returncode": 1, "stdout": "", "stderr": "boom\n"},
     )
-    assert failed == queue.item_path(pool.FAILED, key)
+    assert failed == queue.records.item_path(pool.record_store.FAILED, key)
     return {"queue": queue, "queue_root": queue_root, "cas_root": cas_root,
             "failed": failed, "tmp_path": tmp_path}
 

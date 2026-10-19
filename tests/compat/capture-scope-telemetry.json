@@ -1,0 +1,27 @@
+{
+  "capture_name": "scope-telemetry-capture-01",
+  "capture_report_sha256": "a16ae86906f42640123c5564ae5f6b1f9b1fe5e61d13896a7fe148d7504fb7de",
+  "excluded_cases": [],
+  "files": {
+    "goldens-scope-telemetry.jsonl": "5899afc267446b9d9a27601b3e8e41c549f080e63511f8d2f60ff97529899c4f",
+    "historical-scope-telemetry.jsonl": "cb802b3994e5edb57b68f34193884271b913194659d282ee2000d150af6eaab4"
+  },
+  "finished_at": "2026-10-17T00:25:32.756023+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "scope-telemetry/complete",
+    "scope-telemetry/partial"
+  ],
+  "source_git": {
+    "parents": [
+      "ab12fa7447e57afae595c0293e6ee5237c75fec2"
+    ],
+    "snapshot": "b55e2d5943f54ff4501b1b34dd92ce634aa23d7b",
+    "tree": "b670626b19b133f5ef19b9ab81df635c6ae688bc"
+  },
+  "started_at": "2026-10-17T00:25:05.694656+00:00"
+}

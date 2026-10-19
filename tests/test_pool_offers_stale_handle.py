@@ -36,8 +36,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool  # noqa: E402
 
 
+from fleet_world import FleetWorld
+
+
 def _write_offer(root: Path, host: str) -> Path:
-    directory = root / pool.WORKERS
+    directory = root / pool.record_store.WORKERS
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{host}.json"
     path.write_text(
@@ -57,9 +60,7 @@ def _write_offer(root: Path, host: str) -> Path:
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 def _raise_on(monkeypatch: pytest.MonkeyPatch, name: str, err: int) -> None:
@@ -112,7 +113,7 @@ def test_read_json_still_raises_on_stale_by_default(
     _raise_on(monkeypatch, "addressed.json", errno.ESTALE)
 
     with pytest.raises(OSError) as caught:
-        pool._read_json(path)
+        pool.record_store.read_document(path)
     assert caught.value.errno == errno.ESTALE
 
 

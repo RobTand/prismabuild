@@ -28,8 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
 
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER = "c" * 64
 MOVER = "4" * 64
@@ -37,11 +38,12 @@ TIER = "prismabuild-stage:dl380g10"
 GIB = storage_tiers.GIB
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
+    return FleetWorld(tmp_path).queue
 
 
 @pytest.fixture()
@@ -61,13 +63,13 @@ def _staged_file(stage: Path, relative: str, size: int = 4096) -> Path:
 def _held_mover(queue: pool.PoolQueue, stage: Path, path: Path) -> None:
     """A finished mover holding two tokens for one staged file, by fragment."""
 
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(MOVER, {"stage_gib": 2})
+    queue.tier(TIER).mint({'stage_gib': 8})
+    ledger = queue.tier(TIER)
+    assert ledger.take(MOVER, {'stage_gib': 2})
     queue.record_move(MOVER, {"consumer_action_key": CONSUMER, "tier_id": TIER,
                               "stage_root": str(stage), "complete": True,
                               "bytes_staged": 2 * GIB})
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": CONSUMER, "mover_action_key": MOVER,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "a" * 64,
@@ -78,35 +80,35 @@ def _held_mover(queue: pool.PoolQueue, stage: Path, path: Path) -> None:
 
 
 def _marker(stage: Path) -> dict[str, object]:
-    return json.loads((stage / stage_release.STAGE_ROOT_MARKER).read_text())
+    return json.loads((stage / staged_path.STAGE_ROOT_MARKER).read_text())
 
 
 # -- registration ------------------------------------------------------------
 
 
 def test_registering_writes_the_marker_and_is_idempotent(queue, stage) -> None:
-    assert stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage) == "registered"
+    assert staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage) == "registered"
     marker = _marker(stage)
-    assert marker["schema"] == stage_release.STAGE_ROOT_MARKER_SCHEMA_V1
+    assert marker["schema"] == staged_path.STAGE_ROOT_MARKER_SCHEMA_V1
     assert marker["queue_root"] == os.path.realpath(str(queue.root))
     assert marker["tier_id"] == TIER
-    first = (stage / stage_release.STAGE_ROOT_MARKER).stat().st_mtime_ns
+    first = (stage / staged_path.STAGE_ROOT_MARKER).stat().st_mtime_ns
 
-    assert stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage) == "registered"
+    assert staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage) == "registered"
 
-    assert (stage / stage_release.STAGE_ROOT_MARKER).stat().st_mtime_ns == first, \
+    assert (stage / staged_path.STAGE_ROOT_MARKER).stat().st_mtime_ns == first, \
         "an already-correct marker is left alone, not rewritten every cycle"
-    assert stage_release.stage_root_refusal(queue, stage) is None
+    assert staged_path.stage_root_refusal(queue, stage) is None
 
 
 def test_registering_never_takes_a_root_from_another_queue(queue, stage, tmp_path) -> None:
     """Two owners is the state this refuses; an operator moves a marker by hand."""
 
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
-    assert stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage) == "registered"
+    other.records.ensure_layout()
+    assert staged_path.register_stage_root(other, tier_id=TIER, stage_root=stage) == "registered"
 
-    outcome = stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    outcome = staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
 
     assert outcome.startswith("stage_root_belongs_to_another_queue")
     assert _marker(stage)["queue_root"] == os.path.realpath(str(other.root))
@@ -119,17 +121,17 @@ def test_a_root_this_queue_cannot_write_is_reported_not_raised(queue, stage) -> 
         pytest.skip("root writes anywhere")
     stage.chmod(0o500)
     try:
-        outcome = stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+        outcome = staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     finally:
         stage.chmod(0o700)
 
     assert outcome.startswith("stage_root_marker_unwritable")
-    assert not (stage / stage_release.STAGE_ROOT_MARKER).exists()
-    assert stage_release.stage_root_refusal(queue, stage) == "stage_root_unregistered"
+    assert not (stage / staged_path.STAGE_ROOT_MARKER).exists()
+    assert staged_path.stage_root_refusal(queue, stage) == "stage_root_unregistered"
 
 
 def test_a_missing_root_is_unwritable_too(queue, tmp_path) -> None:
-    outcome = stage_release.register_stage_root(
+    outcome = staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=tmp_path / "never-mounted")
 
     assert outcome.startswith("stage_root_marker_unwritable")
@@ -142,11 +144,11 @@ def test_a_reconcile_of_an_unregistered_root_deletes_nothing(queue, stage) -> No
     nobodys = _staged_file(stage, "models/shard-0.safetensors")
     partial = _staged_file(stage, "models/.shard-1.safetensors.partial")
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
+    receipt = staged_path.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                                       wanted=set())
 
     assert receipt["skipped"] == "stage_root_unregistered"
-    assert receipt["event"] == stage_release.STAGE_ROOT_REFUSED_EVENT
+    assert receipt["event"] == staged_path.STAGE_ROOT_REFUSED_EVENT
     assert receipt["complete"] is False
     assert receipt["entries_deleted"] == 0 and receipt["partials_deleted"] == 0
     assert nobodys.exists() and partial.exists()
@@ -156,15 +158,19 @@ def test_an_egress_on_an_unregistered_root_keeps_bytes_and_tokens(queue, stage) 
     path = _staged_file(stage, "models/shard-0.safetensors")
     _held_mover(queue, stage, path)
 
-    receipt = stage_release.evict(queue, MOVER, consumer_action_key=CONSUMER,
+    receipt = staged_path.evict(queue, MOVER, consumer_action_key=CONSUMER,
                                   stage_root=str(stage))
 
     assert receipt["skipped"] == "stage_root_unregistered"
     assert receipt["complete"] is False
     assert receipt["entries_deleted"] == 0 and receipt["tokens_released"] == 0
     assert path.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
-    fragment = residency_map.fragment_path(queue.root / pool.RESIDENCY, CONSUMER, MOVER)
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
+    fragment = residency_map.fragment_path(
+        queue.root / pool.record_store.RESIDENCY,
+        CONSUMER,
+        MOVER,
+    )
     assert fragment.exists(), "a refused egress keeps the fragment for the owner"
 
 
@@ -177,20 +183,20 @@ def test_a_sweep_of_an_unregistered_root_refuses_once_per_tier(queue, stage) -> 
 
     swept = stage_release.sweep(queue, stage_roots={TIER: str(stage)})
 
-    assert [r["event"] for r in swept] == [stage_release.STAGE_ROOT_REFUSED_EVENT]
+    assert [r["event"] for r in swept] == [staged_path.STAGE_ROOT_REFUSED_EVENT]
     assert swept[0]["tier_id"] == TIER
     assert swept[0]["skipped"] == "stage_root_unregistered"
     assert path.exists() and nobodys.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {"stage_gib": 2}
+    assert queue.tier(TIER).holdings(MOVER) == {'stage_gib': 2}
 
 
 def test_another_queues_root_is_refused_by_name(queue, stage, tmp_path) -> None:
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
-    stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
+    other.records.ensure_layout()
+    staged_path.register_stage_root(other, tier_id=TIER, stage_root=stage)
     nobodys = _staged_file(stage, "models/nobodys.bin")
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
+    receipt = staged_path.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                                       wanted=set())
 
     assert receipt["skipped"] == (
@@ -199,10 +205,10 @@ def test_another_queues_root_is_refused_by_name(queue, stage, tmp_path) -> None:
 
 
 def test_a_marker_that_is_not_a_marker_refuses(queue, stage) -> None:
-    (stage / stage_release.STAGE_ROOT_MARKER).write_text("not json")
+    (stage / staged_path.STAGE_ROOT_MARKER).write_text("not json")
     nobodys = _staged_file(stage, "models/nobodys.bin")
 
-    receipt = stage_release.reconcile(queue, tier_id=TIER, stage_root=str(stage),
+    receipt = staged_path.reconcile(queue, tier_id=TIER, stage_root=str(stage),
                                       wanted=set())
 
     assert receipt["skipped"].startswith("stage_root_marker_invalid")
@@ -213,7 +219,7 @@ def test_a_marker_that_is_not_a_marker_refuses(queue, stage) -> None:
 
 
 def test_a_registered_root_is_swept_and_the_marker_survives(queue, stage) -> None:
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     nobodys = _staged_file(stage, "models/nobodys.bin")
     path = _staged_file(stage, "models/shard-0.safetensors")
     _held_mover(queue, stage, path)
@@ -222,10 +228,10 @@ def test_a_registered_root_is_swept_and_the_marker_survives(queue, stage) -> Non
 
     assert [r["reason"] for r in swept] == ["orphan-sweep", "unattributed-reconcile"]
     assert not path.exists() and not nobodys.exists()
-    assert queue.tier_ledger(TIER).holder_tokens(MOVER) == {}
-    assert (stage / stage_release.STAGE_ROOT_MARKER).is_file(), \
+    assert queue.tier(TIER).holdings(MOVER) == {}
+    assert (stage / staged_path.STAGE_ROOT_MARKER).is_file(), \
         "the sweep must not delete the fact that lets it sweep"
-    assert stage_release.stage_root_refusal(queue, stage) is None
+    assert staged_path.stage_root_refusal(queue, stage) is None
 
 
 # -- the tier loop registers its own box's stage, and only that --------------
@@ -258,7 +264,7 @@ def test_another_boxs_stage_is_left_to_its_own_loop(queue, stage) -> None:
         discover=lambda **_kwargs: {record["tier_id"]: record})
 
     assert "stage_root_owner" not in announced[0]
-    assert not (stage / stage_release.STAGE_ROOT_MARKER).exists()
+    assert not (stage / staged_path.STAGE_ROOT_MARKER).exists()
 
 
 def test_the_incidents_shape_deletes_nothing_now(queue, stage, tmp_path) -> None:
@@ -271,8 +277,8 @@ def test_the_incidents_shape_deletes_nothing_now(queue, stage, tmp_path) -> None
     """
 
     fleet = pool.PoolQueue(tmp_path / "prismabuild-fleet" / "pb-queue")
-    fleet.ensure_layout()
-    stage_release.register_stage_root(fleet, tier_id=TIER, stage_root=stage)
+    fleet.records.ensure_layout()
+    staged_path.register_stage_root(fleet, tier_id=TIER, stage_root=stage)
     shard = _staged_file(stage, "models/GLM-5.3-Flash/model-00001.safetensors")
     partial = _staged_file(stage, "models/GLM-5.3-Flash/.model-00002.safetensors.partial")
 
@@ -284,7 +290,7 @@ def test_the_incidents_shape_deletes_nothing_now(queue, stage, tmp_path) -> None
 
     assert announced[0]["stage_root_owner"].startswith("stage_root_belongs_to_another_queue")
     assert shard.exists() and partial.exists()
-    assert [r["event"] for r in swept] == [stage_release.STAGE_ROOT_REFUSED_EVENT]
+    assert [r["event"] for r in swept] == [staged_path.STAGE_ROOT_REFUSED_EVENT]
     assert _marker(stage)["queue_root"] == os.path.realpath(str(fleet.root))
 
 
@@ -304,8 +310,8 @@ def test_a_present_but_unregistered_root_keeps_tokens_and_refuses_movers(
     """
 
     other = pool.PoolQueue(tmp_path / "other-queue")
-    other.ensure_layout()
-    stage_release.register_stage_root(other, tier_id=TIER, stage_root=stage)
+    other.records.ensure_layout()
+    staged_path.register_stage_root(other, tier_id=TIER, stage_root=stage)
 
     announced = tier_loop.cycle(
         queue, host="dl380g10", source_pool="storage_pool",
@@ -316,9 +322,9 @@ def test_a_present_but_unregistered_root_keeps_tokens_and_refuses_movers(
     assert record["stage_root_owner"].startswith("stage_root_belongs_to_another_queue")
     assert record["stage_root_admits"] is False
     assert record["tokens"]["stage_gib"] == 8
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.capacity()["stage_gib"] == 8
-    assert ledger.available()["stage_gib"] == 8
+    ledger = queue.tier(TIER)
+    assert ledger.mint_supply()['stage_gib'] == 8
+    assert ledger.free_supply()['stage_gib'] == 8
     assert "stage-root-refuses-movers" in capsys.readouterr().out
 
 

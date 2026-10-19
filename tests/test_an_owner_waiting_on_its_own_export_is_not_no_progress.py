@@ -19,6 +19,7 @@ launch token and lands export bytes in finite steps on an injected clock.
 The real execution loop, watch and export verdict decide each outcome.
 """
 from __future__ import annotations
+from fleet_world import ActionRows, Clock as FleetClock
 
 from dataclasses import dataclass
 import json
@@ -32,7 +33,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prismabuild import core as pb, pool, produced_spool, progress  # noqa: E402
+from prismabuild import contracts, core as pb, pool, produced_spool, progress  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
 ENTRY_BYTES = 1 << 20
@@ -75,12 +76,10 @@ def clock(monkeypatch, request):
     unix_origin, monotonic_origin = getattr(request, "param", (FIXED_UNIX, 0.0))
     clock = _Clock(unix_origin=unix_origin, monotonic_origin=monotonic_origin)
     monkeypatch.setattr(pool, "time", clock)
-    monkeypatch.setattr(pool, "_now", clock.time)
+    FleetClock(source=clock.time).install(monkeypatch, scope="pool")
     monkeypatch.setattr(progress, "time", clock)
     monkeypatch.setattr(pb, "time", clock)
     monkeypatch.setattr(pool.materialize, "time", clock)
-    monkeypatch.setattr(time, "sleep", clock.sleep)
-    monkeypatch.setattr(subprocess, "Popen", _real_process_launch)
     return clock
 
 
@@ -114,7 +113,7 @@ def _owner(tmp_path: Path):
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
-    item = queue.claim()
+    item = queue.claim(tags=[contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG])
     assert item is not None, "the owner was not admitted"
     return queue, item
 
@@ -133,7 +132,7 @@ class _OwnerProcess:
 
     def __init__(self, queue, item, export, destination, clock, monkeypatch,
                  *, steps: list[_Step], clock_reads: int = 0) -> None:
-        self.path = queue.action_progress_path(str(item["action_key"]))
+        self.path = queue.records.action_progress_path(str(item["action_key"]))
         self.export = export
         self.destination = Path(str(destination) + ".tmp")
         self.clock = clock
@@ -144,6 +143,8 @@ class _OwnerProcess:
         self.token = None
         self.argv = None
         self.terminated = False
+        monkeypatch.setattr(time, "sleep", clock.sleep)
+        monkeypatch.setattr(subprocess, "Popen", _real_process_launch)
         monkeypatch.setattr(pool, "subprocess", SimpleNamespace(
             **{**vars(subprocess), "Popen": self.launch}))
         monkeypatch.setattr(pb, "_terminate_process_group", self.terminate)
@@ -250,24 +251,23 @@ def _seal_export(tmp_path: Path, item, *, seed: str, owner: str | None = None
     return str(action["action_key"]), destination
 
 
-def _publish(queue: pool.PoolQueue, item, export: str) -> None:
-    queue.publish(action_key=export, cas_root=item["cas_root"],
-                  checkout_root=item["checkout_root"],
-                  worker_script=item["worker_script"],
-                  dependent_of=str(item["action_key"]))
-
-
 def _claim(queue: pool.PoolQueue, item, export: str, *,
            claimed_unix: float = 1.0) -> None:
     """Hand ``export`` to ``claimed/``, as a claim on another box would."""
 
-    _publish(queue, item, export)
-    source = queue.item_path(pool.READY, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
+    source = queue.records.item_path(pool.record_store.READY, export)
     record = json.loads(source.read_text())
     source.unlink()
     record.update({"claimed_unix": claimed_unix, "claimed_by": "export-fixture",
                    "claimed_host": "sparky"})
-    queue.item_path(pool.CLAIMED, export).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, export).write_text(json.dumps(record))
 
 
 def _execute(queue, item):
@@ -384,7 +384,7 @@ def test_stalled_export_outcome_uses_only_scripted_time(
 
 def _declare(queue: pool.PoolQueue, item, exports: list[str], *,
              token: str = "t" * 32, since_unix: float = FIXED_UNIX) -> Path:
-    path = queue.action_progress_path(str(item["action_key"]))
+    path = queue.records.action_progress_path(str(item["action_key"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     Path(progress.export_wait_path(str(path))).write_text(json.dumps({
         "schema": progress.EXPORT_WAIT_SCHEMA_V1, "token": token,
@@ -403,7 +403,7 @@ def _verdict(queue, item, path, **kwargs):
 
 def test_no_record_is_no_verdict(tmp_path: Path) -> None:
     queue, item = _owner(tmp_path)
-    path = queue.action_progress_path(str(item["action_key"]))
+    path = queue.records.action_progress_path(str(item["action_key"]))
     assert _verdict(queue, item, path) is None
 
 
@@ -474,8 +474,14 @@ def test_a_refused_or_withheld_export_is_not_waited_on(
 
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="denied")
-    _publish(queue, item, export)
-    ready = json.loads(queue.item_path(pool.READY, export).read_text())
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
+    ready = json.loads(queue.records.item_path(pool.record_store.READY, export).read_text())
     queue._record_denial_transition(ready, host="sparky", reason=reason,
                                     decision_reason=None)
     path = _declare(queue, item, [export])
@@ -496,7 +502,13 @@ def test_an_export_the_spool_refused_is_not_waited_on(tmp_path: Path) -> None:
 
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="spoolrefused")
-    _publish(queue, item, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
     filed = (queue.root / produced_spool.REFUSALS_SUBDIR / str(item["action_key"])
              / f"spoolrefused.{export[:16]}.export.local-source-changed.json")
     filed.parent.mkdir(parents=True)
@@ -517,7 +529,13 @@ def test_a_queued_export_is_waited_on_for_one_window(tmp_path: Path) -> None:
 
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="queued")
-    _publish(queue, item, export)
+    ActionRows(queue).publish(
+        export,
+        cas_root=item['cas_root'],
+        checkout_root=item['checkout_root'],
+        worker_script=item['worker_script'],
+        dependent_of=str(item['action_key']),
+    )
     path = _declare(queue, item, [export], since_unix=100.0)
 
     first = _verdict(queue, item, path, now=1000.0)
@@ -537,8 +555,8 @@ def test_a_failed_withdrawn_or_unpublished_export_is_not_waited_on(
     failed, _ = _seal_export(tmp_path, item, seed="failed")
     withdrawn, _ = _seal_export(tmp_path, item, seed="withdrawn")
     unpublished, _ = _seal_export(tmp_path, item, seed="unpublished")
-    for key, state in ((failed, pool.FAILED), (withdrawn, pool.WITHDRAWN)):
-        target = queue.item_path(state, key)
+    for key, state in ((failed, pool.record_store.FAILED), (withdrawn, pool.record_store.WITHDRAWN)):
+        target = queue.records.item_path(state, key)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps({"action_key": key}))
     path = _declare(queue, item, [failed, withdrawn, unpublished])
@@ -556,7 +574,7 @@ def test_a_done_export_is_waited_on_only_for_the_report_latency(
         tmp_path: Path) -> None:
     queue, item = _owner(tmp_path)
     export, _destination = _seal_export(tmp_path, item, seed="done")
-    target = queue.item_path(pool.DONE, export)
+    target = queue.records.item_path(pool.record_store.DONE, export)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps({"action_key": export, "finished_unix": 1000.0}))
     path = _declare(queue, item, [export])

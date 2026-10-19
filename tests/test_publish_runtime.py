@@ -28,6 +28,8 @@ def _checkout(path: Path, generation: str) -> Path:
     (package / "__init__.py").write_text("")
     (package / "core.py").write_text(f"GENERATION = {generation!r}\n")
     (package / "pool.py").write_text(f"GENERATION = {generation!r}\n")
+    for leaf in ("generation_receipt.py", "digest_primitives.py"):
+        (package / leaf).write_bytes((ROOT / "src/prismabuild" / leaf).read_bytes())
     # Phase-2 default-ON: every published generation is verified, so a plain
     # green canary driver ships with every test checkout.  Tests that care
     # about a verdict overwrite it with _write_canary_driver; tests that care
@@ -139,14 +141,13 @@ def test_published_skill_companion_documents_resolve_inside_the_generation(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    # Content test: publishes the real tree to inspect the generation's docs;
-    # the real canary driver cannot verify a sandboxed mirror, so it skips.
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--no-canary",
+    # Content inspection prepares a real sealed generation; installing its
+    # importing updater requires separately proven installed readers.
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--stage-only", "--rollout", "rolling",
                                         "--rollout-reason", "fixture publication",
                                         "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
-    generation = mirror.resolve()
+    generation = next((mirror.parent / "runtime-generations").iterdir())
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
     skill = generation / "skills/prismabuild/SKILL.md"
     text = skill.read_text()
@@ -190,14 +191,12 @@ def test_published_torch_helper_can_be_copied_without_a_source_checkout(
     monkeypatch.setattr(publish_runtime, "CHECKOUT", ROOT)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime.subprocess, "run", _fake_git_and_probe("a" * 40))
-    # Content test: publishes the real tree to inspect the generation's docs;
-    # the real canary driver cannot verify a sandboxed mirror, so it skips.
-    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--rollout", "rolling",
-                                        "--no-canary",
+    # Content inspection prepares the same shipped helper without activation.
+    monkeypatch.setattr(sys, "argv", ["publish_runtime.py", "--stage-only", "--rollout", "rolling",
                                         "--rollout-reason", "fixture publication",
                                         "--shape-gate-waiver", "fixture publication"])
     assert publish_runtime.main() == 0
-    generation = mirror.resolve()
+    generation = next((mirror.parent / "runtime-generations").iterdir())
     helper = generation / "tools/profile_torch.py"
     assert helper.is_file(), "published torch guide names an absent helper"
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
@@ -988,15 +987,15 @@ def test_publish_refuses_a_script_whose_import_it_does_not_carry(
 
     checkout = _checkout(tmp_path / "checkout", "new")
     fleet = checkout / "tools" / "fleet"
-    (fleet / "tier_loop.py").write_text("import manifest_promotion\n")
-    (fleet / "manifest_promotion.py").write_text("")
+    (fleet / "tier_loop.py").write_text("import pbtest_outcomes\n")
+    (fleet / "pbtest_outcomes.py").write_text("")
     mirror = tmp_path / "mirror"
     monkeypatch.setattr(publish_runtime, "CHECKOUT", checkout)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
     monkeypatch.setattr(publish_runtime, "FLEET_SCRIPTS", ("tier_loop.py",))
     monkeypatch.setattr(publish_runtime, "FLEET_DATA", ())
     monkeypatch.setattr(publish_runtime, "EXCLUDED", (
-        ("manifest_promotion.py", "fixture: excluded, yet imported"),
+        ("pbtest_outcomes.py", "fixture: excluded, yet imported"),
         ("pbcanary.py", "fixture: the canary driver"),
     ))
     monkeypatch.setattr(
@@ -1006,7 +1005,7 @@ def test_publish_refuses_a_script_whose_import_it_does_not_carry(
         "--rollout-reason", "fixture publication",
         "--shape-gate-waiver", "fixture publication", "--dry-run"])
 
-    with pytest.raises(SystemExit, match="tier_loop.py imports manifest_promotion"):
+    with pytest.raises(SystemExit, match="tier_loop.py imports pbtest_outcomes"):
         publish_runtime.main()
     assert not mirror.exists()
 
@@ -1085,3 +1084,234 @@ def test_the_automatic_signer_does_not_approve_a_replaced_generation(
     assert result["state"] == "error", result
     assert "no valid publisher approval" in result["error"]
     assert not (publication_store / generation.name).exists()
+
+
+def test_pending_bootstrap_excludes_ordinary_publication(tmp_path, monkeypatch):
+    mirror = tmp_path / 'repo'
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    pending = tmp_path / 'rollout/pending-bootstrap.json'
+    pending.parent.mkdir()
+    pending.write_text('{"state":"reserved"}')
+    with pytest.raises(SystemExit, match='pending installed bootstrap'):
+        publish_runtime._require_no_epoch()
+
+
+@pytest.mark.parametrize('canary_code', [0, 2, 1])
+def test_installed_bootstrap_activates_and_runs_canary_under_lock(tmp_path, monkeypatch, canary_code):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, observations, _, designation = case
+    mirror = tmp_path / 'repo'
+    source, target = (Path(plan[name]['directory']) for name in ('source', 'target'))
+    mirror.symlink_to(source)
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    assessment = tmp_path / 'assessment.json'
+    assessment.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    events = []
+    def assess(*a, **kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        events.append('fresh-root-assessment')
+        return assess_case(case), observations
+    def convergence(*a, **kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        assert mirror.resolve() == target
+        events.append('convergence')
+        return observations
+    def canary(**kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        assert kw['enabled'] is True
+        events.append('canary')
+        if canary_code == 0:
+            path = publish_runtime._canary_record_path(target.parent, target.name)
+            path.write_text(json.dumps({'generation': target.name, 'commit': plan['target']['commit'], 'canary_status': 'verified'}))
+        return canary_code
+    monkeypatch.setattr(installed_bootstrap, 'assess', assess)
+    monkeypatch.setattr(installed_bootstrap, 'require_convergence', convergence)
+    monkeypatch.setattr(publish_runtime, '_run_rollout_canary', canary)
+    result = publish_runtime._activate_installed_bootstrap('final', assessment)
+    assert result == canary_code
+    assert events[:3] == ['fresh-root-assessment', 'convergence', 'canary']
+    assert mirror.resolve() == target
+    pending = publish_runtime._bootstrap_pending_path()
+    if canary_code:
+        assert pending.exists()
+        # Resumption keeps the original source, even with a final pointer.
+        assert json.loads(pending.read_bytes())['source'] == plan['source']
+    else:
+        assert not pending.exists()
+        assert events[-1] == 'convergence'
+
+
+def test_installed_bootstrap_refuses_substituted_activation_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish_runtime, 'MIRROR', tmp_path / 'repo')
+    from bootstrap_fixture import bootstrap_case
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, _, _, designation = case
+    path = tmp_path / 'assessment.json'
+    path.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    with pytest.raises(SystemExit, match='target differs'):
+        publish_runtime._activate_installed_bootstrap('old', path)
+
+
+def test_bootstrap_ordinary_canary_does_not_receive_a_publication_grant(monkeypatch):
+    captured = []
+    def driver(*, generation, publication_canary_authorizer=None):
+        captured.append(publication_canary_authorizer)
+        return 0
+    monkeypatch.setattr(publish_runtime, '_load_canary_driver', lambda: driver)
+    assert publish_runtime._invoke_canary_driver('generation', publication_slot=False)[0] == 0
+    assert captured == [None]
+    assert publish_runtime._invoke_canary_driver('generation')[0] == 0
+    assert callable(captured[-1])
+
+
+def test_bootstrap_unreadable_queue_cannot_authorize_activation(tmp_path, monkeypatch):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    from prismabuild import installed_bootstrap
+    from prismabuild.compatibility_window import WindowError
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, observations, _, designation = case
+    mirror = tmp_path / 'repo'
+    source = Path(plan['source']['directory'])
+    mirror.symlink_to(source)
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    monkeypatch.setattr(installed_bootstrap, 'assess', lambda *a, **kw: (assess_case(case), observations))
+    monkeypatch.setattr(installed_bootstrap, 'require_convergence', lambda *a, **kw: observations)
+    monkeypatch.setattr(publish_runtime, '_run_rollout_canary', lambda **kw: 1)
+    path = tmp_path / 'assessment.json'
+    path.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    original = os.scandir
+    def unreadable(directory):
+        if isinstance(directory, (str, os.PathLike)) and Path(directory) == tmp_path / 'pb-queue/ready':
+            raise PermissionError('queue census unavailable')
+        return original(directory)
+    monkeypatch.setattr(os, 'scandir', unreadable)
+    with pytest.raises((PermissionError, WindowError), match='queue'):
+        publish_runtime._activate_installed_bootstrap('final', path)
+    assert mirror.resolve() == source
+
+
+def test_bootstrap_intent_and_transcript_link_every_new_directory(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    writer = publish_runtime._write_bootstrap_pending
+    monkeypatch.setattr(publish_runtime, 'MIRROR', tmp_path / 'fleet/repo')
+    fsync = os.fsync
+    observed = []
+    def syncing(fd):
+        observed.append(str(Path('/proc/self/fd', str(fd)).resolve()))
+        fsync(fd)
+    monkeypatch.setattr(os, 'fsync', syncing)
+    path = tmp_path / 'fleet/rollout/pending-bootstrap.json'
+    writer(path, {'id': 'durable'})
+    assert all(str(p) in observed for p in (tmp_path, tmp_path / 'fleet', path.parent))
+    observed.clear()
+    recorder = writer.__globals__['_record_bootstrap_root_responses']
+    result = recorder({'id': 'durable'}, SimpleNamespace(nonce='a' * 64, started_unix=1, rows={}), 'before')
+    target = Path(result['path'])
+    assert all(str(p) in observed for p in (path.parent, target.parent.parent, target.parent))
+
+
+@pytest.mark.parametrize('interrupt_assessment', [False, True])
+@pytest.mark.parametrize('pointer', ['source', 'target'])
+def test_pending_forward_can_reverse_after_reboot_with_original_owner(tmp_path, monkeypatch, pointer, interrupt_assessment):
+    from bootstrap_fixture import bootstrap_case, assess_case
+    from prismabuild import installed_bootstrap
+    from prismabuild.digest_primitives import canonical_sha256
+    case = bootstrap_case(tmp_path, monkeypatch)
+    plan, observations, _, designation = case
+    source, target = (Path(plan[name]['directory']) for name in ('source', 'target'))
+    mirror = tmp_path / 'repo'; mirror.symlink_to(source if pointer == 'source' else target)
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    forward_hash = canonical_sha256(plan)
+    prior = {'schema': 'prismabuild.pending_bootstrap.v1', 'id': plan['id'],
+        'direction': 'forward', 'source': plan['source'], 'target': plan['target'],
+        'forward_plan_sha256': forward_hash, 'state': 'awaiting-convergence',
+        'root_transcript': {'sha256': '9' * 64}}
+    pending = publish_runtime._bootstrap_pending_path()
+    publish_runtime._write_bootstrap_pending(pending, prior)
+    plan['direction'] = 'restore'
+    for host, row in observations.rows.items():
+        row['boot_id'] = 'new-' + host
+        row['broker_process'] = {'pid': 999, 'starttime': '99'}
+        row['boot_reconciliation'] = {'original_boot_id': plan['boots'][host],
+            'boot_id': row['boot_id'], 'broker_process': row['broker_process'],
+            'plan_sha256': forward_hash, 'approved_unix': row['observed_unix'] - .001}
+        row['plan_sha256'] = canonical_sha256(plan)
+        row['files']['upgrade_client.py'] = plan['source_files']['upgrade_client.py']
+        row['captured_sha256'] = row['executing_sha256'] = plan['source_files']['upgrade_client.py']
+    assessment = tmp_path / 'reverse.json'
+    assessment.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    attempts = []
+    def assess(*a, **kw):
+        assert publish_runtime._PUBLISH_LOCK_DEPTH > 0
+        attempts.append(True)
+        if interrupt_assessment and len(attempts) == 1:
+            raise RuntimeError('fresh observation interrupted')
+        return assess_case(case), observations
+    def canary(**kw):
+        assert mirror.resolve() == source
+        decision = json.loads(pending.read_bytes())['direction_decision']
+        assert decision['previous_intent'] == prior
+        assert decision['plan_sha256'] == canonical_sha256(plan)
+        assert decision['from'] == 'forward' and decision['to'] == 'restore'
+        path = publish_runtime._canary_record_path(source.parent, source.name)
+        path.write_text(json.dumps({'generation': source.name, 'commit': plan['source']['commit'], 'canary_status': 'verified'}))
+        return 0
+    monkeypatch.setattr(installed_bootstrap, 'assess', assess)
+    monkeypatch.setattr(installed_bootstrap, 'require_convergence', lambda *a, **kw: observations)
+    monkeypatch.setattr(publish_runtime, '_run_rollout_canary', canary)
+    if interrupt_assessment:
+        with pytest.raises(RuntimeError, match='observation interrupted'):
+            publish_runtime._activate_installed_bootstrap(source.name, assessment)
+        selected = json.loads(pending.read_bytes())
+        assert selected['direction'] == 'restore' and selected['state'] == 'restore-selected'
+        forward = tmp_path / 'forward.json'
+        forward.write_text(json.dumps({**json.loads(assessment.read_bytes()), 'plan': {**plan, 'direction': 'forward'}}))
+        with pytest.raises(SystemExit, match='direction cannot change'):
+            publish_runtime._activate_installed_bootstrap(target.name, forward)
+        assert json.loads(pending.read_bytes()) == selected
+    assert publish_runtime._activate_installed_bootstrap(source.name, assessment) == 0
+    archive = pending.parent / ('bootstrap-' + plan['id'] + '-restore.accepted.json')
+    assert json.loads(archive.read_bytes())['direction_decision']['previous_intent'] == prior
+    assert not pending.exists()
+
+
+@pytest.mark.parametrize('foreign', ['id', 'source', 'target', 'forward_plan_sha256', 'accepted', 'direction', 'empty'])
+def test_reverse_refuses_foreign_or_unintended_pending_owner(tmp_path, monkeypatch, foreign):
+    from bootstrap_fixture import bootstrap_case
+    from prismabuild.digest_primitives import canonical_sha256
+    plan, _, _, designation = bootstrap_case(tmp_path, monkeypatch)
+    mirror = tmp_path / 'repo'; mirror.symlink_to(Path(plan['target']['directory']))
+    monkeypatch.setattr(publish_runtime, 'MIRROR', mirror)
+    monkeypatch.setattr(publish_runtime, '_bootstrap_roster', lambda *a: plan['roster'])
+    monkeypatch.setattr(publish_runtime.socket, 'gethostname', lambda: 'sparky')
+    prior = {'schema': 'prismabuild.pending_bootstrap.v1', 'id': plan['id'],
+        'source': plan['source'], 'target': plan['target'], 'direction': 'forward',
+        'forward_plan_sha256': canonical_sha256(plan), 'state': 'reserved'}
+    if foreign == 'empty': prior = {}
+    elif foreign == 'accepted': prior['state'] = 'accepted'
+    elif foreign == 'direction': prior['direction'] = 'unrelated'
+    else: prior[foreign] = 'foreign'
+    pending = publish_runtime._bootstrap_pending_path()
+    publish_runtime._write_bootstrap_pending(pending, prior)
+    plan['direction'] = 'restore'
+    path = tmp_path / 'reverse.json'
+    path.write_text(json.dumps({'schema': 'prismabuild.installed_bootstrap.assessment.v1',
+        'plan': plan, 'qualification_actions': ['1' * 64], 'rollback_designation': designation}))
+    with pytest.raises(SystemExit, match='owns publication|direction cannot change'):
+        publish_runtime._activate_installed_bootstrap(plan['source']['generation'], path)
+    assert json.loads(pending.read_bytes()) == prior
+    assert mirror.resolve() == Path(plan['target']['directory'])

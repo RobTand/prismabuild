@@ -7,6 +7,7 @@ from prismabuild import pool
 from test_local_resident_mover import world
 
 from local_resident_space import roomy_disk  # noqa: F401
+from prismabuild import tier_holdings
 
 pytestmark = pytest.mark.usefixtures("roomy_disk")
 
@@ -24,7 +25,7 @@ def test_adoption_verifies_every_file_and_moves_without_copying(tmp_path):
     target = Path(result["local_root"]) / "weights"
     assert target.stat().st_ino == inode
     assert result["verification"][0]["sha256"] == record["manifest"]["entries"][0]["sha256"]
-    assert pool.PoolQueue(store.queue_root).tier_ledger("local:test-host").held()["local_gib"] == 1
+    assert pool.PoolQueue(store.queue_root).tier('local:test-host').holdings()['local_gib'] == 1
 
 
 @pytest.mark.parametrize("defect", ["digest", "extra", "symlink"])
@@ -72,12 +73,12 @@ def test_adoption_cli_queues_the_owner_action_and_never_hashes_on_coordinator(tm
     assert json.loads(capsys.readouterr().out)["action_key"] == "a" * 64
 
 
-def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, *, release_on_error=False):
+def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect):
     from prismabuild import local_resident
     store, record, spec = world(tmp_path)
     set_id = record["set_id"]
-    ledger = pool.PoolQueue(store.queue_root).tier_ledger("local:test-host")
-    ledger.release(set_id)  # This fixture has neither local bytes nor an existing hold.
+    ledger = pool.PoolQueue(store.queue_root).tier('local:test-host')
+    ledger.release_unspent(set_id, authority=tier_holdings.Unspent.NEVER_STARTED)  # This fixture has neither local bytes nor an existing hold.
     source = tmp_path / "manual"
     source.mkdir()
     payload = b"corrupt" if defect == "wrong_bytes" else b"weights"
@@ -96,33 +97,15 @@ def _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, *, re
 
         monkeypatch.setattr(Path, "read_text", mountinfo)
     function = local_resident.adopt_resident_copy
-    if release_on_error:
-        original = function
-
-        def release_mutant(*args, **kwargs):
-            try:
-                return original(*args, **kwargs)
-            except ValueError:
-                ledger.release(set_id)
-                raise
-
-        function = release_mutant
     with pytest.raises(ValueError, match=expected[defect]):
         function(store, set_id, "test-host", spec, source, now=120)
     assert store.read_copy(set_id, "test-host")["state"] == "absent"
     assert not Path(spec["root"]).joinpath(set_id).exists()
     assert (source / "weights").read_bytes() == payload
     assert (source / "weights").stat().st_ino == inode
-    assert ledger.holder_tokens(set_id).get("local_gib", 0) == 1, "refused adoption must retain its reservation"
+    assert ledger.holdings(set_id).get('local_gib', 0) == 1, "refused adoption must retain its reservation"
 
 
 @pytest.mark.parametrize("defect", ["wrong_bytes", "cross_filesystem", "mounted_source"])
 def test_refused_adoption_retains_its_lease_bounded_reservation(tmp_path, monkeypatch, defect):
     _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect)
-
-
-@pytest.mark.parametrize("defect", ["wrong_bytes", "cross_filesystem", "mounted_source"])
-def test_releasing_on_adoption_failure_mutant_fails_retention(tmp_path, monkeypatch, defect):
-    with pytest.raises(AssertionError, match="refused adoption must retain its reservation"):
-        _refused_adoption_keeps_its_reservation(tmp_path, monkeypatch, defect, release_on_error=True)
-

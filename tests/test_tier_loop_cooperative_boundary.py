@@ -17,7 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 
 @pytest.fixture
@@ -29,21 +29,28 @@ def scope(tmp_path, monkeypatch):
     runtime = tier_loop.runtime_gate
     monkeypatch.setattr(runtime, "MAINTENANCE_GATE", gate)
     monkeypatch.setattr(runtime, "PARKED_ROOT", parked)
-    monkeypatch.setattr(runtime, "loaded_runtime_commit", lambda: "fixed")
-    monkeypatch.setattr(runtime, "published_commit", lambda: "fixed")
-    monkeypatch.setattr(runtime, "_generation_at", lambda path: "fixed")
+    loaded, published = tmp_path / "loaded.json", tmp_path / "published.json"
+    for receipt in (loaded, published):
+        receipt.write_text(json.dumps({"commit": "fixed", "generation": "fixed"}))
+    monkeypatch.setattr(runtime, "GENERATION_VERSION", loaded)
+    monkeypatch.setattr(runtime, "RUNTIME_VERSION", published)
     args = SimpleNamespace(pool_root=str(tmp_path / "queue"), source_pool=None,
                            interval_s=1.0, once=True)
     events = []
 
-    class Queue:
+    class Records:
         def __init__(self, root):
             self.root = root
-            events.append("construct")
 
         def ensure_layout(self):
             events.append("layout")
             self.root.mkdir()
+
+    class Queue:
+        def __init__(self, root):
+            self.root = root
+            self.records = Records(root)
+            events.append("construct")
 
     def start(queue, **kwargs):
         events.append("adopt")
@@ -55,7 +62,7 @@ def scope(tmp_path, monkeypatch):
     monkeypatch.setattr(tier_loop, "tier_cycle_line", lambda *args: {"event": "cycle-final"})
     monkeypatch.setattr(tier_loop, "cycle", lambda *args, **kwargs: events.append("cycle") or [])
     return SimpleNamespace(gate=gate, parked=parked, args=args, events=events,
-                           root=tmp_path, Queue=Queue)
+                           root=tmp_path, Queue=Queue, Records=Records, published=published)
 
 
 def close(scope, epoch=101.5):
@@ -84,17 +91,17 @@ def test_unknown_gate_parks_without_starting_or_claiming_epoch(scope, contents):
         scope.gate.write_text(contents)
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == []
-    assert markers(scope)[0].name.endswith("-unknown")
+    assert markers(scope) == []
 
 
 def test_gate_closes_during_layout_and_blocks_adoption(scope, monkeypatch):
-    original = scope.Queue.ensure_layout
+    original = scope.Records.ensure_layout
 
     def layout(queue):
         original(queue)
         close(scope)
 
-    monkeypatch.setattr(scope.Queue, "ensure_layout", layout)
+    monkeypatch.setattr(scope.Records, 'ensure_layout', layout)
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == ["construct", "layout"]
     assert not (scope.root / "queue" / "adoption").exists()
@@ -221,7 +228,7 @@ def test_startup_exception_restores_both_signal_handlers(scope, monkeypatch):
     def layout(queue):
         raise OSError("startup namespace unavailable")
 
-    monkeypatch.setattr(scope.Queue, "ensure_layout", layout)
+    monkeypatch.setattr(scope.Records, 'ensure_layout', layout)
     with pytest.raises(OSError, match="startup namespace"):
         tier_loop._serve(scope.args)
     assert {s: signal.getsignal(s) for s in previous} == previous
@@ -229,12 +236,19 @@ def test_startup_exception_restores_both_signal_handlers(scope, monkeypatch):
 
 
 def test_stop_during_initial_identity_reads_precedes_all_startup_writes(scope, monkeypatch):
-    def loaded():
-        os.kill(os.getpid(), signal.SIGTERM)
-        return "fixed"
+    previous = sys.getprofile()
 
-    monkeypatch.setattr(tier_loop.runtime_gate, "loaded_runtime_commit", loaded)
-    assert tier_loop._serve(scope.args) == 0
+    def read_finished(frame, event, value):
+        if (event == "return" and isinstance(value, str) and frame.f_code == Path.read_text.__code__
+                and frame.f_locals.get("self") == tier_loop.runtime_gate.GENERATION_VERSION):
+            sys.setprofile(previous)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    sys.setprofile(read_finished)
+    try:
+        assert tier_loop._serve(scope.args) == 0
+    finally:
+        sys.setprofile(previous)
     assert scope.events == []
     assert markers(scope) == []
 
@@ -260,7 +274,7 @@ def test_one_shot_cycle_closure_parks_only_after_final_output(scope, monkeypatch
 
 
 def test_runtime_rotation_precedes_layout_even_when_gate_is_open(scope, monkeypatch):
-    monkeypatch.setattr(tier_loop.runtime_gate, "published_commit", lambda: "successor")
+    scope.published.write_text(json.dumps({"commit": "successor", "generation": "fixed"}))
     assert tier_loop._serve(scope.args) == 75
     assert scope.events == []
     assert markers(scope) == []

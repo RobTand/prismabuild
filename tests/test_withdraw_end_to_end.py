@@ -31,8 +31,11 @@ from prismabuild import core as pb, cpu_topology, pool, resource_scope  # noqa: 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
+
+
 
 
 def _await(predicate, *, timeout_s: float = 30.0) -> bool:
@@ -161,7 +164,7 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     cas.publish_action_request(action)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=key, cas_root=cas.root, checkout_root=checkout,
         worker_script=WORKER_LOOP.parents[1] / "prismabuild_worker.py",
@@ -171,16 +174,26 @@ def test_an_operator_stops_a_running_action_and_the_worker_carries_on(
     host = socket.gethostname()
     # main owns process signals. Run it in a process, as the supervisor does,
     # so withdrawal exercises the real SIGTERM handler as well as the queue.
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    (tmp_path / "maintenance.json").write_text(json.dumps({"draining": False}))
     bootstrap = tmp_path / "run_worker.py"
     bootstrap.write_text(f"""
 import sys
+from functools import partial
 from pathlib import Path
 sys.path.insert(0, {str(WORKER_LOOP.parents[2] / 'src')!r})
 sys.path.insert(0, {str(WORKER_LOOP.parent)!r})
 import worker_loop as wl
+from prismabuild import role_session
 wl.SH = Path({str(tmp_path)!r})
-wl.loaded_runtime_commit = lambda: 'deadbeef'
-wl.published_commit = lambda: 'deadbeef'
+wl.PUBLICATION_LOCK_ROOT = wl.SH / "offer-locks"
+wl.container_images.InventoryCache = partial(
+    wl.container_images.InventoryCache, root=wl.SH / "images")
+role_session.GENERATION_VERSION = wl.SH / "loaded.json"
+role_session.RUNTIME_VERSION = wl.SH / "published.json"
+role_session.MAINTENANCE_GATE = wl.SH / "maintenance.json"
+role_session.PARKED_ROOT = wl.SH / "parked"
 raise SystemExit(wl.main())
 """)
     cpu_slots = cpu_slots_that_fit()
@@ -191,18 +204,18 @@ raise SystemExit(wl.main())
     ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         action_pid = _await_pid(pidfile, worker=worker)
-        assert _await(lambda: (queue.lease_path(key).exists() and json.loads(
-            queue.lease_path(key).read_text()).get("child_pid") is not None))
+        assert _await(lambda: (queue.records.lease_path(key).exists() and json.loads(
+            queue.records.lease_path(key).read_text()).get("child_pid") is not None))
         assert queue.ledger(host).available().get("cpu", 0) == cpu_slots - 1, (
             f"one of {cpu_slots} cpu token(s) is held while the action runs")
-        claim = json.loads(queue.item_path(pool.CLAIMED, key).read_text())
+        claim = json.loads(queue.records.item_path(pool.record_store.CLAIMED, key).read_text())
         control = claim["resource_scope"]
         assert control["memory_max_bytes"] == 1024 ** 3
         membership = Path(f"/proc/{action_pid}/cgroup").read_text()
         assert control["scope_id"] in membership
 
-        assert pbrun.withdraw_main(
-            queue, [key[:12]], reason="ten merges stale", by=f"rob@{host}") == 0
+        assert submit_core.withdraw_main(
+            queue, [key[:12]], reason="ten merges stale", by=f"rob@{host}", store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
         output, _ = worker.communicate(timeout=60.0)
         assert worker.returncode == 0, output
@@ -211,12 +224,12 @@ raise SystemExit(wl.main())
             "the action outlived the operator's decision")
 
         # One place, and it is not the failure record.
-        filed = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+        filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
         assert filed["status"] == "withdrawn"
         assert filed["reason"] == "ten merges stale"
-        for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED):
-            assert list(queue.dir(state).glob("*.json")) == [], state
-        assert not queue.lease_path(key).exists()
+        for state in (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED):
+            assert list(queue.records.dir(state).glob("*.json")) == [], state
+        assert not queue.records.lease_path(key).exists()
 
         # And the box is whole again: every token back, nothing widowed.
         ledger = queue.ledger(host)
@@ -230,8 +243,8 @@ raise SystemExit(wl.main())
         assert _await(lambda: not Path(control["cgroup_path"]).exists())
 
         # The submitter is told, rather than waiting out ``--wait-s``.
-        rc = pbrun.await_outcome(queue, key, wait_s=1.0)
-        assert rc == pbrun.WITHDRAWN_EXIT
+        rc = submit_core.action_client.report_pool_outcome(queue, key, wait_s=1.0)
+        assert rc == submit_core.action_client.WITHDRAWN_EXIT
     finally:
         if worker.poll() is None:
             # This child belongs to the test. Do not leak it on an assertion;

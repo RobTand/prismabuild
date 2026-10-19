@@ -96,7 +96,7 @@ def test_the_default_root_is_the_queue_pbrun_submits_to() -> None:
         "from prismabuild import pool\n"
         "import pbrun\n"
         "print(pool.DEFAULT_POOL_ROOT)\n"
-        "print(pbrun.SH / 'pb-queue')\n"
+        "print(pbrun.configured_store().queue_root)\n"
     )
     shown = subprocess.run(
         [sys.executable, "-c", probe], env=environment, capture_output=True,

@@ -15,11 +15,14 @@ import json
 from pathlib import Path
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
 from prismabuild import core as pb
-import fleet_submit
+from prismabuild import fleet_submit
 
 result_path = "fleet_result.txt"
 
@@ -153,6 +156,7 @@ def main(argv=None) -> int:
             cas=cas,
             request_path=request,
             transport=args.transport,
+            job_entry=Path(__file__).resolve(strict=True).with_name("slurm_job.py"),
             # Named on both transports: the pull queue carries it on the queue
             # item, the lane seals it as the snapshot the node materializes.
             checkout_root=str(checkout),

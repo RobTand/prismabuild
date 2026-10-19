@@ -90,7 +90,7 @@ def _egress(plan, ordinal):
 def test_declared_needs_cover_suffix_only_plus_prefix_keys() -> None:
     """Waiting and fence read the suffix; two keys carry the prefix (R1)."""
     plan = _prefix_plan()
-    out = residency_plan.advance_needs(plan, None)
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation()).advance
     assert [entry["phase"] for entry in out["waiting"]] == ["s1", "s2"]
     assert out["current_min_gib"] == 40
     assert out["next_min_gib"] == 40
@@ -118,8 +118,7 @@ def test_declared_needs_cover_suffix_only_plus_prefix_keys() -> None:
 def test_declared_needs_keep_streaming_lead_after_publish() -> None:
     """The lead stays the first streaming leg, published or not."""
     plan = _prefix_plan()
-    out = residency_plan.advance_needs(plan, None,
-                                       published=[_mover(plan, 1)])
+    out = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[_mover(plan, 1)])).advance
     assert [entry["phase"] for entry in out["waiting"]] == ["s2"]
     assert out["current_min_gib"] == 40
     assert out["next_min_gib"] is None
@@ -130,11 +129,8 @@ def test_declared_needs_keep_streaming_lead_after_publish() -> None:
 
 def test_declared_plan_without_suffix_uses_idle_shape_plus_keys() -> None:
     """No streaming phase gives the idle shape with the two keys."""
-    declared_out = residency_plan.advance_needs(_declared_only_plan(), None)
-    plain_out = residency_plan.advance_needs(_stream_plan(), None,
-                                             published=[_mover(
-                                                 _stream_plan(), 0),
-                                                 _mover(_stream_plan(), 1)])
+    declared_out = residency_plan.ConsumerWindow(_declared_only_plan(), None, residency_plan.LegObservation()).advance
+    plain_out = residency_plan.ConsumerWindow(_stream_plan(), None, residency_plan.LegObservation(published=[_mover(_stream_plan(), 0), _mover(_stream_plan(), 1)])).advance
     assert set(declared_out) == set(plain_out) | {
         "prelaunch_legs", "prelaunch_gib"}
     assert declared_out["waiting"] == []
@@ -149,7 +145,7 @@ def test_declared_plan_without_suffix_uses_idle_shape_plus_keys() -> None:
 
 def test_undeclared_needs_carry_no_prelaunch_keys() -> None:
     """A plan with no declaration keeps the old shape exactly."""
-    out = residency_plan.advance_needs(_stream_plan(), None)
+    out = residency_plan.ConsumerWindow(_stream_plan(), None, residency_plan.LegObservation()).advance
     assert "prelaunch_legs" not in out
     assert "prelaunch_gib" not in out
     assert out["current_min_gib"] == 40

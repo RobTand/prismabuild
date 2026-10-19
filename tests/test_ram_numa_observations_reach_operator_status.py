@@ -5,6 +5,7 @@ announcement, and public --starvation JSON. All evidence/queues are private.
 These tests do not prove physical page placement, provisioning or live balance.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock, FleetWorld
 
 import json
 import os
@@ -17,8 +18,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from prismabuild import pool, storage_tiers  # noqa: E402
 
 HOST = "dl380g10"
@@ -126,7 +128,7 @@ class _RamEvidence:
 def clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     stamp = [NOW]
     monkeypatch.setattr(pbstatus.time, "time", lambda: stamp[0])
-    monkeypatch.setattr(pool, "_now", lambda: stamp[0])
+    FleetClock(source=lambda: stamp[0]).install(monkeypatch, scope="pool")
     return stamp
 
 
@@ -149,28 +151,22 @@ def _assert_admitted(record: dict[str, object], *, ids: tuple[int, ...] = (0, 2)
     return tokens
 
 
-def _queue(root: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(root)
-    queue.ensure_layout()
-    return queue
-
-
 def _publish(queue: pool.PoolQueue, record: dict[str, object]) -> dict[str, object]:
     tokens = storage_tiers.tier_tokens(record)
-    queue.mint_tier_capacity(str(record["tier_id"]), tokens)
+    queue.tier(str(record['tier_id'])).mint(tokens)
     path = queue.announce_tier(record, now=NOW)
     persisted = json.loads(path.read_text())
     # Publish the exact discovered record, not a replacement RAM dictionary.
     assert persisted == dict(record, announced_unix=NOW)
     for kind, count in tokens.items():
-        assert queue.tier_ledger(str(record["tier_id"])).capacity()[kind] == count
+        assert queue.tier(str(record['tier_id'])).mint_supply()[kind] == count
     return persisted
 
 
 def _cli(queue: pool.PoolQueue, capsys: pytest.CaptureFixture[str]) -> dict:
     assert pbstatus.main(["--starvation", "--queue-root", str(queue.root)]) == 0
     blob = json.loads(capsys.readouterr().out)
-    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert blob["schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert blob["complete"] is True
     return {row["tier_id"]: row for row in blob["tiers"]}
 
@@ -214,7 +210,7 @@ def test_primary_real_discovery_announced_ram_observations_reach_starvation_cli(
     _assert_admitted(record)
     assert record["mount_options"] == evidence.options
     assert record["sampled_unix"] == SAMPLED
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     operator = _cli(queue, capsys)[RAM_TIER]
     assert operator["ledger_capacity"][storage_tiers.RAM_CAPACITY_KIND] == 112
@@ -232,7 +228,7 @@ def test_zero_kib_conversion_and_single_cpu_less_node_are_observations_not_press
         evidence.write_node(node, free=0, shmem=123 if node == 2 else 0)
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record, ids=ids)
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     _assert_observations(
         record, persisted, _cli(queue, capsys)[RAM_TIER],
@@ -252,7 +248,7 @@ def test_up_to_twenty_digit_optional_counters_convert_to_exact_integer_bytes(
             f"Node {node} MemFree: {value} kB\nNode {node} Shmem: {value} kB\n")
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record)
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     expected = {str(node): int(value) * 1024 for node in evidence.ids}
     _assert_observations(record, persisted, _cli(queue, capsys)[RAM_TIER],
@@ -297,7 +293,7 @@ def test_bad_optional_counter_is_per_node_unknown_without_changing_admission(
     free: dict[str, int | None] = dict(DEFAULT_FREE)
     shmem: dict[str, int | None] = dict(DEFAULT_SHMEM)
     (free if field == "node_memfree_bytes" else shmem)["0"] = None
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     _assert_observations(record, persisted, _cli(queue, capsys)[RAM_TIER],
                          free=free, shmem=shmem)
@@ -311,7 +307,7 @@ def test_memtotal_only_evidence_still_mints_with_all_optional_values_unknown(
             f"Node {node} MemTotal: {evidence.total_kib} kB\n")
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record)
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     _assert_observations(record, persisted, _cli(queue, capsys)[RAM_TIER],
                          free={"0": None, "2": None}, shmem={"0": None, "2": None})
@@ -368,7 +364,7 @@ def test_invalid_snapshot_refuses_and_announces_whole_unknown_observation_maps(
     assert admission["reason"] == "ram_numa_topology_unreadable"
     assert record["memory_nodes"] is None
     assert storage_tiers.tier_tokens(record) == {}
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     operator = _cli(queue, capsys)[RAM_TIER]
     assert operator["ledger_capacity"].get(storage_tiers.RAM_CAPACITY_KIND, 0) == 0
@@ -400,7 +396,7 @@ def test_membership_change_discards_all_observations_and_refuses_without_new_epo
     assert admission["admissible"] is False
     assert storage_tiers.tier_tokens(record) == {}
     assert record["epoch"] == before["epoch"]
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     _assert_observations(record, persisted, _cli(queue, capsys)[RAM_TIER],
                          free=None, shmem=None)
@@ -422,7 +418,7 @@ def test_discovery_uses_one_membership_bracket_for_totals_free_and_shmem(
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record)
     assert reads == ["has_memory", "node0/meminfo", "node2/meminfo", "has_memory"]
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     _assert_observations(record, persisted, _cli(queue, capsys)[RAM_TIER],
                          free=DEFAULT_FREE, shmem=DEFAULT_SHMEM)
@@ -434,7 +430,7 @@ def test_resampling_diagnostics_changes_values_but_not_admission_epoch_or_tokens
     evidence = _RamEvidence(tmp_path / "evidence")
     before = evidence.discover()[RAM_TIER]
     _assert_admitted(before)
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted_before = _publish(queue, before)
     operator_before = _cli(queue, capsys)[RAM_TIER]
     # Balanced second sample versus deliberately unequal primary sample.
@@ -461,7 +457,7 @@ def test_old_non_ram_and_unannounced_rows_have_explicit_unknown_observations(
     evidence = _RamEvidence(tmp_path / "evidence")
     tiers = evidence.discover()
     _assert_admitted(tiers[RAM_TIER])
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     legacy = {key: value for key, value in tiers[RAM_TIER].items()
               if key not in (*OBSERVATIONS, "memory_nodes")}
     _publish(queue, legacy)
@@ -472,7 +468,7 @@ def test_old_non_ram_and_unannounced_rows_have_explicit_unknown_observations(
                node_memfree_bytes=DEFAULT_FREE, node_shmem_bytes=DEFAULT_SHMEM)
     _publish(queue, arc)
     unannounced = storage_tiers.tier_id("ram", "unannounced-fixture")
-    queue.mint_tier_capacity(unannounced, {storage_tiers.RAM_CAPACITY_KIND: 1})
+    queue.tier(unannounced).mint({storage_tiers.RAM_CAPACITY_KIND: 1})
     rows = _cli(queue, capsys)
     assert rows[RAM_TIER]["announced"] is True
     assert rows[arc_id]["tier_kind"] == "arc"
@@ -496,7 +492,7 @@ def test_status_reads_persisted_ram_observations_without_sampling_or_writes(
     evidence = _RamEvidence(tmp_path / "evidence")
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record)
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     persisted = _publish(queue, record)
     for node in evidence.ids:
         evidence.write_node(node, free=0, shmem=0)
@@ -521,17 +517,17 @@ def test_liveness_refresh_keeps_sample_stamp_and_observations_aging(
     evidence = _RamEvidence(tmp_path / "evidence")
     record = evidence.discover()[RAM_TIER]
     _assert_admitted(record)
-    queue = _queue(tmp_path / "pb-queue")
-    queue.mint_tier_capacity(RAM_TIER, storage_tiers.tier_tokens(record))
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
+    queue.tier(RAM_TIER).mint(storage_tiers.tier_tokens(record))
     liveness = tier_loop.Liveness(interval_s=5)
     liveness.begin_cycle()
     liveness.announce(queue, record)
-    original = json.loads(queue.tier_record_path(RAM_TIER).read_text())
+    original = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     for node in evidence.ids:
         evidence.write_node(node, free=0, shmem=0)
     clock[0] += 100
     liveness.checkpoint("fixture-progress")
-    refreshed = json.loads(queue.tier_record_path(RAM_TIER).read_text())
+    refreshed = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     assert refreshed["announced_unix"] > original["announced_unix"]
     assert refreshed["sampled_unix"] == original["sampled_unix"] == SAMPLED
     assert refreshed["epoch"] == record["epoch"]
@@ -562,7 +558,7 @@ def test_real_tier_cycle_mints_and_announces_discovered_observations_to_status(
 
     # The mint's own writable resample sees the same private tmpfs facts.
     monkeypatch.setattr(tier_loop.os, "statvfs", private_statvfs)
-    queue = _queue(tmp_path / "pb-queue")
+    queue = FleetWorld((tmp_path / 'pb-queue').parent, queue_name=(tmp_path / 'pb-queue').name).queue
     queue.ledger(HOST).ensure_capacity({"mem_gb": 294})
     assert queue.ledger(HOST).acquire("fixture-row", {"mem_gb": 88})
     assert queue.rows_host_memory_held(HOST) == 88
@@ -572,8 +568,8 @@ def test_real_tier_cycle_mints_and_announces_discovered_observations_to_status(
     record = next(row for row in announced if row["tier_id"] == RAM_TIER)
     _assert_admitted(record)
     assert record["stage_root_owner"] == "registered"
-    assert queue.tier_ledger(RAM_TIER).capacity()[storage_tiers.RAM_CAPACITY_KIND] == 112
-    persisted = json.loads(queue.tier_record_path(RAM_TIER).read_text())
+    assert queue.tier(RAM_TIER).mint_supply()[storage_tiers.RAM_CAPACITY_KIND] == 112
+    persisted = json.loads(queue.records.tier_record_path(RAM_TIER).read_text())
     assert persisted == dict(record, announced_unix=NOW)
     assert tier_loop.LAST_CYCLE["completed"] is True
     # Cycle event logs are not the CLI's one JSON blob.

@@ -18,6 +18,7 @@ evidence bounds so a key's ring stays the size of the records it already
 keeps.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -52,7 +53,7 @@ def test_a_new_transition_carries_the_decision_snapshot(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     item = fx._publish_export(queue, fx._hexkey("owner"), "starved")
     clock = [1000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
 
     _refuse_once(queue, item, HOST_PRESSURE_DECISION, clock)
 
@@ -82,7 +83,7 @@ def test_a_damped_repeat_keeps_the_first_snapshot(tmp_path, monkeypatch):
     item = fx._publish_export(queue, fx._hexkey("owner"), "damped")
     key = str(item["action_key"])
     clock = [1000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
 
     # The starvation begins under foreign load.
     _refuse_once(queue, item, HOST_PRESSURE_DECISION, clock)
@@ -119,7 +120,7 @@ def test_the_snapshot_uses_the_ring_evidence_bounds(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     item = fx._publish_export(queue, fx._hexkey("owner"), "bounded")
     clock = [1000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
 
     noisy = dict(HOST_PRESSURE_DECISION, note="x" * 100_000,
                  many={str(i): i for i in range(500)})
@@ -144,7 +145,7 @@ def test_a_reason_without_a_decision_records_none(tmp_path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "queue")
     item = fx._publish_export(queue, fx._hexkey("owner"), "no-decision")
     clock = [1000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
 
     queue.record_denial(item, "residency_plan_unreadable", {"why": "test"})
 

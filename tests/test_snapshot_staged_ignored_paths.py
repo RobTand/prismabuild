@@ -8,6 +8,7 @@ path was in the snapshot; the bundle did not carry it.
 """
 
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 from pathlib import Path
@@ -76,11 +77,11 @@ def test_a_newly_staged_ignored_file_is_sealed_with_its_working_bytes(
     assert _git(checkout, "add", "-f", "ignored.txt").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
-    assert "ignored.txt" in pbrun.snapshot_path_roster(checkout)
+    assert "ignored.txt" in submit_core.snapshot_path_roster(checkout)
     materialized, roster = _sealed_roster(tmp_path, snapshot, cas)
     assert "ignored.txt" in roster
     assert (materialized / "ignored.txt").read_text() == "required staged input\n"
@@ -97,7 +98,7 @@ def test_a_staged_ignored_file_seals_its_live_bytes_not_its_staged_bytes(
     (checkout / "ignored.txt").write_text("live bytes\n")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
@@ -117,7 +118,7 @@ def test_a_staged_addition_removed_from_the_worktree_is_not_sealed(
     (checkout / "ignored.txt").unlink()
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
@@ -134,7 +135,7 @@ def test_a_tracked_deletion_stays_deleted_in_the_sealed_tree(
     (checkout / "task.py").unlink()
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
@@ -156,10 +157,10 @@ def test_the_sealed_roster_is_the_roster_the_identity_hashes(
     (checkout / "build" / "artifact.bin").write_bytes(b"never submitted")
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
 
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES
     )
 
     _, roster = _sealed_roster(tmp_path, snapshot, cas)
-    assert sorted(roster) == sorted(pbrun.snapshot_path_roster(checkout))
+    assert sorted(roster) == sorted(submit_core.snapshot_path_roster(checkout))
     assert "build/artifact.bin" not in roster

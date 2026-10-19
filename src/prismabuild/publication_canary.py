@@ -8,16 +8,17 @@ finish, withdrawal and process death do not replenish that budget.
 """
 from __future__ import annotations
 
+from . import immutable_files
+
 import hashlib
 import math
 from pathlib import Path
 import re
 from collections.abc import Callable, Mapping
 
-from . import core as pb, posix_lock
-from .materialize import _write_json_atomic
+from . import contracts, core as pb, posix_lock
 
-CAPABILITY = "publication-canary-slot-v1"
+CAPABILITY = contracts.PUBLICATION_CANARY_TAG
 SCHEMA = "prismabuild.publication_canary_slot.v1"
 # Verified same-image leg2 action 4ae5bc61d25fa5c5de7fcfc40b5e40430f5c137b6dce3eb8430ac944f3c0aa33:
 # elapsed execution 3.93170428276062s, excluding queue wait. Eightfold margin.
@@ -59,8 +60,8 @@ def slot_path(root: Path, value: Mapping[str, str]) -> Path:
 def load(root: Path, value: Mapping[str, str], key: str) -> dict[str, object]:
     path = slot_path(root, value)
     try:
-        raw = pb._read_regular_file_nofollow(path, where="publication canary grant")
-        grant = pb._decode_strict_json(raw, where="publication canary grant")
+        raw = immutable_files.read_stable_file(path, where="publication canary grant")
+        grant = pb.digest_primitives.decode_strict_json(raw, where="publication canary grant")
     except (OSError, ValueError) as exc:
         raise ValueError(f"publication canary grant unavailable: {exc}") from exc
     if (not isinstance(grant, dict) or grant.get("schema") != SCHEMA
@@ -90,7 +91,7 @@ def mint(root: Path, action: Mapping[str, object], *, run_id: str) -> Path:
         raise ValueError("publication canary mint requires sealed intent and run id")
     path = slot_path(root, value)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pb._atomic_write_new_json(path, {
+    pb.write_new_json(path, {
         "schema": SCHEMA, **value, "action_key": checked["action_key"],
         "execution_timeout_s": EXECUTION_TIMEOUT_S, "run_id": run_id,
         "published_unix": None,
@@ -121,7 +122,7 @@ def bind(root: Path, value: Mapping[str, str], key: str, published_unix: float) 
         grant = load(root, value, key)
         if grant["published_unix"] is not None:
             raise ValueError("publication canary slot already spent/published")
-        _write_json_atomic(path, {**grant, "published_unix": published_unix})
+        immutable_files.write_json_atomic(path, {**grant, "published_unix": published_unix})
 
 
 def verified(root: Path, item: Mapping[str, object]) -> bool:

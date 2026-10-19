@@ -1,5 +1,7 @@
 """Reviewed fleet configuration selects D38 enforcement, with private evidence."""
 from __future__ import annotations
+from submission_support import patch_store
+from prismabuild import submission as submit_core
 
 import json
 from pathlib import Path
@@ -49,7 +51,7 @@ def test_malformed_grant_images_are_failed_evidence_checks(
     ({"d38_enforce": False}, False), ({"d38_enforce": True}, True)])
 def test_only_reviewed_json_booleans_select_enforcement(d38_config, value, expected):
     d38_config.write_text(json.dumps(value))
-    assert d38_gate.enforcement_enabled() is expected
+    assert d38_gate.enforcement_enabled(store=pbrun.configured_store()) is expected
 
 
 @pytest.mark.parametrize("raw", ["{", "[]", "null", "0", "false",
@@ -58,14 +60,14 @@ def test_only_reviewed_json_booleans_select_enforcement(d38_config, value, expec
     '{"d38_enforce": []}', '{"d38_enforce": {}}'])
 def test_invalid_configuration_is_an_explicit_error(d38_config, raw):
     d38_config.write_text(raw)
-    with pytest.raises(SystemExit, match="D38 configuration error"):
-        d38_gate.enforcement_enabled()
+    with pytest.raises(submit_core.SubmissionRefused, match="D38 configuration error"):
+        d38_gate.enforcement_enabled(store=pbrun.configured_store())
 
 
 def test_unreadable_configuration_is_an_explicit_error(d38_config):
     d38_config.unlink()
-    with pytest.raises(SystemExit, match="D38 configuration error"):
-        d38_gate.enforcement_enabled()
+    with pytest.raises(submit_core.SubmissionRefused, match="D38 configuration error"):
+        d38_gate.enforcement_enabled(store=pbrun.configured_store())
 
 
 def test_configuration_follows_the_resolved_module(monkeypatch, tmp_path):
@@ -79,8 +81,8 @@ def test_configuration_follows_the_resolved_module(monkeypatch, tmp_path):
     (alias / "fleet_boxes.json").write_text('{"d38_enforce": true}')
     link = alias / "d38_gate.py"
     link.symlink_to(gate)
-    monkeypatch.setattr(d38_gate, "__file__", str(link))
-    assert d38_gate.enforcement_enabled() is False
+    patch_store(monkeypatch, client=pbrun, d38_config_path=link.resolve().with_name("fleet_boxes.json"))
+    assert d38_gate.enforcement_enabled(store=pbrun.configured_store()) is False
 
 
 @pytest.mark.parametrize("field,value", [
@@ -270,19 +272,21 @@ def _generation(tmp_path, layout):
     return root, directory
 
 
-FRESH_SUBMISSION = """
+FRESH_SUBMISSION = r"""
 import datetime, socket, sys
 from pathlib import Path
 root, directory, private, work, transport, intent = sys.argv[1:]
 sys.path[:0] = [str(Path(root) / 'src'), directory]
-import pbrun, d38_gate
+import pbrun
+from prismabuild import d38_gate
+from prismabuild import submission as submit_core
 from prismabuild import pool
-pbrun.SH = Path(private)
+pbrun.configured_store = lambda: submit_core.FleetStore(Path(Path(private)), pbrun.RUNTIME_ROOT, pbrun.fleet_roster.Roster.beside(pbrun.__file__))
 pool.is_box_local_path = lambda _path: False
 socket.gethostname = lambda: 'sparky' if transport == 'pool' and intent == 'demand' else 'dl380g10'
 d38_gate.utc_now = lambda: datetime.datetime(2026, 10, 8, 16, 30, tzinfo=datetime.timezone.utc)
 assert d38_gate.INVOCATIONS == {}
-assert d38_gate.enforcement_enabled() is False
+assert d38_gate.enforcement_enabled(store=pbrun.configured_store()) is False
 queue = pool.PoolQueue(Path(private) / 'pb-queue')
 queue.announce(host='sparky', tags=['sparky', 'gb10'], has_gpu=True,
                capacity={'cpu': 4, 'mem_gb': 16, 'gpu': 1})
@@ -325,7 +329,7 @@ def test_absent_key_in_fresh_generations_publishes_and_audits(
 def test_no_caller_override_selects_enforcement(tmp_path, monkeypatch, d38_config):
     for name in ("D38_ENFORCE", "PRISMABUILD_D38_ENFORCE", "ENFORCE"):
         monkeypatch.setenv(name, "true")
-    assert d38_gate.enforcement_enabled() is False
+    assert d38_gate.enforcement_enabled(store=pbrun.configured_store()) is False
     for option in ("--d38-enforce", "--no-d38-enforce"):
         with pytest.raises(SystemExit):
             pbrun.parse_args([option, "--", "/bin/true"])
@@ -333,10 +337,10 @@ def test_no_caller_override_selects_enforcement(tmp_path, monkeypatch, d38_confi
         "demand": {"gpu": 1}, "command": ["/bin/true"]}}
     args = SimpleNamespace(d38_enforce=True, host_class=None)
     assert d38_gate.judge_publication(args, action, cas=None,
-        queue_root=tmp_path / "queue", transport="pool") is None
+        queue_root=tmp_path / "queue", transport="pool", store=pbrun.configured_store()) is None
     d38_config.write_text('{"d38_enforce": true}')
     for name in ("D38_ENFORCE", "PRISMABUILD_D38_ENFORCE", "ENFORCE"):
         monkeypatch.setenv(name, "false")
     args.d38_enforce = False
     assert d38_gate.judge_publication(args, action, cas=None,
-        queue_root=tmp_path / "queue", transport="pool") is not None
+        queue_root=tmp_path / "queue", transport="pool", store=pbrun.configured_store()) is not None

@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools/fleet"))
 import migrate_role_logs as migration  # noqa: E402
+from generation_fixture import generation_receipt
 
 HOST = "private-exact-role-box"
 ROLES = ("storage", "tiers", "metrics")
@@ -115,9 +116,7 @@ def box(tmp_path, monkeypatch):
                  hashlib.sha256(path.read_bytes()).hexdigest()
                  for path in generation.rglob("*")
                  if path.is_file() and path.name != "RUNTIME_VERSION.json"}
-        (generation / "RUNTIME_VERSION.json").write_text(json.dumps({
-            "schema": migration.supervise.RUNTIME_VERSION_SCHEMA,
-            "generation": generation.name, "commit": "a" * 40, "files": files}))
+        (generation / "RUNTIME_VERSION.json").write_text(json.dumps(generation_receipt(generation.name, "a" * 40, files)))
         for path in generation.rglob("*"):
             path.chmod(0o555 if path.is_dir() else 0o444)
         generation.chmod(0o555)

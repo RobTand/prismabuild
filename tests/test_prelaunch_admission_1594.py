@@ -16,7 +16,8 @@ from pathlib import Path
 from test_gang_reservation_1517 import HOSTS, gang_fleet  # noqa: F401
 from test_measurement_drains_gpu_backfill import fleet  # noqa: F401
 
-from prismabuild import _gang, core as pb, pool, residency_map, residency_plan
+from prismabuild import _gang, candidate_policy, core as pb, pool, residency_map, residency_plan
+from prismabuild import data_manifest as manifest_codec
 
 TIER = "prismabuild-stage:sparklina"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -40,7 +41,7 @@ def _manifest_doc(*, declare: bool, tag: str) -> dict[str, object]:
             phase["resident_before_launch"] = True
         phases.append(phase)
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": f"tests-1594-{tag}"},
         "annotations": {"phases": phases},
         "mount_prefix": "/data",
@@ -59,12 +60,12 @@ def _seal_member(cas, checkout: Path, queue, group: str, index: int,
     The row carries no residency block: the plan is filed, never rewritten
     onto the row. Returns the member key and its lead key.
     """
-    manifest = pb.validate_data_manifest(
+    manifest = manifest_codec.validate_data_manifest(
         _manifest_doc(declare=declare_manifest, tag=f"{tag}-{index}"))
     blob = checkout.parent / f"{name}-{index}-manifest.json"
     blob.write_text(json.dumps(manifest))
     entry, _ = cas.ingest_input(
-        blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     snap_blob = checkout.parent / f"{name}-{index}-snapshot.json"
     snap_blob.write_text("{}")
     snap_entry, _ = cas.ingest_input(
@@ -141,7 +142,7 @@ def _seal_member(cas, checkout: Path, queue, group: str, index: int,
 
 def _file_map(queue, key: str) -> Path:
     """File an empty composed map for one consumer; return its path."""
-    path = queue.residency_map_path(key)
+    path = queue.records.residency_map_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{}\n")
     return path
@@ -172,21 +173,23 @@ def _gang_pair(gang_fleet, tmp_path, name, *, declare_manifest: bool,
     keys = []
     leads = []
     for index in range(2):
-        clock[0] += 0.001
+        clock.now += 0.001
         key, lead = _seal_member(
             cas, checkout, queue, group, index, name,
             declare_manifest=declare_manifest, declare_plan=declare_plan,
             tag=name)
         keys.append(key)
         leads.append(lead)
-    rows = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    rows = [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) for key in keys]
     _gang.publish_group(queue, group, rows)
     return queue, clock, publish, finish, gclaim, denial, group, keys, leads
 
 
 def _publish_lead(queue, clock, lead: str, sha: str) -> None:
     """Publish one movement node for the plan's phase 0."""
-    clock[0] += 0.001
+    clock.now += 0.001
     queue.publish(action_key=lead, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
@@ -229,7 +232,7 @@ def _delete_manifest_blob(row: dict[str, object], key: str) -> None:
          / f"{key}.json").read_bytes())
     manifest_entry = next(
         entry for entry in request["inputs"]
-        if entry["id"] == pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        if entry["id"] == manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     cas.input_path(manifest_entry).unlink()
 
 
@@ -242,7 +245,7 @@ def test_declared_manifest_with_streaming_plan_is_refused(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-refused",
                    declare_manifest=True, declare_plan=False)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, keys[0]))
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "prelaunch_undeclared", verdict
     assert verdict["manifest_declares"] == ["phase-0"], verdict
@@ -254,7 +257,7 @@ def test_matching_declaration_passes_shape_check(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-match",
                    declare_manifest=True, declare_plan=True)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, keys[0]))
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "lead_not_resident", verdict
     assert verdict["pending"] == [{"lead": leads[0], "status": "absent"}]
@@ -265,11 +268,11 @@ def test_no_declaration_keeps_todays_verdict(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-clean",
                    declare_manifest=False, declare_plan=False)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, keys[0]))
     verdict = queue.residency_verdict(row)
     assert verdict["state"] == "lead_not_resident", verdict
     assert verdict["pending"] == [{"lead": leads[0], "status": "absent"}]
-    text = Path(queue.residency_plan_path(keys[0])).read_text()
+    text = Path(queue.records.residency_plan_path(keys[0])).read_text()
     assert "resident_before_launch" not in text
 
 
@@ -278,10 +281,10 @@ def test_unreadable_manifest_is_not_a_pass(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-unreadable",
                    declare_manifest=True, declare_plan=True)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, keys[0]))
     _delete_manifest_blob(row, keys[0])
     verdict = queue.residency_verdict(row)
-    assert verdict["state"] in pool.RESIDENCY_REFUSAL_STATES, verdict
+    assert verdict["state"] in candidate_policy.RESIDENCY_REFUSAL_STATES, verdict
     assert verdict["state"] != "resident", verdict
 
 
@@ -290,15 +293,15 @@ def test_manifest_parses_once_per_blob(gang_fleet, tmp_path, monkeypatch):
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "shape-memo",
                    declare_manifest=True, declare_plan=True)
-    row = pool._read_json(queue.item_path(pool.READY, keys[0]))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, keys[0]))
     calls = []
-    original = pb.read_data_manifest
+    original = manifest_codec.read_data_manifest
 
     def counting(path):
         calls.append(str(path))
         return original(path)
 
-    monkeypatch.setattr(pb, "read_data_manifest", counting)
+    monkeypatch.setattr(manifest_codec, "read_data_manifest", counting)
     assert queue.residency_verdict(row)["state"] == "lead_not_resident"
     assert queue.residency_verdict(row)["state"] == "lead_not_resident"
     assert len(calls) == 1, calls
@@ -313,7 +316,7 @@ def test_asymmetric_prelaunch_gang_defers_election(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "deferral",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     first, second = keys
@@ -337,7 +340,7 @@ def test_all_resident_prelaunch_gang_elects(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "elected",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     for index, key in enumerate(keys):
@@ -361,7 +364,7 @@ def test_unreadable_sibling_evidence_defers(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "sibling-unreadable",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     for index, key in enumerate(keys):
@@ -372,7 +375,9 @@ def test_unreadable_sibling_evidence_defers(
                   {key: [leads[index]] for index, key in enumerate(keys)})
 
     first, second = keys
-    sibling_row = pool._read_json(queue.item_path(pool.READY, second))
+    sibling_row = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, second),
+    )
     _delete_manifest_blob(sibling_row, second)
 
     assert gclaim("sparklina") is None
@@ -387,12 +392,12 @@ def test_undeclared_gang_reads_no_manifest_and_no_sibling_verdict(
     """R3: an undeclared gang elects with no manifest or sibling reads."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     group, keys = members("undeclared-1594", declares_manifest=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     record = _gang.read_group(queue, group)
     assert record is not None
 
     manifest_calls: list[str] = []
-    original_manifest = pb.read_data_manifest
+    original_manifest = manifest_codec.read_data_manifest
 
     def counting_manifest(path):
         manifest_calls.append(str(path))
@@ -405,7 +410,7 @@ def test_undeclared_gang_reads_no_manifest_and_no_sibling_verdict(
         verdict_calls.append(str(item.get("action_key")))
         return original_verdict(item)
 
-    monkeypatch.setattr(pb, "read_data_manifest", counting_manifest)
+    monkeypatch.setattr(manifest_codec, "read_data_manifest", counting_manifest)
     monkeypatch.setattr(queue, "residency_verdict", counting_verdict)
     assert queue._gang_prelaunch_blocker(
         record, record["members"][0]) is None
@@ -424,7 +429,7 @@ def test_election_boundary_rereads_sibling_verdict(
     queue, clock, publish, finish, gclaim, denial, group, keys, leads = \
         _gang_pair(gang_fleet, tmp_path, "boundary",
                    declare_manifest=True, declare_plan=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     stage = tmp_path / "stage"
     stage.mkdir()
     for index, key in enumerate(keys):

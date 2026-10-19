@@ -10,6 +10,8 @@ payload is still using.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
+from prismabuild import submission
 
 import json
 from pathlib import Path
@@ -25,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY_A = "a" * 64
 KEY_B = "b" * 64
@@ -32,21 +35,12 @@ HOLDER = "holder-box"
 OPERATOR = "operator-box"
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
-
-
-def _publish(q: pool.PoolQueue, key: str) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=q.root / "cas",
-        checkout_root=q.root / "co",
-        worker_script=q.root / "worker.py",
-        resources={"cpu": 1},
-    )
+    return FleetWorld(tmp_path).queue
 
 
 def _claim_on_the_holder(q: pool.PoolQueue, key: str) -> dict:
@@ -76,7 +70,13 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
 ) -> None:
     """The issue #64 probe, inverted: no replacement is admitted meanwhile."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _claim_on_the_holder(queue, KEY_A)
     assert queue.ledger(HOLDER).held() == {"cpu": 1}
 
@@ -89,23 +89,29 @@ def test_a_remote_withdrawal_keeps_the_reservation_until_the_holder_stops(
     assert result["stop_pending"]["holder_host"] == HOLDER
     # The claim and lease stay: they are the ownership record for a payload
     # that has not stopped, and the reaper needs them to conclude it.
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert queue.lease_path(KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert queue.records.lease_path(KEY_A).exists()
     assert queue.ledger(HOLDER).available() == {}
     assert queue.ledger(HOLDER).held() == {"cpu": 1}
 
     # The decision itself is durable straight away, as it always was.
-    filed = json.loads(queue.item_path(pool.WITHDRAWN, KEY_A).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A).read_text())
     assert filed["status"] == "withdrawn"
     assert filed["reason"] == "cancel remotely"
 
     # Withdrawal never rewrites the claiming worker's ownership record.
-    live = json.loads(queue.item_path(pool.CLAIMED, KEY_A).read_text())
+    live = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY_A).read_text())
     assert "stop_pending" not in live
     assert "withdrawn_note" not in live
 
     # And nothing else can run on the holder's only token.
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(
+        KEY_B,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
         assert queue.claim(owner="another-worker", capacity={"cpu": 1}) is None
 
@@ -115,7 +121,13 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
 ) -> None:
     """What the holder's launcher checkpoint does next, and what it frees."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = _claim_on_the_holder(queue, KEY_A)
     _withdraw_from_elsewhere(queue, KEY_A, reason="cancel remotely")
     assert queue.ledger(HOLDER).held() == {"cpu": 1}
@@ -129,16 +141,22 @@ def test_the_holder_completes_the_withdrawal_and_releases_then(
             claim_snapshot=claimed,
         )
 
-    assert destination == queue.item_path(pool.WITHDRAWN, KEY_A)
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert destination == queue.records.item_path(pool.record_store.WITHDRAWN, KEY_A)
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger(HOLDER).held() == {}
     assert queue.ledger(HOLDER).available() == {"cpu": 1}
     # Nothing is filed as a failure: a cancellation is a decision.
-    assert not queue.item_path(pool.FAILED, KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.FAILED, KEY_A).exists()
 
     # Only now is the holder's token available to somebody else.
-    _publish(queue, KEY_B)
+    ActionRows(queue).publish(
+        KEY_B,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     with mock.patch.object(pool.socket, "gethostname", return_value=HOLDER):
         other = queue.claim(owner="another-worker", capacity={"cpu": 1})
     assert other is not None and other["action_key"] == KEY_B
@@ -149,16 +167,22 @@ def test_a_local_withdrawal_defers_release_to_the_claiming_worker(
 ) -> None:
     """The gate must not hold capacity when there is nothing left to stop."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     claimed = queue.claim(owner="local-worker", capacity={"cpu": 1})
     assert claimed is not None
     result = queue.withdraw(KEY_A, reason="changed my mind")
     assert result["stop_pending"] is not None
     assert result["released"] == 0
-    assert queue.item_path(pool.CLAIMED, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
     queue.finish(KEY_A, status="withdrawn", claim_snapshot=claimed)
-    assert not queue.item_path(pool.CLAIMED, KEY_A).exists()
-    assert not queue.lease_path(KEY_A).exists()
+    assert not queue.records.item_path(pool.record_store.CLAIMED, KEY_A).exists()
+    assert not queue.records.lease_path(KEY_A).exists()
     assert queue.ledger().available() == {"cpu": 1}
 
 
@@ -167,17 +191,23 @@ def test_pbrun_says_the_release_is_pending_on_the_holder(
 ) -> None:
     """An operator reading "released 0" must not read it as "nothing to do"."""
 
-    _publish(queue, KEY_A)
+    ActionRows(queue).publish(
+        KEY_A,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _claim_on_the_holder(queue, KEY_A)
 
     with mock.patch.object(pool.socket, "gethostname", return_value=OPERATOR), \
             mock.patch.object(pool, "find_launcher_pids", return_value=[]), \
             mock.patch.object(pool, "launcher_owns_action", return_value=False), \
-            mock.patch.object(pbrun, "published_commit", return_value=""), \
+            mock.patch.object(submission, "published_commit", return_value=""), \
             mock.patch.object(
                 pool, "terminate_action",
                 side_effect=AssertionError("must not signal")):
-        assert pbrun.withdraw_main(queue, [KEY_A[:12]], reason="stale") == 0
+        assert submit_core.withdraw_main(queue, [KEY_A[:12]], reason="stale", store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
     said = capsys.readouterr().err
     assert "released 0 token(s)" in said

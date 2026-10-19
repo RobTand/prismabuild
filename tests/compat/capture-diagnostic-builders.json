@@ -1,0 +1,39 @@
+{
+  "capture_name": "diagnostic-builders-02-capture",
+  "capture_report_sha256": "058bcd8969247332da94110c5c8379ba6ae7c522a79cd4587473adb812c254ff",
+  "excluded_cases": [],
+  "files": {
+    "goldens-diagnostic-builders.jsonl": "f6cc57e54213b979cfea001d232234ea73d0dfd5a770637d833e969dc48ed873",
+    "historical-diagnostic-builders.jsonl": "809bfa7bf5d83827e9428d8f008d6e0c8d0dad2c1321cd88e9ef7a809445a1bc"
+  },
+  "finished_at": "2026-10-17T01:02:43.160368+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "host-spool-offer/measured",
+    "host-spool-offer/replay",
+    "host-spool-offer/zero",
+    "q-census-report/first",
+    "q-census-report/repeat",
+    "q-pricing-log/read-repair",
+    "q-pricing-log/writer"
+  ],
+  "source_git": {
+    "parents": [
+      "81202421b2391da27a96d4b15d853462c158ce4e"
+    ],
+    "snapshot": "86080a460e208171fcc79074ba54666dd5475ec1",
+    "tree": "42cc4bfd82eb103b1d6718d44435e301e86b3ef8"
+  },
+  "started_at": "2026-10-17T01:00:40.168853+00:00",
+  "verified_producer": {
+    "action_key": "cfc9153bf10b6993f272f354045f43726d9b5be5fb926f99abcbfa55a109c4f7",
+    "receipt_sha256": "c1e4c9544bd001ef33c1265a1c82f9d6aa10951e459cbeeebd9358522e8b75ad",
+    "request_sha256": "20fd3c3c5c716144cc41f9dfc2edfe9ee641f2a15cdf2b52e2aca76c7f9be483",
+    "source_parent": "81202421b2391da27a96d4b15d853462c158ce4e"
+  }
+}

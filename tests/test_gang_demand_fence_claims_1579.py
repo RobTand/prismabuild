@@ -14,6 +14,8 @@ real sealed movement nodes.
 """
 from __future__ import annotations
 
+import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -73,7 +75,7 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
         isolated_args = list(ma.MOVEMENT_PYTHON_ARGS) if isolated else []
         command = [python or ma.MOVEMENT_PYTHON, *isolated_args, tool,
                    "--pool-root", str(queue.root), *extra_command]
-        task_argv = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", ma.captured_command(command, name)]
+        task_argv = ma.captured_command(command, name)
         task_fields, execution_scope = dict(ma.MOVEMENT_TASK), dict(ma.MOVEMENT_EXECUTION_SCOPE)
         sealed_variables = {"variables": dict(ma.movement_environment(command)), "toolchain": {}}
     if variables is not None:
@@ -94,7 +96,7 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
 
 def _enqueue(queue, clock, key, cas, checkout, *, resources, recompute=False, residency=None,
              priority=-10, tags=("sparky",)):
-    clock[0] += 0.001
+    clock.now += 0.001
     queue.publish(action_key=key, cas_root=str(cas.root), checkout_root=str(checkout),
                   worker_script="worker.py", resources=dict(resources),
                   needs_gpu=bool(resources.get("gpu")), tags=list(tags), priority=priority,
@@ -112,7 +114,7 @@ def _publish_sealed(queue, tmp_path, clock, name, *, script, resources, residenc
 
 
 def _row(queue, key):
-    return pool._read_json(queue.item_path(pool.READY, key))
+    return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
 
 def _roles(queue, key):
@@ -121,6 +123,20 @@ def _roles(queue, key):
 
 
 # --- what publish derives, from the sealed definition alone --------------------------
+
+def test_s5_inline_movement_keeps_its_capacity_role(gang_fleet, store, tmp_path):
+    queue, clock, *_ = gang_fleet
+    command = [ma.MOVEMENT_PYTHON, *ma.MOVEMENT_PYTHON_ARGS,
+               _tool(store, "stage_release.py"), "--pool-root", str(queue.root)]
+    fixture = json.loads((Path(__file__).parent / "fixtures/capture_argv_s5.json").read_text())
+    script = fixture["argv"][4].removeprefix("export PATH=/usr/bin:$PATH; ")
+    script = script.replace(shlex.join(fixture["command"]), shlex.join(command))
+    script = script.replace(fixture["log_name"], "s5-movement.log")
+    key = _publish_sealed(queue, tmp_path, clock, "s5-movement.log",
+                          script="stage_release.py", resources=SMALL,
+                          argv=[*fixture["argv"][:4], script], generation=store)
+    assert _roles(queue, key) == ["returns_capacity"]
+
 
 @pytest.mark.parametrize("field", ["returns_capacity", "serves_residency"])
 @pytest.mark.parametrize("value", [True, False, "yes", 1])
@@ -467,7 +483,7 @@ def test_a_waiting_gang_reserves_its_member_demand_and_admits_what_returns_capac
     """
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "res")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     gpu = publish("late-gpu", priority=-10, timeout_s=None, cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
     small = _publish_sealed(queue, tmp_path, clock, "small", script=None, resources=SMALL)
     release = _publish_sealed(queue, tmp_path, clock, "release", script="stage_release.py",
@@ -488,7 +504,7 @@ def test_a_gang_that_has_started_holds_back_no_equal_priority_row(gang_fleet, tm
     """
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "running")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     for host in HOSTS:
         finish(incumbents[host], host)
     started = set()
@@ -513,9 +529,9 @@ def test_a_gangs_priority_for_the_precedence_is_the_gang_records(gang_fleet):
     """The one priority that the gang has: the loop-top release reads it, not a member row's."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "which-priority")
-    row = pool._read_json(queue.item_path(pool.READY, second))
+    row = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, second))
     assert queue._gang_reservation_priority(row, authority=True) is None, "a young gang reserves nothing"
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     assert queue._gang_reservation_priority(row, authority=True) == -10
     assert queue._gang_reservation_priority(row, authority=False) is None
     assert queue._gang_reservation_priority({**row, "gang": None}, authority=True) is None
@@ -524,7 +540,7 @@ def test_a_gangs_priority_for_the_precedence_is_the_gang_records(gang_fleet):
 def test_a_young_gang_does_not_hold_equal_priority_work(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     _wait_gang(publish, gclaim, members, clock, "young")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S - 60
+    clock.now += reservation.GANG_RESERVE_AFTER_S - 60
     small = _publish_sealed(queue, tmp_path, clock, "young-small", script=None, resources=SMALL)
     assert gclaim("sparky") == small
 
@@ -544,11 +560,11 @@ def _whole_cpu_gang(gang_fleet, monkeypatch, tmp_path, mover_tool, *, isolated=T
     incumbents = _busy_both(publish, gclaim)
     group, (first, second) = members("whole-cpu", priority=-10, member_cpu=20,
                                      residency=_consumer_block([mover]))
-    queue.mint_tier_capacity(TIER, {"stage_gib": 8})
+    queue.tier(TIER).mint({'stage_gib': 8})
     for host in HOSTS:
         assert gclaim(host) is None
     assert _gang.elections(queue, group, 2)[1]["host"] == "sparky"
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     for host in HOSTS:
         finish(incumbents[host], host)
     return mover, cas, checkout, need, first, second
@@ -681,7 +697,7 @@ def test_without_the_copy_equal_priority_work_is_admitted_but_strictly_lower_is_
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "no-copy")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     lower = publish("lower", priority=-20, timeout_s=None, cpu=1, mem_gb=1, tags=["sparky"])
     gpu = publish("equal-gpu", priority=-10, timeout_s=None, cpu=1, gpu=1, mem_gb=8, tags=["sparky"])
     assert gclaim("sparky") is None            # the incumbent still holds the box
@@ -695,7 +711,7 @@ def test_a_mark_judged_by_another_box_does_not_exempt_here(gang_fleet, store, mo
     """An unavailable protected tool cannot authorize a role or a reservation."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "judged")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     foreign = store.parent / ("d" * 12 + "-1791400000-" + "e" * 12)
     release = _publish_sealed(queue, tmp_path, clock, "release-of-another-generation",
                               script="stage_release.py", resources=SMALL, generation=foreign)
@@ -727,20 +743,19 @@ def test_a_carried_measurement_withhold_does_not_hold_back_an_aged_gang_member(
         return real(item)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
-    real_carry = queue._carried_withhold
-    monkeypatch.setattr(pool.PoolQueue, "_carried_withhold", staticmethod(
-        lambda records, item, *, host, now: {
-            "reason": "adaptive_cpu_refused_withholding", "mode": "exclusive",
-            "epoch_unix": now, "drain_until_unix": now + 3600.0}
-        if item.get("action_key") == measurement else real_carry(records, item, host=host, now=now)))
+    row = pool.read_queue_record(queue.records.item_path(pool.READY, measurement))
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
+    queue.record_denial(row, "adaptive_gpu_refused_withholding", {"withhold": {
+        "withhold": True, "mode": "exclusive", "episode_age_s": 0.0,
+        "drain_until_unix": clock.now + 3600.0}})
     assert gclaim("sparklina") is None
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] != "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is not None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_without_the_copy_a_carried_measurement_withhold_keeps_holding_the_member(
@@ -760,19 +775,18 @@ def test_without_the_copy_a_carried_measurement_withhold_keeps_holding_the_membe
         return real(item)
 
     monkeypatch.setattr(queue, "residency_verdict", verdict)
-    real_carry = queue._carried_withhold
-    monkeypatch.setattr(pool.PoolQueue, "_carried_withhold", staticmethod(
-        lambda records, item, *, host, now: {
-            "reason": "adaptive_cpu_refused_withholding", "mode": "exclusive",
-            "epoch_unix": now, "drain_until_unix": now + 3600.0}
-        if item.get("action_key") == measurement else real_carry(records, item, host=host, now=now)))
+    row = pool.read_queue_record(queue.records.item_path(pool.READY, measurement))
+    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparky")
+    queue.record_denial(row, "adaptive_gpu_refused_withholding", {"withhold": {
+        "withhold": True, "mode": "exclusive", "episode_age_s": 0.0,
+        "drain_until_unix": clock.now + 3600.0}})
     assert gclaim("sparklina") is None
     assert gclaim("sparky") is None
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_the_reservation_wins_over_an_older_measurement_withhold_so_the_gang_can_elect(gang_fleet, tmp_path):
@@ -786,11 +800,11 @@ def test_the_reservation_wins_over_an_older_measurement_withhold_so_the_gang_can
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is None
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] != "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is not None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_without_the_copy_a_waiting_measurement_keeps_its_place_as_on_main(
@@ -804,11 +818,11 @@ def test_without_the_copy_a_waiting_measurement_keeps_its_place_as_on_main(
     group, (first, second) = members("behind-measurement", priority=-10)
     assert gclaim("sparklina") is None
     assert gclaim("sparky") is None
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     assert gclaim("sparky") is None
     assert denial(second, "sparky")["reason"] == "deferred_behind_withheld_row", denial(second, "sparky")
     assert _gang.elections(queue, group, 2).get(1) is None
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_a_strictly_higher_priority_measurement_keeps_its_place_ahead_of_an_aged_gang(gang_fleet, tmp_path):
@@ -820,7 +834,7 @@ def test_a_strictly_higher_priority_measurement_keeps_its_place_ahead_of_an_aged
         assert gclaim(host) is None
     elected = _gang.elections(queue, group, 2)
     assert {e["host"] for e in elected.values()} == set(HOSTS)
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     ship = publish("ship-window-measurement", measurement=True, priority=10, timeout_s=None,
                    cpu=2, gpu=1, mem_gb=8, tags=["sparky"])
     for _ in range(3):
@@ -835,13 +849,13 @@ def test_a_strictly_higher_priority_measurement_keeps_its_place_ahead_of_an_aged
 def test_a_measurement_single_of_the_gangs_priority_does_not_elect_on_a_reserved_host(gang_fleet, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, keys = _wait_gang(publish, gclaim, members, clock, "no-elect")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     measurement = publish("late-measurement", measurement=True, priority=-10, timeout_s=None,
                           cpu=2, gpu=1, mem_gb=8, tags=["sparky"])
     assert gclaim("sparky") is None
     census = reservation.CensusReader(queue, queue.ledger("sparky")).capture()
     assert measurement not in census["elections"], "a host must not be reserved and withheld"
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_without_the_copy_a_measurement_single_of_the_gangs_priority_elects_as_on_main(
@@ -849,7 +863,7 @@ def test_without_the_copy_a_measurement_single_of_the_gangs_priority_elects_as_o
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     monkeypatch.setattr(runtime_publication, "PROTECTED_GENERATION_STORE", tmp_path / "no-such-store")
     incumbents, group, keys = _wait_gang(publish, gclaim, members, clock, "no-copy-elect")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     measurement = publish("late-measurement", measurement=True, priority=-10, timeout_s=None,
                           cpu=2, gpu=1, mem_gb=8, tags=["sparky"])
     assert gclaim("sparky") is None
@@ -863,7 +877,7 @@ def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(g
     group, (first, second) = members("measured-gang", priority=-10, measurement_member=1)
     for host in HOSTS:
         assert gclaim(host) is None
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     other = publish("other-measurement", measurement=True, priority=-10, timeout_s=None,
                     cpu=2, gpu=1, mem_gb=8, tags=["sparky"])
     for host in HOSTS:
@@ -875,14 +889,14 @@ def test_a_measurement_class_gang_member_is_not_blocked_by_its_own_reservation(g
             if claimed is not None:
                 started.add(claimed)
     assert started == {first, second}, (started, denial(second, "sparky"), denial(other, "sparky"))
-    assert queue.item_path(pool.READY, other).exists()
+    assert queue.records.item_path(pool.record_store.READY, other).exists()
 
 
 def test_a_running_member_reserves_nothing_more_than_its_ledger_hold(gang_fleet, tmp_path):
     """Review fd78197 finding 1: a running member already holds its demand."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "running")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     for host in HOSTS:
         finish(incumbents[host], host)
     started = set()
@@ -900,7 +914,7 @@ def test_a_finished_member_with_a_live_sibling_reserves_nothing(gang_fleet, tmp_
     """Review fd78197 finding 1: a terminal member holds nothing, not the whole host."""
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, (first, second) = _wait_gang(publish, gclaim, members, clock, "finished")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     for host in HOSTS:
         finish(incumbents[host], host)
     started = set()
@@ -927,8 +941,8 @@ def test_a_retained_mover_queued_before_the_copy_runs_while_the_copy_is_fresh(
         gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"))
     _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
     assert _roles(queue, mover) == []
-    assert queue.item_path(pool.READY, mover).exists()
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     _unseal(retained.parent)
     _approve(retained, monkeypatch)
     assert runtime_publication.live_authority() is False, "a fresh copy is not mature"
@@ -958,7 +972,7 @@ def test_a_mutated_retained_tool_and_import_without_a_new_receipt_stays_ordinary
                         mem_gb=8, tags=["sparky"])
     assert gclaim("sparky") == incumbent
     assert gclaim("sparky") is None
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     assert queue.ledger("sparky").held_keys() == [incumbent]
     finish(incumbent, "sparky")
     assert gclaim("sparky") == mover, denial(mover, "sparky")
@@ -975,7 +989,7 @@ def test_a_mover_sealed_by_the_previous_sealer_runs_while_the_copy_is_fresh(
         gang_fleet, monkeypatch, tmp_path, _tool(retained, "stage_move.py"), isolated=False)
     _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
     assert _roles(queue, mover) == [], "the previous sealer lacks isolated Python"
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     _unseal(retained.parent)
     _approve(retained, monkeypatch)
     assert runtime_publication.live_authority() is False, "a fresh copy is not mature"
@@ -1000,8 +1014,7 @@ def test_a_protected_tool_without_isolated_python_gets_no_role(gang_fleet, store
     bare_params["command"] = bare_command
     bare["params"] = bare_params
     bare_task = dict(action["task"])
-    bare_task["argv"] = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                         ma.captured_command(bare_command, "isolated.log")]
+    bare_task["argv"] = ma.captured_command(bare_command, "isolated.log")
     bare["task"] = bare_task
     assert ma.capacity_role(bare, SMALL, residency=None) is None
 
@@ -1021,9 +1034,9 @@ def test_a_legacy_prerequisite_outlasts_copy_maturity_and_then_starts_the_gang(
     _enqueue(queue, clock, mover, cas, checkout, resources=need, residency=RANGE)
     assert _roles(queue, mover) == []
     approve(retained, monkeypatch)
-    clock[0] += 901
+    clock.now += 901
     assert gclaim("sparky") is None
-    assert queue.item_path(pool.READY, mover).exists()
+    assert queue.records.item_path(pool.record_store.READY, mover).exists()
     finish(incumbent, "sparky")
     _run_the_mover_and_start_the_gang(
         gang_fleet, monkeypatch, tmp_path, mover, cas, checkout,
@@ -1038,7 +1051,7 @@ def test_the_claim_applies_the_exact_gang_wait_boundary(gang_fleet, tmp_path, ag
     row = _publish_sealed(queue, tmp_path, clock, "cpu-shortfall", script=None,
                           resources={"cpu": 19, "mem_gb": 1}, tags=("sparklina",))
     first = _gang.read_group(queue, group)["members"][0]["published_unix"]
-    clock[0] = first + age - 0.01
+    clock.now = first + age - 0.01
     claimed = gclaim("sparklina")
     if held:
         assert claimed is None
@@ -1061,7 +1074,7 @@ def test_the_claim_names_dimensional_and_unknown_demand_shortfalls(
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, keys = _wait_gang(publish, gclaim, members, clock, "dimensions")
     finish(incumbents["sparklina"], "sparklina")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     row = _publish_sealed(queue, tmp_path, clock, "dimension-row", script=None,
                           resources=demand, tags=("sparklina",))
     assert gclaim("sparklina") is None
@@ -1074,7 +1087,7 @@ def test_the_claim_names_dimensional_and_unknown_demand_shortfalls(
 def test_equal_priority_gangs_keep_their_rank_after_the_reservation_bound(gang_fleet):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, older, first = _wait_gang(publish, gclaim, members, clock, "older-gang")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     newer, second = members("newer-gang", priority=-10)
     for host, key in zip(HOSTS, second):
         assert gclaim(host) is None
@@ -1092,19 +1105,19 @@ def test_equal_priority_gangs_keep_their_rank_after_the_reservation_bound(gang_f
             if claimed is not None:
                 started.add(claimed)
     assert started == set(first)
-    assert all(queue.item_path(pool.READY, key).exists() for key in second)
+    assert all(queue.records.item_path(pool.record_store.READY, key).exists() for key in second)
 
 
 def test_the_reservation_returns_only_after_the_legacy_row_ends(
         gang_fleet, retained, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     incumbents, group, keys = _wait_gang(publish, gclaim, members, clock, "drain-completion")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     legacy = _publish_sealed(
         queue, tmp_path, clock, "legacy-return", script="stage_release.py",
         resources=SMALL, generation=retained, isolated=False)
     assert gclaim("sparky") == legacy
-    clock[0] += 31
+    clock.now += 31
     ordinary = _publish_sealed(queue, tmp_path, clock, "ordinary-during-drain",
                                script=None, resources=SMALL)
     assert gclaim("sparky") == ordinary, denial(ordinary, "sparky")
@@ -1121,7 +1134,7 @@ def test_a_legacy_row_on_another_host_does_not_suspend_this_hosts_reservation(
         gang_fleet, retained, tmp_path):
     queue, clock, publish, finish, gclaim, denial, members = gang_fleet
     _wait_gang(publish, gclaim, members, clock, "host-local-drain")
-    clock[0] += reservation.GANG_RESERVE_AFTER_S + 1
+    clock.now += reservation.GANG_RESERVE_AFTER_S + 1
     legacy = _publish_sealed(
         queue, tmp_path, clock, "other-host-return", script="stage_release.py",
         resources=SMALL, generation=retained, isolated=False, tags=("sparklina",))
@@ -1131,4 +1144,4 @@ def test_a_legacy_row_on_another_host_does_not_suspend_this_hosts_reservation(
     evidence = denial(ordinary, "sparky")
     assert evidence["reason"] == "deferred_for_gang_reservation"
     assert evidence["evidence"]["gang_election"]["reservation"]["mem_gb"] == 29
-    assert queue.item_path(pool.READY, legacy).exists()
+    assert queue.records.item_path(pool.record_store.READY, legacy).exists()

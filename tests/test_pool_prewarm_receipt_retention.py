@@ -10,6 +10,7 @@ must stop when that generation leaves the queue, where the generation is the
 generation as its own.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -25,23 +26,16 @@ from prismabuild import pool  # noqa: E402
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
 
+from fleet_world import Admission, FleetWorld
+
+
 def _key() -> str:
     return uuid.uuid4().hex + uuid.uuid4().hex
 
 
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
-    return q
-
-
-def _publish(queue: pool.PoolQueue, key: str) -> dict:
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py")
-    return pool._read_json(queue.item_path(pool.READY, key))
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def _receipt(queue: pool.PoolQueue, key: str, **overrides) -> None:
@@ -56,7 +50,7 @@ def _receipt(queue: pool.PoolQueue, key: str, **overrides) -> None:
 
 
 def _receipt_path(queue: pool.PoolQueue, key: str) -> Path:
-    return queue.root / pool.PREWARM / f"{key}.json"
+    return queue.root / pool.record_store.PREWARM / f"{key}.json"
 
 
 # -- retention ------------------------------------------------------------
@@ -64,7 +58,8 @@ def _receipt_path(queue: pool.PoolQueue, key: str) -> Path:
 
 def test_a_live_key_always_keeps_its_receipt(queue: pool.PoolQueue) -> None:
     key = _key()
-    _publish(queue, key)
+    ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key)
     verdict = queue.prune_prewarm_receipt(key, live=True)
     assert verdict == {"action_key": key, "pruned": False, "reason": "live"}
@@ -73,7 +68,8 @@ def test_a_live_key_always_keeps_its_receipt(queue: pool.PoolQueue) -> None:
 
 def test_a_terminal_key_is_pruned(queue: pool.PoolQueue) -> None:
     key = _key()
-    _publish(queue, key)
+    ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key)
     claimed = queue.claim()
     queue.finish(key, status="executed", detail={"status": "executed"},
@@ -86,7 +82,8 @@ def test_a_terminal_key_is_pruned(queue: pool.PoolQueue) -> None:
 def test_a_withdrawn_key_keeps_an_unreleased_stage_band(
         queue: pool.PoolQueue) -> None:
     key = _key()
-    _publish(queue, key)
+    ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key, stage={"staged_through_bytes": 8})
     queue.withdraw(key, reason="test")
     verdict = queue.prune_prewarm_receipt(key, live=False)
@@ -98,7 +95,8 @@ def test_a_withdrawn_key_keeps_an_unreleased_stage_band(
 def test_a_withdrawn_key_is_pruned_once_its_band_is_released(
         queue: pool.PoolQueue) -> None:
     key = _key()
-    _publish(queue, key)
+    ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     _receipt(queue, key, stage={"staged_through_bytes": 8, "swept": True})
     queue.withdraw(key, reason="test")
     verdict = queue.prune_prewarm_receipt(key, live=False)
@@ -142,10 +140,12 @@ def test_pruning_a_missing_receipt_is_a_non_action(
 def test_the_sweep_pass_prunes_only_non_live_receipts(
         queue: pool.PoolQueue) -> None:
     live_key = _key()
-    _publish(queue, live_key)
+    ActionRows(queue).publish(live_key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, live_key))
     _receipt(queue, live_key)
     dead_key = _key()
-    _publish(queue, dead_key)
+    ActionRows(queue).publish(dead_key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, dead_key))
     _receipt(queue, dead_key)
     claimed = queue.claim()
     if claimed["action_key"] == live_key:
@@ -168,7 +168,8 @@ def test_the_sweep_pass_prunes_only_non_live_receipts(
 
 def test_a_claimed_generation_is_live(queue: pool.PoolQueue) -> None:
     key = _key()
-    item = _publish(queue, key)
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     queue.claim()
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "live"
@@ -176,14 +177,16 @@ def test_a_claimed_generation_is_live(queue: pool.PoolQueue) -> None:
 
 def test_a_ready_generation_is_live(queue: pool.PoolQueue) -> None:
     key = _key()
-    item = _publish(queue, key)
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "live"
 
 
 def test_a_finished_generation_is_terminal(queue: pool.PoolQueue) -> None:
     key = _key()
-    item = _publish(queue, key)
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     claimed = queue.claim()
     queue.finish(key, status="executed", detail={"status": "executed"},
                  claim_snapshot=claimed)
@@ -196,20 +199,22 @@ def test_a_successor_generation_reads_as_superseded_not_live(
     """The same key under a new stamp is a different request (#571)."""
 
     key = _key()
-    item = _publish(queue, key)
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     live_claim = queue.claim()
     assert live_claim is not None
     # A successor generation holds the claim now: the old stamp is gone.
     successor = dict(live_claim)
     successor["published_unix"] = float(item["published_unix"]) + 1000.0
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(successor))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(successor))
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "superseded"
 
 
 def test_a_withdrawn_generation_is_withdrawn(queue: pool.PoolQueue) -> None:
     key = _key()
-    item = _publish(queue, key)
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     queue.withdraw(key, reason="test")
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "withdrawn"
@@ -220,15 +225,17 @@ def test_a_key_nowhere_is_unknown_not_terminal(
     """Absence everywhere is a requeue in flight, not a verdict (#571)."""
 
     key = _key()
-    item = _publish(queue, key)
-    (queue.item_path(pool.READY, key)).unlink()
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
+    (queue.records.item_path(pool.record_store.READY, key)).unlink()
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "unknown"
 
 
 def test_an_unscoped_watch_is_unknown(queue: pool.PoolQueue) -> None:
     key = _key()
-    _publish(queue, key)
+    ActionRows(queue).publish(key)
+    pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert queue.selection_live(key, published_unix=None) == "unknown"
 
 
@@ -237,11 +244,12 @@ def test_an_unreadable_record_is_unknown_not_terminal(
     """Unavailable evidence never cancels a warm (#571)."""
 
     key = _key()
-    item = _publish(queue, key)
+    ActionRows(queue).publish(key)
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
     def failing(path, **kwargs):
         raise OSError("stale handle")
 
-    monkeypatch.setattr(pool, "_read_json", failing)
+    monkeypatch.setattr(pool.record_store, '_read_json', failing)
     assert queue.selection_live(
         key, published_unix=item["published_unix"]) == "unknown"

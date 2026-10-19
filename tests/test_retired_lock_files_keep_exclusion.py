@@ -32,6 +32,9 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 ENV = {**os.environ, "PYTHONPATH": str(SRC)}
 
 
+from fleet_world import FleetWorld
+
+
 def _key(tag: str) -> str:
     return hashlib.sha256(tag.encode()).hexdigest()
 
@@ -200,14 +203,8 @@ def test_retire_finishes_a_retirement_cut_off_before_its_unlink(tmp_path, monkey
 # --------------------------------------------------------------------------
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
-
-
 def _file(queue: pool.PoolQueue, state: str, key: str, *, age_s: float) -> None:
-    path = queue.item_path(state, key)
+    path = queue.records.item_path(state, key)
     path.write_text(json.dumps({"action_key": key, "published_unix": 1.0}))
     stamp = time.time() - age_s
     os.utime(path, (stamp, stamp))
@@ -220,19 +217,24 @@ def _lock_names(queue: pool.PoolQueue) -> set[str]:
 def test_one_gc_leaves_exactly_the_live_lock_files(tmp_path):
     """1,000 terminal keys and 10 live ones: one gc leaves exactly the 10."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     old = pool.LEASE_TIMEOUT_S + 60
     terminal = [_key(f"terminal-{index}") for index in range(1000)]
     live = [_key(f"live-{index}") for index in range(10)]
-    states = (pool.DONE, pool.FAILED, pool.WITHDRAWN)
+    states = (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
     for index, key in enumerate(terminal):
         _file(queue, states[index % 3], key, age_s=old)
     for index, key in enumerate(live):
         # Five queued again after an ending, five running: both are live.
-        _file(queue, pool.DONE, key, age_s=old)
-        _file(queue, pool.READY if index < 5 else pool.CLAIMED, key, age_s=old)
+        _file(queue, pool.record_store.DONE, key, age_s=old)
+        _file(
+            queue,
+            pool.record_store.READY if index < 5 else pool.record_store.CLAIMED,
+            key,
+            age_s=old,
+        )
     for key in terminal + live:
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             pass
     assert len(_lock_names(queue)) == 1010
     assert _lock_names(queue) == {pb_gc.transition_lock_name(key)
@@ -253,12 +255,12 @@ def test_one_gc_leaves_exactly_the_live_lock_files(tmp_path):
 
 
 def test_a_young_ending_keeps_its_lock_and_an_apply_needs_the_acknowledgement(tmp_path):
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     young, old = _key("young"), _key("old")
-    _file(queue, pool.DONE, young, age_s=1)
-    _file(queue, pool.DONE, old, age_s=pool.LEASE_TIMEOUT_S + 60)
+    _file(queue, pool.record_store.DONE, young, age_s=1)
+    _file(queue, pool.record_store.DONE, old, age_s=pool.LEASE_TIMEOUT_S + 60)
     for key in (young, old):
-        with queue._transition_locked(key):
+        with queue.action_transition_lock(key):
             pass
     assert pb_gc.main(["--queue-root", str(queue.root), "--apply"]) == 2
     assert len(_lock_names(queue)) == 2
@@ -278,31 +280,31 @@ def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
     not its fragments remain; a namespace only when its directory is empty.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     old = pool.LEASE_TIMEOUT_S + 60
-    residency = queue.residency_fragment_root()
+    residency = queue.records.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
     dead = [_key(f"dead-{index}") for index in range(20)]
     for index, key in enumerate(dead):
-        _file(queue, pool.FAILED, key, age_s=old)
+        _file(queue, pool.record_store.FAILED, key, age_s=old)
         (residency / key).mkdir()
         if index < 5:
             # A finished consumer's map and landing record, beside it.
             (residency / f"{key}.map.json").write_text("{}")
             (residency / f"{key}.landing.json").write_text("{}")
     running = _key("running")
-    _file(queue, pool.CLAIMED, running, age_s=old)
+    _file(queue, pool.record_store.CLAIMED, running, age_s=old)
     (residency / running).mkdir()
     (residency / f"{running}.map.json").write_text("{}")
     (residency / f"{running}.landing.json").write_text("{}")
     holding = _key("holding")
-    _file(queue, pool.DONE, holding, age_s=old)
+    _file(queue, pool.record_store.DONE, holding, age_s=old)
     (residency / holding).mkdir()
     (residency / holding / f"{_key('mover')}.json").write_text("{}")
     (residency / f"{holding}.map.json").write_text("{}")
     (residency / f"{holding}.landing.json").write_text("{}")
     landing_only = _key("landing-only")
-    _file(queue, pool.DONE, landing_only, age_s=old)
+    _file(queue, pool.record_store.DONE, landing_only, age_s=old)
     (residency / f"{landing_only}.landing.json").write_text("{}")
     unknown = _key("never-queued")
     (residency / unknown).mkdir()
@@ -333,17 +335,19 @@ def test_empty_residency_namespaces_of_terminal_consumers_are_retired(tmp_path):
 def test_a_tombstone_after_the_survey_keeps_the_namespace_as_the_survey_would(tmp_path):
     """The re-check under the lock uses the survey's liveness rule, not the row alone."""
 
-    queue = _queue(tmp_path)
-    residency = queue.residency_fragment_root()
+    queue = FleetWorld(tmp_path).queue
+    residency = queue.records.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
     key = _key("mid-transition")
-    _file(queue, pool.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
+    _file(queue, pool.record_store.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
     (residency / key).mkdir()
     (residency / f"{key}.map.json").write_text("{}")
     plan = pb_gc.survey_queue(Path(queue.root))
     assert len(plan["remove"]) == 1
     # A finisher moved a claim of the key aside after the survey.
-    tombstone = queue.dir(pool.CLAIMED) / f"{key}.1.host.1.abcdef01{pool.TOMBSTONE_SUFFIX}"
+    tombstone = queue.records.dir(
+        pool.record_store.CLAIMED,
+    ) / f"{key}.1.host.1.abcdef01{pool.record_store.TOMBSTONE_SUFFIX}"
     tombstone.write_text("{}")
     outcome = pb_gc.sweep_queue(plan, lock_takers_verify=True)
     assert outcome["removed"] == []
@@ -354,17 +358,17 @@ def test_a_tombstone_after_the_survey_keeps_the_namespace_as_the_survey_would(tm
 def test_a_consumer_queued_again_after_the_survey_keeps_its_namespace(tmp_path):
     """The removal re-reads the consumer under its transition lock."""
 
-    queue = _queue(tmp_path)
-    residency = queue.residency_fragment_root()
+    queue = FleetWorld(tmp_path).queue
+    residency = queue.records.residency_fragment_root()
     residency.mkdir(parents=True, exist_ok=True)
     key = _key("resubmitted")
-    _file(queue, pool.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
+    _file(queue, pool.record_store.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
     (residency / key).mkdir()
     (residency / f"{key}.map.json").write_text("{}")
     (residency / f"{key}.landing.json").write_text("{}")
     plan = pb_gc.survey_queue(Path(queue.root))
     assert len(plan["remove"]) == 2
-    _file(queue, pool.READY, key, age_s=0)      # queued again after the survey
+    _file(queue, pool.record_store.READY, key, age_s=0)      # queued again after the survey
     outcome = pb_gc.sweep_queue(plan, lock_takers_verify=True)
     assert outcome["removed"] == []
     assert {why for _row, why in outcome["skipped"]} == {"its consumer was queued again"}
@@ -372,9 +376,9 @@ def test_a_consumer_queued_again_after_the_survey_keeps_its_namespace(tmp_path):
         key, f"{key}.map.json", f"{key}.landing.json"}
 
     # A consumer whose lock is held when the sweep reaches it is left alone.
-    queue.item_path(pool.READY, key).unlink()
+    queue.records.item_path(pool.record_store.READY, key).unlink()
     plan = pb_gc.survey_queue(Path(queue.root))
-    with queue._transition_locked(key):
+    with queue.action_transition_lock(key):
         context = multiprocessing.get_context("fork")
         results = context.Queue()
         worker = context.Process(target=_sweep_in_child, args=(plan, results))
@@ -415,7 +419,7 @@ def _hold_repeatedly(root: str, keys: list[str], marks: str, stop_at: float,
     violations = entries = 0
     while time.monotonic() < stop_at:
         for key in keys:
-            with queue._transition_locked(key):
+            with queue.action_transition_lock(key):
                 mark = Path(marks) / key
                 try:
                     fd = os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -432,11 +436,11 @@ def _hold_repeatedly(root: str, keys: list[str], marks: str, stop_at: float,
 def test_a_holder_racing_the_gc_keeps_mutual_exclusion(tmp_path):
     """Four processes take terminal keys' locks while the gc retires them."""
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     keys = [_key(f"race-{index}") for index in range(8)]
     for key in keys:
-        _file(queue, pool.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
-        with queue._transition_locked(key):
+        _file(queue, pool.record_store.DONE, key, age_s=pool.LEASE_TIMEOUT_S + 60)
+        with queue.action_transition_lock(key):
             pass
     marks = tmp_path / "marks"
     marks.mkdir()

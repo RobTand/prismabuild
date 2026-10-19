@@ -15,20 +15,33 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
-from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool  # noqa: E402
+from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool
+from fleet_world import Clock, FleetWorld  # noqa: E402
 import pbstatus  # noqa: E402
 
 T0 = 2_000_000.0
 GIB = adaptive_gpu.GIB
 
 
+def cpu_sample(clock, readings):
+    return {
+        "sampled_unix": clock.now, "cpu_count": 20, "interval_s": 1.0,
+        "psi_some": 0.0, "busy_cpus": readings["busy_cpus"],
+        "foreign_per_cpu_busy": dict(readings["foreign"]),
+    }
+
+
+def gpu_sample(sample, readings):
+    return None if readings.get("gpu_missing") else dict(sample)
+
+
 @pytest.fixture()
 def fleet(tmp_path, monkeypatch):
-    clock = [T0]
-    monkeypatch.setattr(time, "time", lambda: clock[0])
-    monkeypatch.setattr(pool.socket, "gethostname", lambda: "sparklina")
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    clock = Clock(now=T0)
+    clock.install(monkeypatch)
+    FleetWorld.use_host(monkeypatch, "sparklina")
+    world = FleetWorld(tmp_path, clock=clock)
+    queue = world.queue
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
     readings = {"busy_cpus": 0.0, "foreign": {str(cpu): 0.0 for cpu in range(20)}}
@@ -43,13 +56,8 @@ def fleet(tmp_path, monkeypatch):
         "memory_pressure_some": 0.0, "memory_pressure_full": 0.0,
         "cpu_pressure_some": 0.0, "foreign_processes": [], "jobs": [],
     }
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
-        "sampled_unix": clock[0], "cpu_count": 20, "interval_s": 1.0,
-        "psi_some": 0.0, "busy_cpus": readings["busy_cpus"],
-        "foreign_per_cpu_busy": dict(readings["foreign"]),
-    })
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self:
-                        None if readings.get("gpu_missing") else dict(sample))
+    cpu_sampler = lambda: cpu_sample(clock, readings)
+    gpu_sampler = lambda: gpu_sample(sample, readings)
     monkeypatch.setattr(adaptive_cpu.Controller, "_foreign_pids", lambda *args: {})
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -57,8 +65,9 @@ def fleet(tmp_path, monkeypatch):
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     def publish(name, *, measurement=False, pinned=False, priority=-10, timeout_s=4200,
-                cpu=2, gpu=1, mem_gb=8, tags=None, retry_safe=None, max_attempts=3):
-        clock[0] += 0.001
+                cpu=2, gpu=1, mem_gb=8, tags=None, retry_safe=None, max_attempts=3,
+                residency=None):
+        clock.now += 0.001
         action = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
             "task": {"definition_id": "tests/gpu-backfill", "definition_version": "v1",
@@ -82,32 +91,38 @@ def fleet(tmp_path, monkeypatch):
                       worker_script="worker.py", resources={"cpu": cpu, "gpu": gpu, "mem_gb": mem_gb},
                       needs_gpu=bool(gpu),
                       tags=(["sparklina"] if pinned else []) if tags is None else tags,
-                      priority=priority, retry_safe=retry_safe, max_attempts=max_attempts)
+                      priority=priority, retry_safe=retry_safe, max_attempts=max_attempts,
+                      residency=residency)
         return key
 
     def tick(seconds=2.0):
-        clock[0] += seconds
-        sampled = clock[0] - adaptive_gpu.MAX_SAMPLE_AGE_S - 1 if readings.get("gpu_stale") else clock[0]
+        clock.now += seconds
+        sampled = clock.now - adaptive_gpu.MAX_SAMPLE_AGE_S - 1 if readings.get("gpu_stale") else clock.now
         if readings.get("gpu_future"):
-            sampled = clock[0] + 1
-        sample.update(sampled_unix=sampled, sample_id=str(clock[0]), jobs=[])
+            sampled = clock.now + 1
+        sample.update(sampled_unix=sampled, sample_id=str(clock.now), jobs=[])
         for key in queue.ledger().held_keys():
             record = {"action_key": key, "nonce": key + "-attempt", "scope_unit": key + "-scope",
-                      "sampled_unix": clock[0], "cpu_seconds": 0.01 * (clock[0] - T0),
-                      "wall_seconds": clock[0] - T0, "complete": True}
+                      "sampled_unix": clock.now, "cpu_seconds": 0.01 * (clock.now - T0),
+                      "wall_seconds": clock.now - T0, "complete": True}
             adaptive_cpu.write_json(adaptive_cpu.local_telemetry_path(queue.ledger().base, key), record)
             sample["jobs"].append({"action_key": key, "nonce": record["nonce"],
                                    "scope_id": record["scope_unit"], "complete": True})
 
-    def claim(host="sparklina", q=None):
+    def claim(host="sparklina", q=None, *, cpu_sampler=cpu_sampler,
+              gpu_sampler=gpu_sampler):
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
         tick(0.01)
         active = q or queue
         result = active.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
-                              has_gpu=True, tags=["gb10", host])
+                              has_gpu=True, tags=["gb10", host],
+                              cpu_sampler=cpu_sampler,
+                              gpu_sampler=gpu_sampler)
         if result is not None and len(active.ledger(host).held_keys()) == 1:
             key = result["action_key"]
-            record = pool._read_json(active.item_path(pool.CLAIMED, key))
+            record = pool.record_store.value_or_raise(
+                active.records.item(pool.record_store.CLAIMED, key),
+            )
             assert isinstance(record, dict)
             if (record.get("needs_gpu")
                     and not adaptive_gpu.action_contract(record, record["resources"])[1]):
@@ -115,8 +130,8 @@ def fleet(tmp_path, monkeypatch):
                 # broker or reserve/spend this permission: the next claim must
                 # still decide for itself, and its metadata proves a probe.
                 tick(adaptive_gpu.SETTLE_S + 1)
-                cpu = adaptive_cpu.Controller(active.ledger(host), tiers)
-                gpu = adaptive_gpu.Controller(active.ledger(host))
+                cpu = adaptive_cpu.Controller(active.ledger(host), tiers, sampler=cpu_sampler)
+                gpu = adaptive_gpu.Controller(active.ledger(host), sampler=gpu_sampler)
                 with cpu.locked():
                     permission = gpu.decision(record, record["resources"])
                 assert permission is not None and permission["probe"] is True, gpu.last_decision
@@ -154,9 +169,12 @@ def test_an_old_bounded_gpu_incumbent_does_not_reopen_the_host_to_sharing_backfi
     assert queue.holder_bound(holder)["bound"] == "long"
     for _ in range(2):
         tick(1)
-        cpu = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []})
-        gpu = adaptive_gpu.Controller(queue.ledger())
-        record = pool._read_json(queue.item_path(pool.CLAIMED, holder))
+        cpu = adaptive_cpu.Controller(queue.ledger(), {"preferred": list(range(20)), "fallback": []},
+            sampler=lambda: cpu_sample(clock, readings))
+        gpu = adaptive_gpu.Controller(queue.ledger(), sampler=lambda: gpu_sample(sample, readings))
+        record = pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.CLAIMED, holder),
+        )
         with cpu.locked():
             permission = gpu.decision(record, record["resources"])
     assert permission is not None and permission["probe"] is True, gpu.last_decision
@@ -169,7 +187,7 @@ def test_an_old_bounded_gpu_incumbent_does_not_reopen_the_host_to_sharing_backfi
     queue.finish(holder, status="executed")
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim() == measurement, denial(measurement)
-    assert queue.item_path(pool.READY, backfill).exists()
+    assert queue.records.item_path(pool.record_store.READY, backfill).exists()
 
 
 def test_affirmative_foreign_clear_replaces_the_old_measurement_foreign_veto(fleet):
@@ -192,7 +210,7 @@ def test_affirmative_foreign_clear_replaces_the_old_measurement_foreign_veto(fle
     readings["busy_cpus"] = 0.0
     tick(adaptive_gpu.PSI_AVG10_S + 1)
     assert claim() == measurement, denial(measurement)
-    assert queue.item_path(pool.READY, backfill).exists()
+    assert queue.records.item_path(pool.record_store.READY, backfill).exists()
 
 
 def test_current_foreign_cpu_load_never_becomes_a_measurement_drain(fleet):
@@ -211,7 +229,7 @@ def test_current_foreign_cpu_load_never_becomes_a_measurement_drain(fleet):
     waiting = denial(measurement)
     assert waiting["evidence"]["decision"]["reason"] == "measurement_foreign_ambient"
     assert waiting["evidence"]["withhold"]["withhold"] is False
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_a_restart_and_higher_priority_refill_do_not_renew_the_measurement_episode(fleet):
@@ -226,7 +244,7 @@ def test_a_restart_and_higher_priority_refill_do_not_renew_the_measurement_episo
     restarted = pool.PoolQueue(queue.root)
     assert claim(q=restarted) is None
     assert denial(measurement)["evidence"]["withhold"]["drain_until_unix"] == until
-    tick(until - clock[0] + 1)
+    tick(until - clock.now + 1)
     assert claim(q=restarted) is None
     expired = denial(measurement)["evidence"]["withhold"]
     # #1419: this finite original opportunity elected a host. Time alone
@@ -244,15 +262,16 @@ def test_a_restart_and_higher_priority_refill_do_not_renew_the_measurement_episo
                                "missing_gpu", "future_gpu", "incomplete_gpu", "unattributed_gpu"])
 def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monkeypatch, bad):
     queue, clock, readings, sample, publish, tick, claim, denial = fleet
+    cpu_sampler = lambda: cpu_sample(clock, readings)
     holder = publish("incumbent")
-    assert claim() == holder
+    assert claim(cpu_sampler=cpu_sampler) == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     readings["busy_cpus"] = 2.0
     readings["foreign"]["2"] = 0.2
-    assert claim() is None
+    assert claim(cpu_sampler=cpu_sampler) is None
     assert denial(measurement)["evidence"]["withhold"]["why"] == "foreign_load"
     def foreign_stamp():
-        record = pool._read_json(queue.passes_path(measurement))
+        record = pool.record_store.read_document(queue.records.passes_path(measurement))
         assert isinstance(record, dict)
         episodes = record["measurement_drains"]
         assert isinstance(episodes, dict)
@@ -269,11 +288,11 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
         readings["foreign"]["2"] = -0.1
     elif bad in ("stale_cpu", "future_cpu"):
         offset = -adaptive_cpu.MAX_SAMPLE_AGE_S - 1 if bad == "stale_cpu" else 1
-        monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
-            "sampled_unix": clock[0] + offset, "cpu_count": 20, "interval_s": 1.0,
+        cpu_sampler = lambda: {
+            "sampled_unix": clock.now + offset, "cpu_count": 20, "interval_s": 1.0,
             "psi_some": 0.0, "busy_cpus": 2.0,
             "foreign_per_cpu_busy": dict(readings["foreign"]),
-        })
+        }
     elif bad == "stale_gpu":
         readings["gpu_stale"] = True
     elif bad == "missing_gpu":
@@ -284,7 +303,7 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
         sample["complete"] = False
     else:
         sample["attributed"] = False
-    assert claim() is None
+    assert claim(cpu_sampler=cpu_sampler) is None
     waiting = denial(measurement)["evidence"]
     if bad in ("stale_cpu", "future_cpu"):
         assert waiting["decision"]["reason"] == "measurement_sampler_unknown"
@@ -296,7 +315,7 @@ def test_unproven_readings_cannot_retire_a_measurement_foreign_veto(fleet, monke
     else:
         verdict = waiting["withhold"]
         assert verdict["why"] == "foreign_load" and verdict["withhold"] is False
-    assert queue.item_path(pool.READY, measurement).exists()
+    assert queue.records.item_path(pool.record_store.READY, measurement).exists()
 
 
 def test_an_unbounded_incumbent_has_only_one_bounded_measurement_episode(fleet):
@@ -306,7 +325,7 @@ def test_an_unbounded_incumbent_has_only_one_bounded_measurement_episode(fleet):
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
     initial = denial(measurement)["evidence"]["withhold"]
-    assert initial["drain_until_unix"] - clock[0] == pytest.approx(pool.WITHHOLD_CEILING_S)
+    assert initial["drain_until_unix"] - clock.now == pytest.approx(pool.WITHHOLD_CEILING_S)
     for _ in range(3):
         tick(pool.WITHHOLD_CEILING_S / 4)
         assert claim() is None
@@ -363,7 +382,7 @@ def test_an_expired_measurement_does_not_withhold_for_a_holder_tail(fleet):
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
     until = denial(measurement)["evidence"]["withhold"]["drain_until_unix"]
-    tick(until - clock[0] + 1)
+    tick(until - clock.now + 1)
     assert claim() is None
     queue.finish(holder, status="executed")
     assert claim() is None, "a holder tail still fails the measurement idle gate"
@@ -382,14 +401,16 @@ def test_measurement_deadlines_survive_transient_carry_without_renewal(fleet):
     assert claim() == holder
     measurement = publish("measurement", measurement=True, pinned=True)
     assert claim() is None
-    item = pool._read_json(queue.item_path(pool.READY, measurement))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, measurement),
+    )
     records = queue._host_denial_records()
-    carried = queue._carried_withhold(records, item, host="sparklina", now=clock[0])
+    carried = queue._carried_withhold(records, item, host="sparklina", now=clock.now)
     assert carried is not None
     generation = f"{measurement}:{float(item['published_unix'])!r}"
     for reason in sorted(pool.WITHHOLD_CARRYING_REASONS):
         value = dict(records[generation], reason=reason, evidence={"withhold_carried": carried})
-        repeated = queue._carried_withhold({generation: value}, item, host="sparklina", now=clock[0])
+        repeated = queue._carried_withhold({generation: value}, item, host="sparklina", now=clock.now)
         assert repeated is not None and repeated["drain_until_unix"] == carried["drain_until_unix"]
         assert queue._carried_withhold({generation: value}, item, host="sparklina",
                                      now=carried["drain_until_unix"] + 1) is None

@@ -36,6 +36,10 @@ under ``tmp_path``; nothing reads or writes a real stage.
 """
 from __future__ import annotations
 
+from prismabuild import funding
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+
 import json
 from pathlib import Path
 import sys
@@ -49,8 +53,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import pool, residency_map  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 from test_prepaid_writer_integration import (  # noqa: E402
     KIND, REPO, TIER, _announce_tier, _broker_control, _claim_mover,
@@ -89,13 +93,13 @@ class _World:
         self.template = _template(str(tmp_path / "outputs"))
         self.owner = _producer_request(tmp_path, self.cas_root, self.template)
         self.q = _queue(tmp_path)
-        self.ledger = self.q.tier_ledger(TIER)
+        self.ledger = self.q.tier(TIER)
         # One attempt, as the live producer had: its failure is terminal.
         self.q.publish(action_key=self.owner, cas_root=str(self.cas_root),
                        worker_script=str(REPO / "tools" / "prismabuild_worker.py"),
                        checkout_root=str(tmp_path / "mover-checkout"),
                        resources={"cpu": 1, "mem_gb": 1,
-                                  **po.owner_demand_terms(self.template)},
+                                  **oc.owner_demand_terms(self.template)},
                        produced_output_template=self.template,
                        max_attempts=1, retry_safe=False)
         claimed = self.q.claim(owner="w-owner")
@@ -108,8 +112,8 @@ class _World:
         self.inst = po.bind_instance(self.q, self.template,
                                      owner_action_key=self.owner,
                                      claim_snapshot=claimed, env=env)
-        po.declare_instance(self.q.root, self.inst)
-        assert po.admit_instance(self.q, self.inst, self.template)["ok"] is True
+        bl.declare_instance(self.q.root, self.inst)
+        assert bl.BatchLedger.admit(self.q, self.inst, self.template)["ok"] is True
         self.stage = tmp_path / "stage"
         _announce_tier(self.q, self.stage)
         self.descs = _descriptors(tmp_path, self.template, self.inst, "p1",
@@ -128,24 +132,24 @@ class _World:
 
         claimed = _claim_mover(self.q, "w-mover")
         assert claimed["action_key"] == self.mover
-        funding = self.q.read_output_funding(self.mover, TIER)
+        funding = self.q.funding.read_output(self.mover, TIER)
         assert funding is not None and funding["state"] == "consumed"
         self.q.finish(self.mover, status="failed", detail={"returncode": 1})
-        if self.q.item_path(pool.READY, self.mover).exists():
+        if self.q.records.item_path(pool.record_store.READY, self.mover).exists():
             self.q.withdraw(self.mover, by="test",
                             reason="stranded produced-output mover")
-        ended = [state for state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)
-                 if self.q.item_path(state, self.mover).exists()]
+        ended = [state for state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
+                 if self.q.records.item_path(state, self.mover).exists()]
         assert len(ended) == 1, ended
-        assert not self.q.item_path(pool.READY, self.mover).exists()
+        assert not self.q.records.item_path(pool.record_store.READY, self.mover).exists()
         assert self.q.move_record(self.mover) is None
         # Neither the failure nor the withdrawal released the prepaid token.
-        assert self.ledger.holder_tokens(self.mover) == {KIND: 1}
+        assert self.ledger.holdings(self.mover) == {KIND: 1}
 
     def fail_the_producer(self) -> None:
         self.q.finish(self.owner, status="failed", detail={"returncode": 1})
-        assert self.q.item_path(pool.FAILED, self.owner).exists()
-        assert not self.q.item_path(pool.READY, self.owner).exists()
+        assert self.q.records.item_path(pool.record_store.FAILED, self.owner).exists()
+        assert not self.q.records.item_path(pool.record_store.READY, self.owner).exists()
 
     def sweep(self, pressure):
         return stage_release.sweep(
@@ -153,7 +157,7 @@ class _World:
 
     def batch_entry(self) -> dict:
         commitments = json.loads(
-            (po.instance_dir(self.q.root, self.inst) / "commitments.json")
+            (bl.scope_dir(self.q.root, self.inst) / "commitments.json")
             .read_text())
         return commitments["batches"]["b1"]
 
@@ -183,7 +187,7 @@ def test_a_withdrawn_mover_of_a_failed_producer_is_retired(tmp_path) -> None:
     assert world.batch_entry().get("retired") is True
 
     # The funding record no longer has a token pinning it.
-    assert world.q.retire_terminal_output_funding()["retired"] == 1
+    assert world.q.funding.retire_output()["retired"] == 1
     # A second pass has nothing left to do.
     assert not _about(world.sweep(IDLE), world.mover)
 
@@ -198,7 +202,7 @@ def test_a_succeeded_producer_that_left_its_batch_staged_is_retired(
     retired = _about(world.sweep(IDLE), world.mover)
     assert [entry.get("producer_state") for entry in retired] == ["succeeded"]
     assert retired[0]["complete"] is True, retired
-    assert world.ledger.holder_tokens(world.mover) == {}
+    assert world.ledger.holdings(world.mover) == {}
 
 
 def test_a_withdrawn_mover_of_a_live_producer_is_kept(tmp_path) -> None:
@@ -208,11 +212,11 @@ def test_a_withdrawn_mover_of_a_live_producer_is_kept(tmp_path) -> None:
     world.strand_the_mover()
     receipts = world.sweep(UNMET)
     assert not _about(receipts, world.mover), receipts
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
     assert world.batch_entry().get("retired") is not True
     # The producer's own window is named by its own live claim: it is not
     # reported as a holder nobody can place, under pressure or otherwise.
-    assert world.ledger.holder_tokens(world.owner) == {KIND: 1}
+    assert world.ledger.holdings(world.owner) == {KIND: 1}
     assert not _about(receipts, world.owner), receipts
     assert not _about(world.sweep(IDLE), world.owner)
 
@@ -221,11 +225,11 @@ def test_a_queued_mover_of_a_dead_producer_is_kept(tmp_path) -> None:
     """The mover's own row is live: releasing now would let it copy unpaid."""
 
     world = _World(tmp_path)
-    assert world.q.item_path(pool.READY, world.mover).exists()
+    assert world.q.records.item_path(pool.record_store.READY, world.mover).exists()
     world.fail_the_producer()
     receipts = world.sweep(UNMET)
     assert not _about(receipts, world.mover), receipts
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
 
 
 def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
@@ -240,7 +244,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
     staged.write_bytes(PAYLOAD)
     origin = str(world.descs[0]["path"])
     residency_map.write_fragment(
-        po.output_fragment_root(world.q.root / pool.RESIDENCY), {
+        bl.output_fragment_root(world.q.root / pool.record_store.RESIDENCY), {
             "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
             "consumer_action_key": world.namespace,
             "mover_action_key": world.mover, "tier_id": TIER,
@@ -254,7 +258,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
         "range_start_bytes": 0, "range_end_bytes": len(PAYLOAD),
         "bytes_staged": len(PAYLOAD), "complete": True})
     world.q.finish(world.mover, status="executed")
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
 
     # The joint-commitment census does not offer its tokens as room either.
     tiers = {TIER: next(record for record in world.q.tiers()
@@ -265,7 +269,7 @@ def test_a_completed_batch_of_a_live_producer_keeps_its_tokens(
     receipts = world.sweep(UNMET)
     assert not [entry for entry in _about(receipts, world.mover)
                 if entry.get("tokens_released")], receipts
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
     assert staged.read_bytes() == PAYLOAD
 
 
@@ -276,8 +280,8 @@ def test_an_unresolvable_produced_holder_is_reported_once_and_kept(
     world = _World(tmp_path)
     world.strand_the_mover()
     world.fail_the_producer()
-    template_file = (world.q.root / pool.RESIDENCY
-                     / po.OUTPUT_TEMPLATES_SUBDIR
+    template_file = (world.q.root / pool.record_store.RESIDENCY
+                     / oc.OUTPUT_TEMPLATES_SUBDIR
                      / f"{world.inst['template_id']}.json")
     template_file.chmod(0o644)
     template_file.unlink()
@@ -287,7 +291,7 @@ def test_an_unresolvable_produced_holder_is_reported_once_and_kept(
         UNRESOLVED_EVENT], first
     assert "template" in " ".join(first[0]["errors"]), first
     assert first[0]["tier_id"] == TIER
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}
     # The same reason again is not news.
     assert not _about(world.sweep(IDLE), world.mover)
-    assert world.ledger.holder_tokens(world.mover) == {KIND: 1}
+    assert world.ledger.holdings(world.mover) == {KIND: 1}

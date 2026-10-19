@@ -7,6 +7,9 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 install -d -o root -g root -m 0755 /opt/prismabuild-resource-broker /etc/prismabuild /var/lib/prismabuild-client-upgrade
+for leaf in digest_primitives generation_receipt; do
+    install -o root -g root -m 0644 "$source_dir/$leaf.py" "/opt/prismabuild-resource-broker/$leaf.py"
+done
 install -o root -g root -m 0644 "$source_dir/upgrade_client.py" /opt/prismabuild-resource-broker/upgrade_client.py
 config=/etc/prismabuild/client-upgrade.json
 if [ ! -e "$config" ]; then

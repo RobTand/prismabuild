@@ -14,6 +14,9 @@ the claim unchanged, a claim without enough of it is refused, and a producer
 whose claimed row did not reserve its window refuses to spool.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 from pathlib import Path
 import sys
@@ -109,18 +112,16 @@ def test_the_observed_offer_passes_the_spool_budget_through_unchanged():
         declared, {}, gpu_sample=None, mem_gb=None, load1=None)[KIND] == 64
 
 
-def _publish(queue, key, resources):
-    queue.publish(action_key=key, cas_root="/cas",
-                  worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
-                  checkout_root=str(Path(queue.root).parent / "checkout"),
-                  resources=resources)
-
-
 def test_a_claim_reserves_spool_on_a_box_that_declares_it(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     key = "a" * 64
-    _publish(queue, key, {"cpu": 1, "mem_gb": 1, KIND: 3})
+    ActionRows(queue).publish(
+        key,
+        worker_script=str(fx.REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources={'cpu': 1, 'mem_gb': 1, KIND: 3},
+    )
     claimed = queue.claim(owner="w", capacity={"cpu": 2, "mem_gb": 4, KIND: 5})
     assert claimed is not None and claimed["resources"][KIND] == 3
     ledger = queue.ledger()
@@ -130,7 +131,7 @@ def test_a_claim_reserves_spool_on_a_box_that_declares_it(tmp_path):
 
 def test_a_box_that_declares_no_spool_never_fits_and_placement_calls_it_unknown(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce(host="box", tags=["box"], has_gpu=False,
                    capacity={"cpu": 2, "mem_gb": 4})
     key = "b" * 64
@@ -138,7 +139,12 @@ def test_a_box_that_declares_no_spool_never_fits_and_placement_calls_it_unknown(
     # The census reads a kind an offer does not name as unknown, not zero, so
     # pbrun's placement check passes the submission through ...
     assert queue.placeable(intent) is True
-    _publish(queue, key, intent["resources"])
+    ActionRows(queue).publish(
+        key,
+        worker_script=str(fx.REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(Path(queue.root).parent / 'checkout'),
+        resources=intent['resources'],
+    )
     # ... and every claim refuses it for want of the kind.
     assert queue.claim(owner="w", capacity={"cpu": 2, "mem_gb": 4}) is None
     local = pool.cpu_admission.local_state_base(queue.ledger().base) / pool.CLAIM_DENIALS
@@ -169,7 +175,7 @@ def _spool(tmp_path, *, env=None, reserved=None, maximum=256):
     cas.publish_action_request(action)
     owner = action["action_key"]
     q = fx._queue(tmp_path)
-    resources = {"cpu": 1, "mem_gb": 1, **po.owner_demand_terms(template)}
+    resources = {"cpu": 1, "mem_gb": 1, **oc.owner_demand_terms(template)}
     capacity = {"cpu": 4, "mem_gb": 8}
     if reserved is not None:
         resources[KIND] = reserved
@@ -186,8 +192,8 @@ def _spool(tmp_path, *, env=None, reserved=None, maximum=256):
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
             "PRISMABUILD_ACTION_NONCE": control["nonce"],
             "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(q.root, inst)
-    assert po.admit_instance(q, inst, template)["ok"]
+    bl.declare_instance(q.root, inst)
+    assert bl.BatchLedger.admit(q, inst, template)["ok"]
     fx._announce_tier(q, tmp_path / "stage")
     return lambda: ps.ProducedSpool(q, inst, template, cas_root=cas_root,
                                     root=tmp_path / "local", max_bytes=maximum)

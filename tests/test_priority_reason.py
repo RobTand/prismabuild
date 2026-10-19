@@ -1,5 +1,6 @@
 """Priority explanations follow submissions without changing sealed work."""
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -12,6 +13,8 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import pool  # noqa: E402
 import pbcampaign  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 from test_pbrun_detach import _checkout, _queue, _run_pbrun, _one_json_line  # noqa: E402
 
@@ -21,8 +24,8 @@ REASON = "G2 re-plan gate, coordinator-approved"
 
 def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monkeypatch, capsys):
     work, queue = _checkout(tmp_path), _queue(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun.socket, "gethostname", lambda: "sparky")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.socket, "gethostname", lambda: "sparky")
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([{
         "argv": ["/bin/bash", "-lc", "printf ok"], "cwd": str(work),
@@ -38,7 +41,9 @@ def test_campaign_and_pbrun_reasons_do_not_change_action_identity(tmp_path, monk
     assert _run_pbrun(tmp_path, monkeypatch, work, "--detach", "--priority", "1") == 0
     assert _one_json_line(capsys.readouterr())["action_key"] == direct["action_key"]
     # Attaching does not silently replace the existing generation's reason.
-    record = json.loads(queue.item_path(pool.READY, direct["action_key"]).read_text())
+    record = json.loads(
+        queue.records.item_path(pool.record_store.READY, direct["action_key"]).read_text(),
+    )
     assert record["priority_reason"] == REASON
 
 
@@ -49,14 +54,14 @@ def test_reason_survives_claim_and_is_visible_in_status(tmp_path):
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=KEY, cas_root=tmp_path / "cas", worker_script="/worker.py",
                   checkout_root="/checkout", priority=1, priority_reason=REASON)
-    ready = pbstatus.read_pool(queue.root)
+    ready = fleet_census.action_rows(queue.root).value
     assert ready["jobs"][0]["priority"] == 1
     assert ready["jobs"][0]["priority_reason"] == REASON
     assert REASON in "\n".join(pbstatus.pool_job_lines(ready["jobs"], ready["queue"]))
     assert queue.claim(owner="worker:1") is not None
-    claimed = json.loads(queue.item_path(pool.CLAIMED, KEY).read_text())
+    claimed = json.loads(queue.records.item_path(pool.record_store.CLAIMED, KEY).read_text())
     assert claimed["priority_reason"] == REASON
-    observed = pbstatus.read_pool(queue.root)
+    observed = fleet_census.action_rows(queue.root).value
     assert observed["jobs"][0]["priority_reason"] == REASON
 
 
@@ -84,7 +89,7 @@ def test_bad_reason_is_refused_before_queue_evidence_changes(tmp_path, value):
 def test_campaign_rejects_invalid_reason_before_publishing_any_row(tmp_path, monkeypatch):
     work = _checkout(tmp_path)
     queue = _queue(tmp_path)
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     manifest = tmp_path / "campaign.json"
     manifest.write_text(json.dumps([
         {"argv": ["/bin/true"], "cwd": str(work)},
@@ -92,7 +97,7 @@ def test_campaign_rejects_invalid_reason_before_publishing_any_row(tmp_path, mon
     ]))
     with pytest.raises(pbcampaign.ManifestError, match="priority_reason"):
         pbcampaign.load_manifest(str(manifest))
-    assert not list(queue.dir(pool.READY).glob("*.json"))
+    assert not list(queue.records.dir(pool.record_store.READY).glob("*.json"))
 
 
 def test_reason_is_refused_clearly_by_an_older_queue_runtime():
@@ -104,11 +109,11 @@ def test_reason_is_refused_clearly_by_an_older_queue_runtime():
         "action_key": KEY,
         "params": {"demand": {"cpu": 1}, "placement": {"required_tags": []},
                    "checkout_snapshot": {}},
-        "environment": {"variables": {pbrun.CONTAINER_OWNER_ENV: "fixture"}},
+        "environment": {"variables": {submit_core.CONTAINER_OWNER_ENV: "fixture"}},
     }
     args = pbrun.parse_args(["--priority-reason", REASON, "--", "/bin/true"])
     with pytest.raises(pool.PoolContractError, match="loaded queue runtime.*priority_reason"):
-        pbrun.publication_row(action, args=args, queue=OldQueue())
+        submit_core.row_publication(pbrun.request_from_args(args), pbrun.configured_store()).row(action, queue=OldQueue())
 
 
 def test_an_argument_shaped_campaign_reason_is_only_a_value():
