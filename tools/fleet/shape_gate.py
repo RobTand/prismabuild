@@ -1206,7 +1206,7 @@ def run_gate(table: Mapping[str, object], *, root: Path, shared_root: Path,
 
 #: A pbrun snapshot adds exactly one file to the tree it seals: its closure
 #: stamp, at the root of the snapshotted subdirectory.
-_CLOSURE_STAMP = re.compile(r"\.pbrun-closure\.[0-9a-f]+\.json")
+
 
 
 def reference_nodes() -> list[str]:
@@ -1257,12 +1257,7 @@ def judge_gate_log(log: str, *, where: str) -> None:
             p["message"] for p in verdict["problems"]))
 
 
-def closure_stamp_only(changed: Sequence[str], subdirectory: str) -> list[str]:
-    """The paths in ``changed`` that are not pbrun's closure stamp."""
-
-    return [name for name in changed
-            if not (_CLOSURE_STAMP.fullmatch(Path(name).name)
-                    and str(Path(name).parent) == (subdirectory or "."))]
+from prismabuild.release_identity import closure_stamp_only
 
 
 def verify_gate_receipt(*, action_key: str, commit: str, checkout: Path,

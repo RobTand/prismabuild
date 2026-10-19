@@ -1,7 +1,6 @@
 """Coordinator boundary for authenticated installed-client observations."""
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 import re
@@ -15,105 +14,19 @@ from .compatibility_window import (
 )
 from .digest_primitives import canonical_sha256, raw_sha256
 
-CORPUS_FILES = tuple('tests/test_record_compatibility_' + name + '.py' for name in (
-    'queue', 'storage', 'ownership', 'outputs', 'host', 'decomposition', 'core', 'controller'))
-ROOT_FILES = ('tests/test_client_bootstrap_root.py', 'tests/test_receipt_reader_root.py')
-QUALIFICATION_SOURCES = (*CORPUS_FILES, *ROOT_FILES, 'tests/run_proof_container.py',
-    'tests/proof_container_runtime.py', 'tests/proof_execution.json', 'tests/receipt_execution.json',
-    'tools/fleet/bootstrap_client.py', 'tools/fleet/upgrade_client.py')
+from .qualification_evidence import (
+    CORPUS_FILES, ROOT_FILES, QUALIFICATION_SOURCES,
+    _qualification_source, _qualification_index as _read_qualification_index,
+    generate_qualification_index, rebind_qualification_index,
+    verify_qualification as _verify_qualification,
+)
 
-
-def _qualification_source(checkout, commit, name):
-    path = Path(name)
-    if path.is_absolute() or '..' in path.parts or not path.parts:
-        raise WindowError('invalid qualification source path')
-    return subprocess.check_output(['git', '-C', str(checkout), 'show', commit + ':' + name])
-
+from .release_identity import (
+    release_source_identity, release_snapshot_identity, portable_release_command,
+)
 
 def _qualification_index(assessment, checkout):
-    """Required nodes come from the separately sealed release index, never runs."""
-    pin = assessment.get('qualification_index', {})
-    path = Path(pin.get('path', ''))
-    if not path.is_file() or path.stat().st_mode & 0o222:
-        raise WindowError('bootstrap requires a sealed qualification index')
-    raw = path.read_bytes()
-    if (len(raw) > 16 * 1024 * 1024 or raw_sha256(raw) != pin.get('sha256')
-            or assessment['plan'].get('qualification_index_sha256') != pin.get('sha256')):
-        raise WindowError('bootstrap qualification index pin differs')
-    index = json.loads(raw)
-    commit = assessment['plan']['target']['commit']
-    if (index.get('schema') != 'prismabuild.bootstrap_qualification_index.v1'
-            or index.get('target_commit') != commit
-            or set(index.get('root_routes', {})) != {'aarch64', 'x86_64'}):
-        raise WindowError('bootstrap qualification index source/routes differ')
-    for kind, files in (('root', ROOT_FILES), ('corpus', CORPUS_FILES)):
-        population = index.get('populations', {}).get(kind, {})
-        nodes = population.get('nodes', [])
-        if (set(population.get('files', [])) != set(files)
-                or len(population['files']) != len(files) or not nodes
-                or any(not isinstance(node, str) or '::' not in node for node in nodes)
-                or len(nodes) != len(set(nodes))
-                or {node.split('::')[0] for node in nodes} != set(files)):
-            raise WindowError('bootstrap qualification index must declare the exact required files and nodes')
-    sources = index.get('source_sha256', {})
-    if not set(QUALIFICATION_SOURCES) <= sources.keys():
-        raise WindowError('bootstrap qualification index lacks required source pins')
-    for name, expected in sources.items():
-        if raw_sha256(_qualification_source(checkout, commit, name)) != expected:
-            raise WindowError('bootstrap qualification index source hash differs: ' + name)
-    return index
-
-
-def _require_qualification_execution(action, snapshot, *, kind, machine, index):
-    """Bind approved metadata to Core's executed argv and materialized checkout."""
-    from .action_result import ActionResultError, bind_standard_capture_command
-    try:
-        bind_standard_capture_command(action)
-    except ActionResultError as exc:
-        raise WindowError('bootstrap qualification execution recipe differs: ' + str(exc)) from exc
-    if (action['task'].get('definition_id') != 'fleet/pbrun'
-            or action['task'].get('working_directory') != '.'
-            or action['params'].get('cwd') != '.' or snapshot['subdirectory'] != '.'
-            or snapshot['input'] not in action['inputs']):
-        raise WindowError('bootstrap qualification checkout/cwd/input route differs')
-    if kind == 'corpus':
-        command = action['params']['command']
-        approved = index.get('corpus_routes', {}).get(machine, {}).get('commands', [])
-        if (command not in approved or not Path(command[0]).is_absolute()
-                or action['params'].get('interpreter') != command[0]):
-            raise WindowError('corpus qualification command is outside the sealed approved routes')
-
-
-def _require_root_route(action, attestation, files, machine, index, checkout):
-    route = index['root_routes'].get(machine)
-    if route is None:
-        raise WindowError('root qualification architecture is outside the sealed index')
-    raw = _qualification_source(checkout, index['target_commit'], route['profile'])
-    if (raw_sha256(raw) != route['profile_sha256']
-            or index['source_sha256'].get(route['profile']) != route['profile_sha256']):
-        raise WindowError('root qualification profile differs from the sealed index')
-    profile = json.loads(raw)
-    primary = profile['primary']
-    command = [primary['executable']['path'], 'tests/run_proof_container.py',
-               '--runtime-profile', route['profile'], *files]
-    if (action['params'].get('command') != command
-            or action['params'].get('interpreter') != command[0]
-            or attestation.get('profile_sha256') != route['profile_sha256']
-            or primary['elf_machine'] != {'aarch64': 183, 'x86_64': 62}[machine]):
-        raise WindowError('root qualification did not use the approved runner/profile route')
-    for name, expected in (('outer', primary), ('inner', primary), ('installed_reader', profile['installed_reader'])):
-        observed = attestation.get(name, {})
-        if any(observed.get(key) != expected[key] for key in ('version', 'executable', 'elf_machine')):
-            raise WindowError('root qualification attested runtime differs from its profile')
-    if attestation.get('image', {}).get('actual') != profile['image']:
-        raise WindowError('root qualification image differs')
-    sources = attestation.get('source_sha256', {})
-    required = {*files, 'tests/run_proof_container.py', 'tests/proof_container_runtime.py', route['profile']}
-    if not required <= sources.keys():
-        raise WindowError('root qualification attestation lacks source pins')
-    for name, expected in sources.items():
-        if raw_sha256(_qualification_source(checkout, index['target_commit'], name)) != expected:
-            raise WindowError('root qualification attested source hash differs: ' + name)
+    return _read_qualification_index(assessment, checkout, _qualification_source)
 
 
 def read_assessment(path):
@@ -132,89 +45,8 @@ def read_assessment(path):
 
 
 def verify_qualification(assessment, *, checkout, fleet_root):
-    """Verify actual CAS actions/logs, exact source and whole-file populations.
-
-    The operator index supplies keys, never verdicts. Retained snapshots must
-    differ from the release commit only by PB's own closure stamp.
-    """
-    from . import core as pb
-    from . import pool
-    plan = assessment['plan']
-    index = _qualification_index(assessment, checkout)
-    tools = Path(checkout) / 'tools'
-    if (tools / 'fleet').is_dir():
-        tools /= 'fleet'
-    def load(name):
-        spec = importlib.util.spec_from_file_location('_bootstrap_' + name, tools / (name + '.py'))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    gate, outcomes = load('shape_gate'), load('pbtest_outcomes')
-    cas = pb.PrismaBuildCAS(Path(fleet_root) / 'cas')
-    lanes, keys, runtimes = {}, [], []
-    expected_files = set((*CORPUS_FILES, *ROOT_FILES))
-    for key in assessment['qualification_actions']:
-        full, terminal = gate.resolve_action_key(Path(fleet_root) / 'pb-queue', key)
-        if full in keys:
-            raise WindowError('duplicate bootstrap qualification action')
-        done = pool.record_store.read_document(terminal)
-        if done.get('status') != 'executed' or done.get('detail', {}).get('returncode') != 0:
-            raise WindowError('bootstrap qualification action did not execute successfully')
-        action = cas.read_action_request(full)
-        if action is None:
-            raise WindowError('missing bootstrap qualification request')
-        receipt = cas.lookup(action)
-        if receipt is None:
-            raise WindowError('missing verified bootstrap qualification CAS receipt')
-        snapshot = pb.validate_pbrun_checkout_snapshot(action['params']['checkout_snapshot'])
-        bundle = cas.input_path(snapshot['input'])
-        gate._git(Path(checkout), 'bundle', 'unbundle', str(bundle))
-        changed = gate._git(Path(checkout), 'diff-tree', '-r', '--no-renames', '--name-only',
-                            plan['target']['commit'], snapshot['commit']).splitlines()
-        if gate.closure_stamp_only(changed, snapshot.get('subdirectory') or '.'):
-            raise WindowError('bootstrap qualification source differs from final release')
-        log = cas.result_path(receipt, action).read_text(errors='strict')
-        record = outcomes.parse(log)
-        if not record or record.get('collect_only') or record.get('deselected'):
-            raise WindowError('missing complete bootstrap qualification outcomes')
-        nodes = record['collected']
-        files = sorted({node.split('::')[0] for node in nodes})
-        # Other required integration files may accompany a qualification row.
-        if not set(files) <= expected_files:
-            raise WindowError('qualification rows must name only the corpus and bootstrap root population')
-        if set(files) & set(ROOT_FILES):
-            records = [json.loads(line.removeprefix('prismabuild-root-runtime: '))
-                       for line in log.splitlines() if line.startswith('prismabuild-root-runtime: ')]
-            if (len(records) != 1 or records[0].get('complete') is not True
-                    or records[0].get('mode') != 'execution' or records[0].get('exitstatus') != 0
-                    or not records[0].get('installed_reader')
-                    or not set(files) <= set(records[0].get('source_sha256', {}))):
-                raise WindowError('root bootstrap qualification needs a complete qualified runtime attestation')
-        kind = 'root' if set(files) & set(ROOT_FILES) else 'corpus'
-        if kind == 'root' and not set(files) <= set(ROOT_FILES):
-            raise WindowError('root and corpus qualification use separate populations')
-        machine = receipt['producer']['evidence']['machine']
-        _require_qualification_execution(action, snapshot, kind=kind, machine=machine, index=index)
-        runtime_key = ''
-        if kind == 'root':
-            _require_root_route(action, records[0], files, machine, index, checkout)
-            runtime = {key: records[0]['installed_reader'][key] for key in ('version', 'executable', 'elf_machine')}
-            if runtime not in runtimes:
-                runtimes.append(runtime)
-            runtime_key = canonical_sha256(runtime)
-        rows = lanes.setdefault((kind, machine, runtime_key), [])
-        rows.append({'shard': len(rows), 'files': files, 'returncode': 0,
-                     'timed_out': False, 'output': log})
-        keys.append(full)
-    if (not {('root', 'aarch64'), ('root', 'x86_64')} <= {(kind, machine) for kind, machine, _ in lanes}
-            or not any(kind == 'corpus' for kind, _, _ in lanes)):
-        raise WindowError('bootstrap needs native ARM and x86 root qualification plus the exact record corpus')
-    for (kind, _, _), rows in lanes.items():
-        population = index['populations'][kind]
-        verdict = outcomes.judge_shards(rows, requested_files=population['files'], required_nodes=population['nodes'])
-        if not verdict['green']:
-            raise WindowError('bootstrap qualification is incomplete or contains skips/failures')
-    return BootstrapQualification(plan, action_keys=keys, runtimes=runtimes)
+    return _verify_qualification(assessment, checkout=checkout, fleet_root=fleet_root,
+                                 source_reader=_qualification_source)
 
 
 def collect_responses(plan):
@@ -356,7 +188,8 @@ def capture_inventory(out):
     (out / 'inventory.json').write_text(json.dumps(result, indent=2) + '\n')
 
 
-def write_plan(*, source, target, inventory, actions, qualification_index, designation, out, operation_id):
+def write_plan(*, source, target, inventory, actions, qualification_index, designation, out, operation_id,
+               checkout=None, fleet_root=None):
     from .compatibility_window import (
         BOOTSTRAP_SOURCE, BOOTSTRAP_MEMBERS, BOOTSTRAP_SERVICE_MEMBERS, require_generation,
     )
@@ -408,7 +241,9 @@ def write_plan(*, source, target, inventory, actions, qualification_index, desig
         'qualification_index': {'path': str(Path(qualification_index).resolve(strict=True)),
                                 'sha256': raw_sha256(Path(qualification_index).read_bytes())}}
     plan['qualification_index_sha256'] = assessment['qualification_index']['sha256']
-    qualification = verify_qualification(assessment, checkout=Path(__file__).resolve().parents[2], fleet_root=target.parent.parent)
+    qualification = verify_qualification(assessment,
+        checkout=Path(checkout) if checkout is not None else Path(__file__).resolve().parents[2],
+        fleet_root=Path(fleet_root) if fleet_root is not None else target.parent.parent)
     plan['qualified_runtimes'] = list(qualification.runtimes)
     out.mkdir(mode=0o700, parents=True, exist_ok=False)
     (out / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')

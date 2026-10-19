@@ -19817,8 +19817,35 @@ exactly the profile's primary interpreter, `tests/run_proof_container.py`,
 `--runtime-profile`, the pinned path, and the assigned whole files in sorted
 order. Attested primary/inner/installed-reader identities and actual image must
 match that profile; all attested source hash values must match final source.
-The master supplies/reviews/seals this independent collection index during final
-qualification. This worker supplies no invented index or root execution credit.
+The release preparation adapter `tools/fleet/prepare_release.py prepare` supplies
+this index before qualification execution. Configured published `pbrun` performs
+independently admitted native collection for each root and corpus lane; only
+complete collection-mode outcome records from successful terminal executions and
+verified CAS receipts supply nodes. Execution logs never define the population.
+Profiles, dependency artifacts, resource demand, interpreter paths, corpus
+execution recipes and fleet paths remain reviewed configuration, not inferred
+local-host defaults. Collection has no root execution credit.
+
+Release identity distinguishes requested first-parent merge `M`, observed main
+and actual staged snapshot `S`. Later CI-only main commits do not silently select
+a newer runtime. The source identity API owns ancestry/publication-closure checks;
+the snapshot identity API owns receipt custody and the single-parent closure-only
+`M` to `S` relation. The CLI does not duplicate or relax those domain rules.
+After ordinary stage-only publication, `prepare_release.py finalize` rebinds the
+preexecution index into a new sealed file naming `S`, preserving populations,
+source/routes and original-index provenance, then feeds that file to existing
+`installed_bootstrap.write_plan`. Index/plan equality remains strict at actual
+`S`; `M == S` is neither required nor assumed. Existing plans, assessments,
+publication intents and host journals are never rewritten. Finalization grants
+no activation authority and makes no deployment or workload-completion claim.
+
+`portable_release_command` normalizes checkout-root payload arguments to `.`
+and checkout files to source-relative paths, retaining configured external
+paths. Published submission's absolute submitter-checkout-path refusal remains
+unchanged. Collection lanes declare aggregate CPU/memory, bounded native threads
+and measured deadlines; the coordinator only orchestrates separately admitted
+units, never recursively submits from an action. Failed or incomplete collection
+stops preparation and leaves its evidence for review.
 
 A process argument matching a runtime script basename outside the selected
 generation, or one whose path cannot be resolved, is an explicit pending
