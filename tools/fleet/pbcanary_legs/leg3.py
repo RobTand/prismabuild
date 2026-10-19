@@ -62,7 +62,7 @@ import posixpath
 import sys
 import time
 
-sys.path.insert(0, str(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 try:
     from pbcanary_legs.common import (
         canonical_json,
