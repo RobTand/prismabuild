@@ -1051,3 +1051,7 @@ def main(argv: list[str] | None = None, *, preflight=None,
                 row[2] == "skipped" for row in record["reports"]):
             code = 0
     return int(code)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

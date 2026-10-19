@@ -106,8 +106,16 @@ class PublishedCollector:
             raise ValueError('collection snapshot differs from requested source')
         output = cas.result_path(receipt, action).read_text(errors='strict')
         record = self.outcomes.parse(output)
-        if (not record or not record.get('collect_only') or not record.get('collection_complete')
-                or record.get('collection_errors') or record.get('deselected')):
+        # Outcomes carry nodes; the separate completion record proves that
+        # collection finished. Let their owner reconcile both records and the
+        # terminal summary, including duplicate/mismatched populations.
+        verdict = self.outcomes.judge_shards([{'shard': 0, 'files': files,
+            'returncode': 0, 'timed_out': False, 'output': output}], requested_files=files)
+        complete = verdict['shards'][0]['completion']
+        if (not verdict['green'] or not record or record.get('collect_only') is not True
+                or complete.get('collect_only') is not True
+                or complete.get('collection_complete') is not True
+                or record.get('deselected')):
             raise ValueError('collection lacks a complete independent collection record')
         if kind == 'root':
             attestations = [json.loads(line.split(': ', 1)[1]) for line in output.splitlines()
@@ -121,7 +129,7 @@ class PublishedCollector:
         if {node.split('::')[0] for node in nodes} != set(files):
             raise ValueError('collection did not cover every assigned whole file')
         evidence = {'action_key': key, 'snapshot': snapshot, 'receipt': receipt,
-                    'command': command, 'collection': record}
+                    'command': command, 'collection': record, 'completion': complete}
         path = self.evidence / (kind + '-' + machine + '.json')
         with path.open('x') as handle:
             json.dump(evidence, handle, indent=2)

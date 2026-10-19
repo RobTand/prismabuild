@@ -5048,8 +5048,12 @@ reconciliation. The four frozen runtime helpers must not be edited to bypass thi
 Run it directly: it submits each independent collection lane through the
 configured **published** `pbrun`, with declared aggregate CPU/memory and one
 native thread. Do not wrap preparation in PB (that would recursively submit).
-Collection and qualification execution are separate actions. Collection records
-must say `collect_only`; execution output never supplies expected node IDs.
+Collection and qualification execution are separate actions. The recorder's
+`pbtest-outcomes` record supplies the collected nodes and must say `collect_only`;
+its separate `pbtest-completion` record must also say `collect_only` and prove
+`collection_complete`, with no collection errors and the same node population.
+The recorder reconciles both records against the terminal summary before the
+adapter accepts collection. Execution output never supplies expected node IDs.
 
 Supply a reviewed JSON configuration (paths below are placeholders; use existing
 deployment values). `root_profiles` maps `aarch64` and `x86_64` to committed,
@@ -5076,6 +5080,7 @@ Collection lanes are separate:
     },
     "corpus": {
       "x86_64": {"cpus": 1, "mem_gb": 4, "timeout_s": 600, "wait_s": 1800,
+        "env": {"PYTHONPATH": "src"},
         "command_prefix": ["/configured/worker/python", "tools/fleet/pbtest_outcomes.py", "-q", "-o", "addopts=", "-p", "no:cacheprovider"]}
     }
   }
@@ -5086,10 +5091,13 @@ Replace every placeholder, including the complete eight-file execution argv;
 this is a schema example, not a runnable deployment configuration. Root collection
 uses each profile's primary interpreter and fixed runner with `--collect-only`.
 Corpus collection appends `--collect-only` and all assigned sorted whole files
-to `command_prefix`; use the existing outcome recorder. Optional lane `env`
-supplies configured dependencies; native-thread variables are always bounded to
-one. Tags express real architecture needs, never CPU-only host steering. Size
-CPU/memory and deadlines to the actual lane (including container demand).
+to `command_prefix`; the shown `pbtest_outcomes.py` script entrypoint runs pytest
+and propagates its exit code, while imports remain inert. Configure `PYTHONPATH=src`
+for this checkout-relative recorder in both collection and corpus execution
+actions. Lane `env` supplies configured dependencies; native-thread variables
+are always bounded to one. Tags express real architecture needs, never CPU-only
+host steering. Size CPU/memory and deadlines to the actual lane (including
+container demand).
 
 ```bash
 # R, M, E, RELEASE_CONFIG and CLIENT_PY are operator-selected configuration.

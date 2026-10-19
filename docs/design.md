@@ -19820,8 +19820,14 @@ match that profile; all attested source hash values must match final source.
 The release preparation adapter `tools/fleet/prepare_release.py prepare` supplies
 this index before qualification execution. Configured published `pbrun` performs
 independently admitted native collection for each root and corpus lane; only
-complete collection-mode outcome records from successful terminal executions and
-verified CAS receipts supply nodes. Execution logs never define the population.
+collection-mode outcome records from successful terminal executions and verified
+CAS receipts supply nodes. The separate recorder completion record must prove
+collection finished without errors and match the outcome node population; the
+shared recorder judge reconciles these records with the terminal summary.
+Both records are retained as sealed collection evidence. The corpus script
+entrypoint runs the same recorder `main()` as the native root runner's callable
+entry, propagating pytest's exit code without running on import. Execution logs
+never define the population.
 Profiles, dependency artifacts, resource demand, interpreter paths, corpus
 execution recipes and fleet paths remain reviewed configuration, not inferred
 local-host defaults. Collection has no root execution credit.
