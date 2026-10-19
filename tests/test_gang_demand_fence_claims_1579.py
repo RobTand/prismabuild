@@ -73,7 +73,7 @@ def _seal(queue, tmp_path, name, *, script=None, extra_params=None, extra_comman
         isolated_args = list(ma.MOVEMENT_PYTHON_ARGS) if isolated else []
         command = [python or ma.MOVEMENT_PYTHON, *isolated_args, tool,
                    "--pool-root", str(queue.root), *extra_command]
-        task_argv = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c", ma.captured_command(command, name)]
+        task_argv = ma.captured_command(command, name)
         task_fields, execution_scope = dict(ma.MOVEMENT_TASK), dict(ma.MOVEMENT_EXECUTION_SCOPE)
         sealed_variables = {"variables": dict(ma.movement_environment(command)), "toolchain": {}}
     if variables is not None:
@@ -998,8 +998,7 @@ def test_a_protected_tool_without_isolated_python_gets_no_role(gang_fleet, store
     bare_params["command"] = bare_command
     bare["params"] = bare_params
     bare_task = dict(action["task"])
-    bare_task["argv"] = [ma.SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                         ma.captured_command(bare_command, "isolated.log")]
+    bare_task["argv"] = ma.captured_command(bare_command, "isolated.log")
     bare["task"] = bare_task
     assert ma.capacity_role(bare, SMALL, residency=None) is None
 
