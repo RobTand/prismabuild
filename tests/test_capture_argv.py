@@ -67,7 +67,7 @@ def test_s5_sealed_capture_still_verifies_and_runs(tmp_path, monkeypatch):
     (checkout / "task_code.py").write_text("pass\n")
     action = pb.seal_action({
         "schema": pb.ACTION_SCHEMA_V2,
-        "task": {"definition_id": "fleet/pbrun", "definition_version": "v1",
+        "task": {"definition_id": "tests/s5-capture", "definition_version": "v1",
                  "task_class": "generation", "determinism": "deterministic",
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "argv": fixture["argv"], "working_directory": ".",

@@ -81,7 +81,8 @@ def test_a_multiline_shell_script_is_queued_verbatim(
     request = Path(str(item["cas_root"])) / "requests" / key[:2] / f"{key}.json"
     action = json.loads(request.read_text(encoding="utf-8"))
     # The inner script travels as one original argument, byte for byte.
-    assert action["task"]["argv"][5:] == ["bash", "/bin/bash", "-lc", SCRIPT]
+    assert action["task"]["argv"][5:] == ["bash", *action["params"]["command"]]
+    assert action["task"]["argv"][-1] == SCRIPT
 
 
 def test_a_refused_contract_is_a_named_refusal_not_a_traceback(
