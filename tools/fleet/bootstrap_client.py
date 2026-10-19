@@ -314,7 +314,8 @@ def _bootstrap_systemctl(*args):
 
 
 def _bootstrap_unit_state(unit):
-    raw = _bootstrap_systemctl('show', unit, '--property=MainPID,ActiveState,Job,UnitFileState,Conditions')
+    raw = _bootstrap_systemctl('show', unit,
+                               '--property=MainPID,ActiveState,Job,UnitFileState,DropInPaths,NeedDaemonReload')
     return dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
 
 
@@ -336,9 +337,11 @@ def fenced(plan):
     for path in drops:
         if _bootstrap_capture(_bootstrap_trusted(path))[0] != fence_content(block):
             return False
-    for unit in UPGRADE_UNITS:
+    # systemd 255 and 259 print the Conditions property as "[unprintable]", so
+    # the loaded drop-in list, with nothing awaiting daemon-reload, proves the fence.
+    for unit, path in zip(UPGRADE_UNITS, drops):
         state = _bootstrap_unit_state(unit)
-        if str(block) not in state.get('Conditions', ''):
+        if str(path) not in state.get('DropInPaths', '').split() or state.get('NeedDaemonReload') != 'no':
             return False
     state = _bootstrap_unit_state(UPGRADE_UNITS[1])
     return (state.get('MainPID') == '0' and state.get('Job') in ('', '0')
