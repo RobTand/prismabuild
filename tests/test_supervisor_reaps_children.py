@@ -67,7 +67,9 @@ def test_tick_reaps_children_from_previous_process_image(tmp_path, exit_before_e
         supervise.declared_roles = lambda *a, **k: []
         supervise.declared_shape = lambda *a, **k: (0, [])
         supervise._loaded_published_generation = lambda: None
-        supervise._next_log_index = lambda: 0
+        # The tick must never list or prune the host's real worker logs.
+        supervise.LOG_DIR = Path({str(tmp_path / 'logs')!r})
+        supervise._worker_log_census = lambda: []
         supervise._claim_holders = lambda: frozenset()
         supervise._ready_backlog = lambda: False
         supervise._live_loops = lambda: []
