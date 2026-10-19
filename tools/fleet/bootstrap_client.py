@@ -313,9 +313,24 @@ def _bootstrap_systemctl(*args):
                           text=True, timeout=30).stdout.strip()
 
 
+def _bootstrap_busctl(*args):
+    return subprocess.run(['/usr/bin/busctl', '--json=short', *args], check=True, capture_output=True,
+                          text=True, timeout=30).stdout
+
+
+def _bootstrap_loaded_conditions(unit):
+    label = ''.join(c if c.isascii() and c.isalnum() and not (i == 0 and c.isdigit()) else '_%02x' % ord(c)
+                    for i, c in enumerate(unit))
+    value = json.loads(_bootstrap_busctl('get-property', 'org.freedesktop.systemd1',
+                                         '/org/freedesktop/systemd1/unit/' + label,
+                                         'org.freedesktop.systemd1.Unit', 'Conditions'))
+    if value.get('type') != 'a(sbbsi)':
+        raise ValueError('systemd returned an unexpected Conditions type')
+    return value['data']
+
+
 def _bootstrap_unit_state(unit):
-    raw = _bootstrap_systemctl('show', unit,
-                               '--property=MainPID,ActiveState,Job,UnitFileState,DropInPaths,NeedDaemonReload')
+    raw = _bootstrap_systemctl('show', unit, '--property=MainPID,ActiveState,Job,UnitFileState,Conditions')
     return dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
 
 
@@ -337,11 +352,11 @@ def fenced(plan):
     for path in drops:
         if _bootstrap_capture(_bootstrap_trusted(path))[0] != fence_content(block):
             return False
-    # systemd 255 and 259 print the Conditions property as "[unprintable]", so
-    # the loaded drop-in list, with nothing awaiting daemon-reload, proves the fence.
-    for unit, path in zip(UPGRADE_UNITS, drops):
-        state = _bootstrap_unit_state(unit)
-        if str(path) not in state.get('DropInPaths', '').split() or state.get('NeedDaemonReload') != 'no':
+    # systemctl show prints Conditions as "[unprintable]" on systemd 255 and 259;
+    # the typed D-Bus property names the negated block condition systemd loaded.
+    for unit in UPGRADE_UNITS:
+        loaded = [row[:4] for row in _bootstrap_loaded_conditions(unit)]
+        if ['ConditionPathExists', False, True, str(block)] not in loaded:
             return False
     state = _bootstrap_unit_state(UPGRADE_UNITS[1])
     return (state.get('MainPID') == '0' and state.get('Job') in ('', '0')
