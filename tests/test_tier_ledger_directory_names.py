@@ -11,7 +11,6 @@ import time
 
 import pytest
 
-from kept_read_clock import after_paths
 from record_store_trust import ObservedTrust
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,8 +28,18 @@ OTHER = "b" * 64
 KIND = "stage_gib"
 
 
-def _settle(held: tier_holdings.TierLedger, monkeypatch: pytest.MonkeyPatch) -> None:
-    after_paths(monkeypatch, held.paths.base, *(path for path in held.paths.base.rglob('*') if path.is_dir()))
+def _settle(held: tier_holdings.TierLedger) -> None:
+    """Qualify warm reads with the kernel clock that also stamps mutations.
+
+    Only warm-up waits for the documented coarse-clock fence. Every mutation
+    is checked immediately, before the next warm-up.
+    """
+    directories = [held.paths.base, *(path for path in held.paths.base.rglob('*')
+                                     if path.is_dir())]
+    latest = max(max(info.st_mtime_ns, info.st_ctime_ns)
+                 for info in map(os.stat, directories))
+    while time.clock_gettime_ns(kept_reads._COARSE_REALTIME) <= latest:
+        time.sleep(0.001)
 
 
 def _names(reader: kept_reads.DirectoryRecords):
@@ -48,7 +57,7 @@ def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     ledger = queue.tier(TIER)
     ledger.grow_supply({KIND: 4})
     assert ledger.take(MOVER, {KIND: 1})
-    _settle(ledger, monkeypatch)
+    _settle(ledger)
     return queue, ledger, kept_reads.DirectoryRecords(trust=trust)
 
 
@@ -63,7 +72,7 @@ def test_a_token_glob_does_not_materialize_unmatched_paths(ledger, monkeypatch):
     _queue, held, reader = ledger
     for ordinal in range(64):
         (held.paths.free / f'unrelated-{ordinal:04d}.tmp').touch()
-    _settle(held, monkeypatch)
+    _settle(held)
     pattern = f"{KIND}-*"
     directory = held.paths.free
     expected = sorted(directory.glob(pattern))
@@ -87,13 +96,14 @@ def test_cached_token_selection_keeps_legacy_order(ledger, pattern, monkeypatch)
     _queue, held, reader = ledger
     for name in ("aux-10.tmp", "aux-2.tmp", ".hidden.tmp", "AUX-1.tmp", "é.tmp"):
         (held.paths.free / name).touch()
-    _settle(held, monkeypatch)
+    _settle(held)
     expected = sorted(held.paths.free.glob(pattern))
     with pool.tier_ledger_names_from(_names(reader)):
         assert held.token_paths(held.paths.free, pattern) == expected
         assert held.token_paths(held.paths.free, pattern) == expected
 
 
+@pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("change,expected", [
     ("acquire", (4, 2, 1)),
     ("release", (4, 4, 0)),
@@ -103,8 +113,10 @@ def test_cached_token_selection_keeps_legacy_order(ledger, pattern, monkeypatch)
     ("unlink", (3, 2, 1)),
     ("rename-holder", (4, 3, 0)),
 ])
-def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected, monkeypatch):
+def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected, native):
     _queue, held, reader = ledger
+    if native:
+        reader = kept_reads.DirectoryRecords()
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
         listed = reader.listed
@@ -125,7 +137,7 @@ def test_a_warm_census_sees_the_next_token_transition(ledger, change, expected, 
         else:
             os.rename(held.paths.held / MOVER, held.paths.held / OTHER)
         assert _view(held) == expected
-        _settle(held, monkeypatch)
+        _settle(held)
         assert _view(held) == expected
         listed = reader.listed
         assert _view(held) == expected
@@ -151,8 +163,54 @@ def test_a_warm_ledger_is_not_kept_after_filesystem_trust_leaves(
         assert reader.kept == kept
 
 
-def test_a_same_tick_listing_does_not_hide_an_added_token(ledger, monkeypatch):
+def test_warmup_keeps_the_reader_and_mutations_on_the_same_clock(ledger, monkeypatch):
     _queue, held, reader = ledger
+    kernel = {"now": 1_000_000_000}
+    stamps = {str(held.paths.base): kernel["now"]}
+    stamps.update((str(path), kernel["now"]) for path in held.paths.base.rglob('*')
+                  if path.is_dir())
+    real_clock = time.clock_gettime_ns
+
+    class KernelStamp:
+        def __init__(self, info, tick):
+            self.info = info
+            self.st_mtime_ns = self.st_ctime_ns = tick
+
+        def __getattr__(self, name):
+            return getattr(self.info, name)
+
+    def observe(original, path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        tick = stamps.get(os.fspath(path)) if not isinstance(path, int) else None
+        return info if tick is None else KernelStamp(info, tick)
+
+    def clock(clock_id):
+        return kernel["now"] if clock_id == kept_reads._COARSE_REALTIME else real_clock(clock_id)
+
+    def next_tick(_seconds):
+        kernel["now"] += 1_000_000
+
+    monkeypatch.setattr(os, "stat", partial(observe, os.stat))
+    monkeypatch.setattr(os, "lstat", partial(observe, os.lstat))
+    monkeypatch.setattr(time, "clock_gettime_ns", clock)
+    monkeypatch.setattr(time, "sleep", next_tick)
+    _settle(held)
+    with pool.tier_ledger_names_from(_names(reader)):
+        assert _view(held) == (4, 3, 1)
+        assert _view(held) == (4, 3, 1)
+        assert reader.kept > 0
+        next(held.paths.free.glob(f'{KIND}-*')).unlink()
+        stamps[str(held.paths.free)] = kernel["now"]
+        assert _view(held) == (3, 2, 1)
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("change,expected", [("add", (5, 4, 1)), ("unlink", (3, 2, 1))])
+def test_a_same_tick_listing_does_not_hide_a_token_transition(
+        ledger, monkeypatch, native, change, expected):
+    _queue, held, reader = ledger
+    if native:
+        reader = kept_reads.DirectoryRecords()
     real_lstat = os.lstat
     real_clock = time.clock_gettime_ns
     tick = real_clock(kept_reads._COARSE_REALTIME)
@@ -178,8 +236,11 @@ def test_a_same_tick_listing_does_not_hide_an_added_token(ledger, monkeypatch):
     monkeypatch.setattr(time, "clock_gettime_ns", clock)
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
-        (held.paths.free / f'{KIND}-0004').touch()
-        assert _view(held) == (5, 4, 1)
+        if change == "add":
+            (held.paths.free / f'{KIND}-0004').touch()
+        else:
+            next(held.paths.free.glob(f'{KIND}-*')).unlink()
+        assert _view(held) == expected
         assert reader.kept == 0
 
 
@@ -190,7 +251,7 @@ def test_an_unreadable_namespace_cannot_authorize_minting(
     with pool.tier_ledger_names_from(_names(reader)):
         assert _view(held) == (4, 3, 1)
         held.grow_supply({KIND: 4})
-        _settle(held, monkeypatch)
+        _settle(held)
         held.grow_supply({KIND: 4})
         before = {p.name for p in held.paths.free.iterdir()}
         directory = {'free': held.paths.free, 'held': held.paths.held, 'holder': held.paths.held / MOVER, 'minted': held.paths.minted}[namespace]
@@ -275,7 +336,7 @@ def test_an_optional_dead_namespace_never_hides_an_unknown_parent_or_child(
         dead.touch()
     elif failure == "child":
         dead.mkdir()
-    _settle(held, monkeypatch)
+    _settle(held)
     reader.trust.available = False
     real = os.listdir
     target = held.paths.minted if failure == 'parent' else dead
