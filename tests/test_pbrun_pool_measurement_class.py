@@ -11,6 +11,7 @@ from test_pbrun_host_class import _sealed_body
 from test_core import _body
 from prismabuild import core as pb, pool
 import pbrun
+from prismabuild import submission as submit_core
 
 
 def _evidence(host="sparky", uuid="GPU-1111"):
@@ -25,9 +26,9 @@ def _evidence(host="sparky", uuid="GPU-1111"):
 
 def _measurement(tmp_path, monkeypatch):
     monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **kw: _evidence())
-    scope, toolchain = pbrun.host_class_scope("gb10", measurement=True, transport="pool")
+    scope, toolchain = submit_core.host_class_scope("gb10", measurement=True, transport="pool")
     body = _body(tmp_path, task_class="measurement", determinism="stochastic",
-                 argv=[pbrun.SEALED_ARGV0, "--noprofile", "--norc", "-c",
+                 argv=[submit_core.SEALED_ARGV0, "--noprofile", "--norc", "-c",
                        "printf 'before:%s\\nafter:%s\\n' \"$$\" \"$$\" > result.bin"])
     body["inputs"] = []
     body["execution_scope"] = scope
@@ -42,7 +43,7 @@ def test_pool_measurement_can_select_a_class_without_forcing_the_submitter(
 ):
     import pbrun
 
-    monkeypatch.setattr(pbrun.socket, "gethostname", lambda: "sparky")
+    monkeypatch.setattr(submit_core.socket, "gethostname", lambda: "sparky")
     arguments = ["--measurement", "--host-class", "gb10"]
     if here:
         arguments += ["--here"]
@@ -105,7 +106,7 @@ def test_worker_drift_refuses_before_either_arm(tmp_path, monkeypatch, field, va
 
 def test_executable_drift_refuses_before_either_arm(tmp_path, monkeypatch):
     action = _measurement(tmp_path, monkeypatch)
-    executable = pb.identify_executable(pbrun.SEALED_ARGV0)
+    executable = pb.identify_executable(submit_core.SEALED_ARGV0)
     monkeypatch.setattr(pb, "identify_executable", lambda path: dict(executable, sha256="0" * 64))
     with pytest.raises(pb.ActionContractError, match="argv0.sha256"):
         pb.preflight_action(action, cas_root=tmp_path / "cas", checkout_root=tmp_path)
@@ -149,7 +150,7 @@ def test_cache_scope_changes_with_class_model_architecture_and_toolchain(tmp_pat
             else:
                 observed[change] = "x86_64" if change == "machine" else "glibc-2.40"
             monkeypatch.setattr(pb, "_collect_worker_evidence", lambda **kw: observed)
-            scope, toolchain = pbrun.host_class_scope("gb10", measurement=True, transport="pool")
+            scope, toolchain = submit_core.host_class_scope("gb10", measurement=True, transport="pool")
             other["execution_scope"] = scope
             other["environment"]["toolchain"] = toolchain
         resealed = pb.seal_action(other)

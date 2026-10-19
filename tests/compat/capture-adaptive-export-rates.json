@@ -1,0 +1,27 @@
+{
+  "capture_name": "state-export-rates-capture-02",
+  "capture_report_sha256": "5d901dc5c328607c704753c196e9fa1bf033656bea03155482851b9ff0c00a10",
+  "excluded_cases": [],
+  "files": {
+    "goldens-adaptive-export-rates.jsonl": "bd20a3e134e8d9946cd81b917e261da192712cb5a98af28ae919bec51a403ee7",
+    "historical-adaptive-export-rates.jsonl": "a8406b17cd838750d3a000fb895e735c9eb67c77d27b2307ce536243445109f1"
+  },
+  "finished_at": "2026-10-17T00:21:31.531249+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "state-export-rates/family",
+    "state-export-rates/template"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "3ed0433b60ce2f95037af4892ecba136caea4a65",
+    "tree": "ead056d14a66c91374438487ef34af54a2e01dc4"
+  },
+  "started_at": "2026-10-17T00:21:03.101466+00:00"
+}

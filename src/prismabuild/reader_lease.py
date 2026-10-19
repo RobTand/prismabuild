@@ -58,6 +58,8 @@ capability.
 
 from __future__ import annotations
 
+from . import digest_primitives, immutable_files
+
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -76,15 +78,17 @@ import time
 from typing import NamedTuple
 import uuid
 
+from .record_kinds import wire_id
+
 #: Worker announce tag for this behavior; advertised only once qualified.
 READER_LEASE_TAG = "reader-lease-v1"
 #: What one window's pin looks like on disk.
 LEASE_SCHEMA_V1 = "prismaquant.prismabuild.reader_pin.v1"
 #: What an egress files when it defers to live refs: closed to new acquires
 #: for the named material generation only.
-RETIRING_SCHEMA_V1 = "prismaquant.prismabuild.reader_retiring.v2"
+RETIRING_SCHEMA_V1 = wire_id("retiring")
 #: What a mover files at publish beside its fragment: publish-time identity.
-MATERIAL_SCHEMA_V1 = "prismaquant.prismabuild.reader_material.v1"
+MATERIAL_SCHEMA_V1 = wire_id("material")
 #: Beside the fragments, under ``<pool-root>/residency``: one writer per file.
 LEASES_SUBDIR = "leases"
 #: Publish-time sidecars live here, never among the fragments (the
@@ -1135,9 +1139,9 @@ def _replay_attestation_from_terminal(queue, action_key: str, nonce: str,
         return False, "attestation-present-no-replay"
     if isinstance(existing, Exception):
         return False, f"broker-attestation-unreadable-retain: {existing}"
-    for state in (pool_mod.DONE, pool_mod.FAILED):
+    for state in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED):
         try:
-            record = pool_mod._read_json(queue.item_path(state, action_key))
+            record = pool_mod.record_store.value_or_raise(queue.records.item(state, action_key))
         except (OSError, pool_mod.PoolContractError) as exc:
             return False, f"terminal record unreadable: {state}"
         if not isinstance(record, Mapping):
@@ -1400,9 +1404,9 @@ def containment_certificate_ok(queue, certificate: Mapping[str, object]
 
     terminal_states: dict[str, object] = {}
     names_this_attempt: bool | None = None
-    for state in (pool_mod.DONE, pool_mod.FAILED, pool_mod.WITHDRAWN):
+    for state in (pool_mod.record_store.DONE, pool_mod.record_store.FAILED, pool_mod.record_store.WITHDRAWN):
         try:
-            record = pool_mod._read_json(queue.item_path(state, action_key))
+            record = pool_mod.record_store.value_or_raise(queue.records.item(state, action_key))
         except (OSError, pool_mod.PoolContractError):
             return False, f"terminal record unreadable: {state}"
         if record is None or not isinstance(record, Mapping):
@@ -2053,7 +2057,6 @@ def covers_for_keys(root: str | Path, consumer_action_key: str,
             "expected": expected}
 
 
-
 def resolve_window_covers(queue, *, consumer_action_key: str,
                           tier_id: str, epoch: str,
                           keys: list[str] | None = None,
@@ -2069,7 +2072,7 @@ def resolve_window_covers(queue, *, consumer_action_key: str,
     from prismabuild import pool as pool_mod
 
     root = Path(residency_root if residency_root is not None
-                else Path(queue.root) / pool_mod.RESIDENCY)
+                else Path(queue.root) / pool_mod.record_store.RESIDENCY)
     if manifest_sha256 is None:
         return {"ok": False, "refusal": "manifest-unbound"}
     if keys is None:
@@ -2184,7 +2187,7 @@ def acquire(queue, *, consumer_action_key: str, attempt: Mapping[str, str],
     from prismabuild import pool as pool_mod
 
     root = Path(residency_root if residency_root is not None
-                else Path(queue.root) / pool_mod.RESIDENCY)
+                else Path(queue.root) / pool_mod.record_store.RESIDENCY)
     leases = root / LEASES_SUBDIR
     if context is None:
         context = {}
@@ -2565,9 +2568,11 @@ def _announced_epoch(queue, tier_id: str) -> str | None:
         try:
             # The bound the other replaced-leaf readers pass for small JSON
             # records; a live announcement is under 2 KiB.
-            raw = pb._read_regular_file_nofollow(
-                record_path, where="tier announcement",
-                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES, replaced_leaf=True)
+            raw = immutable_files.read_replaced_record(
+                record_path,
+                where="tier announcement",
+                max_bytes=pb.MAX_ACTION_PROGRESS_BYTES,
+            )
             record = json.loads(raw)
             if not isinstance(record, Mapping):
                 raise ValueError("the announcement is not a JSON object")
@@ -2718,10 +2723,6 @@ RELEASE_RETRYABLE_ERRNOS = frozenset({
 RELEASE_RETRY_DELAYS_S = (0.05, 0.2, 0.8)
 #: The tier event a failed release files for its consumer (#1002's file).
 RELEASE_FAILED_EVENT = "reader-release-failed"
-#: That event's file, ``residency-events/<consumer>/<host>`` + this: beside
-#: the tier loop's ``<host>.jsonl`` rather than in it, because that file has
-#: one writer, the host's tier loop, and a reader is not it.
-RELEASE_EVENTS_SUFFIX = "-reader-release.jsonl"
 
 
 def _errno_name(code: int | None) -> str | None:
@@ -2988,30 +2989,22 @@ def _file_release_failure(queue, failure: ReleaseFailure) -> None:
     host = socket.gethostname()
     record = failure.record()
     consumer = record.pop("consumer_action_key")
-    line = json.dumps({"unix": time.time(), "event": RELEASE_FAILED_EVENT,
-                       "consumer": consumer, "host": host,
-                       "pid": os.getpid(), **record},
-                      sort_keys=True, default=str)
+    line = digest_primitives.sorted_diagnostic_json({
+        "unix": time.time(), "event": RELEASE_FAILED_EVENT,
+        "consumer": consumer, "host": host, "pid": os.getpid(), **record,
+    })
     print(f"PrismaBuild: {line}", file=sys.stderr, flush=True)
     if not isinstance(consumer, str):
         return
     try:
-        directory = queue.consumer_events_dir(consumer)
+        path = queue.records.reader_release_event_path(consumer, host)
     except (AttributeError, ValueError):
         return
-    path = directory / f"{host}{RELEASE_EVENTS_SUFFIX}"
     keep = pool_mod.MAX_CONSUMER_EVENT_LINES
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        with open(path, "a") as stream:
-            stream.write(line + "\n")
-        with open(path) as stream:
-            lines = stream.readlines()
+        lines = queue.records.append_reader_release_line_at(path, line)
         if len(lines) >= 2 * keep:
-            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            with open(temporary, "w") as stream:
-                stream.writelines(lines[-keep:])
-            os.replace(temporary, path)
+            pool_mod.record_store.replace_event_lines(path, lines[-keep:])
     except OSError as exc:
         print(f"PrismaBuild: {RELEASE_FAILED_EVENT} event unwritten: "
               f"{exc!r}", file=sys.stderr, flush=True)
@@ -3156,8 +3149,9 @@ def _read_claim(queue, action_key: str):
     from prismabuild import pool as pool_mod
 
     try:
-        return pool_mod._read_json(
-            queue.item_path(pool_mod.CLAIMED, action_key))
+        return pool_mod.record_store.value_or_raise(
+            queue.records.item(pool_mod.record_store.CLAIMED, action_key),
+        )
     except (OSError, pool_mod.PoolContractError) as exc:
         return exc
 
@@ -3279,8 +3273,9 @@ def injected_context(queue=None, *, env=None, residency_root=None):
     if queue is None:
         queue = pool_mod.PoolQueue(launch_queue_root(source))
     try:
-        claim = pool_mod._read_json(
-            queue.item_path(pool_mod.CLAIMED, action_key))
+        claim = pool_mod.record_store.value_or_raise(
+            queue.records.item(pool_mod.record_store.CLAIMED, action_key),
+        )
     except (OSError, pool_mod.PoolContractError) as exc:
         return {"ok": False, "refusal": f"claim-unreadable: {exc}"}
     if not isinstance(claim, Mapping):
@@ -3435,7 +3430,6 @@ __all__ = [
     "RELEASE_RETRYABLE_ERRNOS",
     "RELEASE_RETRY_DELAYS_S",
     "RELEASE_FAILED_EVENT",
-    "RELEASE_EVENTS_SUFFIX",
     "acquire",
     "attestation_path",
     "attestation_proves_empty",

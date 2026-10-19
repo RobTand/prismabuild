@@ -17,7 +17,7 @@ def test_shared_filesystem_mint_stall_is_bounded_before_ready(tmp_path, monkeypa
     entered = tmp_path / "mint-entered"
     published = tmp_path / "ready-marker"
     argv = _stub(tmp_path, f'''
-def main(*, publication_canary_intent, authorize_canary):
+def main(argv=None, *, publication_canary_intent, authorize_canary):
     authorize_canary(json.loads({json.dumps(action)!r}))
     Path({str(published)!r}).write_text("READY")
     print(json.dumps({{"action_key": {action['action_key']!r}}}))

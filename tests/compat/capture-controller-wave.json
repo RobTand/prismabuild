@@ -1,0 +1,28 @@
+{
+  "capture_name": "controller-wave-capture-01",
+  "capture_report_sha256": "4e1c8461d8d8d1b85420ffdca588d188d09d470372c070ef7cfbcad20f487496",
+  "excluded_cases": [],
+  "files": {
+    "goldens-controller-wave.jsonl": "245f1d828e9ac43afa7258d9fef696768540ee4bae30b40c00cae6218ae5ccd0",
+    "historical-controller-wave.jsonl": "68b1f3eb539d4909d08e852a4e60934e44c328863eaea7a952b3053de4e71360"
+  },
+  "finished_at": "2026-10-17T00:26:09.582747+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "controller-wave/empty",
+    "controller-wave/legacy",
+    "controller-wave/published"
+  ],
+  "source_git": {
+    "parents": [
+      "ab12fa7447e57afae595c0293e6ee5237c75fec2"
+    ],
+    "snapshot": "d52f77aadec99ec190a29fc8f474ccdd86f2c349",
+    "tree": "56b16dcf64289bed3f4296b820349a2005cef21f"
+  },
+  "started_at": "2026-10-17T00:25:32.546317+00:00"
+}

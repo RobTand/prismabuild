@@ -29,8 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
-import stage_move  # noqa: E402
-import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -43,6 +43,9 @@ RAM_MOVER = "e" * 64
 SIZE = 16 * 1024
 
 
+from fleet_world import FleetWorld
+
+
 def _payload() -> bytes:
     return bytes([i % 251 + 1 for i in range(SIZE)])
 
@@ -51,12 +54,6 @@ def _changed() -> bytes:
     other = bytes([255 - (i % 251) for i in range(SIZE)])
     assert other != _payload()
     return other
-
-
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
-    return queue
 
 
 def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
@@ -93,7 +90,7 @@ def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -104,7 +101,7 @@ def _run_stage(queue: pool.PoolQueue, tmp_path: Path, manifest: Path,
 
 def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
     fragments = residency_map.read_fragments(
-        queue.root / pool.RESIDENCY, consumer)
+        queue.root / pool.record_store.RESIDENCY, consumer)
     composed = residency_map.compose(fragments)
     entries = composed["entries"]
     assert isinstance(entries, dict) and len(entries) == 1
@@ -112,7 +109,7 @@ def _staged_path(queue: pool.PoolQueue, consumer: str) -> Path:
 
 
 def test_same_consumer_changed_origin_refuses(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     source = str(body["entries"][0]["path"])
     digest = hashlib.sha256(_payload()).hexdigest()
@@ -166,7 +163,7 @@ def test_same_consumer_changed_origin_refuses(tmp_path: Path) -> None:
 
 
 def test_same_consumer_unchanged_origin_reuses(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
 
     first = _run_stage(queue, tmp_path, manifest, manifest_sha,
@@ -187,7 +184,7 @@ def test_same_consumer_unchanged_origin_reuses(tmp_path: Path) -> None:
 
 
 def test_cross_consumer_changed_origin_refuses(tmp_path: Path) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     source = str(body["entries"][0]["path"])
 
@@ -218,7 +215,7 @@ def test_dev_shared_source_end_to_end_reader(tmp_path: Path) -> None:
     and read them back. Locks in the working path; not a RED test.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path).queue
     manifest, manifest_sha, body = _manifest(tmp_path)
     source = str(body["entries"][0]["path"])
 
@@ -249,7 +246,7 @@ def test_dev_shared_source_end_to_end_reader(tmp_path: Path) -> None:
         "--range-start-bytes", "0",
         "--range-end-bytes", str(SIZE),
         "--manifest", str(manifest),
-        "--residency-root", str(queue.root / pool.RESIDENCY),
+        "--residency-root", str(queue.root / pool.record_store.RESIDENCY),
         "--block", "4096",
         "--readers", "2",
         "--max-readers", "2",
@@ -258,7 +255,7 @@ def test_dev_shared_source_end_to_end_reader(tmp_path: Path) -> None:
     assert receipt.get("complete") is True, receipt
     assert receipt.get("refusal") is None, receipt
 
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     ram_frags = [f for f in residency_map.read_fragments(residency, CONSUMER_A)
                  if str(f.get("tier_id") or "") == RAM_TIER]
     assert ram_frags

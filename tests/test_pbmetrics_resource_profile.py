@@ -23,6 +23,7 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbmetrics  # noqa: E402
 from test_pbmetrics import NOW, _ending, _item, _offer, _samples, _write  # noqa: E402
 
@@ -42,7 +43,7 @@ class ResourceProfileMetrics(unittest.TestCase):
             (self.queue / name).mkdir(parents=True)
         for patcher in (
             mock.patch.object(pbmetrics.time, "time", return_value=NOW),
-            mock.patch.object(pbmetrics.pbstatus.time, "time", return_value=NOW),
+            mock.patch.object(fleet_census.time, "time", return_value=NOW),
             mock.patch.object(pool, "_now", return_value=NOW),
         ):
             patcher.start()

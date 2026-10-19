@@ -12,7 +12,7 @@ room stayed lost, and the receipt counted the files without their bytes,
 mixed in with the prewarm loop's objects.
 
 With the fix each mover also names itself on its copy
-(``stage_move.STAGE_MOVER_XATTR``).  The reconciliation deletes such a copy
+(``stage_marks.STAGE_MOVER_XATTR``).  The reconciliation deletes such a copy
 once no fragment, live pin or live promotion names it and its writer has
 ended, and it sizes what it deleted and what it left by kind.  A copy whose
 writer is still wanted or queued stays, a genuine prewarm object stays, and
@@ -36,11 +36,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import prismabuild.core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import ram_promote  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_marks  # noqa: E402
+from prismabuild import ram_promote  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 STAGE_TIER = "prismabuild-stage:testbox"
 RAM_TIER = "ram:testbox"
@@ -73,7 +75,7 @@ def _manifest(tmp_path: Path) -> tuple[Path, str, dict]:
         entries.append({"path": str(path), "offset": 0, "bytes": SIZE,
                         "sha256": hashlib.sha256(_payload(index)).hexdigest()})
     body = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "killed-mover-residue-fixture"},
         "mount_prefix": str(origin),
         "entries": entries,
@@ -92,8 +94,8 @@ class _World:
     def __init__(self, tmp_path: Path) -> None:
         self.tmp = tmp_path
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
-        self.residence = self.queue.root / pool.RESIDENCY
+        self.queue.records.ensure_layout()
+        self.residence = self.queue.root / pool.record_store.RESIDENCY
         self.stage = tmp_path / "stage"
         self.ram = tmp_path / "ram"
         self.manifest, self.manifest_sha, self.body = _manifest(tmp_path)
@@ -118,11 +120,11 @@ class _World:
         self.ram.mkdir()
         assert storage_tiers.ensure_ram_epoch(self.ram, host="testbox")
         for tier, root in ((STAGE_TIER, self.stage), (RAM_TIER, self.ram)):
-            assert stage_release.register_stage_root(
+            assert staged_path.register_stage_root(
                 self.queue, tier_id=tier, stage_root=root) == "registered"
 
     def paths(self, root: Path) -> list[Path]:
-        return [root / stage_move.stage_relative(
+        return [root / staged_path.stage_relative(
                     str(entry["path"]), 0, SIZE,
                     mount_prefix=str(self.body["mount_prefix"]))
                 for entry in self.body["entries"]]
@@ -207,7 +209,7 @@ class _World:
 
 def _reconciled(events: list[dict[str, object]], tier: str) -> dict:
     found = [event for event in events
-             if event.get("event") == stage_release.UNATTRIBUTED_EVENT
+             if event.get("event") == staged_path.UNATTRIBUTED_EVENT
              and event.get("tier_id") == tier]
     assert len(found) == 1, events
     return found[0]
@@ -254,7 +256,7 @@ def test_a_killed_promotions_copies_are_deleted_and_sized(world, monkeypatch):
     # The ram root's own markers, and the stage copies a wanted fragment
     # names, are nobody's residue.
     assert (world.ram / storage_tiers.RAM_EPOCH_MARKER).exists()
-    assert (world.ram / stage_release.STAGE_ROOT_MARKER).exists()
+    assert (world.ram / staged_path.STAGE_ROOT_MARKER).exists()
     assert all(path.exists() for path in world.paths(world.stage))
 
 
@@ -301,7 +303,7 @@ def test_a_ready_movers_copies_are_never_judged(world, monkeypatch):
                    "manifest_bytes": TOTAL, "tier_id": RAM_TIER,
                    "range_start_bytes": 0, "range_end_bytes": TOTAL})
 
-    receipt = stage_release.reconcile(world.queue, tier_id=RAM_TIER,
+    receipt = staged_path.reconcile(world.queue, tier_id=RAM_TIER,
                                       stage_root=str(world.ram), wanted=set())
 
     assert receipt["skipped"] == "movers_in_flight", receipt
@@ -322,10 +324,10 @@ def test_a_live_writers_residue_is_kept_and_sized(world, monkeypatch, owner):
     if owner == "wanted":
         wanted = {RAM_MOVER}
     else:
-        pool._write_json_atomic(world.queue.lease_path(RAM_MOVER),
+        pool.immutable_files.write_json_atomic(world.queue.records.lease_path(RAM_MOVER),
                                 {"action_key": RAM_MOVER})
 
-    receipt = stage_release.reconcile(world.queue, tier_id=RAM_TIER,
+    receipt = staged_path.reconcile(world.queue, tier_id=RAM_TIER,
                                       stage_root=str(world.ram), wanted=wanted)
 
     assert all(path.exists() for path in copies), receipt
@@ -357,17 +359,17 @@ def test_a_live_promotions_source_leg_is_kept(world):
             "--ram-root", str(world.ram),
             "--source-stage-root", str(world.stage),
             "--range-start-bytes", "0", "--range-end-bytes", str(SIZE)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": world.manifest_sha,
                     "bytes": blob.stat().st_size}],
     }))
-    (world.queue.dir(pool.CLAIMED) / f"{RAM_MOVER}.json").write_text(
+    (world.queue.records.dir(pool.record_store.CLAIMED) / f"{RAM_MOVER}.json").write_text(
         json.dumps({"action_key": RAM_MOVER, "cas_root": str(cas),
                     "resources": {"cpu": 2, "mem_gb": 1,
                                   f"{storage_tiers.RAM_CAPACITY_KIND}"
                                   f"@{RAM_TIER}": 1}}))
 
-    receipt = stage_release.reconcile(world.queue, tier_id=STAGE_TIER,
+    receipt = staged_path.reconcile(world.queue, tier_id=STAGE_TIER,
                                       stage_root=str(world.stage), wanted=set())
 
     assert copies[0].exists(), "a live promotion's source leg was deleted"
@@ -389,21 +391,16 @@ def test_a_prewarm_object_and_a_copy_marked_before_the_fix_are_kept(world):
 
     world.forget_stage_fragment()
     legacy, *residue = world.paths(world.stage)
-    os.removexattr(legacy, stage_move.STAGE_MOVER_XATTR)
-    assert os.getxattr(legacy, prewarm_loop.STAGE_SOURCE_XATTR)
+    os.removexattr(legacy, stage_marks.STAGE_MOVER_XATTR)
+    assert os.getxattr(legacy, stage_marks.STAGE_SOURCE_XATTR)
     origin = Path(str(world.body["entries"][0]["path"]))
-    tier = prewarm_loop.StageTier(state="present", reason="test",
-                                  mountpoint=str(world.stage),
-                                  free_bytes=1 << 20)
-    sink = tier.open_object("prewarm/shard-0.bin.pbstage@0+16384", SIZE)
-    assert sink is not None
-    sink.identify(os.stat(origin))
-    assert sink.write(memoryview(_payload(0))) is True
-    sink.commit()
     prewarmed = world.stage / "prewarm" / "shard-0.bin.pbstage@0+16384"
-    assert prewarmed.exists() and tier.identity_unrecorded == 0
+    prewarmed.parent.mkdir()
+    prewarmed.write_bytes(_payload(0))
+    os.setxattr(prewarmed, stage_marks.STAGE_SOURCE_XATTR,
+                stage_marks.source_identity(origin.stat()).encode())
 
-    receipt = stage_release.reconcile(world.queue, tier_id=STAGE_TIER,
+    receipt = staged_path.reconcile(world.queue, tier_id=STAGE_TIER,
                                       stage_root=str(world.stage), wanted=set())
 
     assert prewarmed.exists(), "a genuine prewarm object was deleted"
@@ -427,7 +424,7 @@ def test_an_unanswerable_mark_is_kept_and_sized(world, monkeypatch):
         raise OSError(errno.EOPNOTSUPP, "Operation not supported")
 
     monkeypatch.setattr(stage_release.os, "getxattr", refuse)
-    receipt = stage_release.reconcile(world.queue, tier_id=STAGE_TIER,
+    receipt = staged_path.reconcile(world.queue, tier_id=STAGE_TIER,
                                       stage_root=str(world.stage), wanted=set())
 
     assert all(path.exists() for path in copies), receipt
@@ -442,7 +439,11 @@ def test_every_movers_copy_names_its_writer(world, monkeypatch):
     for root, mover in ((world.stage, STAGE_MOVER), (world.ram, RAM_MOVER)):
         if root == world.ram:
             world.kill_a_promotion(monkeypatch)
-        for path in world.paths(root):
-            assert os.getxattr(path, stage_move.STAGE_MOVER_XATTR) == (
+        sources = (world.paths(world.stage) if root == world.ram else
+                   [Path(str(entry["path"])) for entry in world.body["entries"]])
+        for path, source in zip(world.paths(root), sources, strict=True):
+            assert os.getxattr(path, stage_marks.STAGE_MOVER_XATTR) == (
                 mover.encode()), path
-            assert os.getxattr(path, prewarm_loop.STAGE_SOURCE_XATTR), path
+            seen = source.stat()
+            expected = f"{seen.st_size}:{seen.st_mtime_ns}:{seen.st_ino}".encode()
+            assert os.getxattr(path, stage_marks.STAGE_SOURCE_XATTR) == expected, path

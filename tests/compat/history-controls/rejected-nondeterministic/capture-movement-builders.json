@@ -1,0 +1,31 @@
+{
+  "capture_name": "movement-builders-01-capture",
+  "capture_report_sha256": "2baf1744e6398ab9e76d4681d352685277c4bf660037d837340b62e0075cc01f",
+  "excluded_cases": [],
+  "files": {
+    "goldens-movement-builders.jsonl": "ebb07947ba3d8f72d0ec55c5f7e6ecd07de47c207c509b74cbd321540659a3b7",
+    "historical-movement-builders.jsonl": "f55c4de49d93899532edf100dde935ee1fa5fb5d1814af683d4c2f9f5e179b41"
+  },
+  "finished_at": "2026-10-17T00:48:05.265571+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "fragment/ram-writer",
+    "fragment/stage-writer",
+    "landing/tier-loop-writer",
+    "move/ram-refusal-writer",
+    "move/ram-writer",
+    "move/stage-writer"
+  ],
+  "source_git": {
+    "parents": [
+      "fe4adef9f7577b9110a8c7e51a77a3b7045e996e"
+    ],
+    "snapshot": "3c9509f212bdbe6d4d413231bd2303215bbf6e35",
+    "tree": "12ee38d6d7e93b4933c58a8ea01f97c71fd67539"
+  },
+  "started_at": "2026-10-17T00:45:33.434254+00:00"
+}

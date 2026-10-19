@@ -21,6 +21,9 @@ the rows are sealed by the real ``pbrun.residency_stage_rows``, exactly as
 sealed requests are captured rather than published to a CAS.
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 
 import hashlib
 import json
@@ -34,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import movement_actions, pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 CONSUMER = "c" * 64
@@ -64,6 +67,8 @@ class _Cas:
 
 def _template(digest: str, size: int, variables: dict[str, str]) -> dict[str, object]:
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
     return {
         "cas": None, "marker_root": Path("/home/rob/tmp/markers"),
@@ -75,7 +80,7 @@ def _template(digest: str, size: int, variables: dict[str, str]) -> dict[str, ob
                  "working_directory": "."},
         "inputs": [{"id": "pbrun.checkout-snapshot", "sha256": "b" * 64,
                     "bytes": 4096}],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"command": ["python", "stage_a.py"], "cwd": "/home/rob",
                    "demand": {"cpu": 1},
                    "placement": {"required_tags": ["sparky"]},
@@ -98,7 +103,7 @@ def _seal(tmp_path: Path, variables: dict[str, str]):
     import pbrun
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({
         "schema": "prismaquant.prismabuild.data_manifest.v1",
@@ -119,16 +124,13 @@ def _seal(tmp_path: Path, variables: dict[str, str]):
 
     tier_loop.cycle(queue, host="dl380g10", source_pool="storage_pool",
                     receipts=tier_loop.ReceiptCache(), discover=discover)
-    tier = pbrun.resolve_stage_tier(queue, None)
-    args = types.SimpleNamespace(
+    tier = residency_plan.resolve_stage_tier(queue, None)
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=4, residency_mover_max_attempts=3)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size, variables),
-        consumer_action_key=CONSUMER, tier=tier, args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size, variables), consumer_action_key=CONSUMER, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     phase = staged["plan"]["phases"][0]
     return tier, {"mover": cas.actions[str(phase["mover_row"]["action_key"])],
                   "egress": cas.actions[str(phase["egress_row"]["action_key"])]}
@@ -171,7 +173,7 @@ def _shared_template(variables: dict[str, str]) -> dict[str, object]:
                  "artifact_family": "generic", "artifact_kind": "generic",
                  "working_directory": "."},
         "inputs": [],
-        "code_closure": pbrun.build_stamp_closure("pbrun.stamp", "{}"),
+        "code_closure": submit_core.build_stamp_closure("pbrun.stamp", "{}"),
         "params": {"cwd": "/home/rob",
                    "retry_policy": {"max_attempts": 1, "retry_safe": False}},
         "environment": {"variables": dict(variables), "toolchain": {}},

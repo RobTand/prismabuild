@@ -1,0 +1,43 @@
+{
+  "base": "a962ed3fb2767ce6805110a18124f3cf01a166a3",
+  "base_updater_sha256": "08cf5ff5443b696e56b5ea99ac445eeaaf40308dcfba55219dc6e6f865873884",
+  "bridge_sha256": "159fb4550dd2841f68008dbfd1f92f7a94209957a6737ff94b529df0468485da",
+  "published": false,
+  "leaves": {
+    "digest_primitives.py": "src/prismabuild/digest_primitives.py",
+    "generation_receipt.py": "src/prismabuild/generation_receipt.py"
+  },
+  "corpus": {
+    "standalone-receipt-bridge.py": {
+      "sha256": "159fb4550dd2841f68008dbfd1f92f7a94209957a6737ff94b529df0468485da",
+      "bytes": 95192
+    },
+    "base/tools/fleet/upgrade_client.py": {
+      "sha256": "08cf5ff5443b696e56b5ea99ac445eeaaf40308dcfba55219dc6e6f865873884",
+      "bytes": 92501
+    },
+    "base/src/prismabuild/generation_receipt.py": {
+      "sha256": "a40a30752c17206f592a512c3ffc01e4ec5fe56157a087fe8e26b491f8461817",
+      "bytes": 1747
+    },
+    "base/src/prismabuild/runtime_publication.py": {
+      "sha256": "933686e6e4df3ca77b091c336f7f6ad98b9a6bf3e21fb08b40598df3bb861a16",
+      "bytes": 27301
+    },
+    "base/src/prismabuild/resource_scope.py": {
+      "sha256": "d6bd2bb27f1b0a07a48553c71818f1ab9084e66a264c98186a69705644f999c1",
+      "bytes": 44655
+    },
+    "base/tools/fleet/publish_runtime.py": {
+      "sha256": "c0aed31b2768ba2ee242690d9e2a793d1a85171c95b6d5507c50ab45bfc48ecf",
+      "bytes": 115411
+    },
+    "base/tools/fleet/supervise.py": {
+      "sha256": "7549c2b8cb82057f0cd8775b9e747761abb296c10ed4f55ff6b99aebfd26940b",
+      "bytes": 102833
+    }
+  },
+  "branch": "sol/c15-prepared-reader-bridge-r2-20261017",
+  "commit": "6d13d55457a458a9990aed57eb0fef7bb02e82a0",
+  "tree": "8ede6738d86d6d60ae8985eafc1ce0560c8ba183"
+}

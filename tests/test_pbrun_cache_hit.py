@@ -17,13 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "ab" * 32
 
 
 class _Receipted:
-    def __init__(self, receipt):
+    def __init__(self, receipt, root):
         self.receipt = receipt
+        self.root = root
         self.lookups = 0
 
     def lookup(self, action):
@@ -35,15 +37,15 @@ def _outcome(monkeypatch, tmp_path, *, receipt):
     def never(*args, **kwargs):
         raise AssertionError("sbatch was reached for receipted work")
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", never)
-    monkeypatch.setattr(pbrun.slurm_lane, "resume", never)
-    cas = _Receipted(receipt)
-    rc = pbrun.slurm_outcome(
+    monkeypatch.setattr(submit_core.slurm_lane, "run", never)
+    monkeypatch.setattr(submit_core.slurm_lane, "resume", never)
+    cas = _Receipted(receipt, tmp_path / 'cas')
+    rc = submit_core.slurm_outcome(
         {"action_key": KEY}, cas=cas, request_path="r.json",
         tags=["gb10"], demand={"cpu": 2, "mem_gb": 8}, exclusive=False,
         timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
         queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
-    )
+    store=pbrun.configured_store(), display=pbrun.render_submission)
     # A lookup verifies the result blob, gigabytes over NFS for a rendered
     # model, so the attached path asks exactly once.
     assert cas.lookups == 1
@@ -53,7 +55,7 @@ def _outcome(monkeypatch, tmp_path, *, receipt):
 def test_receipted_work_is_not_submitted_and_is_reported_done(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    rc = _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64})
+    rc = _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64, "result": {"sha256": "d" * 64}})
     err = capsys.readouterr().err
     assert rc == 0
     assert f"{KEY[:12]} is already in the CAS; nothing submitted" in err
@@ -64,9 +66,9 @@ def test_receipted_work_is_not_submitted_and_is_reported_done(
 def test_a_key_with_no_done_record_gets_a_cache_hit_record(
     monkeypatch, tmp_path: Path
 ) -> None:
-    _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64})
+    _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64, "result": {"sha256": "d" * 64}})
     filed = json.loads(
-        (tmp_path / "queue" / pool.DONE / f"{KEY}.json").read_text())
+        (tmp_path / "queue" / pool.record_store.DONE / f"{KEY}.json").read_text())
     assert filed["status"] == "cache_hit"
     assert filed["transport"] == "slurm"
     assert filed["attempts"] == 0
@@ -74,18 +76,18 @@ def test_a_key_with_no_done_record_gets_a_cache_hit_record(
     assert filed["resources"] == {"cpu": 2, "mem_gb": 8}
     assert filed["detail"]["receipt_published"] is True
     assert filed["detail"]["result_digest"] == "d" * 64
-    assert not (tmp_path / "queue" / pool.FAILED).exists()
+    assert not (tmp_path / "queue" / pool.record_store.FAILED).exists()
 
 
 def test_the_runs_own_done_record_is_left_as_it_was(
     monkeypatch, tmp_path: Path
 ) -> None:
-    done = tmp_path / "queue" / pool.DONE
+    done = tmp_path / "queue" / pool.record_store.DONE
     done.mkdir(parents=True)
     original = json.dumps({"status": "executed", "action_key": KEY,
                            "detail": {"slurm": {"job_id": "41"}}})
     (done / f"{KEY}.json").write_text(original)
-    _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64})
+    _outcome(monkeypatch, tmp_path, receipt={"result_digest": "d" * 64, "result": {"sha256": "d" * 64}})
     assert (done / f"{KEY}.json").read_text() == original
 
 
@@ -96,14 +98,14 @@ def test_unreceipted_work_still_reaches_the_scheduler(
 
     def record(action, **kwargs):
         reached["called"] = True
-        raise pbrun.slurm_lane.SlurmLaneError("stop here")
+        raise submit_core.slurm_lane.SlurmLaneError("stop here")
 
-    monkeypatch.setattr(pbrun.slurm_lane, "run", record)
-    with pytest.raises(SystemExit):
-        pbrun.slurm_outcome(
-            {"action_key": KEY}, cas=_Receipted(None), request_path="r.json",
+    monkeypatch.setattr(submit_core.slurm_lane, "run", record)
+    with pytest.raises(submit_core.SubmissionRefused):
+        submit_core.slurm_outcome(
+            {"action_key": KEY}, cas=_Receipted(None, tmp_path / 'cas'), request_path="r.json",
             tags=[], demand={"cpu": 1, "mem_gb": 4}, exclusive=False,
             timeout_s=None, wait_s=30.0, retry_safe=False, max_attempts=1,
             queue_root=tmp_path / "queue", lane_root=tmp_path / "lane",
-        )
+        store=pbrun.configured_store(), display=pbrun.render_submission)
     assert reached == {"called": True}

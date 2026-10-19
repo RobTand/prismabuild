@@ -7,6 +7,7 @@ driven here on a fake clock and a fake queue that records every write, so
 each rule is checked at its boundary.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 from pathlib import Path
 import sys
@@ -18,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 L = pool.OFFER_TIMEOUT_S
 P = pool.HEARTBEAT_S
@@ -52,7 +53,7 @@ class _Queue:
 @pytest.fixture
 def clock(monkeypatch) -> _Clock:
     clock = _Clock()
-    monkeypatch.setattr(pool, "_now", clock)
+    FleetClock(source=clock).install(monkeypatch, scope="pool")
     return clock
 
 

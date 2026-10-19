@@ -451,7 +451,7 @@ def test_a_manifest_row_declares_the_contract_the_same_way_pbrun_does():
     # by its own advancement, and the box ceiling then clamps the allowances
     # rather than the run.
     assert "--timeout-s" not in argv
-    assert pbcampaign.pbrun.parse_progress_phases(row["progress_phases"]) == {
+    assert pbcampaign.submission.parse_progress_phases(row["progress_phases"]) == {
         "schema": pb.PROGRESS_POLICY_SCHEMA_V1,
         "phases": [{"name": "startup", "grace_s": 1800.0},
                    {"name": "pricing", "grace_s": 900.0},

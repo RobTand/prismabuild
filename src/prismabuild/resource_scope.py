@@ -316,16 +316,6 @@ def _atomic_json(path: Path, record: dict) -> None:
         temp.unlink(missing_ok=True)
 
 
-def _sha256_file(path: Path) -> str:
-    """Hex SHA-256 of one file, read in blocks."""
-
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 #: Where the fleet publishes immutable runtime generations. Read at call
 #: time rather than bound at import, for the same reason
 #: ``supervise.MIRROR`` is: it is the one name a test can repoint at a
@@ -489,8 +479,7 @@ class ResourceScope:
                 'memory_max_bytes': self.memory_max_bytes,
                 'gpu_memory_max_bytes': self.gpu_memory_max_bytes}
 
-    def _verified_member(self, root: Path, rel: str,
-                           files: dict) -> Path:
+    def _sealed_member(self, root: Path, rel: str, receipt) -> Path:
         """One manifest-covered sealed member, or raise ``OSError``.
 
         Mirrors ``publish_runtime._barrier_generation``: the spelling must
@@ -501,14 +490,14 @@ class ResourceScope:
         than executed outside the action's contained slice.
         """
 
-        if not rel or Path(rel).is_absolute() or any(
-                part in (".", "..") for part in Path(rel).parts):
-            raise OSError(f"unsafe generation member path: {rel!r}")
-        expected = files.get(rel)
-        if (not isinstance(expected, str)
-                or re.fullmatch(r"[0-9a-f]{64}", expected) is None):
-            raise OSError(f"generation receipt covers no sha256 for {rel}")
-        path = root / rel
+        try:
+            path = receipt.member_path(root, rel)
+        except ValueError as exc:
+            raise OSError(f"unsafe generation member path: {rel!r}") from exc
+        try:
+            receipt.member_digest(rel)
+        except ValueError as exc:
+            raise OSError(str(exc)) from exc
         try:
             if path.resolve(strict=True) != path or not path.is_file():
                 raise OSError(f"generation member is a symlink: {rel}")
@@ -517,7 +506,7 @@ class ResourceScope:
         except OSError as exc:
             raise OSError(f"unverified retained runtime member {rel}: "
                           f"{exc}") from exc
-        if _sha256_file(path) != expected:
+        if not receipt.matches_file(rel, path):
             raise OSError(f"retained runtime hash mismatch: {rel}")
         return path
 
@@ -535,6 +524,8 @@ class ResourceScope:
         broker token on its argv -- so unknown/unverified roots refuse
         here instead of silently falling back to a mismatching proxy.
         """
+
+        from .generation_receipt import GenerationReceipt
 
         try:
             store = RETAINED_GENERATION_STORE.resolve(strict=True)
@@ -556,46 +547,50 @@ class ResourceScope:
         try:
             if root.stat().st_mode & 0o222:
                 raise OSError(f"generation {root.name} is not sealed")
-            receipt = json.loads(
-                (root / "RUNTIME_VERSION.json").read_text())
+            receipt = GenerationReceipt.capture((root / "RUNTIME_VERSION.json").read_text())
         except (OSError, ValueError) as exc:
             raise OSError(f"generation {root.name} receipt is not readable; "
                           "this is not a generation to launch from") from exc
-        if not isinstance(receipt, dict):
+        if not isinstance(receipt.document, dict):
             raise OSError(f"generation {root.name} receipt is not an object; "
                           "refusing")
-        files = receipt.get("files")
-        if (receipt.get("schema") != RUNTIME_RECEIPT_SCHEMA
-                or receipt.get("generation") != root.name
-                or re.fullmatch(r"[0-9a-f]{40}",
-                                str(receipt.get("commit", ""))) is None
-                or not isinstance(files, dict)):
+        try:
+            receipt.require_generation(root.name)
+            receipt.require_commit()
+        except ValueError as exc:
             raise OSError(f"generation {root.name} has an invalid published "
-                          "runtime receipt; refusing")
+                          "runtime receipt; refusing") from exc
+        files = receipt.files
         worker_rel = worker.relative_to(root).as_posix()
         if worker_rel != _WORKER_TAIL[0] + "/" + _WORKER_TAIL[1]:
             raise OSError(f"worker {worker} is not the generation's sealed "
                           "entry point; refusing")
-        self._verified_member(root, worker_rel, files)
+        self._sealed_member(root, worker_rel, receipt)
         for dependency in _PROXY_PACKAGE_DEPENDENCIES:
-            self._verified_member(
-                root, f"src/prismabuild/{dependency}", files)
+            self._sealed_member(
+                root, f"src/prismabuild/{dependency}", receipt)
         digest_owner_rel = "src/prismabuild/digest_primitives.py"
         if digest_owner_rel in files:
-            self._verified_member(root, digest_owner_rel, files)
+            self._sealed_member(root, digest_owner_rel, receipt)
+        immutable_owner_rel = "src/prismabuild/immutable_files.py"
+        if immutable_owner_rel in files:
+            self._sealed_member(root, immutable_owner_rel, receipt)
         for proxy_rel in _PROXY_CANDIDATES:
             if proxy_rel not in files:
                 continue  # this layout does not carry that spelling
             # Present but unverifiable refuses the whole generation --
             # falling through to another spelling would let one tampered
             # member hide behind an intact one.
-            proxy = self._verified_member(root, proxy_rel, files)
+            proxy = self._sealed_member(root, proxy_rel, receipt)
             directory = proxy.parent
             for dependency in _PROXY_DEPENDENCIES:
-                self._verified_member(
+                self._sealed_member(
                     root,
-                    (directory.relative_to(root) / dependency).as_posix(),
-                    files)
+                    ("src/prismabuild/runtime_paths.py"
+                     if dependency == "runtime_paths.py"
+                     and "src/prismabuild/runtime_paths.py" in files
+                     else (directory.relative_to(root) / dependency).as_posix()),
+                    receipt)
             return proxy
         raise OSError(f"generation {root.name} carries no proven proxy with "
                       "its broker and layout dependencies; refusing")

@@ -21,6 +21,7 @@ These tests are the red/green artifact for the fix: run against main
 no ``spool_gb`` and the explicit ``0`` is accepted silently.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -34,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import produced_spool as ps  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 from test_pbrun_detach import _checkout  # noqa: E402
 
 GIB = 1 << 30
@@ -53,7 +55,7 @@ def _env(*items: str) -> list[str]:
 def _build(work: Path, fleet: Path, monkeypatch, *extra: str, transport: str = "pool"):
     """The frozen template of one submission over an existing checkout."""
 
-    monkeypatch.setattr(pbrun, "SH", fleet)
+    patch_store(monkeypatch, client=pbrun, root=fleet)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     args = pbrun.parse_args([
         "--cwd", str(work), "--detach", "--transport", transport,
@@ -61,7 +63,7 @@ def _build(work: Path, fleet: Path, monkeypatch, *extra: str, transport: str = "
         "--tag", "sparky", *extra,
         "--", "/bin/bash", "-lc", "true",
     ])
-    return pbrun.prepare_submission(args)["template"]
+    return submit_core.prepare(pbrun.request_from_args(args), store=pbrun.configured_store(), display=pbrun.render_submission)["template"]
 
 
 def _fixture(tmp_path: Path):
@@ -72,7 +74,7 @@ def test_a_declared_bound_is_charged_without_any_switch(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
     template = _build(work, fleet, monkeypatch, "--env", f"{MAX}={5 * GIB}")
     assert template["params"]["demand"] == {"cpu": 1, "mem_gb": 4, KIND: 5}
-    sealed = pbrun.seal_action_from_template(template)
+    sealed = submit_core.seal(template)
     assert sealed["params"]["demand"][KIND] == 5
     variables = sealed["environment"]["variables"]
     assert variables[SWITCH] == "1"
@@ -81,9 +83,9 @@ def test_a_declared_bound_is_charged_without_any_switch(tmp_path, monkeypatch):
 
 def test_an_explicit_opt_in_seals_the_same_effective_contract(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    default = pbrun.seal_action_from_template(_build(
+    default = submit_core.seal(_build(
         work, fleet, monkeypatch, "--env", f"{MAX}={5 * GIB}"))
-    explicit = pbrun.seal_action_from_template(_build(
+    explicit = submit_core.seal(_build(
         work, fleet, monkeypatch, "--env", f"{SWITCH}=1", "--env", f"{MAX}={5 * GIB}"))
     assert default["params"]["demand"] == explicit["params"]["demand"]
     assert (default["environment"]["variables"][SWITCH]
@@ -95,7 +97,7 @@ def test_an_explicit_opt_in_seals_the_same_effective_contract(tmp_path, monkeypa
 
 def test_an_explicit_zero_beside_a_declared_bound_is_refused_by_name(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(work, fleet, monkeypatch,
                *_env(f"{SWITCH}=0", f"{MAX}={5 * GIB}"))
 
@@ -103,13 +105,13 @@ def test_an_explicit_zero_beside_a_declared_bound_is_refused_by_name(tmp_path, m
 @pytest.mark.parametrize("maximum", ["0", "", "-1", "1.5", "x", " 8"])
 def test_a_malformed_or_zero_bound_is_refused_by_name(tmp_path, monkeypatch, maximum):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match=MAX):
+    with pytest.raises(submit_core.SubmissionRefused, match=MAX):
         _build(work, fleet, monkeypatch, *_env(f"{MAX}={maximum}"))
 
 
 def test_a_declared_switch_that_is_not_zero_or_one_is_refused(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match="must be 0 or 1"):
+    with pytest.raises(submit_core.SubmissionRefused, match="must be 0 or 1"):
         _build(work, fleet, monkeypatch, *_env(f"{SWITCH}=yes", f"{MAX}=256"))
 
 
@@ -124,7 +126,7 @@ def test_the_window_and_declared_scratch_add_in_one_kind(tmp_path, monkeypatch):
     template = _build(work, fleet, monkeypatch, *declared)
     assert template["params"]["demand"] == {
         "cpu": 1, "mem_gb": 4, KIND: SPILL_GIB + 32}
-    sealed = pbrun.seal_action_from_template(template)
+    sealed = submit_core.seal(template)
     variables = sealed["environment"]["variables"]
     assert variables[SWITCH] == "1"
     assert ps.host_window_terms(variables) == {KIND: 32}
@@ -132,7 +134,7 @@ def test_the_window_and_declared_scratch_add_in_one_kind(tmp_path, monkeypatch):
 
 def test_slurm_refuses_a_declared_bound(tmp_path, monkeypatch):
     work, fleet = _fixture(tmp_path)
-    with pytest.raises(SystemExit, match="pull queue"):
+    with pytest.raises(submit_core.SubmissionRefused, match="pull queue"):
         _build(work, fleet, monkeypatch, *_env(f"{MAX}={5 * GIB}"),
                transport="slurm")
 
@@ -147,7 +149,7 @@ def test_a_request_without_a_spool_bound_is_unchanged(tmp_path, monkeypatch, ext
     # A stale switch the caller passed is carried through untouched.
     assert variables.get(SWITCH) == (extra[0].split("=", 1)[1] if extra else None)
     assert KIND not in json.dumps(
-        pbrun.seal_action_from_template(template), default=str)
+        submit_core.seal(template), default=str)
 
 
 def test_the_sealed_helpers_legacy_semantics_are_unchanged(tmp_path):

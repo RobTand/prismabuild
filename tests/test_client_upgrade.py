@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from generation_fixture import generation_receipt
+from receipt_reader_fixture import prepared_receipt_bridge
 
 spec = importlib.util.spec_from_file_location('upgrade_client', Path(__file__).parents[1] / 'tools/fleet/upgrade_client.py')
 upgrade = importlib.util.module_from_spec(spec)
@@ -62,9 +64,7 @@ def setup(tmp_path):
         (install / name).write_bytes((b'CLIENT_UPGRADE_PROTOCOL = 2\n'
                                      if name == 'upgrade_client.py' else b'')
                                     + ('old:' + name).encode())
-    (generation / 'RUNTIME_VERSION.json').write_text(json.dumps({
-        'schema': 'prismaquant.prismabuild.runtime_version.v1',
-        'generation': generation.name, 'commit': 'a' * 40, 'files': files}))
+    (generation / 'RUNTIME_VERSION.json').write_text(json.dumps(generation_receipt(generation.name, 'a' * 40, files)))
     gate = tmp_path / 'run' / 'maintenance.json'
     gate.parent.mkdir()
     gate.write_text(json.dumps({'draining': False}))
@@ -161,7 +161,10 @@ def test_storage_drain_observation_does_not_gate_ordinary_client_convergence(set
     result = updater.run()
     assert result['state'] == 'draining'
     assert result['drained'] is False
-    assert result['unparked'] == [105]
+    assert result['unparked'] == []
+    assert result['evidence_errors'] == [
+        f'host park observation unavailable: unsafe root-owned installation path: {updater.install}'
+    ]
     backend.active = 0
     assert updater.run()['state'] == 'updated'
     assert not backend.draining
@@ -473,15 +476,16 @@ def test_failed_removal_recovers_previously_installed_dependency(setup):
     original_copy = updater.copy_files
     failed = False
 
-    def interrupted_once(source, files):
+    def interrupted_once(source, files, *, proof_metadata=None):
         nonlocal failed
-        original_copy(source, files)
+        original_copy(source, files, proof_metadata=proof_metadata)
         if not failed:
             failed = True
             raise RuntimeError('injected failed downgrade')
 
     updater.copy_files = interrupted_once
     assert updater.run()['state'] == 'rolled_back'
+    assert failed, 'the failed dependency-removal cut must be exercised'
     assert updater.installed() == with_dependency
     assert (updater.install / 'gpu_capacity.py').exists()
 
@@ -522,7 +526,7 @@ def test_legacy_updater_needs_bridge_then_new_dependency_converges(setup, tmp_pa
     (generation / 'RUNTIME_VERSION.json').write_bytes(old_receipt)
     (generation / 'tools/resource_broker.py').write_bytes(old_broker)
     # A bridge retains the old broker and carries only the new updater code.
-    bridge = Path(upgrade.__file__).read_bytes()
+    bridge = prepared_receipt_bridge()
     (generation / 'tools/upgrade_client.py').write_bytes(bridge)
     receipt = json.loads(old_receipt)
     receipt['files']['tools/upgrade_client.py'] = upgrade.digest(bridge)
@@ -564,4 +568,31 @@ def test_optional_transaction_requires_recoverable_previous_updater(setup):
     with pytest.raises(ValueError, match='dependency-aware recovery protocol'):
         updater.run()
     assert not backend.operations
+    assert not updater.journal.exists()
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_final_eight_member_matching_tick_never_replaces_or_stops_services(setup, monkeypatch, held):
+    updater, backend, generation = setup
+    # The ordinary matching branch only needs the captured bytes and metadata;
+    # strict actual installed loaders have their own root population.
+    version, blobs = upgrade.desired(updater.config)
+    for name in upgrade.OPTIONAL_MEMBERS:
+        if name not in blobs:
+            blobs[name] = ('matching:' + name).encode()
+    version['files'] = {name: upgrade.digest(raw) for name, raw in blobs.items()}
+    for name, raw in blobs.items():
+        (updater.install / name).write_bytes(raw)
+    snapshot = upgrade.InstalledClientSnapshot(blobs, upgrade.ProofFileSnapshot(
+        blobs['park_proof.py'], upgrade.ProofFileMetadata(0, 0, 0o644)))
+    updater.reader = lambda config: (version, blobs)
+    monkeypatch.setattr(updater, 'read_installed_snapshot', lambda names=None: snapshot)
+    monkeypatch.setattr(updater, 'installed', lambda names=None: version['files'])
+    monkeypatch.setattr(updater, 'loaded_matches', lambda status: True)
+    monkeypatch.setattr(updater, 'copy_files', lambda *a, **kw: pytest.fail('matching tick copied files'))
+    backend.holder = 'deploy:bootstrap' if held else None
+    backend.active = 3
+    result = updater.run()
+    assert result['state'] == ('held' if held else 'current')
+    assert backend.operations == ['maintenance_status']
     assert not updater.journal.exists()

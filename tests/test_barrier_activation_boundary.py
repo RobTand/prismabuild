@@ -101,7 +101,9 @@ def test_barrier_dry_run_reports_history_without_proving_participation(
         monkeypatch.setattr(publish_runtime, "_commit_identity", lambda: "c" * 40)
         monkeypatch.setattr(publish_runtime, "_working_tree_dirty", lambda: False)
         monkeypatch.setattr(publish_runtime, "_publication_manifest", lambda: {
-            upgrade.MEMBERS["upgrade_client.py"]: sha})
+            upgrade.MEMBERS["upgrade_client.py"]: sha,
+            "tools/fleet/fleet_boxes.json": hashlib.sha256(
+                (publish_runtime.CHECKOUT / "tools/fleet/fleet_boxes.json").read_bytes()).hexdigest()})
         monkeypatch.setattr(publish_runtime, "_git_index_modes", lambda: {})
     monkeypatch.setattr(publish_runtime.sys, "argv", argv)
 

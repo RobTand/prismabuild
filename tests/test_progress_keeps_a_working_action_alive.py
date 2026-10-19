@@ -18,10 +18,13 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import core as pb, pool, progress  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -120,7 +123,7 @@ def _claimed(tmp_path, *, mode, seconds, policy, timeout_s=None, source=REPORTER
                   checkout_root=checkout,
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
-    return queue, queue.claim(cpu_tiers=cpu_tiers)
+    return queue, queue.claim(cpu_tiers=cpu_tiers, tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
 
 
 def _run(tmp_path, **kwargs):
@@ -187,7 +190,7 @@ class _ScriptedChild:
 
     @property
     def observation(self):
-        lease = json.loads(self.queue.lease_path(self.item["action_key"]).read_text())
+        lease = json.loads(self.queue.records.lease_path(self.item["action_key"]).read_text())
         return lease["progress_observation"]
 
     def publish(self, units, *, phase="run", token=None):
@@ -586,12 +589,12 @@ def test_entering_a_later_phase_rearms_the_allowance_once(tmp_path):
     (["run=1", "run=2"], "repeats"),
 ])
 def test_an_unusable_phase_declaration_is_refused_at_submit(bad, message):
-    with pytest.raises(SystemExit, match=message):
-        pbrun.parse_progress_phases(bad)
+    with pytest.raises(submit_core.SubmissionRefused, match=message):
+        submit_core.parse_progress_phases(bad)
 
 
 def test_phase_order_is_the_order_it_was_declared():
-    policy = pbrun.parse_progress_phases(["startup=1800", "encode=900"])
+    policy = submit_core.parse_progress_phases(["startup=1800", "encode=900"])
     assert [phase["name"] for phase in policy["phases"]] == ["startup", "encode"]
     assert policy["schema"] == pb.PROGRESS_POLICY_SCHEMA_V1
 
@@ -614,15 +617,15 @@ def _fleet(tmp_path, boxes, *, helper_hosts=None):
             host for host, contracts in boxes.items()
             if contracts and pb.PROGRESS_RECORD_SCHEMA_V1 in contracts
         }
-    for host, contracts in boxes.items():
+    for host, announced in boxes.items():
         tags = ["cpu", host, "x86"]
-        if contracts and pb.PROGRESS_RECORD_SCHEMA_V1 in contracts:
-            tags.append(pb.PROGRESS_TAG)
+        if announced and pb.PROGRESS_RECORD_SCHEMA_V1 in announced:
+            tags.append(contracts.PROGRESS_TAG)
             if host in helper_hosts:
-                tags.append(pb.PROGRESS_HELPER_TAG)
+                tags.append(contracts.PROGRESS_HELPER_TAG)
         queue.announce(host=host, tags=tags, has_gpu=False,
                        capacity={"gpu": 0, "mem_gb": 60, "cpu": 80},
-                       timeout_ceiling_s=7200.0, progress_contracts=contracts)
+                       timeout_ceiling_s=7200.0, progress_contracts=announced)
     return queue
 
 
@@ -633,7 +636,7 @@ def test_a_box_announces_the_contracts_it_can_honour(tmp_path):
 
 def test_requested_progress_notice_states_payload_budget_not_release(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1]})
-    said = pbrun.progress_contract_notice(
+    said = submit_core.progress_contract_notice(
         queue, _intent([]), policy=_policy(1800, 900), requested_timeout_s=13000)
     assert "explicit payload execution budget of 13000s" in said
     assert "not a wall-clock stop or resource-release guarantee" in said
@@ -654,8 +657,8 @@ def test_a_fleet_that_cannot_honour_the_contract_refuses_the_submission(tmp_path
     """Point 6: no hidden whole-run ceiling under a contract that promised none."""
 
     queue = _fleet(tmp_path, {"dl380g10": None, "sparky": []})
-    with pytest.raises(SystemExit, match="no eligible worker announces"):
-        pbrun.progress_contract_notice(
+    with pytest.raises(submit_core.SubmissionRefused, match="no eligible worker announces"):
+        submit_core.progress_contract_notice(
             queue, _intent([]), policy=_policy(1800, 900))
 
 
@@ -664,10 +667,10 @@ def test_a_mixed_fleet_is_narrowed_rather_than_refused(tmp_path):
 
     queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1],
                               "sparky": None})
-    said = pbrun.progress_contract_notice(
+    said = submit_core.progress_contract_notice(
         queue, _intent([]), policy=_policy(1800, 900))
     assert "sparky do not announce" in said
-    assert f"requires the {pb.PROGRESS_TAG} tag" in said
+    assert f"requires the {contracts.PROGRESS_TAG} tag" in said
     assert "waits for a box that does" in said
 
 
@@ -684,13 +687,13 @@ def test_notice_names_v1_workers_withheld_for_the_helper_and_uses_only_new_ceili
     old_offer = next(offer for offer in queue.offers()
                      if offer["host"] == "watchdog-only")
     old_offer["timeout_ceiling_s"] = 60.0
-    (queue.root / pool.WORKERS / "watchdog-only.json").write_text(
+    (queue.root / pool.record_store.WORKERS / "watchdog-only.json").write_text(
         json.dumps(old_offer))
 
-    said = pbrun.progress_contract_notice(
+    said = submit_core.progress_contract_notice(
         queue, _intent([]), policy=_policy(1800, 900))
     assert "watchdog-only announce" in said
-    assert pb.PROGRESS_HELPER_TAG in said
+    assert contracts.PROGRESS_HELPER_TAG in said
     assert "limits startup grace to 60s" not in said
 
 
@@ -699,14 +702,14 @@ def test_v1_only_fleet_refuses_helper_submission_precisely(tmp_path):
         tmp_path, {"watchdog-only": [pb.PROGRESS_RECORD_SCHEMA_V1]},
         helper_hosts=set(),
     )
-    with pytest.raises(SystemExit, match="watchdog-only announce the watchdog"):
-        pbrun.progress_contract_notice(
+    with pytest.raises(submit_core.SubmissionRefused, match="watchdog-only announce the watchdog"):
+        submit_core.progress_contract_notice(
             queue, _intent([]), policy=_policy(1800, 900))
 
 
 def test_the_submitter_is_told_the_total_quiet_it_just_asked_for(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": [pb.PROGRESS_RECORD_SCHEMA_V1]})
-    said = pbrun.progress_contract_notice(
+    said = submit_core.progress_contract_notice(
         queue, _intent([]), policy=_policy(3600, 900, 1800))
     assert "startup 3600s, run 900s, publish 1800s" in said
     assert "at most 6300s of quiet in total" in said
@@ -715,7 +718,7 @@ def test_the_submitter_is_told_the_total_quiet_it_just_asked_for(tmp_path):
 
 def test_no_policy_says_nothing(tmp_path):
     queue = _fleet(tmp_path, {"dl380g10": None})
-    assert pbrun.progress_contract_notice(queue, _intent([]), policy=None) == ""
+    assert submit_core.progress_contract_notice(queue, _intent([]), policy=None) == ""
 
 
 def test_a_box_that_cannot_keep_the_policy_cannot_claim_the_work(tmp_path):
@@ -751,13 +754,15 @@ def test_a_box_that_cannot_keep_the_policy_cannot_claim_the_work(tmp_path):
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=action["action_key"], cas_root=cas.root,
                   checkout_root=checkout,
-                  tags=["x86", pb.PROGRESS_TAG],
+                  tags=["x86", contracts.PROGRESS_TAG],
                   worker_script=Path(__file__).resolve().parents[1]
                   / "tools" / "prismabuild_worker.py")
 
     previous_generation = ["x86", "dl380g10", "cpu"]
     assert queue.claim(tags=previous_generation) is None
-    claimed = queue.claim(tags=[*previous_generation, pb.PROGRESS_TAG])
+    assert queue.claim(tags=[*previous_generation, contracts.PROGRESS_TAG]) is None
+    claimed = queue.claim(tags=[*previous_generation, contracts.PROGRESS_TAG,
+                                contracts.PROGRESS_HELPER_TAG])
     assert claimed is not None
     assert claimed["action_key"] == action["action_key"]
 
@@ -772,11 +777,11 @@ def test_the_slurm_lane_refuses_a_contract_it_cannot_enforce():
     ``--timeout-s``, no deadline either.
     """
 
-    policy = pbrun.parse_progress_phases(["startup=1800", "run=900"])
-    pbrun.require_progress_scope(progress=policy, transport="pool")
-    pbrun.require_progress_scope(progress=None, transport="slurm")
+    policy = submit_core.parse_progress_phases(["startup=1800", "run=900"])
+    submit_core.require_progress_scope(progress=policy, transport="pool")
+    submit_core.require_progress_scope(progress=None, transport="slurm")
     with pytest.raises(ValueError, match="requires pool transport"):
-        pbrun.require_progress_scope(progress=policy, transport="slurm")
+        submit_core.require_progress_scope(progress=policy, transport="slurm")
 
 
 def test_a_campaign_row_cannot_carry_phases_to_slurm():
@@ -808,7 +813,7 @@ def test_a_progress_submission_seals_the_capability_it_needs(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(
         host="sparky",
-        tags=["sparky", "gb10", pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+        tags=["sparky", "gb10", contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG],
         has_gpu=True,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
         timeout_ceiling_s=7200.0,
@@ -823,8 +828,8 @@ def test_a_progress_submission_seals_the_capability_it_needs(
     captured = capsys.readouterr()
     line = _one_json_line(captured)
     item = json.loads(Path(line["submission"]).read_text(encoding="utf-8"))
-    assert pb.PROGRESS_TAG in item["tags"]
-    assert pb.PROGRESS_HELPER_TAG in item["tags"]
+    assert contracts.PROGRESS_TAG in item["tags"]
+    assert contracts.PROGRESS_HELPER_TAG in item["tags"]
     assert "at most 2700s of quiet in total" in captured.err
 
     # And the sealed request carries the policy the receipt will name -- read
@@ -877,14 +882,14 @@ def _claim_with(queue, key, observation, *, tmp_path, overrides=()):
         default_demand={"cpu": 1, "mem_gb": 1})
     queue.publish(action_key=key, cas_root=tmp_path / "cas",
                   checkout_root=tmp_path, worker_script="/worker.py")
-    item = queue.claim(owner="worker")
+    item = queue.claim(owner="worker", tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert item is not None
-    lease = json.loads(queue.lease_path(key).read_text(encoding="utf-8"))
+    lease = json.loads(queue.records.lease_path(key).read_text(encoding="utf-8"))
     lease["published_unix"] = item["published_unix"]
     lease["progress_observation"] = observation
     lease.update(overrides)
-    queue.lease_path(key).write_text(json.dumps(lease), encoding="utf-8")
-    return next(row for row in pbstatus.read_pool(queue.root)["jobs"]
+    queue.records.lease_path(key).write_text(json.dumps(lease), encoding="utf-8")
+    return next(row for row in fleet_census.action_rows(queue.root).value["jobs"]
                 if row["action_key"] == key)
 
 

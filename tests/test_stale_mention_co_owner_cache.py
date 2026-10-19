@@ -44,8 +44,10 @@ import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
 from prismabuild import reader_lease, residency_map  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import kept_reads
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 SIZE = red.SIZE
@@ -54,9 +56,9 @@ TIER = red.TIER
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 def _path(stage: Path, name: str) -> Path:
@@ -89,13 +91,13 @@ def _co_owner(fleet, names) -> tuple[str, str]:
     queue.finish(mover, status="executed", detail={"returncode": 0})
     # The owner under test holds the one token its fixture minted; the mint
     # sets the tier's capacity, so this owner's token needs a second one.
-    queue.mint_tier_capacity(TIER, {"stage_gib": 2})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": 1}) is True
+    queue.tier(TIER).mint({'stage_gib': 2})
+    assert queue.tier(TIER).take(mover, {'stage_gib': 1}) is True
     return consumer, mover
 
 
 def _write_fragment(queue, stage, consumer, mover, entries) -> None:
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -105,7 +107,7 @@ def _write_fragment(queue, stage, consumer, mover, entries) -> None:
 def _rewrite_fragment(queue, consumer, mover) -> None:
     """The same document filed again: a new inode, the same content."""
 
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     path = residency_map.fragment_path(root, consumer, mover)
     residency_map.write_fragment(root, json.loads(path.read_text()))
 
@@ -113,20 +115,19 @@ def _rewrite_fragment(queue, consumer, mover) -> None:
 def _drop_owner(queue, consumer, mover) -> None:
     """What an owner's egress leaves: no fragment and no material."""
 
-    root = queue.residency_fragment_root()
-    residency_map.fragment_path(root, consumer, mover).unlink()
-    reader_lease.material_path(root, consumer, mover).unlink()
+    root = queue.records.residency_fragment_root()
+    staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
 
 
 def _pass(queue, stage, index=None):
     return stage_release.sweep_dead_owner_fragments(
         queue, stage_roots={TIER: str(stage)},
-        residency_root=queue.residency_fragment_root(), index=index)
+        residency_root=queue.records.residency_fragment_root(), index=index)
 
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
     return [entry for entry in receipts
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT
             and entry.get("action_key") == mover]
 
 
@@ -137,8 +138,8 @@ def _one(receipts, mover: str) -> dict:
 
 
 def _checkpoint_key(queue, stage, consumer, mover) -> tuple:
-    return stage_release._skip_checkpoint_key(
-        queue, queue.residency_fragment_root(), stage, TIER, consumer, mover)
+    return staged_path._skip_checkpoint_key(
+        queue, queue.records.residency_fragment_root(), stage, TIER, consumer, mover)
 
 
 def _count_destination_lstats(monkeypatch, paths) -> list[int]:
@@ -218,7 +219,7 @@ def test_removing_the_co_owner_can_evict_the_whole_owner(fleet):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet)      # every path replaced
     co_consumer, co_mover = _co_owner(fleet, NAMES)
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
 
     assert _one(_pass(queue, stage), mover)["retained_reason"] == "co-owner"
     assert _receipts_for(_pass(queue, stage), mover) == []
@@ -230,7 +231,7 @@ def test_removing_the_co_owner_can_evict_the_whole_owner(fleet):
             and entry.get("complete") is True], third
     assert not residency_map.fragment_path(root, consumer, mover).exists()
     assert not any(_path(stage, name).exists() for name in NAMES)
-    assert mover not in queue.tier_ledger(TIER).held_keys()
+    assert mover not in queue.tier(TIER).holders()
 
 
 def test_rewriting_the_co_owner_fragment_reruns_the_census(fleet):
@@ -294,7 +295,7 @@ def test_a_tainted_census_still_caches_an_idle_owner(fleet, monkeypatch):
                                       replace=False)
     _co_owner(fleet, NAMES)
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), ["46da18322b2d: mover seals no range"],
                                  set()))
 
@@ -339,7 +340,7 @@ def test_a_promotion_handoff_on_an_idle_owner_caches(fleet, monkeypatch):
     consumer, mover = red.stale_owner(fleet, coherent_names=set(NAMES),
                                       replace=False)
     handoff = os.path.normpath(str(_path(stage, NAMES[1]).resolve()))
-    monkeypatch.setattr(stage_release, "_claimed_source_paths",
+    monkeypatch.setattr(staged_path, 'claimed_source_paths',
                         lambda *args, **kwargs: ({handoff}, []))
 
     receipt = _one(_pass(queue, stage), mover)
@@ -354,7 +355,7 @@ def test_a_retained_owner_with_a_stale_path_is_never_cached(fleet, monkeypatch):
     queue, stage, _ = fleet
     consumer, mover = red.stale_owner(fleet, coherent_names={NAMES[0]})
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), ["46da18322b2d: mover seals no range"],
                                  set()))
 
@@ -372,12 +373,13 @@ def test_a_retained_owner_with_a_stale_path_is_never_cached(fleet, monkeypatch):
 # The cache holds the live shape and follows the owners the sweep sees
 # --------------------------------------------------------------------------
 
-def _stamps(prefix: str, count: int) -> dict[str, tuple[int, int, int, int]]:
+def _stamps(prefix: str, count: int) -> dict[str, kept_reads.DirectoryEvidence]:
     # A live parent is ``<stage>/models/<model>/<shard>.pbrange``: 242 bytes
     # on average on 2026-09-24.
     stem = f"/stage/prewarm/models/{prefix}/" + "m" * 180
-    return {f"{stem}-{index:06d}-of-000120.safetensors.pbrange": (1, index, 2, 3)
-            for index in range(count)}
+    return {name: kept_reads.DirectoryEvidence(name, (1, index, 2, 3))
+            for index in range(count)
+            for name in [f"{stem}-{index:06d}-of-000120.safetensors.pbrange"]}
 
 
 def test_the_checkpoint_holds_the_live_owner_shape():
@@ -386,18 +388,18 @@ def test_the_checkpoint_holds_the_live_owner_shape():
     owners = [("big",)] + [("owner", index) for index in range(40)]
     # The sweep names the owners it discovered before it consults the cache
     # (#1056); main has no such step and caches under its fixed literals.
-    discovered = getattr(stage_release, "_retain_skip_checkpoints", None)
+    discovered = getattr(staged_path, '_retain_skip_checkpoints', None)
     if discovered is not None:
         discovered(owners)
     fragment, material = (1, 2, 3, 4, 5), (1, 2, 3, 4, 6)
     for key in owners:
         count = 2575 if key == ("big",) else 1680
-        assert stage_release._install_skip_checkpoint(
+        assert staged_path._install_skip_checkpoint(
             key, fragment, material, _stamps(str(key), count),
             documents={}), (
             f"{key}: a discovered owner of {count} entries, one parent "
             f"directory each, must fit")
-    assert set(stage_release._skip_checkpoints) == set(owners)
+    assert set(staged_path._skip_checkpoints) == set(owners)
 
 
 def test_overflow_refuses_and_the_refused_owner_is_still_censused(
@@ -414,11 +416,8 @@ def test_overflow_refuses_and_the_refused_owner_is_still_censused(
     _consumer_a, mover_a = red.stale_owner(fleet, coherent_names=set(NAMES),
                                            replace=False)
     _consumer_b, mover_b = _co_owner(fleet, NAMES)
-    # Room for one checkpoint: the fixed literal on main, the discovered
-    # count (#1056) here.
-    monkeypatch.setattr(stage_release, "SKIP_CHECKPOINT_MAX_ENTRIES", 1,
-                        raising=False)
-    monkeypatch.setattr(stage_release, "_skip_checkpoint_capacity",
+    # Room for one checkpoint through the actual discovered-count policy.
+    monkeypatch.setattr(staged_path, '_skip_checkpoint_capacity',
                         lambda discovered: 1, raising=False)
 
     first = _pass(queue, stage)
@@ -444,7 +443,7 @@ def test_a_checkpoint_installed_under_a_taint_sees_a_replaced_leaf(
     consumer, mover = red.stale_owner(fleet, coherent_names=set(NAMES),
                                       replace=False)
     monkeypatch.setattr(
-        stage_release, "_claimed_paths_attributed",
+        staged_path, 'claimed_paths_attributed',
         lambda *args, **kwargs: (set(), ["46da18322b2d: mover seals no range"],
                                  set()))
     assert _one(_pass(queue, stage), mover)["cacheable"] is True
@@ -471,15 +470,15 @@ def test_a_sweep_forgets_the_checkpoint_of_an_owner_that_left(fleet):
     other_consumer, other_mover = _co_owner(fleet, [NAMES[1]])
     _pass(queue, stage)
     key = _checkpoint_key(queue, stage, other_consumer, other_mover)
-    assert key in stage_release._skip_checkpoints
+    assert key in staged_path._skip_checkpoints
 
     _drop_owner(queue, other_consumer, other_mover)
     _pass(queue, stage)
 
-    assert key not in stage_release._skip_checkpoints, (
+    assert key not in staged_path._skip_checkpoints, (
         "a checkpoint must not outlive the owner the sweep discovers")
     assert _checkpoint_key(queue, stage, consumer, mover) in (
-        stage_release._skip_checkpoints)
+        staged_path._skip_checkpoints)
 
 
 def test_the_cycle_line_counts_skips_and_censuses(fleet):

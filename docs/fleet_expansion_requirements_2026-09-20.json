@@ -62,7 +62,7 @@
     },
     {
       "acceptance": "tests/test_fleet_membership_join_resign.py::test_gate_shape_is_fail_closed_and_keyed",
-      "enforcement": "worker_loop.read_maintenance_gate/_gate_key mirror",
+      "enforcement": "role_session.read_maintenance_gate and park_proof._gate_key",
       "id": "FLEET-08",
       "maturity": "tested",
       "owner": "PB:broker-gate",

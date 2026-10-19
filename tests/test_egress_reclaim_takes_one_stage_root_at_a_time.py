@@ -48,7 +48,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 CONSUMER_A = "a" * 64
 CONSUMER_B = "b" * 64
@@ -75,7 +76,11 @@ def _publish(root: Path, stage: Path, consumer: str, mover: str, tier: str,
              source: str, staged: Path) -> str:
     """One mover's published fragment plus the sidecar that dates it."""
 
-    residency_map.write_fragment(root, {
+    generation = reader_lease.mint_generation()
+    identity = reader_lease.stat_identity(str(staged))
+    assert identity is not None
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": tier, "stage_root": str(stage),
@@ -86,15 +91,9 @@ def _publish(root: Path, stage: Path, consumer: str, mover: str, tier: str,
                 "sha256": DIGEST, "offset": 0,
             },
         },
-    })
-    generation = reader_lease.mint_generation()
-    identity = reader_lease.stat_identity(str(staged))
-    assert identity is not None
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=tier, stage_root=str(stage), manifest_sha256="a" * 64,
+    },
         generation=generation,
-        entries={residency_map.residency_map_key(source, 0): {
+        material_entries={residency_map.residency_map_key(source, 0): {
             "stage_path": str(staged), "bytes": SIZE, "sha256": DIGEST,
             "file_id": identity}})
     return generation
@@ -128,7 +127,7 @@ def _contain(queue, consumer: str, attempt: dict) -> None:
         "scope_empty": True, "released": True, "retired": False,
         "settled": False, "empty": True, "tickets_pending": False,
         "stopped_unix": 1789870000.0, "unix": 1789880000.0}) + "\n")
-    done = queue.dir(pool.DONE)
+    done = queue.records.dir(pool.record_store.DONE)
     done.mkdir(parents=True, exist_ok=True)
     (done / f"{consumer}.json").write_text(json.dumps({
         "action_key": consumer, "status": "executed",
@@ -149,12 +148,12 @@ def _root(queue, base: Path, name: str, tier: str, consumer: str,
 
     stage = base / name
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=tier, stage_root=stage) == "registered"
     staged = stage / "model" / "shard.bin"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(b"\x19" * SIZE)
-    residency = queue.root / pool.RESIDENCY
+    residency = queue.root / pool.record_store.RESIDENCY
     _publish(residency, stage, consumer, mover, tier,
              f"/mnt/shared/{name}/shard.bin", staged)
     held = _acquire(queue, consumer, mover, tier, CONTAINED, f"{name}-gone")
@@ -174,14 +173,14 @@ def two_roots(tmp_path: Path):
     """One queue, two registered stage roots, each pinned on both attempts."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     first = _root(queue, tmp_path, "stage-a", TIER_A, CONSUMER_A, MOVER_A)
     second = _root(queue, tmp_path, "stage-b", TIER_B, CONSUMER_B, MOVER_B)
     return queue, first, second
 
 
 def _pin_refs(queue, side: dict[str, object]) -> set[str]:
-    path = (queue.root / pool.RESIDENCY / reader_lease.LEASES_SUBDIR
+    path = (queue.root / pool.record_store.RESIDENCY / reader_lease.LEASES_SUBDIR
             / str(side["consumer"]) / f"{side['pin_id']}.lease.json")
     pin = json.loads(path.read_text())
     refs = pin["refs"]
@@ -229,7 +228,7 @@ def test_egress_requests_no_second_stage_root_while_holding_one(
 
     queue, first, second = two_roots
     watched = WatchingQueue(queue.root)
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         watched, str(first["mover"]),
         consumer_action_key=str(first["consumer"]),
         stage_root=str(first["stage"]))
@@ -280,7 +279,7 @@ def _child_egress(pool_root: str, stage_root: str, consumer: str, mover: str,
         return original(*args, **kwargs)
 
     reader_lease.release_refs = rendezvous
-    receipt = stage_release.evict(queue, mover,
+    receipt = staged_path.evict(queue, mover,
                                   consumer_action_key=consumer,
                                   stage_root=stage_root)
     Path(receipt_path).write_text(json.dumps(receipt) + "\n")

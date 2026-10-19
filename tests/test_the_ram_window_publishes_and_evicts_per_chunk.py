@@ -20,6 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 
+from prismabuild import census as fleet_census
+
 import pbstatus  # noqa: E402
 import residency_publication  # noqa: E402
 
@@ -96,10 +98,7 @@ def _key(phase: int, chunk: int) -> str:
 def test_chunks_publish_in_read_order_behind_free_space() -> None:
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=3, capacity_gib=4,
-        published=[_key(0, 0)], staged=[_key(0, 0)],
-        mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_key(0, 0)], staged=[_key(0, 0)], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=3, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"]) for entry in decision["publish"]] == [
         ("phase-0000", 1), ("phase-0001", 0), ("phase-0001", 1)]
@@ -113,11 +112,7 @@ def test_the_current_phases_chunks_ignore_the_runahead_budget() -> None:
 
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0000", free_gib=3, capacity_gib=4,
-        published=[_key(0, 0), _key(1, 0), _key(1, 1), _key(2, 0)],
-        staged=[_key(0, 0)],
-        mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0000', residency_plan.LegObservation(published=[_key(0, 0), _key(1, 0), _key(1, 1), _key(2, 0)], staged=[_key(0, 0)], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=3, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"]) for entry in decision["publish"]] == [
         ("phase-0000", 1)]
@@ -133,11 +128,7 @@ def test_the_current_phases_chunks_ignore_the_runahead_budget() -> None:
 def test_each_chunk_of_a_passed_phase_egresses_through_its_own_node() -> None:
     plan = _plan()
 
-    decision = residency_plan.window(
-        plan, accepted_phase="phase-0001", free_gib=4, capacity_gib=4,
-        published=[_key(0, 0), _key(0, 1)],
-        staged=[_key(0, 0), _key(0, 1)],
-        mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(plan, 'phase-0001', residency_plan.LegObservation(published=[_key(0, 0), _key(0, 1)], staged=[_key(0, 0), _key(0, 1)], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=4, capacity_gib=4)).decision
 
     assert [(entry["phase"], entry["chunk_index"]) for entry in decision["evict"]] == [
         ("phase-0000", 0), ("phase-0000", 1)]
@@ -178,9 +169,7 @@ def test_a_whole_phase_leg_beside_chunks_decides_as_it_always_did() -> None:
         manifest_bytes=6 * GIB,
         phases=[whole, *plan["phases"][1:]], ram_tier_id=RAM_TIER)  # type: ignore[index]
 
-    decision = residency_plan.window(
-        mixed, accepted_phase=None, free_gib=4, capacity_gib=4,
-        published=[], staged=[], mover_role="ram_mover_row")
+    decision = residency_plan.ConsumerWindow(mixed, None, residency_plan.LegObservation(published=[], staged=[], mover_role='ram_mover_row'), residency_plan.WindowBudget(free_gib=4, capacity_gib=4)).decision
 
     first = decision["publish"][0]
     assert first["phase"] == "phase-0000"
@@ -234,15 +223,16 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
     (whole-phase) ``ram``, which stays ``None`` so the existing shape holds."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _plan()
     residency_plan.freeze(queue, plan)
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}), residency={
         "schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": STAGE_TIER,
         "manifest_sha256": MANIFEST, "manifest_bytes": 6 * GIB,
         "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(_key(0, 0), {"ram_gib": 1})
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 16})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(_key(0, 0), {'ram_gib': 1})
     # The booking above is the room; these are the records the finished
     # promotion left, which is what the census now reports (#759).
     queue.announce_tier({
@@ -250,13 +240,13 @@ def test_the_census_reports_a_chunked_phase_per_chunk(tmp_path) -> None:
         "tier_id": RAM_TIER, "host": "dl380g10",
         "mountpoint": str(tmp_path / "ram"), "epoch": EPOCH,
         "capacity_bytes": 8 * GIB})
-    residency_publication.vouch_landed(
+    residency_publication.publish_landed_files(
         queue, consumer_action_key=CONSUMER, mover_action_key=_key(0, 0),
         tier_id=RAM_TIER, stage_root=tmp_path / "ram",
         manifest_sha256=MANIFEST, range_start_bytes=0,
         range_end_bytes=GIB, epoch=EPOCH)
 
-    entry = pbstatus._starvation_plan_entry(
+    entry = fleet_census._starvation_plan_entry(
         queue, CONSUMER, plan, ready={CONSUMER}, claimed=set("#"),
         notes=[], unreadable=[], now=0.0)
 

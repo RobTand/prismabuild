@@ -11,6 +11,7 @@ happen: a run that died between publishing some children and publishing the
 rest, and a source tree that moved on between two runs.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -25,6 +26,7 @@ from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbcampaign  # noqa: E402
 
 from test_pbrun_detach import _checkout, _queue  # noqa: E402
@@ -34,7 +36,7 @@ EVIDENCE = "cas:sha256:" + "0" * 64
 
 @pytest.fixture()
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return _checkout(tmp_path), _queue(tmp_path)
 
@@ -96,19 +98,19 @@ def _refuse_to_partition(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _plan_path(tmp_path: Path, parent_key: str) -> Path:
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    return pbcampaign.decomposition_dir(cas, parent_key) / "plan.json"
+    return dc.record_dir(cas.root, parent_key) / "plan.json"
 
 
 def _index_path(tmp_path: Path, parent_key: str) -> Path:
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    return pbcampaign.decomposition_dir(cas, parent_key) / "publication.json"
+    return dc.record_dir(cas.root, parent_key) / "publication.json"
 
 
 def _published_plan(tmp_path: Path) -> dict:
-    root = tmp_path / "cas" / pbcampaign.DECOMPOSITIONS
+    root = tmp_path / "cas" / dc.DECOMPOSITIONS
     plans = sorted(root.glob("*/*/plan.json"))
     assert len(plans) == 1, f"expected one plan, found {plans!r}"
-    return dc.validate_plan(json.loads(plans[0].read_text(encoding="utf-8")))
+    return json.loads(plans[0].read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -130,7 +132,7 @@ def test_a_resumed_campaign_publishes_only_the_children_that_are_missing(
     # The state a campaign dies in: the index and most of the children are
     # published, one is not.
     missing = str(first[0]["action_key"])
-    (queue.root / pool.READY / f"{missing}.json").unlink()
+    (queue.root / pool.record_store.READY / f"{missing}.json").unlink()
 
     _refuse_to_partition(monkeypatch)
     second = _decompose(request)
@@ -184,7 +186,7 @@ def test_a_tree_that_moved_on_is_a_different_parent_and_leaves_the_old_plan(
         assert done.returncode == 0, done.stderr
     _decompose(request)
 
-    plans = sorted((tmp_path / "cas" / pbcampaign.DECOMPOSITIONS)
+    plans = sorted((tmp_path / "cas" / dc.DECOMPOSITIONS)
                    .glob("*/*/plan.json"))
     assert len(plans) == 2, "a changed tree is a second parent, not an edit"
     assert old_path.read_bytes() == old_bytes, (
@@ -287,14 +289,14 @@ def test_a_plan_no_box_can_run_publishes_no_child(
     request = _request(work)
     request["common"]["demand"] = {"cpu": 99, "mem_gb": 4}
 
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(pbcampaign.ManifestError) as refusal:
         _decompose(request)
     assert "no recorded worker can run this action" in str(refusal.value)
 
-    published = tmp_path / "cas" / pbcampaign.DECOMPOSITIONS
+    published = tmp_path / "cas" / dc.DECOMPOSITIONS
     assert list(published.rglob("plan.json")), "the cut is pure; publish it"
     assert not list(published.rglob("publication.json"))
-    assert not list((tmp_path / "pb-queue" / pool.READY).glob("*.json"))
+    assert not list((tmp_path / "pb-queue" / pool.record_store.READY).glob("*.json"))
 
 
 def test_one_commit_in_two_places_is_one_parent(

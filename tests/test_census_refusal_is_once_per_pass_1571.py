@@ -24,6 +24,7 @@ import pytest
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
     tmpfs_mount, tmpfs_state)
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
@@ -48,7 +49,9 @@ def test_a_busy_fence_is_waited_for_once_per_pass_not_once_per_candidate(
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.05)
     keys = [publish(f"census-candidate-{index}", priority=-10)
             for index in range(CANDIDATES)]
-    records = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    records = [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) for key in keys]
 
     attempts: list[int] = []
     real_held = reservation.CensusReader.held
@@ -67,7 +70,9 @@ def test_a_busy_fence_is_waited_for_once_per_pass_not_once_per_candidate(
     try:
         claimed = queue.claim(
             capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-            has_gpu=True, tags=["gb10", "sparklina"], ready=records)
+            has_gpu=True, tags=["gb10", "sparklina"], ready=records,
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings))
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -89,7 +94,7 @@ def test_the_next_pass_takes_the_fence_again(fleet, tmpfs_state, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     monkeypatch.setattr(reservation, "FENCE_WAIT_S", 0.05)
     key = publish("census-next-pass", priority=-10)
-    record = pool._read_json(queue.item_path(pool.READY, key))
+    record = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
     other = reservation.CensusReader(queue, queue.ledger())
     descriptor = os.open(other.directory / (other.name + ".guard"),
@@ -98,14 +103,18 @@ def test_the_next_pass_takes_the_fence_again(fleet, tmpfs_state, monkeypatch):
     try:
         assert queue.claim(
             capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-            has_gpu=True, tags=["gb10", "sparklina"], ready=[record]) is None
+            has_gpu=True, tags=["gb10", "sparklina"], ready=[record],
+            cpu_sampler=lambda: cpu_sample(clock, readings),
+            gpu_sampler=lambda: gpu_sample(sample, readings)) is None
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
 
     claimed = queue.claim(
         capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-        has_gpu=True, tags=["gb10", "sparklina"], ready=[record])
+        has_gpu=True, tags=["gb10", "sparklina"], ready=[record],
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings))
     assert claimed is not None and claimed["action_key"] == key
 
 
@@ -116,7 +125,7 @@ def test_a_publication_that_vanishes_during_the_scan_is_rescanned(
     monkeypatch.setattr(adaptive_cpu, "BOX_STATE_ROOT", tmpfs_state / "box-state")
     keep = publish("census-kept", measurement=True, priority=-100)
     gone = publish("census-vanishing", measurement=True, priority=-100)
-    gone_path = queue.item_path(pool.READY, gone)
+    gone_path = queue.records.item_path(pool.record_store.READY, gone)
 
     real_read = reservation._read
 
@@ -149,7 +158,7 @@ def test_a_publication_that_keeps_vanishing_still_refuses_after_bounded_rescans(
     attempts = tmp_path / "attempts"
 
     real_read = reservation._read
-    ready = str(queue.root / pool.READY)
+    ready = str(queue.root / pool.record_store.READY)
 
     def always_missing(path, *args, **kwargs):
         # Only the queue's publications vanish; the reader's own ownership

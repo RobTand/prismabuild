@@ -213,3 +213,79 @@ with the old broker and no optional source as the rollback generation. Once
 that removes the optional file safely, a separate later publication can restore
 a pre-bridge updater if explicitly intended; reintroducing the dependency would
 then require bridge convergence again.
+
+`park_proof.py` is a separate updater-owned optional member at
+`src/prismabuild/park_proof.py`. It participates in export, exact installed
+hashes, the previous/target member union and presence/absence recovery. Broker
+loaded equality excludes only this leaf and `upgrade_client.py`; GPU modules
+remain broker-owned. `CLIENT_UPGRADE_PROOF_MEMBER_PROTOCOL = 2` declares this
+transport/recovery contract, including prior proof metadata preservation. The
+unpublished protocol 1 intermediate is not a capable rollback reader. The proof
+protocol does not claim strict marker acceptance.
+Whenever either side names the proof leaf, both the captured previous updater
+and verified exported candidate must declare that capability as well as the
+existing optional-member protocol 2.
+
+One no-follow regular file descriptor supplies bounded previous proof bytes and
+uid/gid/mode together. Missing files are explicit absence; unavailable, oversized
+or nonregular files refuse before journal or service mutation. Worker-owned or
+worker-writable regular files remain repairable through the existing owned
+zero-scope drain, without receipt MATCH or physical park evidence. Unsafe captured
+proof ownership or write mode still takes that repair path when client byte
+digests already match. A trusted equal-byte installation stays current without
+staging or service restart. Whenever the
+member union includes the leaf, the journal requires `previous_proof_file`: null
+for known absence, or exact integer `uid`, `gid`, `mode` fields for a previous
+file. Missing legacy metadata is unknown and cannot authorize rollback. Recovery
+validates it before service I/O, restores uid/gid and then permission mode on an
+exclusive temporary file, fsyncs, and atomically replaces the installed path.
+Root recopy therefore cannot turn retained worker-controlled bytes into trusted
+code. The existing GPU/optional-member protocol 2 remains independent.
+
+First converge a non-consuming bridge. An old installed reader exports only its
+known names and can adopt that bridge while the proof source remains in the
+shared runtime for roles. A subsequent fresh bridge tick introduces the leaf.
+A direct candidate driver with an incapable installed rollback reader refuses.
+Once introduced, downgrade to an incapable updater stays fenced. Rollback to a
+capable bridge preserves the leaf. First-introduction failure can restore its
+actual previous absence. The GPU instruction to publish a leaf-absent bridge
+does not apply to this role-required shared source.
+
+The updater captures one bounded installed byte map under its local upgrade
+lock. Capability checks, previous digests and backup writes all use that same
+map, including optional absence. Candidate capability uses the already verified
+export bytes. The lock serializes cooperating updater transactions; independent
+administrative replacement of installed files during a transaction is outside
+this guarantee. Such changes must take the same lock or wait for the timer
+transaction to finish.
+
+The retained bridges do not import or consume proof code. The strict consumer
+loads only the root-trusted installed `park_proof.py` sibling when physical
+proof is requested. One no-follow regular FD supplies bounded coherent bytes
+and uid/gid/mode. The updater hashes and compiles those same bytes in a fresh
+module, requires its actual strict API, and removes temporary module registration.
+It does not consult import caches, bytecode, the shared runtime or package code.
+Missing, unsafe or incapable proof code yields unknown evidence, including with
+an empty selected census.
+
+Host drain and rotation use the installed owner's `HOST_QUIESCENT` profile,
+exact gate keys and regular markers. Rotation retains its additional generation
+paths, supervisor and worker requirements. A rollout rechecks the same captured
+owner's drain identity after epoch refresh and before posting `drained`; its
+existing positive numeric wire restriction remains additional to finite physical
+identity. No future profile membership or reader-window default is selected.
+
+Ordinary zero-scope repair remains independent of successful physical proof or
+receipt MATCH. The loader is lazy: construction, current-member checks and
+transaction recovery do not require a trusted proof leaf. Another named holder
+and active rollout epochs retain their existing limits. Bridge qualification
+requires deterministic captured-byte replacement and fresh-process journal/copy/
+recovery histories. The private two-host transport qualifier uses a root
+container with its installed updater and proof under private `/var/lib`.
+Its runtime and rollout reads and marker writes use the installed program's
+actual unprivileged subprocesses. The coordinator and fixture writes use worker
+filesystem credentials. Native ARM/NFS reader evidence and all four distinct-host
+scenario outcomes remain required before integration. Its fake broker and
+process census do not establish physical-fleet quiescence.
+Run `pbcampaign.py` from the pinned coordinator candidate checkout. Emitted rows
+omit `cwd` and use the campaign's submitting directory as the source to seal.

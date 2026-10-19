@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import core as pb  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbsnapshot  # noqa: E402
 
 OWNER = "e" * 64
@@ -53,7 +54,7 @@ def _snapshot(tmp_path, name, *, extra=None, bad=None, version=1,
     command = ["python", "-m", "pytest", name]
     demand = {"cpu": 1, "mem_gb": 4}
     placement = {"required_tags": [name]}
-    result, filename = pbrun.result_and_stamp_names(
+    result, filename = submit_core.result_and_stamp_names(
         command, ".", demand, variables,
         identity={k: stamp[k] for k in ("head", "dirty_sha256")},
         placement=placement)

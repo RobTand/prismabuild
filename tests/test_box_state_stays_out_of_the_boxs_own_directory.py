@@ -25,7 +25,9 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'fleet'))
 from prismabuild import adaptive_cpu
+import mount_latency
 
 #: The directory a real loop on this box uses.  Named here from the same two
 #: parts the module names it from, rather than read back from the module, so
@@ -149,10 +151,6 @@ def test_the_probe_reads_the_directory_the_lock_writes(tmp_path):
     would leave the probe measuring somewhere nothing is written -- which
     reads as a healthy, empty gate.
     """
-
-    mount_latency = sys.modules.get('mount_latency')
-    if mount_latency is None:
-        pytest.skip('mount_latency is not imported in this session')
 
     directory, _ = adaptive_cpu.box_state(tmp_path / 'reservations' / 'h')
     assert Path(mount_latency.ADMISSION_LOCK_DIR) == directory

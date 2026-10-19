@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     GIB, MANIFEST, TIER, _hexkey, _queue)
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
@@ -57,9 +57,8 @@ def _protect(queue, tiers):
 
 def _held(queue):
     """Ledger holdings by holder, the shape obligations reads."""
-    ledger = queue.tier_ledger(TIER)
-    return {str(holder): dict(ledger.holder_tokens(holder))
-            for holder in ledger.held_keys()}
+    ledger = queue.tier(TIER)
+    return {str(holder): dict(ledger.holdings(holder)) for holder in ledger.holders()}
 
 
 def _reserve(queue, units):
@@ -101,7 +100,7 @@ def test_fresh_declared_newcomers_admit_one_then_stall(tmp_path) -> None:
     assert bound is not None
     assert (bound["retained_gib"], bound["peak_gib"]) == (90, 170)
     result = _protect(queue, tiers)
-    gated = result["gated"]
+    gated = result.gated
     assert len(gated) == 1
     (key, _), entry = next(iter(gated.items()))
     assert key in (first, second)
@@ -109,7 +108,7 @@ def test_fresh_declared_newcomers_admit_one_then_stall(tmp_path) -> None:
     assert entry["permanent"] is False
     assert entry["need_gib"] == 170
     other = second if key == first else first
-    assert (other, TIER) in result["permitted"]
+    assert (other, TIER) in result.permitted
 
 
 def test_second_declared_newcomer_waits_on_commitment(tmp_path) -> None:
@@ -119,9 +118,8 @@ def test_second_declared_newcomer_waits_on_commitment(tmp_path) -> None:
     units = _units(queue, first, second)
     by_key = {unit.key: unit for unit in units}
     _reserve(queue, [by_key[first]])
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(by_key[first].holder).get(
-        "stage_gib", 0) == 90
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(by_key[first].holder).get('stage_gib', 0) == 90
     totals, detail = pt.obligations(units, _held(queue), KIND)
     assert totals == {TIER: 80}
     assert detail[first]["obligation_gib"] == 80
@@ -129,8 +127,8 @@ def test_second_declared_newcomer_waits_on_commitment(tmp_path) -> None:
     assert 90 + 80 + 170 > 210
     _publish_leg(queue, plan_first, _mover_of(plan_first, "p0"))
     result = _protect(queue, tiers)
-    assert (first, TIER) not in result["gated"]
-    entry = result["gated"][(second, TIER)]
+    assert (first, TIER) not in result.gated
+    entry = result.gated[(second, TIER)]
     assert entry["reason"] == "joint-commitment-stall"
     assert entry["permanent"] is False
     assert entry["need_gib"] == 170
@@ -156,8 +154,7 @@ def test_declared_peak_past_capacity_refuses_for_good(tmp_path) -> None:
     units = _units(queue, consumer)
     assert units[0].peak_gib == 230
     suffix = _mover_of(plan, "p2")
-    assert queue.tier_ledger(TIER).acquire(
-        suffix, {"stage_gib": 25}) is True
+    assert queue.tier(TIER).take(suffix, {'stage_gib': 25}) is True
     held = _held(queue)
     owned = residency_plan.prelaunch_owned_gib(
         plan, held, units[0].holder, KIND)
@@ -165,7 +162,7 @@ def test_declared_peak_past_capacity_refuses_for_good(tmp_path) -> None:
     assert window_credit.prelaunch_footprint_gib(230, owned) == 205
     result = _protect(queue, {TIER: {"tier_id": TIER, "tier": "stage",
                                      "mountpoint": str(stage)}})
-    entry = result["gated"][(consumer, TIER)]
+    entry = result.gated[(consumer, TIER)]
     assert entry["reason"] == "joint-fit-oversize"
     assert entry["permanent"] is True
     assert entry["need_gib"] == 205
@@ -204,23 +201,23 @@ def test_undeclared_newcomer_waits_then_proceeds(tmp_path) -> None:
     units = _units(queue, declared)
     _reserve(queue, units)
     first = _protect(queue, tiers)
-    entry = first["gated"][(plain, TIER)]
+    entry = first.gated[(plain, TIER)]
     assert entry["reason"] == "joint-fit-stall"
     assert entry["permanent"] is False
-    assert (declared, TIER) not in first["gated"]
+    assert (declared, TIER) not in first.gated
     # The declared consumer ends.  Its leads are not resident, so a claim is
     # refused by design; a withdrawal is how a waiting window ends.
     queue.withdraw(declared, reason="test: the declared consumer ended")
     released = pt.release_terminal(queue, TIER, units, shared_owned=[])
     assert any(event["event"] == "prelaunch-group-released"
                for event in released)
-    grant = first["grants"].get((declared, TIER))
+    grant = first.grants.get((declared, TIER))
     if grant is not None:
-        assert queue.cancel_tier_fence(TIER, grant)["released"] == 40
+        assert queue.tier(TIER).cancel_fence(grant)['released'] == 40
     again = _protect(queue, tiers)
-    assert (plain, TIER) not in again["gated"]
-    assert (plain, TIER) in again["permitted"]
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 170
+    assert (plain, TIER) not in again.gated
+    assert (plain, TIER) in again.permitted
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 170
     live = {consumer["action_key"]
             for consumer in tier_loop.live_consumers(queue)}
     assert declared not in live
@@ -234,8 +231,7 @@ def test_undeclared_queue_gates_like_a_direct_call(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=80)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert queue.tier_ledger(TIER).acquire(
-        "squatter-zero", {"stage_gib": 10}) is True
+    assert queue.tier(TIER).take('squatter-zero', {'stage_gib': 10}) is True
     consumer = _hexkey("gate-direct")
     plan = _declared_plan(queue, consumer, [("v0", 40, False, 1),
                                             ("v1", 40, False, 1)],
@@ -244,11 +240,10 @@ def test_undeclared_queue_gates_like_a_direct_call(tmp_path) -> None:
     assert pt.declared_units(queue, {TIER: {"tier": "stage"}},
                              [_consumer(consumer)]) == []
     assert pt.obligations([], _held(queue), KIND) == ({}, {})
-    needs = residency_plan.advance_needs(plan, None, published=[], rowed=[],
-                                         staged=[])
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(published=[], rowed=[], staged=[])).advance
     assert (needs["current_min_gib"], needs["next_min_gib"]) == (40, 40)
     result = _protect(queue, _tiers(stage))
-    entry = result["gated"][(consumer, TIER)]
+    entry = result.gated[(consumer, TIER)]
     gib, enforced, _, error = tier_loop.output_obligation(queue, TIER)
     assert not error
     direct = window_credit.gate_newcomer(
@@ -258,9 +253,9 @@ def test_undeclared_queue_gates_like_a_direct_call(tmp_path) -> None:
     assert entry["reason"] == direct["reason"]
     assert entry["permanent"] == direct["permanent"]
     assert all(not str(event.get("event", "")).startswith("prelaunch")
-               for event in result["events"])
+               for event in result.events)
     assert all(permit.get("advance") != "prelaunch"
-               for permit in result["permitted"].values())
+               for permit in result.permitted.values())
 
 
 # ------------------------------------------------- holdings admit
@@ -271,8 +266,7 @@ def test_declared_holder_is_no_newcomer(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=120)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert queue.tier_ledger(TIER).acquire(
-        "squatter-held", {"stage_gib": 25}) is True
+    assert queue.tier(TIER).take('squatter-held', {'stage_gib': 25}) is True
     consumer = _hexkey("gate-held")
     plan = _declared_plan(queue, consumer, [("p0", 90, True, 1),
                                             ("p1", 5, False, 1),
@@ -283,8 +277,8 @@ def test_declared_holder_is_no_newcomer(tmp_path) -> None:
     assert bound is not None
     assert (bound["retained_gib"], bound["peak_gib"]) == (90, 100)
     fresh = _protect(queue, _tiers(stage))
-    assert fresh["gated"][(consumer, TIER)]["reason"] == "joint-fit-stall"
-    assert fresh["gated"][(consumer, TIER)]["need_gib"] == 100
+    assert fresh.gated[(consumer, TIER)]["reason"] == "joint-fit-stall"
+    assert fresh.gated[(consumer, TIER)]["need_gib"] == 100
     units = _units(queue, consumer)
     _reserve(queue, units)
     held = _held(queue)
@@ -294,9 +288,9 @@ def test_declared_holder_is_no_newcomer(tmp_path) -> None:
     assert totals == {TIER: 10}
     assert detail[consumer]["obligation_gib"] == 10
     result = _protect(queue, _tiers(stage))
-    assert (consumer, TIER) not in result["gated"]
-    assert (consumer, TIER) in result["permitted"]
-    assert result["permitted"][(consumer, TIER)]["advance"] != "prelaunch"
+    assert (consumer, TIER) not in result.gated
+    assert (consumer, TIER) in result.permitted
+    assert result.permitted[(consumer, TIER)]["advance"] != "prelaunch"
 
 
 # ------------------------------------------------- retention
@@ -319,9 +313,9 @@ def _retention_queue(tmp_path):
     residency_plan.freeze(queue, plan_reader)
     prefix = _mover_of(plan_reader, "p0")
     suffix = _mover_of(plan_reader, "p1")
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.acquire(prefix, {"stage_gib": 4}) is True
-    assert ledger.acquire(suffix, {"stage_gib": 4}) is True
+    ledger = queue.tier(TIER)
+    assert ledger.take(prefix, {'stage_gib': 4}) is True
+    assert ledger.take(suffix, {'stage_gib': 4}) is True
     for mover in (prefix, suffix):
         queue.record_move(mover, {"consumer_action_key": reader,
                                   "tier_id": TIER,
@@ -376,8 +370,7 @@ def test_horizon_pass_keeps_a_declared_prefix(tmp_path) -> None:
                for rows in out.values() for row in rows)
     assert tier_loop.evict_beyond_horizon(
         queue, tiers, consumers=consumers, pressure={TIER: 5}) == []
-    assert queue.tier_ledger(TIER).holder_tokens(prefix).get(
-        "stage_gib", 0) == 4
+    assert queue.tier(TIER).holdings(prefix).get('stage_gib', 0) == 4
 
 
 # ------------------------------------------------- dangling census
@@ -391,8 +384,7 @@ def _orphan(queue, tag):
     units = _units(queue, consumer)
     _reserve(queue, units)
     holder = units[0].holder
-    assert queue.tier_ledger(TIER).holder_tokens(holder).get(
-        "stage_gib", 0) == 2
+    assert queue.tier(TIER).holdings(holder).get('stage_gib', 0) == 2
     return holder
 
 
@@ -412,11 +404,10 @@ def test_complete_census_releases_an_orphan_holder(tmp_path) -> None:
     holder = _orphan(queue, "gone")
     _plain_live(queue, "gone")
     result = _protect(queue, _tiers(stage))
-    assert [event["event"] for event in result["events"]
+    assert [event["event"] for event in result.events
             if event.get("holder") == holder] == ["prelaunch-dangling-released"]
-    assert queue.tier_ledger(TIER).holder_tokens(holder).get(
-        "stage_gib", 0) == 0
-    assert queue.tier_ledger(TIER).available().get("stage_gib") == 8
+    assert queue.tier(TIER).holdings(holder).get('stage_gib', 0) == 0
+    assert queue.tier(TIER).free_supply().get('stage_gib') == 8
 
 
 def test_incomplete_census_withholds_the_release(tmp_path) -> None:
@@ -427,7 +418,7 @@ def test_incomplete_census_withholds_the_release(tmp_path) -> None:
     holder = _orphan(queue, "half")
     _plain_live(queue, "half")
     stranger = _hexkey("half-stranger")
-    Path(queue.residency_plan_path(stranger)).write_text("{not json")
+    Path(queue.records.residency_plan_path(stranger)).write_text("{not json")
     queue.publish(
         action_key=stranger, cas_root=str(queue.root / "cas"),
         checkout_root=str(queue.root / "co"),
@@ -437,12 +428,11 @@ def test_incomplete_census_withholds_the_release(tmp_path) -> None:
                    "manifest_sha256": MANIFEST, "manifest_bytes": 1,
                    "leads": ["0" * 64]})
     result = _protect(queue, _tiers(stage))
-    assert queue.tier_ledger(TIER).holder_tokens(holder).get(
-        "stage_gib", 0) == 2
+    assert queue.tier(TIER).holdings(holder).get('stage_gib', 0) == 2
     assert all(event.get("event") != "prelaunch-dangling-released"
-               for event in result["events"])
+               for event in result.events)
     assert any(event.get("event") == "advance-deferred-unknown-evidence"
-               for event in result["events"])
+               for event in result.events)
 
 
 def test_live_holders_survive_the_dangling_pass(tmp_path) -> None:
@@ -458,7 +448,6 @@ def test_live_holders_survive_the_dangling_pass(tmp_path) -> None:
     _reserve(queue, units)
     live_holder = units[0].holder
     result = _protect(queue, _tiers(stage))
-    assert [event.get("holder") for event in result["events"]
+    assert [event.get("holder") for event in result.events
             if event.get("event") == "prelaunch-dangling-released"] == [holder]
-    assert queue.tier_ledger(TIER).holder_tokens(live_holder).get(
-        "stage_gib", 0) == 2
+    assert queue.tier(TIER).holdings(live_holder).get('stage_gib', 0) == 2

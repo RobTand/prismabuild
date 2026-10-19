@@ -13,9 +13,11 @@ import secrets
 import sys
 
 import pytest
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
 
 from prismabuild import _gang, adaptive_gpu, core as pb, pool
+from prismabuild import data_manifest as manifest_codec
 
 fleet = fleet_fixture
 CAPACITY = {"cpu": 20, "gpu": 1, "mem_gb": 120}
@@ -37,12 +39,15 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
         queue.finish(key, status="executed")
         tick(adaptive_gpu.PSI_AVG10_S + 1)
 
-    def gclaim(host):
+    def gclaim(host, *, ready=None, advance=0.01):
         """A gang-enabled worker on ``host``: the fixture's claim plus the tag."""
         monkeypatch.setattr(pool.socket, "gethostname", lambda: host)
-        tick(0.01)
+        if advance is not None:
+            tick(advance)
         result = queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-                             has_gpu=True, tags=["gb10", host, _gang.TAG])
+                             has_gpu=True, tags=["gb10", host, _gang.TAG],
+                             cpu_sampler=lambda: cpu_sample(clock, readings),
+                             gpu_sampler=lambda: gpu_sample(sample, readings), ready=ready)
         return None if result is None else result["action_key"]
 
     def members(name, *, priority=0, mem_gb=100, skew_s=_gang.DEFAULT_SKEW_S, file_group=True,
@@ -63,13 +68,13 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
         checkout = tmp_path / "checkout"
         rows = []
         for index, host in enumerate(HOSTS):
-            clock[0] += 0.001
+            clock.now += 0.001
             gang = {"group": group, "size": len(HOSTS), "index": index}
             member_inputs = list(inputs or [])
             params: dict = {"gpu_exclusive": False, "execution_timeout_s": 3600, "gang": gang}
             if declares_manifest and index == 0:
                 manifest = {
-                    "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+                    "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
                     "produced_by": {"tool": "tests"},
                     "annotations": {"phases": [
                         {"name": "phase-0", "bytes": 2 << 30, "cumulative_bytes": 2 << 30},
@@ -82,10 +87,10 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
                         {"path": "/data/blob-2", "offset": 0, "bytes": 2 << 30, "sha256": None}],
                     "entry_count": 3, "total_bytes": 6 << 30,
                 }
-                manifest = pb.validate_data_manifest(manifest)
+                manifest = manifest_codec.validate_data_manifest(manifest)
                 blob = tmp_path / f"{name}-manifest.json"
                 blob.write_text(json.dumps(manifest))
-                entry, _ = cas.ingest_input(blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                entry, _ = cas.ingest_input(blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
                 snap_blob = tmp_path / f"{name}-snapshot.json"
                 snap_blob.write_text("{}")
                 snap_entry, _ = cas.ingest_input(snap_blob, input_id="pbrun.checkout-snapshot")
@@ -132,7 +137,9 @@ def gang_fleet(fleet, tmp_path, monkeypatch, movement_authority):
                           max_attempts=1,
                           **({} if residency is None or (index and not residency_all)
                              else {"residency": residency}))
-            rows.append(pool._read_json(queue.item_path(pool.READY, key)))
+            rows.append(
+                pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key)),
+            )
         if file_group:
             _gang.publish_group(queue, group, rows, skew_s=skew_s)
         return group, [row["action_key"] for row in rows]
@@ -167,11 +174,11 @@ def test_both_hosts_busy_fences_each_host_and_starts_nothing(gang_fleet):
         # The member's own token-shortage withhold may hold the box first.
         assert denial(refill, host)["reason"] in (
             "deferred_for_gang_reservation", "deferred_behind_withheld_row"), denial(refill, host)
-        assert queue.item_path(pool.READY, refill).exists()
+        assert queue.records.item_path(pool.record_store.READY, refill).exists()
         assert queue.ledger(host).held_keys() == [incumbents[host]]
     for key in keys:
-        assert queue.item_path(pool.READY, key).exists()
-        assert not queue.item_path(pool.CLAIMED, key).exists()
+        assert queue.records.item_path(pool.record_store.READY, key).exists()
+        assert not queue.records.item_path(pool.record_store.CLAIMED, key).exists()
 
 
 def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
@@ -188,7 +195,7 @@ def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
     assert waiting["evidence"]["waiting"][0]["index"] == 1
     # Ready holds nothing: the freed host carries no member tokens.
     assert queue.ledger("sparklina").held_keys() == []
-    assert queue.item_path(pool.READY, first).exists()
+    assert queue.records.item_path(pool.record_store.READY, first).exists()
     # The gang fence also holds back host-pinned CPU work on the freed host.
     refill = publish("refill-freed", priority=-10, timeout_s=None,
                      cpu=1, gpu=0, mem_gb=1, tags=["sparklina"])
@@ -200,7 +207,7 @@ def test_the_host_that_frees_first_does_not_start_its_member_alone(gang_fleet):
     assert gclaim("sparklina") == first, denial(first, "sparklina")
     assert queue.ledger("sparklina").held_keys() == [first]
     assert queue.ledger("sparky").held_keys() == [second]
-    assert queue.item_path(pool.READY, refill).exists()
+    assert queue.records.item_path(pool.record_store.READY, refill).exists()
 
 
 def test_a_stale_ready_mark_does_not_commit_the_peer(gang_fleet):
@@ -211,7 +218,7 @@ def test_a_stale_ready_mark_does_not_commit_the_peer(gang_fleet):
     assert gclaim("sparklina") is None
     assert denial(first, "sparklina")["reason"] == "gang_waiting_for_peers"
     # sparklina's loop goes quiet; its ready mark ages past freshness.
-    clock[0] += _gang.READY_FRESH_S + 5
+    clock.now += _gang.READY_FRESH_S + 5
     finish(incumbents["sparky"], "sparky")
     assert gclaim("sparky") is None, "committed against a stale peer ready mark"
     assert denial(second, "sparky")["reason"] == "gang_waiting_for_peers"

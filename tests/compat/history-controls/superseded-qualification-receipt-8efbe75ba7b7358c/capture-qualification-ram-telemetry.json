@@ -1,0 +1,45 @@
+{
+  "capture_name": "writer-variants-capture-02",
+  "capture_report_sha256": "b702de9b95e38dd319a80d9fef0b117f1ac84acdb71e74c44960271d82c2b7b0",
+  "excluded_cases": [
+    "resource-profile/unavailable"
+  ],
+  "files": {
+    "goldens-qualification-ram-telemetry.jsonl": "8efbe75ba7b7358c1f2c6e160874fc3dfa8706b7dd928ed6b7fde0bb61861437",
+    "historical-qualification-ram-telemetry.jsonl": "0b224a04f37591d22394c22c8c15d12b4fcbd687c835979bd52e23f0574360fc"
+  },
+  "finished_at": "2026-10-16T23:22:26.778579+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [
+    {
+      "attestation_error": null,
+      "case": "resource-profile/unavailable",
+      "entry_error": null,
+      "error": {
+        "message": "'cas_root'",
+        "type": "KeyError"
+      },
+      "generation": "candidate",
+      "phase": "writer",
+      "returncode": 1
+    }
+  ],
+  "selected_cases": [
+    "box-window/pool",
+    "box-window/unavailable",
+    "runtime-receipt/qualification",
+    "storage-tier/ram",
+    "storage-tier/ram-refused"
+  ],
+  "source_git": {
+    "parents": [
+      "75a4cd809eaf6114abaeec78a35491e001265721"
+    ],
+    "snapshot": "74ac0269653d0b69c361428b582f5d0ef55838c0",
+    "tree": "367dae721fad76b30e155ac6815e186f3435a668"
+  },
+  "started_at": "2026-10-16T23:21:51.932323+00:00"
+}

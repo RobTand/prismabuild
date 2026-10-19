@@ -23,6 +23,8 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import adaptive_cpu  # noqa: E402
 from prismabuild import container_images  # noqa: E402
 from prismabuild import core as pb, pool  # noqa: E402
@@ -42,7 +44,7 @@ SPARKLINA_SET = [
 
 KEY_A = "a" * 64
 CAPACITY = {"cpu": 4, "mem_gb": 16, "gpu": 1}
-CLAIM_TAGS = [pb.CONTAINER_IMAGE_TAG]
+CLAIM_TAGS = [contracts.CONTAINER_IMAGE_TAG]
 
 
 def publish(queue, key, **kwargs):
@@ -50,10 +52,20 @@ def publish(queue, key, **kwargs):
                   worker_script="/w.py", **kwargs)
 
 
-def announce(queue, host, *, tags=("gb10", pb.CONTAINER_IMAGE_TAG),
+def announce(queue, host, *, tags=("gb10", contracts.CONTAINER_IMAGE_TAG),
              observed_images=None, capacity=CAPACITY, gpu=False):
-    queue.announce(host=host, tags=list(tags), has_gpu=gpu,
-                   capacity=dict(capacity), observed_images=observed_images)
+    queue.announce(
+        host=host,
+        tags=list(tags),
+        has_gpu=gpu,
+        capacity=dict(capacity),
+        capabilities=capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                observed_images,
+                None,
+            ),
+        ),
+    )
 
 
 def denials(queue):
@@ -88,7 +100,7 @@ def test_the_placement_surface_matches_on_both_stores(tmp_path):
 
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[BARE], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[BARE], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "sparky", observed_images=list(SPARKY_SET))
     announce(queue, "sparklina", observed_images=list(SPARKLINA_SET))
     ready = queue.ready_items()[0]
@@ -122,19 +134,19 @@ def test_a_box_holding_neither_the_id_nor_the_repo_digest_still_denies(tmp_path)
     denial = denials(queue)[-1]
     assert denial["reason"] == "container_image_absent"
     assert denial["evidence"]["absent"] == [BARE]
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 def test_an_unknown_inventory_stays_unknown_for_placement_and_claim(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
     publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1},
-            container_images=[BARE], tags=["gb10", pb.CONTAINER_IMAGE_TAG])
+            container_images=[BARE], tags=["gb10", contracts.CONTAINER_IMAGE_TAG])
     announce(queue, "unknown", observed_images=None)
     assert queue.placeable_hosts(queue.ready_items()[0]) == []
     assert queue.claim(capacity=CAPACITY, tags=["gb10", *CLAIM_TAGS],
                        observed_images=None) is None
     assert denials(queue)[-1]["reason"] == "container_image_presence_unknown"
-    assert queue.item_path(pool.READY, KEY_A).exists()
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 @pytest.mark.parametrize("inventory,keeps_room", [
@@ -176,13 +188,13 @@ def test_a_busy_gpu_row_keeps_room_only_where_its_image_is_present(
         by_key = {entry["action_key"]: entry for entry in denials(queue)}
         assert by_key[KEY_A]["evidence"]["gpu_room_kept"] == gpu_demand
         assert by_key[cpu_key]["reason"] == "deferred_for_ready_gpu_row"
-        assert queue.item_path(pool.READY, cpu_key).exists()
+        assert queue.records.item_path(pool.record_store.READY, cpu_key).exists()
         assert queue.claim(capacity=CAPACITY, has_gpu=True,
                            tags=[*CLAIM_TAGS, "test-box"],
                            observed_images=inventory)["action_key"] == KEY_A
     else:
         assert claimed is not None and claimed["action_key"] == cpu_key
-        assert queue.item_path(pool.READY, KEY_A).exists()
+        assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
 
 
 # --------------------------------------------------------------------------

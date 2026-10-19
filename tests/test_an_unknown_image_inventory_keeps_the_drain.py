@@ -28,6 +28,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+from prismabuild import contracts
 from prismabuild import adaptive_cpu, adaptive_gpu, core as pb, pool  # noqa: E402
 
 T0 = 2_000_000.0
@@ -78,18 +79,18 @@ def box(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(adaptive_cpu, "action_identity", lambda item: ("shape", False))
     monkeypatch.setattr(adaptive_gpu, "action_contract", lambda item, demand: (
         "shape", False, False, int(demand.get("mem_gb", 0)) * GIB))
-    monkeypatch.setattr(adaptive_cpu.Controller, "sample", lambda self: {
+    cpu_sampler = lambda: {
         "sampled_unix": clock[0], "busy_cpus": 0., "psi_some": 0.,
-        "cpu_count": 20, "interval_s": 1.})
+        "cpu_count": 20, "interval_s": 1.}
     sample = {"schema": "prismabuild.gpu_capacity.v1", "sample_id": str(T0),
               "sampled_unix": T0, "complete": True, "attributed": True,
               "devices": [_device()],
               "host_total_bytes": 128 * GIB, "host_available_bytes": 120 * GIB,
               "memory_pressure_some": 0., "memory_pressure_full": 0.,
               "cpu_pressure_some": 0., "foreign_processes": [], "jobs": []}
-    monkeypatch.setattr(adaptive_gpu.Controller, "sample", lambda self: dict(sample))
+    gpu_sampler = lambda: dict(sample)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     capacity = {"cpu": 20, "gpu": 1, "mem_gb": 120}
     tiers = {"preferred": list(range(20)), "fallback": []}
 
@@ -118,8 +119,8 @@ def box(tmp_path: Path, monkeypatch):
 
     def claim(observed):
         item = queue.claim(capacity=capacity, cpu_tiers=tiers, adaptive_cpu=True,
-                           has_gpu=True, tags=[pb.CONTAINER_IMAGE_TAG],
-                           observed_images=observed)
+                           has_gpu=True, tags=[contracts.CONTAINER_IMAGE_TAG],
+                           observed_images=observed, cpu_sampler=cpu_sampler, gpu_sampler=gpu_sampler)
         return None if item is None else item["action_key"]
 
     return queue, clock, publish, tick, claim
@@ -163,9 +164,9 @@ def test_an_unknown_inventory_does_not_admit_a_cpu_row_into_the_drain(box) -> No
         assert carried["mode"] == "exclusive"
         assert carried["reason"] == "adaptive_gpu_refused_withholding"
         assert carried["epoch_unix"] == pytest.approx(epoch), "a carry renewed the episode"
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
     # #714 stands: unknown is not presence, so no claim, no pass, no token.
-    assert queue.item_path(pool.READY, big).exists()
+    assert queue.records.item_path(pool.record_store.READY, big).exists()
     assert queue.passes(big) == passes
 
     # The drain completes and the row is admitted on a positive inventory.
@@ -219,7 +220,7 @@ def test_an_unreadable_residency_lead_record_keeps_the_drain(box, monkeypatch) -
     denial = _denial(queue, big)
     assert denial["reason"] == "residency_lead_record_unreadable"
     assert denial["evidence"]["withhold_carried"]["epoch_unix"] == pytest.approx(epoch)
-    assert queue.item_path(pool.READY, behind).exists()
+    assert queue.records.item_path(pool.record_store.READY, behind).exists()
 
 
 #: The rows a pass could not evaluate for a transient reason (#1085, #1143).

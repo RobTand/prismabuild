@@ -47,7 +47,10 @@ def _stage(world, batch_id, payload):
     batch = world.first_publish(batch_id, desc)
     mover = batch["mover_key"]
     assert fx._claim_mover(world.q, "w-" + batch_id)["action_key"] == mover
-    outcome = world.q.execute(fx.pool._read_json(world.q.item_path("claimed", mover)), timeout_s=240)
+    outcome = world.q.execute(
+        fx.pool.record_store.value_or_raise(world.q.records.item("claimed", mover)),
+        timeout_s=240,
+    )
     receipt = world.q.move_record(mover)
     assert outcome.get("returncode") == 0, {
         "returncode": outcome.get("returncode"),
@@ -135,7 +138,7 @@ def test_independent_producers_same_basename_keep_own_bytes_and_pins(tmp_path):
                                       "range", "unsealed_manifest", "corrupt_request", "missing_reference"])
 def test_unbound_or_unsafe_output_namespace_refuses_before_copy(tmp_path, mutation):
     import json
-    import stage_move
+    from prismabuild import stage_move
 
     world = fx._World(tmp_path)
     desc = fx._descriptors(world.template, world.inst, "p-shared", b"owned bytes",

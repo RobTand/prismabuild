@@ -44,6 +44,7 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from prismabuild import immutable_files
 from prismabuild import adaptive_cpu, pool
 
 #: Two preferred CPUs, so both items are seated on the preferred tier and
@@ -54,13 +55,16 @@ CAPACITY = {'cpu': 4, 'mem_gb': 4}
 KEYS = ('a' * 64, 'b' * 64)
 
 
+def _idle_sample():
+    return {
+        'sampled_unix': time.time(), 'busy_cpus': 0., 'psi_some': 0.,
+        'cpu_count': 4, 'interval_s': 1.}
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     """A pool with two claimable items and a host that is plainly idle."""
 
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
-        'sampled_unix': time.time(), 'busy_cpus': 0., 'psi_some': 0.,
-        'cpu_count': 4, 'interval_s': 1.})
     queue = pool.PoolQueue(tmp_path / 'queue')
     for key in KEYS:
         queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
@@ -71,14 +75,14 @@ def rig(tmp_path, monkeypatch):
 
 def _pin_sibling(queue):
     """Test host-lock independence, not #1526's portable-CPU placement rule."""
-    path = queue.item_path(pool.READY, KEYS[1])
+    path = queue.records.item_path(pool.record_store.READY, KEYS[1])
     item = json.loads(path.read_text())
     item['tags'] = [pool.socket.gethostname()]
-    pool._write_json_atomic(path, item)
+    pool.immutable_files.write_json_atomic(path, item)
 
 
-def _claim(queue):
-    return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True)
+def _claim(queue, *, cpu_sampler=_idle_sample):
+    return queue.claim(capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
 
 
 def _lock_path(queue):
@@ -156,7 +160,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
     """The fixed topology is not changing headroom; reading it needs no gate."""
     rig.ledger().configure_cpu_tiers(TIERS)
     entered, release = threading.Event(), threading.Event()
-    original = pool._read_json
+    original = pool.record_store._read_json
     outcome = {}
 
     def stalled_read(path, **kwargs):
@@ -173,7 +177,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
             outcome['error'] = exc
 
     stalled = threading.Thread(target=run, daemon=True)
-    monkeypatch.setattr(pool, '_read_json', stalled_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', stalled_read)
     stalled.start()
     try:
         assert entered.wait(30), 'claim did not read CPU map'
@@ -191,7 +195,7 @@ def test_sibling_claims_while_existing_cpu_map_read_stalls(rig, monkeypatch):
 
 def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
     rig.ledger().configure_cpu_tiers(TIERS)
-    original = pool._read_json
+    original = pool.record_store._read_json
     reads = []
 
     def checked_read(path, **kwargs):
@@ -200,13 +204,13 @@ def test_existing_cpu_map_read_does_not_hold_admission(rig, monkeypatch):
             assert _admission_is_free(rig), 'existing CPU map read held host admission'
         return original(path, **kwargs)
 
-    monkeypatch.setattr(pool, '_read_json', checked_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', checked_read)
     assert _claim(rig) is not None
     assert reads, 'claim skipped topology validation'
 
 
 def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
-    original = pool.pb._atomic_publish
+    original = immutable_files.publish_immutable
     initialized = []
 
     def checked_publish(path, *args, **kwargs):
@@ -215,7 +219,7 @@ def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
             initialized.append(path)
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(pool.pb, '_atomic_publish', checked_publish)
+    monkeypatch.setattr(immutable_files, 'publish_immutable', checked_publish)
     assert _claim(rig) is not None
     assert len(initialized) == 1
     assert json.loads(initialized[0].read_text()) == TIERS
@@ -223,7 +227,7 @@ def test_missing_cpu_map_initialization_stays_under_admission(rig, monkeypatch):
 
 def test_cpu_map_preparation_does_not_bypass_busy_admission(rig, monkeypatch):
     rig.ledger().configure_cpu_tiers(TIERS)
-    original = pool._read_json
+    original = pool.record_store._read_json
     descriptor = os.open(_lock_path(rig), os.O_CREAT | os.O_RDWR, 0o600)
     entered = []
 
@@ -234,7 +238,7 @@ def test_cpu_map_preparation_does_not_bypass_busy_admission(rig, monkeypatch):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return record
 
-    monkeypatch.setattr(pool, '_read_json', lock_after_read)
+    monkeypatch.setattr(pool.record_store, '_read_json', lock_after_read)
     try:
         assert _bounded(lambda: _claim(rig), 'claim after topology read') is None
     finally:
@@ -344,7 +348,7 @@ def test_a_lost_rename_returns_only_this_claimants_tokens(rig, monkeypatch):
         write_intent(action_key, owner=owner)
         # The record leaves ``ready`` between this claimant's reservation and
         # its rename, which is what losing the race looks like from here.
-        rig.item_path(pool.READY, action_key).unlink()
+        rig.records.item_path(pool.record_store.READY, action_key).unlink()
 
     monkeypatch.setattr(rig, '_write_claim_intent', peer_wins)
 
@@ -376,7 +380,7 @@ def test_an_exception_before_the_rename_returns_the_reservation(rig, monkeypatch
         'a claim that raised between the reservation and the rename kept its '
         'tokens; the caller holds the only handle that can return them')
     assert rig.ledger().available() == rig.ledger().capacity()
-    assert sorted(p.name for p in rig.dir(pool.READY).iterdir()) == sorted(
+    assert sorted(p.name for p in rig.records.dir(pool.record_store.READY).iterdir()) == sorted(
         f'{key}.json' for key in KEYS), 'the items did not stay ready'
 
 
@@ -415,7 +419,7 @@ def test_a_busy_admission_lock_after_the_rename_cannot_undo_the_claim(
         'a busy host-local lock after the rename lost a claim that was '
         'already made')
     assert rig.ledger().held_keys() == [claimed['action_key']]
-    assert rig.item_path(pool.CLAIMED, claimed['action_key']).exists()
+    assert rig.records.item_path(pool.record_store.CLAIMED, claimed['action_key']).exists()
 
 
 @pytest.mark.parametrize(('refusal', 'operation'), [
@@ -430,7 +434,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
     def claim(queue):
         return queue.claim(capacity=capacity, cpu_tiers=TIERS,
                            adaptive_cpu=True, has_gpu=True,
-                           tags=[pool.socket.gethostname()])
+                           tags=[pool.socket.gethostname()], cpu_sampler=_idle_sample)
 
     if refusal == 'tokens':
         # A real committed holder leaves enough for B, but not A's memory.
@@ -439,7 +443,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
                     resources={'cpu': 1, 'mem_gb': 1}, priority=10)
         assert claim(rig)['action_key'] == 'c' * 64
     if refusal in ('gpu', 'tokens'):
-        path = rig.item_path(pool.READY, KEYS[0])
+        path = rig.records.item_path(pool.record_store.READY, KEYS[0])
         item = json.loads(path.read_text())
         item['resources'].update({'gpu': 1} if refusal == 'gpu' else {'mem_gb': 4})
         path.write_text(json.dumps(item))
@@ -455,14 +459,14 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
     entered, release = threading.Event(), threading.Event()
     account = getattr(rig, operation)
     if operation == 'withhold_age':
-        monkeypatch.setattr(pool, 'STARVATION_FLOOR', 1)
+        monkeypatch.setattr(pool.drain_policy, 'STARVATION_FLOOR', 1)
     outcome = {}
 
-    def stalled_pass(key):
+    def stalled_pass(key, **kwargs):
         assert key == KEYS[0]
         entered.set()
         assert release.wait(30), 'test did not release refusal accounting'
-        return account(key)
+        return account(key, **kwargs)
 
     monkeypatch.setattr(rig, operation, stalled_pass)
 
@@ -484,7 +488,7 @@ def test_sibling_claims_while_refusal_accounting_stalls(rig, monkeypatch, refusa
         stalled.join(30)
     assert not stalled.is_alive() and 'error' not in outcome, outcome
     assert outcome['item'] is None
-    assert rig.item_path(pool.READY, KEYS[0]).exists()
+    assert rig.records.item_path(pool.record_store.READY, KEYS[0]).exists()
     expected = [KEYS[1]] + (['c' * 64] if refusal == 'tokens' else [])
     assert sorted(rig.ledger().held_keys()) == sorted(expected)
 
@@ -496,9 +500,9 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
     record_pass = rig.record_pass
     descriptors, preemptions = [], []
 
-    def account(key):
+    def account(key, **kwargs):
         assert _admission_is_free(rig)
-        result = record_pass(key)
+        result = record_pass(key, **kwargs)
         if contended:
             fd = os.open(_lock_path(rig), os.O_RDWR)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -520,17 +524,17 @@ def test_preemption_after_accounting_keeps_host_exclusion(rig, monkeypatch, cont
     assert preemptions == ([] if contended else list(KEYS))
     assert rig.ledger().held() == {}
     assert rig.ledger().available() == rig.ledger().capacity()
-    assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
+    assert all(rig.records.item_path(pool.record_store.READY, key).exists() for key in KEYS)
 
 
 @pytest.mark.parametrize(('gpu', 'read_number'), [(False, 1), (True, 2), (True, 3)])
 def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, read_number):
     """Sealed request reads need no host exclusion, unlike capacity decisions."""
-    monkeypatch.setattr(pool.gpu_admission.Controller, 'sample', lambda self: {})
+    gpu_sampler = lambda: {}
     capacity = dict(CAPACITY, gpu=1) if gpu else CAPACITY
     _pin_sibling(rig)
     if gpu:
-        path = rig.item_path(pool.READY, KEYS[0])
+        path = rig.records.item_path(pool.record_store.READY, KEYS[0])
         item = json.loads(path.read_text())
         item['resources']['gpu'] = 1
         path.write_text(json.dumps(item))
@@ -553,7 +557,9 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     def claim(queue):
         return queue.claim(capacity=capacity, cpu_tiers=TIERS,
                            adaptive_cpu=True, has_gpu=gpu,
-                           tags=[pool.socket.gethostname()])
+                           tags=[pool.socket.gethostname()],
+                           gpu_sampler=gpu_sampler,
+                           cpu_sampler=_idle_sample)
 
     def run():
         try:
@@ -575,7 +581,7 @@ def test_sibling_claims_while_action_request_read_stalls(rig, monkeypatch, gpu, 
     if gpu:
         # No trusted GPU sample: the original candidate still cannot reserve.
         assert outcome['item'] is None
-        assert rig.item_path(pool.READY, KEYS[0]).exists()
+        assert rig.records.item_path(pool.record_store.READY, KEYS[0]).exists()
         assert rig.ledger().held_keys() == [KEYS[1]]
     else:
         assert outcome['item']['action_key'] == KEYS[0]
@@ -587,6 +593,7 @@ def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, ch
     """A delayed immutable read cannot bypass the subsequent live host gates."""
     read_json = adaptive_cpu.read_json
     descriptors, prepared = [], []
+    pressure = [False]
 
     def changed_host(path):
         result = read_json(path)
@@ -598,21 +605,24 @@ def test_action_request_preparation_does_not_grant_capacity(rig, monkeypatch, ch
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 descriptors.append(fd)
             else:
-                monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {
-                    'sampled_unix': time.time(), 'busy_cpus': 4., 'psi_some': 0.,
-                    'cpu_count': 4, 'interval_s': 1.})
+                pressure[0] = True
         return result
 
     monkeypatch.setattr(adaptive_cpu, 'read_json', changed_host)
     try:
-        assert _bounded(lambda: _claim(rig), 'claim after request preparation') is None
+        def sample():
+            return ({'sampled_unix': time.time(), 'busy_cpus': 4., 'psi_some': 0.,
+                     'cpu_count': 4, 'interval_s': 1.} if pressure[0] else _idle_sample())
+
+        assert _bounded(lambda: _claim(rig, cpu_sampler=sample),
+                        'claim after request preparation') is None
     finally:
         for fd in descriptors:
             os.close(fd)
     assert len(prepared) == 1, 'identity was re-read inside the decision'
     assert rig.ledger().held() == {}
     assert rig.ledger().available() == rig.ledger().capacity()
-    assert all(rig.item_path(pool.READY, key).exists() for key in KEYS)
+    assert all(rig.records.item_path(pool.record_store.READY, key).exists() for key in KEYS)
 
 
 def test_empty_poll_cannot_block_a_sibling_on_capacity_refresh(rig, monkeypatch):
@@ -663,17 +673,14 @@ def test_empty_adaptive_poll_leaves_capacity_and_active_holders_untouched(rig, m
     assert first is not None
     ledger = rig.ledger()
     capacity, held = ledger.capacity(), ledger.held()
-    # Seed old fallback pacing state: absence from READY retires that hint.
-    rig._cpu_deferrals[('f' * 64, '1.0')] = time.monotonic()
     with monkeypatch.context() as patch:
         patch.setattr(rig, 'ready_items', lambda: [])
         assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
-                         adaptive_cpu=True) is None
+                         adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert ledger.capacity() == capacity, 'empty discovery rewrote capacity'
     assert ledger.held() == held
-    assert not rig._cpu_deferrals
     # The lower offer still applies when this loop actually sees a candidate.
     assert rig.claim(capacity={'cpu': 1, 'mem_gb': 4}, cpu_tiers=TIERS,
-                     adaptive_cpu=True) is None
+                     adaptive_cpu=True, cpu_sampler=_idle_sample) is None
     assert ledger.capacity()['cpu'] == 1
     assert ledger.held() == held

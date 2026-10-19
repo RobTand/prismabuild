@@ -44,8 +44,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
 
-import pbrun  # noqa: E402  (puts the generation's src/ on sys.path)
+from prismabuild import submission
+from prismabuild.submission_frontend import store_for
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 
@@ -58,7 +62,7 @@ SNAPSHOT_SCHEMAS = {
     b"v2": pb.PBRUN_CHECKOUT_SNAPSHOT_SCHEMA_V2,
 }
 #: Where ``pbrun`` publishes sealed action requests.
-DEFAULT_CAS_ROOT = pbrun.SH / "cas"
+DEFAULT_CAS_ROOT = store_for(__file__).root / "cas"
 _STAMP_NAME = re.compile(
     re.escape(pb.PBRUN_STAMP_PREFIX)
     + "[0-9a-f]{%d}" % pb.PBRUN_GENERATED_FINGERPRINT_HEX_LENGTH
@@ -158,7 +162,7 @@ def verified_stamp(root: Path, commit: str, *, cas_root: Path,
              and re.fullmatch(r"[0-9a-f]{64}", stamp["dirty_sha256"]),
              "pbrun stamp payload is not generated closure metadata")
     identity = {name: stamp[name] for name in ("head", "dirty_sha256")}
-    result_name, stamp_name = pbrun.result_and_stamp_names(
+    result_name, stamp_name = submission.result_and_stamp_names(
         params["command"], params["cwd"], params["demand"], variables,
         identity=identity, placement=params["placement"])
     _require(filename == stamp_name and action["task"]["result_path"] == result_name,

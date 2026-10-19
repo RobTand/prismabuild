@@ -21,16 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools" / "fleet")]
 from prismabuild import core as pb, pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbwait  # noqa: E402
 
 
 KEY = "a" * 64
 
 
-def _queue(tmp_path: Path):
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    return queue
+from fleet_world import FleetWorld
 
 
 def _outcome(*, generation: float = 1.0) -> dict:
@@ -59,8 +57,8 @@ def test_fifo_submission_observation_is_bounded_with_a_causal_marker(
     retries a reaped timeout (#558, ``test_pbwait_observation_retry.py``).
     """
 
-    queue = _queue(tmp_path)
-    fifo = queue.item_path(pool.READY, KEY)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    fifo = queue.records.item_path(pool.record_store.READY, KEY)
     marker = tmp_path / "entered-outstanding-submission-read"
     os.mkfifo(fifo)
     code = f'''\
@@ -70,7 +68,7 @@ sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT / "tools" / "fleet")!r}]
 from prismabuild import core as pb, pool
 import pbwait
 queue = pool.PoolQueue(Path({str(queue.root)!r}))
-fifo = queue.item_path(pool.READY, {KEY!r})
+fifo = queue.records.item_path(pool.record_store.READY, {KEY!r})
 marker = Path({str(marker)!r})
 original = Path.read_text
 def blocked(path, *args, **kwargs):
@@ -79,7 +77,7 @@ def blocked(path, *args, **kwargs):
     return original(path, *args, **kwargs)
 Path.read_text = blocked
 pbwait.slurm_lane.recorded_submission = lambda *_args, **_kwargs: None
-pbwait.PBWAIT_READ_TIMEOUT_S = 0.05
+pbwait.action_wait.OUTCOME_READ_TIMEOUT_S = 0.05
 row = pbwait.wait_one(queue, {KEY!r}, cas=pb.PrismaBuildCAS(Path({str(tmp_path / "cas")!r})), deadline=time.monotonic())
 print(row["status"])
 print(row["note"])
@@ -107,9 +105,12 @@ print(row["note"])
 def test_immutable_summary_verification_is_bounded_per_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
-    real_read = pbrun._bounded_pool_read
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.DONE, KEY),
+        _outcome(),
+    )
+    real_read = submit_core.action_wait.read_observation
 
     def short_verification(section, read, *, budget_s, **kwargs):
         # Only the verification is meant to time out. The observation before
@@ -121,8 +122,8 @@ def test_immutable_summary_verification_is_bounded_per_key(
     def blocked(*_args, **_kwargs):
         time.sleep(30)
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", short_verification)
-    monkeypatch.setattr(pbrun, "outcome_summary", blocked)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", short_verification)
+    monkeypatch.setattr(submit_core.action_client, "outcome_summary", blocked)
     # Zero patience pins one bounded verification; a patient wait retries it.
     row = pbwait.wait_one(
         queue, KEY, cas=pb.PrismaBuildCAS(tmp_path / "cas"),
@@ -135,8 +136,11 @@ def test_immutable_summary_verification_is_bounded_per_key(
 def test_terminal_record_outranks_and_skips_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.DONE, KEY),
+        _outcome(),
+    )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: pytest.fail(
         "a landed ending must return before the sealed request is read"))
@@ -152,8 +156,8 @@ def test_terminal_record_outranks_and_skips_cas_lookup(
 def test_unreadable_terminal_record_outranks_a_blocked_cas_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    path = queue.item_path(pool.FAILED, KEY)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    path = queue.records.item_path(pool.record_store.FAILED, KEY)
     path.write_text("{", encoding="utf-8")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: time.sleep(30))
@@ -166,8 +170,8 @@ def test_unreadable_terminal_record_outranks_a_blocked_cas_lookup(
 def test_preemption_successor_is_observed_after_the_original_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    path = queue.item_path(pool.DONE, KEY)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    path = queue.records.item_path(pool.record_store.DONE, KEY)
     outcome = _outcome(generation=2.0)
     path.write_text(json.dumps(outcome), encoding="utf-8")
     observations = [
@@ -187,8 +191,8 @@ def test_preemption_successor_is_observed_after_the_original_deadline(
 def test_bare_key_follows_an_immediate_preemption_successor_after_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    path = queue.item_path(pool.DONE, KEY)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    path = queue.records.item_path(pool.record_store.DONE, KEY)
     outcome = _outcome(generation=2.0)
     path.write_text(json.dumps(outcome), encoding="utf-8")
     observations = [
@@ -208,11 +212,11 @@ def test_bare_key_follows_an_immediate_preemption_successor_after_deadline(
 def test_preemption_handoff_skips_cas_until_the_successor_is_observed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     monkeypatch.setattr(pbwait, "outstanding", lambda *_args, **_kwargs:
                         ("pool", 1.0, {"published_unix": 1.0}))
-    monkeypatch.setattr(pbrun, "outcome_poll", lambda *_args, **_kwargs:
+    monkeypatch.setattr(submit_core.action_wait, "outcome_poll", lambda *_args, **_kwargs:
                         (None, 2.0))
     monkeypatch.setattr(pbwait, "recorded_action", lambda *_args: pytest.fail(
         "the stopped generation must not reach the request/CAS read"))
@@ -241,11 +245,11 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
     covered by ``test_fifo_submission_observation_is_bounded_with_a_causal_marker``.
     """
 
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     blocked = "a" * 64
     healthy = "b" * 64
     good = {**_outcome(), "action_key": healthy}
-    queue.item_path(pool.DONE, healthy).write_text(json.dumps(good), encoding="utf-8")
+    queue.records.replace_record_at(queue.records.item_path(pool.record_store.DONE, healthy), good)
     healthy_returned = threading.Event()
     released_by_healthy_row = []
 
@@ -255,13 +259,13 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
             # one releases this read as soon as the healthy row exists.
             released_by_healthy_row.append(healthy_returned.wait(timeout=60.0))
             raise _BlockedRead
-        return pbrun.outstanding_submission(q, key, **kwargs)
+        return submit_core.outstanding_submission(q, key, **kwargs)
 
     def inline_reader(section, read, *, budget_s, **_kwargs):
         try:
             return read()
         except _BlockedRead:
-            raise pbrun.OutcomeObservationTimedOut(
+            raise submit_core.action_wait.OutcomeObservationTimedOut(
                 f"{section} timed out after {budget_s}s") from None
 
     real_wait_one = pbwait.wait_one
@@ -273,7 +277,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
         return row
 
     monkeypatch.setattr(pbwait, "outstanding", outstanding)
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", inline_reader)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", inline_reader)
     monkeypatch.setattr(pbwait, "wait_one", observed_wait_one)
     # Zero patience: the blocked key's single timed-out read is its row. A
     # patient wait would retry it until the deadline (#558).
@@ -290,7 +294,7 @@ def test_one_blocked_key_does_not_hide_a_healthy_key_in_a_multi_wait(
 def test_reader_setup_failure_never_retries_reads_in_the_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
 
     def setup_failed(*_args, **_kwargs):
@@ -299,7 +303,7 @@ def test_reader_setup_failure_never_retries_reads_in_the_parent(
     def forbidden(*_args, **_kwargs):
         pytest.fail("reader setup failure must not retry shared reads")
 
-    monkeypatch.setattr(pbrun, "_bounded_pool_read", setup_failed)
+    monkeypatch.setattr(submit_core.action_wait, "read_observation", setup_failed)
     monkeypatch.setattr(pbwait, "outstanding", forbidden)
     monkeypatch.setattr(pbwait, "recorded_action", forbidden)
     row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)
@@ -310,23 +314,27 @@ def test_reader_setup_failure_never_retries_reads_in_the_parent(
 def test_retained_observation_reader_stops_before_render_or_another_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue = _queue(tmp_path)
-    queue.item_path(pool.DONE, KEY).write_text(json.dumps(_outcome()), encoding="utf-8")
+    queue = FleetWorld(tmp_path, queue_name='queue').queue
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.DONE, KEY),
+        _outcome(),
+    )
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
     retained = []
 
     def retain(pid, section, _started, abandoned):
         record = {"pid": pid, "section": section,
-                  "starttime_ticks": pbrun.pbstatus._starttime_ticks(pid)}
+                  "starttime_ticks": submit_core._bounded_reader._starttime_ticks(pid),
+                  "since_unix": time.time()}
         retained.append(record)
         abandoned.append(record)
 
     def forbidden(*_args, **_kwargs):
         pytest.fail("an unreaped observation must not reach terminal verification")
 
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_reap_within", lambda *_args: False)
-    monkeypatch.setattr(pbrun.pbstatus._reader, "_stop_reader", retain)
-    monkeypatch.setattr(pbrun, "bounded_outcome_render", forbidden)
+    monkeypatch.setattr(submit_core._bounded_reader, "_reap_within", lambda *_args: False)
+    monkeypatch.setattr(submit_core._bounded_reader, "_stop_reader", retain)
+    monkeypatch.setattr(submit_core.action_client, "bounded_outcome_render", forbidden)
     try:
         row = pbwait.wait_one(queue, KEY, cas=cas, deadline=time.monotonic() + 30)
         assert pbwait.verdict([row]) == 74

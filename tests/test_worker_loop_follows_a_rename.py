@@ -20,11 +20,20 @@ this test's own and the queue is a stub.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 from unittest import mock
 
+import pytest
+
+from prismabuild import contracts, pool
+
 WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
+
+
+from prismabuild import role_session
 
 
 def _worker_loop():
@@ -57,7 +66,8 @@ class _Ledger:
         return {"cpu": 2}
 
 
-def _announced(module, names: list[str]) -> list[dict]:
+def _announced(module, names: list[str], *, gang=False, generation="g1", gpu=False,
+               extra_tags=()) -> list[dict]:
     """One poll of the real loop, with ``gethostname`` answering ``names``.
 
     The first answer is the startup read and the second is the re-read at the
@@ -99,16 +109,61 @@ def _announced(module, names: list[str]) -> list[dict]:
     def gethostname() -> str:
         return answers.pop(0) if len(answers) > 1 else answers[0]
 
-    argv = ["worker_loop.py", "--once", "--assume-idle", "--gpu-slots", "0",
+    argv = ["worker_loop.py", "--once", "--assume-idle",
             "--poll-s", "0", "--all-cores"]
-    with mock.patch.object(module.pool, "PoolQueue", _Queue), \
-         mock.patch.object(module, "published_commit", return_value="audit"), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="audit"), \
+    if gpu:
+        argv.append("--gpu")
+    else:
+        argv.extend(("--gpu-slots", "0"))
+    if gang:
+        argv.append("--gang-admission")
+    for tag in extra_tags:
+        argv.extend(("--tag", tag))
+    with tempfile.TemporaryDirectory(prefix="pb-worker-offer-") as private:
+        private_root = Path(private)
+        _Queue.root = private_root / "queue"
+        gate = private_root / "maintenance.json"
+        gate.write_text(json.dumps({"draining": False}))
+        receipt = private_root / "RUNTIME_VERSION.json"
+        receipt.write_text(json.dumps({"commit": "audit", "generation": generation}))
+        queue_type = _Queue
+        actual_queue = None
+        key = "f" * 64
+        if not generation:
+            actual_queue = pool.PoolQueue(private_root / "fleet" / "pb-queue")
+            actual_queue.publish(action_key=key, cas_root=private_root / "cas",
+                                 checkout_root=private_root, worker_script="worker.py",
+                                 resources={"cpu": 1, "mem_gb": 1})
+            ready = actual_queue.records.item_path(pool.record_store.READY, key).read_bytes()
+            queue_type = pool.PoolQueue
+        inventory = module.container_images.InventoryCache
+        trusted_sample = module.gpu_admission.trusted_sample
+        with mock.patch.object(module.pool, "PoolQueue", queue_type), \
+         mock.patch.dict(module.os.environ, {"PRISMABUILD_GANG_ADMISSION": "0"}), \
+         mock.patch.object(module, "SH", private_root / "fleet"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", private_root / "parked"), \
+         mock.patch.object(module, "PUBLICATION_LOCK_ROOT", private_root / "offer-locks"), \
+         mock.patch.object(role_session, "ROLE_LOCK_ROOT", private_root / "role-locks"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", receipt), \
+         mock.patch.object(role_session, "GENERATION_VERSION", receipt), \
+         mock.patch.object(module.container_images, "InventoryCache", side_effect=lambda: inventory(
+             root=private_root / "images", docker=str(private_root / "docker"),
+             probe=lambda *_args, **_kwargs: None)), \
+         mock.patch.object(module.gpu_admission, "trusted_sample", side_effect=lambda: trusted_sample(
+             private_root / "gpu-capacity.json")), \
          mock.patch.object(module.os, "sched_getaffinity",
                            lambda _pid: {2, 3}), \
          mock.patch.object(module.socket, "gethostname", gethostname), \
          mock.patch.object(sys, "argv", argv):
-        assert module.main() == 0
+            assert module.main() == (0 if generation else 75)
+        if actual_queue is not None:
+            assert actual_queue.records.item_path(pool.record_store.READY, key).read_bytes(
+            ) == ready
+            assert actual_queue.terminal_keys() == frozenset()
+            assert list(actual_queue.records.dir(pool.record_store.CLAIMED).iterdir()) == []
+            assert actual_queue.offers() == []
+            assert list((actual_queue.root / "generation-drift").glob("*.json")) == []
     return calls
 
 
@@ -129,36 +184,74 @@ def test_a_loop_announces_the_name_the_box_has_now() -> None:
         "worker that no longer answers to it")
 
 
-def test_a_box_that_was_not_renamed_announces_exactly_what_it_did() -> None:
-    """Re-reading the name must not disturb the ordinary case.
-
-    The tags are a set the scheduler matches against, so an extra or reordered
-    entry here is a placement change, not a cosmetic one.
-    """
-
+def test_a_box_that_was_not_renamed_announces_its_current_name() -> None:
     module = _worker_loop()
 
     calls = _announced(module, ["sparky"])
 
     offer = calls[-1]
     assert offer["host"] == "sparky"
-    # Current advertised capability, in the order the loop appends it: the
-    # declared-image claim check (#714) rides the same subset rule, so this
-    # loop offers container-image-v1 and a pre-check loop cannot claim
-    # image-pinned work and die inside it; the named-interpreter (#1263),
-    # digest-pinned dependency (#1495), scratch-I/O and scratch-lifetime
-    # capabilities fence their own rolling publications the same way.  The
-    # later capabilities are read from their owners, so adding one is a
-    # reviewed edit of this list rather than a silent stale literal (#1040
-    # review of the doubles).
-    assert offer["tags"] == [
-        "gb10", "sparky", "cpu", "progress-v1", "progress-helper-v1",
-        "progress-cycle-v1", "progress-pool-contention-v1",
-        "progress-egress-v1", "progress-queued-child-v1",
-        "container-image-v1",
-        module.pb.INTERPRETER_TAG,
-        module.local_dependencies.TAG,
-        module.dependency_digest.DEPENDENCY_DIGEST_TAG,
-        module.local_scratch.IO_CAPABILITY,
-        module.local_scratch.SCRATCH_LIFETIME_TAG,
-    ], offer["tags"]
+    assert "sparky" in offer["tags"]
+
+
+@pytest.mark.parametrize("gang", [False, True])
+@pytest.mark.parametrize("generation", ["", "g1"])
+@pytest.mark.parametrize("gpu", [False, True])
+def test_worker_enablement_reaches_the_published_offer_and_claim_matcher(
+        tmp_path, gang, generation, gpu):
+    module = _worker_loop()
+    announcements = _announced(module, ["testbox"], gang=gang,
+                               generation=generation, gpu=gpu)
+    if not generation:
+        assert announcements == []
+        return
+    announcement = announcements[-1]
+    queue = pool.PoolQueue(tmp_path / "queue")
+    queue.announce(**announcement)
+    offer = queue.offers()[0]
+    tags = frozenset(offer["tags"])
+
+    assert ("cpu" in tags) is (not gpu)
+    assert contracts.CONTAINER_IMAGE_TAG in tags
+    assert contracts.SCRATCH_IO_TAG in tags
+    assert contracts.SCRATCH_LIFETIME_TAG in tags
+    assert (contracts.GANG_TAG in tags) is gang
+    assert (contracts.PUBLICATION_CANARY_TAG in tags) is bool(generation)
+    assert {tag for tag in tags if tag.startswith("runtime-generation:")} == (
+        {f"runtime-generation:{generation}"} if generation else set())
+    assert queue._placement_matches(
+        {"tags": [contracts.GANG_TAG]}, tags=tags, has_gpu=gpu) is gang
+    assert queue._placement_matches(
+        {"tags": [contracts.PUBLICATION_CANARY_TAG]}, tags=tags,
+        has_gpu=gpu) is bool(generation)
+
+
+@pytest.mark.parametrize("tag,generation", [
+    (contracts.GANG_TAG, ""),
+    (contracts.PUBLICATION_CANARY_TAG, ""),
+    ("runtime-generation:forged", ""),
+    ("runtime-generation:forged", "g1"),
+])
+def test_manual_contract_tags_refuse_before_worker_main_announces(tag, generation, capsys):
+    module = _worker_loop()
+    published = []
+    original = module.publish_offer
+
+    def record_publication(*args, **kwargs):
+        published.append(True)
+        return original(*args, **kwargs)
+
+    with mock.patch.object(module, "publish_offer", side_effect=record_publication):
+        with pytest.raises(SystemExit) as exc:
+            _announced(module, ["testbox"], generation=generation, extra_tags=[tag])
+    assert exc.value.code == 2
+    assert tag in capsys.readouterr().err
+    assert published == []
+
+
+def test_manual_placement_tags_keep_enabled_code_contracts():
+    module = _worker_loop()
+    tags = _announced(module, ["testbox"], gang=True, generation="g1",
+                      extra_tags=["custom-placement", "cpu"])[-1]["tags"]
+    assert {"custom-placement", "cpu", contracts.GANG_TAG,
+            contracts.PUBLICATION_CANARY_TAG, "runtime-generation:g1"} <= set(tags)

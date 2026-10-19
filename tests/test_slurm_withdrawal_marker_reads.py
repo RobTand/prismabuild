@@ -4,7 +4,7 @@
 codebase already measured what that does to a lookup of a path that did not
 exist yet: the client caches the negative entry, so ``exists()`` keeps
 answering False and ``open()`` keeps raising ``ENOENT`` after the file has
-landed.  ``pbrun.terminal_record`` polls by ``os.listdir`` for exactly that
+landed.  ``pbrun.action_wait.terminal_record`` polls by ``os.listdir`` for exactly that
 reason, and says so.
 
 Three reads in ``slurm_lane`` trusted the lookup instead, and what they lose is
@@ -77,7 +77,7 @@ class _NegativelyCachedDirectory:
 
 
 def _operators_marker(queue_root: Path, *, published_unix: float) -> Path:
-    directory = queue_root / pool.WITHDRAWN
+    directory = queue_root / pool.record_store.WITHDRAWN
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{KEY}.json"
     path.write_text(json.dumps({
@@ -102,14 +102,14 @@ def test_publish_withdrawal_lists_the_directory_before_it_reads(
 
     queue_root = tmp_path / "pb-queue"
     _operators_marker(queue_root, published_unix=100.0)
-    client = _NegativelyCachedDirectory(monkeypatch, queue_root / pool.WITHDRAWN)
+    client = _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.WITHDRAWN)
 
     _, filed = sl.publish_withdrawal(
         queue_root=queue_root, action_key=KEY,
         reason="the job was cancelled", by="slurm:scancel",
     )
 
-    assert str(queue_root / pool.WITHDRAWN) in client.listed
+    assert str(queue_root / pool.record_store.WITHDRAWN) in client.listed
     assert filed["withdrawn_by"] == "rob@dl380g10"
     assert filed["reason"] == "superseded by the 4.75 arm"
 
@@ -121,7 +121,7 @@ def test_publish_withdrawal_keeps_the_first_decision_on_disk(
 
     queue_root = tmp_path / "pb-queue"
     marker = _operators_marker(queue_root, published_unix=100.0)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.WITHDRAWN)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.WITHDRAWN)
 
     sl.publish_withdrawal(
         queue_root=queue_root, action_key=KEY,
@@ -140,7 +140,7 @@ def test_withdrawal_covers_finds_a_marker_a_stale_lookup_denies(
 
     queue_root = tmp_path / "pb-queue"
     _operators_marker(queue_root, published_unix=100.0)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.WITHDRAWN)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.WITHDRAWN)
 
     found = sl.withdrawal_covers(queue_root, KEY, 100.0)
     assert found is not None
@@ -170,13 +170,13 @@ def test_supersede_withdrawal_retires_a_marker_a_stale_lookup_denies(
 
     queue_root = tmp_path / "pb-queue"
     marker = _operators_marker(queue_root, published_unix=100.0)
-    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.WITHDRAWN)
+    _NegativelyCachedDirectory(monkeypatch, queue_root / pool.record_store.WITHDRAWN)
 
     retired = sl.supersede_withdrawal(queue_root, KEY, 200.0)
     assert retired is not None and retired["withdrawn_by"] == "rob@dl380g10"
     assert not os.path.isfile(marker)
     archived = list(
-        (queue_root / pool.WITHDRAWN / "superseded").glob(f"{KEY}.*.json")
+        (queue_root / pool.record_store.WITHDRAWN / "superseded").glob(f"{KEY}.*.json")
     )
     assert len(archived) == 1
 

@@ -31,14 +31,10 @@ def _tool():
     return module
 
 
-def _queue(tmp_path: Path) -> pool.PoolQueue:
-    return pool.PoolQueue(tmp_path / "queue")
-
-
 def _announce(queue: pool.PoolQueue, *, age_s: float, host: str = HOST) -> Path:
     """A worker record as ``announce`` writes one, aged by hand."""
 
-    directory = queue.root / pool.WORKERS
+    directory = queue.root / pool.record_store.WORKERS
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{host}.json"
     path.write_text(json.dumps({
@@ -61,7 +57,7 @@ def _retired(queue: pool.PoolQueue, host: str = HOST) -> Path:
 def test_a_record_a_loop_is_still_refreshing_is_not_retired(tmp_path, capsys):
     """One poll ago is a live loop, whatever the operator believes."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     path = _announce(queue, age_s=5.0)
     tool = _tool()
 
@@ -80,12 +76,12 @@ def test_a_record_quiet_only_past_the_offer_timeout_is_not_retired(tmp_path):
     retire a healthy box.
     """
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.OFFER_TIMEOUT_S + 30.0)
     assert pool.OFFER_TIMEOUT_S + 30.0 < pool.LEASE_TIMEOUT_S
 
     assert _tool().main([HOST, "--root", str(queue.root), "--apply"]) == 1
-    assert (queue.root / pool.WORKERS / f"{HOST}.json").exists()
+    assert (queue.root / pool.record_store.WORKERS / f"{HOST}.json").exists()
 
 
 def test_a_name_with_work_out_on_it_is_not_retired(tmp_path, capsys):
@@ -95,23 +91,23 @@ def test_a_name_with_work_out_on_it_is_not_retired(tmp_path, capsys):
     reaper's lease belongs to.
     """
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
-    claimed = queue.dir(pool.CLAIMED)
+    claimed = queue.records.dir(pool.record_store.CLAIMED)
     claimed.mkdir(parents=True, exist_ok=True)
     (claimed / f"{'b' * 64}.json").write_text(
         json.dumps({"claimed_host": HOST, "claimed_by": "worker-1"}))
 
     assert _tool().main([HOST, "--root", str(queue.root), "--apply"]) == 1
 
-    assert (queue.root / pool.WORKERS / f"{HOST}.json").exists()
+    assert (queue.root / pool.record_store.WORKERS / f"{HOST}.json").exists()
     assert "names this host" in capsys.readouterr().out
 
 
 def test_a_name_holding_a_reservation_is_not_retired(tmp_path, capsys):
     """Capacity is reserved under the host name the ledger is keyed by."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
     held = queue.ledger(HOST).held_dir / ("c" * 64)
     held.mkdir(parents=True, exist_ok=True)
@@ -119,7 +115,7 @@ def test_a_name_holding_a_reservation_is_not_retired(tmp_path, capsys):
 
     assert _tool().main([HOST, "--root", str(queue.root), "--apply"]) == 1
 
-    assert (queue.root / pool.WORKERS / f"{HOST}.json").exists()
+    assert (queue.root / pool.record_store.WORKERS / f"{HOST}.json").exists()
     assert "reservation" in capsys.readouterr().out
 
 
@@ -136,7 +132,7 @@ def test_a_record_refreshed_between_the_check_and_the_move_is_put_back(
     measuring the wrong thing.
     """
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     path = _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
     tool = _tool()
     original = tool.os.rename
@@ -162,37 +158,37 @@ def test_a_record_refreshed_between_the_check_and_the_move_is_put_back(
 # --- what it does when the name really is gone -----------------------------
 
 def test_a_quiet_unclaimed_name_is_moved_where_offers_no_longer_sees_it(tmp_path):
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
 
     assert _tool().main([HOST, "--root", str(queue.root), "--apply"]) == 0
 
-    assert not (queue.root / pool.WORKERS / f"{HOST}.json").exists()
+    assert not (queue.root / pool.record_store.WORKERS / f"{HOST}.json").exists()
     assert _retired(queue).exists()
     assert [offer["host"] for offer in queue.offers(max_age_s=1e9)] == []
 
 
 def test_without_apply_nothing_moves(tmp_path, capsys):
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
 
     assert _tool().main([HOST, "--root", str(queue.root)]) == 0
 
-    assert (queue.root / pool.WORKERS / f"{HOST}.json").exists()
+    assert (queue.root / pool.record_store.WORKERS / f"{HOST}.json").exists()
     assert "re-run with --apply" in capsys.readouterr().out
 
 
 def test_a_retirement_is_reversible(tmp_path):
     """Nothing is deleted, because the operator may find out it was wrong."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
     tool = _tool()
     assert tool.main([HOST, "--root", str(queue.root), "--apply"]) == 0
 
     assert tool.main([HOST, "--root", str(queue.root), "--restore"]) == 0
 
-    restored = queue.root / pool.WORKERS / f"{HOST}.json"
+    restored = queue.root / pool.record_store.WORKERS / f"{HOST}.json"
     assert restored.exists()
     assert json.loads(restored.read_text())["host"] == HOST
     assert not _retired(queue).exists()
@@ -211,7 +207,7 @@ def test_a_name_retired_twice_files_the_older_tombstone_rather_than_refusing(
     filed under the moment it last announced, and both remain readable.
     """
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     first = _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 8)
     first_stamp = int(json.loads(first.read_text())["announced_unix"])
     tool = _tool()
@@ -229,7 +225,7 @@ def test_a_name_retired_twice_files_the_older_tombstone_rather_than_refusing(
 def test_restoring_a_name_that_came_back_on_its_own_is_refused(tmp_path):
     """A live announce is the current truth; the archive must not overwrite it."""
 
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S * 4)
     tool = _tool()
     assert tool.main([HOST, "--root", str(queue.root), "--apply"]) == 0
@@ -241,8 +237,8 @@ def test_restoring_a_name_that_came_back_on_its_own_is_refused(tmp_path):
 
 
 def test_a_name_with_no_record_is_reported_not_invented(tmp_path, capsys):
-    queue = _queue(tmp_path)
-    (queue.root / pool.WORKERS).mkdir(parents=True, exist_ok=True)
+    queue = pool.PoolQueue(tmp_path / 'queue')
+    (queue.root / pool.record_store.WORKERS).mkdir(parents=True, exist_ok=True)
 
     assert _tool().main(["gx10-nobody", "--root", str(queue.root), "--apply"]) == 1
     assert "no worker record" in capsys.readouterr().out
@@ -272,7 +268,7 @@ def test_without_root_a_missing_default_queue_is_refused_by_name(
 
 
 def test_without_root_the_default_queue_is_the_one_read(tmp_path, monkeypatch, capsys):
-    queue = _queue(tmp_path)
+    queue = pool.PoolQueue(tmp_path / 'queue')
     _announce(queue, age_s=pool.LEASE_TIMEOUT_S + 60)
     monkeypatch.setattr(pool, "DEFAULT_POOL_ROOT", queue.root)
 

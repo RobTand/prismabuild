@@ -6,7 +6,7 @@ reader must still be able to summarize it, and the failure evidence must still
 be there to read. The rewrite did none of the three. It used
 ``path.write_text``, which truncates and then writes, while every other writer
 in the queue publishes by rename. It changed ``status`` without touching
-``attempt_history``, so ``pbrun.outcome_summary`` refused the record against the
+``attempt_history``, so ``pbrun.action_client.outcome_summary`` refused the record against the
 attempt it adopted. And it replaced ``detail`` outright with the reason,
 destroying the returncode and the output tails with no copy taken.
 """
@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pool_reset  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -47,7 +48,7 @@ def endings(tmp_path: Path) -> dict:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.publish(
         action_key=KEY_POOL,
         cas_root=str(tmp_path / "cas"),
@@ -66,9 +67,9 @@ def endings(tmp_path: Path) -> dict:
             "elapsed_s": 12.0,
         },
     )
-    assert pool_path == queue.item_path(pool.FAILED, KEY_POOL)
+    assert pool_path == queue.records.item_path(pool.record_store.FAILED, KEY_POOL)
 
-    lane_path = queue.item_path(pool.FAILED, KEY_SLURM)
+    lane_path = queue.records.item_path(pool.record_store.FAILED, KEY_SLURM)
     lane_path.write_text(json.dumps({
         "schema": "prismaquant.prismabuild.slurm_outcome.v1",
         "action_key": KEY_SLURM,
@@ -110,7 +111,7 @@ def test_the_rewrite_is_published_by_rename(
     with contextlib.suppress(OSError):
         pool_reset._file_reset({"paths": [path]}, reason="operator reset")
 
-    record = pool._read_json(path)
+    record = pool.record_store.read_document(path)
     assert record is not None
     assert record["status"] == "reset"
 
@@ -127,7 +128,7 @@ def test_a_reset_record_is_still_readable(endings: dict) -> None:
     pool_reset._file_reset({"paths": [path]}, reason="operator reset")
 
     record = json.loads(path.read_text(encoding="utf-8"))
-    summary = pbrun.outcome_summary(endings["queue"], path, record)
+    summary = submit_core.action_client.outcome_summary(endings["queue"], path, record)
     assert summary["status"] == "reset"
     assert summary["action_key"] == KEY_POOL
 

@@ -29,7 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -88,7 +88,7 @@ def _publish_consumer(queue: pool.PoolQueue, plan: dict[str, object]) -> None:
 @pytest.fixture()
 def staged(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
     return queue, stage
@@ -124,12 +124,12 @@ def _fail_mover(queue: pool.PoolQueue, stage: Path, *,
         "bytes_staged": 32, "entries_declared": 100, "entries_staged": 2,
         "complete": False, "seconds": 10.0, "unix": 1000.0,
         "errors": ["No space left on device"]})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
         "entries": entries})
-    assert not queue.tier_ledger(TIER).holder_tokens(mover)
+    assert not queue.tier(TIER).holdings(mover)
     return written
 
 
@@ -152,7 +152,7 @@ def test_a_failed_movers_partials_are_evicted_before_the_recopy(staged) -> None:
     events = _cycle(queue, stage, pressure={TIER: PHASE_GIB})
 
     egress0 = _hexkey("egress0")
-    assert queue.item_path(pool.READY, egress0).exists(), (
+    assert queue.records.item_path(pool.record_store.READY, egress0).exists(), (
         "the failed mover's own egress row is the eviction candidate")
     assert [event["mover"] for event in events
             if event.get("event") == "failed-mover-egress-published"] == [mover0]
@@ -171,7 +171,7 @@ def test_no_pressure_means_no_reclaim(staged) -> None:
         queue, consumers, pressure={})
 
     assert events == []
-    assert not queue.item_path(pool.READY, _hexkey("egress0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("egress0")).exists()
 
 
 def test_a_queued_mover_is_not_reclaimed_from_under_itself(staged) -> None:
@@ -189,7 +189,7 @@ def test_a_queued_mover_is_not_reclaimed_from_under_itself(staged) -> None:
         queue, consumers, pressure={TIER: PHASE_GIB})
 
     assert events == []
-    assert not queue.item_path(pool.READY, _hexkey("egress0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("egress0")).exists()
 
 
 def test_a_completed_mover_is_not_reclaimed(staged) -> None:
@@ -209,7 +209,7 @@ def test_a_completed_mover_is_not_reclaimed(staged) -> None:
         queue, consumers, pressure={TIER: PHASE_GIB})
 
     assert events == []
-    assert not queue.item_path(pool.READY, _hexkey("egress0")).exists()
+    assert not queue.records.item_path(pool.record_store.READY, _hexkey("egress0")).exists()
 
 
 def test_a_concluded_egress_is_not_published_again(staged) -> None:
@@ -221,7 +221,7 @@ def test_a_concluded_egress_is_not_published_again(staged) -> None:
     mover0 = _hexkey("mover0")
     _fail_mover(queue, stage, mover=mover0)
     egress0 = _hexkey("egress0")
-    queue.item_path(pool.DONE, egress0).write_text(json.dumps({
+    queue.records.item_path(pool.record_store.DONE, egress0).write_text(json.dumps({
         "action_key": egress0, "status": "executed"}))
     consumers = tier_loop._planned_consumers(queue, {TIER: _tier_record()})
 
@@ -229,7 +229,7 @@ def test_a_concluded_egress_is_not_published_again(staged) -> None:
         queue, consumers, pressure={TIER: PHASE_GIB})
 
     assert events == []
-    assert not queue.item_path(pool.READY, egress0).exists()
+    assert not queue.records.item_path(pool.record_store.READY, egress0).exists()
 
 
 def test_the_window_holds_the_recopy_while_its_egress_is_queued(
@@ -243,7 +243,7 @@ def test_the_window_holds_the_recopy_while_its_egress_is_queued(
     mover0 = _hexkey("mover0")
     partials = _fail_mover(queue, stage, mover=mover0)
     queue.publish(**plan["phases"][0]["egress_row"], recompute=True)
-    queue.mint_tier_capacity(TIER, {"stage_gib": 10})
+    queue.tier(TIER).mint({'stage_gib': 10})
 
     events = tier_loop.residency_window(queue, tiers={TIER: _tier_record()})
 

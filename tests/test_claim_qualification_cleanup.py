@@ -40,7 +40,7 @@ def registered_cleanup(tmp_path, monkeypatch):
     monkeypatch.setattr(ResourceScope, "_request", request)
     queue = SimpleNamespace(
         ledger=lambda: SimpleNamespace(base=tmp_path),
-        item_path=lambda *args: tmp_path / "claim.json",
+        records=SimpleNamespace(item_path=lambda *args: tmp_path / "claim.json"),
         write_lease=interrupt_setup,
     )
     # Register the real callback, stopping before a payload is launched. Only

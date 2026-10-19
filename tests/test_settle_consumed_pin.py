@@ -16,6 +16,7 @@ Small logical GiB quotas, real ledgers, real claim/settle/evict calls.
 """
 from __future__ import annotations
 
+
 from pathlib import Path
 import sys
 
@@ -24,12 +25,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
+from prismabuild.funding import AdvanceProtection
 from prismabuild import pool, residency_map, residency_plan, storage_tiers  # noqa: E402
 from prismabuild import window_credit  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -71,12 +74,12 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 5})
-    ledger = queue.tier_ledger(TIER)
+    queue.records.ensure_layout()
+    queue.tier(TIER).mint({'stage_gib': 5})
+    ledger = queue.tier(TIER)
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=str(stage)) == "registered"
 
     mover, consumer = _hexkey("settle-mover"), _hexkey("settle-consumer")
@@ -91,7 +94,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
 
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-0")
@@ -101,12 +104,12 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
               "range_start_bytes": 0, "range_end_bytes": SPAN,
               "kind": "stage_gib",
               "published_unix": float(row["published_unix"])}  # type: ignore[arg-type]
-    assert queue.reserve_fence(TIER, grant, fields, 1) is True
-    record = queue.read_funding(mover, TIER)
+    assert queue.funding.reserve_window(TIER, grant, fields, 1).bound is True
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None
     generation = str(record["generation"])
-    assert queue.transfer_fence(TIER, grant, mover) == 1
-    assert queue.advance_funding_state(
+    assert queue.funding._transfer_window(TIER, grant, mover) == 1
+    assert queue.funding.advance_window(
         mover, TIER, expect="reserved", advance_to="transferring",
         generation=generation) is True
 
@@ -115,7 +118,7 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
     # The actual copy, staged before the receipt measures it.
     staged = stage / "pin.bin"
     staged.write_bytes(b"s" * SPAN)
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    residency_map.write_fragment(queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": MANIFEST,
@@ -127,31 +130,31 @@ def test_settle_keeps_consumed_bytes_until_egress(tmp_path: Path) -> None:
         "stage_root": str(stage), "complete": True, "bytes_staged": SPAN})
     queue.finish(mover, status="executed")
     # Landed and pinned: DONE filed, 1 GiB still charged to the mover.
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
-    assert queue.read_funding(mover, TIER)["state"] == "consumed"
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
+    assert queue.funding.read_window(mover, TIER)["state"] == "consumed"
 
-    protection = {"protected": {(consumer, TIER): {
+    protection = AdvanceProtection(protected={(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": 1, "phase": "phase-0",
-        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
-    events = tier_loop._settle_protected(queue, protection)
+        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}})
+    events = queue.funding.settle_windows( protection)
     # Credit reconciliation frees nothing from the mover: no fused release,
     # tokens still held, record still consumed.
     assert [e for e in events
             if e.get("reason") == "mover-terminal-fused"] == []
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 4
-    record = queue.read_funding(mover, TIER)
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 4
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "consumed"
     assert str(record["generation"]) == generation
 
     # Only the owner path returns landed bytes: a real egress deletes the
     # staged file, releases the charge, and drops the fragment.
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         queue, mover, consumer_action_key=consumer, stage_root=str(stage))
     assert not staged.exists()
     assert int(receipt.get("tokens_released", 0)) == 1
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
-    assert ledger.available().get("stage_gib") == 5
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 5
 
 
 def _funded_pair(queue, plan, mover, row, *, kind, gib, grant):
@@ -162,21 +165,21 @@ def _funded_pair(queue, plan, mover, row, *, kind, gib, grant):
               "kind": kind,
               "published_unix": float(row["published_unix"])}
     tier = TIER
-    assert queue.reserve_fence(tier, grant, fields, gib) is True
-    record = queue.read_funding(mover, tier)
+    assert queue.funding.reserve_window(tier, grant, fields, gib).bound is True
+    record = queue.funding.read_window(mover, tier)
     assert record is not None
     generation = str(record["generation"])
-    assert queue.transfer_fence(tier, grant, mover) == gib
-    assert queue.advance_funding_state(
+    assert queue.funding._transfer_window(tier, grant, mover) == gib
+    assert queue.funding.advance_window(
         mover, tier, expect="reserved", advance_to="transferring",
         generation=generation) is True
     return generation
 
 
 def _protection(consumer, mover, grant, *, gib):
-    return {"protected": {(consumer, TIER): {
+    return AdvanceProtection(protected={(consumer, TIER): {
         "grant": grant, "mover": mover, "need_gib": gib, "phase": "phase-0",
-        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}}}
+        "tier_id": TIER, "kind": "stage_gib", "leg": "mover_row"}})
 
 
 def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
@@ -191,9 +194,9 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
     queue = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    queue.mint_tier_capacity(TIER, {"stage_gib": 5})
-    ledger = queue.tier_ledger(TIER)
+    queue.records.ensure_layout()
+    queue.tier(TIER).mint({'stage_gib': 5})
+    ledger = queue.tier(TIER)
     mover, consumer = _hexkey("proof-mover"), _hexkey("proof-consumer")
     plan = _plan(queue, mover=mover, consumer=consumer)
     phases = plan["phases"]
@@ -206,38 +209,38 @@ def test_settle_honors_terminal_proof_for_transferring(tmp_path: Path) -> None:
         worker_script=mover_row["worker_script"],
         tags=["dl380g10"], resources=mover_row["resources"],
         residency=mover_row["residency"])
-    row = pool.read_queue_record(queue.item_path(pool.READY, mover))
+    row = pool.read_queue_record(queue.records.item_path(pool.record_store.READY, mover))
     assert isinstance(row, dict)
     grant = window_credit.grant_key(consumer, TIER, "mover_row", "phase-proof")
     generation = _funded_pair(queue, plan, mover, row, kind="stage_gib",
                               gib=1, grant=grant)
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None
     names = [str(name) for name in record["tokens"]]
 
-    done_path = queue.item_path(pool.DONE, mover)
-    pool._write_json_atomic(done_path, {
+    done_path = queue.records.item_path(pool.record_store.DONE, mover)
+    pool.immutable_files.write_json_atomic(done_path, {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
         "action_key": mover, "status": "executed",
         "tier_funding": {TIER: {"generation": generation,
                                 "kinds": {"stage_gib": 1},
                                 "tokens": names}},
     })
-    events = tier_loop._settle_protected(
-        queue, _protection(consumer, mover, grant, gib=1))
+    events = queue.funding.settle_windows(
+         _protection(consumer, mover, grant, gib=1))
     assert [e for e in events
             if e.get("reason") == "mover-terminal-fused"] == []
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 1
-    assert ledger.available().get("stage_gib") == 4
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 1
+    assert ledger.free_supply().get('stage_gib') == 4
 
     # Control: the same terminal state with no proof releases exactly.
-    pool._write_json_atomic(done_path, {
+    pool.immutable_files.write_json_atomic(done_path, {
         "schema": pool.POOL_OUTCOME_SCHEMA_V1,
         "action_key": mover, "status": "executed",
     })
-    events = tier_loop._settle_protected(
-        queue, _protection(consumer, mover, grant, gib=1))
+    events = queue.funding.settle_windows(
+         _protection(consumer, mover, grant, gib=1))
     assert [e for e in events
             if e.get("reason") == "mover-terminal-fused"] != []
-    assert int(ledger.holder_tokens(mover).get("stage_gib", 0)) == 0
-    assert ledger.available().get("stage_gib") == 5
+    assert int(ledger.holdings(mover).get('stage_gib', 0)) == 0
+    assert ledger.free_supply().get('stage_gib') == 5

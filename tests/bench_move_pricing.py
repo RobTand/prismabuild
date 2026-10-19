@@ -52,7 +52,7 @@ def _full_read(queue: pool.PoolQueue, *, schemas=(pool.POOL_MOVE_SCHEMA_V1,),
                ) -> list[dict[str, object]]:
     """``PoolQueue.move_records`` as it was at ``c1fbf87db723``."""
 
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     out: list[dict[str, object]] = []
     try:
         paths = sorted(directory.glob("*.json"))
@@ -60,7 +60,7 @@ def _full_read(queue: pool.PoolQueue, *, schemas=(pool.POOL_MOVE_SCHEMA_V1,),
         return out
     for path in paths:
         try:
-            record = pool._read_json(path, tolerate_stale=True)
+            record = pool.record_store._read_json(path, tolerate_stale=True)
         except pool.PoolContractError:
             continue
         if not isinstance(record, dict):
@@ -102,7 +102,7 @@ def _receipt(index: int) -> dict[str, object]:
 
 
 def _file_history(queue: pool.PoolQueue, count: int) -> None:
-    directory = queue.root / pool.MOVERS
+    directory = queue.root / pool.record_store.MOVERS
     directory.mkdir(parents=True, exist_ok=True)
     for index in range(count):
         (directory / f"{index:064x}.json").write_bytes(
@@ -113,8 +113,8 @@ def _file_history(queue: pool.PoolQueue, count: int) -> None:
 def _evict(queue: pool.PoolQueue) -> bool:
     """Drop the receipts and the log from the page cache; ``False`` if not."""
 
-    paths = list((queue.root / pool.MOVERS).glob("*.json"))
-    log = queue.move_pricing_log_path()
+    paths = list((queue.root / pool.record_store.MOVERS).glob("*.json"))
+    log = queue.records.move_pricing_log_path()
     if log.exists():
         paths.append(log)
     try:
@@ -137,8 +137,8 @@ def _evict(queue: pool.PoolQueue) -> bool:
 
 
 def _measure(queue: pool.PoolQueue, read, monkeypatch) -> dict[str, object]:
-    directory = queue.root / pool.MOVERS
-    log = queue.move_pricing_log_path()
+    directory = queue.root / pool.record_store.MOVERS
+    log = queue.records.move_pricing_log_path()
     opened = {"receipts": 0, "log": 0}
     real = Path.read_bytes
 
@@ -182,11 +182,11 @@ def _prices(records) -> dict[str, object]:
 def test_bench_move_pricing(history: int, tmp_path: Path, monkeypatch, capsys) -> None:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     _file_history(queue, history)
-    body = (queue.root / pool.MOVERS / f"{0:064x}.json").stat().st_size
+    body = (queue.root / pool.record_store.MOVERS / f"{0:064x}.json").stat().st_size
     results: dict[str, object] = {"history": history, "receipt_bytes": body}
     evicted = {}
     for cache in ("warm", "cold"):
-        log = queue.move_pricing_log_path()
+        log = queue.records.move_pricing_log_path()
         if log.exists():
             log.unlink()
         if cache == "cold":
@@ -211,8 +211,8 @@ def test_bench_move_pricing(history: int, tmp_path: Path, monkeypatch, capsys) -
             results[f"{cache}:{name}"] = value
         # Undo this pass's filings so the cold pass reads the same history.
         for index in range(history, history + FILED_SINCE):
-            queue.move_path(f"{index:064x}").unlink()
+            queue.records.move_path(f"{index:064x}").unlink()
     results["evicted"] = evicted
-    results["log_bytes"] = queue.move_pricing_log_path().stat().st_size
+    results["log_bytes"] = queue.records.move_pricing_log_path().stat().st_size
     with capsys.disabled():
         print("bench-move-pricing: " + json.dumps(results, sort_keys=True))

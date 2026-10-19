@@ -18,6 +18,7 @@ outside its scope.
 Issues #227, #262.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import json
 from pathlib import Path
@@ -32,6 +33,8 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
+
+from prismabuild import census as fleet_census
 
 import pbstatus  # noqa: E402
 import pbwait  # noqa: E402
@@ -67,7 +70,7 @@ def lost_claim(tmp_path: Path) -> tuple[pool.PoolQueue, Path, dict]:
     with mock.patch.object(pool, "_now", lambda: later):
         assert q.reap_stale(timeout_s=-1) == [KEY]
 
-    path = q.item_path(pool.FAILED, KEY)
+    path = q.records.item_path(pool.record_store.FAILED, KEY)
     record = json.loads(path.read_text())
     assert record["claimed_host"] == HELD_BY
     assert record["finished_host"] == REAPED_BY
@@ -78,7 +81,7 @@ def test_pbstatus_names_the_holder(lost_claim) -> None:
     """The HOST column is where the action was."""
 
     q, _, _ = lost_claim
-    rows = pbstatus.read_endings(q.root, limit=10)
+    rows = fleet_census.endings(q.root, limit=10)
 
     row = next(row for row in rows if row["action_key"] == KEY)
     assert row["host"] == HELD_BY, (
@@ -90,7 +93,7 @@ def test_pbwait_names_the_holder(lost_claim) -> None:
 
     q, path, record = lost_claim
 
-    row = pbwait._from_record(q, path, record)
+    row = pbwait._from_ending(q, (path, record))
     assert row["host"] == HELD_BY
 
 
@@ -104,18 +107,18 @@ def test_an_ending_with_no_claimant_still_names_a_box(tmp_path: Path) -> None:
     """
 
     q = pool.PoolQueue(tmp_path / "queue")
-    q.ensure_layout()
-    pool._write_json_atomic(q.item_path(pool.DONE, KEY), {
+    q.records.ensure_layout()
+    pool.immutable_files.write_json_atomic(q.records.item_path(pool.record_store.DONE, KEY), {
         "action_key": KEY, "status": "cache_hit", "transport": "slurm",
         "finished_host": REAPED_BY, "finished_unix": pool._now(),
         "detail": {"elapsed_s": 0.0, "returncode": 0},
     })
-    record = json.loads(q.item_path(pool.DONE, KEY).read_text())
+    record = json.loads(q.records.item_path(pool.record_store.DONE, KEY).read_text())
 
-    rows = pbstatus.read_endings(q.root, limit=10)
+    rows = fleet_census.endings(q.root, limit=10)
     assert next(row for row in rows if row["action_key"] == KEY)["host"] == REAPED_BY
 
-    row = pbwait._from_record(q, q.item_path(pool.DONE, KEY), record)
+    row = pbwait._from_ending(q, (q.records.item_path(pool.record_store.DONE, KEY), record))
     assert row["host"] == REAPED_BY
 
 
@@ -129,11 +132,13 @@ def test_the_two_readers_agree_with_pbrun(lost_claim) -> None:
 
     q, path, record = lost_claim
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    summary = pbrun.outcome_summary(q, path, record)
-    assert f"held by {HELD_BY}" in pbrun.outcome_headline(summary)
+    summary = submit_core.action_client.outcome_summary(q, path, record)
+    assert f"held by {HELD_BY}" in submit_core.action_client.outcome_headline(summary)
 
-    status_row = next(row for row in pbstatus.read_endings(q.root, limit=10)
+    status_row = next(row for row in fleet_census.endings(q.root, limit=10)
                       if row["action_key"] == KEY)
-    wait_row = pbwait._from_record(q, path, record)
+    wait_row = pbwait._from_ending(q, (path, record))
     assert status_row["host"] == wait_row["host"] == summary["claimed_host"]

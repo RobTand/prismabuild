@@ -15,14 +15,15 @@ from pathlib import Path
 import sys
 
 import prismabuild.core as pb
+from prismabuild import data_manifest as manifest_codec
 import prismabuild.storage_tiers as storage_tiers  # noqa: F401
 from prismabuild import residency_plan
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from prewarm_fixture import Fleet, data_manifest, phase_table  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import manifest_promotion  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import manifest_promotion  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 HOST = "dl380g10"
 STAGE_TIER = "prismabuild-stage:dl380g10"
@@ -64,11 +65,11 @@ def _manifest_row(fleet: Fleet, seed: str, *, annotations=None,
         fleet.file(name, size) for name, size in NAMED_FILES]
     manifest = data_manifest(files, prefix=str(fleet.mount),
                              annotations=annotations)
-    manifest = pb.validate_data_manifest(manifest)
+    manifest = manifest_codec.validate_data_manifest(manifest)
     blob = fleet.root / f"{seed}.manifest.json"
     blob.write_text(json.dumps(manifest))
     entry, _ = fleet.cas.ingest_input(
-        blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+        blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
     snap = fleet.root / f"{seed}.snapshot.json"
     snap.write_text("{}")
     snap_entry, _ = fleet.cas.ingest_input(
@@ -234,7 +235,7 @@ def test_a_planned_row_is_staged_by_the_tier_loop(tmp_path):
     fleet = Fleet(tmp_path)
     key = _manifest_row(fleet, "row-staged",
                         annotations={"phases": phase_table(NAMED_FILES)})
-    fleet.queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 16})
+    fleet.queue.tier(STAGE_TIER).mint({'stage_gib': 16})
     assert manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, key)])[0]["outcome"] == "planned"
@@ -344,7 +345,7 @@ def test_a_busy_transition_lock_defers_not_refuses(tmp_path, monkeypatch):
     def _busy(self, action_key, **kwargs):
         raise pool_mod.TransitionLockBusy(action_key, {"holder_pid": 1})
 
-    monkeypatch.setattr(pool_mod.PoolQueue, "_transition_locked", _busy)
+    monkeypatch.setattr(pool_mod.PoolQueue, "action_transition_lock", _busy)
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),
         ready=[_ready_item(fleet, key)])
@@ -481,7 +482,7 @@ def test_priority_zero_is_not_minus_ten(tmp_path):
 def _driven_cycle(fleet, tmp_path, stage_root):
     """One real tier_loop cycle over a stub stage tier (never the live one)."""
 
-    import tier_loop
+    from prismabuild import tier_cycle as tier_loop
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
 
@@ -549,7 +550,6 @@ def test_a_repeated_identical_refusal_writes_one_receipt(tmp_path):
     """REVIEW-1252-r3 [P3]: the receipt gate is real, not a comment."""
 
     import os
-    import time
     fleet = Fleet(tmp_path)
     key = _manifest_row(fleet, "row-stuck",
                         annotations={"phases": phase_table(NAMED_FILES)})
@@ -561,9 +561,9 @@ def test_a_repeated_identical_refusal_writes_one_receipt(tmp_path):
         fleet.queue, fleet.cas_root, broken,
         ready=[_ready_item(fleet, key)])
     assert record.exists()
+    os.utime(record, ns=(record.stat().st_atime_ns, 0))
     before = record.stat().st_mtime_ns
     content = record.read_text()
-    time.sleep(0.05)
 
     manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, broken,
@@ -616,14 +616,20 @@ def test_the_superseded_directory_is_listed_once_per_call(tmp_path, monkeypatch)
     keys = [fleet.action(f"r4-plain-{index}", files, with_manifest=False)
             for index in range(5)]
     listings: list[str] = []
-    real_scan = pool_scan = __import__("prismabuild.pool", fromlist=["_scan"])._scan
+    real_scan = pool_scan = __import__(
+        "prismabuild.immutable_files",
+        fromlist=["scan_optional"],
+    ).scan_optional
 
     def counting(directory):
         listings.append(str(directory))
         return real_scan(directory)
 
     monkeypatch.setattr(
-        __import__("prismabuild.pool", fromlist=["_scan"]), "_scan", counting)
+        __import__(
+            "prismabuild.immutable_files",
+            fromlist=["scan_optional"],
+        ), 'scan_optional', counting)
 
     outcomes = manifest_promotion.promote_ready_manifest_rows(
         fleet.queue, fleet.cas_root, _stage_tier(fleet),

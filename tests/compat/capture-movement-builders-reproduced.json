@@ -1,0 +1,38 @@
+{
+  "capture_name": "movement-builders-03-capture",
+  "capture_report_sha256": "022e43d6188c7f80a2a39220a7b56f48a8619e7a244461c07f16d3d2e796062d",
+  "excluded_cases": [],
+  "files": {
+    "goldens-movement-builders-reproduced.jsonl": "e98b6cfa88235866106b16ddb23165f772e94e837880f92ceec0aa2bdbdfffb5",
+    "historical-movement-builders-reproduced.jsonl": "4f2bfdc1cfad43a89b7075778c7e47f37d7994dd50bcdaf09d5426e2d06785e2"
+  },
+  "finished_at": "2026-10-17T01:15:58.682403+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "independent_writer_reproduction_required": true,
+  "retained_failures": [],
+  "selected_cases": [
+    "fragment/ram-writer",
+    "fragment/stage-writer",
+    "landing/tier-loop-writer",
+    "move/ram-refusal-writer",
+    "move/ram-writer",
+    "move/stage-writer"
+  ],
+  "source_git": {
+    "parents": [
+      "13a8293c84185f6eb3393b82ded6ce4be3ba8213"
+    ],
+    "snapshot": "ce4873a4d39f5ef44b4643eaa95a3cbbd268129c",
+    "tree": "9d7ce706f07f896e107d78d6b3a1176a5adfa61d"
+  },
+  "started_at": "2026-10-17T01:11:32.798365+00:00",
+  "verified_producer": {
+    "action_key": "8bcbf2d5b4d9c5e4649124224e14816b9d6b46153b08aeca27b751d8dc1146fb",
+    "receipt_sha256": "63ba16a11b3c53f29ddd4e4da6cdfb79ea6babfe1ebad862bf2ab36e72ddedfb",
+    "request_sha256": "6ae1c6bc05e8c771505d2cf253c339a93c1f1104db24e90cefce0536eea7ae8c",
+    "source_parent": "13a8293c84185f6eb3393b82ded6ce4be3ba8213"
+  }
+}

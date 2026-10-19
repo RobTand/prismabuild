@@ -2,7 +2,7 @@
 
 ``pool.withdraw`` persists ``membership_handoff`` in the immutable
 decision only after proving, against the live claim under the key lock:
-the claim still is the planned attempt (``_same_claim``), its
+the claim still is the planned attempt (``claim_identity.same_claim``), its
 generation is uncovered, and restart permission with remaining budget
 and existing lineage still holds. The tier-loop window reads that exact
 decision back. A supervisor-shaped ``by`` with no (or a failing) proof
@@ -10,6 +10,9 @@ files an ordinary cancellation and still retires the window.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
+
+from prismabuild import claim_identity
 
 import hashlib
 import json
@@ -28,7 +31,7 @@ from prismabuild import (  # noqa: E402
     residency_plan,
     storage_tiers,
 )
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -49,8 +52,8 @@ EGRESS = _hexkey("r13egress0")
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 8})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': 8})
     return q
 
 
@@ -61,16 +64,6 @@ def _sealed_shape(monkeypatch) -> None:
 
 def _owner(host: str) -> str:
     return f"{host}:supervisor-9:8"
-
-
-def _publish(queue: pool.PoolQueue, key: str, **kw) -> None:
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co",
-                  worker_script=queue.root / "worker.py",
-                  resources=kw.pop("resources", {"cpu": 1}),
-                  max_attempts=kw.pop("max_attempts", 3),
-                  retry_safe=kw.pop("retry_safe", True),
-                  tags=kw.pop("tags", ["x86"]), **kw)
 
 
 def _claim(queue: pool.PoolQueue, host: str, tag: str = "x86") -> dict:
@@ -166,7 +159,7 @@ def test_proven_handoff_persists_exact_decision(
     requeue = queue.plan_requeue(dict(snap))
     queue.withdraw(MOVER, reason=f"resign {owner}: test", by=owner,
                    membership_handoff=requeue["snapshot"])
-    marker = json.loads(queue.item_path(pool.WITHDRAWN, MOVER).read_text())
+    marker = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, MOVER).read_text())
     proof = marker.get("membership_handoff")
     assert isinstance(proof, dict)
     assert proof["owner"] == owner == marker["withdrawn_by"]
@@ -188,42 +181,78 @@ def test_handoff_proof_refuses_before_withdrawal(
     owner = _owner(host)
 
     stale_key = _hexkey("r13stale")
-    _publish(queue, stale_key)
+    ActionRows(queue).publish(
+        stale_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     live = _claim(queue, host)
     tampered = dict(live, claimed_unix=float(live["claimed_unix"]) + 100.0)
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(stale_key, reason="t", by=owner,
                        membership_handoff=tampered)
-    assert not queue.item_path(pool.WITHDRAWN, stale_key).exists()
-    assert queue.item_path(pool.CLAIMED, stale_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, stale_key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, stale_key).exists()
 
     other_key = _hexkey("r13other")
-    _publish(queue, other_key, tags=["other"])
+    ActionRows(queue).publish(
+        other_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['other'],
+    )
     foreign = _claim(queue, host, tag="other")
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(stale_key, reason="t", by=owner,
                        membership_handoff=dict(foreign))
-    assert not queue.item_path(pool.WITHDRAWN, stale_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, stale_key).exists()
 
     spent_key = _hexkey("r13spent")
-    _publish(queue, spent_key, max_attempts=1)
+    ActionRows(queue).publish(
+        spent_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+    )
     spent = queue.claim(tags=["x86"], owner=f"{host}:1:spent",
                         capacity={"cpu": 4, "mem_gb": 16})
     assert spent is not None
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(spent_key, reason="t", by=owner,
                        membership_handoff=dict(spent))
-    assert not queue.item_path(pool.WITHDRAWN, spent_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, spent_key).exists()
 
     covered_key = _hexkey("r13covered")
-    _publish(queue, covered_key)
+    ActionRows(queue).publish(
+        covered_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     covered = _claim(queue, host)
     queue.withdraw(covered_key, reason="operator", by="operator:test")
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(covered_key, reason="t", by=owner,
                        membership_handoff=dict(covered))
     marker = json.loads(
-        queue.item_path(pool.WITHDRAWN, covered_key).read_text())
+        queue.records.item_path(pool.record_store.WITHDRAWN, covered_key).read_text())
     assert "membership_handoff" not in marker
 
 
@@ -239,7 +268,16 @@ def test_forged_snapshot_bindings_refuse(
     owner = _owner(host)
 
     flip_key = _hexkey("r13flip")
-    _publish(queue, flip_key, retry_safe=False, max_attempts=1)
+    ActionRows(queue).publish(
+        flip_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=False,
+        tags=['x86'],
+    )
     flip_live = queue.claim(tags=["x86"], owner=f"{host}:1:flip",
                             capacity={"cpu": 4, "mem_gb": 16})
     assert flip_live is not None
@@ -248,11 +286,20 @@ def test_forged_snapshot_bindings_refuse(
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(flip_key, reason="t", by=owner,
                        membership_handoff=forged_safe)
-    assert not queue.item_path(pool.WITHDRAWN, flip_key).exists()
-    assert queue.item_path(pool.CLAIMED, flip_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, flip_key).exists()
+    assert queue.records.item_path(pool.record_store.CLAIMED, flip_key).exists()
 
     inflate_key = _hexkey("r13inflate")
-    _publish(queue, inflate_key, max_attempts=1)
+    ActionRows(queue).publish(
+        inflate_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=1,
+        retry_safe=True,
+        tags=['x86'],
+    )
     inflate_live = queue.claim(tags=["x86"], owner=f"{host}:1:inflate",
                                capacity={"cpu": 4, "mem_gb": 16})
     assert inflate_live is not None
@@ -260,19 +307,37 @@ def test_forged_snapshot_bindings_refuse(
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(inflate_key, reason="t", by=owner,
                        membership_handoff=forged_budget)
-    assert not queue.item_path(pool.WITHDRAWN, inflate_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, inflate_key).exists()
 
     key_key = _hexkey("r13key")
-    _publish(queue, key_key)
+    ActionRows(queue).publish(
+        key_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     key_live = _claim(queue, host)
     wrong_key = dict(key_live, action_key=_hexkey("r13wrong"))
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(key_key, reason="t", by=owner,
                        membership_handoff=wrong_key)
-    assert not queue.item_path(pool.WITHDRAWN, key_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, key_key).exists()
 
     scope_key = _hexkey("r13scope")
-    _publish(queue, scope_key)
+    ActionRows(queue).publish(
+        scope_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     scope_live = _claim(queue, host)
     nonce = "ab" * 16
     unit = ("prismabuild-job"
@@ -283,14 +348,14 @@ def test_forged_snapshot_bindings_refuse(
         "token": "cd" * 32, "memory_max_bytes": 1 << 30,
         "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + unit,
         "socket_path": "/run/prismabuild/resources.sock"})
-    queue.item_path(pool.CLAIMED, scope_key).write_text(json.dumps(scoped))
+    queue.records.item_path(pool.record_store.CLAIMED, scope_key).write_text(json.dumps(scoped))
     scopeless = {k: v for k, v in scoped.items() if k != "resource_scope"}
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(scope_key, reason="t", by=owner,
                        membership_handoff=scopeless)
-    assert not queue.item_path(pool.WITHDRAWN, scope_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, scope_key).exists()
     assert json.loads(
-        queue.item_path(pool.CLAIMED, scope_key).read_text()) == scoped
+        queue.records.item_path(pool.record_store.CLAIMED, scope_key).read_text()) == scoped
 
 
 def test_malformed_carrier_never_authorizes() -> None:
@@ -358,22 +423,33 @@ def test_repeat_handoff_never_retargets_successor(
     host = socket.gethostname()
     owner = _owner(host)
     key = _hexkey("r15retarget")
-    _publish(queue, key)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     snap_a = _claim(queue, host)
     pre = queue.plan_requeue(dict(snap_a))
     queue.withdraw(key, reason=f"resign {owner}: t", by=owner,
                    membership_handoff=pre["snapshot"])
-    live_a = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    live_a = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
     assert pool.membership_handoff_authorized(live_a) is True
     successor = {"action_key": key,
                  "published_unix": float(live_a["published_unix"]) + 1000.0,
                  "attempts": 1, "max_attempts": 3}
-    queue.item_path(pool.READY, key).write_text(json.dumps(successor))
+    queue.records.item_path(pool.record_store.READY, key).write_text(json.dumps(successor))
     out = queue.withdraw(key, reason=f"resign {owner}: again", by=owner,
                          membership_handoff=pre["snapshot"])
     assert out["status"] == "already_withdrawn", out
-    assert json.loads(queue.item_path(pool.READY, key).read_text()) == successor
-    live_after = json.loads(queue.item_path(pool.WITHDRAWN, key).read_text())
+    assert json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(),
+    ) == successor
+    live_after = json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, key).read_text())
     assert live_after["published_unix"] == live_a["published_unix"]
     assert live_after["membership_handoff"] == live_a["membership_handoff"]
 
@@ -381,7 +457,7 @@ def test_repeat_handoff_never_retargets_successor(
 def _scoped_live(queue: pool.PoolQueue, key: str, snap: dict,
                  nonce: str) -> dict:
     """Rewrite the live claim adding a broker-valid scope block (the
-    contract `_scope_from_record` enforces), returning the new bytes."""
+    contract `scope_for_record` enforces), returning the new bytes."""
     from prismabuild.resource_scope import BROKER_SOCKET
 
     unit = ("prismabuild-job"
@@ -392,7 +468,7 @@ def _scoped_live(queue: pool.PoolQueue, key: str, snap: dict,
         "token": "cd" * 32, "memory_max_bytes": 1 << 30,
         "cgroup_path": "/sys/fs/cgroup/prismabuild.slice/" + unit,
         "socket_path": str(BROKER_SOCKET)})
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(scoped))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(scoped))
     return scoped
 
 
@@ -405,16 +481,25 @@ def test_malformed_scope_block_refuses_without_withdrawal(
     host = socket.gethostname()
     owner = _owner(host)
     key = _hexkey("r15malformed")
-    _publish(queue, key)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     snap = _claim(queue, host)
     broken = dict(snap, resource_scope="broken")
-    queue.item_path(pool.CLAIMED, key).write_text(json.dumps(broken))
+    queue.records.item_path(pool.record_store.CLAIMED, key).write_text(json.dumps(broken))
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(key, reason="t", by=owner,
                        membership_handoff=dict(snap))
-    assert not queue.item_path(pool.WITHDRAWN, key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, key).exists()
     assert json.loads(
-        queue.item_path(pool.CLAIMED, key).read_text()) == broken
+        queue.records.item_path(pool.record_store.CLAIMED, key).read_text()) == broken
 
 
 def test_scope_intent_gate(queue: pool.PoolQueue, monkeypatch) -> None:
@@ -426,38 +511,56 @@ def test_scope_intent_gate(queue: pool.PoolQueue, monkeypatch) -> None:
     owner = _owner(host)
 
     intent_key = _hexkey("r15intent")
-    _publish(queue, intent_key)
+    ActionRows(queue).publish(
+        intent_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     intent_live = _claim(queue, host)
     intented = dict(intent_live, resource_scope_intent={
         "action_key": intent_key, "nonce": "ab" * 16})
-    queue.item_path(pool.CLAIMED, intent_key).write_text(json.dumps(intented))
+    queue.records.item_path(pool.record_store.CLAIMED, intent_key).write_text(json.dumps(intented))
     stale = dict(intented)
     stale["resource_scope_intent"] = dict(stale["resource_scope_intent"],
                                           nonce="cd" * 16)
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(intent_key, reason="t", by=owner,
                        membership_handoff=stale)
-    assert not queue.item_path(pool.WITHDRAWN, intent_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, intent_key).exists()
     malformed = dict(intented, resource_scope_intent="broken")
-    queue.item_path(pool.CLAIMED, intent_key).write_text(json.dumps(malformed))
+    queue.records.item_path(pool.record_store.CLAIMED, intent_key).write_text(json.dumps(malformed))
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(intent_key, reason="t", by=owner,
                        membership_handoff=dict(malformed))
-    queue.item_path(pool.CLAIMED, intent_key).write_text(json.dumps(intented))
+    queue.records.item_path(pool.record_store.CLAIMED, intent_key).write_text(json.dumps(intented))
     out = queue.withdraw(intent_key, reason="t", by=owner,
                          membership_handoff=dict(intented))
     assert out["status"] == "withdrawn", out
     assert pool.membership_handoff_authorized(
-        json.loads(queue.item_path(pool.WITHDRAWN, intent_key).read_text()))
+        json.loads(queue.records.item_path(pool.record_store.WITHDRAWN, intent_key).read_text()))
 
     both_key = _hexkey("r15both")
-    _publish(queue, both_key)
+    ActionRows(queue).publish(
+        both_key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        max_attempts=3,
+        retry_safe=True,
+        tags=['x86'],
+    )
     both_live = _claim(queue, host)
     scoped = _scoped_live(queue, both_key, both_live, "ab" * 16)
     drifted = dict(scoped, resource_scope_intent={
         "action_key": both_key, "nonce": "ef" * 16})
-    queue.item_path(pool.CLAIMED, both_key).write_text(json.dumps(drifted))
+    queue.records.item_path(pool.record_store.CLAIMED, both_key).write_text(json.dumps(drifted))
     with pytest.raises(pool.PoolContractError):
         queue.withdraw(both_key, reason="t", by=owner,
                        membership_handoff=dict(drifted))
-    assert not queue.item_path(pool.WITHDRAWN, both_key).exists()
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, both_key).exists()

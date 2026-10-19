@@ -41,6 +41,8 @@ under its grant before the cycle's publication and binds it to the advance's
 own queued row; the free assertion below measures that reservation.
 """
 from __future__ import annotations
+from fleet_world import FleetWorld
+
 
 from pathlib import Path
 import sys
@@ -49,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -96,9 +98,8 @@ def _plan(queue: pool.PoolQueue, consumer: str, *,
 
 
 def _queue(tmp_path: Path, *, capacity_gib: int = 5) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": capacity_gib})
+    q = FleetWorld(tmp_path).queue
+    q.tier(TIER).mint({'stage_gib': capacity_gib})
     return q
 
 
@@ -123,8 +124,8 @@ def test_two_windows_each_fit_alone_but_jointly_exceed_free(tmp_path) -> None:
     plan_a = _plan(queue, CONSUMER_A, seed="moverA")
     plan_b = _plan(queue, CONSUMER_B, seed="moverB")
 
-    dec_a = residency_plan.window(plan_a, accepted_phase=None, free_gib=5)
-    dec_b = residency_plan.window(plan_b, accepted_phase=None, free_gib=5)
+    dec_a = residency_plan.ConsumerWindow(plan_a, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=5)).decision
+    dec_b = residency_plan.ConsumerWindow(plan_b, None, residency_plan.LegObservation(), residency_plan.WindowBudget(free_gib=5)).decision
 
     assert [e["phase"] for e in dec_a["publish"]] == ["phase-0", "phase-1"]
     assert [e["phase"] for e in dec_b["publish"]] == ["phase-0", "phase-1"]
@@ -175,7 +176,7 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
     # 2 GiB, so free is capacity minus that advance (#832).
     plans = {CONSUMER_A: plan_a, CONSUMER_B: plan_b}
     advance = str(plans[winner]["phases"][1]["mover_row"]["action_key"])  # type: ignore[index]
-    record = queue.read_funding(advance, TIER)
+    record = queue.funding.read_window(advance, TIER)
     assert record is not None, [e for e in events
                                 if e.get("event") == "mover-published"]
     assert record.get("state") in ("reserved", "transferring"), record
@@ -184,12 +185,10 @@ def test_residency_window_admits_one_window_and_gates_the_other(tmp_path) -> Non
         residency_plan.plan_sha256(plans[winner]), record
     assert int(record.get("range_start_bytes")) == 2 * GIB, record
     assert int(record.get("range_end_bytes")) == 4 * GIB, record
-    ledger = queue.tier_ledger(TIER)
-    kinds = ledger.available()
+    ledger = queue.tier(TIER)
+    kinds = ledger.free_supply()
     assert kinds.get("stage_gib", 0) == 3
-    held = sum(int(tokens.get("stage_gib", 0))
-               for tokens in (ledger.holder_tokens(holder)
-                              for holder in ledger.held_keys()))
+    held = sum((int(tokens.get('stage_gib', 0)) for tokens in (ledger.holdings(holder) for holder in ledger.holders())))
     assert held + kinds.get("stage_gib", 0) == 5
 
 

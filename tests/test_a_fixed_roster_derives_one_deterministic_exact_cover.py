@@ -198,7 +198,6 @@ def test_the_same_bytes_give_the_same_plan_key_and_a_changed_task_does_not() -> 
     frozen = _frozen(request)
     first = dc.build_plan(request, frozen)
     assert dc.build_plan(request, frozen) == first
-    assert dc.validate_plan(first) == first
 
     moved = dict(request)
     moved["batch_policy"] = _policy(("r", 45.0), fraction=0.25)
@@ -209,7 +208,7 @@ def test_the_same_bytes_give_the_same_plan_key_and_a_changed_task_does_not() -> 
     assert replanned["plan_key"] != first["plan_key"]
 
 
-def test_a_plan_key_that_does_not_match_its_blueprint_is_refused() -> None:
+def test_a_plan_key_that_does_not_match_its_blueprint_is_refused(tmp_path: Path) -> None:
     """Recovery reuses published plan bytes, so it may not take them on trust."""
 
     request = {
@@ -225,13 +224,60 @@ def test_a_plan_key_that_does_not_match_its_blueprint_is_refused() -> None:
         "roster": _roster(*[("r", 8.2) for _ in range(66)]),
         "batch_policy": _policy(("r", 45.0)),
     }
-    plan = dc.build_plan(request, _frozen(request))
+    frozen = _frozen(request)
+    plan = dc.freeze_plan(request, frozen, cas_root=tmp_path)
     tampered = {**plan, "partitions": [
         [*plan["partitions"][0], *plan["partitions"][1]],
         *plan["partitions"][2:],
     ]}
+    path = dc.record_dir(tmp_path, plan["parent_key"]) / "plan.json"
+    path.unlink()
+    path.write_bytes(dc.document_bytes(tampered))
     with pytest.raises(dc.ActionContractError, match="does not match its blueprint"):
-        dc.validate_plan(tampered)
+        dc.freeze_plan(request, frozen, cas_root=tmp_path)
+    assert path.read_bytes() == dc.document_bytes(tampered)
+
+
+@pytest.mark.parametrize("first_writer", ["already-published", "publication-race"])
+def test_a_valid_older_algorithm_plan_is_the_recovery_authority(
+    tmp_path: Path, monkeypatch, first_writer,
+) -> None:
+    from prismabuild import immutable_files
+
+    request = {
+        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
+        "common": {
+            "argv": ["python", "collect.py", dc.TASK_BATCH_PLACEHOLDER],
+            "cwd": "/checkout", "demand": {"cpu": 1},
+            "gpu_memory_gb": None, "data_manifest": None, "env": {}},
+        "roster": _roster(*[("r", 8.2) for _ in range(3)]),
+        "batch_policy": _policy(("r", 20.0), fraction=0.5),
+    }
+    frozen = _frozen(request)
+    current = dc.build_plan(request, frozen)
+    blueprint = {key: value for key, value in current.items() if key != "plan_key"}
+    blueprint["algorithm_version"] = "older-test-algorithm.v1"
+    winner = {**blueprint, "plan_key": dc.canonical_sha256(blueprint)}
+    raw = dc.document_bytes(winner)
+    path = dc.record_dir(tmp_path, winner["parent_key"]) / "plan.json"
+    publish = immutable_files.publish_immutable
+    if first_writer == "already-published":
+        assert publish(path, raw)
+
+        def repartition(*args, **kwargs):
+            raise AssertionError("recovery must not consult the current partitioner")
+
+        monkeypatch.setattr(dc, "partition_roster", repartition)
+    else:
+        def winning_publisher(destination, proposed):
+            assert destination == path
+            assert publish(destination, raw)
+            return publish(destination, proposed)
+
+        monkeypatch.setattr(immutable_files, "publish_immutable", winning_publisher)
+
+    assert dc.freeze_plan(request, frozen, cas_root=tmp_path) == winner
+    assert path.read_bytes() == raw
 
 
 def test_parent_identity_follows_the_tree_not_the_path() -> None:

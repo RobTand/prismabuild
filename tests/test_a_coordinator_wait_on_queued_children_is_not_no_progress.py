@@ -15,6 +15,8 @@ baseline and count zero. A child with several tasks still counts one.
 """
 from __future__ import annotations
 
+from functools import partial
+
 import json
 import sys
 import time
@@ -24,10 +26,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prismabuild import contracts
 from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 from prismabuild.durable_child_reporter import DurableChildReporter  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
+from file_open_observer import observe_file_opens  # noqa: E402
 from test_progress_keeps_a_working_action_alive import _policy  # noqa: E402
 
 EVIDENCE = "cas:sha256:" + "0" * 64
@@ -119,12 +123,21 @@ def _frozen() -> dict:
     }
 
 
-def _batch(tmp_path: Path):
+def _batch(
+    tmp_path: Path, *, producer: str = PRODUCER,
+    setup_seconds: float = 1.0, max_setup_fraction: float = 0.4,
+):
     """One validated plan with sealed children in an isolated CAS."""
 
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    request = dc.validate_logical_request(_request())
-    plan = dc.build_plan(request, _frozen())
+    proposed = _request()
+    proposed["common"]["argv"][2] = producer
+    proposed["batch_policy"]["residencies"][0]["setup_seconds"] = setup_seconds
+    proposed["batch_policy"]["max_setup_fraction"] = max_setup_fraction
+    request = dc.validate_logical_request(proposed)
+    frozen = _frozen()
+    frozen["argv"][2] = producer
+    plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
     prepared = dc.PreparedBatches(request, plan)
     checkout = tmp_path / "child-src"
     checkout.mkdir()
@@ -132,12 +145,13 @@ def _batch(tmp_path: Path):
     roster_input, _ = cas.ingest_bytes(
         dc.document_bytes(request["roster"]), input_id=dc.TASK_ROSTER_INPUT_ID)
     children = []
+    digests = []
     for ordinal in range(len(plan["partitions"])):
         envelope = prepared.envelope(ordinal)
         batch_input, _ = cas.ingest_bytes(
             dc.document_bytes(envelope), input_id=dc.TASK_BATCH_INPUT_ID)
         command = dc.resolve_task_batch(
-            [sys.executable, "-c", PRODUCER, dc.TASK_BATCH_PLACEHOLDER],
+            request["common"]["argv"],
             batch_path=str(cas.blob_path(str(batch_input["sha256"]))))
         child = pb.seal_action({
             "schema": pb.ACTION_SCHEMA_V2,
@@ -157,21 +171,28 @@ def _batch(tmp_path: Path):
         })
         cas.publish_action_request(child)
         children.append(child)
-    stored = cas.root / "decompositions" / plan["parent_key"][:2] / plan["parent_key"]
-    stored.mkdir(parents=True, exist_ok=True)
-    (stored / "plan.json").write_bytes(dc.document_bytes(plan))
-    (stored / "publication.json").write_bytes(dc.document_bytes(
-        dc.publication_index(
-            plan, batch_input_digests=["0" * 64] * len(children),
-            child_action_keys=[child["action_key"] for child in children])))
+        digests.append(str(batch_input["sha256"]))
+    dc.publish_children(
+        plan, cas_root=cas.root, batch_input_digests=digests,
+        child_action_keys=[child["action_key"] for child in children])
     return cas, plan, children
 
 
-def _queue(tmp_path: Path, cas) -> AdmittedQueueFixture:
-    return AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "queue"),
-        capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
+def _finish_child(tmp_path: Path, queue, cas, child):
+    worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
+    queue.publish(
+        action_key=child["action_key"], cas_root=cas.root,
+        checkout_root=tmp_path / "child-src", worker_script=worker)
+    claimed = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
+    assert claimed is not None
+    assert claimed["action_key"] == child["action_key"]
+    outcome = queue.execute(
+        claimed, timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
+    assert outcome["status"] == "executed", outcome
+    queue.finish(child["action_key"], status="executed", detail=outcome)
+    receipt = cas.lookup(child)
+    assert receipt is not None
+    return receipt
 
 
 def _controller_state(tmp_path: Path, children, *, name: str = "controller-state"):
@@ -233,13 +254,17 @@ def _coordinator(tmp_path: Path, cas, plan, children, *, seconds: float):
             "host_class": None},
     })
     cas.publish_action_request(action)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     queue.publish(
         action_key=action["action_key"], cas_root=cas.root,
         checkout_root=checkout,
         worker_script=Path(__file__).resolve().parents[1]
         / "tools" / "prismabuild_worker.py")
-    claimed = queue.claim()
+    claimed = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert claimed is not None, "the coordinator must claim before its child publishes"
     assert claimed["action_key"] == action["action_key"], claimed
     return queue, claimed, state
@@ -249,7 +274,11 @@ def test_a_child_with_other_keys_earns_no_credit(tmp_path: Path) -> None:
     """A sealed request naming another batch is foreign, not awaited."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "foreign-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -292,7 +321,11 @@ def test_a_child_with_no_logical_batch_earns_no_credit(tmp_path: Path) -> None:
     """An ordinary action without membership is not an awaited child."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "plain-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -329,7 +362,11 @@ def test_an_unreadable_child_request_earns_no_credit(tmp_path: Path) -> None:
     """A child with no sealed request in the CAS earns no credit."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     missing = "d" * 64
     state = _controller_state(tmp_path, [children[0]], name="controller-missing")
     awaited = _awaited(plan, state)
@@ -344,7 +381,11 @@ def test_a_child_with_a_foreign_ordinal_earns_no_credit(tmp_path: Path) -> None:
     """A sealed ordinal outside its publication slot is foreign."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     other = children[1] if len(children) > 1 else children[0]
     batch = dict(other["params"]["logical_batch"])
     checkout = tmp_path / "ordinal-src"
@@ -368,7 +409,11 @@ def test_a_child_with_foreign_tasks_earns_no_credit(tmp_path: Path) -> None:
     """A sealed task set outside its plan partition is foreign."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     child = children[0]
     batch = dict(child["params"]["logical_batch"])
     wrong = dict(child)
@@ -444,7 +489,7 @@ def test_a_coordinator_ends_no_progress_once_the_child_is_terminal(
     def withdraw_soon() -> None:
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline and not stopped.is_set():
-            if queue.item_path(pool.READY, children[0]["action_key"]).exists():
+            if queue.records.item_path(pool.record_store.READY, children[0]["action_key"]).exists():
                 time.sleep(1.0)
                 queue.withdraw(children[0]["action_key"], by="test-terminal")
                 return
@@ -468,7 +513,11 @@ def test_a_first_sighting_is_a_baseline_and_earns_no_credit(
     """One live sample without a prior is a baseline, not a credit."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -499,7 +548,11 @@ def test_a_replacement_child_is_a_new_baseline(tmp_path: Path) -> None:
     """A live child that the prior never saw earns no credit yet."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     assert len(children) >= 2, "the batch needs two children to replace one"
     checkout = tmp_path / "held-src"
     checkout.mkdir()
@@ -541,7 +594,11 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
     """A retained member with no row stays in the verdict and earns none."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     assert len(children) >= 2, "the batch needs two children for this"
     checkout = tmp_path / "held-src"
     checkout.mkdir()
@@ -557,7 +614,7 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
     awaited = _awaited(plan, state)
     admitted = _admitted(queue, cas, plan, state)
     assert len(admitted) == 2, admitted
-    queue.item_path(pool.READY, children[1]["action_key"]).unlink()
+    queue.records.item_path(pool.record_store.READY, children[1]["action_key"]).unlink()
     retained = _admitted(queue, cas, plan, state, retained={
         key: {} for key in admitted})
     assert children[1]["action_key"] in retained, retained
@@ -565,7 +622,7 @@ def test_a_missing_admitted_child_blocks_a_live_sibling(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=retained,
         prior={"children": [
-            {"key": children[0]["action_key"], "state": pool.READY,
+            {"key": children[0]["action_key"], "state": pool.record_store.READY,
              "evidence": "baseline", "ordinal": 0,
              "parent_key": plan["parent_key"], "plan_key": plan["plan_key"]}]})
     assert verdict["exempt"] is False
@@ -577,7 +634,11 @@ def test_an_older_worker_cannot_claim_an_awaited_coordinator(
     """The declaration requires the queued-child capability tag."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "coord-src"
     checkout.mkdir()
     (checkout / "task.py").write_text("print('ok')\n")
@@ -601,17 +662,13 @@ def test_an_older_worker_cannot_claim_an_awaited_coordinator(
                             "host_class": None},
     })
     cas.publish_action_request(action)
-    tags = [pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.QUEUED_CHILD_TAG]
-    import pbrun as pbrun_mod  # noqa: PLC0415 -- tools/fleet is on sys.path in PB
-    required = pbrun_mod.progress_required_tags(policy, awaited)
-    assert pb.QUEUED_CHILD_TAG in required
-    assert pb.QUEUED_CHILD_TAG not in pbrun_mod.progress_required_tags(policy)
+    tags = [contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG, contracts.QUEUED_CHILD_TAG]
     queue.publish(
         action_key=action["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true",
         tags=[*tags])
-    assert queue.claim(tags=["x86", "old", pb.PROGRESS_TAG,
-                             pb.PROGRESS_HELPER_TAG]) is None
+    assert queue.claim(tags=["x86", "old", contracts.PROGRESS_TAG,
+                             contracts.PROGRESS_HELPER_TAG]) is None
     claimed = queue.claim(tags=["x86", "old", *tags])
     assert claimed is not None
     assert claimed["action_key"] == action["action_key"]
@@ -621,7 +678,11 @@ def test_a_missing_child_with_a_verified_result_is_durable(tmp_path: Path) -> No
     """A queue miss with a CAS receipt is durable, not missing."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     checkout = tmp_path / "run-src"
@@ -630,13 +691,13 @@ def test_a_missing_child_with_a_verified_result_is_durable(tmp_path: Path) -> No
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     queue.finish(children[0]["action_key"], status="executed", detail=outcome)
     # Remove the terminal record: the queue no longer names the child, but
     # the CAS still verifies its durable result.
-    queue.item_path(pool.DONE, children[0]["action_key"]).unlink()
+    queue.records.item_path(pool.record_store.DONE, children[0]["action_key"]).unlink()
     state = _controller_state(tmp_path, [children[0]], name="controller-durable")
     awaited = _awaited(plan, state)
     verdict = queue.queued_child_wait_verdict(
@@ -652,7 +713,11 @@ def test_the_reporter_counts_one_unit_per_newly_durable_child(
     """Receipt, blob digest, schema, parent and plan match: one unit."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     reporter = DurableChildReporter(
@@ -670,7 +735,7 @@ def test_the_reporter_counts_one_unit_per_newly_durable_child(
         queue.publish(
             action_key=child["action_key"], cas_root=cas.root,
             checkout_root=checkout, worker_script=worker)
-        outcome = queue.execute(queue.claim(), timeout_s=60.0,
+        outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0,
                                 heartbeat_s=0.05, timeout_grace_s=0.2)
         assert outcome["status"] == "executed", outcome
         fresh = reporter.newly_durable()
@@ -685,7 +750,11 @@ def test_children_durable_at_start_count_zero(tmp_path: Path) -> None:
     """The baseline is verified and counts zero, not new progress."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     checkout = tmp_path / "run-src"
@@ -694,7 +763,7 @@ def test_children_durable_at_start_count_zero(tmp_path: Path) -> None:
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05,
                             timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     reporter = DurableChildReporter(
@@ -720,12 +789,16 @@ def test_a_non_verifying_child_counts_zero(tmp_path: Path) -> None:
     assert reporter.newly_durable() == []
     assert reporter.units == 0
 
-def test_a_reporter_rejects_a_manifest_for_another_ordinal(
+def test_a_reporter_rejects_a_supplied_request_for_another_child(
         tmp_path: Path) -> None:
-    """A valid receipt with a valid digest but a foreign ordinal counts zero."""
+    """Supplied request identity must match the native request for its key."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     checkout = tmp_path / "run-src"
@@ -734,7 +807,7 @@ def test_a_reporter_rejects_a_manifest_for_another_ordinal(
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0,
                             heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     other = children[1] if len(children) > 1 else children[0]
@@ -747,50 +820,136 @@ def test_a_reporter_rejects_a_manifest_for_another_ordinal(
     assert reporter.newly_durable() == []
     assert reporter.units == 0
 
-def test_a_reporter_rejects_a_partial_task_set(tmp_path: Path) -> None:
-    """A manifest that answers one task of a three-task batch counts zero."""
-
-    checkout = tmp_path / "child-src"
-    checkout.mkdir()
-    (checkout / "t.py").write_text("x")
-    request = dc.validate_logical_request({
-        "schema": dc.LOGICAL_REQUEST_SCHEMA_V1,
-        "common": {
-            "argv": [sys.executable, "-c", PRODUCER,
-                     dc.TASK_BATCH_PLACEHOLDER],
-            "cwd": ".", "demand": {"cpu": 1, "mem_gb": 1},
-            "gpu_memory_gb": None, "data_manifest": None, "env": {}},
-        "roster": {
-            "schema": dc.LOGICAL_TASK_ROSTER_SCHEMA_V1,
-            "tasks": [
-                {"id": f"q{index}", "payload": {"v": index},
-                 "residency_key": "r", "estimated_seconds": 8.2,
-                 "estimate_evidence": EVIDENCE, "output_id": f"z{index}"}
-                for index in range(3)]},
-        "batch_policy": {
-            "schema": dc.ROSTER_BATCH_POLICY_SCHEMA_V1,
-            "residencies": [{"key": "r", "setup_seconds": 20.0,
-                             "setup_evidence": EVIDENCE}],
-            "max_setup_fraction": 0.5,
-            "max_estimated_wall_seconds": 300.0},
-    })
-    frozen = _frozen()
-    frozen["argv"] = [sys.executable, "-c", PRODUCER,
-                      dc.TASK_BATCH_PLACEHOLDER]
-    plan = dc.build_plan(request, frozen)
+@pytest.mark.parametrize("result_kind", ["complete", "partial", "wrong-ordinal"])
+def test_a_reporter_checks_the_actual_receipted_manifest(
+    tmp_path: Path, result_kind,
+) -> None:
+    producer = PRODUCER
+    if result_kind == "partial":
+        producer = producer.replace(
+            'for task in batch["tasks"]', 'for task in batch["tasks"][:1]')
+    elif result_kind == "wrong-ordinal":
+        producer = producer.replace(
+            '"child_ordinal": batch["child_ordinal"],',
+            '"child_ordinal": batch["child_ordinal"] + 1,')
+    cas, plan, children = _batch(
+        tmp_path, producer=producer, setup_seconds=20.0, max_setup_fraction=0.5)
     assert len(plan["partitions"]) == 1, plan["partitions"]
     assert len(plan["partitions"][0]) == 3, plan["partitions"]
-    batch = dc.PreparedBatches(request, plan).membership(0)
-    manifest = {
-        "schema": dc.CHILD_RESULT_MANIFEST_SCHEMA_V1,
-        "parent_key": plan["parent_key"], "plan_key": plan["plan_key"],
-        "child_ordinal": 0,
-        "results": [{
-            "task_id": batch["ordered_task_ids"][0],
-            "output_id": f"z0", "value_sha256": "0" * 64}]}
-    checked = dc.validate_child_result_manifest(manifest)
-    assert sorted(entry["task_id"] for entry in checked["results"]) != sorted(
-        batch["ordered_task_ids"])
+    child = children[0]
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"]],
+        controller_state=_controller_state(tmp_path, children), phase="run")
+    assert reporter.establish_baseline() == set()
+    receipt = _finish_child(tmp_path, AdmittedQueueFixture(
+                                          pool.PoolQueue(tmp_path / 'queue'),
+                                          capacity={'cpu': 8, 'mem_gb': 16},
+                                          default_demand={'cpu': 1, 'mem_gb': 1},
+                                      ), cas, child)
+    manifest = json.loads(cas.result_path(receipt, child).read_bytes())
+    assert len(manifest["results"]) == (1 if result_kind == "partial" else 3)
+    assert manifest["child_ordinal"] == (1 if result_kind == "wrong-ordinal" else 0)
+
+    expected = [child["action_key"]] if result_kind == "complete" else []
+    assert reporter.newly_durable() == expected
+    assert reporter.units == len(expected)
+    assert reporter.newly_durable() == []
+
+
+@pytest.mark.parametrize("consumer", ["reporter", "queue"])
+@pytest.mark.parametrize("oversized", [False, True], ids=["within-limit", "over-limit"])
+def test_child_result_blob_opens_respect_the_size_bound(
+    tmp_path: Path, monkeypatch, consumer, oversized,
+) -> None:
+    producer = PRODUCER
+    if oversized:
+        producer += (
+            '\nwith open(batch["result_manifest_path"], "a") as result:\n'
+            '    result.write(" " * (1024 * 1024 + 1))\n')
+    cas, plan, children = _batch(tmp_path, producer=producer)
+    child = children[0]
+    state = _controller_state(tmp_path, [child])
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"]], controller_state=state, phase="run")
+    assert reporter.establish_baseline() == set()
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
+    receipt = _finish_child(tmp_path, queue, cas, child)
+    assert (receipt["result"]["bytes"] > 1024 * 1024) is oversized
+    queue.records.item_path(pool.record_store.DONE, child["action_key"]).unlink()
+    blob = cas.blob_path(receipt["result"]["sha256"])
+    opened = observe_file_opens(monkeypatch, blob)
+
+    if consumer == "reporter":
+        expected = [] if oversized else [child["action_key"]]
+        assert reporter.newly_durable() == expected
+        assert reporter.units == len(expected)
+    else:
+        verdict = queue.queued_child_wait_verdict(
+            "c" * 64, cas_root=cas.root, awaited=_awaited(plan, state),
+            admitted={child["action_key"]: {}})
+        assert verdict["exempt"] is False
+        assert (verdict["children"][0]["state"] == "durable") is (not oversized)
+    if oversized:
+        assert opened == [], "a byte cap after an unbounded lookup does not bound the read"
+    else:
+        assert opened, "the observer must witness actual reads of an accepted result"
+
+
+@pytest.mark.parametrize("consumer", ["bound-query", "reporter", "queue"])
+def test_a_receipted_json_null_preserves_query_refusal_and_zero_credit(
+    tmp_path: Path, capsys, consumer,
+) -> None:
+    producer = PRODUCER + (
+        '\nwith open(batch["result_manifest_path"], "w") as result:\n'
+        '    result.write("null\\n")\n')
+    cas, plan, children = _batch(
+        tmp_path, producer=producer, setup_seconds=20.0, max_setup_fraction=0.5)
+    assert len(children) == 1
+    child = children[0]
+    key = child["action_key"]
+    state = _controller_state(tmp_path, children)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
+    receipt = _finish_child(tmp_path, queue, cas, child)
+    assert cas.result_path(receipt, child).read_bytes() == b"null\n"
+    queue.records.item_path(pool.record_store.DONE, key).unlink()
+    capsys.readouterr()
+
+    if consumer == "bound-query":
+        publication = json.loads(
+            (dc.record_dir(cas.root, plan["parent_key"]) / "publication.json").read_bytes())
+        with pytest.raises(pb.ActionContractError) as refusal:
+            dc.child_result(
+                cas, child, child_key=key, plan=plan, publication=publication)
+        assert str(refusal.value) == "child result manifest must be an object"
+    elif consumer == "reporter":
+        reporter = DurableChildReporter(
+            cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+            child_keys=[key], controller_state=state, phase="run")
+        assert reporter.establish_baseline() == set()
+        assert reporter.newly_durable() == []
+        assert reporter.units == 0
+    else:
+        verdict = queue.queued_child_wait_verdict(
+            "c" * 64, cas_root=cas.root, awaited=_awaited(plan, state),
+            admitted={key: {}})
+        assert verdict["exempt"] is False
+        assert verdict["children"][0]["state"] == "unpublished"
+        assert verdict["children"][0]["evidence"] == "none"
+        assert verdict["missing"] == [key]
+        assert verdict["reason"] == (
+            "an awaited child is missing or unreadable with no verified durable result")
+    assert capsys.readouterr().err == ""
+    assert cas.lookup(child) == receipt
 
 
 def test_awaited_batch_needs_progress_phases(tmp_path: Path) -> None:
@@ -826,14 +985,18 @@ def test_a_cleanup_tombstone_is_neither_credited_nor_released(
     """A finish mark holds owner custody; the credit leaves it alone."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
     queue.publish(
         action_key=children[0]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    claimed = queue.claim()
+    claimed = queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts()))
     assert claimed is not None
     tombstone, mine = queue._entomb_claim(
         children[0]["action_key"], expect=claimed)
@@ -848,8 +1011,8 @@ def test_a_cleanup_tombstone_is_neither_credited_nor_released(
         (entry,) = verdict["children"]
         assert entry["state"] == "held", verdict
         assert verdict["exempt"] is False
-        assert queue.item_path(
-            pool.CLAIMED, children[0]["action_key"]).exists() is False
+        assert queue.records.item_path(
+            pool.record_store.CLAIMED, children[0]["action_key"]).exists() is False
     finally:
         tombstone.unlink(missing_ok=True)
 
@@ -885,7 +1048,7 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
     frozen = _frozen()
     frozen["argv"] = [sys.executable, "-c", PRODUCER,
                       dc.TASK_BATCH_PLACEHOLDER]
-    plan = dc.build_plan(request, frozen)
+    plan = dc.freeze_plan(request, frozen, cas_root=cas.root)
     assert len(plan["partitions"]) == 1, plan["partitions"]
     assert len(plan["partitions"][0]) == 3, plan["partitions"]
     prepared = dc.PreparedBatches(request, plan)
@@ -914,14 +1077,14 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
                             "platform_key": None, "host_class": None},
     })
     cas.publish_action_request(child)
-    stored = cas.root / "decompositions" / plan["parent_key"][:2] / plan["parent_key"]
-    stored.mkdir(parents=True, exist_ok=True)
-    (stored / "plan.json").write_bytes(dc.document_bytes(plan))
-    (stored / "publication.json").write_bytes(dc.document_bytes(
-        dc.publication_index(
-            plan, batch_input_digests=["0" * 64],
-            child_action_keys=[child["action_key"]])))
-    queue = _queue(tmp_path, cas)
+    dc.publish_children(
+        plan, cas_root=cas.root, batch_input_digests=[str(batch_input["sha256"])],
+        child_action_keys=[child["action_key"]])
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     worker = (Path(__file__).resolve().parents[1]
               / "tools" / "prismabuild_worker.py")
     run = tmp_path / "run-multi"
@@ -929,7 +1092,7 @@ def test_a_child_with_three_tasks_counts_one_unit(tmp_path: Path) -> None:
     (run / "t.py").write_text("x")
     queue.publish(action_key=child["action_key"], cas_root=cas.root,
                   checkout_root=run, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0,
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0,
                             heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     reporter = DurableChildReporter(
@@ -946,7 +1109,11 @@ def test_a_pending_only_child_earns_no_credit(tmp_path: Path) -> None:
     """Intent without controller acceptance is not admission and earns nothing."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     state = _controller_state(tmp_path, [], name="controller-pending")
     (state / "wave-state.json").write_text(json.dumps({
         "waves": [], "pending_submission": {
@@ -963,7 +1130,11 @@ def test_an_unreadable_wave_state_refuses_the_credit(tmp_path: Path) -> None:
     """A missing custody file carries custody and credits nothing."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -985,7 +1156,7 @@ def test_an_unreadable_wave_state_refuses_the_credit(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=retained,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -997,7 +1168,11 @@ def test_an_unknown_custody_shape_refuses_the_credit(tmp_path: Path) -> None:
     """An extra key, field, type or non-hex key refuses the credit."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     state = _controller_state(tmp_path, [children[0]], name="controller-shape")
     shapes = [
         {"waves": [], "schema": "extra"},
@@ -1030,7 +1205,11 @@ def test_a_key_in_one_custody_file_earns_no_credit(tmp_path: Path) -> None:
     """A member the journal does not confirm is not awaited."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     assert len(children) >= 2, "the batch needs two children for this"
     state = _controller_state(
         tmp_path, [children[0], children[1]], name="controller-split")
@@ -1050,7 +1229,11 @@ def test_a_member_outside_the_plan_earns_no_credit(tmp_path: Path) -> None:
     """A custody key the sealed batch cannot bind blocks the credit."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -1072,7 +1255,7 @@ def test_a_member_outside_the_plan_earns_no_credit(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=admitted,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1084,7 +1267,11 @@ def test_an_initially_absent_member_blocks_a_live_sibling(tmp_path: Path) -> Non
     """Custody names the absent child before any queue row does."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     assert len(children) >= 2, "the batch needs two children for this"
     checkout = tmp_path / "held-src"
     checkout.mkdir()
@@ -1102,7 +1289,7 @@ def test_an_initially_absent_member_blocks_a_live_sibling(tmp_path: Path) -> Non
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=admitted,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1114,7 +1301,11 @@ def test_an_unreadable_retained_request_stays_missing(tmp_path: Path) -> None:
     """A request that stops reading stays in the verdict, not foreign-covered."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     assert len(children) >= 2, "the batch needs two children for this"
     checkout = tmp_path / "held-src"
     checkout.mkdir()
@@ -1142,7 +1333,7 @@ def test_an_unreadable_retained_request_stays_missing(tmp_path: Path) -> None:
         "c" * 64, cas_root=str(cas.root), awaited=awaited,
         admitted=retained,
         prior={"sample_monotonic": 100.0, "children": [{
-            "key": children[0]["action_key"], "state": pool.READY,
+            "key": children[0]["action_key"], "state": pool.record_store.READY,
             "evidence": "baseline", "ordinal": 0,
             "parent_key": plan["parent_key"],
             "plan_key": plan["plan_key"]}]})
@@ -1154,7 +1345,11 @@ def test_a_terminal_transition_keeps_its_earned_credit(tmp_path: Path) -> None:
     """Intervals credited before the child ends stay credited."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -1198,7 +1393,11 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
     """A gap a missing member blocked starts no credit before it clears."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     assert len(children) >= 2, "the batch needs two children for this"
     checkout = tmp_path / "held-src"
     checkout.mkdir()
@@ -1216,8 +1415,9 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
             ceiling_s=None, awaited_batch=awaited),
         started=90.0)
     item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    queue._sample_queued_child_wait(
-        item, item["action_key"], watch, watch.policy, now=100.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], watch.policy),
+        now=100.0)
     first = watch.queued_child_wait
     assert first["exempt"] is False
     assert first["missing"] == [children[1]["action_key"]], first
@@ -1225,8 +1425,9 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
     queue.publish(
         action_key=children[1]["action_key"], cas_root=cas.root,
         checkout_root=checkout, worker_script="/bin/true")
-    queue._sample_queued_child_wait(
-        item, item["action_key"], watch, watch.policy, now=110.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], watch.policy),
+        now=110.0)
     second = watch.queued_child_wait
     assert second["exempt"] is False
     assert "since_monotonic" not in second
@@ -1234,8 +1435,9 @@ def test_a_blocked_interval_never_refunds(tmp_path: Path) -> None:
     assert entries[children[1]["action_key"]]["evidence"] == "baseline"
     assert watch.queued_child_wait_exempt_s == 0.0
     assert watch.stall_deadline() == 150.0
-    queue._sample_queued_child_wait(
-        item, item["action_key"], watch, watch.policy, now=120.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], watch.policy),
+        now=120.0)
     assert watch.queued_child_wait["exempt"] is True
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
@@ -1250,7 +1452,11 @@ def test_recovery_requires_two_valid_endpoints(
     """Recovery grants no credit until both samples have valid custody."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     checkout = tmp_path / "held-src"
     checkout.mkdir()
     (checkout / "t.py").write_text("x")
@@ -1266,16 +1472,20 @@ def test_recovery_requires_two_valid_endpoints(
     watch = pool.ProgressWatch(
         tmp_path / "progress.json", "t" * 32, policy, started=90.0)
     item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=100.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=100.0)
     assert watch.queued_child_wait["exempt"] is False
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=110.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=110.0)
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
 
     key = children[1]["action_key"]
     paths = {
-        "missing-row": queue.item_path(pool.READY, key),
-        "unreadable-row": queue.item_path(pool.READY, key),
+        "missing-row": queue.records.item_path(pool.record_store.READY, key),
+        "unreadable-row": queue.records.item_path(pool.record_store.READY, key),
         "unreadable-request": cas.root / "requests" / key[:2] / f"{key}.json",
         "unreadable-custody": state / "wave-state.json",
         "unreadable-plan": (
@@ -1287,18 +1497,24 @@ def test_recovery_requires_two_valid_endpoints(
     path.unlink()
     if refusal != "missing-row":
         path.write_bytes(b"not JSON")
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=120.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=120.0)
     assert watch.queued_child_wait["exempt"] is False
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
 
     path.write_bytes(original)
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=130.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=130.0)
     assert watch.queued_child_wait["exempt"] is False
     assert "since_monotonic" not in watch.queued_child_wait
     assert watch.queued_child_wait_exempt_s == 10.0
     assert watch.stall_deadline() == 160.0
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=140.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=140.0)
     assert watch.queued_child_wait["exempt"] is True
     assert watch.queued_child_wait_exempt_s == 20.0
     assert watch.stall_deadline() == 170.0
@@ -1308,7 +1524,11 @@ def test_the_fixed_writer_optional_fields_do_not_grant_credit(tmp_path: Path) ->
     """The fa37751 optional fields are typed diagnostics, not child progress."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     state = _controller_state(tmp_path, [children[0]])
     value = json.loads((state / "wave-state.json").read_text())
     value.update({
@@ -1339,7 +1559,11 @@ def test_bad_optional_fields_refuse_and_name_the_field(
     """A field error refuses the whole read and appears in the observation."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     state = _controller_state(tmp_path, children[:1])
     value = json.loads((state / "wave-state.json").read_text())
     if name == "published_unix":
@@ -1352,7 +1576,9 @@ def test_bad_optional_fields_refuse_and_name_the_field(
         ceiling_s=None, awaited_batch=_awaited(plan, state))
     watch = pool.ProgressWatch(tmp_path / "progress.json", "t" * 32, policy, started=0.0)
     item = {"action_key": "c" * 64, "cas_root": str(cas.root)}
-    queue._sample_queued_child_wait(item, item["action_key"], watch, policy, now=100.0)
+    watch.sample_queued_child_wait(
+        partial(queue.queued_child_wait_evidence, item, item['action_key'], policy),
+        now=100.0)
     assert watch.queued_child_wait["exempt"] is False
     assert name in watch.queued_child_wait["reason"]
     assert watch.queued_child_wait_exempt_s == 0.0
@@ -1364,7 +1590,11 @@ def test_conflicting_custody_mappings_refuse_the_whole_read(
     """Neither file can hide a conflicting candidate in the other file."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     state = _controller_state(tmp_path, children[:1])
     if conflict == "same-key":
         line = f"child-00001 {children[0]['action_key']}\n"
@@ -1383,7 +1613,11 @@ def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
     """Prepared work and intent cannot produce progress from a CAS receipt."""
 
     cas, plan, children = _batch(tmp_path)
-    queue = _queue(tmp_path, cas)
+    queue = AdmittedQueueFixture(
+                pool.PoolQueue(tmp_path / 'queue'),
+                capacity={'cpu': 8, 'mem_gb': 16},
+                default_demand={'cpu': 1, 'mem_gb': 1},
+            )
     state = _controller_state(tmp_path, [])
     key = children[0]["action_key"]
     reporter = DurableChildReporter(
@@ -1395,10 +1629,10 @@ def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
     (checkout / "t.py").write_text("x")
     worker = Path(__file__).resolve().parents[1] / "tools" / "prismabuild_worker.py"
     queue.publish(action_key=key, cas_root=cas.root, checkout_root=checkout, worker_script=worker)
-    outcome = queue.execute(queue.claim(), timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
+    outcome = queue.execute(queue.claim(tags=contracts.offered_contract_tags(contracts.WorkerFacts())), timeout_s=60.0, heartbeat_s=0.05, timeout_grace_s=0.2)
     assert outcome["status"] == "executed", outcome
     queue.finish(key, status="executed", detail=outcome)
-    queue.item_path(pool.DONE, key).unlink()
+    queue.records.item_path(pool.record_store.DONE, key).unlink()
     assert reporter.newly_durable() == []
     (state / "wave-state.json").write_text(json.dumps({
         "waves": [], "pending_submission": {"batch": "child-00000", "key": key}}))
@@ -1410,3 +1644,47 @@ def test_the_reporter_requires_confirmed_custody_even_with_a_durable_result(
     assert reporter.newly_durable() == [key]
     assert reporter.units == 1
     assert reporter.newly_durable() == []
+
+
+@pytest.mark.parametrize("refusal", ["missing", "wrong-bound"])
+def test_a_refused_plan_stops_the_reporter_but_keeps_queue_diagnosis(
+        tmp_path, monkeypatch, refusal):
+    cas, plan, children = _batch(tmp_path)
+    state = _controller_state(tmp_path, children)
+    stored = dc.record_dir(cas.root, plan["parent_key"])
+    plan_path = stored / "plan.json"
+    if refusal == "missing":
+        plan_path.unlink()
+    else:
+        other = {key: value for key, value in plan.items() if key != "plan_key"}
+        other["parent_key"] = "f" * 64
+        plan_path.unlink()
+        plan_path.write_bytes(dc.document_bytes(
+            {**other, "plan_key": pb.canonical_sha256(other)}))
+    publication_reads = []
+    original = Path.read_bytes
+
+    def unavailable_publication(path):
+        if path == stored / "publication.json":
+            publication_reads.append(path)
+            raise OSError("publication unavailable")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unavailable_publication)
+    reporter = DurableChildReporter(
+        cas=cas, parent_key=plan["parent_key"], plan_key=plan["plan_key"],
+        child_keys=[child["action_key"] for child in children],
+        controller_state=state)
+    assert reporter.establish_baseline() == set()
+    assert publication_reads == []
+    verdict = AdmittedQueueFixture(
+                  pool.PoolQueue(tmp_path / 'queue'),
+                  capacity={'cpu': 8, 'mem_gb': 16},
+                  default_demand={'cpu': 1, 'mem_gb': 1},
+              ).queued_child_wait_verdict(
+        "c" * 64, cas_root=cas.root, awaited=_awaited(plan, state))
+    assert verdict["exempt"] is False
+    assert "publication.json is unreadable" in verdict["detail"]
+    assert ("plan.json is missing" if refusal == "missing" else
+            "the stored plan names another parent or plan") in verdict["detail"]
+    assert publication_reads == [stored / "publication.json"]

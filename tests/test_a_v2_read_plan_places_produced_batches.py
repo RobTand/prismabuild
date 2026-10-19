@@ -24,6 +24,8 @@ published generation this checkout does not have, so it is replaced by a
 recorder; its own tests are ``test_pbrun_read_plan_storage_gate.py``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import hashlib
 import json
@@ -36,13 +38,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import test_prepaid_writer_integration as fx  # noqa: E402
+from prismabuild import contracts
+from prismabuild import manifest_layout
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan  # noqa: E402
-import deferred_release as dr  # noqa: E402
+from prismabuild import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_move  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
 from test_deferred_action_edges import (  # noqa: E402
     TAGS, _commit, _env, _producer_key, _publish_producer, _released,
     _request, _start, _submit,
@@ -55,7 +61,7 @@ from test_write_only_produced_output import _template  # noqa: E402
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
-V2 = pb.DATA_MANIFEST_SCHEMA_V2
+V2 = manifest_codec.DATA_MANIFEST_SCHEMA_V2
 HEAD = (b"head entry zero", b"head entry one, a little longer")
 PAYLOAD = b"band L handoff bytes"
 #: The consumer's read timeline: its head, the handoff, then a replay that
@@ -77,12 +83,12 @@ def _progress_worker(queue: pool.PoolQueue, monkeypatch) -> list[str]:
     """
 
     queue.announce(host="sparky",
-                   tags=[*TAGS, pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+                   tags=[*TAGS, contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG],
                    has_gpu=True, capacity={"cpu": 4, "mem_gb": 16, "gpu": 1},
                    progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1])
     consulted: list[str] = []
-    monkeypatch.setattr(pbrun, "require_deployed_read_plan_storage",
-                        lambda: consulted.append("v2"))
+    monkeypatch.setattr(submit_core, "require_deployed_read_plan_storage",
+                        lambda **_context: consulted.append('v2'))
     return consulted
 
 
@@ -114,8 +120,8 @@ def _static(tmp_path: Path, *slots: dict, layout=PLAN,
                         "sha256": None})
     notes = dict(annotations or {})
     if slots:
-        notes[po.ORIGIN_SLOTS_ANNOTATION] = list(slots)
-    return pb.validate_data_manifest({
+        notes[oc.ORIGIN_SLOTS_ANNOTATION] = list(slots)
+    return manifest_codec.validate_data_manifest({
         "schema": V2, "produced_by": {"tool": "tests/946"},
         "mount_prefix": str(root), "entries": entries,
         "entry_count": len(entries),
@@ -148,7 +154,7 @@ def _placed(tmp_path: Path, queue: pool.PoolQueue, ref: dict) -> dict:
 def _sealed_manifest(tmp_path: Path, key: str) -> dict:
     summary = _request(tmp_path, key)["params"]["data_manifest"]
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    manifest, _ = pb.read_data_manifest(cas.input_path(summary["input"]))
+    manifest, _ = manifest_codec.read_data_manifest(cas.input_path(summary["input"]))
     assert summary["schema"] == V2
     assert summary["read_bytes"] == manifest["read_plan"]["read_bytes"]
     return manifest
@@ -166,9 +172,9 @@ def _staged_windows(queue: pool.PoolQueue, key: str,
 
     plan = residency_plan.read(queue, key)
     assert plan is not None
-    timeline = prewarm_loop.manifest_read_entries(manifest)
+    timeline = manifest_layout.read_entries(manifest)
     return [(str(phase["name"]),
-             [str(entry["path"]) for entry in prewarm_loop.entries_between(
+             [str(entry["path"]) for entry in manifest_layout.entries_between(
                  timeline, int(phase["start_bytes"]), int(phase["end_bytes"]))])
             for phase in plan["phases"]]
 
@@ -192,14 +198,14 @@ def _run_mover(tmp_path: Path, queue: pool.PoolQueue, key: str,
     # the tier loop's next cycle copies it to each consumer that reads the
     # range, before it composes that consumer's map.
     _tier_cycle(queue, tmp_path / "stage")
-    return mover, rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
+    return mover, rm.compose(rm.read_fragments(queue.root / pool.record_store.RESIDENCY, key))
 
 
 def _fragment_paths(queue: pool.PoolQueue, key: str, mover: str) -> list[str]:
     """The entries one mover's own fragment vouches for, sorted."""
 
     fragment = rm.validate_fragment(json.loads(rm.fragment_path(
-        queue.root / pool.RESIDENCY, key, mover).read_text()))
+        queue.root / pool.record_store.RESIDENCY, key, mover).read_text()))
     return sorted(rm.parse_residency_map_key(item)[0]
                   for item in fragment["entries"])
 
@@ -246,15 +252,15 @@ def test_a_deferred_plan_reads_the_batch_at_the_phase_it_names(
         pb.PrismaBuildCAS(tmp_path / "cas").input_path(
             _request(tmp_path, key)["params"]["data_manifest"]["input"]))
     assert _reads(manifest) == _expected_reads(tmp_path, path)
-    assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [committed["ref"]]
-    assert manifest["annotations"][po.ORIGIN_SLOTS_ANNOTATION] == [
+    assert manifest["annotations"][oc.ORIGIN_BATCHES_ANNOTATION] == [committed["ref"]]
+    assert manifest["annotations"][oc.ORIGIN_SLOTS_ANNOTATION] == [
         {"phase": "handoff", "refs": [committed["ref"]]}]
     # One mechanism: the release built what an ordinary submitter builds, and
     # what pbrun accepts from one.
     assert manifest == _placed(tmp_path, queue, committed["ref"])
-    pbrun.require_declared_origin_batches(
+    submit_core.require_declared_origin_batches(
         manifest, transport="pool", queue_root=queue.root)
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists(), "declared against the batch (#914)"
 
     # Residency follows the plan: the batch second, the head again after it.
@@ -289,19 +295,19 @@ def test_a_crashed_v2_release_resumes_as_pinned(
     _path, committed = _commit(queue, template, instance, "b1", PAYLOAD)
     queue.finish(producer, status="executed")
 
-    publish = pbrun.publish_consumer_row
+    publish = submit_core.publish_consumer_row
 
     def crash(*_args, **_kwargs):
         raise OSError("the tier host lost power")
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", crash)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", crash)
     [refusal] = [event for event in dr.release_tick(queue)
                  if event["event"] == dr.REFUSED_EVENT]
     assert "lost power" in refusal["reason"]
     pinned = ae.read_release(queue.root, pending)
     assert pinned is not None and ae.read_published(queue.root, pending) is None
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", publish)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", publish)
     [resumed] = _released(dr.release_tick(queue))
     assert resumed["resumed"] is True
     assert resumed["action_key"] == pinned["action_key"]
@@ -329,7 +335,7 @@ def test_an_ordinary_submission_declares_the_same_plan(
     manifest = _sealed_manifest(tmp_path, key)
     assert manifest == placed
     assert _reads(manifest) == _expected_reads(tmp_path, path)
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists(), "declared against the batch (#914)"
 
     _tier_cycle(queue, tmp_path / "stage")
@@ -360,7 +366,7 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
     assert "outside its slot" in refused(reread)
 
     elsewhere = {**placed, "annotations": {
-        **notes, po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "replay-0", "refs": [ref]}]}}
+        **notes, oc.ORIGIN_SLOTS_ANNOTATION: [{"phase": "replay-0", "refs": [ref]}]}}
     assert "outside its slot" in refused(elsewhere)
 
     moved = _rephased(placed, (("head", [0, 1]), ("handoff", []),
@@ -377,16 +383,16 @@ def test_a_submitted_plan_must_read_its_batches_exactly_at_their_slots(
 
     unplaced = {**placed, "annotations": {
         key: value for key, value in notes.items()
-        if key != po.ORIGIN_SLOTS_ANNOTATION}}
-    assert po.ORIGIN_SLOTS_ANNOTATION in refused(unplaced)
+        if key != oc.ORIGIN_SLOTS_ANNOTATION}}
+    assert oc.ORIGIN_SLOTS_ANNOTATION in refused(unplaced)
 
     edge = f"{producer}:{_t['template_id']}"
     deferred_slot = {**placed, "annotations": {
-        **notes, po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "handoff", "after": edge}]}}
+        **notes, oc.ORIGIN_SLOTS_ANNOTATION: [{"phase": "handoff", "after": edge}]}}
     assert "placed by the release" in refused(deferred_slot)
 
-    assert not queue.dir(pool.READY).exists() or not [
-        row for row in queue.dir(pool.READY).glob("*.json")
+    assert not queue.records.dir(pool.record_store.READY).exists() or not [
+        row for row in queue.records.dir(pool.record_store.READY).glob("*.json")
         if row.stem != producer], "nothing refused was queued"
     # Control: the placed manifest itself is accepted.
     assert _submit(work, monkeypatch, capsys, "--data-manifest",
@@ -436,9 +442,9 @@ def test_a_deferred_plan_names_one_slot_per_edge(
     assert "exactly phase and after" in refused(
         _static(tmp_path, {"phase": "handoff", "after": edge, "refs": []}),
         *PROGRESS)
-    assert po.ORIGIN_BATCHES_ANNOTATION in refused(
+    assert oc.ORIGIN_BATCHES_ANNOTATION in refused(
         _static(tmp_path, {"phase": "handoff", "after": edge},
-                annotations={po.ORIGIN_BATCHES_ANNOTATION: []}), *PROGRESS)
+                annotations={oc.ORIGIN_BATCHES_ANNOTATION: []}), *PROGRESS)
     assert "linear progress reporting" in refused(
         _static(tmp_path, {"phase": "handoff", "after": edge}),
         *PROGRESS[:-2])
@@ -476,8 +482,8 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     root.mkdir()
     head = root / "h0.bin"
     head.write_bytes(HEAD[0])
-    static = pb.validate_data_manifest({
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {"tool": "tests/946"},
+    static = manifest_codec.validate_data_manifest({
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {"tool": "tests/946"},
         "mount_prefix": str(root),
         "entries": [{"path": str(head), "offset": 0, "bytes": len(HEAD[0]),
                      "sha256": None}],
@@ -496,7 +502,7 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     request = _request(tmp_path, released["action_key"])
     summary = request["params"]["data_manifest"]
     assert set(summary) == {"input", "mount_prefix", "entry_count", "total_bytes"}
-    manifest, _ = pb.read_data_manifest(
+    manifest, _ = manifest_codec.read_data_manifest(
         pb.PrismaBuildCAS(tmp_path / "cas").input_path(summary["input"]))
     assert manifest == ae.merged_manifest(
         static, po.origin_batch_manifest(queue.root, [committed["ref"]]))
@@ -505,7 +511,7 @@ def test_a_v1_manifest_is_released_and_checked_as_before(
     # A v1 manifest has no read plan to place a batch in.
     slotted = {**static, "annotations": {
         **static["annotations"],
-        po.ORIGIN_SLOTS_ANNOTATION: [{"phase": "head", "refs": [committed["ref"]]}]}}
-    with pytest.raises(SystemExit, match="only a data_manifest.v2 has"):
-        pbrun.require_declared_origin_batches(
+        oc.ORIGIN_SLOTS_ANNOTATION: [{"phase": "head", "refs": [committed["ref"]]}]}}
+    with pytest.raises(submit_core.SubmissionRefused, match="only a data_manifest.v2 has"):
+        submit_core.require_declared_origin_batches(
             slotted, transport="pool", queue_root=queue.root)

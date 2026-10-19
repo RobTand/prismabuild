@@ -22,11 +22,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import core as pb, pool, reader_lease, residency_map, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
+from prismabuild import stage_marks  # noqa: E402
 import stage_reclaim  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
-from stage_move import stage_relative  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
+  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 KIND = "stage_gib"
@@ -35,7 +37,7 @@ NAMES = ["alpha.bin", "beta.bin"]
 
 
 def _staged(stage: Path, mount: Path, name: str) -> Path:
-    return stage / stage_relative(f"{mount}/{name}", 0, SIZE,
+    return stage / staged_path.stage_relative(f"{mount}/{name}", 0, SIZE,
                                   mount_prefix=str(mount))
 
 
@@ -44,17 +46,17 @@ def _stage_copy(stage: Path, mount: Path, name: str,
     path = _staged(stage, mount, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    os.setxattr(path, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(path, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
     return path
 
 
 @pytest.fixture()
 def fleet(tmp_path: Path, monkeypatch):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     stage = tmp_path / "stage"
     stage.mkdir()
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=TIER, stage_root=stage) == "registered"
     mount = tmp_path / "originals"
     mount.mkdir()
@@ -82,7 +84,7 @@ def _reference_action(fleet, *, tier=None, claim=False, command=None):
     queue, stage, mount, quarantine, good = fleet
     cas = pb.PrismaBuildCAS(queue.root.parent / "cas")
     manifest = {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1, "produced_by": {}, "annotations": {},
         "mount_prefix": str(mount), "entry_count": 1, "total_bytes": SIZE,
         "entries": [{"path": str(mount / NAMES[0]), "offset": 0,
                      "bytes": SIZE, "sha256": None}]}
@@ -94,14 +96,14 @@ def _reference_action(fleet, *, tier=None, claim=False, command=None):
     checkout = stage.parent / "request-code"
     checkout.mkdir(exist_ok=True)
     (checkout / "task.py").write_text("# fixture task\n")
-    manifest_input = {"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+    manifest_input = {"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                       "sha256": digest, "bytes": len(raw)}
     demand = {"cpu": 1, "mem_gb": 1}
     residency = None
     if tier is not None:
         kind = storage_tiers.capacity_kind_of(tier)
         demand[f"{kind}@{tier}"] = 1
-        queue.mint_tier_capacity(tier, {kind: 2})
+        queue.tier(tier).mint({kind: 2})
         residency = {"schema": pool.RESIDENCY_SCHEMA_V1, "tier_id": tier,
                      "manifest_sha256": digest, "manifest_bytes": SIZE,
                      "range_start_bytes": 0, "range_end_bytes": SIZE}
@@ -138,7 +140,7 @@ def test_dry_run_lists_proven_pairs_and_changes_nothing(fleet) -> None:
               for name in NAMES}
     before_xattr = {
         name: os.getxattr(_staged(stage, mount, name),
-                          prewarm_loop.STAGE_SOURCE_XATTR)
+                          stage_marks.STAGE_SOURCE_XATTR)
         for name in NAMES}
 
     got = _reclaim(fleet)
@@ -157,7 +159,7 @@ def test_dry_run_lists_proven_pairs_and_changes_nothing(fleet) -> None:
     for name in NAMES:
         assert _staged(stage, mount, name).read_bytes() == before[name]
         assert os.getxattr(_staged(stage, mount, name),
-                           prewarm_loop.STAGE_SOURCE_XATTR) == before_xattr[
+                           stage_marks.STAGE_SOURCE_XATTR) == before_xattr[
             name]
 
 
@@ -182,6 +184,30 @@ def test_apply_moves_only_digest_equal_pairs_to_quarantine(fleet) -> None:
         (quarantine / "run-apply" / "manifest.json").read_text())
     assert manifest["schema"] == stage_reclaim.MANIFEST_SCHEMA_V1
     assert len(manifest["entries"]) == len(NAMES)
+
+
+def test_a_retired_prewarm_temporary_name_uses_the_ordinary_reclaim_proof(
+        fleet, monkeypatch) -> None:
+    _queue, stage, _mount, _quarantine, good = fleet
+    temporary = stage / "alpha.bin.pbstage@0+4096.7.1.tmp"
+    temporary.write_bytes(good)
+    os.setxattr(temporary, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
+    real_getxattr = os.getxattr
+    probed = []
+
+    def observe(path, *args, **kwargs):
+        probed.append(path)
+        return real_getxattr(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "getxattr", observe)
+
+    got = _reclaim(fleet, apply=True)
+
+    assert got["complete"] is True
+    assert got["entries_moved"] == len(NAMES)
+    assert got["refused_reasons"] == {"unpaired_name": 1}
+    assert temporary.read_bytes() == good
+    assert str(temporary) in {os.fspath(path) for path in probed}
 
 
 def test_a_crash_between_copy_and_removal_loses_no_data(
@@ -281,7 +307,7 @@ def test_a_produced_output_copy_never_moves(fleet) -> None:
     staged = lane / (NAMES[0] + ".pbrange") / f"0-{SIZE}"
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(good)
-    os.setxattr(staged, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(staged, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
 
     got = _reclaim(fleet, apply=True, run_id="run-lane")
 
@@ -292,7 +318,7 @@ def test_a_produced_output_copy_never_moves(fleet) -> None:
 def test_a_fragment_owner_never_moves(fleet) -> None:
     queue, stage, mount, _quarantine, _good = fleet
     consumer, mover = "c" * 64, "d" * 64
-    residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+    residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
@@ -315,29 +341,26 @@ def test_a_fragment_owner_never_moves(fleet) -> None:
 def test_a_pin_owner_never_moves(fleet) -> None:
     queue, stage, mount, _quarantine, good = fleet
     consumer, mover = "c" * 64, "d" * 64
-    root = queue.root / pool.RESIDENCY
+    root = queue.root / pool.record_store.RESIDENCY
     target = _staged(stage, mount, NAMES[0])
     map_key = residency_map.residency_map_key(str(mount / NAMES[0]), 0)
     entry = {"stage_path": str(target), "bytes": SIZE, "offset": 0,
              "sha256": hashlib.sha256(good).hexdigest()}
-    residency_map.write_fragment(root, {
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,
-        "entries": {map_key: entry}})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover, tier_id=TIER,
-        stage_root=str(stage), manifest_sha256="e" * 64,
+        "entries": {map_key: entry}},
         generation=reader_lease.mint_generation(),
-        entries={map_key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
+        material_entries={map_key: {**entry, "file_id": reader_lease.stat_identity(str(target))}})
     pin = reader_lease.acquire(
         queue, consumer_action_key=consumer, attempt={"nonce": "n1", "scope_id": "s1"},
         tier_id=TIER, epoch="", span={"start_bytes": 0, "end_bytes": SIZE},
         holder={"host": "test-host", "pid": 4242}, acquire_token="test-pin",
         covers=[{"mover_action_key": mover, "manifest_sha256": "e" * 64}])
     assert pin["ok"]
-    residency_map.fragment_path(root, consumer, mover).unlink()
-    reader_lease.material_path(root, consumer, mover).unlink()
+    staged_path.withdraw_vouch(None, root, consumer, mover, missing_ok=False)
 
     got = _reclaim(fleet, apply=True, run_id="run-pin")
 
@@ -392,7 +415,7 @@ def test_a_mover_in_flight_refuses_the_pass(fleet) -> None:
 def test_an_unreadable_reference_record_refuses_the_pass(fleet) -> None:
     queue, stage, mount, _quarantine, _good = fleet
     path = residency_map.fragment_path(
-        queue.root / pool.RESIDENCY, "c" * 64, "d" * 64)
+        queue.root / pool.record_store.RESIDENCY, "c" * 64, "d" * 64)
     path.parent.mkdir(parents=True)
     path.write_text("{")
 
@@ -409,7 +432,7 @@ def test_restore_round_trips_bytes_marks_and_times(fleet) -> None:
     before = {name: (
         _staged(stage, mount, name).read_bytes(),
         os.getxattr(_staged(stage, mount, name),
-                    prewarm_loop.STAGE_SOURCE_XATTR),
+                    stage_marks.STAGE_SOURCE_XATTR),
         os.stat(_staged(stage, mount, name))) for name in NAMES}
 
     got = _reclaim(fleet, apply=True, run_id="run-restore")
@@ -426,7 +449,7 @@ def test_restore_round_trips_bytes_marks_and_times(fleet) -> None:
         live = os.stat(path)
         assert path.read_bytes() == before[name][0]
         assert os.getxattr(path,
-                            prewarm_loop.STAGE_SOURCE_XATTR) == before[
+                            stage_marks.STAGE_SOURCE_XATTR) == before[
             name][1]
         assert live.st_mtime_ns == before[name][2].st_mtime_ns
         assert live.st_atime_ns == before[name][2].st_atime_ns
@@ -458,10 +481,10 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
     retained_key, waiting_key = "b" * 64, "c" * 64
     retained = stage / "owned.bin"
     retained.write_bytes(b"held")
-    os.setxattr(retained, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
-    os.setxattr(retained, stage_reclaim.STAGE_MOVER_XATTR, retained_key.encode())
-    queue.mint_tier_capacity(TIER, {KIND: 3})
-    assert queue.tier_ledger(TIER).acquire(retained_key, {KIND: 1})
+    os.setxattr(retained, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(retained, stage_marks.STAGE_MOVER_XATTR, retained_key.encode())
+    queue.tier(TIER).mint({KIND: 3})
+    assert queue.tier(TIER).take(retained_key, {KIND: 1})
     queue.record_move(retained_key, {
         "tier_id": TIER, "stage_root": str(stage), "complete": True,
         "entries": [{"stage_path": str(retained), "bytes": 4}],
@@ -469,7 +492,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
 
     def available():
         occupied = sum(path.stat().st_size for path in stage.rglob("*")
-                       if path.is_file() and path.name != stage_release.STAGE_ROOT_MARKER)
+                       if path.is_file() and path.name != staged_path.STAGE_ROOT_MARKER)
         return 2 * storage_tiers.GIB + 4 - occupied
 
     monkeypatch.setattr(storage_tiers, "stage_dataset", lambda pool: {
@@ -495,7 +518,7 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
 
     publish()
     assert queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2}) is None
-    assert queue.tier_ledger(TIER).holder_tokens(waiting_key) == {}
+    assert queue.tier(TIER).holdings(waiting_key) == {}
     queue.withdraw(waiting_key, reason="fixture pauses the mover", by="test")
     got = _reclaim(fleet, apply=True, run_id="run-mint")
     assert got["complete"] is True
@@ -504,13 +527,13 @@ def test_next_mint_exposes_the_reclaimed_room(fleet, monkeypatch) -> None:
     after = mint()
     assert after["landed"] == 1 and after["supply"] == 3
     assert after["writable"] == before["writable"] + 1
-    assert queue.tier_ledger(TIER).holder_tokens(retained_key) == {KIND: 1}
+    assert queue.tier(TIER).holdings(retained_key) == {KIND: 1}
     publish()
     admitted = queue.claim(tags=["x86"], capacity={"cpu": 2, "mem_gb": 2})
     assert admitted is not None and admitted["action_key"] == waiting_key
-    assert queue.tier_ledger(TIER).held() == {KIND: 3}
-    assert queue.tier_ledger(TIER).holder_tokens(waiting_key) == {KIND: 2}
-    assert 4 <= queue.tier_ledger(TIER).held()[KIND] * storage_tiers.GIB
+    assert queue.tier(TIER).holdings() == {KIND: 3}
+    assert queue.tier(TIER).holdings(waiting_key) == {KIND: 2}
+    assert 4 <= queue.tier(TIER).holdings()[KIND] * storage_tiers.GIB
 
 
 def test_quarantine_on_the_stage_device_is_refused(fleet) -> None:
@@ -540,11 +563,11 @@ def test_a_ranged_name_inside_a_ranged_name_still_pairs(fleet) -> None:
     nested = "nested.pbrange/0-5"
     (mount / "nested.pbrange").mkdir(parents=True, exist_ok=True)
     (mount / nested).write_bytes(good)
-    staged = stage / stage_relative(
+    staged = stage / staged_path.stage_relative(
         f"{mount}/{nested}", 0, SIZE, mount_prefix=str(mount))
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(good)
-    os.setxattr(staged, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(staged, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
 
     got = _reclaim(fleet)
 
@@ -610,7 +633,7 @@ def test_an_unreadable_ledger_refuses_the_pass(fleet, monkeypatch) -> None:
     def _refuse(_tier_id):
         raise pool.PoolContractError("ledger gone")
 
-    monkeypatch.setattr(queue, "tier_ledger", _refuse)
+    monkeypatch.setattr(queue, 'tier', _refuse)
 
     got = _reclaim(fleet)
 
@@ -667,7 +690,7 @@ def test_a_receipt_without_a_fragment_keeps_its_copy(fleet):
 
 def test_an_unreadable_ready_record_refuses_all_moves(fleet):
     queue, stage, mount, quarantine, good = fleet
-    queue.item_path(pool.READY, "7" * 64).write_text("{")
+    queue.records.item_path(pool.record_store.READY, "7" * 64).write_text("{")
     got = _reclaim(fleet, apply=True, run_id="bad-ready")
     assert got["complete"] is False
     assert all(_staged(stage, mount, name).exists() for name in NAMES)
@@ -718,7 +741,7 @@ def test_a_consumer_without_a_fragment_keeps_its_input(fleet, claim):
 def test_a_range_receipt_without_a_fragment_keeps_its_extent(fleet):
     queue, stage, mount, quarantine, good = fleet
     key, digest = _reference_action(fleet)
-    queue.item_path(pool.READY, key).unlink()
+    queue.records.item_path(pool.record_store.READY, key).unlink()
     queue.record_move(key, {
         "tier_id": TIER, "stage_root": str(stage), "complete": True,
         "manifest_sha256": digest, "range_start_bytes": 0,
@@ -736,7 +759,7 @@ def test_a_late_fragment_blocks_removal(fleet, monkeypatch):
     def add_fragment(source, dest, size, **kwargs):
         sha = real_copy(source, dest, size, **kwargs)
         if source == target:
-            residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+            residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": "c" * 64, "mover_action_key": "d" * 64,
                 "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,
@@ -782,11 +805,11 @@ def test_apply_budget_includes_copy_verification_and_final_source_read(fleet):
 def test_a_nonzero_original_extent_is_proven(fleet):
     queue, stage, mount, quarantine, good = fleet
     (mount / "offset.bin").write_bytes(b"prefix" + good + b"suffix")
-    target = stage / stage_relative(
+    target = stage / staged_path.stage_relative(
         str(mount / "offset.bin"), 6, SIZE, mount_prefix=str(mount))
     target.parent.mkdir(parents=True)
     target.write_bytes(good)
-    os.setxattr(target, prewarm_loop.STAGE_SOURCE_XATTR, b"0:0:0")
+    os.setxattr(target, stage_marks.STAGE_SOURCE_XATTR, b"0:0:0")
     got = _reclaim(fleet, apply=True, run_id="nonzero")
     row = next(row for row in got["entries"] if row["stage_path"] == str(target))
     assert row["offset"] == 6 and row["sha256"] == hashlib.sha256(good).hexdigest()
@@ -869,7 +892,7 @@ def test_a_stage_parent_substitution_cannot_move_a_referenced_copy(fleet, monkey
         if source == target:
             target.parent.rename(relocated)
             target.parent.symlink_to(relocated, target_is_directory=True)
-            residency_map.write_fragment(queue.root / pool.RESIDENCY, {
+            residency_map.write_fragment(queue.root / pool.record_store.RESIDENCY, {
                 "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
                 "consumer_action_key": "c" * 64, "mover_action_key": "d" * 64,
                 "tier_id": TIER, "stage_root": str(stage), "manifest_sha256": "e" * 64,

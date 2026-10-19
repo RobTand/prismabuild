@@ -33,7 +33,8 @@ import time
 import uuid
 
 from . import core as pb
-from . import owned_tree
+from . import owned_tree, immutable_files
+from .immutable_files import MaterializationError, MaterializationContractError
 
 # The snapshot bundle travels through the shared CAS, but execution trees stay
 # on each worker's local disk. Same spelling on every box, different storage.
@@ -55,133 +56,9 @@ LOCAL_CHECKOUT_ROOT = Path(
 CHECKOUT_TREE = re.compile(r"[0-9a-f]{12}\.[a-z0-9_]{8}")
 
 
-class MaterializationError(pb.PrismaBuildError):
-    """A checkout could not be materialized from its sealed snapshot."""
-
-
-class MaterializationContractError(MaterializationError, ValueError):
-    """A record handed to the materializer does not satisfy its schema."""
-
-
 def _now() -> float:
     return time.time()
 
-
-def _write_json_atomic(path: Path, payload: Mapping[str, object], *,
-                       make_parent: bool = True,
-                       trailing_newline: bool = False,
-                       text: str = "canonical",
-                       tmp: str = "pid_uuid",
-                       fsync: bool = True) -> None:
-    """Publish a record by rename, so no reader ever sees a partial file.
-
-    The one owner for rename-atomic JSON records (#1330): the pool queue
-    writers already call this, and the hand-rolled remainder migrate to
-    it with exactly the parameters that preserve their history -- never
-    silently upgraded or downgraded.
-
-    ``make_parent=False`` skips the ``mkdir``: a caller that rewrites one
-    record every cycle creates its directory only when a write finds it
-    missing (``FileNotFoundError``), not on every call (#960).
-
-    ``trailing_newline=True`` terminates the record with one LF, the lane
-    history: the retired ``slurm_lane._write_latest`` wrote
-    ``_canonical_file_bytes``.  Lane records are read by another box's
-    ``json.load``, which accepts both shapes, but their bytes are pinned,
-    so the flag preserves them bit for bit.  ``False`` keeps this module's
-    historical bare bytes, which feed content-addressed paths and must not
-    move.  ``text" selects the bytes: ``"canonical"`` (the default,
-    ``_canonical_bytes``), ``"canonical_lf"`` (same plus one LF, the
-    spelling ``trailing_newline=True`` keeps for its callers), or
-    ``"sorted_lf"`` (``core._sorted_lf_bytes`` -- ``json.dumps`` with
-    ``sort_keys`` plus one LF, the exact bytes ``pool``'s holder
-    records and reader-scope proofs wrote).  ``core``'s status
-    sidecars, ``progress`` and ``resource_scope`` keep their own
-    spellings: all three run standalone (runpy, as-a-program, and
-    single-file-in-generation respectively) and cannot import this
-    owner at any level -- proven by the reachability suites, which
-    failed on the migration and pass on the revert.
-
-    ``tmp`` names the temp file: ``"pid_uuid"`` (the default -- a lane
-    directory lives on the shared mount, where two boxes submitting one
-    action key write into it and a pid alone names one file on both) or
-    ``"pid"`` (the local writers' history).  ``pid_uuid`` opens
-    ``O_EXCL`` (a collision there is a bug); ``pid`` opens ``O_TRUNC``
-    -- the migrated writers used ``write_text``/``open("w")``, and a
-    stale pid temp left by a SIGKILLed writer must truncate, not wedge
-    every later write with ``FileExistsError`` (PIDs get reused, and
-    the status sidecars swallow ``OSError`` while progress records feed
-    stall detection: #1331 review).
-
-    ``fsync=False`` skips the file fsync (the local status writers'
-    history -- a best-effort sidecar must not pay spindle latency).
-    The rename sits inside the ``try`` so a failed rename still cleans
-    its temp instead of littering a directory an operator reads.
-
-    Deliberately NOT parametrized further: the upgrade client's
-    (plain temp, post-write chmod, dir fsync) and the resource broker's
-    (token temp, ``O_NOFOLLOW``, dir fsync) writers stay hand-rolled --
-    both are standalone host tools that must not import this package,
-    and their durability contracts are not this owner's.
-    """
-
-    if text not in ("canonical", "canonical_lf", "sorted_lf"):
-        raise MaterializationContractError(
-            f"atomic record text must be canonical, canonical_lf or "
-            f"sorted_lf, not {text!r}")
-    if tmp not in ("pid_uuid", "pid"):
-        raise MaterializationContractError(
-            f"atomic record tmp must be pid_uuid or pid, not {tmp!r}")
-    if make_parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    if tmp == "pid_uuid":
-        tmp_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    else:
-        tmp_name = f".{path.name}.{os.getpid()}.tmp"
-    tmp_path = path.parent / tmp_name
-    if text == "sorted_lf":
-        data = pb._sorted_lf_bytes(dict(payload))
-    elif text == "canonical_lf" or trailing_newline:
-        data = pb._canonical_file_bytes(dict(payload))
-    else:
-        data = pb._canonical_bytes(dict(payload))
-    flags = os.O_WRONLY | os.O_CREAT
-    flags |= os.O_EXCL if tmp == "pid_uuid" else os.O_TRUNC
-    descriptor = os.open(tmp_path, flags, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            if fsync:
-                os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-
-
-def write_bytes_atomic(path: Path, data: bytes, *,
-                       make_parent: bool = True) -> None:
-    """Publish exact bytes by rename, beside the JSON owner (#1330).
-
-    ``pool._write_bytes_atomic``'s contract verbatim: pid+UUID temp,
-    ``0o644`` exclusive create, file fsync, rename; the same sync policy
-    as JSON records.  One spelling so the two can never drift.
-    """
-
-    if make_parent:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    os.replace(temporary, path)
 
 def _run_materializer_git(
     argv: Sequence[str],
@@ -252,7 +129,7 @@ def _cleanup_execution_checkout(
     )
     record_error = ""
     try:
-        _write_json_atomic(record_path, record)
+        immutable_files.write_json_atomic(record_path, record)
     except Exception as exc:  # stderr remains the observable fallback
         record_error = f"; could not publish {record_path}: {exc}"
     print(

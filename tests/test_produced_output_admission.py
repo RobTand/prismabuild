@@ -6,6 +6,11 @@ existing ledger channel, and runtime binding from the sealed queue item.
 No prewrite/commit/retire/release/funding bodies, no mover copy, no GPU.
 """
 from __future__ import annotations
+from fleet_world import Admission, FleetWorld
+from prismabuild import output_contract as oc
+from submission_support import patch_store
+import pbrun
+from prismabuild import submission as submit_core
 
 import hashlib
 import json
@@ -32,7 +37,7 @@ OTHER = "b" * 64
 
 def _template(output_prefix: str, template_id: str = "admit-v1") -> dict:
     body = {
-        "schema": po.TEMPLATE_SCHEMA_V1,
+        "schema": oc.TEMPLATE_SCHEMA_V1,
         "version": 1,
         "template_id": template_id,
         "output_prefix": output_prefix,
@@ -50,15 +55,12 @@ def _template(output_prefix: str, template_id: str = "admit-v1") -> dict:
         },
         "permitted_tiers": [STAGE_TIER],
     }
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _queue(tmp_path: Path, stage_gib: int = 8) -> pool.PoolQueue:
-    queue = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    queue.ensure_layout()
-    queue.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: stage_gib})
+    queue = FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 8, 'mem_gb': 16}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
+    queue.tier(STAGE_TIER).mint({STAGE_BARE: stage_gib})
     return queue
 
 
@@ -86,11 +88,11 @@ def _file_broker_control(queue: pool.PoolQueue, owner: str) -> dict:
         "cgroup_path": str(Path("/sys/fs/cgroup/prismabuild.slice") / unit),
     })
     control = scope.control_record()
-    path = queue.item_path(pool.CLAIMED, owner)
-    live = pool._read_json(path)
+    path = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    live = pool.record_store.read_document(path)
     assert live is not None
     live["resource_scope"] = control
-    pool._write_json_atomic(path, live)
+    pool.immutable_files.write_json_atomic(path, live)
     return control
 
 
@@ -104,7 +106,7 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     assert terms == {f"{STAGE_BARE}@{STAGE_TIER}": 2}
 
     # Enough capacity: publish projects the ref, claim holds host+tier.
@@ -115,16 +117,16 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
                         resources={"cpu": 1, "mem_gb": 1, **terms},
                         produced_output_template=template)
     assert row.is_file()
-    item = pool._read_json(queue.item_path(pool.READY, key))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert isinstance(item, dict)
     ref = item["produced_output"]
-    assert ref["schema"] == po.PRODUCED_OUTPUT_REF_SCHEMA_V1
+    assert ref["schema"] == oc.PRODUCED_OUTPUT_REF_SCHEMA_V1
     assert ref["template_id"] == "admit-v1"
-    assert ref["template_sha256"] == po.template_sha256(template)
+    assert ref["template_sha256"] == oc.template_sha256(template)
     # Filed immutably beside the queue.
-    filed = json.loads((queue.root / "residency" / po.OUTPUT_TEMPLATES_SUBDIR
+    filed = json.loads((queue.root / "residency" / oc.OUTPUT_TEMPLATES_SUBDIR
                         / "admit-v1.json").read_text())
-    assert po.template_sha256(filed) == ref["template_sha256"]
+    assert oc.template_sha256(filed) == ref["template_sha256"]
 
     claimed = queue.claim(owner="w1")
     assert claimed is not None and claimed["action_key"] == key
@@ -136,22 +138,24 @@ def test_publish_admits_with_capacity_and_denies_without(tmp_path: Path) -> None
     q2 = AdmittedQueueFixture(
         pool.PoolQueue(small / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    q2.ensure_layout()
-    q2.mint_tier_capacity(STAGE_TIER, {STAGE_BARE: 1})
+    q2.records.ensure_layout()
+    q2.tier(STAGE_TIER).mint({STAGE_BARE: 1})
     key2 = "9" * 64
     q2.publish(action_key=key2, cas_root="/cas", worker_script="/w.py",
                checkout_root="/co",
                resources={"cpu": 1, "mem_gb": 1, **terms},
                produced_output_template=_template(str(small / "out")))
     assert q2.claim(owner="w1") is None
-    assert pool._read_json(q2.item_path(pool.READY, key2)) is not None
+    assert pool.record_store.value_or_raise(
+        q2.records.item(pool.record_store.READY, key2),
+    ) is not None
 
 
 def test_input_and_output_demand_coexist(tmp_path: Path) -> None:
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     queue = _queue(tmp_path, stage_gib=8)
     key = "d" * 64
     # Input residency (leads) carries no tier demand; output window does.
@@ -163,20 +167,22 @@ def test_input_and_output_demand_coexist(tmp_path: Path) -> None:
                    "manifest_sha256": "e" * 64, "manifest_bytes": 10,
                    "leads": ["f" * 64]},
         produced_output_template=template)
-    item = pool._read_json(queue.item_path(pool.READY, key))
+    item = pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
     assert item["residency"]["leads"] == ["f" * 64]
     assert item["produced_output"]["template_id"] == "admit-v1"
     # Leads are absent, so the claim waits on inputs (input semantics
     # preserved) rather than admitting on tier capacity alone.
     assert queue.claim(owner="w1") is None
-    assert pool._read_json(queue.item_path(pool.READY, key)) is not None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) is not None
 
 
 def test_refusals_and_legacy(tmp_path: Path) -> None:
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin))
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     queue = _queue(tmp_path)
 
     # Underdeclared tier demand refuses.
@@ -201,7 +207,9 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
                       worker_script="/w.py", checkout_root="/co",
                       resources={"cpu": 1, "mem_gb": 1, **terms},
                       produced_output_template=bad)
-    assert pool._read_json(queue.item_path(pool.READY, "3" * 64)) is None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, "3" * 64),
+    ) is None
     # File the original, then a conflicting body for the same id refuses.
     queue.publish(action_key="0" * 64, cas_root="/cas",
                   worker_script="/w.py", checkout_root="/co",
@@ -211,14 +219,16 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
     other = dict(other)
     other["durable_maxima"] = dict(other["durable_maxima"])
     other["durable_maxima"]["payload_max_bytes"] = 2 << 20
-    other_validated = po.validate_template(other)
-    other_terms = po.owner_demand_terms(other_validated)
+    other_validated = oc.validate_template(other)
+    other_terms = oc.owner_demand_terms(other_validated)
     with pytest.raises(pool.PoolContractError):
         queue.publish(action_key="4" * 64, cas_root="/cas",
                       worker_script="/w.py", checkout_root="/co",
                       resources={"cpu": 1, "mem_gb": 1, **other_terms},
                       produced_output_template=other_validated)
-    assert pool._read_json(queue.item_path(pool.READY, "4" * 64)) is None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, "4" * 64),
+    ) is None
 
     # Legacy input-only mover still publishes without any produced template.
     mover = "5" * 64
@@ -232,7 +242,9 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
                              "tier_id": STAGE_TIER,
                              "range_start_bytes": 0,
                              "range_end_bytes": 1 << 30})
-    assert pool._read_json(queue.item_path(pool.READY, mover)) is not None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, mover),
+    ) is not None
     # And the old #595 gate still refuses unbacked tier demand.
     with pytest.raises(pool.PoolContractError, match="residency block"):
         queue.publish(action_key="6" * 64, cas_root="/cas",
@@ -243,7 +255,7 @@ def test_refusals_and_legacy(tmp_path: Path) -> None:
 
 def test_core_declaration_binds_input_row(tmp_path: Path) -> None:
     template = _template(str(tmp_path / "out"))
-    digest = po.template_sha256(template)
+    digest = oc.template_sha256(template)
     good_input = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
                   "sha256": "a" * 64, "bytes": 100}
     declaration = {"schema": pb.PRODUCED_OUTPUT_DECLARATION_SCHEMA_V1,
@@ -294,7 +306,7 @@ def test_runtime_binds_declared_template_not_caller_template(
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     template = _template(str(origin), "bind-a")
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     queue = _queue(tmp_path)
     key = "c" * 64
     queue.publish(action_key=key, cas_root="/cas", worker_script="/w.py",
@@ -318,7 +330,7 @@ def test_runtime_binds_declared_template_not_caller_template(
     # item declared: binding it directly would answer for the wrong scope.
     foreign = _template(str(origin), "bind-b")
     po.declare_template(queue.root, foreign)
-    assert po.template_sha256(foreign) != po.template_sha256(declared)
+    assert oc.template_sha256(foreign) != oc.template_sha256(declared)
 
 
 def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
@@ -326,10 +338,12 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     import subprocess
 
     import pbrun as pbrun_mod
+    from prismabuild import submission
+    from submission_support import patch_store
 
     # Redirect the submitter's shared handles into the fixture: freeze seals
     # against SH, so without this the test would ingest into the live CAS.
-    monkeypatch.setattr(pbrun_mod, "SH", tmp_path / "fleet")
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -346,9 +360,9 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     template = _template(str(out_prefix), "pbrun-path-v1")
     tpath = tmp_path / "template.json"
     _write_template(tpath, template)
-    terms = po.owner_demand_terms(template)
+    terms = oc.owner_demand_terms(template)
     demand = {"cpu": 1, "mem_gb": 1, **terms}
-    frozen = pbrun_mod.freeze_action_template(
+    frozen = submit_core.freeze_template(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand=demand, placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -359,17 +373,17 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
         checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
         exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
         progress=None, profile=None, container_image_refs=(),
-        wrapper_dir=tmp_path / "wrapper")
+        wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
     assert frozen["produced_output_template"]["template_id"] == "pbrun-path-v1"
     assert pb.PRODUCED_OUTPUT_TEMPLATE_PARAM in frozen["params"]
-    sealed = pbrun_mod.seal_action_from_template(frozen)
+    sealed = submit_core.seal(frozen)
     key = sealed["action_key"]
     # A second template seals a different key.
     _write_template(tpath, _template(str(out_prefix), "pbrun-path-v2"))
-    frozen2 = pbrun_mod.freeze_action_template(
+    frozen2 = submit_core.freeze_template(
         command=["sh", "run.sh"], cwd=repo, logical_cwd=".",
         demand={"cpu": 1, "mem_gb": 1,
-                **po.owner_demand_terms(
+                **oc.owner_demand_terms(
                     _template(str(out_prefix), "pbrun-path-v2"))},
         placement={"required_tags": []},
         variables={"PATH": "/usr/bin:/bin"}, determinism="stochastic",
@@ -380,13 +394,13 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
         checkout_snapshot_max_bytes=512 * 1024 * 1024, snapshot_refs=[],
         exclusive=False, gpu_memory_gb=None, execution_timeout_s=None,
         progress=None, profile=None, container_image_refs=(),
-        wrapper_dir=tmp_path / "wrapper")
-    assert (pbrun_mod.seal_action_from_template(frozen2)["action_key"]
+        wrapper_dir=tmp_path / "wrapper", store=pbrun.configured_store())
+    assert (submit_core.seal(frozen2)["action_key"]
             != key)
     # The sealed row publishes and claims against the real ledgers.
     queue = _queue(tmp_path / "q2")
     args = pbrun_mod.parse_args(["--cpus", "1", "--", "true"])
-    row = pbrun_mod.publication_row(sealed, args=args, queue=queue)
+    row = submit_core.row_publication(args, pbrun.configured_store()).row(sealed, queue=queue)
     row["produced_output_template"] = frozen["produced_output_template"]
     queue.publish(**row)
     assert queue.claim(owner="w-seal") is not None
@@ -401,7 +415,7 @@ def test_pbrun_sealing_publish_claim_path(tmp_path: Path,
     assert captured != tpath.read_bytes()
     runtime_body = po.declared_template(queue, key)
     assert runtime_body["template_id"] == "pbrun-path-v1"
-    assert po.template_sha256(runtime_body) == decl["template_sha256"]
+    assert oc.template_sha256(runtime_body) == decl["template_sha256"]
 
 
 def test_refused_declaration_leaves_withdrawal_untouched(
@@ -409,7 +423,7 @@ def test_refused_declaration_leaves_withdrawal_untouched(
     origin = tmp_path / "outputs"
     origin.mkdir(parents=True)
     first = _template(str(origin), "conflict-v1")
-    terms = po.owner_demand_terms(first)
+    terms = oc.owner_demand_terms(first)
     queue = _queue(tmp_path)
     key = "7" * 64
     queue.publish(action_key=key, cas_root="/cas", worker_script="/w.py",
@@ -418,28 +432,34 @@ def test_refused_declaration_leaves_withdrawal_untouched(
                   produced_output_template=first)
     queue.withdraw(key, reason="operator hold", by="test",
                    signal_child=False)
-    assert pool._read_json(queue.item_path(pool.WITHDRAWN, key)) is not None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.WITHDRAWN, key),
+    ) is not None
     # Same id, different durable maxima, same window so the demand matches:
     # the declaration conflict must refuse BEFORE any withdrawal is retired.
     other = _template(str(origin), template_id="conflict-v1")
     other = dict(other)
     other["durable_maxima"] = dict(other["durable_maxima"])
     other["durable_maxima"]["payload_max_bytes"] = 2 << 20
-    other_validated = po.validate_template(other)
+    other_validated = oc.validate_template(other)
     with pytest.raises(pool.PoolContractError):
         queue.publish(
             action_key=key, cas_root="/cas", worker_script="/w.py",
             checkout_root="/co",
             resources={"cpu": 1, "mem_gb": 1,
-                       **po.owner_demand_terms(other_validated)},
+                       **oc.owner_demand_terms(other_validated)},
             produced_output_template=other_validated)
-    assert pool._read_json(queue.item_path(pool.READY, key)) is None
-    assert pool._read_json(queue.item_path(pool.WITHDRAWN, key)) is not None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) is None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.WITHDRAWN, key),
+    ) is not None
 
 
 def test_core_declaration_rejects_empty_and_oversized_input() -> None:
     template = _template("/out")
-    digest = po.template_sha256(template)
+    digest = oc.template_sha256(template)
     empty = {"id": pb.PRODUCED_OUTPUT_TEMPLATE_INPUT_ID,
              "sha256": "a" * 64, "bytes": 0}
     with pytest.raises(pb.ActionContractError):

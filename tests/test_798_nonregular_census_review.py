@@ -33,17 +33,10 @@ def test_nonregular_fragment_state_retains_live_staged_bytes(world, shape, layou
     else:
         namespace.rmdir()
         namespace.write_text("corrupt namespace\n")
-    held = world.queue.tier_ledger(TIER).holder_tokens(mover)
+    held = world.queue.tier(TIER).holdings(mover)
     events = _sweep(world.queue, world.stage)
     receipt = _reconcile_receipt(events)
-    observed = {
-        "shape": shape,
-        "layout": layout,
-        "receipt": receipt,
-        "staged_bytes_exist": staged.exists(),
-        "held_before": held,
-        "held_after": world.queue.tier_ledger(TIER).holder_tokens(mover),
-    }
+    observed = {'shape': shape, 'layout': layout, 'receipt': receipt, 'staged_bytes_exist': staged.exists(), 'held_before': held, 'held_after': world.queue.tier(TIER).holdings(mover)}
     print("OBSERVATION", json.dumps(observed, sort_keys=True))
     assert receipt is not None and receipt["complete"] is False, observed
     assert receipt["skipped"] == "attribution_unreadable", observed

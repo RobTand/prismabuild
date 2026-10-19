@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan, storage_tiers, window_credit  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 CONSUMER = "c" * 64
 MANIFEST = "9" * 64
@@ -114,7 +114,7 @@ def test_nonfinal_result_names_the_frontier_advance(mover_role: str) -> None:
     """The lead plus its protected next, on either leg."""
 
     plan = _whole_plan()
-    needs = residency_plan.advance_needs(plan, None, mover_role=mover_role)
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(mover_role=mover_role)).advance
 
     assert needs["final"] is False
     assert needs["current_min_gib"] == 2
@@ -133,8 +133,7 @@ def test_frontier_advance_moves_past_landed_ranges() -> None:
     the safe-retire prior."""
 
     plan = _whole_plan()
-    needs = residency_plan.advance_needs(
-        plan, None, staged=[_hexkey("mover0")])
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(staged=[_hexkey('mover0')])).advance
 
     assert needs["final"] is False
     target = needs["fence_target"]
@@ -150,7 +149,7 @@ def test_final_leg_needs_no_advance() -> None:
     leg. This guards the fix against overcorrection."""
 
     plan = _whole_plan(phases=1)
-    needs = residency_plan.advance_needs(plan, None)
+    needs = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation()).advance
 
     assert needs["final"] is True
     assert needs["next_min_gib"] is None
@@ -162,15 +161,14 @@ def test_chunked_leg_targets_the_next_chunk() -> None:
     never the next phase."""
 
     plan = _chunked_plan()
-    fresh = residency_plan.advance_needs(plan, None, mover_role="mover_row")
+    fresh = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(mover_role='mover_row')).advance
 
     target = fresh["fence_target"]
     assert isinstance(target, dict)
     assert (target["phase"], target["chunk_index"]) == ("phase-0000", 1)
     assert target["stage_gib"] == 1
 
-    advanced = residency_plan.advance_needs(
-        plan, None, mover_role="mover_row", staged=[_hexkey("mover0c0")])
+    advanced = residency_plan.ConsumerWindow(plan, None, residency_plan.LegObservation(mover_role='mover_row', staged=[_hexkey('mover0c0')])).advance
     following = advanced["fence_target"]
     assert isinstance(following, dict)
     assert (following["phase"], following["chunk_index"]) == ("phase-0001", 0)
@@ -184,7 +182,7 @@ def test_protection_holds_the_named_advance_before_it_permits(
     holds nothing."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     plan = _whole_plan(phases=2)
     residency_plan.freeze(queue, plan)
     queue.publish(action_key=CONSUMER, cas_root=queue.root / "cas",
@@ -195,7 +193,7 @@ def test_protection_holds_the_named_advance_before_it_permits(
                              "tier_id": STAGE_TIER, "manifest_sha256": MANIFEST,
                              "manifest_bytes": 4 * GIB,
                              "leads": residency_plan.leads_for(plan)})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 4})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 4})
 
     result = tier_loop._protect_tier_advances(
         queue,
@@ -205,12 +203,12 @@ def test_protection_holds_the_named_advance_before_it_permits(
         tier_of=lambda plan: plan.get("tier_id"),
         state_of=tier_loop._mover_state)
 
-    assert result["gated"] == {}
-    entry = result["permitted"][(CONSUMER, STAGE_TIER)]
+    assert result.gated == {}
+    entry = result.permitted[(CONSUMER, STAGE_TIER)]
     assert entry["advance"] == "blind-held"
-    grant = result["grants"][(CONSUMER, STAGE_TIER)]
+    grant = result.grants[(CONSUMER, STAGE_TIER)]
     assert grant == window_credit.grant_key(
         CONSUMER, STAGE_TIER, "mover_row", "phase-0001", None)
-    assert queue.tier_ledger(STAGE_TIER).holder_tokens(grant) == {"stage_gib": 2}
-    assert [key for key in result["grants"] if key[0] == CONSUMER] == [
+    assert queue.tier(STAGE_TIER).holdings(grant) == {'stage_gib': 2}
+    assert [key for key in result.grants if key[0] == CONSUMER] == [
         (CONSUMER, STAGE_TIER)]

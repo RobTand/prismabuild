@@ -22,9 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan, storage_tiers  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     _stage_range, _tier_record)
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
@@ -32,6 +32,7 @@ from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
 from test_prelaunch_tier_gate_1594 import _live  # noqa: E402
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan)
+from prismabuild import staged_path
 
 STAGE = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{STAGE}"
@@ -69,7 +70,7 @@ def _fixture(tmp_path: Path):
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=STAGE, stage_root=stage)
     queue.publish(action_key=DONE, cas_root=str(queue.root / "cas"),
                   checkout_root=str(queue.root / "co"),
                   worker_script=str(queue.root / "worker.py"),
@@ -93,8 +94,8 @@ def _fixture(tmp_path: Path):
         step, _authority = pt.reserve_pass(queue, STAGE, units,
                                            admitted=lambda unit: True)
         events.extend(step)
-    ledger = queue.tier_ledger(STAGE)
-    assert int(ledger.holder_tokens(units[0].holder).get("stage_gib", 0)) == 10, events
+    ledger = queue.tier(STAGE)
+    assert int(ledger.holdings(units[0].holder).get('stage_gib', 0)) == 10, events
     window_plan = _window_plan(queue, WINDOW)
     residency_plan.freeze(queue, window_plan)
     queue.publish(
@@ -137,9 +138,8 @@ def test_the_sweep_reaches_the_asked_room(tmp_path: Path) -> None:
     queue, stage, orphans, prefix = _fixture(tmp_path)
     for _ in range(3):
         _cycle(queue, stage)
-    assert not queue.tier_ledger(STAGE).holder_tokens(orphans[0])
-    assert not queue.tier_ledger(STAGE).holder_tokens(orphans[1])
-    ledger = queue.tier_ledger(STAGE)
-    held_prefix = sum(
-        int(ledger.holder_tokens(key).get("stage_gib", 0)) for key in prefix)
+    assert not queue.tier(STAGE).holdings(orphans[0])
+    assert not queue.tier(STAGE).holdings(orphans[1])
+    ledger = queue.tier(STAGE)
+    held_prefix = sum((int(ledger.holdings(key).get('stage_gib', 0)) for key in prefix))
     assert held_prefix == 10, "the admitted prefix stays"

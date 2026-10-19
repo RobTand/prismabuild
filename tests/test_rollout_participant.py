@@ -11,6 +11,27 @@ import socket
 import pytest
 
 from test_client_upgrade import CLIENT, setup, upgrade
+from test_client_proof_prior_trust import tmp_path
+from test_client_proof_prior_trust import STRICT_PROOF, STRICT_PROOF_SHA256
+from client_proof_bridge_fixture import fixed_source_artifact
+from test_installed_park_proof_loader import installed_leaf
+from prismabuild import park_proof
+from receipt_reader_fixture import bind_current_receipt_reader
+
+
+@pytest.fixture(autouse=True)
+def rollout_rule_owner(setup, installed_leaf):
+    updater, _, generation = setup
+    path, strict_bytes, _ = installed_leaf
+    assert path == updater.install / "park_proof.py"
+    member = upgrade.OPTIONAL_MEMBERS["park_proof.py"]
+    published = generation / member
+    published.parent.mkdir(parents=True, exist_ok=True)
+    published.write_bytes(strict_bytes)
+    receipt_path = generation / "RUNTIME_VERSION.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["files"][member] = upgrade.digest(strict_bytes)
+    receipt_path.write_text(json.dumps(receipt))
 
 
 def _intent(updater, generation, *, epoch="4" * 32, target="target-generation"):
@@ -24,6 +45,7 @@ def _intent(updater, generation, *, epoch="4" * 32, target="target-generation"):
     receipt = json.loads((generation / "RUNTIME_VERSION.json").read_text())
     receipt["files"][member] = updater_sha
     (generation / "RUNTIME_VERSION.json").write_text(json.dumps(receipt))
+    bind_current_receipt_reader((generation, updater.install, None, None, None, None))
     value = {
         "schema": "prismabuild.rollout_barrier.intent.v1",
         "epoch": epoch,
@@ -102,7 +124,9 @@ def _rotation_processes(updater, generation, *, old_generation=None, one_shot=Fa
     updater.parked_root.mkdir(parents=True, exist_ok=True)
     for pid, starttime, _ in rows:
         if pid != 101 and (pid != 104 or not one_shot):
-            (updater.parked_root / upgrade.park_marker_name(pid, starttime, 458.0)).touch()
+            (updater.parked_root / park_proof.park_marker_filename(
+                park_proof.ProcessIdentity(pid, starttime),
+                park_proof.drain_identity({"draining": True, "changed_unix": 458.0}))).touch()
     updater.procs = lambda: rows
     return rows
 
@@ -435,18 +459,101 @@ def test_rotation_proof_rejects_old_unknown_or_unparked_paths(setup, fault):
     assert updater.rotation_evidence(status, source.name)["rotated"] is False
 
 
-def test_prewarm_role_must_park_before_rollout_drain_proof(setup):
+@pytest.mark.parametrize("script", ["prewarm_loop.py", "tier_loop.py", "local_tier_loop.py"])
+def test_work_storage_role_must_park_before_rollout_drain_proof(setup, script):
     updater, broker, source = setup
     broker.holder = CLIENT
     updater.gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
     updater.procs = lambda: [
-        (103, "1003", ["python3", str(source / "tools/prewarm_loop.py")]),
+        (103, "1003", ["python3", str(source / "tools" / script)]),
     ]
     status = updater.rpc(updater.endpoint, "maintenance_status")
 
     # Storage readers are now always part of the census (PR #525), so no
     # rollout-only switch can accidentally certify this active reader.
     assert updater.drain_evidence(status)["drained"] is False
+
+
+@pytest.mark.parametrize("script", ["tier_loop.py", "local_tier_loop.py"])
+@pytest.mark.parametrize("state", ["old-path", "unparked", "current"])
+def test_observed_tier_roles_need_current_generation_and_park_marker(setup, script, state):
+    updater, broker, source = setup
+    for name, member in upgrade.MEMBERS.items():
+        (updater.install / name).write_bytes((source / member).read_bytes())
+    updater.gate.write_text(json.dumps({"draining": True, "changed_unix": 458.0}))
+    broker.holder = CLIENT
+    rows = _rotation_processes(updater, source.name)
+    root = source if state != "old-path" else source.parent / "old-generation"
+    rows.append((104, "1004", ["python3", str(root / "tools" / script)]))
+    if state != "unparked":
+        (updater.parked_root / "104-1004-458.0").touch()
+
+    evidence = updater.rotation_evidence(
+        updater.rpc(updater.endpoint, "maintenance_status"), source.name)
+
+    assert evidence["rotated"] is (state == "current"), evidence
+    if state == "current":
+        assert any(process["pid"] == 104 and process["parked"]
+                   for process in evidence["processes"])
+
+
+def test_historical_installed_proof_refuses_both_proofs_and_keeps_rollout_waiting(setup):
+    updater, broker, source = setup
+    for name, member in upgrade.MEMBERS.items():
+        (updater.install / name).write_bytes((source / member).read_bytes())
+    broker.holder = CLIENT
+    updater.gate.write_text(json.dumps({
+        "draining": True, "changed_unix": 458.0, "owner": CLIENT}))
+    updater.procs = lambda: []
+    _durable(updater)
+    intent = _intent(updater, source)
+    historical = fixed_source_artifact(
+        "strict-proof.py", STRICT_PROOF, "src/prismabuild/park_proof.py", STRICT_PROOF_SHA256)
+    (updater.install / "park_proof.py").write_bytes(historical)
+    status = updater.rpc(updater.endpoint, "maintenance_status")
+
+    drain = updater.drain_evidence(status)
+    rotation = updater.rotation_evidence(status, source.name)
+    assert drain["drained"] is False and drain["evidence_errors"]
+    assert rotation["rotated"] is False and rotation["rotation_errors"]
+    assert updater.run()["state"] == "rollout_draining"
+    markers = upgrade.read_rollout(updater.config, intent["epoch"])["markers"]
+    assert upgrade.marker_name(socket.gethostname(), "drained") not in markers
+    assert broker.holder == CLIENT
+
+
+def test_gate_replacement_after_observation_cannot_publish_a_drained_marker(setup):
+    updater, broker, source = setup
+    for name, member in upgrade.MEMBERS.items():
+        (updater.install / name).write_bytes((source / member).read_bytes())
+    broker.holder = CLIENT
+    updater.gate.write_text(json.dumps({
+        "draining": True, "changed_unix": 458.0, "owner": CLIENT}))
+    updater.procs = lambda: []
+    _durable(updater)
+    intent = _intent(updater, source)
+    original = updater._refresh_epoch
+    witnessed = []
+
+    def refresh_then_replace(snapshot):
+        result = original(snapshot)
+        if not witnessed:
+            witnessed.append(updater.gate.read_bytes())
+            updater.gate.write_text(json.dumps({
+                "draining": True, "changed_unix": 459.0, "owner": CLIENT}))
+        return result
+
+    updater._refresh_epoch = refresh_then_replace
+    result = updater.run()
+    assert len(witnessed) == 1
+    assert json.loads(witnessed[0])["changed_unix"] == 458.0
+    assert json.loads(updater.gate.read_bytes())["changed_unix"] == 459.0
+    assert result["state"] == "rollout_draining"
+    markers = upgrade.read_rollout(updater.config, intent["epoch"])["markers"]
+    assert upgrade.marker_name(socket.gethostname(), "drained") not in markers
+    assert broker.holder == CLIENT
+    assert "maintenance_end" not in broker.operations
+    assert not updater.journal.exists()
 
 
 def test_failed_epoch_install_restores_bytes_but_keeps_the_gate(setup):

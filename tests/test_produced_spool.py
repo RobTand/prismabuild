@@ -1,4 +1,6 @@
 """Admitted CPU integration: real export action, durable ack, existing stage/lease."""
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 import hashlib
 import json
 import os
@@ -47,7 +49,7 @@ def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1, env=None):
         q.publish(action_key=owner, cas_root=str(cas_root),
             worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
             checkout_root=str(tmp_path / "mover-checkout"),
-            resources={"cpu": 1, "mem_gb": parent_mem, **po.owner_demand_terms(template)},
+            resources={"cpu": 1, "mem_gb": parent_mem, **oc.owner_demand_terms(template)},
             produced_output_template=template)
         claimed = q.claim(owner="finite-producer", capacity=host_capacity)
         assert claimed is not None and claimed["action_key"] == owner
@@ -57,8 +59,8 @@ def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1, env=None):
             claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
                 "PRISMABUILD_ACTION_NONCE": control["nonce"],
                 "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-        po.declare_instance(q.root, inst)
-        assert po.admit_instance(q, inst, template)["ok"]
+        bl.declare_instance(q.root, inst)
+        assert bl.BatchLedger.admit(q, inst, template)["ok"]
     fx._announce_tier(q, tmp_path / "stage")
     spool = ps.ProducedSpool(q, inst, template, cas_root=cas_root,
                              root=tmp_path / "local", max_bytes=maximum)
@@ -67,7 +69,7 @@ def world(tmp_path, *, maximum=256, host_capacity=None, parent_mem=1, env=None):
 
 def prepare(spool, batch="b1", payload=b"hello", ceiling=64):
     destination = Path(spool.template["output_prefix"]) / f"{batch}.bin"
-    pre = po.require_prewrite(spool.queue, spool.instance, spool.template,
+    pre = bl.BatchLedger.reserve(spool.queue, spool.instance, spool.template,
         batch_id=batch, tier=fx.TIER,
         class_bytes={"payload": ceiling, "checkpoint": 0, "temp": 0},
         paths=[str(destination), str(destination) + ".tmp"])
@@ -126,10 +128,10 @@ def test_local_group_exports_as_real_pb_action_then_stages_and_leases(tmp_path):
     assert destination.read_bytes() == b"hello"
     assert spool.release_group("b1")["ok"] and not source.exists()
     assert spool.release_group("b1")["duplicate"]
-    descriptor = po.validate_descriptor({
-        "schema": po.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
+    descriptor = oc.validate_descriptor({
+        "schema": oc.DESCRIPTOR_SCHEMA_V2, "slot": "s0", "artifact_class": "payload",
         "path": str(destination), "bytes": 5, "sha256": entries[0]["sha256"],
-        "producer_generation": po.mint_generation(),
+        "producer_generation": oc.mint_output_generation(),
         "owner_action_key": spool.owner, "owner_attempt": spool.instance["owner_attempt"]},
         spool.template, spool.instance)
     batch = po.publish_prepaid_batch(spool.queue, spool.instance, spool.template,
@@ -150,7 +152,7 @@ def test_local_group_exports_as_real_pb_action_then_stages_and_leases(tmp_path):
         acquire_token=secrets.token_hex(16),
         covers=[{"mover_action_key": mover, "manifest_sha256": batch["manifest_digest"]}],
         expected=None, owner_action_key=fx._hexkey("downstream"),
-        residency_root=str(po.output_fragment_root(spool.queue.root / pool.RESIDENCY)))
+        residency_root=str(bl.output_fragment_root(spool.queue.root / pool.record_store.RESIDENCY)))
     assert lease["ok"], lease
     staged = tmp_path / "stage" / "produced-output" / batch["batch_namespace"] / "b1.bin"
     assert staged.read_bytes() == b"hello"
@@ -213,7 +215,7 @@ def test_spool_bound_and_release_reuses_capacity(tmp_path):
     spool = world(tmp_path, maximum=64)
     source, destination, entries = prepare(spool)
     other = Path(spool.template["output_prefix"]) / "b2.bin"
-    assert po.require_prewrite(spool.queue, spool.instance, spool.template,
+    assert bl.BatchLedger.reserve(spool.queue, spool.instance, spool.template,
         batch_id="b2", tier=fx.TIER, class_bytes={"payload":64,"checkpoint":0,"temp":0},
         paths=[str(other),str(other)+".tmp"])["ok"]
     with pytest.raises(ps.SpoolCapacityDeferred):
@@ -297,7 +299,7 @@ def test_corrupt_reservation_retains_capacity(tmp_path):
 def test_export_requires_writer_digest_and_no_leftover_files(tmp_path):
     spool = world(tmp_path)
     source, _, entries = prepare(spool)
-    with pytest.raises(po.ProducedOutputError):
+    with pytest.raises(oc.ProducedOutputError):
         spool.submit_group("b1", [{**entries[0], "sha256": None}])
     leftover = source.with_name("unaccounted.tmp")
     leftover.write_bytes(b"x")
@@ -325,12 +327,12 @@ def test_export_admission_respects_live_producer_aggregate_memory(tmp_path, pare
     claimed = spool.queue.claim(owner="finite-export", tags=[spool.host], capacity=capacity)
     if not can_claim:
         assert claimed is None
-        assert spool.queue.item_path(pool.READY, handle["export_key"]).exists()
+        assert spool.queue.records.item_path(pool.record_store.READY, handle["export_key"]).exists()
         assert not destination.exists() and source.exists()
         return
     assert claimed is not None and claimed["action_key"] == handle["export_key"]
     assert spool.queue.ledger().holder_tokens(handle["export_key"])["mem_gb"] == 1
-    assert spool.queue.item_path(pool.CLAIMED, spool.owner).exists()
+    assert spool.queue.records.item_path(pool.record_store.CLAIMED, spool.owner).exists()
     outcome = spool.queue.execute(claimed, timeout_s=120)
     assert outcome.get("returncode") == 0, outcome
     assert spool.poll_group("b1")["complete"]
@@ -339,7 +341,7 @@ def test_export_admission_respects_live_producer_aggregate_memory(tmp_path, pare
 def test_temp_credit_cannot_fund_canonical_payload(tmp_path):
     spool = world(tmp_path)
     destination = Path(spool.template["output_prefix"]) / "b1.bin"
-    assert po.require_prewrite(spool.queue, spool.instance, spool.template,
+    assert bl.BatchLedger.reserve(spool.queue, spool.instance, spool.template,
         batch_id="b1", tier=fx.TIER, class_bytes={"payload":1,"checkpoint":0,"temp":63},
         paths=[str(destination),str(destination)+".tmp"])["ok"]
     directory = spool.reserve_group("b1", 64)

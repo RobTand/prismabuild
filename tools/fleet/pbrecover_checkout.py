@@ -11,7 +11,10 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / 'src'))
 from prismabuild import core as pb, pool, checkout_recovery as recovery  # noqa: E402
@@ -25,9 +28,14 @@ class _JSONParser(argparse.ArgumentParser):
 
 
 def _pbrecover_checkout_read(path: Path):
-    return pb._decode_strict_json(pb._read_regular_file_nofollow(
-        path.absolute(), where='checkout recovery CLI JSON',
-        max_bytes=recovery.MAX_JSON_BYTES), where='checkout recovery CLI JSON')
+    return pb.digest_primitives.decode_strict_json(
+        pb.immutable_files.read_stable_file(
+            path.absolute(),
+            where='checkout recovery CLI JSON',
+            max_bytes=recovery.MAX_JSON_BYTES,
+        ),
+        where='checkout recovery CLI JSON',
+    )
 
 
 def main() -> int:

@@ -19,6 +19,8 @@ Same real primitives and the same disclosed fixture concessions as
 ``tests/test_produced_output_restage.py``, whose world this reuses.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import json
 import os
@@ -34,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prismabuild.pool as pool  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
+from prismabuild.record_store import Absent, Present, RecordStore  # noqa: E402
 from prismabuild import residency_map as map_mod  # noqa: E402
 import test_produced_output_restage as restage  # noqa: E402
 
@@ -99,7 +102,7 @@ def _world_with_the_stage_elsewhere(tmp_path: Path, **kwargs):
     record = json.loads(path.read_text())
     assert record["host"] == socket.gethostname()
     record["host"] = ELSEWHERE
-    pool._write_json_atomic(path, record)
+    pool.immutable_files.write_json_atomic(path, record)
     assert restage._tier_host(world.q) == ELSEWHERE
     return world
 
@@ -118,7 +121,9 @@ def _run_on_the_tier_host(world, action_key: str, worker: str, *,
     claimed = world.q.claim(owner=worker, tags=[host])
     assert claimed is not None, "the row must be claimable on the tier host"
     assert claimed["action_key"] == action_key, claimed["action_key"]
-    row = pool._read_json(world.q.item_path(pool.CLAIMED, action_key))
+    row = pool.record_store.value_or_raise(
+        world.q.records.item(pool.record_store.CLAIMED, action_key),
+    )
     assert isinstance(row, dict)
     return world.q.execute(row, timeout_s=240)
 
@@ -156,18 +161,18 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
     world.run_mover(mover0, "w-fwd")
     staged = world.stage_path("p1.bin")
     assert staged.read_bytes() == payload
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 1
 
     with _OwnersView(world.stage_root):
         deferred = world.retire("b1")
         egress0 = _assert_own_egress_deferral(deferred)
         assert deferred["receipt"]["egress_state"] == "published"
         assert egress0 != mover0
-        assert po.OWN_EGRESS_IN_FLIGHT == OWN_EGRESS
+        assert oc.OWN_EGRESS_IN_FLIGHT == OWN_EGRESS
 
         # Nothing was deleted from here, and nothing was filed as retired.
         assert staged.read_bytes() == payload
-        assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 1
+        assert world.ledger.holdings(mover0).get(KIND, 0) == 1
         entry = world.entry("b1")
         assert not entry.get("retired")
         # The staged paths are on file BEFORE the egress can drop the fragment.
@@ -176,7 +181,9 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
         # The row `pbrun` publishes for a consumer's egress: on the tier host,
         # one CPU and one GiB, no tier demand, no residency, no batch
         # reference, and marked so a republished key runs again.
-        row = pool._read_json(world.q.item_path(pool.READY, egress0))
+        row = pool.record_store.value_or_raise(
+            world.q.records.item(pool.record_store.READY, egress0),
+        )
         assert isinstance(row, dict)
         assert row["tags"] == [ELSEWHERE]
         assert row["resources"]["cpu"] == 1 and row["resources"]["mem_gb"] == 1
@@ -188,14 +195,14 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
         # A re-drive while the action is queued publishes nothing more.
         again = world.retire("b1")
         assert _assert_own_egress_deferral(again) == egress0
-        assert again["receipt"]["egress_state"] == pool.READY
+        assert again["receipt"]["egress_state"] == pool.record_store.READY
 
     # The tier host's view: writable. The egress is the fleet's own tool.
     outcome = _run_on_the_tier_host(world, egress0, "w-tier-egress-0")
     assert outcome.get("returncode") == 0, outcome
     world.q.finish(egress0, status="executed")
     assert not staged.exists()
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
     assert map_mod.read_fragments(world.out_base, ns) == []
 
     with _OwnersView(world.stage_root):
@@ -242,7 +249,7 @@ def test_a_batch_retires_through_an_egress_action_on_the_tier_host(
         materialization = world.entry("b1")["materializations"][0]
         assert materialization["retired"] is True
         assert materialization["staged_paths"] == [str(staged)]
-    assert world.ledger.holder_tokens(mover1).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover1).get(KIND, 0) == 0
 
 
 def test_a_copy_still_in_flight_is_never_raced_by_its_egress(
@@ -252,7 +259,8 @@ def test_a_copy_still_in_flight_is_never_raced_by_its_egress(
     world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
     _descs, first = _staged_batch(world, "b1", "p1", b"Q" * 900)
     mover0 = str(first["mover_key"])
-    assert po._mover_live_state(world.q, mover0) == pool.READY
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(mover0), Present)
+            and mover_row.value.state == pool.record_store.READY)
 
     with _NoFleetTools():
         outcome = world.retire("b1")
@@ -261,7 +269,7 @@ def test_a_copy_still_in_flight_is_never_raced_by_its_egress(
     assert outcome["receipt"]["deferred_own"] == ["own-copy-in-flight"]
     assert "egress_action_key" not in outcome
     ready = sorted(path.stem for path in
-                   (Path(world.q.root) / pool.READY).glob("*.json"))
+                   (Path(world.q.root) / pool.record_store.READY).glob("*.json"))
     assert ready == [mover0], ready
 
 
@@ -290,14 +298,16 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     with _NoFleetTools():
         egress = _assert_own_egress_deferral(world.retire("b1"))
     attempts = 0
-    while po._mover_live_state(world.q, egress) == pool.READY:
+    while (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.record_store.READY):
         attempts += 1
         outcome = _run_on_the_tier_host(world, egress, f"w-tier-{attempts}")
         assert outcome.get("returncode") == 1, outcome
         world.q.finish(egress, status="failed")
         assert attempts <= 3, "the row's own retry budget is three"
     assert attempts == 3
-    assert po._mover_live_state(world.q, egress) == pool.FAILED
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.record_store.FAILED)
     assert staged.read_bytes() == payload
 
     with _NoFleetTools():
@@ -309,7 +319,8 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
     assert blocked["receipt"]["deferred_own"] == []
     assert blocked["receipt"]["action_key"] == mover0
     # ...and the same key is queued again, as a fresh attempt.
-    assert po._mover_live_state(world.q, egress) == pool.READY
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.record_store.READY)
     assert not world.entry("b1").get("retired")
 
     assert rlc.release(world.q, read["pin_id"], read["ref_id"],
@@ -323,7 +334,7 @@ def test_an_egress_a_live_reader_blocks_answers_with_its_own_receipt(
         retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
 
 
 def test_the_tier_host_itself_still_retires_in_one_call(tmp_path: Path) -> None:
@@ -338,22 +349,19 @@ def test_the_tier_host_itself_still_retires_in_one_call(tmp_path: Path) -> None:
     assert retired.get("ok") is True, retired
     assert "egress_action_key" not in retired["receipt"]
     assert not world.stage_path("p1.bin").exists()
-    assert list((Path(world.q.root) / pool.READY).glob("*.json")) == []
+    assert list((Path(world.q.root) / pool.record_store.READY).glob("*.json")) == []
 
 
 def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
         tmp_path: Path) -> None:
-    """The in-process egress needs the tool; an owner without it never raises.
+    """The remote tier announcement selects an action without fleet imports.
 
-    `stage_release` is a fleet tool, and the package a production owner imports
-    does not carry it. On the tier host itself such an owner takes the same
-    tier-host route a GPU host takes -- placed on this box, because this box is
-    the one the tier record names -- instead of failing its first retirement on
-    an import.
+    The original native ID and assertions remain. Its former import-failure
+    setup now uses the explicit remote-host ownership boundary.
     """
 
-    here = socket.gethostname()
-    world = restage._World(tmp_path, window_gib=1, gib=4)
+    here = ELSEWHERE
+    world = _world_with_the_stage_elsewhere(tmp_path, window_gib=1, gib=4)
     assert restage._tier_host(world.q) == here
     payload = b"T" * 700
     _descs, first = _staged_batch(world, "b1", "p1", payload)
@@ -364,7 +372,7 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
     with _NoFleetTools():
         egress = _assert_own_egress_deferral(world.retire("b1"))
     assert staged.read_bytes() == payload
-    row = pool._read_json(world.q.item_path(pool.READY, egress))
+    row = pool.record_store.value_or_raise(world.q.records.item(pool.record_store.READY, egress))
     assert isinstance(row, dict) and row["tags"] == [here], row
     outcome = _run_on_the_tier_host(world, egress, "w-tier-here", host=here)
     assert outcome.get("returncode") == 0, outcome
@@ -374,7 +382,7 @@ def test_an_owner_without_the_fleet_tool_retires_through_the_action_anywhere(
         retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
-    assert world.ledger.holder_tokens(mover0).get(KIND, 0) == 0
+    assert world.ledger.holdings(mover0).get(KIND, 0) == 0
 
 
 def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(
@@ -408,7 +416,7 @@ def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(
         assert str(refused.get("refusal")).startswith("unknown-retain: "), refused
         assert "-root-mismatch" in str(refused["refusal"]), refused
         assert "receipt" not in refused, refused
-    assert list((Path(world.q.root) / pool.READY).glob("*.json")) == []
+    assert list((Path(world.q.root) / pool.record_store.READY).glob("*.json")) == []
     assert staged.read_bytes() == payload
 
     # A trailing separator is the same root, and the sealed command names the
@@ -421,7 +429,7 @@ def test_the_egress_is_sealed_with_the_tiers_roots_never_the_callers(
     command = [str(part) for part in request["params"]["command"]]
     assert command[command.index("--stage-root") + 1] == str(world.stage_root)
     assert command[command.index("--residency-root") + 1] == str(
-        po.output_fragment_root(Path(world.q.root) / pool.RESIDENCY))
+        bl.output_fragment_root(Path(world.q.root) / pool.record_store.RESIDENCY))
 
 
 def test_a_finished_egress_is_read_by_its_receipt_whatever_the_rows_state(
@@ -442,14 +450,14 @@ def test_a_finished_egress_is_read_by_its_receipt_whatever_the_rows_state(
     outcome = _run_on_the_tier_host(world, egress, "w-tier-egress")
     assert outcome.get("returncode") == 0, outcome
     # The window itself: the claim is gone and no terminal has landed.
-    os.unlink(world.q.item_path(pool.CLAIMED, egress))
-    assert po._mover_live_state(world.q, egress) == "absent"
+    os.unlink(world.q.records.item_path(pool.record_store.CLAIMED, egress))
+    assert isinstance(RecordStore(world.q.root).mover(egress), Absent)
 
     with _OwnersView(world.stage_root):
         retired = world.retire("b1")
     assert retired.get("ok") is True, retired
     assert retired["receipt"]["egress_action_key"] == egress
-    assert po._mover_live_state(world.q, egress) == "absent", (
+    assert isinstance(RecordStore(world.q.root).mover(egress), Absent), (
         "nothing was published for an egress that had already completed")
 
 
@@ -465,7 +473,8 @@ def test_a_withdrawn_egress_is_never_republished_by_a_re_drive(
     with _OwnersView(world.stage_root):
         egress = _assert_own_egress_deferral(world.retire("b1"))
     withdrawn = world.q.withdraw(egress, reason="operator stop", by="test")
-    assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN, withdrawn
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.record_store.WITHDRAWN), withdrawn
 
     with _OwnersView(world.stage_root):
         stopped = world.retire("b1")
@@ -473,6 +482,7 @@ def test_a_withdrawn_egress_is_never_republished_by_a_re_drive(
     assert str(stopped.get("refusal")).startswith("egress-withdrawn: "), stopped
     assert "receipt" not in stopped, "no deferral for a poller to wait on"
     assert stopped["egress_action_key"] == egress
-    assert po._mover_live_state(world.q, egress) == pool.WITHDRAWN
+    assert (isinstance(mover_row := RecordStore(world.q.root).mover(egress), Present)
+            and mover_row.value.state == pool.record_store.WITHDRAWN)
     assert world.stage_path("p1.bin").read_bytes() == payload
     assert not world.entry("b1").get("retired")

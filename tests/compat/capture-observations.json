@@ -1,0 +1,93 @@
+{
+  "capture_name": "publication-and-observations-capture-03",
+  "capture_report_sha256": "2a6fecb9c4a8a279b0406e8e0ccb6011185c9f83894fccdd74399f3f087d858a",
+  "excluded_cases": [
+    "dc-data-plans/initial",
+    "dc-data-plans/replay"
+  ],
+  "files": {
+    "absent-participants-observations.jsonl": "5f0d05412f139d7df442f1ce2f2524eba80b05b23d122818e75a1bdc85c06fac",
+    "goldens-observations.jsonl": "cfc22b92ab600dfaf8220c3b47d22535b0c5591f04fbc4a1ac10c5d0cd82f302",
+    "historical-observations.jsonl": "33ec1b0a960b94012566d13c1184d0102940452309c499810209b390c8c591ce"
+  },
+  "finished_at": "2026-10-16T22:18:22.167083+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [
+    {
+      "attestation_error": null,
+      "case": "dc-data-plans/initial",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "module 'prismabuild.decomposition' has no attribute 'record_dir'",
+        "type": "AttributeError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "dc-data-plans/initial",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "module 'prismabuild.decomposition' has no attribute 'record_dir'",
+        "type": "AttributeError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "dc-data-plans/replay",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "module 'prismabuild.decomposition' has no attribute 'record_dir'",
+        "type": "AttributeError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "dc-data-plans/replay",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "module 'prismabuild.decomposition' has no attribute 'record_dir'",
+        "type": "AttributeError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "writer",
+      "returncode": 3
+    }
+  ],
+  "selected_cases": [
+    "idle-baseline/excursion",
+    "idle-baseline/within",
+    "mover-landing/landed",
+    "mover-landing/partial",
+    "mover-landing/repeated",
+    "publication-ending/initial",
+    "publication-ending/replay",
+    "shape-table/hashed",
+    "shape-table/unhashed",
+    "spool-pacing/empty",
+    "spool-pacing/written",
+    "spool-refusal/initial",
+    "spool-refusal/replay",
+    "spool-tick/empty",
+    "spool-tick/failed"
+  ],
+  "source_git": {
+    "parents": [
+      "8a3517bcb406936876a0736fed9995f9e6ef8924"
+    ],
+    "snapshot": "9c59c7814b08809cddb942280b4ee7873656bd1e",
+    "tree": "dfee9e525cc71c776263723ea70a209294118f96"
+  },
+  "started_at": "2026-10-16T22:15:04.805505+00:00"
+}

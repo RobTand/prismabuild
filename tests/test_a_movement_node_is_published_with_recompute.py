@@ -15,6 +15,7 @@ a requeue, and the launch appends ``--recompute``.  Everything else launches
 exactly as SLURM would.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
 
 from pathlib import Path
 import sys
@@ -25,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool, residency_plan  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -51,16 +52,21 @@ def test_a_movement_node_launches_with_recompute() -> None:
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": 5})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': 5})
     return q
 
 
 def _publish(queue: pool.PoolQueue, key: str, **extra) -> dict[str, object]:
-    queue.publish(action_key=key, cas_root=queue.root / "cas",
-                  checkout_root=queue.root / "co", worker_script=queue.root / "worker.py",
-                  resources={"cpu": 1, "mem_gb": 1}, **extra)
-    return pool._read_json(queue.item_path(pool.READY, key))
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1, 'mem_gb': 1},
+        **extra,
+    )
+    return pool.record_store.value_or_raise(queue.records.item(pool.record_store.READY, key))
 
 
 def test_publish_stamps_recompute_only_when_asked(queue) -> None:
@@ -76,7 +82,9 @@ def test_recompute_survives_a_requeue(queue) -> None:
     record = dict(_publish(queue, "e" * 64, recompute=True))
     record.update({"claimed_by": "x", "claimed_unix": 1.0, "status": "failed"})
     queue._shape_as_ready_item(record, action_key="e" * 64)
-    assert pool._read_json(queue.item_path(pool.READY, "e" * 64))["recompute"] is True
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, "e" * 64),
+    )["recompute"] is True
 
 
 def _hexkey(seed: str) -> str:
@@ -128,7 +136,9 @@ def test_the_window_publishes_its_movers_as_movement_nodes(queue, tmp_path) -> N
     published = [e["action_key"] for e in events if e["event"] == "mover-published"]
     assert published == [_hexkey("mover0"), _hexkey("mover1")]
     for key in published:
-        assert pool._read_json(queue.item_path(pool.READY, key))["recompute"] is True
+        assert pool.record_store.value_or_raise(
+            queue.records.item(pool.record_store.READY, key),
+        )["recompute"] is True
 
 
 def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
@@ -136,17 +146,19 @@ def test_an_egress_is_a_movement_node_too(queue, tmp_path, monkeypatch) -> None:
     plan = _plan(queue)
     _claim_consumer(queue, plan)
     phases = plan["phases"]
-    monkeypatch.setattr(tier_loop.residency_plan, "window", lambda *a, **k: {
+    monkeypatch.setattr(tier_loop.residency_plan.ConsumerWindow, "decision", property(lambda self: {
         "publish": [], "evict": [{"phase": "phase-0", "egress_row": phases[0]["egress_row"],
                                   "mover_action_key": _hexkey("mover0")}],
         # The window's own answer since #632; a stub that omitted it would be
         # asserting a contract the caller no longer has.
-        "stall": None})
+        "stall": None}))
 
     events = tier_loop.residency_window(
         queue, tiers={TIER: {"tier_id": TIER, "tier": "stage",
                              "mountpoint": str(tmp_path / "stage")}})
 
     assert [e["event"] for e in events if "egress" in e["event"]] == ["egress-published"]
-    item = pool._read_json(queue.item_path(pool.READY, _hexkey("egress0")))
+    item = pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, _hexkey("egress0")),
+    )
     assert item["recompute"] is True

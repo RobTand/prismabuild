@@ -70,6 +70,8 @@ import sys
 import time
 from pathlib import Path
 
+
+
 HERE = Path(__file__).resolve()
 FLEET_DIR = HERE.parent
 
@@ -270,11 +272,12 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     if not image or generation is None:
         return False
     sys.path.insert(0, str(paths["published_src"]))
-    from prismabuild import pool as _pool, core as _core
+    from prismabuild import contracts as _contracts
+    from prismabuild import pool as _pool
     from prismabuild import publication_canary as _canary
     queue = _pool.PoolQueue(paths["queue_root"])
     base = {
-        "tags": [host, _canary.CAPABILITY, _core.CONTAINER_IMAGE_TAG],
+        "tags": [host, _canary.CAPABILITY, _contracts.CONTAINER_IMAGE_TAG],
         "container_images": [image],
         "needs_gpu": True,
         "resources": {"gpu": 1},
@@ -285,8 +288,9 @@ def generation_pending(paths: dict, spec: dict, generation: str | None,
     # window, so a box busy past it still blocks on its retained
     # old-generation offer.  Read the same offers, or "not pending" lets the
     # leg submit into that refusal (#1278).
-    import pbrun
-    recorded = pbrun.RECORDED_OFFER_MAX_AGE_S
+    from prismabuild import submission
+    from prismabuild import submission
+    recorded = submission.RECORDED_OFFER_MAX_AGE_S
     if queue.placeable(full, max_age_s=recorded) is True:
         return False
     return queue.placeable(base, max_age_s=recorded) is True
@@ -613,16 +617,18 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
     """
     if type(generation) not in (int, float) or not math.isfinite(generation):
         return None
-    import pbrun
+    from prismabuild import submission
+    from prismabuild import action_client, action_wait, endings
     from pbcanary_legs import leg3
     try:
-        q = pbrun.pool.PoolQueue(Path(paths["queue_root"]))
-        landed, observed_generation = pbrun.bounded_outcome_observation(
-            q, action_key, generation, budget_s=pbrun.OUTCOME_READ_TIMEOUT_S)
-        if landed is None or observed_generation != generation:
+        q = submission.pool.PoolQueue(Path(paths["queue_root"]))
+        landed, observed_generation = action_client.bounded_outcome_observation(
+            q, action_key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
+        if (landed is None or isinstance(landed, endings.PublicationSupersession)
+                or observed_generation != generation):
             return None
-        rendered = pbrun.bounded_outcome_render(
-            q, landed[0], landed[1], budget_s=pbrun.OUTCOME_READ_TIMEOUT_S)
+        rendered = action_client.bounded_outcome_render(
+            q, landed[0], landed[1], budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
         summary = rendered["summary"]
         if summary["status"] != "failed" or summary["action_key"] != action_key:
             return None
@@ -632,8 +638,8 @@ def staging_wait_evidence(paths: dict, action_key: str, generation) -> bool | No
         _, envelope, _ = leg3._extract_envelope({"stdout": stdout})
         return bool(envelope and envelope.get("ok") is False
                     and envelope.get("not_verified") == "staging_wait")
-    except (OSError, ValueError, KeyError, pbrun.OutcomeReadUnavailable,
-            pbrun.UnreadableTerminal):
+    except (OSError, ValueError, KeyError, action_wait.OutcomeReadUnavailable,
+            action_wait.UnreadableTerminal):
         return None
 
 

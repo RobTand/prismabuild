@@ -23,7 +23,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, storage_tiers  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 
 POOL = "prismabuild-stage"
 TIER = f"{POOL}:dl380g10"
@@ -94,7 +94,7 @@ def _cycle(tmp_path: Path, primarycache: str | None, capsys):
     """One tier cycle over a driver that states the setting under test."""
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
 
     def discover(**_kwargs):
         record = {

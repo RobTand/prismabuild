@@ -5,7 +5,7 @@ requeue has already touched carries ``attempt_history``, and every reader of a
 terminal record adopts the immutable attempt whenever that key is present.
 The adopted attempt's disposition is ``requeued``, the directory is
 ``withdrawn``, and ``outcome_summary`` refuses the disagreement, so
-``pbrun.await_outcome`` and ``pbwait`` raised ``PoolContractError`` instead of
+``pbrun.action_client.report_pool_outcome`` and ``pbwait`` raised ``PoolContractError`` instead of
 reporting that somebody had cancelled the work.
 
 A withdrawal is an operator verb, not an attempt. The links are kept under a
@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import pool  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 import pbwait  # noqa: E402
 
@@ -40,7 +42,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
     value = AdmittedQueueFixture(
         pool.PoolQueue(tmp_path / "queue"), capacity={"cpu": 8, "mem_gb": 16},
         default_demand={"cpu": 1, "mem_gb": 1})
-    value.ensure_layout()
+    value.records.ensure_layout()
     value.publish(
         action_key=KEY,
         cas_root=str(tmp_path / "cas"),
@@ -62,7 +64,7 @@ def withdrawn(queue: pool.PoolQueue) -> pool.PoolQueue:
         status="failed",
         detail={"returncode": 1, "stdout": "", "stderr": "boom\n"},
     )
-    assert requeued == queue.item_path(pool.READY, KEY)
+    assert requeued == queue.records.item_path(pool.record_store.READY, KEY)
     ready = json.loads(requeued.read_text(encoding="utf-8"))
     assert "attempt_history" in ready, "the requeue is what puts the links here"
     assert queue.claim() is not None
@@ -80,17 +82,17 @@ def test_a_withdrawal_after_a_retry_is_readable(
     branch: ``pbrun`` exits 143 and ``pbwait`` renders a row.
     """
 
-    path = withdrawn.item_path(pool.WITHDRAWN, KEY)
+    path = withdrawn.records.item_path(pool.record_store.WITHDRAWN, KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
 
-    summary = pbrun.outcome_summary(withdrawn, path, record)
+    summary = submit_core.action_client.outcome_summary(withdrawn, path, record)
     assert summary["status"] == "withdrawn"
     assert summary["withdrawn_by"] == "rob"
     assert summary["adopted"] is None
 
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001, raising=False)
-    assert pbrun.await_outcome(withdrawn, KEY, wait_s=1.0) == pbrun.WITHDRAWN_EXIT
-    assert pbwait._from_record(withdrawn, path, record)["status"] == "withdrawn"
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001, raising=False)
+    assert submit_core.action_client.report_pool_outcome(withdrawn, KEY, wait_s=1.0) == submit_core.action_client.WITHDRAWN_EXIT
+    assert pbwait._from_ending(withdrawn, (path, record))["status"] == "withdrawn"
 
 
 def test_the_withdrawn_record_keeps_the_attempts_it_inherited(
@@ -103,7 +105,7 @@ def test_the_withdrawn_record_keeps_the_attempts_it_inherited(
     branch: the queue's own two readers of a withdrawal are unaffected.
     """
 
-    path = withdrawn.item_path(pool.WITHDRAWN, KEY)
+    path = withdrawn.records.item_path(pool.record_store.WITHDRAWN, KEY)
     record = json.loads(path.read_text(encoding="utf-8"))
 
     assert "attempt_history" not in record
@@ -117,7 +119,7 @@ def test_the_withdrawn_record_keeps_the_attempts_it_inherited(
     assert outcomes[0]["stderr"] == "boom\n"
 
     assert withdrawn.withdrawal_covers(record, action_key=KEY) is not None
-    endings = pbstatus.read_endings(withdrawn.root, limit=10)
+    endings = fleet_census.endings(withdrawn.root, limit=10)
     assert [row["status"] for row in endings if row["action_key"] == KEY] == [
         "withdrawn"
     ]

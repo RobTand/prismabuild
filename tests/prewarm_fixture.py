@@ -15,11 +15,12 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import prismabuild.core as pb  # noqa: E402
-from prismabuild import pool  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
+from prismabuild import contracts, pool  # noqa: E402
 from prismabuild import progress as progress_v1  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
 
@@ -31,7 +32,7 @@ def data_manifest(paths_and_sizes, *, prefix: str,
         for path, size in paths_and_sizes
     ]
     return {
-        "schema": pb.DATA_MANIFEST_SCHEMA_V1,
+        "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
         "produced_by": {"tool": "tests"},
         "annotations": dict(annotations or {}),
         "mount_prefix": prefix,
@@ -67,7 +68,7 @@ class Fleet:
         self.queue = AdmittedQueueFixture(
             pool.PoolQueue(root / "pb-queue"), capacity={"cpu": 8, "mem_gb": 16},
             default_demand={"cpu": 1})
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.cas_root = root / "cas"
         self.cas = pb.PrismaBuildCAS(self.cas_root)
         self.warmed: list[str] = []
@@ -121,9 +122,9 @@ class Fleet:
             manifest = data_manifest(files, prefix=str(self.mount),
                                      annotations=annotations)
             if read_plan is not None:
-                manifest["schema"] = pb.DATA_MANIFEST_SCHEMA_V2
+                manifest["schema"] = manifest_codec.DATA_MANIFEST_SCHEMA_V2
                 manifest["read_plan"] = read_plan
-            manifest = pb.validate_data_manifest(manifest)
+            manifest = manifest_codec.validate_data_manifest(manifest)
             blob = self.root / f"{key_seed}.manifest.json"
             blob.write_text(json.dumps(manifest))
             if content_encoding == "gzip":
@@ -134,7 +135,7 @@ class Fleet:
             else:
                 assert content_encoding == "identity"
             entry, _ = self.cas.ingest_input(
-                blob, input_id=pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
+                blob, input_id=manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID)
             inputs.append(entry)
             params["data_manifest"] = {
                 "input": entry, "mount_prefix": manifest["mount_prefix"],
@@ -145,7 +146,7 @@ class Fleet:
                 params["data_manifest"]["content_encoding"] = "gzip"
             if read_plan is not None:
                 params["data_manifest"].update({
-                    "schema": pb.DATA_MANIFEST_SCHEMA_V2,
+                    "schema": manifest_codec.DATA_MANIFEST_SCHEMA_V2,
                     "read_bytes": manifest["read_plan"]["read_bytes"],
                 })
         action = pb.seal_action({
@@ -178,20 +179,22 @@ class Fleet:
         """Claim the selected action through real simulated host admission."""
         from unittest import mock
 
-        source = self.queue.item_path(pool.READY, action_key)
+        source = self.queue.records.item_path(pool.record_store.READY, action_key)
         candidate = json.loads(source.read_text())
         simulated_host = host if host is not None else pool.socket.gethostname()
         with mock.patch.object(pool.socket, "gethostname", lambda: simulated_host):
-            item = self.queue.claim(owner="prewarm-fixture", ready=[candidate])
+            item = self.queue.claim(
+                owner="prewarm-fixture", ready=[candidate],
+                tags=[contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG])
         assert item is not None and item["action_key"] == action_key
-        target = self.queue.item_path(pool.CLAIMED, action_key)
+        target = self.queue.records.item_path(pool.record_store.CLAIMED, action_key)
         if age_s:
             item["claimed_unix"] = float(item["claimed_unix"]) - age_s
-            pool._write_json_atomic(target, item)
-            lease_path = self.queue.lease_path(action_key)
+            pool.immutable_files.write_json_atomic(target, item)
+            lease_path = self.queue.records.lease_path(action_key)
             lease = json.loads(lease_path.read_text())
             lease["claimed_unix"] = item["claimed_unix"]
-            pool._write_json_atomic(lease_path, lease)
+            pool.immutable_files.write_json_atomic(lease_path, lease)
         return target
 
     def report_progress(self, action_key: str, phase: str, *,
@@ -210,7 +213,7 @@ class Fleet:
         self.queue.write_lease(
             action_key, owner="prewarm-fixture", claim_snapshot=claimed,
             progress_observation=observation)
-        return self.queue.lease_path(action_key)
+        return self.queue.records.lease_path(action_key)
 
     def offer(self, host: str, *, addresses: list[str] | None = None,
               announced_unix: float | None = None) -> Path:
@@ -222,7 +225,7 @@ class Fleet:
         that announced no ``addresses`` leaves behind.
         """
 
-        directory = self.queue.root / pool.WORKERS
+        directory = self.queue.root / pool.record_store.WORKERS
         directory.mkdir(parents=True, exist_ok=True)
         record: dict = {
             "schema": pool.POOL_OFFER_SCHEMA_V1, "host": host, "tags": [host],
@@ -276,90 +279,3 @@ class Fleet:
         mounts = prewarm_loop.MountMap(list(args.mount_map))
         return prewarm_loop.cycle(
             args, self.queue, mounts, threading.Event(), pacer=pacer)
-
-
-class StagePool:
-    """A stage tier the tests can state exactly: real files, fake ``zpool``.
-
-    The loop discovers its stage by asking ``zpool`` and ``zfs``, so a test
-    about that discovery has to answer as those tools answer -- byte counts
-    from ``zpool list -Hp``, a mountpoint from ``zfs get``, leaf paths from
-    ``zpool status -P`` -- and let the real parse do the rest.  The mountpoint
-    is a real directory and the members are real device nodes under a private
-    ``by-id`` tree, so a record's member names come from resolving symlinks
-    the way they do on the box.
-    """
-
-    def __init__(self, root: Path, *, name: str = "prismabuild-stage",
-                 size: int = 1 << 40, free: int = 1 << 40,
-                 health: str = "ONLINE",
-                 by_id_name: str = "nvme-LT0800KEXVA_CVMD54710026800BGN",
-                 device: str = "nvme9n1", mounted: bool = True,
-                 has_dataset: bool = True,
-                 available: "int | None" = None,
-                 answers_available: bool = True) -> None:
-        self.name = name
-        self.size = size
-        self.free = free
-        #: What ``zfs get -Hp available`` on the dataset answers.  Its own
-        #: number, below the pool's ``free``, because ZFS has already
-        #: withheld the pool's slop from it.  ``None`` is a dataset that
-        #: cannot answer, which is the loop's fallback path.
-        self.available = free if available is None else available
-        #: A dataset that cannot answer ``zfs get available`` at all, which is
-        #: the loop's fallback-to-pool-``free`` path.
-        self.answers_available = answers_available
-        self.health = health
-        self.by_id_name = by_id_name
-        self.device = device
-        self.has_dataset = has_dataset
-        self.dataset = f"{name}/prewarm" if has_dataset else name
-        self.mount = root / "stage-mount"
-        if mounted:
-            self.mount.mkdir(parents=True, exist_ok=True)
-        self.mountpoint = str(self.mount)
-        devices = root / "devices"
-        devices.mkdir(parents=True, exist_ok=True)
-        self.device_path = devices / device
-        self.device_path.write_bytes(b"")
-        self.by_id = root / "by-id"
-        self.by_id.mkdir(parents=True, exist_ok=True)
-        link = self.by_id / by_id_name
-        if not link.exists():
-            link.symlink_to(self.device_path)
-        self.calls: list[list[str]] = []
-
-    def runner(self, argv: list[str]) -> str:
-        self.calls.append(list(argv))
-        if "list" in argv:
-            return (f"{self.name}\t{self.size}\t{self.size - self.free}\t"
-                    f"{self.free}\t{self.health}\n")
-        if "get" in argv:
-            # ``zfs get`` on a dataset that does not exist exits nonzero, the
-            # way the loop's fallback to the pool root expects it to.
-            if argv[-1] != self.dataset:
-                raise subprocess.CalledProcessError(1, argv)
-            if "available" in argv:
-                if not self.answers_available:
-                    raise subprocess.CalledProcessError(1, argv)
-                return f"{self.available}\n"
-            return self.mountpoint + "\n"
-        if "status" in argv:
-            return (f"  pool: {self.name}\nconfig:\n\n"
-                    "\tNAME                 STATE\n"
-                    f"\t{self.name}          ONLINE\n"
-                    f"\t  {self.device_path}  ONLINE\n\nerrors: No known data errors\n")
-        raise AssertionError(f"unexpected command: {argv}")
-
-    def install(self, monkeypatch) -> None:
-        """Answer the loop's own subprocess boundary, and nothing else."""
-
-        monkeypatch.setattr(prewarm_loop, "run_tool", self.runner)
-        monkeypatch.setattr(prewarm_loop, "BY_ID", str(self.by_id))
-
-    def objects(self) -> list[str]:
-        """Every staged object, as a path relative to the stage mountpoint."""
-
-        return sorted(
-            str(path.relative_to(self.mount))
-            for path in self.mount.rglob("*") if path.is_file())

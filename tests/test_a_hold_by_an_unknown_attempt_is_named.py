@@ -17,6 +17,8 @@ reported as orphaned, with a remedy.  The hold itself stays: the report is
 the change, never a delete.  A live writer's hold stays quiet.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import os
 from pathlib import Path
@@ -30,7 +32,9 @@ sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from prismabuild import pool  # noqa: E402
+from prismabuild.record_store import Absent, RecordStore  # noqa: E402
 import prismabuild.produced_output as po  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 import test_prepaid_writer_integration as fx  # noqa: E402
@@ -40,7 +44,7 @@ from test_a_dead_producers_origin_files_survive_every_sweep import (  # noqa: E4
 )
 import test_write_only_produced_output as wo  # noqa: E402
 
-HELD = po.ORIGIN_HELD_BY_UNKNOWN_EVENT
+HELD = oc.ORIGIN_HELD_BY_UNKNOWN_EVENT
 
 
 @pytest.fixture(autouse=True)
@@ -62,14 +66,14 @@ def _events(events, name):
 def _drop_row(queue: pool.PoolQueue, key: str) -> None:
     """The holder's queue row is lost: no record of its key anywhere."""
 
-    queue.item_path(pool.CLAIMED, key).unlink()
-    assert po._key_generation(queue, key) == ("absent", None)
+    queue.records.item_path(pool.record_store.CLAIMED, key).unlink()
+    assert isinstance(RecordStore(queue.root).standing(key), Absent)
 
 
 def _age(queue: pool.PoolQueue, instance: dict, seconds: float) -> None:
     """Every record of the attempt was last written ``seconds`` ago."""
 
-    scope = po.instance_dir(queue.root, instance)
+    scope = bl.scope_dir(queue.root, instance)
     stamp = os.stat(scope).st_mtime - seconds
     for directory, _dirs, files in os.walk(scope):
         for name in files:
@@ -79,7 +83,7 @@ def _age(queue: pool.PoolQueue, instance: dict, seconds: float) -> None:
 def _foreign_holder(tmp_path: Path, queue, template, path: Path) -> dict:
     """Another action, of an overlapping template, prewrote ``path``."""
 
-    overlapping = po.validate_template({
+    overlapping = oc.validate_template({
         **template, "template_id": "write-only-overlapping-v1",
         "output_prefix": str(tmp_path)})
     holder = _bind_owner(queue, overlapping, fx._hexkey("foreign"))
@@ -89,8 +93,7 @@ def _foreign_holder(tmp_path: Path, queue, template, path: Path) -> dict:
 
 
 def _entry(queue, instance) -> dict:
-    return po._read_commitments(
-        po._commitments_path(queue.root, instance))["batches"]["b1"]
+    return bl.BatchLedger.for_instance(queue.root, instance).capture()["batches"]["b1"]
 
 
 def test_a_consumed_batch_held_by_an_attempt_with_no_row_is_named(
@@ -123,7 +126,7 @@ def test_a_consumed_batch_held_by_an_attempt_with_no_row_is_named(
 
     assert po.origin_retirement_tick(queue) == [], "once per change"
 
-    listed = pbstatus.read_blocked_origins(queue.root)["held_by_unknown"]
+    listed = fleet_census.blocked_origins(queue.root).value["held_by_unknown"]
     assert [(item["ref"]["batch_id"], item["reason"],
              [holder["why"] for holder in item["holders"]])
             for item in listed] == [
@@ -136,18 +139,18 @@ def test_a_consumed_batch_held_by_an_attempt_with_no_row_is_named(
     held = _events(events, HELD)
     assert len(held) == 1, events
     assert held[0]["reason"] == "held-by-orphaned-attempt"
-    assert held[0]["remedy"] == po.ORPHANED_HOLDER_REMEDY
+    assert held[0]["remedy"] == oc.ORPHANED_HOLDER_REMEDY
     assert held[0]["holders"][0]["orphaned"] is True
     assert path.exists()
     assert po.origin_retirement_tick(queue) == [], "once per change"
-    listed = pbstatus.read_blocked_origins(queue.root)["held_by_unknown"]
+    listed = fleet_census.blocked_origins(queue.root).value["held_by_unknown"]
     assert [item["reason"] for item in listed] == ["held-by-orphaned-attempt"]
 
     # The remedy frees it: the prewrite record removed, the batch retires.
     Path(held[0]["holders"][0]["prewrite_record"]).unlink()
-    retired = _events(po.origin_retirement_tick(queue), po.ORIGIN_RETIRED_EVENT)
+    retired = _events(po.origin_retirement_tick(queue), oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1 and retired[0]["unlinked"] == [str(path)], retired
-    assert pbstatus.read_blocked_origins(queue.root)["held_by_unknown"] == []
+    assert fleet_census.blocked_origins(queue.root).value["held_by_unknown"] == []
 
 
 def test_a_queued_holder_is_named_with_why(tmp_path: Path) -> None:
@@ -156,8 +159,8 @@ def test_a_queued_holder_is_named_with_why(tmp_path: Path) -> None:
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
     holder = _foreign_holder(tmp_path, queue, template, path)
     owner = holder["owner_action_key"]
-    row = queue.item_path(pool.CLAIMED, owner)
-    os.replace(row, queue.item_path(pool.READY, owner))
+    row = queue.records.item_path(pool.record_store.CLAIMED, owner)
+    os.replace(row, queue.records.item_path(pool.record_store.READY, owner))
 
     held = _events(po.origin_retirement_tick(queue), HELD)
     assert [holder["why"] for holder in held[0]["holders"]] == ["queued"], held
@@ -168,7 +171,7 @@ def test_a_live_holder_stays_quiet_in_the_listing(tmp_path: Path) -> None:
     template, queue, instance, path = _dead_consumed_batch(tmp_path)
     _foreign_holder(tmp_path, queue, template, path)
     assert po.origin_retirement_tick(queue) == []
-    assert pbstatus.read_blocked_origins(queue.root)["held_by_unknown"] == []
+    assert fleet_census.blocked_origins(queue.root).value["held_by_unknown"] == []
 
 
 def test_an_ended_prewrite_held_by_an_attempt_with_no_row_is_named(
@@ -188,8 +191,8 @@ def test_an_ended_prewrite_held_by_an_attempt_with_no_row_is_named(
 
     events = po.origin_retirement_tick(queue)
 
-    assert not _events(events, po.ORIGIN_PREWRITE_ORPHANED_EVENT), events
-    assert not _events(events, po.ORIGIN_PREWRITE_RECLAIMED_EVENT), events
+    assert not _events(events, oc.ORIGIN_PREWRITE_ORPHANED_EVENT), events
+    assert not _events(events, oc.ORIGIN_PREWRITE_RECLAIMED_EVENT), events
     held = _events(events, HELD)
     assert len(held) == 1, (
         f"the ended prewrite's hold must name its unknown holder: {events}")
@@ -199,7 +202,7 @@ def test_an_ended_prewrite_held_by_an_attempt_with_no_row_is_named(
     assert _events(po.origin_retirement_tick(queue), HELD) == [], (
         "once per change")
 
-    listed = pbstatus.read_blocked_origins(queue.root)["held_by_unknown"]
+    listed = fleet_census.blocked_origins(queue.root).value["held_by_unknown"]
     assert [item["prewrite"] for item in listed] == [
         po._batch_report_key(dead, "b43")], listed
 
@@ -207,5 +210,5 @@ def test_an_ended_prewrite_held_by_an_attempt_with_no_row_is_named(
     _age(queue, holder, pool.LEASE_TIMEOUT_S + 60)
     held = _events(po.origin_retirement_tick(queue), HELD)
     assert len(held) == 1 and held[0]["reason"] == "held-by-orphaned-attempt"
-    assert path.exists() and (po._prewrites_dir(queue.root, dead)
+    assert path.exists() and (bl.prewrites_dir(queue.root, dead)
                               / "b43.prewrite.json").exists()

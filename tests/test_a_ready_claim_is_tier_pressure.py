@@ -30,11 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, residency_plan  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     MANIFEST, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _plan, _row,
     _stage_range, _tier_record, assert_ledger_matches_the_stage)
+from prismabuild import staged_path
 
 #: Ten GiB of stage: the successor's landed lead (2) and three orphans of the
 #: withdrawn consumer (3 x 2) leave 2 free.
@@ -47,8 +48,8 @@ ORPHANS = 3
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": CAPACITY_GIB})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': CAPACITY_GIB})
     return q
 
 
@@ -56,7 +57,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def stage(tmp_path: Path, queue: pool.PoolQueue) -> Path:
     path = tmp_path / "stage"
     path.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=path)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=path)
     return path
 
 
@@ -92,8 +93,7 @@ def _setup(queue: pool.PoolQueue, stage: Path, *,
                              "tier_id": TIER, "manifest_sha256": MANIFEST,
                              "manifest_bytes": 1 << 30,
                              "leads": residency_plan.leads_for(plan)})
-    assert queue.tier_ledger(TIER).available()["stage_gib"] == (
-        CAPACITY_GIB - PHASE_GIB * (ORPHANS + 1))
+    assert queue.tier(TIER).free_supply()['stage_gib'] == CAPACITY_GIB - PHASE_GIB * (ORPHANS + 1)
     return orphans
 
 
@@ -110,7 +110,7 @@ def _claim_tier_shortage(queue: pool.PoolQueue,
 
 
 def _held(queue: pool.PoolQueue, ordinal: int) -> bool:
-    return bool(queue.tier_ledger(TIER).holder_tokens(_orphan(ordinal)))
+    return bool(queue.tier(TIER).holdings(_orphan(ordinal)))
 
 
 def test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough(
@@ -138,8 +138,7 @@ def test_a_ready_claim_short_on_tier_tokens_evicts_oldest_orphans_just_enough(
         assert _held(queue, ordinal)
         assert all(path.exists() for path in orphans[ordinal])
     # The successor's own lead is never relief.
-    assert queue.tier_ledger(TIER).holder_tokens(
-        _hexkey("successormover0")) == {"stage_gib": PHASE_GIB}
+    assert queue.tier(TIER).holdings(_hexkey('successormover0')) == {'stage_gib': PHASE_GIB}
     assert _claim_tier_shortage(queue, 4) is None
     assert_ledger_matches_the_stage(queue)
 

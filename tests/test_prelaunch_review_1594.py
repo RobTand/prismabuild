@@ -3,6 +3,9 @@
 Each test drives tier_loop.residency_window through real transitions, in the
 style of test_prelaunch_tier_publish_1594.py.  The integrator runs them.
 """
+
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
 from pathlib import Path
 import sys
 
@@ -11,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     _hexkey, _queue, MANIFEST)
 from test_prelaunch_tier_module_1594 import _declared_plan, TIER  # noqa: E402
@@ -20,8 +23,8 @@ from test_prelaunch_tier_publish_1594 import (  # noqa: E402
 
 
 def _published(queue, movers):
-    return all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+    return all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers)
 
 
@@ -47,7 +50,7 @@ def test_a_prefix_only_plan_begins_its_group_and_publishes(tmp_path) -> None:
     assert _published(queue, movers), [
         (event.get("event"), event.get("reason")) for event in seen]
     for mover in movers:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring"
 
 
@@ -121,14 +124,14 @@ def test_a_row_published_before_its_funding_is_funded_on_a_later_cycle(
     _live(queue, plan, consumer, specs)
     unit, movers = _declared_movers(queue, consumer)
     assert unit.demand_gib == 8
-    real = pg.publish_chunk
+    real = queue.funding.bind_chunk
     calls: list[str] = []
 
     def crash(*args, **kwargs):
         calls.append("crash")
         raise OSError("crash between the row and its funding")
 
-    monkeypatch.setattr(pg, "publish_chunk", crash)
+    monkeypatch.setattr(queue.funding, "bind_chunk", crash)
     for _ in range(5):
         try:
             tier_loop.residency_window(queue, tiers=tiers)
@@ -137,13 +140,13 @@ def test_a_row_published_before_its_funding_is_funded_on_a_later_cycle(
         if calls:
             break
     assert calls, "the window never reached the funding step"
-    monkeypatch.setattr(pg, "publish_chunk", real)
-    assert any(queue.item_path(pool.READY, mover).exists() for mover in movers)
+    monkeypatch.setattr(queue.funding, "bind_chunk", real)
+    assert any(queue.records.item_path(pool.record_store.READY, mover).exists() for mover in movers)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
     assert _published(queue, movers)
     for mover in movers:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring", mover
 
 
@@ -155,7 +158,7 @@ def test_a_sole_consumer_withdrawn_before_publication_returns_its_group(
     cleanup never ran for a tier whose only consumer was withdrawn between
     its reservation and its first publication.
     """
-    import prelaunch_tier as pt
+    from prismabuild import prelaunch_tier as pt
     from test_prelaunch_tier_module_1594 import TIERS, _consumer
     queue = _queue(tmp_path, stage_gib=300)
     tiers = {TIER: _stage(queue, TIER)}
@@ -171,19 +174,19 @@ def test_a_sole_consumer_withdrawn_before_publication_returns_its_group(
         found, _authority = pt.reserve_pass(queue, TIER, units,
                                             admitted=lambda found: True)
         events.extend(found)
-        ledger = queue.tier_ledger(TIER)
-        if ledger.holder_tokens(unit.holder).get("stage_gib", 0) > 0:
+        ledger = queue.tier(TIER)
+        if ledger.holdings(unit.holder).get('stage_gib', 0) > 0:
             break
-    assert ledger.holder_tokens(unit.holder).get("stage_gib", 0) > 0, events
+    assert ledger.holdings(unit.holder).get('stage_gib', 0) > 0, events
     queue.withdraw(consumer, reason="test: withdrawn before publication",
                    by="test")
     seen: list[dict] = []
     for _ in range(3):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(unit.holder).get("stage_gib", 0) == 0, [
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(unit.holder).get('stage_gib', 0) == 0, [
         (event.get("event"), event.get("reason")) for event in seen]
-    assert ledger.available().get("stage_gib") == 300
+    assert ledger.free_supply().get('stage_gib') == 300
 
 
 def test_prefix_cuts_follow_phase_names_when_a_declared_phase_is_empty() -> None:
@@ -193,9 +196,11 @@ def test_prefix_cuts_follow_phase_names_when_a_declared_phase_is_empty() -> None
     prefix and made the capacity check refuse or pass the wrong peak.
     """
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     ranges = [{"name": "kept"}, {"name": "streamed"}]
     cuts = [[(0, 4)], [(4, 8)]]
-    prefix, suffix = pbrun.split_prelaunch_cuts(
+    prefix, suffix = residency_plan.split_prelaunch_cuts(
         ranges, cuts, {"empty-declared", "kept"})
     assert prefix == [[(0, 4)]]
     assert suffix == [[(4, 8)]]
@@ -225,7 +230,7 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
     unit, movers = _declared_movers(queue, consumer)
     assert unit.demand_gib == 8 and len(movers) == 1
     mover = movers[0]
-    real = pg._advance_record
+    real = queue.funding._chunk_advance_record
     calls: list[str] = []
 
     def interrupted(*args, **kwargs):
@@ -234,7 +239,7 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
             raise OSError("stopped after the token transfer")
         return False
 
-    monkeypatch.setattr(pg, "_advance_record", interrupted)
+    monkeypatch.setattr(queue.funding, "_chunk_advance_record", interrupted)
     for _ in range(6):
         try:
             tier_loop.residency_window(queue, tiers=tiers)
@@ -243,12 +248,12 @@ def test_an_interruption_after_the_token_transfer_is_repaired(
         if calls:
             break
     assert calls, "the window never reached the funding update"
-    ledger = queue.tier_ledger(TIER)
-    assert len(pool.held_names_visible(ledger, mover)) == 8
-    assert queue.read_funding(mover, TIER)["state"] == "reserved"
-    monkeypatch.setattr(pg, "_advance_record", real)
+    ledger = queue.tier(TIER)
+    assert len(ledger.holder_state(mover)) == 8
+    assert queue.funding.read_window(mover, TIER)["state"] == "reserved"
+    monkeypatch.setattr(queue.funding, "_chunk_advance_record", real)
     for _ in range(5):
         tier_loop.residency_window(queue, tiers=tiers)
-    record = queue.read_funding(mover, TIER)
+    record = queue.funding.read_window(mover, TIER)
     assert record is not None and record["state"] == "transferring"
-    assert len(pool.held_names_visible(queue.tier_ledger(TIER), mover)) == 8
+    assert len(queue.tier(TIER).holder_state(mover)) == 8

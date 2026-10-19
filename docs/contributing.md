@@ -23,6 +23,7 @@ It reads only metadata and does not execute pull request code.
 The following pull requests are exempt from branch validation:
 
 - The head branch starts with `ig/`.
+- The head branch starts with `tl/`: TrustLadder's release branches, `tl/release-<operation>`.
 - The head branch starts with `release`.
 - GitHub records a creation time before `2026-10-09T17:00:00Z`.
 

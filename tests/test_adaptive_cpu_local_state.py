@@ -1,4 +1,6 @@
 """CPU bookkeeping must not put a remote writer under host admission."""
+from prismabuild import census as fleet_census
+import pbstatus
 from pathlib import Path
 import subprocess
 import sys
@@ -146,7 +148,7 @@ def test_snapshot_preserves_source_age_and_is_never_read_back(tmp_path, monkeypa
     assert adaptive_snapshot.copy_snapshot(controller.base, shared) == ['cpu-sample.json']
     record = adaptive_cpu.read_json(shared / 'cpu-sample.json')
     assert record['_snapshot']['copied_unix'] > 10.
-    assert pbstatus._admission_sample(record, now=20., max_age_s=5.)['state'] == 'stale'
+    assert fleet_census._admission_sample(record, now=20., max_age_s=5.)['state'] == 'stale'
     (controller.base / 'cpu-sample.json').unlink()
     monkeypatch.setattr(adaptive_cpu, 'counters', lambda cpus: {
         'sampled_unix': 11., 'cpus': {'0': [20, 200]}, 'psi_total': 0, })
@@ -158,13 +160,13 @@ def test_publisher_launch_failure_does_not_override_claim_result(tmp_path, monke
     queue = pool.PoolQueue(tmp_path / 'queue')
     tiers = {'preferred': [0], 'fallback': []}
     monkeypatch.setattr(adaptive_cpu, 'action_identity', lambda item: ('shape', False))
-    monkeypatch.setattr(adaptive_cpu.Controller, 'sample', lambda self: {})
+    cpu_sampler = lambda: {}
     monkeypatch.setattr(adaptive_snapshot.subprocess, 'Popen',
                         lambda *a, **kw: (_ for _ in ()).throw(OSError('no interpreter')))
     key = 'a' * 64
     queue.publish(action_key=key, cas_root=str(tmp_path / 'cas'),
                   checkout_root=str(tmp_path), worker_script='worker.py', resources={'cpu': 1})
-    claimed = queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True)
+    claimed = queue.claim(capacity={'cpu': 1}, cpu_tiers=tiers, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed['action_key'] == key
     assert queue.ledger().held_keys() == [key]
 

@@ -29,6 +29,9 @@ the retirement holds.  Before this change it finishes, and its file is gone.
 """
 from __future__ import annotations
 
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+
 import contextlib
 import json
 import os
@@ -66,20 +69,22 @@ MOVER = "e" * 64
 @pytest.fixture(autouse=True)
 def _reports():
     po._UNFILED_REPORTS.clear()
+    bl._TEMPLATE_BODIES.clear()
     yield
     po._UNFILED_REPORTS.clear()
+    bl._TEMPLATE_BODIES.clear()
 
 
 def _write_only(prefix: Path, template_id: str) -> dict:
-    return po.validate_template({**wo._template(prefix),
+    return oc.validate_template({**wo._template(prefix),
                                  "template_id": template_id})
 
 
 def _read_back(prefix: Path, template_id: str) -> dict:
     """A staged template, as every live one is (the issue's census)."""
 
-    return po.validate_template({
-        "schema": po.TEMPLATE_SCHEMA_V1, "version": 1,
+    return oc.validate_template({
+        "schema": oc.TEMPLATE_SCHEMA_V1, "version": 1,
         "template_id": template_id, "output_prefix": str(prefix),
         "slots": {"s0": {"class": "payload"}},
         "durable_maxima": {"payload_max_bytes": 1 << 20,
@@ -99,13 +104,13 @@ def _dead_handoff(queue, template: dict, path: Path, seed: str = "dead"
                         len(DEAD_BYTES))["ok"] is True
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(DEAD_BYTES)
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, instance, template,
         [wo._descriptor(instance, template, path, DEAD_BYTES)],
-        batch_id="b1", lifetime=po.ORIGIN_LIFETIME_CONSUMED)
+        batch_id="b1", lifetime=oc.ORIGIN_LIFETIME_CONSUMED)
     assert committed["ok"] is True, committed
     queue.finish(instance["owner_action_key"], status="failed")
-    assert po._producer_attempt_state(queue, instance) == "dead"
+    assert bl.producer_attempt_state(queue, instance) == "dead"
     return instance
 
 
@@ -150,14 +155,14 @@ class _Successor:
                 self.queue, self.instance, self.template, [descriptor],
                 batch_id="s1", tier=wo.TIER, mover_key=MOVER)
         else:
-            self.committed = po.commit_origin_batch(
+            self.committed = bl.BatchLedger.commit_origin(
                 self.queue, self.instance, self.template, [descriptor],
                 batch_id="s1")
 
     def recorded(self) -> dict:
         return json.loads((Path(self.queue.root) / "residency"
-                           / po.OUTPUT_BATCHES_SUBDIR
-                           / po.instance_namespace(self.instance)
+                           / oc.OUTPUT_BATCHES_SUBDIR
+                           / oc.instance_namespace(self.instance)
                            / "s1.json").read_text())["origin_identity"]
 
 
@@ -218,7 +223,7 @@ class _Race:
 def _at_the_owner_read(monkeypatch, instance: dict, action) -> None:
     """Run ``action`` once the retirement of ``instance`` read the owners."""
 
-    real = po._TickReads.path_owners
+    real = bl.LedgerReads.path_owners
 
     def path_owners(self, owner_instance, *args, **kwargs):
         owners = real(self, owner_instance, *args, **kwargs)
@@ -226,7 +231,7 @@ def _at_the_owner_read(monkeypatch, instance: dict, action) -> None:
             action()
         return owners
 
-    monkeypatch.setattr(po._TickReads, "path_owners", path_owners)
+    monkeypatch.setattr(bl.LedgerReads, "path_owners", path_owners)
 
 
 def _at_the_delete(monkeypatch, path: Path, action) -> None:
@@ -289,7 +294,7 @@ def test_a_successors_adopted_file_survives_a_nested_prefix_retirement(
     assert race.contended, "the successor was never ordered by the retirement"
     assert successor.adopted is False
     assert path.read_bytes() == FRESH_BYTES
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert [event["unlinked"] for event in retired] == [[str(path)]], events
 
 
@@ -313,7 +318,7 @@ def test_a_retirement_after_the_adoption_leaves_the_file(
 
     events = po.origin_retirement_tick(queue)
 
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert len(retired) == 1, events
     assert retired[0]["unlinked"] == [] and retired[0]["superseded"] == [
         str(path)]
@@ -323,8 +328,7 @@ def test_a_retirement_after_the_adoption_leaves_the_file(
         "batch_id": "s1"}}
     assert os.lstat(path).st_ino == committed_inode
     assert path.read_bytes() == DEAD_BYTES
-    entry = po._read_commitments(
-        po._commitments_path(queue.root, dead))["batches"]["b1"]
+    entry = bl.BatchLedger.for_instance(queue.root, dead).capture()["batches"]["b1"]
     assert entry["origin_reclaimed"] is True
 
 
@@ -374,7 +378,7 @@ def test_a_template_filed_during_the_tick_is_read_under_the_lock(
         "the retirement deleted the file a template filed during the tick "
         "had committed")
     assert successor.path.read_bytes() == DEAD_BYTES
-    retired = _events(events, po.ORIGIN_RETIRED_EVENT)
+    retired = _events(events, oc.ORIGIN_RETIRED_EVENT)
     assert sorted(event["superseded"] for event in retired) == [
         [], [str(successor.path)]], events
 
@@ -427,7 +431,7 @@ def test_each_step_asks_for_every_overlapping_prefix_lock_in_one_order(
                 queue, successor.instance, successor.template, [descriptor],
                 batch_id="s1", tier=wo.TIER, mover_key=MOVER)
         else:
-            successor.committed = po.commit_origin_batch(
+            successor.committed = bl.BatchLedger.commit_origin(
                 queue, successor.instance, successor.template, [descriptor],
                 batch_id="s1")
         steps[f"{name} commit"] = list(asked)
@@ -435,7 +439,7 @@ def test_each_step_asks_for_every_overlapping_prefix_lock_in_one_order(
         assert successor.committed["ok"] is True, successor.committed
     asked.clear()
     retired = _events(po.origin_retirement_tick(queue),
-                      po.ORIGIN_RETIRED_EVENT)
+                      oc.ORIGIN_RETIRED_EVENT)
     steps["retirement"] = list(asked)
 
     assert len(retired) == 1 and retired[0]["ref"]["owner_action_key"] == (

@@ -55,7 +55,7 @@ def _mover_residency(start: int, end: int) -> dict:
 def starved_queue(tmp_path, monkeypatch):
     monkeypatch.setattr(pool.socket, "gethostname", lambda: HOST)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "tier": "stage", "host": HOST,
@@ -66,23 +66,32 @@ def starved_queue(tmp_path, monkeypatch):
                         "probe_offer_mb_s": 324,
                         "probe_basis": {"basis": "oldest-ready-sealed-demand",
                                         "demand_mb_s": 74}}})
-    queue.mint_tier_capacity(STAGE_TIER, {"stage_gib": 64})
-    assert queue.tier_ledger(STAGE_TIER).acquire(MOVER, {"stage_gib": 2})
+    queue.tier(STAGE_TIER).mint({'stage_gib': 64})
+    assert queue.tier(STAGE_TIER).take(MOVER, {'stage_gib': 2})
     # Claim the mover by filing, not through claim(): these tests read
     # queue files, and admission is not what they exercise.
     queue.publish(**_row(MOVER2, {STAGE_KIND: 1}, queue,
                          residency=_mover_residency(0, storage_tiers.GIB)))
-    ready_path = queue.item_path(pool.READY, MOVER2)
+    ready_path = queue.records.item_path(pool.record_store.READY, MOVER2)
     record = json.loads(ready_path.read_text())
     record.update({"claimed_unix": NOW - 100, "claimed_host": HOST,
                    "claimed_by": f"worker-{HOST}"})
-    queue.item_path(pool.CLAIMED, MOVER2).write_text(json.dumps(record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.CLAIMED, MOVER2),
+        record,
+    )
     ready_path.unlink()
-    queue.lease_path(MOVER2).write_text(json.dumps({
-        "action_key": MOVER2, "owner": record["claimed_by"], "host": HOST,
-        "claimed_unix": record["claimed_unix"],
-        "published_unix": record["published_unix"],
-        "heartbeat_unix": NOW - 1}))
+    queue.records.replace_record_at(
+        queue.records.lease_path(MOVER2),
+        {
+            'action_key': MOVER2,
+            'owner': record['claimed_by'],
+            'host': HOST,
+            'claimed_unix': record['claimed_unix'],
+            'published_unix': record['published_unix'],
+            'heartbeat_unix': NOW - 1,
+        },
+    )
     queue.publish(**_row(MOVER, {STAGE_KIND: 2}, queue,
                          residency=_mover_residency(0, 2 * storage_tiers.GIB)))
     queue.publish(**_row(CONSUMER, {"mem_gb": 1}, queue, residency={
@@ -91,26 +100,33 @@ def starved_queue(tmp_path, monkeypatch):
     # The consumer, claimed and quiet on its first phase: the promotion lag
     # gauge joins this lease to the frozen plan below, through the same
     # quiet/grace rule the --starvation blob reads.
-    ready_consumer = queue.item_path(pool.READY, CONSUMER)
+    ready_consumer = queue.records.item_path(pool.record_store.READY, CONSUMER)
     consumer_record = json.loads(ready_consumer.read_text())
     consumer_record.update({"claimed_unix": NOW - 100, "claimed_host": HOST,
                             "claimed_by": f"worker-{HOST}"})
-    queue.item_path(pool.CLAIMED, CONSUMER).write_text(
-        json.dumps(consumer_record))
+    queue.records.replace_record_at(
+        queue.records.item_path(pool.record_store.CLAIMED, CONSUMER),
+        consumer_record,
+    )
     ready_consumer.unlink()
-    queue.lease_path(CONSUMER).write_text(json.dumps({
-        "action_key": CONSUMER, "owner": consumer_record["claimed_by"],
-        "host": HOST, "claimed_unix": consumer_record["claimed_unix"],
-        "published_unix": consumer_record["published_unix"],
-        "heartbeat_unix": NOW - 1,
-        "progress_observation": {
-            "phase": "encode", "quiet_s": 800.0, "grace_s": 900.0,
-            "last_accepted": {"phase": "phase-0000",
-                              "reported_unix": NOW - 800,
-                              "units_completed": 3}},
-        "execution_observation": {
-            "child": {"alive": True, "pid_count": 3, "cpu_seconds": 12.0,
-                      "silent_s": 700.0}}}))
+    queue.records.replace_record_at(
+        queue.records.lease_path(CONSUMER),
+        {
+            'action_key': CONSUMER,
+            'owner': consumer_record['claimed_by'],
+            'host': HOST,
+            'claimed_unix': consumer_record['claimed_unix'],
+            'published_unix': consumer_record['published_unix'],
+            'heartbeat_unix': NOW - 1,
+            'progress_observation': {
+                'phase': 'encode',
+                'quiet_s': 800.0,
+                'grace_s': 900.0,
+                'last_accepted': {'phase': 'phase-0000', 'reported_unix': NOW - 800, 'units_completed': 3},
+            },
+            'execution_observation': {'child': {'alive': True, 'pid_count': 3, 'cpu_seconds': 12.0, 'silent_s': 700.0}},
+        },
+    )
     # Two phases, neither staged anywhere: the movers are unpublished and
     # hold no tokens, so the whole plan reads as promotion backlog behind a
     # cursor accepted at phase-0000.
@@ -151,8 +167,8 @@ def starved_queue(tmp_path, monkeypatch):
         "disk_pacing": {"mean_pool_read_mb_s": 100.0,
                         "pool_read_bytes": storage_tiers.GIB},
         "host": HOST, "unix": NOW - 7200})
-    published = {key: json.loads(queue.item_path(
-        pool.CLAIMED if key == MOVER2 else pool.READY, key).read_text()
+    published = {key: json.loads(queue.records.item_path(
+        pool.record_store.CLAIMED if key == MOVER2 else pool.record_store.READY, key).read_text()
     )["published_unix"] for key in (MOVER, MOVER2)}
     _write(queue.ledger(HOST).base / "adaptive" / pool.CLAIM_DENIALS, {
         "schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {
@@ -285,12 +301,12 @@ def test_corrupt_move_receipt_fails_collection(starved_queue):
 def test_invalid_plan_counts_under_unknown_tier(tmp_path, monkeypatch):
     monkeypatch.setattr(pool.socket, "gethostname", lambda: HOST)
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     queue.announce_tier({
         "schema": storage_tiers.TIER_RECORD_SCHEMA_V1,
         "tier_id": STAGE_TIER, "tier": "stage", "host": HOST,
         "capacity_bytes": 600 * storage_tiers.GIB, "sampled_unix": NOW - 5})
-    plans = queue.root / pool.RESIDENCY_PLANS
+    plans = queue.root / pool.record_store.RESIDENCY_PLANS
     plans.mkdir(parents=True, exist_ok=True)
     (plans / ("d" * 64 + ".json")).write_text("{")
     text = pbmetrics.collect_metrics(queue.root, now=NOW)

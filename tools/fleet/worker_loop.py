@@ -38,7 +38,7 @@ are properties of the box rather than of the work:
   action in a **closed** environment built from the variables the action itself
   declares, so an action's interpreter is sealed into its command and therefore
   into its action key.  Making that portable would mean changing the executed
-  contract ``slurm.py`` pins, so it is deliberately not done here.  A cross-arch
+  action contract, so it is deliberately not done here. A cross-arch
   action instead names an interpreter that exists on its target and carries the
   matching class tag; the two must agree, and the submitter owns both.
 * **The tags.**  ``--class`` replaces a hardcoded ``gb10``: a box that offers
@@ -88,10 +88,8 @@ under the generation that claimed it; rolling publishes converge at these
 claim boundaries and are never interrupted mid-action.
 """
 import argparse
-from contextlib import contextmanager
 import errno
 import fcntl
-import hashlib
 import json
 import math
 import os
@@ -102,18 +100,23 @@ import sys
 import time
 from collections import namedtuple
 from pathlib import Path
+from threading import Event
 
 SH = Path("/mnt/shared/prismabuild-fleet")
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import capability_eligibility, contracts
 from prismabuild import (adaptive_cpu, adaptive_gpu as gpu_admission,  # noqa: E402
                          box_capacity, container_images,
-                         core as pb, cpu_topology, dependency_digest,
-                         filesystem_floor, local_dependencies, local_scratch, pool,
-                         publication_canary, storage_tiers)
+                         core as pb, cpu_topology,
+                         filesystem_floor, generation_receipt, local_scratch,
+                         park_proof, pool, publication_canary, role_session, storage_tiers)
 from pbstatus import Deadline, bounded  # noqa: E402
 
 #: The safety ceiling a worker loop enforces on one action unless told
@@ -131,37 +134,6 @@ MAX_CONSECUTIVE_ERRORS = 5
 # remains the empty-queue backoff, so idle workers do not turn one shared NFS
 # directory into a per-second fleet-wide scan.
 PRESSURE_POLL_S = 1.0
-
-#: The receipt beside these imported bytes proves what this process loaded.
-GENERATION_VERSION = RUNTIME_ROOT / "RUNTIME_VERSION.json"
-#: The stable name crosses the generation boundary on every idle poll, which
-#: is how a loop notices that the publisher activated a successor.
-RUNTIME_VERSION = SH / "repo" / "RUNTIME_VERSION.json"
-#: The path is read at import so a qualification harness can point a loop
-#: child at a private gate.  ``/run/prismabuild`` is ``root:root 0755`` and
-#: nothing running as uid 1000 can write under it, so a test that could not
-#: move this path could not exercise the drain at all.
-MAINTENANCE_GATE = Path(os.environ.get("PRISMABUILD_MAINTENANCE_GATE")
-                        or "/run/prismabuild/maintenance.json")
-
-#: Where a parked loop records that it parked.  ``/run`` is tmpfs cleared only
-#: at boot, and no loop survives a boot either, so a missing marker here is
-#: never a stale absence.  That is exactly the inference a drain proof has to
-#: make, and it is the reason ``adaptive_cpu.box_state()`` cannot serve:
-#: ``BOX_STATE_ROOT`` defaults under ``/tmp``, which is cleared on some of
-#: these hosts, and that module requires a missing file there to be read as
-#: "no information" rather than as a fact.
-#:
-#: The directory is created and handed to this uid by the root upgrade agent.
-#: The loop never creates it: under the real gate it could not, and a loop
-#: that silently made its own would be recording into a place no reader looks.
-PARKED_ROOT = MAINTENANCE_GATE.parent / "rollout" / "parked"
-
-#: What may appear in a marker name.  ``changed_unix`` arrives from a JSON
-#: document this process does not write, so it is spelled into the filename
-#: rather than trusted as one.
-_KEY_SAFE = frozenset("0123456789abcdefghijklmnopqrstuvwxyz"
-                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ._")
 
 #: How long one worker-loop offer publication may spend on the shared mount
 #: before the loop gives up on this poll.  An offer is advisory: the box is not
@@ -208,264 +180,16 @@ DISCOVERY_TIMEOUT_S = 30.0
 PUBLICATION_LOCK_ROOT = Path(f"/tmp/prismabuild-offer-publish-{os.getuid()}")
 
 
-def read_maintenance_gate() -> dict | None:
-    """The drain in force on this box, or ``None`` when there is none.
-
-    Split out of :func:`maintenance_requested` so a caller can read the
-    drain's ``changed_unix`` without restating the rules below:
-
-    * a missing gate means admission has not been initialized after boot;
-    * a gate that cannot be read or parsed means draining, because the other
-      reading admits work on a parse error;
-    * a value that is not an object means draining, for the same reason;
-    * ``draining`` anything other than ``False`` means draining.
-
-    An open gate returns ``None`` rather than the parsed object, so a caller
-    testing truthiness cannot mistake ``{"draining": false}`` for a stop.
-    """
-
-    try:
-        value = json.loads(MAINTENANCE_GATE.read_text())
-    except FileNotFoundError:
-        return {"draining": True, "reason": "maintenance gate not initialized"}
-    except (OSError, ValueError):
-        return {"draining": True}
-    if not isinstance(value, dict):
-        return {"draining": True}
-    return None if value.get("draining") is False else value
-
-
-def maintenance_requested() -> bool:
-    return read_maintenance_gate() is not None
-
-
-#: The longest owner and reason this loop copies out of the maintenance gate.
-#: The gate is root-written data this process does not control and every field
-#: in it is optional; the broker already truncates owner at 200 and reason at
-#: 1000, and a reader of the offer should never have to parse an unbounded
-#: string out of a JSON record.
-_DRAIN_OWNER_LIMIT = 200
-_DRAIN_REASON_LIMIT = 1000
-
-
-def drain_offer_fields(gate: dict) -> dict:
-    """The offer fields that keep a parked loop visible in the census (#1204).
-
-    ``read_maintenance_gate`` returns a gate for every state that means
-    "closed" -- including a missing or unparsable file, where it synthesizes
-    the reason -- so ``state`` is always ``draining`` here.  ``owner``,
-    ``reason`` and ``changed_unix`` are copied only when they have the shape a
-    reader can use, and are bounded; a missing or malformed field is omitted
-    rather than rendered, and the record still says the box is draining.
-    ``changed_unix`` names one drain, which is what lets a reader match this
-    offer to the gate that produced it; ``reason`` is descriptive text and is
-    deliberately not identity.
-    """
-
-    fields = {"state": "draining"}
-    owner = gate.get("owner")
-    if isinstance(owner, str) and owner:
-        fields["drain_owner"] = owner[:_DRAIN_OWNER_LIMIT]
-    reason = gate.get("reason")
-    if isinstance(reason, str) and reason:
-        fields["drain_reason"] = reason[:_DRAIN_REASON_LIMIT]
-    stamp = gate.get("changed_unix")
-    if type(stamp) in (int, float):
-        try:
-            stamp = float(stamp)
-        except OverflowError:
-            stamp = None
-        if stamp is not None and math.isfinite(stamp):
-            fields["drain_changed_unix"] = stamp
-    return fields
-
-
-def _proc_starttime(pid: int) -> str:
-    """Field 22 of ``/proc/<pid>/stat``, which makes a marker survive pid reuse.
-
-    ``comm`` is field 2, is parenthesised, and may itself contain spaces and
-    parentheses, so the fields are counted from the last ``)`` rather than by
-    splitting the line.
-    """
-
-    try:
-        line = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return "unknown"
-    _, _, rest = line.rpartition(")")
-    fields = rest.split()
-    return fields[19] if len(fields) > 19 else "unknown"
-
-
-def _gate_key(gate: dict) -> str:
-    """This drain's identity, as the broker already stamps it.
-
-    ``maintenance_begin`` stamps a new drain with a fresh ``changed_unix``
-    and preserves it while that drain remains held, so the field names
-    this drain and not the last one, and a reader matching on it reads a marker
-    left by an earlier drain as what it is. ``reason`` is descriptive text,
-    not the identity of a drain.
-
-    A gate with no identity gets a key no reader matches, which leaves the host
-    reading as not drained.
-    """
-
-    value = gate.get("changed_unix") if isinstance(gate, dict) else None
-    if value is None:
-        return "unknown"
-    return "".join(c if c in _KEY_SAFE else "_" for c in str(value))
-
-
-def post_park_marker(gate: dict) -> Path | None:
-    """Record that this process is parked on ``gate``, once, and return the path.
-
-    Best effort by contract, and the direction of the failure is the point: a
-    loop that cannot write the marker parks anyway, the host then reads as not
-    drained, and whatever is waiting on the drain keeps waiting.  The opposite
-    arrangement would let a box that failed to record itself pass for stopped.
-
-    Reposting on every poll is idempotent: the name is fixed by the
-    pid and the drain, and the create is exclusive.
-    """
-
-    marker = PARKED_ROOT / (f"{os.getpid()}-{_proc_starttime(os.getpid())}"
-                            f"-{_gate_key(gate)}")
-    try:
-        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
-    except FileExistsError:
-        return marker
-    except OSError:
-        return None
-    return marker
-
-
-def _runtime_receipt(path: Path) -> dict:
-    """The parsed receipt at ``path``, or ``{}`` when it cannot be read.
-
-    One read serves both identities a receipt carries -- the commit and the
-    generation name -- so a claim-boundary handshake costs one file open,
-    not one per compared field.  ``{}`` is "unknown", never "absent": the
-    callers' existing rule stands, and a receipt that cannot be read does
-    not license a refusal any more than it licenses a claim.
-    """
-
-    try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _commit_at(path: Path) -> str:
-    return str(_runtime_receipt(path).get("commit") or "")
-
-
-def _generation_at(path: Path) -> str:
-    return str(_runtime_receipt(path).get("generation") or "")
-
-
-def published_commit() -> str:
-    """The commit at the live generation boundary, or "" if unknown."""
-
-    return _commit_at(RUNTIME_VERSION)
-
-
-#: Where a loop that refuses drifted work files the refusal.  A directory
-#: under the queue's own root, spelled like the queue's other record
-#: namespaces (``workers/``, ``attempts/``, ``prewarm/``), so a reader of
-#: the queue finds it where the queue keeps everything else.
-GENERATION_DRIFT_DIR = "generation-drift"
-#: The one schema every record in that namespace carries.
-GENERATION_DRIFT_SCHEMA = "prismaquant.prismabuild.generation_drift.v1"
-
-
-def generation_drift(*, loaded_commit: str,
-                     loaded_generation: str) -> dict | None:
-    """The active generation's disagreement with this process's own bytes.
-
-    Reads ``RUNTIME_VERSION.json`` through the live ``repo`` name -- the
-    same existing reader path every reload check uses, not a second one --
-    and compares it with the generation this process imported, which the
-    caller derived from ``__file__``'s immutable root at startup.  The
-    comparison is the reload fence's, unchanged: a published commit that
-    differs from the loaded one, or a published generation name that
-    differs while both are known.  ``None`` means the fleet and this
-    process agree (or the receipt is unreadable, which was never a move).
-
-    The reads go through ``published_commit`` and ``_generation_at`` rather
-    than an inlined ``json.loads`` for the same reason those helpers exist:
-    they are the one seam the fleet's own convergence tests patch, and a
-    second reading path beside them would be the drift this module refuses.
-
-    The return value is the drift half of a ``generation-drift`` record, so
-    the refusal, the stamp and any later forensic read all name the same
-    identities from one comparison.
-    """
-
-    current_commit = published_commit()
-    current_generation = _generation_at(RUNTIME_VERSION)
-    moved = bool((current_commit and current_commit != loaded_commit) or (
-        loaded_generation and current_generation
-        and loaded_generation != current_generation))
-    if not moved:
-        return None
-    return {
-        "loaded_commit": loaded_commit,
-        "loaded_generation": loaded_generation,
-        "published_commit": current_commit,
-        "published_generation": current_generation,
-    }
-
-
-def record_generation_drift(drift: dict, *, actor: str,
-                            queue_root, detail: dict | None = None) -> Path | None:
-    """Stamp one immutable ``generation-drift/`` record, or ``None``.
-
-    The loud half of the handshake.  On 2026-09-19 the fleet's active
-    generation sat on a four-day-old tree for hours while workers and roles
-    kept executing, and the drift was found by forensic inspection because
-    nothing anywhere had written a word: loops printed to logs that scroll
-    away, and no record named both generations.  This is that record.  It
-    follows the queue's own conventions -- canonical JSON, published by
-    atomic first-writer link under the queue root, mode 0444 so not even
-    its writer can quietly edit it -- and it is written once per incident,
-    because every caller stamps on the way out the door (a worker exits;
-    a supervisor restarts a role), not per poll.
-
-    Best effort in the same direction as the park marker: a loop that
-    cannot write the stamp still refuses, because the refusal is the
-    safety and the stamp is the evidence.
-    """
-
-    record = {
-        "schema": GENERATION_DRIFT_SCHEMA,
-        "actor": actor,
-        "host": socket.gethostname(),
-        "pid": os.getpid(),
-        "unix": round(time.time(), 3),
-        "loaded_commit": str(drift.get("loaded_commit") or ""),
-        "loaded_generation": str(drift.get("loaded_generation") or ""),
-        "published_commit": str(drift.get("published_commit") or ""),
-        "published_generation": str(drift.get("published_generation") or ""),
-        "detail": dict(detail or {}),
-    }
-    raw = pb._canonical_bytes(record) + b"\n"
-    digest = hashlib.sha256(raw).hexdigest()[:8]
-    path = (Path(queue_root) / GENERATION_DRIFT_DIR
-            / (f"{int(record['unix'] * 1000):013d}-{record['host']}"
-               f"-{record['pid']}-{digest}.json"))
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pb._atomic_publish(path, raw)
-    except OSError:
-        return None
-    return path
-
-
-def _refuse_moved_runtime(drift: dict, *, host: str, boundary: str) -> None:
+def _refuse_moved_runtime(decision: generation_receipt.Drift, *, host: str, boundary: str) -> None:
     """Stamp the drift, say it loudly, and leave the exit to the caller."""
 
-    stamped = record_generation_drift(
+    drift = {
+        "loaded_commit": decision.loaded.commit,
+        "loaded_generation": decision.loaded.generation,
+        "published_commit": decision.published.commit,
+        "published_generation": decision.published.generation,
+    }
+    stamped = role_session.record_generation_drift(
         drift, actor="worker_loop", queue_root=SH / "pb-queue")
     print(f"[{host}] runtime moved "
           f"{drift['loaded_commit'][:12] or '(unversioned)'} -> "
@@ -573,160 +297,6 @@ def _open_publication_lock(path: Path) -> int:
     return descriptor
 
 
-#: Where a service role's host-local singleton lock lives.
-#:
-#: A role is a box singleton -- one storage reader, one tier minter -- and the
-#: queue has no lock that makes two of them safe: two readers warm the same
-#: bytes twice and publish contradictory receipts, which is the compounding
-#: movers wedge of 2026-09-19 (#709).  The supervisor's own host-wide claim
-#: already refuses a second supervisor, but that claim belongs to the
-#: supervisor, not to the role: role entrypoints previously had no per-role
-#: lock, so a direct invocation, a legacy loop or a stale generation's
-#: supervisor could serve a second role beside the running one.  So the lock
-#: is taken here, by the process that serves.  The root is
-#: host-local and private per uid, the same discipline the admission lock
-#: keeps, and ``/tmp`` being cleared on some hosts only means a missing lock
-#: file is "no information" and is re-created -- the same accepted lapse the
-#: admission lock documents.  Nothing on the shared mount: on shared storage
-#: one box's role would silence another's.
-ROLE_LOCK_ROOT = Path(f"/tmp/prismabuild-roles-{os.getuid()}")
-
-#: Exit code a service role returns when another instance on this box already
-#: holds its singleton lock.  Not 0 (it served nothing), not 75 (nothing was
-#: deferred -- this instance must not run at all); stable so the supervisor's
-#: respawn logging and an operator can name it.
-ROLE_SINGLETON_HELD_EXIT = 3
-
-
-class RoleLockHeld(RuntimeError):
-    """Another process on this box already serves this role.
-
-    Raised instead of racing.  ``holder`` is the pid the kernel names for the
-    lock when that could be read, and ``None`` when it could not; a missing
-    holder is "unknown", never "nobody".
-    """
-
-    def __init__(self, role: str, holder: int | None = None):
-        self.role = role
-        self.holder = holder
-        super().__init__(
-            f"the {role} role singleton is held by pid {holder} on this box"
-            if holder is not None else
-            f"the {role} role singleton is held by another process on this box")
-
-
-class RoleLockUnavailable(RuntimeError):
-    """This role's singleton lock cannot be trusted on this box.
-
-    An unsafe directory or lock file, or a failure other than contention: the
-    caller must refuse rather than serve without the exclusion, and it must
-    not confuse this with an error out of the work the lock protects.
-    """
-
-
-def role_lock_path(script: str | Path) -> Path:
-    """This role's singleton lock, named by the script and not by generation.
-
-    One role, one path, whatever tree the caller's bytes were loaded from:
-    that is what lets a replacement generation and a stale one contend rather
-    than each serve.  The path is a path only -- ``take_role_singleton`` owns
-    creating and locking it -- and it is never unlinked, because a lock file
-    removed under a live holder lets the next starter lock a second inode.
-    """
-
-    return Path(ROLE_LOCK_ROOT) / f"{Path(script).stem}.lock"
-
-
-def _role_lock_directory() -> Path:
-    """The private per-uid directory the role locks live in.
-
-    The admission lock's discipline: host-local, private to this uid,
-    owner-repairable when the mode is too permissive, refused when the object
-    is not ours at all.  Refusing rather than proceeding matters here for the
-    same reason it does there: a lock nobody can trust is not a lock.
-    """
-
-    directory = Path(ROLE_LOCK_ROOT)
-    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-    info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-        raise RuntimeError("unsafe PrismaBuild role lock directory")
-    if info.st_mode & 0o077:
-        directory.chmod(0o700)
-        info = directory.lstat()
-        if info.st_mode & 0o077:
-            raise RuntimeError("unsafe PrismaBuild role lock directory")
-    return directory
-
-
-def take_role_singleton(script: str | Path) -> int:
-    """Take this role's host-local singleton lock for the life of the caller.
-
-    Returns an open descriptor holding the flock; the exclusion lives on that
-    open file description, so it is released by the final close (the role's
-    exit, or the caller's own close) and never by unlinking or an explicit
-    unlock.  ``RoleLockHeld`` means another process on this box already serves
-    the role; ``RoleLockUnavailable`` means the lock could not be trusted at
-    all.  Either way the caller refuses rather than races: fail closed,
-    because the lock is the safety.
-
-    Prefer :func:`role_singleton`, which guarantees the final close on every
-    exit; raw descriptors are for callers that must probe without holding
-    (``role_singleton_holder``).
-    """
-
-    role = Path(script).stem
-    try:
-        directory = _role_lock_directory()
-        descriptor = os.open(directory / f"{role}.lock",
-                             os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
-                             | os.O_CLOEXEC, 0o600)
-    except (OSError, RuntimeError) as exc:
-        raise RoleLockUnavailable(
-            f"cannot open the {role} role singleton lock: {exc}") from exc
-    try:
-        info = os.fstat(descriptor)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_nlink != 1):
-            raise RoleLockUnavailable("unsafe PrismaBuild role lock file")
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            # The holder pid is a diagnostic, and the admission lock's own
-            # holder rule is the one place that parse lives (#264, #276),
-            # including the btrfs inode/device ambiguity; a helper that
-            # cannot answer still leaves this a refusal.
-            raise RoleLockHeld(role, adaptive_cpu._holder_of(descriptor)) \
-                from None
-        except OSError as exc:
-            raise RoleLockUnavailable(
-                f"the {role} role singleton lock could not be taken: {exc}"
-            ) from exc
-    except BaseException:
-        os.close(descriptor)
-        raise
-    return descriptor
-
-
-@contextmanager
-def role_singleton(script: str | Path):
-    """Hold this role's singleton for the block, or raise ``RoleLockHeld``.
-
-    The descriptor's final close -- the release, and the only release -- is
-    guaranteed on every exit from the block, including a ``return`` or an
-    exception, so a one-shot invocation that takes the lock cannot leak it
-    into a hosting interpreter and a repeated ``main`` call still contends
-    honestly.  Nothing here unlinks the lock file or unlocks a shared
-    description.
-    """
-
-    descriptor = take_role_singleton(script)
-    try:
-        yield descriptor
-    finally:
-        os.close(descriptor)
-
-
 #: The host-local lock and cadence stamp of the spool retirement tick (#1001),
 #: beside the role locks.  One loop per box runs a tick; the stamp's mtime is
 #: when the last one started.
@@ -750,7 +320,7 @@ def spool_retirement(queue, *, host: str, cas_root: Path,
     from prismabuild import produced_spool
 
     now = time.time() if now is None else float(now)
-    directory = _role_lock_directory()
+    directory = role_session.role_lock_directory()
     descriptor = os.open(directory / SPOOL_RETIRE_LOCK,
                          os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
@@ -781,33 +351,15 @@ def spool_retirement(queue, *, host: str, cas_root: Path,
         os.close(descriptor)
 
 
-def role_singleton_holder(script: str | Path) -> tuple[bool, int | None]:
-    """Whether this role's singleton lock is held, and by which pid if known.
-
-    The lock is tried, not assumed: a free lock is taken and released here --
-    the caller's own start still races nothing, because its child takes the
-    lock for real -- and a held one is discovered by ``flock``'s refusal and
-    named from /proc/locks, never from a pid file.  ``(True, None)`` is a held
-    lock whose holder could not be read: "held, holder unknown", never free.
-    """
-
-    try:
-        descriptor = take_role_singleton(script)
-    except RoleLockHeld as held:
-        return True, held.holder
-    os.close(descriptor)
-    return False, None
-
-
 def _proc_starttime_or_none(pid: int) -> str | None:
     """The pid's starttime, or ``None`` when ``/proc`` cannot answer.
 
-    ``_proc_starttime`` spells an unreadable ``/proc`` as ``"unknown"``, which
+    ``park_proof.process_starttime`` spells an unreadable ``/proc`` as ``"unknown"``, which
     is right for a marker filename but wrong for an ownership decision: a
     launch must not read "I could not ask" as "the writer is gone".
     """
 
-    observed = _proc_starttime(pid)
+    observed = park_proof.process_starttime(pid)
     return None if observed == "unknown" else observed
 
 
@@ -976,73 +528,6 @@ def _retained_reader(abandoned: list) -> tuple[int, str] | None:
     return _retained_publisher(abandoned)
 
 
-def interpreter_lookup(items) -> tuple[list[str], list[str]]:
-    """The paths READY items name, split into this box's ``(present, absent)``.
-
-    The lookup design (#1263): no directory scan and no configured roots --
-    the offer answers exactly the paths the queue asks about, each with one
-    stat.  Present is positive evidence only, and absent is an ANSWER, not a
-    guess (#1266 review): the submission-time verdict refuses a path only
-    when every capable eligible offer named it absent, which is what makes a
-    first submission -- a path no offer was asked about yet -- publish with a
-    notice instead of deadlocking the tool on its own first use.
-    """
-
-    paths = sorted({
-        str(item.get("interpreter"))
-        for item in items
-        if isinstance(item, dict)
-        and isinstance(item.get("interpreter"), str)})
-    present, absent = [], []
-    for path in paths:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            present.append(path)
-        else:
-            absent.append(path)
-    return present, absent
-
-
-def local_dependency_lookup(items, *, python: str) -> dict[str, str]:
-    """Extend the same offer lookup with command/path questions, not a registry."""
-    import shutil
-    requirements = {python: "executable"}
-    shell = shutil.which("bash", path=os.defpath)
-    if shell:
-        requirements[str(Path(shell).resolve())] = "executable"
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        interpreter = item.get("interpreter")
-        if isinstance(interpreter, str):
-            requirements[interpreter] = "executable"
-        for field in ("dependency_queries", "local_dependencies"):
-            try:
-                queries = local_dependencies.normalize(item.get(field, {}))
-            except ValueError:
-                continue  # A malformed foreign row cannot vouch for any path.
-            for path, kind in queries.items():
-                if kind == "executable" or path not in requirements:
-                    requirements[path] = kind
-    return local_dependencies.observe(requirements)
-def dependency_lookup(items) -> tuple[list[str], list[str]]:
-    """The requirement paths READY items name, as this box's ``(present, absent)``.
-
-    The interpreter lookup's shape (#1263), one stat per distinct path per
-    poll (#1495): the offer answers exactly what the queue asks about, never
-    scans, and never hashes here -- the claim gate reads the bytes.
-    """
-
-    paths = sorted({
-        str(entry.get("path"))
-        for item in items if isinstance(item, dict)
-        for entry in (item.get("requires_files") or ())
-        if isinstance(entry, dict) and isinstance(entry.get("path"), str)})
-    present, absent = [], []
-    for path in paths:
-        (present if os.path.isfile(path) else absent).append(path)
-    return present, absent
-
-
 def discover_ready_snapshot(queue, *, budget_s: float,
                             abandoned: list,
                             placement: tuple | None = None) -> DiscoveryResult:
@@ -1101,12 +586,6 @@ def discover_ready_snapshot(queue, *, budget_s: float,
     return DiscoveryResult(
         "failed", None, retained,
         f"discovery returned an unknown status: {status!r}")
-
-
-def loaded_runtime_commit() -> str:
-    """The commit beside the immutable source tree this loop imported."""
-
-    return _commit_at(GENERATION_VERSION)
 
 
 def inherited_cpus() -> int:
@@ -1170,19 +649,8 @@ def main(argv=None, *, on_outcome=None):
     execution and leaving a lease for the reaper. Action cancellation remains
     the queue withdrawal protocol.
     """
-    stopping = False
-
-    def request_stop(signum, frame):
-        nonlocal stopping
-        stopping = True
-
-    previous = signal.signal(signal.SIGTERM, request_stop)
-    try:
-        if argv is None and on_outcome is None:
-            return _run_loop(lambda: stopping)
-        return _run_loop(lambda: stopping, argv=argv, on_outcome=on_outcome)
-    finally:
-        signal.signal(signal.SIGTERM, previous)
+    with role_session.stop_requests(signal.SIGTERM) as stop:
+        return _run_loop(stop, argv=argv, on_outcome=on_outcome)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1274,6 +742,13 @@ def image_observation(inventory, policy, *, max_age_s=None):
 def validate_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse argument values no box can declare."""
 
+    code_tags = {row.tag for row in contracts.CONTRACTS}
+    reserved = sorted({tag.strip() for tag in args.tag
+                       if tag.strip() in code_tags
+                       or tag.strip().startswith("runtime-generation:")})
+    if reserved:
+        ap.error("--tag names worker code contracts assigned by the loaded runtime: "
+                 + ", ".join(reserved))
     if args.gpu_slots < 0:
         ap.error("--gpu-slots cannot be negative")
     if args.spool_gb < 0:
@@ -1494,7 +969,7 @@ def scratch_observed_detail(observer, profile_inputs):
     return detail
 
 
-def _run_loop(stop_requested, *, argv=None, on_outcome=None):
+def _run_loop(stop: Event, *, argv=None, on_outcome=None):
     ap = build_parser()
     args = ap.parse_args(argv)
     validate_args(ap, args)
@@ -1564,7 +1039,22 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         if args.class_image_config is not None else None)
     # Immutable loaded generation, never the moving repo symlink. Old loops
     # cannot claim a successor publisher's privileged action.
-    loaded_generation = _generation_at(GENERATION_VERSION)
+    loaded = role_session.loaded_runtime()
+
+    def runtime_decision() -> generation_receipt.ReceiptDecision:
+        nonlocal loaded
+        if isinstance(loaded, generation_receipt.ReceiptUnavailable):
+            loaded = role_session.loaded_runtime()
+        return generation_receipt.compare(loaded, role_session.published_runtime())
+
+    def report_unknown(decision: generation_receipt.Unknown, boundary: str) -> None:
+        reasons = {
+            name: value.reason if isinstance(value, generation_receipt.ReceiptUnavailable) else "known"
+            for name, value in (("loaded", decision.loaded), ("published", decision.published))
+        }
+        print(f"[{host}] runtime receipt unknown at {boundary}; {json.dumps(reasons)}; "
+              "admission paused", flush=True)
+
     def offered_tags(name: str) -> list[str]:
         """What this box offers, for the name it currently has.
 
@@ -1573,11 +1063,8 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         one box -- which is every action whose checkout is a box-local worktree
         rather than shared storage -- matches no worker and never runs.
 
-        The progress tags ride the same subset rule as capabilities rather than
-        a place, exactly as ``cpu`` does below.  The watchdog and helper have
-        separate tags: a previous v1 loop can still run an already-sealed
-        watchdog action, but cannot claim a new action that depends on its
-        helper environment.
+        Code contracts use the same subset rule. The registry decides which
+        loaded contracts are enabled; ``cpu`` remains a host fact here.
 
         Built from a name passed in rather than read here, because the name can
         change while this loop runs; see the re-read at the top of the poll.
@@ -1589,48 +1076,13 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             # matches it on tags and then fails at run time instead of waiting
             # for a box that can serve it.
             tags.append("cpu")
-        tags.extend((pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG, pb.PROGRESS_CYCLE_TAG,
-                     pb.POOL_CONTENTION_TAG, pb.EGRESS_PROGRESS_TAG,
-                     pb.QUEUED_CHILD_TAG))
-        # This loop's code performs the declared-image claim check, so it may
-        # take image-pinned work.  A loop from before the check does not offer
-        # the tag and therefore cannot claim that work and die inside it
-        # (#714).  Docker being absent does not remove the capability: the
-        # check then finds presence unknown and refuses, leaving the item
-        # ready for a box that can see it.
-        tags.append(pb.CONTAINER_IMAGE_TAG)
-        # Same fence for a named interpreter (#1263): this loop's claim checks
-        # the item's absolute path on this box before it spends an attempt,
-        # and its offer answers for the paths READY items name.  A loop from
-        # before the field offers neither, so an interpreter-naming item waits
-        # for a box that can run it instead of dying with 127 there.
-        tags.append(pb.INTERPRETER_TAG)
-        tags.append(local_dependencies.TAG)
-        # And for digest-pinned dependencies (#1495): this loop's claim
-        # hashes the row's required bytes on this box before it spends an
-        # attempt, and its offer answers for the paths READY items name.  A
-        # loop from before the contract offers neither, so a row whose
-        # dependencies it would silently ignore waits for a box that can
-        # read the requirement instead of dying inside it.
-        tags.append(dependency_digest.DEPENDENCY_DIGEST_TAG)
-        # Code capability only; configured executed profiles and current root
-        # observations separately decide admission. Old workers cannot ignore
-        # opted-in sealed traffic during a rolling publication.
-        tags.append(local_scratch.IO_CAPABILITY)
-        # Versioned lifetime actions cannot run on declaration-only workers.
-        tags.append(local_scratch.SCRATCH_LIFETIME_TAG)
-        if args.gang_admission:
-            # Default off (#1517): without this no box offers the tag, so no
-            # gang member is ever claimed and no gang code runs in a pass.
-            from prismabuild import _gang
-            tags.append(_gang.TAG)
-        if loaded_generation:
-            tags.extend((publication_canary.CAPABILITY,
-                         f"runtime-generation:{loaded_generation}"))
+        tags.extend(contracts.offered_contract_tags(contracts.WorkerFacts(
+            gang_admission=args.gang_admission,
+            loaded_generation=(loaded.generation if isinstance(
+                loaded, generation_receipt.RuntimeIdentity) else ""))))
         return tags
 
     host = socket.gethostname()
-    offered = offered_tags(host)
     if pinned is not None:
         print(f"[{host}] pinned to {cpu_topology.as_range(pinned)} "
               f"({len(pinned)} of {len(cpu_topology.classify()[0]) + len(cpu_topology.classify()[1])} cpus)",
@@ -1657,7 +1109,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
     #: launch another reader: the survivor holds no lock, but a stalled mount
     #: must not accumulate one D-state process per poll per loop.
     abandoned_discoveries: list = []
-    loaded_commit = loaded_runtime_commit()
+    loaded_commit = loaded.commit if isinstance(loaded, generation_receipt.RuntimeIdentity) else ""
     print(f"[{host}] runtime {loaded_commit[:12] or '(unversioned)'}",
           flush=True)
     print(f"[{host}] offer publication bounded to {OFFER_PUBLISH_TIMEOUT_S:g}s "
@@ -1670,7 +1122,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
     # runtime must not touch the queue first.
     swept_dead_offers = False
     while True:
-        if stop_requested():
+        if stop.is_set():
             print(f"[{host}] shutdown requested; current action drained", flush=True)
             return 0
         # Fence stale imported bytes before the first queue read or mutation,
@@ -1702,7 +1154,6 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             print(f"[{host}] renamed to {renamed_to}; announcing under the new "
                   f"name from this poll on", flush=True)
             host = renamed_to
-            offered = offered_tags(host)
         # Fence stale imported bytes before the first queue read or mutation,
         # and again at the top of every later poll.  In particular, an old
         # orphan reaper must never classify a record emitted by a successor's
@@ -1732,20 +1183,30 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # The old name's `workers/<name>.json` is left to expire on its own
         # rather than removed here: this loop is one of many on the box and
         # cannot know whether a sibling still answers to the old name.
-        drift = generation_drift(loaded_commit=loaded_commit,
-                                 loaded_generation=loaded_generation)
-        if drift is not None:
-            _refuse_moved_runtime(drift, host=host, boundary="poll top")
+        decision = runtime_decision()
+        if isinstance(decision, generation_receipt.Drift):
+            _refuse_moved_runtime(decision, host=host, boundary="poll top")
             return 0
+        if isinstance(decision, generation_receipt.Unknown):
+            report_unknown(decision, "poll top")
+            gate = role_session.read_maintenance_gate()
+            if gate is not None:
+                role_session.post_park_marker(gate)
+            if args.once:
+                return role_session.ROLE_DEFERRED_EXIT
+            stop.wait(args.poll_s)
+            continue
+        loaded_commit = decision.identity.commit
+        offered = offered_tags(host)
         if not swept_dead_offers:
             swept_dead_offers = True
             swept = sweep_own_dead_offer_tmp(queue.root / "workers", host)
             if swept:
                 print(f"[{host}] swept {len(swept)} dead offer temporary "
                       f"file(s) (issue #1040)", flush=True)
-        gate = read_maintenance_gate()
+        gate = role_session.read_maintenance_gate()
         if gate is not None:
-            post_park_marker(gate)
+            role_session.post_park_marker(gate)
             print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
             # Drain-path membership reconciliation (authoritative for
             # resigned workers): a resign CLI that died after withdrawing
@@ -1834,7 +1295,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 observed_images = None
                 if class_policy is not None:
                     class_verdict = class_policy.evaluate(None, now=time.time())
-            drain_fields = drain_offer_fields(gate)
+            drain_fields = role_session.drain_offer_fields(gate)
             # What the last open poll declared, not a fresh ledger read: the
             # spool figure ``stable_host_capacity`` holds up survives the gate
             # closing, and this capacity still comes from that declaration --
@@ -1845,13 +1306,15 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
             # figure below is what stops any admission reading this box as
             # admittable.
             drain_capacity = dict(last_declared)
+            capabilities = capability_eligibility.OfferCapabilities(
+                images=capability_eligibility.ImageAnswers.from_observed(
+                    observed_images, class_verdict))
 
             def announce_drain(queue=queue, host=host, tags=offered,
                                has_gpu=gpu_capable, capacity=drain_capacity,
                                runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                                timeout_s=args.timeout_s, loops=loops,
-                               addresses=addresses, observed_images=observed_images,
-                               class_verdict=class_verdict, fields=drain_fields):
+                               addresses=addresses, capabilities=capabilities, fields=drain_fields):
                 """The exact parked record this poll offers the queue.
 
                 A closure, not a kwargs dict, so the publisher's child runs
@@ -1867,8 +1330,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                     runtime_commit=runtime_commit, cpu_tiers=cpu_tiers,
                     loops=loops, timeout_ceiling_s=timeout_s,
                     progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
-                    addresses=addresses, observed_images=observed_images,
-                    **({"container_class_verdict": class_verdict} if class_verdict is not None else {}),
+                    addresses=addresses, capabilities=capabilities,
                     **fields)
 
             publication = publish_offer(
@@ -1987,33 +1449,27 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # snapshot asks about, statted on this box.  One bounded set per poll;
         # a snapshot that could not be read publishes nothing, which is the
         # fail-closed answer rather than a guess.
-        offered_interpreters, absent_interpreters = interpreter_lookup(
+        interpreter_answers = capability_eligibility.observe_interpreters(
             discovery.snapshot or [])
-        dependency_answers = local_dependency_lookup(discovery.snapshot or [], python=args.python)
-        # And the digest-contract answers (#1495): the requirement paths this
-        # poll's ready snapshot asks about, statted on this box.
-        offered_dependencies, absent_dependencies = dependency_lookup(
-            discovery.snapshot or [])
+        dependency_answers = capability_eligibility.observe_dependencies(
+            discovery.snapshot or [], python=args.python)
 
         # Immutable producer/source verification is cached; small CAS proof
         # inputs and independent current device identity refresh outside the
         # admission lock. The publisher receives this poll's captured detail.
         observed_detail = scratch_observed_detail(observer, profile_inputs)
+        capabilities = capability_eligibility.OfferCapabilities(
+            images=capability_eligibility.ImageAnswers.from_observed(
+                observed_images, class_verdict),
+            interpreters=interpreter_answers, dependencies=dependency_answers)
 
         def announce_offer(queue=queue, host=host, tags=offered,
                            has_gpu=gpu_capable, declared=placeable_capacity,
                            capacity=capacity, observer=observer, loops=loops,
                            runtime_commit=loaded_commit, cpu_tiers=cpu_tiers,
                            timeout_s=args.timeout_s, addresses=addresses,
-                           observed_images=observed_images, class_verdict=class_verdict,
-                           interpreters=offered_interpreters,
-                           interpreters_absent=absent_interpreters,
-                           dependency_answers=dependency_answers,
-                           dependency_files=offered_dependencies,
-                           dependency_files_absent=absent_dependencies,
+                           capabilities=capabilities,
                            observed_detail=observed_detail):
-            # (``interpreters`` binds the poll's lookup; the announce call
-            # below receives it under that closure-local name.)
             """The exact advisory record this poll offers the queue.
 
             A closure, not a kwargs dict, so the publisher's child runs the
@@ -2043,21 +1499,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # and this is whether it would count committed work first (#480).
                 progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
                 addresses=addresses,
-                # Which local image references this box can positively show.
-                # Present-and-empty says it looked and has none; absent says
-                # it could not look.  An image-pinned item reads both as
-                # not-here at claim and as not-placeable here at dispatch.
-                observed_images=observed_images,
-                **({"container_class_verdict": class_verdict} if class_verdict is not None else {}),
-                # Which named interpreters this box can positively run
-                # (#1263): the paths this poll's ready items ask about, statted
-                # here.  Absent says it could not answer, and an item naming
-                # an interpreter reads that as unknown, never capable.
-                interpreters=interpreters,
-                interpreters_absent=interpreters_absent,
-                local_dependency_answers=dependency_answers,
-                dependency_files=dependency_files,
-                dependency_files_absent=dependency_files_absent,
+                capabilities=capabilities,
             )
 
         publication = publish_offer(
@@ -2097,7 +1539,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # SystemExit must still stop the loop.  And the count is consecutive,
         # so a box whose every poll raises stops rather than spinning: that
         # shape is the box being broken, not the items.
-        if stop_requested():
+        if stop.is_set():
             return 0
         # Membership handoff reconciliation, through the existing retry
         # path: a resign CLI that died after withdrawing leaves owed rows
@@ -2181,11 +1623,19 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
         # publish_runtime's rolling convergence depends on -- loops cycle at
         # their own boundaries while a publish converges, and nothing here
         # fights that by interrupting work in flight.
-        drift = generation_drift(loaded_commit=loaded_commit,
-                                 loaded_generation=loaded_generation)
-        if drift is not None:
-            _refuse_moved_runtime(drift, host=host, boundary="claim boundary")
+        decision = runtime_decision()
+        if isinstance(decision, generation_receipt.Drift):
+            _refuse_moved_runtime(decision, host=host, boundary="claim boundary")
             return 0
+        if isinstance(decision, generation_receipt.Unknown):
+            report_unknown(decision, "claim boundary")
+            gate = role_session.read_maintenance_gate()
+            if gate is not None:
+                role_session.post_park_marker(gate)
+            if args.once:
+                return role_session.ROLE_DEFERRED_EXIT
+            stop.wait(args.poll_s)
+            continue
         # The claim's own evidence, taken after publication so it is not the
         # offer's TTL that answers a claim.  While image-pinned work is
         # waiting, the shared record is re-probed at CLAIM_FRESHNESS_S, once
@@ -2208,7 +1658,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                 # Re-checked under the per-key transition lock just before
                 # the claim rename, so a resign drain that began after this
                 # poll's gate check still refuses the claim deterministically.
-                admission_open=lambda: read_maintenance_gate() is None,
+                admission_open=lambda: role_session.read_maintenance_gate() is None,
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop
@@ -2227,7 +1677,7 @@ def _run_loop(stop_requested, *, argv=None, on_outcome=None):
                       f"the items -- exiting for the supervisor to replace",
                       flush=True)
                 return 1
-            if stop_requested():
+            if stop.is_set():
                 return 0
             time.sleep(args.poll_s)
             continue

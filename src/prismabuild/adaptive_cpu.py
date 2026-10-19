@@ -6,7 +6,9 @@ are never discounted. The local lock serializes budget decisions, not queue
 ownership (which still uses NFS rename).
 """
 from __future__ import annotations
+from prismabuild import output_contract as oc
 
+from collections.abc import Callable
 from contextlib import contextmanager
 import contextlib
 import fcntl
@@ -23,6 +25,8 @@ import time
 import uuid
 
 from . import adaptive_snapshot
+from . import flock_owner
+from .holder_census import CPU_METADATA, HolderCensus
 from .storage_tiers import RAM_HOST_MEMORY_PREFIX
 from .control_cpu import attributed_ticks, boot_ticks, control_plane_counters
 
@@ -36,7 +40,7 @@ MAX_SAMPLE_AGE_S = 5.0
 MIN_INTERVAL_S = 1.0
 MAX_INTERVAL_S = 60.0
 MAX_ACTIONS = 256
-METADATA = '.adaptive.json'
+METADATA = CPU_METADATA
 #: ``decision`` has not been told the item's :func:`dependent_owner`.
 _UNREAD = object()
 
@@ -50,9 +54,9 @@ def read_json(path):
 
 
 def write_json(path, value):
-    from .materialize import _write_json_atomic
+    from . import immutable_files
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomic(Path(path), value)
+    immutable_files.write_json_atomic(Path(path), value)
 
 
 def action_identity(item):
@@ -152,16 +156,15 @@ def export_rate_key(template_sha256, family=None):
     ``family:<name>``, so a Stage B row -- its own template -- inherits what
     the family's earlier rows measured.  ``None`` means none is declared, and
     the key is the template's digest, as #999 keyed every producer.  A family
-    that is not an identifier (``produced_output.validate_export_rate_family``)
+    that is not an identifier (``output_contract.validate_export_rate_family``)
     or, undeclared, a digest that is not a key has no key: nothing is learned
     or read under it, so no malformed value lands on another producer's entry.
     """
     if family is None:
         return template_sha256 if _is_key(template_sha256) else None
-    from . import produced_output
     try:
-        return EXPORT_RATE_FAMILY_PREFIX + produced_output.validate_export_rate_family(family)
-    except produced_output.ProducedOutputError:
+        return EXPORT_RATE_FAMILY_PREFIX + oc.validate_export_rate_family(family)
+    except oc.ProducedOutputError:
         return None
 
 
@@ -377,94 +380,6 @@ class AdmissionBusy(RuntimeError):
             f'PrismaBuild admission is held by pid {holder} on this box'
             if holder is not None else
             'PrismaBuild admission is held by another loop on this box')
-
-
-def _device_and_inode(field):
-    """``(major, minor, inode)`` from a ``/proc/locks`` device field, or None.
-
-    Parsed rather than formatted-and-compared.  The kernel prints the device as
-    ``%02x:%02x``, so a key built by formatting has to reproduce that padding
-    exactly, and getting it wrong yields a silent false negative that reads as
-    good news: #264 matched nothing at all on dl380g10, whose ``/tmp`` is tmpfs
-    with major 0, while looking correct on sparky, whose major 259 prints the
-    same either way.  Reading the numbers back out cannot have that bug, for
-    any padding the kernel might choose.
-    """
-
-    parts = field.split(':')
-    if len(parts) != 3:
-        return None
-    try:
-        return (int(parts[0], 16), int(parts[1], 16), int(parts[2]))
-    except ValueError:
-        return None
-
-
-def _holder_of(descriptor):
-    """The pid holding the flock on ``descriptor``, or ``None`` if unreadable.
-
-    Best effort and local: ``/proc/locks`` is procfs, so asking costs no I/O
-    on the shared mount -- which matters, because the reason this is being
-    asked at all is that something on the shared mount is slow.  Every failure
-    answers ``None`` rather than raising: a diagnostic must never be able to
-    turn a refusal into a crash.
-
-    The INODE identifies the lock and the device only breaks a tie, which is
-    not the obvious way round.  Requiring both to match makes this blind on
-    btrfs, where a subvolume carries its own anonymous device: ``fstat``
-    returns the subvolume's, while ``/proc/locks`` reports the superblock's,
-    and the two differ.  Measured on dl380g10 on 2026-09-06, one lock, one
-    row::
-
-        /home/rob/tmp  btrfs  fstat 00:1f:14164446
-                              /proc/locks 00:1e:14164446
-
-    Same inode, minor off by one, and #276 reported no holder at all for a
-    lock it was itself holding.  Matching on the inode recovers it, and costs
-    nothing: this is only ever asked after a non-blocking acquisition failed,
-    so a holder exists and its row is there to be found.  A second row on the
-    same inode number means some other filesystem also has one -- that is the
-    collision the device exists to resolve, and where it cannot resolve it
-    this answers ``None`` rather than naming a pid from another mount.
-    """
-
-    try:
-        info = os.fstat(descriptor)
-    except OSError:
-        return None
-    wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
-    candidates = []
-    try:
-        with open('/proc/locks') as handle:
-            for line in handle:
-                fields = line.split()
-                # "<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> 0 EOF",
-                # where the device numbers are hex and the inode is decimal.
-                # A waiter's line begins "<n>: -> FLOCK", which fails the test
-                # below and is skipped, so only the holder is ever named.
-                if len(fields) < 6 or fields[1] != 'FLOCK':
-                    continue
-                found = _device_and_inode(fields[5])
-                if found is None or found[2] != info.st_ino:
-                    continue
-                candidates.append((found, int(fields[4])))
-    except (OSError, ValueError):
-        return None
-    if not candidates:
-        return None
-    if len(candidates) > 1:
-        # More than one filesystem has a lock on this inode NUMBER, so the
-        # number alone no longer names a lock and the device has to break the
-        # tie.  If it cannot -- neither row carries this descriptor's device,
-        # or both do -- the honest answer is that we do not know which.
-        exact = [row for row in candidates if row[0] == wanted]
-        if len(exact) != 1:
-            return None
-        candidates = exact
-    held_by = candidates[0][1]
-    # -1 is the kernel's "no owning process" (an OFD lock); it is not a pid
-    # and must not be reported as one.
-    return held_by if held_by > 0 else None
 
 
 #: Where a box keeps the host-local state its loops share.  An attribute
@@ -707,7 +622,6 @@ def census_box_origins(directory):
     return origins, legacy
 
 
-
 def box_identity(base):
     """The digest that names ONE box's host-local state for the ledger at ``base``.
 
@@ -749,7 +663,7 @@ class AdmissionGate:
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
-                    raise AdmissionBusy(holder=_holder_of(descriptor)) from None
+                    raise AdmissionBusy(holder=flock_owner.holder_pid(descriptor)) from None
             except AdmissionBusy:
                 raise
             except (OSError, RuntimeError) as exc:
@@ -1222,7 +1136,6 @@ def prune_box_state(*, queue_roots=(), older_than_s=PRUNE_IDLE_AFTER_S,
             'queue_evidence': dict(survey['queue_evidence'])}
 
 
-
 def local_telemetry_path(base, action_key):
     """Where the executing box records a holder's live telemetry; admission reads only this.
 
@@ -1509,7 +1422,8 @@ def idle_judgement(state, sample, *, holders, identity, fields=IDLE_FIELDS,
 
 
 class Controller:
-    def __init__(self, ledger, tiers):
+    def __init__(self, ledger, tiers, *,
+                 sampler: Callable[[], dict[str, object]] | None = None):
         self.ledger = ledger
         self.tiers = tiers
         self.cpus = list(tiers['preferred']) + list(tiers['fallback'])
@@ -1520,6 +1434,7 @@ class Controller:
         # at most once per sample (#1185): it names the suspects in a
         # measurement_foreign_ambient refusal, never a decision input.
         self._foreign_pid_cache = None
+        self._sampler = sampler
 
     def idle(self, sample, holders):
         """This pass's :func:`idle_judgement`, persisted host-local (#997).
@@ -1744,6 +1659,8 @@ class Controller:
                 adaptive_snapshot.publish(self.base, self.ledger.base / 'adaptive')
 
     def sample(self):
+        if self._sampler is not None:
+            return self._sampler()
         path = self.base / 'cpu-sample.json'
         previous = read_json(path)
         # No proc census for each candidate inside the same sampling interval.
@@ -1807,7 +1724,7 @@ class Controller:
         self.write_state('cpu-sample.json', current)
         return observation
 
-    def _funding(self, owner, holders, demand):
+    def _funding(self, owner, holders, demand, census):
         """Whether ``owner``'s export allowance covers this dependent (#985).
 
         Returns ``(funded, None)`` -- the allowance CPUs and memory this
@@ -1818,7 +1735,7 @@ class Controller:
         """
         if set(demand) - set(EXPORT_DEMAND) or not int(demand.get('cpu', 0)):
             return None, 'demand_outside_allowance'
-        meta_of_owner = read_json(self.ledger.held_dir / owner / METADATA)
+        meta_of_owner = census.cpu(owner).metadata
         allowance = meta_of_owner.get('dependent_allowance')
         if not isinstance(allowance, dict):
             return None, 'owner_holds_no_allowance'
@@ -1830,7 +1747,7 @@ class Controller:
         for holder in holders:
             if holder.name == owner:
                 continue
-            meta = read_json(holder / METADATA)
+            meta = census.cpu(holder.name).metadata
             if meta.get('measurement'):
                 return None, 'measurement_holder'
             if meta.get('funded_by') == owner:
@@ -1892,8 +1809,8 @@ class Controller:
         # counts, and runs nothing on a CPU.  Read as a holder it has no
         # declared CPU and non-empty content, so it refused every row on the
         # storage host as ``holder_reservation_unknown`` (#1260).
-        holders = [p for p in self.ledger.held_dir.iterdir()
-                   if p.is_dir() and not p.name.startswith(RAM_HOST_MEMORY_PREFIX)]
+        census = HolderCensus(self.ledger.held_dir, read_json)
+        holders = list(census.non_mirror_holders)
         # Resolved once, before the pressure decision reads the demand.  The
         # caller may have pre-read the sealed identity, and the measurement and
         # ownership paths below all need the same answer rather than a second
@@ -1921,7 +1838,7 @@ class Controller:
             # pressure is not its gate: its CPUs are reserved, so nothing the
             # pool admits runs there, and the pressure its producer makes on
             # its own CPUs is the producer's.  No free token is taken.
-            funded, funding_refusal = self._funding(owner, holders, demand)
+            funded, funding_refusal = self._funding(owner, holders, demand, census)
             if funded is not None:
                 serves_measurement = funded.pop('owner_measurement')
                 self.last_decision = {"reason": "admitted_on_allowance", "sample": sample,
@@ -2069,11 +1986,12 @@ class Controller:
         protected_cpus = set()
         active_cost = 0.
         for holder in holders:
-            meta = read_json(holder / METADATA)
-            physical = len(list(holder.glob('cpu-*')))
+            reservation = census.cpu(holder.name)
+            meta = reservation.metadata
+            physical = reservation.physical_cpu_count
             reserved = meta.get('declared_cpu', physical)
             if not reserved:
-                if meta or any(holder.iterdir()):
+                if meta or reservation.has_contents:
                     return refuse("holder_reservation_unknown", holder=holder.name)
                 continue
             if measurement:
@@ -2082,7 +2000,7 @@ class Controller:
                 # that measurement's own dependents (#982).
                 isolated = holder.name if meta.get('measurement') else next(
                     (other.name for other in holders
-                     if read_json(other / METADATA).get('measurement')), None)
+                     if census.cpu(other.name).metadata.get('measurement')), None)
                 return refuse("measurement_holder", holder=holder.name,
                               isolated_by=isolated, fresh=fresh)
             if meta.get('measurement'):

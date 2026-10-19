@@ -8,6 +8,7 @@ with the submission template's identity. No second sealing scheme lives
 here; this module IS the one construction, moved verbatim.
 """
 from __future__ import annotations
+from .submission_types import SubmissionRefused
 
 import hashlib
 import json
@@ -26,7 +27,7 @@ from . import pool
 SEALED_ARGV0 = "/bin/bash"
 
 
-def captured_command(command: Sequence[str], log_name: str) -> str:
+def _capture_pipeline(producer: str, log_name: str) -> str:
     """Capture bytes with scoped GNU preference and retain both pipeline codes.
 
     Selection uses the action's existing PATH. The resolved executable and
@@ -37,7 +38,7 @@ def captured_command(command: Sequence[str], log_name: str) -> str:
         'elif _pb_capture=$(command -v tee); then :; '
         'else printf "pbrun: log capture executable unavailable\\n" >&2; exit 127; fi; '
         'printf "pbrun: log capture executable=%s\\n" "$_pb_capture" >&2; '
-        f'{shlex.join(command)} 2>&1 | "$_pb_capture" {shlex.quote(log_name)}; '
+        f'{producer} 2>&1 | "$_pb_capture" {shlex.quote(log_name)}; '
         '_pb_status=("${PIPESTATUS[@]}"); '
         'if (( _pb_status[1] != 0 )); then '
         'printf "pbrun: capture status=%s; producer status=%s\\n" '
@@ -45,6 +46,36 @@ def captured_command(command: Sequence[str], log_name: str) -> str:
         'if (( _pb_status[0] != 0 )); then exit "${_pb_status[0]}"; fi; '
         'exit "${_pb_status[1]}"'
     )
+
+
+def _capture_argv(
+    command: Sequence[str], log_name: str, *, path_prefix: str | None = None,
+    legacy: bool = False,
+) -> list[str]:
+    prefix = "" if path_prefix is None else f"export PATH={shlex.quote(path_prefix)}:$PATH; "
+    producer = shlex.join(command) if legacy else '"$@"'
+    return [SEALED_ARGV0, "--noprofile", "--norc", "-c",
+            prefix + _capture_pipeline(producer, log_name),
+            *([] if legacy else ["bash", *command])]
+
+
+def captured_command(
+    command: Sequence[str], log_name: str, *, path_prefix: str | None = None
+) -> list[str]:
+    """Capture separate exec arguments, with a fixed script and explicit bash $0."""
+    return _capture_argv(command, log_name, path_prefix=path_prefix)
+
+
+def capture_argv_matches(
+    argv: object, command: Sequence[str], log_name: str, *, path_prefix: str | None = None
+) -> bool:
+    """Bind only the current positional recipe or the exact S5 inline recipe.
+
+    Retained requests execute unchanged. Legacy reconstruction is verification
+    only; new producers always keep the command outside the shell script.
+    """
+    return any(argv == _capture_argv(command, log_name, path_prefix=path_prefix, legacy=legacy)
+               for legacy in (False, True))
 
 
 def standard_capture_argv(
@@ -57,16 +88,12 @@ def standard_capture_argv(
     (``task.result_path == log_name``): the first ``PATH`` component is
     exported ahead of the inherited ``PATH``, then :func:`captured_command`
     runs the command through the scoped capture.  A client that must prove the
-    sealed ``params.command`` is the one the worker actually executed
-    reconstructs this list from the validated request and compares it with
-    ``task.argv``; nothing else in the tree may spell the wrapper (#1446).
+    sealed ``params.command`` is the one the worker actually executed uses
+    :func:`capture_argv_matches`, which also accepts the exact retained S5
+    inline recipe. Nothing else in the tree may spell the wrapper (#1446).
     """
 
-    return [
-        SEALED_ARGV0, "--noprofile", "--norc", "-c",
-        f"export PATH={shlex.quote(path_prefix)}:$PATH; "
-        + captured_command(command, log_name),
-    ]
+    return captured_command(command, log_name, path_prefix=path_prefix)
 
 #: Parameters a movement action may restate off its submission template.
 #: ``retry_policy`` is not one of them (#950): a mover's is its own.
@@ -273,8 +300,7 @@ def capacity_role(action: Mapping[str, object], demand: Mapping[str, object], *,
     script_index = 1 + len(MOVEMENT_PYTHON_ARGS)
     result_path = task.get("result_path")
     if (not isinstance(result_path, str)
-            or task.get("argv") != [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                                    captured_command(command, result_path)]
+            or not capture_argv_matches(task.get("argv"), command, result_path)
             or any(task.get(name) != value for name, value in MOVEMENT_TASK.items())
             or action.get("execution_scope") != MOVEMENT_EXECUTION_SCOPE
             or not _movement_environment_ok(action, command)):
@@ -688,7 +714,7 @@ def movement_tools(tier: Mapping[str, object], *,
     python = str(tier.get("mover_python") or "")
     root = str(tier.get("mover_tools_root") or "")
     if not python.startswith("/") or not root.startswith("/"):
-        raise SystemExit(
+        raise SubmissionRefused(
             f"stage tier {tier_id} announces no interpreter or tool "
             f"root for its movement nodes (mover_python={python!r}, "
             f"mover_tools_root={root!r}). tier_loop.py discovers both on the "
@@ -851,8 +877,7 @@ def seal_movement_action(
             # The sealed ``PATH`` is the launch environment's whole ``PATH``
             # (``core.run_local_action`` builds the child's environment from
             # the sealed variables alone), so the wrapper exports nothing.
-            "argv": [SEALED_ARGV0, "--noprofile", "--norc", "-c",
-                     captured_command(params["command"], log_name)],
+            "argv": captured_command(params["command"], log_name),
             "result_path": log_name,
         },
         "inputs": template["inputs"],                     # type: ignore[index]
@@ -865,4 +890,42 @@ def seal_movement_action(
     try:
         return pb.seal_action(body)
     except pb.ActionContractError as exc:
-        raise SystemExit(f"refusing to seal a movement action: {exc}") from None
+        raise SubmissionRefused(f"refusing to seal a movement action: {exc}") from None
+
+
+def checkout_identity(cwd: Path) -> dict[str, str]:
+    """Commit plus a digest of the working-tree delta, or a named refusal."""
+
+    try:
+        return pb.git_checkout_identity(cwd)
+    except pb.ActionContractError as exc:
+        raise SubmissionRefused(f"pbrun: cannot identify checkout: {exc}") from None
+
+
+
+def submission_container_owner(
+    command,
+    cwd,
+    demand,
+    variables,
+    *,
+    determinism,
+    retry_policy,
+    marker_root,
+    identity=None,
+    logical_cwd=None,
+    placement=None,
+    container_images=(),
+) -> str:
+    """Submission ownership with the historical Git-identity fallback.
+
+    The digest recipe is shared with writer movements. Submission templates
+    without an explicit identity retain the same checkout read and refusal.
+    """
+
+    return container_owner(
+        command, cwd, demand, variables,
+        determinism=determinism, retry_policy=retry_policy,
+        marker_root=marker_root, identity=identity,
+        logical_cwd=logical_cwd, placement=placement,
+        container_images=container_images, identity_fn=checkout_identity)

@@ -24,6 +24,9 @@ through the real ``PoolQueue``, and commit through ``commit_origin_batch``
 without running a worker; consumers go through the real ``pbrun.main``.
 """
 from __future__ import annotations
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
+from submission_support import patch_store
 
 import contextlib
 import hashlib
@@ -43,13 +46,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import test_prepaid_writer_integration as fx  # noqa: E402
 from prismabuild import action_edges as ae  # noqa: E402
 from prismabuild import core as pb, pool, produced_output as po  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import residency_map as rm, residency_plan, storage_tiers  # noqa: E402
-import deferred_release as dr  # noqa: E402
+from prismabuild import deferred_release as dr  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 import pbstatus  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import (  # noqa: E402
     _announce_tier, _tier_cycle,
@@ -57,11 +62,12 @@ from test_pbrun_residency_stage_submission import (  # noqa: E402
 from test_write_only_produced_output import (  # noqa: E402
     KIND, TIER, _descriptor, _prewrite, _queue, _template,
 )
+from prismabuild import staged_path
 
 _isolated_synthetic_launch_context = fx._isolated_synthetic_launch_context
 
 WORKER = str(fx.REPO / "tools" / "prismabuild_worker.py")
-CONSUMED = po.ORIGIN_LIFETIME_CONSUMED
+CONSUMED = oc.ORIGIN_LIFETIME_CONSUMED
 PLACEHOLDER = ae.DATA_MANIFEST_PLACEHOLDER
 DIGEST = ae.DATA_MANIFEST_SHA256_PLACEHOLDER
 #: A consumer that verifies its manifest: exit 0 only when the file at the
@@ -87,8 +93,8 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     queue = _queue(tmp_path)
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     (tmp_path / "repo").symlink_to(pbrun.RUNTIME_ROOT)
     return queue, _checkout(tmp_path)
@@ -146,8 +152,8 @@ def _start(queue: pool.PoolQueue, template: dict, key: str, *,
            "PRISMABUILD_ACTION_SCOPE": control["scope_id"]}
     instance = po.bind_instance(queue, template, owner_action_key=key,
                                 claim_snapshot=claimed, env=env)
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"] is True
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"] is True
     return instance
 
 
@@ -160,7 +166,7 @@ def _commit(queue, template, instance, batch_id: str, payload: bytes, *,
                      len(payload))["ok"]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-    committed = po.commit_origin_batch(
+    committed = bl.BatchLedger.commit_origin(
         queue, instance, template, [_descriptor(instance, template, path, payload)],
         batch_id=batch_id, lifetime=lifetime)
     assert committed["ok"], committed
@@ -212,7 +218,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     deferred = ae.read_deferred(queue.root, pending)
     assert deferred is not None
     assert deferred["publication"]["priority_reason"] == "producer gate"
-    assert {row.stem for row in queue.dir(pool.READY).glob("*.json")} == {
+    assert {row.stem for row in queue.records.dir(pool.record_store.READY).glob("*.json")} == {
         producer}, "nothing is queued for the consumer yet"
 
     # The producer is queued, then running: the consumer waits, quietly.
@@ -236,10 +242,12 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     summary = [event for event in events if event["event"] == dr.TICK_EVENT]
     assert summary[0]["released"] == 1 and summary[0]["elapsed_s"] >= 0
     assert ae.read_published(queue.root, pending)["action_key"] == key
-    assert json.loads(queue.item_path(pool.READY, key).read_text())["priority_reason"] == "producer gate"
+    assert json.loads(
+        queue.records.item_path(pool.record_store.READY, key).read_text(),
+    )["priority_reason"] == "producer gate"
     assert "priority_reason" not in _request(tmp_path, key)["params"]
     # Declared against the batch (#914), so its retirement waits for it.
-    assert (po._consumers_dir(queue.root, instance, "b1")
+    assert (bl._consumers_dir(queue.root, instance, "b1")
             / f"{key}.json").exists()
 
     # The sealed command names the manifest, and the manifest names exactly
@@ -250,10 +258,10 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     # /bin at /usr/bin; the leaf may itself be a link, as with Rust coreutils).
     assert request["params"]["command"][0] == os.path.join(
         os.path.realpath("/bin"), "cat")
-    manifest, _ = pb.read_data_manifest(manifest_path)
+    manifest, _ = manifest_codec.read_data_manifest(manifest_path)
     assert [(entry["path"], entry["sha256"]) for entry in manifest["entries"]] == [
         (str(path), hashlib.sha256(payload).hexdigest())]
-    assert manifest["annotations"][po.ORIGIN_BATCHES_ANNOTATION] == [
+    assert manifest["annotations"][oc.ORIGIN_BATCHES_ANNOTATION] == [
         committed["ref"]]
     assert request["params"]["data_manifest"]["input"]["sha256"] == \
         released["manifest_sha256"]
@@ -269,7 +277,7 @@ def test_a_consumer_filed_before_its_producer_runs_reads_the_committed_bytes(
     # the tier loop's next cycle copies it to each consumer that reads the
     # range, before it composes that consumer's map.
     _tier_cycle(queue, tmp_path / "stage")
-    composed = rm.compose(rm.read_fragments(queue.root / pool.RESIDENCY, key))
+    composed = rm.compose(rm.read_fragments(queue.root / pool.record_store.RESIDENCY, key))
     staged = composed["entries"][rm.residency_map_key(str(path), 0)]
     assert Path(staged["stage_path"]).read_bytes() == payload
 
@@ -342,7 +350,7 @@ def test_a_failed_producer_never_releases_its_consumer(
     assert _without_summary(dr.release_tick(queue)) == [], "once per change"
     assert ae.read_release(queue.root, pending) is None
     assert ae.read_published(queue.root, pending) is None
-    assert pbrun.await_release(queue, pending, wait_s=0.01) == pbrun.GAVE_UP_EXIT
+    assert submit_core.await_release(queue, pending, wait_s=0.01, store=pbrun.configured_store(), display=pbrun.render_submission) == submit_core.action_client.GAVE_UP_EXIT
     # The failed producer's batch is an orphan: nothing unreleased will read
     # a failed key, so #914 sweeps it.
     assert ae.held_producer_batches(queue) == set()
@@ -375,12 +383,11 @@ def test_an_edge_to_an_unknown_key_is_refused_at_submission(
         command=("/bin/cat", PLACEHOLDER, DIGEST, DIGEST))
     # A pbrun outside the generation store (a development checkout) freezes
     # a template no release could seal: refused now, not held for ever.
-    current = pbrun.CONTAINER_WRAPPER_DIR
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR",
-                        _retained_generation(tmp_path / "dev", "g-dev"))
+    current = pbrun.configured_store().wrapper_dir
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=_retained_generation(tmp_path / "dev", "g-dev"))
     assert "no release could seal" in refused(
         "--after", f"{producer}:{template['template_id']}")
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", current)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=current)
     assert not (queue.root / ae.DEFERRED_SUBDIR).exists(), (
         "a refused submission files nothing")
     with pytest.raises(SystemExit):
@@ -437,7 +444,7 @@ def test_a_chain_resolves_a_deferred_producer_through_its_release(
     claimed = queue.claim(owner="w-consumer", tags=list(TAGS))
     assert claimed["action_key"] == b_key
     queue.finish(b_key, status="executed")
-    assert pbrun.await_release(queue, b, wait_s=1.0) == 0
+    assert submit_core.await_release(queue, b, wait_s=1.0, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
 
 def test_a_superseded_producer_releases_its_consumer_under_the_new_key(
@@ -546,7 +553,7 @@ def test_an_unreleased_consumer_holds_the_batch_its_producer_committed(
     assert claimed["action_key"] == key
     queue.finish(key, status="executed")
     retired = [event for event in po.origin_retirement_tick(queue)
-               if event["event"] == po.ORIGIN_RETIRED_EVENT]
+               if event["event"] == oc.ORIGIN_RETIRED_EVENT]
     assert {event["ref"]["owner_action_key"] for event in retired} == {
         first, second}
     assert not path.exists()
@@ -566,7 +573,7 @@ def test_a_cache_hit_producer_is_read_from_the_attempt_that_committed(
     fx._broker_control(queue, producer)       # a retry's attempt holds the claim
     queue.finish(producer, status="cache_hit")
 
-    assert po._producer_attempt_state(queue, instance) == "unknown"
+    assert bl.producer_attempt_state(queue, instance) == "unknown"
     assert po.origin_retirement_tick(queue) == []
     assert path.exists(), "the cache hit ran nothing: these are the only bytes"
 
@@ -592,12 +599,12 @@ def test_a_pinned_release_resumes_as_pinned_after_a_crash(
     _path, committed = _commit(queue, template, instance, "b1", b"pinned")
     queue.finish(producer, status="executed")
 
-    publish = pbrun.publish_consumer_row
+    publish = submit_core.publish_consumer_row
 
     def crash(*_args, **_kwargs):
         raise OSError("the tier host lost power")
 
-    monkeypatch.setattr(pbrun, "publish_consumer_row", crash)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", crash)
     [refusal] = _without_summary(dr.release_tick(queue))
     assert refusal["event"] == dr.REFUSED_EVENT and "lost power" in refusal["reason"]
     pinned = ae.read_release(queue.root, pending)
@@ -608,12 +615,12 @@ def test_a_pinned_release_resumes_as_pinned_after_a_crash(
     _publish_producer(queue, template, producer)
     queue.claim(owner="w-producer")
     queue.finish(producer, status="failed")
-    monkeypatch.setattr(pbrun, "publish_consumer_row", publish)
+    monkeypatch.setattr(submit_core, "publish_consumer_row", publish)
     [resumed] = _released(dr.release_tick(queue))
     assert resumed["resumed"] is True
     assert resumed["action_key"] == pinned["action_key"]
     assert resumed["refs"] == [committed["ref"]]
-    assert queue.item_path(pool.READY, pinned["action_key"]).exists()
+    assert queue.records.item_path(pool.record_store.READY, pinned["action_key"]).exists()
 
 
 def test_a_release_published_before_a_crash_records_that_generation(
@@ -636,11 +643,11 @@ def test_a_release_published_before_a_crash_records_that_generation(
     monkeypatch.setattr(ae, "file_published", crash)
     dr.release_tick(queue)
     key = ae.read_release(queue.root, pending)["action_key"]
-    row = json.loads(queue.item_path(pool.READY, key).read_text())
+    row = json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
     monkeypatch.setattr(ae, "file_published", record)
     [resumed] = _released(dr.release_tick(queue))
     assert resumed["published_unix"] == row["published_unix"]
-    assert json.loads(queue.item_path(pool.READY, key).read_text()) == row, (
+    assert json.loads(queue.records.item_path(pool.record_store.READY, key).read_text()) == row, (
         "the row was not published a second time")
 
 
@@ -676,13 +683,13 @@ def test_a_consumer_is_sealed_into_the_retained_generation_that_froze_it(
     old = _retained_generation(store, "g-old")
     bad = _retained_generation(store, "g-bad")
     edge = f"{producer}:{template['template_id']}"
-    current = pbrun.CONTAINER_WRAPPER_DIR
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", old)
+    current = pbrun.configured_store().wrapper_dir
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=old)
     kept = _submit(work, monkeypatch, capsys, "--after", edge)["pending_id"]
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", bad)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=bad)
     tampered = _submit(work, monkeypatch, capsys, "--after", edge,
                        command=("/bin/cat", PLACEHOLDER, "b"))["pending_id"]
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", current)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=current)
     # Tampered after its submission: its wrapper no longer matches its receipt.
     receipt = bad.parent / "RUNTIME_VERSION.json"
     receipt.chmod(0o644)
@@ -718,13 +725,15 @@ def test_a_consumer_is_sealed_into_the_retained_generation_that_froze_it(
 
 def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    """Two real publications: the first stays, and the consumer seals into it.
+    """Two sealed generations retain the consumer's first runtime binding.
 
     Retention is not a reference count.  ``publish_runtime`` never deletes a
     generation (it removes only its own failed ``.staging`` trees), and
     ``pb_gc`` surveys the CAS, not the generation store, so a generation an
     unreleased consumer froze is still there, receipt and wrapper intact,
-    after any number of later publications.
+    after any number of later publications. The real publisher stages each
+    generation. Its real pointer owner moves only this fixture's mirror after
+    sealed-byte verification, without claiming installed-reader activation.
     """
 
     from test_publish_runtime import _fake_git_and_probe, publish_runtime
@@ -732,35 +741,34 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     queue = _queue(tmp_path)
     queue.announce(host="sparky", tags=list(TAGS), has_gpu=True,
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     work = _checkout(tmp_path)
     mirror = tmp_path / "repo"
     monkeypatch.setattr(publish_runtime, "CHECKOUT", fx.REPO)
     monkeypatch.setattr(publish_runtime, "MIRROR", mirror)
 
-    real_run = publish_runtime.subprocess.run
-
     def publish(commit: str) -> Path:
-        # ``subprocess`` is one module: the fake answers publication's Git
-        # questions only while it publishes, never pbrun's.
-        monkeypatch.setattr(publish_runtime.subprocess, "run",
-                            _fake_git_and_probe(commit))
-        monkeypatch.setattr(sys, "argv", [
-            "publish_runtime.py", "--rollout", "rolling", "--no-canary",
-            "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
-        try:
+        store = mirror.parent / "runtime-generations"
+        before = set(store.iterdir()) if store.exists() else set()
+        with monkeypatch.context() as publication:
+            publication.setattr(publish_runtime.subprocess, "run",
+                                _fake_git_and_probe(commit))
+            publication.setattr(sys, "argv", [
+                "publish_runtime.py", "--stage-only", "--rollout", "rolling",
+                "--rollout-reason", "fixture publication", "--shape-gate-waiver", "fixture publication"])
             assert publish_runtime.main() == 0
-        finally:
-            monkeypatch.setattr(publish_runtime.subprocess, "run", real_run)
+        [created] = set(store.iterdir()) - before
+        generation, _receipt = publish_runtime._sealed_generation(created.name)
+        publish_runtime._activate(generation, migrate_directory=False)
         return mirror.resolve()
 
     first = publish("a" * 40)
     template = _template(tmp_path / "canonical")
     producer = _producer_key(tmp_path, template, "across-a-publish")
     _publish_producer(queue, template, producer)
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", first / "tools")
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=first / "tools")
     pending = _submit(work, monkeypatch, capsys, "--after",
                       f"{producer}:{template['template_id']}")["pending_id"]
 
@@ -768,8 +776,8 @@ def test_a_publish_keeps_the_generation_an_unreleased_consumer_froze(
     assert second != first and second.parent == first.parent
     assert (first / "RUNTIME_VERSION.json").is_file()
     # The loop restarted on the new generation, as the supervisor does.
-    monkeypatch.setattr(pbrun, "RUNTIME_ROOT", second)
-    monkeypatch.setattr(pbrun, "CONTAINER_WRAPPER_DIR", second / "tools")
+    patch_store(monkeypatch, client=pbrun, runtime_root=second)
+    patch_store(monkeypatch, client=pbrun, wrapper_dir=second / "tools")
     instance = _start(queue, template, producer)
     _commit(queue, template, instance, "b1", b"across a publish")
     queue.finish(producer, status="executed")
@@ -834,10 +842,10 @@ def test_a_burst_of_releases_is_bounded_per_cycle_and_after_the_windows(
 
     def cycle() -> list[dict]:
         out = io.StringIO()
-        queue.mint_tier_capacity(TIER, {KIND: 8})
+        queue.tier(TIER).mint({KIND: 8})
         stage = tmp_path / "stage"
         stage.mkdir(exist_ok=True)
-        stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+        staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
         with contextlib.redirect_stdout(out):
             tier_loop.cycle(queue, host="sparky", source_pool="storage_pool",
                             receipts=tier_loop.ReceiptCache(),

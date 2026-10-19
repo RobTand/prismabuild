@@ -21,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     PHASE_GIB, TIER, _cycle, _stage_range, _tier_record)
 from test_prelaunch_group_reconcile_1594 import _hexkey, _queue  # noqa: E402
@@ -34,6 +34,7 @@ from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _fixture_queue)
 from test_admission_charges_refill_horizons_jointly import (  # noqa: E402
     NEWCOMER_FOOTPRINT, READER_FOOTPRINT, Consumer, _reader, _tiers)
+from prismabuild import staged_path
 
 EVENT = "window-pressure-skipped"
 
@@ -42,7 +43,7 @@ def _tier(tmp_path: Path):
     queue = _queue(tmp_path, stage_gib=CAPACITY)
     stage = tmp_path / "stage"
     stage.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=stage)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=stage)
     return queue, stage
 
 
@@ -121,7 +122,7 @@ def test_a_waiter_the_commitment_refuses_says_which_decision(tmp_path: Path) -> 
     so the refusal is ``_commitment_decision``'s own.
     """
     queue, stage = _fixture_queue(tmp_path, 30)
-    assert queue.tier_ledger(TIER).acquire(_hexkey("static"), {"stage_gib": 10})
+    assert queue.tier(TIER).take(_hexkey('static'), {'stage_gib': 10})
     _reader(queue, stage)
     newcomer = Consumer(queue, stage, "n")
     skipped: list[dict[str, object]] = []
@@ -220,9 +221,9 @@ def test_a_waiter_that_stops_and_returns_is_reported_again(tmp_path: Path) -> No
     queue, stage = _tier(tmp_path)
     waiter, _movers = _too_big(queue, stage)
     _cycle(queue, stage, gib=CAPACITY)
-    queue.item_path(pool.READY, waiter).rename(tmp_path / "parked.json")
+    queue.records.item_path(pool.record_store.READY, waiter).rename(tmp_path / "parked.json")
     _cycle(queue, stage, gib=CAPACITY)
-    (tmp_path / "parked.json").rename(queue.item_path(pool.READY, waiter))
+    (tmp_path / "parked.json").rename(queue.records.item_path(pool.record_store.READY, waiter))
     _cycle(queue, stage, gib=CAPACITY)
     assert len(_events(queue, waiter)) == 2
 

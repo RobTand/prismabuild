@@ -6,6 +6,7 @@ the same pbrun row vocabulary as an ordinary campaign row. Submission-level
 priority and a single-action reseal handle deliberately remain outside it.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -15,10 +16,12 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from prismabuild import contracts
 from prismabuild import core as pb, decomposition as dc, pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbcampaign, pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_a_decomposed_campaign_closes_on_an_exact_cover import _request  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
@@ -104,7 +107,7 @@ def _progress_queue(tmp_path: Path) -> pool.PoolQueue:
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(
         host="sparky",
-        tags=["sparky", "x86", pb.PROGRESS_TAG, pb.PROGRESS_HELPER_TAG],
+        tags=["sparky", "x86", contracts.PROGRESS_TAG, contracts.PROGRESS_HELPER_TAG],
         has_gpu=False,
         capacity={"cpu": 4, "mem_gb": 16, "gpu": 0},
         progress_contracts=[pb.PROGRESS_RECORD_SCHEMA_V1],
@@ -117,7 +120,7 @@ def test_decomposition_seals_shared_policies_on_every_child(
 ) -> None:
     """The logical path must seal policies, not merely turn them into flags."""
 
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     work = _checkout(tmp_path)
     _progress_queue(tmp_path)
@@ -135,7 +138,7 @@ def test_decomposition_seals_shared_policies_on_every_child(
         dc.validate_logical_request(request), transport="pool", priority=0,
     )
     assert {record["status"] for record in records} == {"submitted"}
-    progress = pbrun.parse_progress_phases(request["common"]["progress_phases"])
+    progress = submit_core.parse_progress_phases(request["common"]["progress_phases"])
     for child in group["children"]:
         params = child["params"]
         assert params["execution_timeout_s"] == 600.0
@@ -143,8 +146,8 @@ def test_decomposition_seals_shared_policies_on_every_child(
         assert params[pb.PROFILE_PARAM] == "sample"
         assert params["retry_policy"] == {"max_attempts": 1, "retry_safe": True}
         assert "x86" in params["placement"]["required_tags"]
-        assert pb.PROGRESS_TAG in params["placement"]["required_tags"]
-        assert pb.PROGRESS_HELPER_TAG in params["placement"]["required_tags"]
+        assert contracts.PROGRESS_TAG in params["placement"]["required_tags"]
+        assert contracts.PROGRESS_HELPER_TAG in params["placement"]["required_tags"]
 
     _, baseline = pbcampaign.decompose(
         dc.validate_logical_request(_request(work)), transport="pool", priority=0,

@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-WORKER_LOOP = Path(__file__).resolve().parents[1] / "tools" / "fleet" / "worker_loop.py"
+ROLE_SESSION = Path(__file__).resolve().parents[1] / "src" / "prismabuild" / "role_session.py"
 
 
 def _worker_loop(gate: Path):
@@ -43,8 +43,8 @@ def _worker_loop(gate: Path):
     previous = os.environ.get("PRISMABUILD_MAINTENANCE_GATE")
     os.environ["PRISMABUILD_MAINTENANCE_GATE"] = str(gate)
     try:
-        spec = importlib.util.spec_from_file_location("worker_loop_parked",
-                                                      WORKER_LOOP)
+        spec = importlib.util.spec_from_file_location("prismabuild.role_session_parked",
+                                                      ROLE_SESSION)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
@@ -176,7 +176,7 @@ def test_an_unwritable_root_parks_the_loop_anyway(tmp_path):
 
 
 def test_an_unreadable_gate_parks_under_a_key_no_reader_matches(tmp_path):
-    """A drain with no identity must not pass for the drain being waited on."""
+    """A drain with no identity parks without filing authoritative evidence."""
 
     gate = tmp_path / "maintenance.json"
     gate.write_text("{not json")
@@ -185,8 +185,8 @@ def test_an_unreadable_gate_parks_under_a_key_no_reader_matches(tmp_path):
 
     marker = loop.post_park_marker(loop.read_maintenance_gate())
 
-    assert marker is not None
-    assert marker.name.rsplit("-", 1)[1] == "unknown"
+    assert marker is None
+    assert list(loop.PARKED_ROOT.iterdir()) == []
 
 
 def _starttime_of_self() -> str:

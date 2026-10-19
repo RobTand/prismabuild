@@ -38,6 +38,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 from prismabuild import pool  # noqa: E402
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 KEY = "c" * 64
 #: A claiming box that is never the reaping box. Derived rather than named:
@@ -75,25 +76,25 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
     )
     with mock.patch.object(pool.socket, "gethostname", lambda: HELD_BY):
         assert q.claim(owner=f"{HELD_BY}:1:abc", capacity={"cpu": 1}) is not None
-    path = q.item_path(pool.CLAIMED, KEY)
+    path = q.records.item_path(pool.record_store.CLAIMED, KEY)
     if never_leased:
         # The lease is what says a payload was launched; this one has none.
-        q.lease_path(KEY).unlink()
+        q.records.lease_path(KEY).unlink()
         # ``withdraw`` closes the retry by writing these two onto the live
         # claim.  Written directly here: the subject is what ``pbrun`` renders
         # from the record, not how the record came to be stamped.
         record = json.loads(path.read_text())
         record["max_attempts"] = 1
         record["withdrawn_unix"] = pool._now()
-        pool._write_json_atomic(path, record)
-    intent_path = q.item_path(pool.INTENT, KEY)
+        pool.immutable_files.write_json_atomic(path, record)
+    intent_path = q.records.item_path(pool.record_store.INTENT, KEY)
     if forget_claimed_host:
         # The shape of a claim lost between the rename and the record rewrite:
         # the claiming box never got to name itself in the record.
         record = json.loads(path.read_text())
         record.pop("claimed_host", None)
         record.pop("claimed_by", None)
-        pool._write_json_atomic(path, record)
+        pool.immutable_files.write_json_atomic(path, record)
     if forget_intent:
         intent_path.unlink(missing_ok=True)
         # The reservation too, or this is not an unknown holder any more: the
@@ -111,7 +112,7 @@ def _lose_a_claim(q: pool.PoolQueue, *, forget_claimed_host: bool = False,
     with mock.patch.object(pool, "_now", lambda: later):
         # The reaper reports every claim it moved, terminal or requeued.
         assert q.reap_stale(timeout_s=-1) == [KEY]
-    failed = q.item_path(pool.FAILED, KEY)
+    failed = q.records.item_path(pool.record_store.FAILED, KEY)
     assert failed.exists()
     record = json.loads(failed.read_text())
     assert record["status"] == "lease_lost_max_attempts"
@@ -124,11 +125,11 @@ def test_the_headline_names_the_holder_and_the_reaper(
     """The box that held the claim leads; the reaper is named as the reaper."""
 
     path, record = _lose_a_claim(queue)
-    summary = pbrun.outcome_summary(queue, path, record)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
 
     assert summary["claimed_host"] == HELD_BY
     assert summary["finished_host"] == socket.gethostname()
-    headline = pbrun.outcome_headline(summary)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert f"held by {HELD_BY}" in headline
     assert f"reaped by {socket.gethostname()}" in headline
     # And never the shape that sent people to the wrong box.
@@ -150,8 +151,8 @@ def test_a_claim_lost_before_its_record_still_names_its_box(
     assert record["claimed_host"] == HELD_BY, (
         "a claim was lost more anonymously than it was taken"
     )
-    summary = pbrun.outcome_summary(queue, path, record)
-    assert f"held by {HELD_BY}" in pbrun.outcome_headline(summary)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
+    assert f"held by {HELD_BY}" in submit_core.action_client.outcome_headline(summary)
 
 
 def test_an_unknown_holder_is_said_to_be_unknown(queue: pool.PoolQueue) -> None:
@@ -166,8 +167,8 @@ def test_an_unknown_holder_is_said_to_be_unknown(queue: pool.PoolQueue) -> None:
     path, record = _lose_a_claim(
         queue, forget_claimed_host=True, forget_intent=True)
 
-    summary = pbrun.outcome_summary(queue, path, record)
-    headline = pbrun.outcome_headline(summary)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert "held by (not recorded)" in headline
     assert f"reaped by {socket.gethostname()}" in headline
 
@@ -176,10 +177,10 @@ def test_a_claim_lost_before_any_lease_says_so(queue: pool.PoolQueue) -> None:
     """``lease_age_s: null`` is not "the lease was old"; it is "there was none"."""
 
     path, record = _lose_a_claim(queue, never_leased=True)
-    summary = pbrun.outcome_summary(queue, path, record)
+    summary = submit_core.action_client.outcome_summary(queue, path, record)
 
     assert summary["detail"]["lease_age_s"] is None
-    headline = pbrun.outcome_headline(summary)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert "no lease was ever written" in headline
     assert "None" not in headline
 
@@ -193,7 +194,7 @@ def test_a_stale_lease_reports_its_age(queue: pool.PoolQueue) -> None:
         "finished_host": "sparky",
         "detail": {"lease_age_s": 312.52},
     }
-    headline = pbrun.outcome_headline(summary)
+    headline = submit_core.action_client.outcome_headline(summary)
     assert headline == (
         "lease_lost_max_attempts -- held by dl380g10, reaped by sparky, "
         "lease 312.5s stale"
@@ -209,4 +210,4 @@ def test_an_ordinary_outcome_is_rendered_as_before(queue: pool.PoolQueue) -> Non
         "finished_host": "sparky",
         "detail": {"elapsed_s": 12.4, "returncode": 0},
     }
-    assert pbrun.outcome_headline(summary) == "executed on sparky in 12s"
+    assert submit_core.action_client.outcome_headline(summary) == "executed on sparky in 12s"

@@ -26,6 +26,7 @@ disagreed in 8 of 10 trials, so the four seals this file asks for fail on the
 old sealer with near certainty rather than merely usually.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 import importlib.util
 from pathlib import Path
@@ -82,7 +83,7 @@ def _repository(root: Path, *, files: int) -> Path:
 
 def _seal(checkout: Path, cas_root: Path, **kwargs: object) -> dict[str, object]:
     cas = core_module.PrismaBuildCAS(cas_root)
-    return pbrun.build_git_checkout_snapshot(
+    return submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES, **kwargs   # type: ignore[arg-type]
     )
 
@@ -137,14 +138,14 @@ def test_the_pack_command_pins_every_setting_that_moves_its_bytes(
 
     checkout = _repository(tmp_path / "checkout", files=4)
     recorded: list[list[str]] = []
-    real_run = pbrun.subprocess.run
+    real_run = submit_core.subprocess.run
 
     def record(argv, *args, **kwargs):
         if isinstance(argv, list):
             recorded.append([str(part) for part in argv])
         return real_run(argv, *args, **kwargs)
 
-    monkeypatch.setattr(pbrun.subprocess, "run", record)
+    monkeypatch.setattr(submit_core.subprocess, "run", record)
     _seal(checkout, tmp_path / "cas")
 
     packs = [argv for argv in recorded if "pack-objects" in argv]
@@ -153,7 +154,7 @@ def test_the_pack_command_pins_every_setting_that_moves_its_bytes(
     pinned = {
         argv[index + 1] for index, part in enumerate(argv) if part == "-c"
     }
-    for key, value in pbrun.BUNDLE_PACK_CONFIGURATION:
+    for key, value in submit_core.BUNDLE_PACK_CONFIGURATION:
         assert f"{key}={value}" in pinned, (
             f"{key} is not pinned on the pack command line"
         )
@@ -213,7 +214,7 @@ def test_the_sealed_bundle_is_a_bundle_git_can_read(tmp_path: Path) -> None:
     checkout = _repository(tmp_path / "checkout", files=4)
     assert _git(checkout, "branch", "gate-base").returncode == 0
     cas = core_module.PrismaBuildCAS(tmp_path / "cas")
-    snapshot = pbrun.build_git_checkout_snapshot(
+    snapshot = submit_core.snapshot_checkout(
         checkout, cas=cas, max_bytes=MAX_BYTES, snapshot_refs=["gate-base"],
     )
     bundle = cas.input_path(snapshot["input"])

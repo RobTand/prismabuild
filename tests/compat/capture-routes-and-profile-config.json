@@ -1,0 +1,294 @@
+{
+  "capture_name": "metrics-and-profile-capture-02",
+  "capture_report_sha256": "b56a1768a315b572167e50d1bd152d0206d041bedba1ac42c6f9d8baec4df46d",
+  "excluded_cases": [
+    "box-window/pqteld",
+    "canary-run/generation",
+    "canary-run/legacy",
+    "profile-exit/ended",
+    "profile-exit/launch-failed",
+    "profile-exit/launched",
+    "resource-profile/io",
+    "resource-profile/rusage",
+    "resource-profile/scope",
+    "scratch-profile/both",
+    "scratch-profile/read",
+    "scratch-profile/write"
+  ],
+  "files": {
+    "goldens-routes-and-profile-config.jsonl": "3b6b03ee8d28bdfd134fd5b61f66f3106db61c3058df21829a9aec2ff8e61e11",
+    "historical-routes-and-profile-config.jsonl": "7e704f0eb3c4d47376d66319532d4daa3acebba8a229ce83c84a66a0490d0950"
+  },
+  "finished_at": "2026-10-16T22:30:56.098203+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [
+    {
+      "attestation_error": null,
+      "case": "box-window/pqteld",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "box-window/pqteld",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "box-window/pqteld",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "box-window/pqteld",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/scope",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/scope",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/scope",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/scope",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/io",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/io",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/io",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/io",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/rusage",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/rusage",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/rusage",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "forward",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "resource-profile/rusage",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "unpublished-bridge-6fa9b780304d",
+      "phase": "reverse",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "canary-run/legacy",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "No module named 'pbcanary'",
+        "type": "ModuleNotFoundError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "canary-run/generation",
+      "entry_error": "adapter did not reach its catalogued production entry",
+      "error": {
+        "message": "No module named 'pbcanary'",
+        "type": "ModuleNotFoundError"
+      },
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "phase": "writer",
+      "returncode": 3
+    },
+    {
+      "attestation_error": null,
+      "case": "profile-exit/launch-failed",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "candidate",
+      "phase": "writer",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "profile-exit/launched",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "candidate",
+      "phase": "writer",
+      "returncode": 1
+    },
+    {
+      "attestation_error": null,
+      "case": "profile-exit/ended",
+      "entry_error": null,
+      "error": {
+        "message": "",
+        "type": "AssertionError"
+      },
+      "generation": "candidate",
+      "phase": "writer",
+      "returncode": 1
+    }
+  ],
+  "selected_cases": [
+    "profile-route/armed",
+    "profile-route/docker",
+    "scratch-profile-inputs/reference"
+  ],
+  "source_git": {
+    "parents": [
+      "db5f51b0a0d119c57649e4ad68480101ff0a81a4"
+    ],
+    "snapshot": "7d283abbba35ea0ca67f63fbb87c02515cf714bf",
+    "tree": "0e24e24cef235b026ad242f1297bdda720b964a5"
+  },
+  "started_at": "2026-10-16T22:29:34.666436+00:00"
+}

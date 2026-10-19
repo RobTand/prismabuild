@@ -13,7 +13,7 @@ the agent's client already speaks.
 Two properties, and they are the whole of the design.
 
 **Read-only by construction.**  Nothing here renames, writes, mints, locks or
-claims.  It never calls ``ensure_layout``, ``_transition_locked``,
+claims.  It never calls ``ensure_layout``, ``action_transition_lock``,
 ``record_pass``, ``claim``, ``publish`` or ``withdraw``, and
 ``tests/test_pbmcp_read_only.py`` asserts both halves of that: an import
 surface with no mutating name in it, and every tool run to completion against
@@ -22,7 +22,7 @@ consequence an agent should trust is not "it happens not to write today": it
 is that a write from this process would have to get past a test that fails on
 the attempt.
 
-**Bounded.**  Every read of the shared mount goes through ``pbstatus.bounded``
+**Bounded.**  Every read of the shared mount goes through ``_reader.bounded``
 (#358), which runs it in a child this process can abandon, because a ``stat``
 on a hard NFS mount need not return at any deadline and no in-process timeout
 can make it.  A section that does not answer inside the caller's deadline is
@@ -37,7 +37,7 @@ What it deliberately does not do:
     hooks that gate it live; an MCP tool that published to the queue would be
     a way around them.
 *   Take the transition lock to resolve a preemption handoff.  ``pbrun``'s
-    ``landed_outcome`` does, and it is right to: it is deciding what to tell a
+    ``action_wait.await_ending`` does, and it is right to: it is deciding what to tell a
     waiter.  This is reporting, so it re-derives the same successor rule
     unlocked and stamps ``unlocked_read`` on the answer -- a requeue published
     in the microseconds since the read reads as "not yet visible", never as
@@ -52,6 +52,7 @@ What it deliberately does not do:
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import hashlib
 import json
 import math
@@ -62,12 +63,16 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
-import pbstatus  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
+import upgrade_client  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
-from prismabuild import core as pb, pool  # noqa: E402
+from prismabuild import census as fleet_census  # noqa: E402
+from prismabuild import core as pb, endings, pool, _bounded_reader as _reader  # noqa: E402
 
 #: The envelope every tool result carries, versioned so a client can tell.
 SCHEMA_V1 = "prismaquant.prismabuild.pbmcp.v1"
@@ -119,7 +124,7 @@ DEFAULT_MOVER_RECEIPTS = 100
 #: The states one action key can be found in, in the order a reader should
 #: prefer them: a live record outranks a terminal one, because a key that was
 #: re-submitted after an ending has both.
-STATES = (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED, pool.WITHDRAWN)
+STATES = (pool.record_store.READY, pool.record_store.CLAIMED, pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)
 
 #: The two names a record's attempt links can sit under.  A withdrawal is an
 #: operator's verb, not an attempt: ``pool.withdraw`` moves the links a requeue
@@ -215,7 +220,7 @@ class Call:
                  repo_link: Path, abandoned: list[dict] | None = None) -> None:
         self.tool = tool
         self.deadline_s = float(deadline_s)
-        self.deadline = pbstatus.Deadline(deadline_s)
+        self.deadline = _reader.Deadline(deadline_s)
         self.startup_generation = startup_generation
         self.repo_link = Path(repo_link)
         self.timed_out: list[str] = []
@@ -253,7 +258,7 @@ class Call:
                 "error": "shared read suppressed until the retained reader exits",
             })
             return default
-        outcome = pbstatus.bounded(section, read, deadline=self.deadline,
+        outcome = _reader.bounded(section, read, deadline=self.deadline,
                                    abandoned=self.abandoned)
         if outcome["status"] == "ok":
             return outcome["value"]
@@ -329,44 +334,6 @@ def _link_target(repo_link: Path) -> str | None:
 # Queue reading -- every one of these opens for reading and nothing else
 # --------------------------------------------------------------------------
 
-def _absent(error: OSError) -> bool:
-    """Whether this error says "nothing is there", not "the mount did not answer".
-
-    ``ENOENT`` and ``ENOTDIR`` are absence: a key that was never published, a
-    state directory a queue has not created yet.  Every other ``OSError`` --
-    ``ESTALE`` and ``EIO`` are the two the fleet actually sees (#208) -- is a
-    mount that failed to answer, and ``pool._read_json`` keeps those loud on
-    purpose.  A reader that swallowed them would answer "no action starts with
-    that prefix" during an NFS burst, with ``complete: true`` next to it, and
-    those two sentences call for opposite responses.  Every call site below
-    runs inside a ``call.read`` lambda, so a raised error becomes a named
-    section with ``complete: false``, never an internal-error frame.
-    """
-
-    return isinstance(error, (FileNotFoundError, NotADirectoryError))
-
-
-def _read_record(path: Path) -> dict | None:
-    try:
-        return pool.read_queue_record(path)
-    except OSError as error:
-        if _absent(error):
-            return None
-        raise
-    except (ValueError, pool.PoolContractError):
-        return None
-
-
-def _keys_in(directory: Path) -> list[str]:
-    try:
-        with os.scandir(directory) as entries:
-            return sorted(entry.name[:-5] for entry in entries
-                          if entry.name.endswith(".json") and entry.is_file())
-    except OSError as error:
-        if _absent(error):
-            return []
-        raise
-
 
 def _valid_prefix(key_prefix: object) -> str:
     """The prefix, checked before any mount read so a bad one says so.
@@ -386,52 +353,14 @@ def _valid_prefix(key_prefix: object) -> str:
 
 
 def _resolve_prefix(queue_root: Path, key_prefix: str) -> list[str]:
-    """Every action key under this prefix, across live and terminal states.
-
-    A prefix rather than a key because that is what an operator and an agent
-    both hold: ``pbstatus`` prints twelve characters and ``pbrun`` says
-    ``pb-<key12>``.  An ambiguous prefix is answered with its candidates
-    rather than with the first match: picking one would be a guess, and the
-    caller can disambiguate with two more characters.
-    """
-
     prefix = _valid_prefix(key_prefix)
-    found: set[str] = set()
-    for state in STATES:
-        found.update(key for key in _keys_in(Path(queue_root) / state)
-                     if key.startswith(prefix))
-    decisions = Path(queue_root) / pool.WITHDRAWN / "decisions"
-    try:
-        with os.scandir(decisions) as entries:
-            found.update(entry.name for entry in entries
-                         if entry.is_dir() and entry.name.startswith(prefix))
-    except OSError as error:
-        if not _absent(error):
-            raise
-    try:
-        with os.scandir(Path(queue_root) / pool.ATTEMPTS) as entries:
-            found.update(entry.name for entry in entries
-                         if entry.is_dir() and entry.name.startswith(prefix))
-    except OSError as error:
-        if not _absent(error):
-            raise
-    return sorted(found)
-
-
-def _records_for(queue_root: Path, key: str) -> dict[str, dict]:
-    queue = pool.PoolQueue(Path(queue_root).absolute())
-    records = {}
-    for state in STATES:
-        record = _read_record(queue.item_path(state, key))
-        if record is not None:
-            records[state] = record
-    return records
+    return pool.record_store.RecordStore(queue_root).inspection_prefix(prefix)
 
 
 def _ending_view(answer: Mapping[str, object]) -> dict:
     """One ``PoolQueue.current_ending`` as plain, JSON-carryable data.
 
-    ``pbstatus.bounded`` carries a child's value back through JSON, so the
+    ``_reader.bounded`` carries a child's value back through JSON, so the
     resolution's ``Path`` fields and full records are projected here before
     it crosses that boundary.
     """
@@ -473,20 +402,17 @@ def _queue_view(queue_root: Path, key: str) -> dict:
     """
 
     queue = pool.PoolQueue(Path(queue_root).absolute())
-    records: dict[str, dict] = {}
-    for state in (pool.READY, pool.CLAIMED):
-        record = _read_record(queue.item_path(state, key))
-        if record is not None:
-            records[state] = record
+    records = queue.records.inspection_live_records(key)
     # A capture that cannot read the terminal slots at all is left to raise:
     # ``call.read`` records the section as unavailable and the payload says
     # ``found: null``.  Swallowing it here would answer ``{}`` and let a dead
     # mount read as an absent key (#1178 review, item 2).
-    readable, unreadable = queue.read_terminal_candidates(key)
-    for state, (_path, record) in readable.items():
-        records[state] = record
+    capture = queue.records.terminal_candidates(key)
+    for observation in capture.candidates:
+        if isinstance(observation.result, pool.record_store.Present):
+            records[observation.address.state] = observation.result.value
     return {"records": records,
-            "answer": _ending_view(queue.resolve_ending(readable, unreadable))}
+            "answer": _ending_view(endings.resolve_current(capture))}
 
 
 def _resolve_state(records: Mapping[str, dict],
@@ -495,7 +421,7 @@ def _resolve_state(records: Mapping[str, dict],
     """Which state answers for this key, resolving terminals by generation.
 
     A live row outranks a terminal one, as before.  Among terminals,
-    ``PoolQueue.resolve_ending`` is the queue's one generation-resolution
+    ``endings.resolve_current`` is the queue's one generation-resolution
     rule, so an older ``done/`` row standing beside a later failed
     generation cannot answer success (#1178).  The returned record is the
     exact one the resolution ordered; a census record never replaces it.
@@ -504,7 +430,7 @@ def _resolve_state(records: Mapping[str, dict],
     success.
     """
 
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         if state in records:
             return state, records[state], None
     if answer is None or answer.get("state") is None:
@@ -564,7 +490,7 @@ def _attempt_identity_mismatch(
     rather than served as this one's evidence.
     """
 
-    if outcome.get("schema") != pool.POOL_ATTEMPT_SCHEMA_V1:
+    if outcome.get("schema") != pool.record_store.POOL_ATTEMPT_SCHEMA_V1:
         return "outcome is not an attempt record"
     if outcome.get("action_key") != record.get("action_key"):
         return "outcome belongs to another action"
@@ -612,7 +538,7 @@ def _attempt_evidence(queue_root: Path, record: Mapping[str, object]) -> dict:
     if "withdrawn_attempt" in record:
         retained = record["withdrawn_attempt"]
         if (not isinstance(retained, Mapping) or "withdrawn_attempt" in retained
-                or retained.get("status") != pool.WITHDRAWN
+                or retained.get("status") != pool.record_store.WITHDRAWN
                 or any(retained.get(field) != record.get(field) for field in
                        ("action_key", "published_unix", "max_attempts", "retry_safe"))):
             raise pool.PoolContractError("withdrawn attempt differs from its decision identity")
@@ -661,7 +587,7 @@ def _attempt_evidence(queue_root: Path, record: Mapping[str, object]) -> dict:
                 "reason": "attempt history link must name its attempt number"})
             continue
         try:
-            expected = queue.attempt_path(record, number)
+            expected = queue.records.attempt_path(record, number)
         except pool.PoolContractError as exc:
             outcomes.append({"attempt": number, "unreadable": str(exc)})
             continue
@@ -671,7 +597,7 @@ def _attempt_evidence(queue_root: Path, record: Mapping[str, object]) -> dict:
                              "unreadable": "outcome link is not its canonical path",
                              "link": link.get("outcome"), "canonical": relative})
             continue
-        value = _read_record(expected)
+        value = pool.record_store.inspection_document(expected)
         if value is None:
             outcomes.append({"attempt": number, "unreadable": "unreadable outcome",
                              "path": str(expected)})
@@ -774,7 +700,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
     Needed because a mutable ``done``/``failed`` row is one slot per action
     key: a later generation overwrites it, and an intermediate handoff then
     survives nowhere but here.  ``pool.archived_preemption_outcomes`` is the
-    verifying reader for this evidence and reaches ``adopted_attempt_summary``,
+    verifying reader for this evidence and reaches ``attempt_ending``,
     which reads every linked log whole to check its digest -- so an action that
     printed a gigabyte would cost a gigabyte to ask about.  Only two fields
     decide a successor, the attempt's own ``published_unix`` and the
@@ -785,12 +711,12 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
     """
 
     found: list[dict] = []
-    base = Path(queue_root) / pool.ATTEMPTS / key
+    base = Path(queue_root) / pool.record_store.ATTEMPTS / key
     try:
         with os.scandir(base) as entries:
             generations = sorted(entry.path for entry in entries if entry.is_dir())
     except OSError as error:
-        if _absent(error):
+        if fleet_census.absent(error):
             return found
         raise
     for generation in generations:
@@ -799,11 +725,11 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
                 attempts = sorted(entry.path for entry in entries
                                   if entry.is_file() and entry.name.endswith(".json"))
         except OSError as error:
-            if not _absent(error):
+            if not fleet_census.absent(error):
                 raise
             continue
         for path in attempts:
-            value = _read_record(Path(path))
+            value = pool.record_store.inspection_document(Path(path))
             if value is None:
                 continue
             context = value.get("preemption_context")
@@ -811,7 +737,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
                 continue
             # An intermediate failed attempt is not an ending, which is the
             # same line ``archived_preemption_outcomes`` draws.
-            if value.get("disposition") not in (pool.DONE, pool.FAILED):
+            if value.get("disposition") not in (pool.record_store.DONE, pool.record_store.FAILED):
                 continue
             found.append({**value, **context, "path": path})
     return found
@@ -820,7 +746,7 @@ def _archived_preemption_records(queue_root: Path, key: str) -> list[dict]:
 def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> float | None:
     """The generation a preemption requeued this one as, read without the lock.
 
-    ``pbrun._preemption_requeue`` holds the transition lock while it looks,
+    ``action_wait._read_preemption_successor`` holds the transition lock while it looks,
     because it is deciding what to tell a waiter and must not answer in the
     middle of admission's withdraw-then-republish.  This is reporting, and
     taking that lock would make a read-only server a participant in the
@@ -832,32 +758,20 @@ def _requeued_as(queue_root: Path, key: str, ending: Mapping[str, object]) -> fl
     """
 
     generation = ending.get("published_unix")
-    if ending.get("preempted_by") is None or type(generation) not in (int, float):
-        return None
-    if str(ending.get("status") or "") != "withdrawn":
+    if type(generation) not in (int, float) or not endings.preempted(ending, generation):
         return None
     queue = pool.PoolQueue(Path(queue_root).absolute())
     candidates: list[Mapping[str, object]] = []
     try:
-        candidates.extend(record for _path, record in queue.withdrawal_decisions(key))
+        candidates.extend(record for _path, record in queue.records.withdrawal_decisions(key))
     except OSError as error:
-        if not _absent(error):
+        if not fleet_census.absent(error):
             raise
     except pool.PoolContractError:
         pass
     candidates.extend(_archived_preemption_records(queue_root, key))
-    candidates.extend(_records_for(queue_root, key).values())
-    successors = []
-    for record in candidates:
-        theirs = record.get("published_unix")
-        parent = record.get("supersedes_withdrawal")
-        if (type(theirs) not in (int, float) or not isinstance(parent, Mapping)
-                or parent.get("published_unix") != generation
-                or parent.get("preempted_by") != ending.get("preempted_by")):
-            continue
-        if float(theirs) > float(generation):
-            successors.append(float(theirs))
-    return min(successors) if successors else None
+    candidates.extend(pool.record_store.RecordStore(queue_root).inspection_records(key).values())
+    return endings.preemption_successor(ending, generation, candidates)
 
 
 def _sealed(record: Mapping[str, object]) -> dict:
@@ -905,7 +819,7 @@ def _derived_claim(record: Mapping[str, object]) -> dict:
                           "digest in its own result at the end of the "
                           "attempt's stdout, which pb_log returns."}
     request = Path(str(cas_root)) / "requests" / key[:2] / f"{key}.json"
-    action = _read_record(request)
+    action = pool.record_store.inspection_document(request)
     if action is None:
         return {"sha256": None, "request": str(request),
                 "reason": "the action manifest is not in the CAS"}
@@ -922,7 +836,7 @@ def _derived_claim(record: Mapping[str, object]) -> dict:
         os.stat(path)
         present = True
     except OSError as error:
-        if not _absent(error):
+        if not fleet_census.absent(error):
             raise
         present = False
     return {"sha256": digest, "path": str(path), "present": present,
@@ -938,7 +852,7 @@ def _receipt_summary(record: Mapping[str, object]) -> dict:
         return {"present": None, "reason": "the record names no CAS root"}
     path = (Path(str(cas_root)) / "actions"
             / pb.CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1] / key[:2] / f"{key}.json")
-    receipt = _read_record(path)
+    receipt = pool.record_store.inspection_document(path)
     if receipt is None:
         return {"present": False, "path": str(path)}
     result = receipt.get("result")
@@ -962,121 +876,18 @@ def _receipt_verdict(state: str | None,
     the caller counts it under ``unknown`` rather than under either verdict.
     """
 
-    if state in (pool.READY, pool.CLAIMED):
+    if state in (pool.record_store.READY, pool.record_store.CLAIMED):
         return "pending"
-    if state == pool.WITHDRAWN:
+    if state == pool.record_store.WITHDRAWN:
         return "withdrawn"
-    if state in (pool.DONE, pool.FAILED):
+    if state in (pool.record_store.DONE, pool.record_store.FAILED):
         code = detail.get("returncode")
-        if state == pool.DONE and code == 0:
+        if state == pool.record_store.DONE and code == 0:
             return "green"
         if code is None:
             return None
         return "failed"
     return None
-
-
-def _mover_live_rows(queue_root: Path) -> list[dict]:
-    """Live actions whose residency block names a byte range: the movers.
-
-    A mover row is the one whose residency block names a range; a consumer's
-    names leads.  That is the same line ``movers_claimed_on_tier`` draws, so
-    a mover this misses or a consumer this keeps would be a disagreement
-    between two readers of one queue rather than a wider net.  Only
-    ``ready/`` and ``claimed/`` are walked: terminal records number in the
-    thousands and a finished mover's story is in its filed receipt, which
-    the next reader below covers.
-    """
-
-    now = time.time()
-    rows: list[dict] = []
-    for state in (pool.READY, pool.CLAIMED):
-        for key in _keys_in(Path(queue_root) / state):
-            record = _read_record(Path(queue_root) / state / f"{key}.json")
-            if record is None:
-                continue
-            block = record.get("residency")
-            if not isinstance(block, Mapping):
-                continue
-            start = block.get("range_start_bytes")
-            end = block.get("range_end_bytes")
-            if type(start) is not int or type(end) is not int:
-                continue
-            published = record.get("published_unix")
-            rows.append({
-                "action_key": key,
-                "action_key_prefix": key[:12],
-                "state": state,
-                "tier_id": block.get("tier_id"),
-                "range_start_bytes": start,
-                "range_end_bytes": end,
-                "range_bytes": end - start,
-                "manifest_sha256": block.get("manifest_sha256"),
-                "claimed_host": record.get("claimed_host"),
-                "published_unix": published,
-                "age_s": (now - float(published)
-                          if type(published) in (int, float) else None),
-            })
-    rows.sort(key=lambda row: str(row["action_key"]))
-    return rows
-
-
-def _filed_move_receipts(queue_root: Path, *,
-                         limit: int = DEFAULT_MOVER_RECEIPTS) -> dict:
-    """The newest filed movement receipts, without reading the directory whole.
-
-    ``movers/`` is append-only -- one JSON per mover, forever -- so the
-    window is chosen by ``stat`` first, exactly as ``_scan_actions`` does for
-    terminal records: the newest ``limit`` by modification time are read and
-    ``truncated`` says whether that was all of them.  A receipt that cannot
-    be read or is not a move receipt is counted in ``unreadable`` rather than
-    raised: a submission must not fail because one older receipt was
-    truncated, and neither must a reader of them.
-    """
-
-    directory = Path(queue_root) / pool.MOVERS
-    try:
-        names = [entry.name for entry in os.scandir(directory)
-                 if entry.name.endswith(".json") and entry.is_file()]
-    except OSError as error:
-        if _absent(error):
-            return {"receipts": [], "scanned": 0, "unreadable": 0,
-                    "truncated": False}
-        raise
-    stamped: list[tuple[float, str]] = []
-    for name in names:
-        try:
-            stamped.append(((directory / name).stat().st_mtime, name))
-        except OSError as error:
-            if _absent(error):
-                continue
-            raise
-    stamped.sort(reverse=True)
-    truncated = len(stamped) > max(0, int(limit))
-    receipts: list[dict] = []
-    unreadable = 0
-    for _mtime, name in stamped[:max(0, int(limit))]:
-        record = _read_record(directory / name)
-        if (not isinstance(record, Mapping)
-                or record.get("schema") != pool.POOL_MOVE_SCHEMA_V1):
-            unreadable += 1
-            continue
-        consumer = record.get("consumer_action_key")
-        consumer = str(consumer) if isinstance(consumer, str) else None
-        receipts.append({
-            "action_key": record.get("action_key"),
-            "action_key_prefix": str(record.get("action_key") or "")[:12],
-            "consumer_action_key": consumer,
-            "consumer_action_key_prefix": (consumer[:12] if consumer else None),
-            "tier_id": record.get("tier_id"),
-            "range_bytes": record.get("range_bytes"),
-            "bytes_staged": record.get("bytes_staged"),
-            "complete": record.get("complete"),
-            "seconds": record.get("seconds"),
-            "unix": record.get("unix"),
-        })
-    return {"receipts": receipts, "scanned": len(stamped),
-            "unreadable": unreadable, "truncated": truncated}
 
 
 def _log_tail(path: Path, *, tail_lines: int, max_bytes: int) -> dict:
@@ -1134,7 +945,7 @@ def _reservations(queue_root: Path) -> dict:
         with os.scandir(root) as entries:
             names = sorted(entry.name for entry in entries if entry.is_dir())
     except OSError as error:
-        if _absent(error):
+        if fleet_census.absent(error):
             return hosts
         raise
     for host in names:
@@ -1156,182 +967,9 @@ def _names_in(directory: Path) -> list[str]:
         with os.scandir(directory) as entries:
             return sorted(entry.name for entry in entries)
     except OSError as error:
-        if _absent(error):
+        if fleet_census.absent(error):
             return []
         raise
-
-
-def _tier_rows(queue_root: Path) -> dict:
-    """Every file under ``tiers/``, curated, with the unreadable ones named.
-
-    A record whose ``tier_id`` does not match its file name is reported
-    rather than served: ``PoolQueue.tiers`` drops such a file silently, which
-    is right for admission and wrong for observation, where a loop filing
-    under the wrong name is exactly what the reader is trying to see.
-    """
-
-    try:
-        with os.scandir(Path(queue_root) / pool.TIERS) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json") and entry.is_file())
-    except OSError as error:
-        if _absent(error):
-            return {"tiers": [], "invalid": []}
-        raise
-    tiers: list[dict] = []
-    invalid: list[dict] = []
-    for name in names:
-        stem = name[:-len(".json")]
-        try:
-            record = pool.read_queue_record(Path(queue_root) / pool.TIERS / name)
-        except (ValueError, pool.PoolContractError) as exc:
-            invalid.append({"tier_id": stem, "reason": str(exc)})
-            continue
-        if record is None:
-            invalid.append({"tier_id": stem,
-                            "reason": "unreadable or empty record"})
-            continue
-        if record.get("tier_id") != stem:
-            invalid.append({"tier_id": stem,
-                            "reason": "tier_id does not match the file name"})
-            continue
-        tiers.append(_tier_row(record))
-    tiers.sort(key=lambda row: str(row.get("tier_id") or ""))
-    return {"tiers": tiers, "invalid": invalid}
-
-
-def _tier_row(record: Mapping[str, object]) -> dict:
-    """The fields #660's debugging actually reached for, nothing reshaped."""
-
-    now = time.time()
-    sampled = record.get("sampled_unix")
-    announced = record.get("announced_unix")
-    return {
-        "tier_id": record.get("tier_id"),
-        "tier": record.get("tier"),
-        "host": record.get("host"),
-        "tokens": record.get("tokens"),
-        "fill_supply": record.get("fill_supply"),
-        "ram_admission": record.get("ram_admission"),
-        "epoch": record.get("epoch"),
-        "window_gib": record.get("window_gib"),
-        "mountpoint": record.get("mountpoint"),
-        "size_bytes": record.get("size_bytes"),
-        "capacity_bytes": record.get("capacity_bytes"),
-        "sampled_unix": sampled,
-        "age_s": (now - float(sampled)
-                  if type(sampled) in (int, float) and math.isfinite(sampled)
-                  else None),
-        # The loop's liveness, apart from its content's age (#1115): a loop
-        # that is idle or busy re-announces within ``OFFER_TIMEOUT_S``; one
-        # stuck mid-cycle stops writing, and this age grows past it.
-        # ``liveness_refresh.after`` names the last step the loop finished.
-        "announced_unix": announced,
-        "announced_age_s": (now - float(announced)
-                            if type(announced) in (int, float)
-                            and math.isfinite(announced) else None),
-        "liveness_refresh": record.get("liveness_refresh"),
-    }
-
-
-def _cursor_census(queue_root: Path, *, now: float) -> dict:
-    """One row per filed residency plan: where its consumer's cursor is.
-
-    The cursor and the frontier are derived by ``pbstatus``'s own plan census
-    -- the same reader ``read_starvation`` and the pbmetrics gauges use -- so
-    three consumers of one set of records cannot disagree about where a
-    reader stands.  What this adds is the join #660 asks for at the per-key
-    grain: the full consumer key, and the progress record's own timestamp for
-    the accepted phase, lifted from the lease beside the claim.  A queue
-    where nobody was ever staged has no plans and answers ``[]``; a mount
-    that does not answer raises, and lands in ``unavailable``.
-    """
-
-    root = Path(queue_root)
-    queue = pool.PoolQueue(root.absolute())
-    notes: list[str] = []
-    unreadable: list[str] = []
-    try:
-        with os.scandir(root / pool.RESIDENCY_PLANS) as entries:
-            names = sorted(entry.name for entry in entries
-                           if entry.name.endswith(".json") and entry.is_file())
-    except OSError as error:
-        if not _absent(error):
-            raise
-        names = []
-    ready = set(_keys_in(root / pool.READY))
-    claimed = set(_keys_in(root / pool.CLAIMED))
-    rows: list[dict] = []
-    for name in names:
-        key = name[:-len(".json")]
-        raw = pbstatus._starvation_sidecar(root / pool.RESIDENCY_PLANS / name)
-        if isinstance(raw, Exception) or not isinstance(raw, Mapping):
-            reason = str(raw) if isinstance(raw, Exception) else "not a JSON object"
-            note = f"cursors plan {key[:12]}: {reason}"
-            notes.append(note)
-            unreadable.append(note)
-            rows.append({"consumer_action_key": key,
-                         "consumer_action_key_prefix": key[:12],
-                         "valid": False, "note": reason})
-            continue
-        entry = pbstatus._starvation_plan_entry(
-            queue, key, raw, ready=ready, claimed=claimed,
-            notes=notes, unreadable=unreadable, now=now)
-        rows.append(_cursor_row(queue, key, entry, now=now,
-                                notes=notes, unreadable=unreadable))
-    return {"rows": rows, "notes": notes, "unreadable": unreadable}
-
-
-def _cursor_row(queue: pool.PoolQueue, key: str,
-                entry: Mapping[str, object], *, now: float,
-                notes: list[str], unreadable: list[str]) -> dict:
-    """The cursor view of one plan entry: the accepted phase, and the gap.
-
-    A ready or absent consumer carries no lease, so its accepted timestamp
-    reads ``null``: nothing recorded one, which is the gap-list fact rather
-    than a missing field.  A claimed consumer whose lease will not answer
-    keeps its plan-derived row and names the failure, so one unreadable
-    sidecar does not cost the caller every cursor.
-    """
-
-    row: dict[str, object] = {
-        "consumer_action_key": key,
-        "consumer_action_key_prefix": key[:12],
-        "valid": entry.get("valid"),
-        "note": entry.get("note"),
-        "state": entry.get("state"),
-        "tier_id": entry.get("tier_id"),
-        "ram_tier_id": entry.get("ram_tier_id"),
-        "accepted_phase": entry.get("accepted_phase"),
-        "accepted_index": entry.get("accepted_index"),
-        "phase_count": len(entry.get("phases") or []),
-        "cursor_gap": entry.get("cursor_gap"),
-        "accepted_reported_unix": None,
-        "accepted_age_s": None,
-        "accepted_units_completed": None,
-    }
-    if not entry.get("valid") or entry.get("state") != "claimed":
-        return row
-    lease = pbstatus._starvation_sidecar(queue.lease_path(key))
-    if isinstance(lease, Exception):
-        note = f"cursors lease {key[:12]}: {lease}"
-        notes.append(note)
-        unreadable.append(note)
-        return row
-    observed = (lease.get("progress_observation")
-                if isinstance(lease, Mapping) else None)
-    accepted = (observed.get("last_accepted")
-                if isinstance(observed, Mapping) else None)
-    if not isinstance(accepted, Mapping):
-        return row
-    reported = accepted.get("reported_unix")
-    if type(reported) in (int, float) and math.isfinite(reported):
-        row["accepted_reported_unix"] = reported
-        row["accepted_age_s"] = now - float(reported)
-    units = accepted.get("units_completed")
-    if type(units) is int:
-        row["accepted_units_completed"] = units
-    return row
 
 
 # --------------------------------------------------------------------------
@@ -1386,13 +1024,13 @@ class Session:
 
     def pb_status(self, call: Call, *, recent: int | None = None) -> dict:
         limit = self.recent if recent is None else int(recent)
-        census = call.read("pool", lambda: pbstatus.read_pool(self.queue_root))
+        census = call.read("pool", lambda: fleet_census.action_rows(self.queue_root).value)
         endings = call.read("endings",
-                            lambda: pbstatus.read_endings(self.queue_root, limit=limit))
+                            lambda: fleet_census.endings(self.queue_root, limit=limit))
         reservations = call.read("reservations",
                                  lambda: _reservations(self.queue_root))
         rollout = call.read("rollout",
-                            lambda: pbstatus.read_rollout_summary(self.repo_link))
+                            lambda: upgrade_client.read_rollout_summary(self.repo_link))
         census = census or {}
         return {
             "queue_root": str(self.queue_root),
@@ -1408,70 +1046,10 @@ class Session:
 
     # -- pb_denials --------------------------------------------------------
 
-    def pb_denials(self, call: Call,
-                   *, hours: float = DEFAULT_DENIAL_HOURS) -> dict:
-        """Claim denials per host, grouped by reason, inside a recent window.
-
-        The reader is ``pbstatus``' own -- the same snapshots, the same schema
-        check, the same per-record validation -- reused rather than repeated,
-        because a second reader of ``claim-denials.json`` that disagrees with
-        the first about what a record means is a second source of truth.  What
-        is new here is the grouping: an agent asking why nothing is claiming
-        wants a histogram with the most recently denied action per reason, not
-        a flat list of up to 256 records per host.
-        """
-
-        window_s = max(0.0, float(hours)) * 3600.0
+    def pb_denials(self, call: Call, *, hours: float = DEFAULT_DENIAL_HOURS) -> dict:
         queue = pool.PoolQueue(self.queue_root.absolute())
-        found = call.read("denials",
-                          lambda: pbstatus._pool_claim_denials(queue))
-        denials, notes = found if found is not None else (None, None)
-        now = time.time()
-        cutoff = None if window_s <= 0 else now - window_s
-        hosts: dict[str, dict] = {}
-        total = 0
-        if denials is not None:
-            for denial in denials:
-                denied = denial.get("denied_unix")
-                if (type(denied) not in (int, float)
-                        or not math.isfinite(denied)
-                        or denied > now
-                        or (cutoff is not None and denied < cutoff)):
-                    continue
-                host = str(denial.get("host"))
-                reason = str(denial.get("reason"))
-                key = str(denial.get("action_key"))
-                entry = hosts.setdefault(
-                    host, {"denials_in_window": 0, "by_reason": {}})
-                entry["denials_in_window"] += 1
-                total += 1
-                bucket = entry["by_reason"].setdefault(reason, {
-                    "count": 0, "latest_denied_unix": None,
-                    "latest_action_key": None,
-                    "latest_action_key_prefix": None,
-                    "latest_decision_reason": None,
-                })
-                bucket["count"] += 1
-                if (bucket["latest_denied_unix"] is None
-                        or float(denied) > float(bucket["latest_denied_unix"])):
-                    decision = denial.get("evidence")
-                    decision = (decision.get("decision")
-                                if isinstance(decision, dict) else None)
-                    subreason = (decision.get("reason")
-                                 if isinstance(decision, dict) else None)
-                    bucket["latest_denied_unix"] = denied
-                    bucket["latest_action_key"] = key
-                    bucket["latest_action_key_prefix"] = key[:12]
-                    bucket["latest_decision_reason"] = (
-                        subreason if isinstance(subreason, str) else None)
-        return {
-            "queue_root": str(self.queue_root),
-            "hours": float(hours),
-            "cutoff_unix": cutoff,
-            "hosts": hosts if denials is not None else None,
-            "total_in_window": total if denials is not None else None,
-            "reader_notes": notes,
-        }
+        found = call.read("denials", lambda: fleet_census._pool_claim_denials(queue))
+        return fleet_census.denials(self.queue_root, hours=hours, captured=found).value
 
     # -- pb_tier -----------------------------------------------------------
 
@@ -1487,7 +1065,7 @@ class Session:
         has no admission" from "the tiers directory did not answer".
         """
 
-        found = call.read("tiers", lambda: _tier_rows(self.queue_root))
+        found = call.read("tiers", lambda: fleet_census.tiers(self.queue_root).value)
         found = found if isinstance(found, dict) else {}
         return {
             "queue_root": str(self.queue_root),
@@ -1628,7 +1206,7 @@ class Session:
                     "reason": "the attempt records no log for this stream"}
         queue = pool.PoolQueue(self.queue_root.absolute())
         try:
-            canonical = queue.attempt_log_path(
+            canonical = queue.records.attempt_log_path(
                 attempt, number, stream, str(metadata.get("sha256")))
         except pool.PoolContractError as exc:
             return {**base, "present": False,
@@ -1865,12 +1443,22 @@ class Session:
         """
 
         wanted = str(tier_id) if tier_id is not None else None
-        found = call.read("tiers", lambda: _tier_rows(self.queue_root))
+        found = call.read("tiers", lambda: fleet_census.tiers(self.queue_root).value)
         found = found if isinstance(found, dict) else {}
         live = call.read("movers-live",
-                         lambda: _mover_live_rows(self.queue_root))
+                         lambda: asdict(fleet_census.movers(self.queue_root)))
+        live_complete = isinstance(live, Mapping) and live["completeness"] == "complete"
+        if isinstance(live, Mapping) and not live_complete:
+            call.unavailable.append({"section": "movers-live", "type": "PartialCensus",
+                                     "error": "; ".join(live["errors"])})
+        live = live["value"] if isinstance(live, Mapping) else None
         filed = call.read("movers-filed",
-                          lambda: _filed_move_receipts(self.queue_root))
+                          lambda: asdict(fleet_census.movers(self.queue_root, view="filed")))
+        filed = filed["value"] if isinstance(filed, Mapping) else None
+        filed_complete = isinstance(filed, Mapping) and not filed["unreadable"]
+        if isinstance(filed, Mapping) and not filed_complete:
+            call.unavailable.append({"section": "movers-filed", "type": "PartialCensus",
+                                     "error": f"{filed['unreadable']} unreadable selected receipt(s)"})
         tiers = found.get("tiers")
         if isinstance(tiers, list) and wanted is not None:
             tiers = [row for row in tiers
@@ -1878,7 +1466,9 @@ class Session:
                      and row.get("tier_id") == wanted]
         rows = None
         if isinstance(tiers, list):
-            rows = [self._one_tier_movers(tier, live, filed) for tier in tiers]
+            rows = [self._one_tier_movers(tier, live, filed, live_complete=live_complete,
+                                          filed_complete=filed_complete)
+                    for tier in tiers]
         return {
             "queue_root": str(self.queue_root),
             "tier_filter": wanted,
@@ -1888,24 +1478,25 @@ class Session:
 
     @staticmethod
     def _one_tier_movers(tier: Mapping[str, object], live: object,
-                         filed: object) -> dict:
+                         filed: object, *, live_complete: bool = True,
+                         filed_complete: bool = True) -> dict:
         ident = tier.get("tier_id")
         ready = claimed = None
         depth = None
         if isinstance(live, list):
             ready = [row for row in live
-                     if row.get("state") == pool.READY
+                     if row.get("state") == pool.record_store.READY
                      and row.get("tier_id") == ident]
             claimed = [row for row in live
-                       if row.get("state") == pool.CLAIMED
+                       if row.get("state") == pool.record_store.CLAIMED
                        and row.get("tier_id") == ident]
-            depth = len(ready) + len(claimed)
+            depth = len(ready) + len(claimed) if live_complete else None
         receipts = receipts_filed = truncated = None
         if isinstance(filed, Mapping):
             receipts = [row for row in (filed.get("receipts") or [])
                         if isinstance(row, Mapping)
                         and row.get("tier_id") == ident]
-            receipts_filed = len(receipts)
+            receipts_filed = len(receipts) if filed_complete else None
             truncated = filed.get("truncated")
         return {
             "tier_id": ident,
@@ -1920,7 +1511,7 @@ class Session:
     # -- pb_starvation -----------------------------------------------------
 
     def pb_starvation(self, call: Call) -> dict:
-        """What is waiting on data, as one census.
+        """What is waiting on data, as one fleet_census.
 
         ``pbstatus --starvation``'s own reader, served whole rather than
         paraphrased: a second reader of the same records that disagreed
@@ -1938,7 +1529,7 @@ class Session:
         """
 
         blob = call.read(
-            "starvation", lambda: pbstatus.read_starvation(self.queue_root))
+            "starvation", lambda: fleet_census.starvation(self.queue_root))
         blob = blob if isinstance(blob, Mapping) else {}
         return {
             "queue_root": str(self.queue_root),
@@ -1974,7 +1565,7 @@ class Session:
 
         blob = call.read(
             "blocked-origins",
-            lambda: pbstatus.read_blocked_origins(self.queue_root))
+            lambda: fleet_census.blocked_origins(self.queue_root).value)
         blob = blob if isinstance(blob, Mapping) else {}
         return {
             "queue_root": str(self.queue_root),
@@ -2006,8 +1597,7 @@ class Session:
 
         prefix = _valid_prefix(key_prefix) if key_prefix else None
         census = call.read("cursors",
-                           lambda: _cursor_census(self.queue_root,
-                                                  now=time.time()))
+                           lambda: fleet_census.plans(self.queue_root, now=time.time()).value)
         census = census if isinstance(census, Mapping) else {}
         rows = census.get("rows")
         if rows is not None and prefix is not None:
@@ -2068,7 +1658,7 @@ class Session:
         }
         not_checked = ["worker attestation (needs the full action manifest; "
                        "core.PrismaBuildCAS.lookup is the verifier)"]
-        claim = call.read("claim", lambda: _read_record(path))
+        claim = call.read("claim", lambda: pool.record_store.inspection_document(path))
         checks["claim_present"] = claim is not None
         payload: dict[str, object] = {
             "sha256": digest, "cas_root": str(root), "claim_path": str(path),
@@ -2086,7 +1676,7 @@ class Session:
         receipt_path = (root / "actions" / pb.CAS_RECEIPT_SCHEMA_V3.rsplit(".", 1)[-1]
                         / key[:2] / f"{key}.json")
         payload["receipt_path"] = str(receipt_path)
-        receipt = call.read("receipt", lambda: _read_record(receipt_path))
+        receipt = call.read("receipt", lambda: pool.record_store.inspection_document(receipt_path))
         checks["receipt_present"] = receipt is not None
         if receipt is not None:
             receipt_body = {name: receipt.get(name) for name in pb.CAS_RECEIPT_BODY_KEYS}
@@ -2193,10 +1783,10 @@ class Session:
 
         manifest = call.read(
             "manifest",
-            lambda: _read_record(self.repo_link / "RUNTIME_VERSION.json"))
-        census = call.read("pool", lambda: pbstatus.read_pool(self.queue_root))
+            lambda: pool.record_store.inspection_document(self.repo_link / "RUNTIME_VERSION.json"))
+        census = call.read("pool", lambda: fleet_census.action_rows(self.queue_root).value)
         rollout = call.read("rollout",
-                            lambda: pbstatus.read_rollout_summary(self.repo_link))
+                            lambda: upgrade_client.read_rollout_summary(self.repo_link))
         nodes = (census or {}).get("nodes") or []
         return {
             "repo_link": str(self.repo_link),
@@ -2281,30 +1871,33 @@ def _scan_actions(queue_root: Path, *, states: Sequence[str],
     if keys:
         for prefix in keys:
             for key in _resolve_prefix(root, prefix):
-                for state, record in _records_for(root, key).items():
+                for state, record in pool.record_store.RecordStore(root).inspection_records(
+                    key,
+                ).items(
+                ):
                     if state in states:
                         scanned += 1
                         rows.append(_row(state, record, now))
         return {"rows": rows, "scanned": scanned, "truncated": False}
-    for state in (pool.READY, pool.CLAIMED):
+    for state in (pool.record_store.READY, pool.record_store.CLAIMED):
         if state not in states:
             continue
-        for key in _keys_in(root / state):
+        for key in pool.record_store.RecordStore(root).inspection_keys(state):
             scanned += 1
-            record = _read_record(root / state / f"{key}.json")
+            record = pool.record_store.RecordStore(root).inspection_slot(state, key)
             if record is not None:
                 rows.append(_row(state, record, now))
     terminal = [state for state in states
-                if state in (pool.DONE, pool.FAILED, pool.WITHDRAWN)]
+                if state in (pool.record_store.DONE, pool.record_store.FAILED, pool.record_store.WITHDRAWN)]
     if terminal and limit:
-        entries = pbstatus.recent_ending_paths(root, limit)
+        entries = fleet_census.recent_ending_paths(root, limit)
         truncated = len(entries) >= limit
         for entry in entries:
             path = Path(entry.path)
             if path.parent.name not in terminal:
                 continue
             scanned += 1
-            record = _read_record(path)
+            record = pool.record_store.inspection_document(path)
             if record is not None:
                 rows.append(_row(path.parent.name, record, now))
     return {"rows": rows, "scanned": scanned, "truncated": truncated}
@@ -2818,10 +2411,10 @@ def session_from(args: argparse.Namespace) -> Session:
     repoints ``pbstatus``'s roots to keep tests off the live store.
     """
 
-    shared = Path(pbstatus.SHARED_ROOT)
+    shared = Path(fleet_census.SHARED_ROOT)
     return Session(
         queue_root=Path(args.queue_root) if args.queue_root
-        else Path(pbstatus.DEFAULT_QUEUE_ROOT),
+        else Path(fleet_census.DEFAULT_QUEUE_ROOT),
         cas_root=Path(args.cas_root) if args.cas_root else shared / "cas",
         repo_link=Path(args.repo_link) if args.repo_link else shared / "repo",
         deadline_s=args.deadline_s,

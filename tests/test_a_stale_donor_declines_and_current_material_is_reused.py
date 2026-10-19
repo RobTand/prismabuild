@@ -42,10 +42,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 from prismabuild import pool, reader_lease, residency_map, residency_plan, storage_tiers  # noqa: E402
-import prewarm_loop  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 TIER = "prismabuild-stage:dl380g10"
 STAGE_KIND = f"stage_gib@{TIER}"
@@ -65,7 +66,7 @@ PAYLOAD = bytes(range(256)) * 5 + bytes(range(16))
 DIGEST = hashlib.sha256(PAYLOAD).hexdigest()
 SOURCE = "/mnt/shared/pq-live-reader-20260920/calib-8x16.safetensors"
 #: Where the stage mover stages it: its range name, derived rather than spelled.
-RELATIVE = stage_move.stage_relative(SOURCE, 0, SIZE, mount_prefix="/mnt/shared")
+RELATIVE = staged_path.stage_relative(SOURCE, 0, SIZE, mount_prefix="/mnt/shared")
 MAP_KEY = residency_map.residency_map_key(SOURCE, 0)
 ENTRIES = [{"path": SOURCE, "offset": 0, "bytes": SIZE, "sha256": DIGEST}]
 
@@ -175,22 +176,20 @@ def _publish_donor_record(queue: pool.PoolQueue, *, mover: str, consumer: str,
     destination = stage / RELATIVE
     identity = reader_lease.stat_identity(str(destination))
     assert identity is not None
-    root = queue.residency_fragment_root()
-    residency_map.write_fragment(root, {
+    root = queue.records.residency_fragment_root()
+    staged_path.publish_vouch(
+        root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": mover,
         "tier_id": TIER, "stage_root": str(stage),
         "manifest_sha256": MANIFEST,
         "entries": {MAP_KEY: {
             "stage_path": str(destination), "bytes": SIZE, "offset": 0,
-            "sha256": DIGEST}}})
-    reader_lease.write_material(
-        root, consumer_action_key=consumer, mover_action_key=mover,
-        tier_id=TIER, stage_root=str(stage), manifest_sha256=MANIFEST,
+            "sha256": DIGEST}}},
         generation=reader_lease.mint_generation(),
-        entries={MAP_KEY: {"stage_path": str(destination), "bytes": SIZE,
+        material_entries={MAP_KEY: {"stage_path": str(destination), "bytes": SIZE,
                            "sha256": DIGEST, "file_id": identity}})
-    assert queue.tier_ledger(TIER).acquire(mover, {"stage_gib": PHASE_GIB})
+    assert queue.tier(TIER).take(mover, {'stage_gib': PHASE_GIB})
     start = ordinal * SIZE
     end = (ordinal + 1) * SIZE
     queue.record_move(mover, {
@@ -218,11 +217,9 @@ def _cycle(queue: pool.PoolQueue, stage: Path) -> None:
 def assert_ledger_matches_the_stage(queue: pool.PoolQueue) -> None:
     """Held tier tokens equal the ranges the stage's fragments account for."""
 
-    ledger = queue.tier_ledger(TIER)
-    held = {key: gib for key, gib in
-            ((key, ledger.holder_tokens(key).get("stage_gib", 0))
-             for key in ledger.held_keys()) if gib}
-    root = queue.residency_fragment_root()
+    ledger = queue.tier(TIER)
+    held = {key: gib for key, gib in ((key, ledger.holdings(key).get('stage_gib', 0)) for key in ledger.holders()) if gib}
+    root = queue.records.residency_fragment_root()
     accounted: dict[str, int] = {}
     hexdigits = set("0123456789abcdef")
     # Only consumer directories -- the material sidecars and pin files live
@@ -272,8 +269,8 @@ def _read_like_the_consumer(queue: pool.PoolQueue, *, consumer: str,
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    q.mint_tier_capacity(TIER, {"stage_gib": STAGE_GIB})
+    q.records.ensure_layout()
+    q.tier(TIER).mint({'stage_gib': STAGE_GIB})
     return q
 
 
@@ -281,7 +278,7 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 def stage(tmp_path: Path, queue: pool.PoolQueue) -> Path:
     path = tmp_path / "stage"
     path.mkdir()
-    stage_release.register_stage_root(queue, tier_id=TIER, stage_root=path)
+    staged_path.register_stage_root(queue, tier_id=TIER, stage_root=path)
     return path
 
 
@@ -330,20 +327,20 @@ def test_the_current_incarnation_is_adopted_and_read(
     _cycle(queue, stage)
 
     assert_ledger_matches_the_stage(queue)
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     # Credit moved through the existing transfer, from the current donor.
-    assert ledger.holder_tokens(third_mover) == {"stage_gib": PHASE_GIB}
-    assert ledger.holder_tokens(DONOR_B) == {}
+    assert ledger.holdings(third_mover) == {'stage_gib': PHASE_GIB}
+    assert ledger.holdings(DONOR_B) == {}
     # The stale donor was not touched: it still vouches and still holds.
-    assert ledger.holder_tokens(DONOR_A) == {"stage_gib": PHASE_GIB}
+    assert ledger.holdings(DONOR_A) == {'stage_gib': PHASE_GIB}
     receipt = queue.move_record(third_mover)
     assert receipt is not None
     assert receipt[pool.MOVE_ADOPTED_FROM_FIELD] == DONOR_B
     assert receipt["bytes_copied"] == 0
     # No copy was queued for the successor.
-    assert not queue.item_path(pool.READY, third_mover).exists()
+    assert not queue.records.item_path(pool.record_store.READY, third_mover).exists()
     # The successor's material dates the incarnation that is there now...
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     material = reader_lease.read_material(root, THIRD, third_mover)
     assert isinstance(material, dict)
     assert material["entries"][MAP_KEY]["file_id"] == history["live"], (
@@ -373,14 +370,14 @@ def test_a_donor_whose_file_went_stale_publishes_no_successor(
     _replace_destination_with_identical_bytes(stage)
     _publish_consumer(queue, THIRD, _plan(queue, THIRD, label="third"))
     third_mover = _hexkey("thirdmover0")
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
 
     _cycle(queue, stage)
 
     assert_ledger_matches_the_stage(queue)
-    ledger = queue.tier_ledger(TIER)
-    assert ledger.holder_tokens(DONOR_A) == {"stage_gib": PHASE_GIB}
-    assert ledger.holder_tokens(third_mover) == {}
+    ledger = queue.tier(TIER)
+    assert ledger.holdings(DONOR_A) == {'stage_gib': PHASE_GIB}
+    assert ledger.holdings(third_mover) == {}
     assert not residency_map.fragment_path(root, THIRD, third_mover).exists(), (
         "a declined adoption must publish no successor fragment")
     assert not reader_lease.material_path(
@@ -413,10 +410,10 @@ def test_file_id_matches_requires_every_field() -> None:
 
 
 def _publisher(queue: pool.PoolQueue, stage: Path, mover: str
-               ) -> stage_move._StagedPublisher:
-    return stage_move._StagedPublisher(
+               ) -> staged_path.StagedPublisher:
+    return staged_path.StagedPublisher(
         queue=queue, stage_root=stage,
-        residency_root=queue.residency_fragment_root(),
+        residency_root=queue.records.residency_fragment_root(),
         mover_action_key=mover, manifest_sha256=MANIFEST,
         tier_id=TIER, cas_root=str(queue.root / "cas"))
 
@@ -462,7 +459,7 @@ def test_the_mover_adopts_the_current_incarnation_despite_a_stale_record(
     # mover's own dated material.
     assert reader_lease.stat_identity(str(destination)) == before
     assert copier.sidecar[MAP_KEY]["file_id"] == before
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     residency_map.write_fragment(root, {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": FOURTH, "mover_action_key": fourth_mover,
@@ -490,8 +487,8 @@ def test_without_a_current_proof_the_publisher_refuses_and_keeps_the_file(
     _publish_donor_record(queue, mover=DONOR_A, consumer=FIRST, stage=stage)
     live = _replace_destination_with_identical_bytes(stage)
     destination = stage / RELATIVE
-    monkeypatch.setattr(stage_move, "_PUBLISH_GRACE_S", 0.05)
-    monkeypatch.setattr(stage_move, "_PUBLISH_POLL_S", 0.01)
+    monkeypatch.setattr(staged_path, '_PUBLISH_GRACE_S', 0.05)
+    monkeypatch.setattr(staged_path, '_PUBLISH_POLL_S', 0.01)
     mover = _hexkey("fourthmover0")
     publisher = _publisher(queue, stage, mover)
     temporary = destination.with_name(

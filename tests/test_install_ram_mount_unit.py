@@ -4,6 +4,7 @@ Run only inside an admitted PB action. Synthetic root metadata is serialization
 and refusal coverage, not real privilege, kernel mount or reboot qualification.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 import configparser
 import copy
@@ -21,8 +22,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from prismabuild import census as fleet_census
 import pbstatus
-import tier_loop
+from prismabuild import tier_cycle as tier_loop
 from prismabuild import pool, storage_tiers
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,13 +184,30 @@ def test_actual_cli_refuses_invalid_or_unsupported_policy_before_effects(generat
     assert _snapshot(generation.parent) == before
 
 
-@pytest.mark.parametrize("text", ["{", "[]", '{"schema":"wrong","schema":"also wrong"}'])
+@pytest.mark.parametrize("text", ["{", "[]"])
 def test_actual_cli_refuses_malformed_and_ambiguous_policy(generation, text):
     path = generation / "bad.json"
     path.write_text(text)
     arguments = _arguments(generation)
     arguments[1] = str(path)
     assert _cli(generation, arguments).returncode != 0
+
+
+def test_actual_cli_refuses_duplicate_valid_policy_before_effects(generation):
+    original = (generation / "tools/ram_tier_policy.json").read_text()
+    schema = json.loads(original)["schema"]
+    path = generation / "duplicate-valid-policy.json"
+    path.write_text('{"schema": ' + json.dumps(schema) + ", " + original.lstrip()[1:])
+    arguments = _arguments(generation)
+    arguments[1] = str(path)
+    before = _snapshot(generation.parent)
+
+    result = _cli(generation, arguments)
+
+    assert result.returncode != 0
+    assert b"duplicate policy field: schema" in result.stderr
+    assert result.stdout == b""
+    assert _snapshot(generation.parent) == before
 
 
 @pytest.mark.parametrize("symlink", [False, True])
@@ -710,12 +729,14 @@ class _RenderedRamEvidence:
 def ram_integration(tmp_path, monkeypatch, rendered_ram_options):
     clock = [RAM_NOW]
     monkeypatch.setattr(pbstatus.time, "time", lambda: clock[0])
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
     for name in ("LAST_CYCLE", "_VERDICT_CYCLE", "_VERDICT_SINCE", "_EVENT_LINES",
-                 "_LOCK_BUSY_COUNT", "_STAGED_WAITS", "_SHARED_MOVERS",
+                 "_LOCK_BUSY_COUNT", "_STAGED_WAITS",
                  "_CYCLE_COMMITMENTS", "_CENSUS_COST", "_JOINT_COMMITTED",
                  "_FASTEST_CONSUMPTION", "_MANIFEST_SUMMARY_LAST"):
         monkeypatch.setattr(tier_loop, name, copy.deepcopy(getattr(tier_loop, name)))
+    monkeypatch.setattr(tier_loop.residency_plan, "_SHARED_MOVER_NAMES",
+                        copy.deepcopy(tier_loop.residency_plan._SHARED_MOVER_NAMES))
     monkeypatch.setattr(tier_loop.residency_plan, "_SHARE_NAMESPACE_MEMO",
                         copy.deepcopy(tier_loop.residency_plan._SHARE_NAMESPACE_MEMO))
     real_statvfs = os.statvfs
@@ -733,7 +754,7 @@ def ram_integration(tmp_path, monkeypatch, rendered_ram_options):
 
         monkeypatch.setattr(tier_loop.os, "statvfs", private_statvfs)
         queue = pool.PoolQueue(tmp_path / "pb-queue")
-        queue.ensure_layout()
+        queue.records.ensure_layout()
         queue.ledger(RAM_HOST).ensure_capacity({"mem_gb": 294})
         assert queue.ledger(RAM_HOST).acquire("fixture-worker", {"mem_gb": 88})
         assert queue.rows_host_memory_held(RAM_HOST) == 88
@@ -749,7 +770,7 @@ def _rendered_ram_cycle(obj, capsys, *, reason=None):
         now=RAM_SAMPLED, discover=obj.evidence.discover)
     assert tier_loop.LAST_CYCLE["completed"] is True
     record = next(row for row in announced if row["tier_id"] == RAM_ID)
-    persisted = json.loads(obj.queue.tier_record_path(RAM_ID).read_text())
+    persisted = json.loads(obj.queue.records.tier_record_path(RAM_ID).read_text())
     assert persisted == dict(record, announced_unix=obj.clock[0])
     assert next(row for row in obj.queue.tiers() if row["tier_id"] == RAM_ID) == persisted
     expected_tokens = {"ram_gib": 112} if reason is None else {}
@@ -774,9 +795,9 @@ def _rendered_ram_cycle(obj, capsys, *, reason=None):
             assert admission[field] == gib * RAM_GIB, (field, admission)
         assert storage_tiers.tier_tokens(carrier) == expected_tokens
     expected_capacity = 112 if reason is None else 0
-    ledger = obj.queue.tier_ledger(RAM_ID)
-    assert ledger.capacity().get("ram_gib", 0) == expected_capacity
-    assert ledger.available().get("ram_gib", 0) == expected_capacity
+    ledger = obj.queue.tier(RAM_ID)
+    assert ledger.mint_supply().get('ram_gib', 0) == expected_capacity
+    assert ledger.free_supply().get('ram_gib', 0) == expected_capacity
     capsys.readouterr()
     return obj.evidence.discovered, record, persisted
 
@@ -795,7 +816,7 @@ def _rendered_ram_status(obj, capsys, monkeypatch):
         assert pbstatus.main(["--starvation", "--queue-root", str(obj.queue.root),
                               "--timeout-s", "0"]) == 0
     blob = json.loads(capsys.readouterr().out)
-    assert blob["schema"] == pbstatus.STARVATION_SCHEMA_V1
+    assert blob["schema"] == fleet_census.STARVATION_SCHEMA_V1
     assert blob["complete"] is True
     assert _snapshot(obj.evidence.root.parent) == before
     operator = next(row for row in blob["tiers"] if row["tier_id"] == RAM_ID)

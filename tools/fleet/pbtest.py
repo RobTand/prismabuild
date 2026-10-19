@@ -41,33 +41,44 @@ import base64
 import importlib.util
 import json
 import os
-import posixpath
 import re
 import statistics
 import subprocess
 import sys
 import threading
 import time
+import tempfile
+import uuid
 import zlib
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import (  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import (  # noqa: E402
     fleet_tool, generation_root, tool_candidates,
 )
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import action_client, client_channel, client_recovery  # noqa: E402
+from prismabuild.submission_frontend import store_for, render_submission, request_arguments
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+
+from prismabuild import action_wait  # noqa: E402
+from prismabuild import contracts
 from prismabuild import adaptive_gpu, core, owned_tree, pool  # noqa: E402
-from prismabuild import dependency_digest  # noqa: E402
-from pbrun import require_gpu_memory_scope  # noqa: E402
+from prismabuild import dependency_digest, pbtest_collection  # noqa: E402
+from prismabuild.submission import require_gpu_memory_scope  # noqa: E402
 #: The capability declarations and cohort rules for this tool (#1495): one
 #: module, so the coordinator's classification and the CLI's contract cannot
 #: drift apart.
-import pbtest_capabilities  # noqa: E402
+from prismabuild import pbtest_capabilities  # noqa: E402
 #: Read for ``pbrun.SH`` when the queue is asked, so the conftest's repointing
 #: of the live store reaches it: see :func:`announced_ceilings`.
-import pbrun  # noqa: E402
+from prismabuild import submission
 #: The submitter each shard is started through, under whichever layout the
 #: runtime containing this file uses.  ``None`` when neither layout has one.
 PBRUN = fleet_tool("pbrun.py", root=RUNTIME_ROOT)
@@ -80,107 +91,11 @@ CLIENT_RSS_MB = 80
 #: shard.
 DEFAULT_MAX_CLIENTS = 8
 
-#: pytest's terminal summary line -- the one line that says pytest reached the
-#: end of a session.  Built from ``_pytest.terminal``'s own grammar:
-#: ``", ".join(parts) + " in " + duration``, where a part is ``N <word>`` from
-#: ``pluralize``, or the literal ``no tests ran``, or one of the
-#: ``--collect-only`` forms; and the duration is ``S.SSs``, with a
-#: ``(H:MM:SS)`` tail past a minute.
-#:
-#: The word-substring test this replaces matched any line containing
-#: ``" passed"``, ``" failed"`` or ``" error"``.  Two live examples of what it
-#: captured instead of a summary: pytest's own usage failure, whose second
-#: line is ``python -m pytest: error: unrecognized arguments: ...``, and
-#: pbrun's ``removed failed exchange probe /mnt/shared/pb-exchange-...``.
-#: Either one set ``ran=True`` for a shard that never started a case, which is
-#: exactly the "did not run" reading the ``ran`` flag exists to keep distinct.
-#:
-#: The ``=``-wrapped form is accepted too.  Shards run ``-q``, so
-#: ``summary_stats`` takes its undecorated ``write_line`` branch and a real
-#: summary looks like ``1 failed, 531 passed, 1 skipped in 17.82s``; the
-#: decoration appears only above ``-q``.  Matching it costs nothing and keeps
-#: a shard run at default verbosity from reading as "did not run".
-#: pytest-subtests reports ``N subtests passed`` (and ``failed``/``skipped``):
-#: the one two-word part.  Without it a shard that ran 16 cases and six
-#: subtests read as "did not run" (#256), which is this grammar producing the
-#: mirror of the defect it was tightened against.
-_COUNTED = r"\d+ (?:subtests? )?[A-Za-z][\w-]*"
-_COLLECT_ONLY = (r"no tests collected(?: \(\d+ deselected\))?"
-                 r"|\d+/\d+ tests collected \(\d+ deselected\)"
-                 r"|\d+ tests? collected")
-_PARTS = rf"(?:no tests ran|{_COLLECT_ONLY}|{_COUNTED})(?:, {_COUNTED})*"
-_DURATION = r"\d+\.\d+s(?: \([^)]*\))?"
-PYTEST_SUMMARY = re.compile(rf"^(?:=+ )?{_PARTS} in {_DURATION}(?: =+)?$")
-#: Colour is off down a pipe, but ``FORCE_COLOR`` in a shard's environment
-#: would wrap the line in escapes and make it unmatchable.
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def pytest_summary(lines: list[str]) -> str:
-    """The last line that is pytest's terminal summary, or ``""``."""
-
-    for line in reversed(lines):
-        if PYTEST_SUMMARY.match(ANSI.sub("", line).strip()):
-            return line.strip()
-    return ""
-
-
-#: The line ``pbrun`` prints, with exit 74, when it could not read an action's
-#: ending: at zero patience, when a reader could not be reaped, or when a
-#: patient wait ended while the last read was unavailable.
-UNOBSERVED_OUTCOME = re.compile(r"^pbrun: unavailable pool outcome for ([0-9a-f]{12})\b")
-
-
-def unobserved_outcome(lines: list[str]) -> str | None:
-    """The 12-character key whose ending ``pbrun`` could not read, or ``None``."""
-
-    for line in reversed(lines):
-        match = UNOBSERVED_OUTCOME.match(ANSI.sub("", line).strip())
-        if match:
-            return match.group(1)
-    return None
-
-
-#: The last line ``pbrun`` prints, with exit 1, when it refused a submission
-#: because its worker-offer scan timed out and the reader was reaped
-#: (``pbrun.OfferDiscoveryTimedOut``, raised by ``bounded_offer_snapshot``).
-#: Nothing was published, so submitting the same shard again is safe, and it
-#: is the one refusal a resubmission can clear.  The ``$`` matters: the same
-#: timeout with a reader that survived cleanup appends `` retained reader=``,
-#: and that one stays a plain refusal, because a retry would race the reader.
-OFFER_DISCOVERY_TIMED_OUT = re.compile(
-    r"^pbrun: worker-offer discovery timed out after [^;]*; refusing submission; "
-    r"no runnable submission was published\.$")
-
-
-def offer_discovery_timed_out(lines: list[str], returncode: int | None) -> bool:
-    """Whether a shard's ``pbrun`` ended in the refusal a resubmission can clear.
-
-    ``pbtest`` runs ``pbrun`` as a subprocess, so it cannot catch the class the
-    way ``pbcampaign`` does (#560).  What it sees is the interpreter printing
-    the ``SystemExit`` text last and exiting 1.  Only pbrun's LAST line counts:
-    a shard whose tests quote the message, and fail, ran and is not retried.
-    """
-
-    if returncode != 1:
-        return False
-    for line in reversed(lines):
-        text = ANSI.sub("", line).strip()
-        if text:
-            return bool(OFFER_DISCOVERY_TIMED_OUT.match(text))
-    return False
-
-
 #: The prefixes of the lines a shard's submitter prints about its own wait.
 #: They are streamed as they arrive (#1048): a patient ``pbrun`` can wait out a
 #: reader stuck in the kernel for all of ``--wait-s``, and says so every
 #: minute, but a line that sits in a pipe until the shard ends says nothing.
 STREAMED_PREFIXES = ("pbrun:", "pbstatus:")
-
-#: The line ``pbrun`` prints when it publishes a shard to the pull queue, or
-#: attaches to the run already carrying its key.  It is the one line naming
-#: the full action key (#1012); SLURM's submission line names a prefix only.
-SUBMITTED = re.compile(r"^pbrun: (queued|attached to) ([0-9a-f]{64})(?![0-9a-f])")
 
 _PRINT_LOCK = threading.Lock()
 
@@ -192,177 +107,91 @@ def _say(text: str) -> None:
         print(text, flush=True)
 
 
-def drain_shard(index: int, stream, lines: list[str], *, submitted=None) -> None:
-    """Read one shard's output as it arrives, keeping all of it in ``lines``.
-
-    Every shard gets its own thread, started as soon as the shard is, so no
-    pipe fills while ``pbtest`` is still reading an earlier shard: a full pipe
-    blocks ``pbrun`` in ``write(2)``, in the middle of its own wait (#1048).
-    Lines that start with a ``STREAMED_PREFIXES`` word are printed at once,
-    prefixed with the shard; pytest's own output stays in the shard's result.
-    ``submitted(key, verb)`` is called for ``pbrun``'s ``SUBMITTED`` line.
-    """
-
+def drain_shard(index: int, stream, lines: list[str]) -> None:
+    """Stream human diagnostics while retaining the shard's complete output."""
     for line in iter(stream.readline, ""):
         lines.append(line)
         if line.startswith(STREAMED_PREFIXES):
             _say(f"shard {index:>3} {line.rstrip()}")
-            match = SUBMITTED.match(line) if submitted is not None else None
-            if match is not None:
-                submitted(match.group(2), match.group(1))
 
 
-# Read-only recovery uses the same pinned pbrun renderer as the submitter.
-# Pass an absolute monotonic deadline, so interpreter startup cannot renew it.
-_RECOVER_OUTCOME = """\
-import runpy, sys, time
-from pathlib import Path
-reader = runpy.run_path(sys.argv[1])
-remaining = float(sys.argv[4]) - time.monotonic()
-if remaining <= 0:
-    sys.exit(reader['GAVE_UP_EXIT'])
-queue = reader['pool'].PoolQueue(reader['SH'] / 'pb-queue')
-sys.exit(reader['await_outcome'](queue, sys.argv[2], wait_s=remaining,
-                               generation=float(sys.argv[3])))
-"""
+def start_shard(index: int, command: list[str], *, result: dict,
+                files=(), progress=None, expected_identity=None) -> client_channel.ClientProcess:
+    result.setdefault('lines', [])
+    result.setdefault('attempts', 1)
+    result.setdefault('returncode', None)
+    result.setdefault('action_key', None)
 
+    def submitted(identity):
+        if result['action_key'] is not None:
+            return
+        result['action_key'] = identity.action_key
+        if progress is not None:
+            progress.observe(index, result)
+        if isinstance(identity, action_client.CachedClientIdentity):
+            verb = 'cached'
+        else:
+            verb = ('queued' if identity.arrival is action_client.ClientArrival.SUBMITTED
+                    else 'attached')
+        _say(f"shard {index:>3} action {identity.action_key} ({verb}): " + " ".join(files))
 
-def recovery_command(lines: list[str], key: str | None, deadline: float) -> list[str] | None:
-    """Recover only a named generation with no possibly retained reader.
-
-    A 74 at the original deadline remains unobserved. Old clients without a
-    generation stamp, and a client naming any retained reader, also refuse
-    recovery rather than read another attempt or race a kernel-blocked read.
-    """
-    if key is None or time.monotonic() >= deadline:
-        return None
-    if any("retained reader=" in line for line in lines):
-        return None
-    for line in lines:
-        submitted = SUBMITTED.match(line)
-        if submitted is None:
-            continue
-        if submitted.group(2) != key:
-            return None
-        stamp = re.search(r" published_unix=([0-9]+(?:\.[0-9]+)?)(?: |$)", line)
-        if stamp is None:
-            return None
-        return [sys.executable, "-c", _RECOVER_OUTCOME, str(PBRUN), key,
-                stamp.group(1), str(deadline)]
-    return None
+    environment = _client_environment()
+    if expected_identity is not None:
+        inherited = environment.get('PYTHONPATH')
+        environment['PYTHONPATH'] = str(RUNTIME_ROOT / 'src') + (
+            os.pathsep + inherited if inherited else '')
+    return client_channel.ClientProcess.launch(command, queue_root=store_for(__file__).root / 'pb-queue',
+        cas_root=store_for(__file__).root / 'cas', env=environment, expected_identity=expected_identity,
+        on_identity=submitted)
 
 
 def run_shard(index: int, command: list[str], first, *, wait_s: float,
-              deadline: float, result: dict, files: list[str] = ()) -> None:
-    """Drain one shard's ``pbrun`` and resubmit it after an offer-read timeout.
-
-    ``first`` is the attempt the caller already launched, so shards start in
-    order as before.  An attempt whose ``pbrun`` ended in
-    ``OFFER_DISCOVERY_TIMED_OUT`` published nothing and holds nothing, so the
-    same command is run again after ``pbrun.POLL_S``, while the shard's own
-    ``--wait-s`` lasts -- the rule ``pbcampaign --max-inflight`` applies to a
-    row (#560). An unobserved outcome (74) may instead start one read-only
-    recovery of the same stamped generation inside the original deadline.
-    It never repeats the submission or starts beside a retained reader.
-    Every attempt's output stays in ``result["lines"]``, so the receipt
-    shows each refusal.
-
-    When ``pbrun`` says which key it queued or attached to, the key goes in
-    ``result["action_key"]`` and is printed with the shard's ``files`` at
-    once, so a run's keys can be cited while it is still running (#1012).
-    """
-
-    lines: list[str] = []
-    result.update(lines=lines, attempts=1, returncode=None, action_key=None)
-
-    def submitted(key: str, verb: str) -> None:
-        # The first such line is this shard's: pbrun prints it before the
-        # action runs and relays the action's own output only at the end,
-        # where a failing test that drove pbrun can print one of its own.
-        if result["action_key"] is not None:
-            return
-        result["action_key"] = key
-        _say(f"shard {index:>3} action {key} "
-             f"({'queued' if verb == 'queued' else 'attached'}): "
-             + " ".join(files))
-
-    proc = first
+              deadline: float, result: dict, files: list[str] = (), progress=None) -> None:
+    """Retry only a typed unpublished offer timeout or recover one exact pool run."""
+    lines = result['lines']
+    running = first
     while True:
-        drain_shard(index, proc.stdout, lines, submitted=submitted)
-        proc.wait()
-        result["returncode"] = proc.returncode
-        if proc.returncode == pbrun.RECORD_WRITE_FAILED_EXIT:
-            recovery = recovery_command(lines, result["action_key"], deadline)
-            if recovery is not None:
-                _say(f"shard {index:>3} pbtest: recovering the same generation's "
-                     "unobserved outcome inside the original deadline; not resubmitting")
-                try:
-                    observer = subprocess.Popen(
-                        recovery, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, errors="replace")
-                except OSError as exc:
-                    _say(f"shard {index:>3} pbtest: cannot start outcome recovery: {exc}")
-                    return
-                drain_shard(index, observer.stdout, lines)
-                observer.wait()
-                result["returncode"] = observer.returncode
+        drain_shard(index, running.process.stdout, lines)
+        events = running.wait()
+        result['returncode'] = running.process.returncode
+        result['client_events'] = events
+        recovery = client_recovery.command(events, deadline=deadline)
+        if recovery is not None:
+            _say(f"shard {index:>3} pbtest: recovering the same generation's "
+                 "unobserved outcome inside the original deadline; not resubmitting")
+            try:
+                observer = start_shard(index, recovery, result=result, files=files,
+                    progress=progress, expected_identity=events.identity)
+            except OSError as exc:
+                _say(f"shard {index:>3} pbtest: cannot start outcome recovery: {exc}")
+                return
+            drain_shard(index, observer.process.stdout, lines)
+            result['client_events'] = observer.wait()
+            result['returncode'] = observer.process.returncode
             return
-        if not offer_discovery_timed_out(lines, proc.returncode):
+        if (events.problem is not None or events.ending is None
+                or not isinstance(events.ending.verdict, action_client.ClientOfferTimeout)):
             return
         remaining = deadline - time.monotonic()
-        if remaining <= pbrun.POLL_S:
-            # The pause would reach the deadline; pbcampaign would stop there
-            # too.  The shard keeps pbrun's refusal as its ending.
+        if remaining <= action_wait.POLL_S:
             _say(f"shard {index:>3} pbtest: worker-offer discovery timed out on "
                  f"attempt {result['attempts']}; {max(remaining, 0.0):.0f}s of "
                  f"--wait-s {wait_s:g} left, not resubmitting")
             return
-        result["attempts"] += 1
+        result['attempts'] += 1
+        if progress is not None:
+            progress.observe(index, result)
         _say(f"shard {index:>3} pbtest: worker-offer discovery timed out and "
              f"nothing was published; attempt {result['attempts']} in "
-             f"{pbrun.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
-        time.sleep(pbrun.POLL_S)
+             f"{action_wait.POLL_S:g}s ({remaining:.0f}s of --wait-s {wait_s:g} left)")
+        time.sleep(action_wait.POLL_S)
         try:
-            proc = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, errors="replace")
+            running = start_shard(index, command, result=result, files=files, progress=progress)
         except OSError as exc:
-            # The first attempt launched this same command, so this is the
-            # box, not the shard.  The refusal already recorded stands.
             _say(f"shard {index:>3} pbtest: could not start attempt "
                  f"{result['attempts']}: {exc}")
-            result["attempts"] -= 1
+            result['attempts'] -= 1
             return
-
-
-def replayed_output(out: str) -> str:
-    """The shard's own stdout, when ``pbrun`` printed a receipt instead of it.
-
-    A submission whose action is already in the CAS comes back as
-    ``"status": "cache_hit"``, and what ``pbrun`` prints then is the receipt --
-    not the shard's stdout, which sits in the result payload the receipt names.
-    Scanning the receipt for a pytest summary finds none, so a cached run of a
-    clean suite read as four shards that never started a test.  A re-run of an
-    unchanged control arm is precisely the case that hits the cache, which made
-    the baseline half of every comparison the half most likely to report
-    nothing.
-
-    Returns "" when there is nothing to recover, so the caller keeps what it
-    already had.
-    """
-
-    if '"status": "cache_hit"' not in out:
-        return ""
-    match = re.search(r'"payload_path": "([^"]+)"', out)
-    if match is None:
-        return ""
-    try:
-        return Path(match.group(1)).read_text(errors="replace")
-    except OSError:
-        # The blob is gone or unreadable.  Recovering nothing is the honest
-        # answer: the caller then reports a shard whose result it cannot read,
-        # which is true, rather than a green one.
-        return ""
 
 
 #: ``pbrun``'s own transport vocabulary, and its own reader for the default.
@@ -371,7 +200,7 @@ def replayed_output(out: str) -> str:
 #: flag twenty shards never see.  ``fleet_submit`` is published beside this
 #: file and holds the one reader of the default, so a shard's transport is the
 #: fleet's transport rather than a second opinion about it.
-from fleet_submit import TRANSPORTS, default_transport  # noqa: E402
+from prismabuild.fleet_submit import TRANSPORTS, default_transport  # noqa: E402
 #: The per-test bound's name and the ceiling the worker loops enforce, read
 #: from the modules that own them rather than restated here: a bound derived
 #: from a number this file copied would drift the moment either moved.
@@ -442,7 +271,7 @@ def fleet_queue():
     alike, so the two questions cannot drift onto different roots.
     """
 
-    return pool.PoolQueue(pbrun.SH / "pb-queue")
+    return pool.PoolQueue(store_for(__file__).root / "pb-queue")
 
 
 def interpreter_refusal(queue, python: str, *, tags, resources,
@@ -464,7 +293,7 @@ def interpreter_refusal(queue, python: str, *, tags, resources,
         "needs_gpu": bool(needs_gpu),
     }
     verdict = queue.interpreter_placement_verdict(
-        probe, python, max_age_s=pbrun.RECORDED_OFFER_MAX_AGE_S)
+        probe, python, max_age_s=submission.RECORDED_OFFER_MAX_AGE_S)
     if verdict == "absent":
         return ("refusal",
                 "pbtest: every recorded worker that could take these shards "
@@ -528,7 +357,7 @@ def receipt_path(action_key: str | None) -> str | None:
 
     if not action_key:
         return None
-    path = core.PrismaBuildCAS(pbrun.SH / "cas").receipt_path(action_key)
+    path = core.PrismaBuildCAS(store_for(__file__).root / "cas").receipt_path(action_key)
     try:
         return str(path) if path.is_file() else None
     except OSError:
@@ -893,7 +722,7 @@ def summary_seconds(summary: str) -> float | None:
     if not summary:
         return None
     match = re.search(r" in (\d+\.\d+)s(?: \([^)]*\))?\s*$",
-                      ANSI.sub("", summary).strip())
+                      pbtest_outcomes.ANSI.sub("", summary).strip())
     return float(match.group(1)) if match else None
 
 SHARD_DIGEST_MODULE = "_prismabuild_pbtest_digest_primitives"
@@ -929,14 +758,16 @@ def load(name):
     return module
 
 
-# Only shipped helper imports bind to the private owner. A later package
-# import loads its real on-disk module, preserving core's source identity.
+# Only shipped helper imports bind to their captured owners. A later package
+# import loads its real on-disk module, preserving that package's identity.
 shipped_owner = load(DIGEST_MODULE)
 
 
 def helper_import(name, globals=None, locals=None, fromlist=(), level=0):
     if name == "prismabuild.digest_primitives" and fromlist and level == 0:
         return shipped_owner
+    if name == "prismabuild.pbtest_collection" and fromlist and level == 0:
+        return shipped_collection
     return builtins.__import__(name, globals, locals, fromlist, level)
 
 
@@ -944,7 +775,7 @@ def helper_import(name, globals=None, locals=None, fromlist=(), level=0):
 HELPER_BUILTINS = dict(vars(builtins), __import__=helper_import)
 pins = load("pbtest_pins") if "pbtest_pins" in SOURCES else None
 digest = load("pbtest_dependency_digest") if "pbtest_dependency_digest" in SOURCES else None
-load("pbtest_collection")
+shipped_collection = load("pbtest_collection")
 selection = None
 if @COLLECTION@:
     import json
@@ -955,10 +786,14 @@ def preflight():
     # The reviewed-dependency guard, then the sealed capability
     # requirements (#1495): each refuses the shard before pytest, which
     # makes a drifted dependency a failed shard, never a skipped test.
-    refused = 0 if pins is None else pins.preflight()
-    if not refused and digest is not None:
-        refused = digest.verify_sealed(selection)
-    return refused
+    if pins is not None:
+        try:
+            pins.check_pins()
+        except ValueError as exc:
+            message = f"pbtest: dependency pin refused before pytest: {exc}"
+            print(message, file=sys.stderr, flush=True)
+            return 1, {"code": "dependency_pin", "message": message}
+    return (0 if digest is None else digest.verify_sealed(selection)), None
 
 
 raise SystemExit(load("pbtest_outcomes").main(
@@ -969,199 +804,9 @@ raise SystemExit(load("pbtest_outcomes").main(
     collection_source=SOURCES["pbtest_collection"]))
 """
 
-#: Loads ``owned_tree`` (the owner lock, retention clock and removal both
-#: attempt programs below use), so the shard's interpreter needs no
-#: PrismaBuild on its path.  ``@SOURCE@`` becomes the module's exact bytes,
-#: zlib-compressed and base85-encoded: the whole program is one ``python -c``
-#: argument, which Linux caps at ``MAX_ARG_STRLEN`` (128 KiB), and the
-#: largest program already used 94% of that before this module.
-OWNED_TREE_PROGRAM = """\
-import base64 as _pb_base64
-import zlib as _pb_zlib
-_pb_owned_tree = {}
-exec(compile(_pb_zlib.decompress(_pb_base64.b85decode(@SOURCE@)),
-             "<pbtest owned_tree>", "exec"), _pb_owned_tree)
-"""
-
-
-#: The worker-only source a sealed ``--basetemp`` executes before anything
-#: else (#1469).  The coordinator never runs it and never needs the root to
-#: exist; the worker refuses an unusable root here, before pytest, rather
-#: than letting a qualification problem surface mid-run.  ``@ROOT@`` becomes
-#: the sealed root.  The attempt's ``<root>/<key>/<attempt>`` holds an owner
-#: lock beside pytest's leaf: exit 0 removes the attempt directory (and the
-#: key directory it empties); any other ending starts its retention clock,
-#: and a later attempt under the same root reaps it once the window passes.
-#: The root itself is never removed or changed.
-BASETEMP_PROGRAM = """\
-import os as _pb_os
-import re as _pb_re
-import stat as _pb_stat
-import sys as _pb_sys
-import tempfile as _pb_tempfile
-import uuid as _pb_uuid
-
-
-def _pb_refuse(reason):
-    raise SystemExit("pbtest: cannot use requested --basetemp: " + reason)
-
-
-_pb_root = @ROOT@
-_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
-if not _pb_key or "/" in _pb_key or _pb_key in (".", ".."):
-    _pb_refuse(
-        "the worker did not provide a safe PRISMABUILD_ACTION_KEY, so the "
-        "action-owned namespace cannot be derived")
-_pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
-if _pb_attempt:
-    if len(_pb_attempt) != 32 or any(
-            character not in "0123456789abcdef" for character in _pb_attempt):
-        _pb_refuse(
-            "PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
-else:
-    # No launcher-provided attempt identity on this lane: mint one per
-    # execution, so a second attempt of the same action key never shares a
-    # namespace -- pytest deletes its basetemp, and the wipe must stay
-    # inside this attempt's own directory.
-    _pb_attempt = _pb_uuid.uuid4().hex
-# A relative root is confined to this attempt's own materialized checkout,
-# which is the shard's working directory.
-_pb_root = _pb_os.path.abspath(_pb_root)
-try:
-    _pb_stat_result = _pb_os.lstat(_pb_root)
-except OSError as _pb_exc:
-    _pb_refuse(f"{_pb_root} ({_pb_exc})")
-if _pb_stat.S_ISLNK(_pb_stat_result.st_mode):
-    _pb_refuse(
-        f"{_pb_root} is a symlink; the sealed root is the real directory "
-        "or nothing")
-if not _pb_stat.S_ISDIR(_pb_stat_result.st_mode):
-    _pb_refuse(f"{_pb_root} is not a directory")
-if _pb_stat_result.st_uid != _pb_os.geteuid():
-    _pb_refuse(
-        f"{_pb_root} is owned by uid {_pb_stat_result.st_uid}, not this "
-        f"action's uid {_pb_os.geteuid()}")
-_pb_check_capacity(_pb_root)
-# pytest receives the action-owned leaf, never the sealed root itself:
-# pytest deletes its basetemp at startup, and the sealed root belongs to
-# every attempt of the action, not to this one.
-_pb_attempt_directory = _pb_os.path.join(_pb_root, _pb_key, _pb_attempt)
-_pb_derived = _pb_os.path.join(_pb_attempt_directory, "pytest")
-_pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_NOFOLLOW | _pb_os.O_CLOEXEC
-try:
-    _pb_parent = _pb_os.open(_pb_root, _pb_flags)
-    try:
-        _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("[0-9a-f]{64}"),
-                                          inner=_pb_re.compile("[0-9a-f]{32}"))
-    except Exception as _pb_exc:
-        print("pbtest: basetemp expiry skipped: " + str(_pb_exc), file=_pb_sys.stderr)
-    try:
-        _pb_os.makedirs(_pb_attempt_directory, exist_ok=True)
-    except FileNotFoundError:
-        # A finished attempt of this key removed the key directory it had
-        # emptied between makedirs' two mkdir calls; make it again.
-        _pb_os.makedirs(_pb_attempt_directory, exist_ok=True)
-    _pb_key_fd = _pb_os.open(_pb_key, _pb_flags, dir_fd=_pb_parent)
-    _pb_held = _pb_os.open(_pb_attempt, _pb_flags, dir_fd=_pb_key_fd)
-    try:
-        _pb_lock = _pb_owned_tree["take_owner_lock"](_pb_held, _pb_owned_tree["LOCK_NAME"])
-    finally:
-        _pb_os.close(_pb_held)
-    _pb_os.makedirs(_pb_derived, exist_ok=True)
-    with _pb_tempfile.TemporaryFile(dir=_pb_derived):
-        pass
-except (OSError, ValueError) as _pb_exc:
-    _pb_refuse(f"{_pb_derived} ({_pb_exc})")
-# The pair goes after the collection JSON (sys.argv[1]) and before the
-# trailing file arguments pbtest_outcomes checks the argv tail against.
-_pb_sys.argv[2:2] = ["--basetemp", _pb_derived]
-
-
-def _pb_run_and_clean_attempt_base(_pb_run):
-    _pb_code = _pb_run()
-    try:
-        _pb_owned_tree["release_owned_tree"](
-            _pb_key_fd, _pb_attempt, _pb_lock, remove=int(_pb_code) == 0)
-        if int(_pb_code) == 0:
-            _pb_os.rmdir(_pb_key, dir_fd=_pb_parent)
-    except OSError as _pb_exc:
-        if _pb_os.path.isdir(_pb_attempt_directory):
-            print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
-                  file=_pb_sys.stderr)
-    return _pb_code
-"""
-
-#: The worker-only source every shard runs before anything else (#1542). It
-#: gives the attempt its own pytest base temp under the sealed ``TMPDIR``:
-#: ``<tmpdir>/pb-<mkdtemp suffix>/pytest``, beside the attempt's owner lock
-#: (``owned_tree``). An explicit sealed ``--basetemp`` keeps its own
-#: namespace; this default never touches it. After pytest exits 0 the
-#: worker removes this attempt's directory, read-only test directories
-#: included. Any other ending keeps it for diagnosis, as
-#: ``tmp_path_retention_policy=failed`` does, and starts its retention
-#: clock (a SIGKILL starts it when a later attempt first finds the lock
-#: free); a later attempt in the same ``TMPDIR`` reaps it
-#: ``owned_tree.RETENTION_S`` after that. ``TMPDIR`` itself is the sealed
-#: scratch placement and the compiler cache context; it is never removed.
-ATTEMPT_TEMP_PROGRAM = """\
-import os as _pb_os
-import re as _pb_re
-import sys as _pb_sys
-import tempfile as _pb_tempfile
-
-
-def _pb_run_and_clean_attempt_base(_pb_run):
-    return _pb_run()
-
-
-_pb_tmpdir = _pb_os.environ.get("TMPDIR", "")
-_pb_key = _pb_os.environ.get("PRISMABUILD_ACTION_KEY", "")
-_pb_attempt = _pb_os.environ.get("PRISMABUILD_ACTION_NONCE", "")
-if _pb_attempt and (len(_pb_attempt) != 32 or any(
-        character not in "0123456789abcdef" for character in _pb_attempt)):
-    raise SystemExit(
-        "pbtest: PRISMABUILD_ACTION_NONCE is not a 32-hex attempt identity")
-if (_pb_tmpdir and _pb_key and "/" not in _pb_key
-        and _pb_key not in (".", "..")):
-    _pb_flags = _pb_os.O_RDONLY | _pb_os.O_DIRECTORY | _pb_os.O_CLOEXEC
-    try:
-        _pb_parent = _pb_os.open(_pb_tmpdir, _pb_flags)
-        try:
-            _pb_owned_tree["reap_dead_trees"](_pb_parent, _pb_re.compile("pb-[a-z0-9_]{8}"))
-        except Exception as _pb_exc:
-            print("pbtest: base temp expiry skipped: " + str(_pb_exc), file=_pb_sys.stderr)
-        # mkdtemp creates an exclusive namespace; no action identity is truncated.
-        _pb_attempt_directory = _pb_tempfile.mkdtemp(prefix="pb-", dir=_pb_tmpdir)
-        _pb_name = _pb_os.path.basename(_pb_attempt_directory)
-        _pb_held = _pb_os.open(_pb_name, _pb_flags | _pb_os.O_NOFOLLOW, dir_fd=_pb_parent)
-        try:
-            _pb_lock = _pb_owned_tree["take_owner_lock"](_pb_held, _pb_owned_tree["LOCK_NAME"])
-        finally:
-            _pb_os.close(_pb_held)
-        _pb_owned = _pb_os.path.join(_pb_attempt_directory, "pytest")
-        _pb_os.mkdir(_pb_owned)
-        with _pb_tempfile.TemporaryFile(dir=_pb_owned):
-            pass
-    except (OSError, ValueError) as _pb_exc:
-        raise SystemExit("pbtest: cannot use the attempt base temp: " + str(_pb_exc))
-    _pb_sys.argv[2:2] = ["--basetemp", _pb_owned]
-
-
-    def _pb_run_and_clean_attempt_base(_pb_run):
-        _pb_code = _pb_run()
-        try:
-            _pb_owned_tree["release_owned_tree"](
-                _pb_parent, _pb_name, _pb_lock, remove=int(_pb_code) == 0)
-        except OSError as _pb_exc:
-            print("pbtest: attempt base temp kept for expiry: " + str(_pb_exc),
-                  file=_pb_sys.stderr)
-        return _pb_code
-
-
-"""
-
-
-
+from prismabuild.pbtest_owned_temp import (
+    OWNED_TREE_PROGRAM, BASETEMP_PROGRAM, ATTEMPT_TEMP_PROGRAM,
+)
 
 
 def packed_source(path: Path) -> str:
@@ -1194,7 +839,7 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     sources = {SHARD_DIGEST_MODULE:
                    Path(core.digest_primitives.__file__).read_bytes().decode("utf-8"),
                "pbtest_outcomes": here.with_name("pbtest_outcomes.py").read_text(),
-               "pbtest_collection": here.with_name("pbtest_collection.py").read_text()}
+               "pbtest_collection": Path(pbtest_collection.__file__).read_text()}
     packed = {}
     if trace:
         # The diagnostic plugin reuses the existing exact-process I/O reader.
@@ -1265,21 +910,6 @@ def shard_entry(python: str, checkout: Path, *, tmpdir: str | None = None,
     return [python, "-c", program]
 
 
-def recorded_skips(record: dict | None) -> list[dict] | None:
-    """Every skip a shard's record holds, with its reason; ``None`` without one."""
-
-    if record is None:
-        return None
-    skips = []
-    for row in record.get("reports") or ():
-        entry = dict(zip(pbtest_outcomes.REPORT_FIELDS, row))
-        if entry.get("category") == "skipped":
-            skips.append({"nodeid": entry["nodeid"], "when": entry["when"],
-                          "reason": entry.get("reason") or "",
-                          "location": entry.get("location")})
-    return skips
-
-
 def summary_count(summary: str, word: str) -> int:
     """The ``N <word>`` count in a pytest summary line, ``0`` when absent."""
 
@@ -1304,109 +934,6 @@ def validate_basetemp(root: str) -> None:
         raise ValueError("--basetemp must not contain NUL")
     if any(part == ".." for part in PurePath(root).parts):
         raise ValueError("--basetemp must not traverse: no '..' in the root")
-
-
-#: Summary parts that are not outcomes, though the same line prints them.
-NOT_OUTCOMES = {"warning", "warnings", "deselected"}
-_COLLECTED_COUNT = re.compile(r"^(?:no tests|(\d+)(?:/\d+)? tests?) collected\b")
-
-
-def summary_outcomes(summary: str) -> tuple[dict[str, int] | None, int | None]:
-    """A summary line's outcome counts by category, and its collected count.
-
-    Outcomes are keyed the way the outcome record keys them: pytest prints
-    ``N error``/``N errors`` for the ``error`` category, and every other
-    counted word is the category itself.  A ``--collect-only`` summary
-    counts items, not outcomes, and answers ``(None, N)``.
-    """
-
-    line = ANSI.sub("", summary).strip()
-    line = re.sub(r"^=+ | =+$", "", line)
-    body = line.rsplit(" in ", 1)[0]
-    collected = _COLLECTED_COUNT.match(body)
-    if collected:
-        return None, int(collected.group(1) or 0)
-    counts: dict[str, int] = {}
-    for part in body.split(", "):
-        match = re.fullmatch(r"(\d+) (.+)", part)
-        if match is None or match.group(2) in NOT_OUTCOMES:
-            continue
-        word = "error" if match.group(2) == "errors" else match.group(2)
-        counts[word] = counts.get(word, 0) + int(match.group(1))
-    return counts, None
-
-
-def reconcile_shards(results: list[dict]) -> None:
-    """Reconcile each shard by node ID, and the shards with each other (#941).
-
-    Each shard that reported a summary gets ``reconciliation``: its own
-    collection matched against its outcomes (``pbtest_outcomes.reconcile``).
-    A shard that reported a summary and printed no outcome record cannot be
-    reconciled, and says so.  Then every node ID collected by two shards is a
-    problem of each: files are disjoint across shards, so a test in two of
-    them ran twice.
-    """
-
-    owners: dict[str, list[int]] = {}
-    for result in results:
-        if not result["ran"]:
-            result["reconciliation"] = None
-            continue
-        record = pbtest_outcomes.parse(result["output"])
-        if record is None:
-            result["reconciliation"] = {"problems": [
-                "no outcome record: the shard's tests cannot be matched "
-                "against its collection"]}
-            continue
-        counts, collected = summary_outcomes(result["summary"])
-        reconciliation = pbtest_outcomes.reconcile(record, counts, collected)
-        rootdir = record.get("rootdir_relative", ".")
-        if not isinstance(rootdir, str):
-            rootdir = ""
-
-        def source_file(nodeid: str) -> str:
-            return posixpath.normpath(posixpath.join(
-                rootdir, nodeid.split("::", 1)[0]))
-
-        observed = {source_file(nodeid) for nodeid in record.get("collected") or ()}
-        observed.update(source_file(nodeid)
-                        for nodeid in record.get("deselected") or ())
-        observed.update(source_file(row[0])
-                        for row in record.get("reports") or ()
-                        if row[1] == "collect")
-        observed.update(source_file(nodeid)
-                        for nodeid in record.get("collect_seen") or ())
-        selection = record.get("file_selection")
-        if "file_selection" in record:
-            if (not isinstance(selection, dict) or set(selection) != {"files", "ignored"}
-                    or selection["files"] != result["files"]
-                    or not isinstance(selection["ignored"], list)
-                    or any(path not in result["files"] for path in selection["ignored"])
-                    or selection["ignored"] != sorted(set(selection["ignored"]))
-                    or set(selection["ignored"]) & observed
-                    or record.get("file_selection_error")):
-                reconciliation["problems"].append("invalid or inconsistent file selection evidence")
-            else:
-                observed.update(selection["ignored"])
-        missing = sorted(set(result["files"]) - observed)
-        reconciliation["missing_files"] = missing
-        if missing:
-            reconciliation["problems"].append(
-                "assigned file(s) had no collection or outcome: "
-                + ", ".join(missing))
-        result["reconciliation"] = reconciliation
-        for nodeid in dict.fromkeys(record.get("collected") or ()):
-            owners.setdefault(nodeid, []).append(result["shard"])
-    for nodeid, shards in owners.items():
-        if len(shards) < 2:
-            continue
-        for result in results:
-            if result["shard"] in shards:
-                reconciliation = result["reconciliation"]
-                reconciliation.setdefault("in_other_shards", []).append(nodeid)
-                message = "node ID(s) also collected by another shard"
-                if not any(message in problem for problem in reconciliation["problems"]):
-                    reconciliation["problems"].append(message)
 
 
 def _names(label: str, names, limit: int = 20) -> None:
@@ -1461,7 +988,8 @@ def displayed(output: str) -> list[str]:
 
     return [line for line in (output or "").strip().splitlines()
             if not line.startswith((pbtest_outcomes.PREFIX,
-                                    pbtest_outcomes.COMPLETION_PREFIX))]
+                                    pbtest_outcomes.COMPLETION_PREFIX,
+                                    pbtest_outcomes.PREFLIGHT_PREFIX))]
 
 
 # A closed vocabulary prevents resource controls, config indirection, and
@@ -1547,10 +1075,87 @@ def shard_pytest_args(arguments: list[str], index: int) -> list[str]:
     return result
 
 
-def shard_command(flags, *, environment, python_entry, arguments):
-    """Bind a shard's child environment and entry at the pbrun boundary."""
-    env_flags = [word for entry in environment for word in ("--env", entry)]
-    return [*flags, *env_flags, "--", *python_entry, *arguments]
+def shard_command(request: SubmissionRequest, *, environment, python_entry, arguments):
+    """Send a typed request across the existing C06 client process boundary."""
+    from dataclasses import replace
+    request = replace(request, env=tuple(environment), command=(*python_entry, *arguments))
+    return ["/usr/bin/python3", str(PBRUN), *request_arguments(request)]
+
+
+def _client_environment():
+    return {key: value for key, value in os.environ.items()
+            if key not in ("PRISMABUILD_PBTEST_RUN_ID", "PRISMABUILD_PBTEST_ENTRYPOINT")}
+
+
+def _write_report_bytes(path, data, *, durable=False):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if durable:
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+class _Progress:
+    def __init__(self, report):
+        self.path = pbtest_outcomes.progress_path(Path(report)) if report else None
+        self.lock = threading.Lock()
+        self.failed = False
+        self.value = {"schema": pbtest_outcomes.PROGRESS_SCHEMA,
+            "run_id": os.environ.get("PRISMABUILD_PBTEST_RUN_ID") or uuid.uuid4().hex,
+            "launch_entrypoint": os.environ.get("PRISMABUILD_PBTEST_ENTRYPOINT") or str(Path(__file__).resolve()),
+            "producer_pid": os.getpid(), "producer_entrypoint": str(Path(__file__).resolve()),
+            "producer_generation": str(RUNTIME_ROOT), "sequence": 0, "state": "running",
+            "total_shards": 0, "completed_shards": 0, "shards": [], "runtime_refusal": None}
+        self._write()
+
+    def _write(self):
+        if self.path is not None:
+            self.value["sequence"] += 1
+            _write_report_bytes(self.path, json.dumps(self.value, separators=(",", ":")).encode(),
+                        durable=self.value["state"] != "running")
+
+    def configure(self, count):
+        with self.lock:
+            self.value["total_shards"] = count
+            self.value["shards"] = [{"shard": i, "status": "pending", "attempts": 0,
+                "action_key": None, "returncode": None} for i in range(count)]
+            self._write()
+
+    def observe(self, index, result, *, completed=False):
+        with self.lock:
+            shard = self.value["shards"][index]
+            shard.update(status="completed" if completed else "submitted",
+                attempts=result["attempts"], action_key=result["action_key"],
+                returncode=result["returncode"] if completed else None)
+            self.value["completed_shards"] = sum(s["status"] == "completed" for s in self.value["shards"])
+            try:
+                self._write()
+            except OSError as exc:
+                self.failed = True
+                sys.stderr.write(f"pbtest: cannot write progress: {exc}\n")
+
+    def refuse(self, refusal):
+        with self.lock:
+            self.value.update(state="refused", runtime_refusal=refusal)
+            self._write()
+
+    def finish(self, report_bytes):
+        with self.lock:
+            self.value.update(state="finished", report_sha256=core.raw_sha256(report_bytes))
+            self._write()
 
 
 def main() -> int:
@@ -1697,9 +1302,14 @@ def main() -> int:
                          "--checkout; a directory contributes every "
                          "test_*.py under it")
     args = ap.parse_args()
+    try:
+        progress = _Progress(args.json)
+    except OSError as exc:
+        sys.stderr.write(f"pbtest: cannot initialize requested output: {exc}\n")
+        return 2
 
     try:
-        if pbrun.interpreter_of([args.python]) != args.python:
+        if submission.interpreter_of([args.python]) != args.python:
             raise ValueError("--python must name an absolute python* executable "
                              "so its path can be sealed into claim-time eligibility")
         if args.tmpdir is not None and not Path(args.tmpdir).is_absolute():
@@ -1956,6 +1566,10 @@ def main() -> int:
         if message is not None:
             sys.stderr.write(message + "\n")
         if kind == "refusal":
+            try:
+                progress.refuse({"code": "interpreter_absent", "message": message})
+            except OSError as exc:
+                sys.stderr.write(f"pbtest: cannot write refusal: {exc}\n")
             return 2
         if plan["selection"] is None:
             continue
@@ -1976,7 +1590,7 @@ def main() -> int:
         if verdict == "unknown_capability":
             sys.stderr.write(
                 f"pbtest: no recorded worker offers the "
-                f"{dependency_digest.DEPENDENCY_DIGEST_TAG} capability, so "
+                f"{contracts.DEPENDENCY_DIGEST_TAG} capability, so "
                 f"the fenced shards ({paths}) would wait unclaimed for "
                 "their whole --wait-s; run a worker generation that carries "
                 "the contract first (#1495)\n")
@@ -2097,88 +1711,35 @@ def main() -> int:
           f"(min {min(sizes)}, max {max(sizes)} files per shard), tags={tags}, "
           f"transport={args.transport}",
           flush=True)
+    try:
+        progress.configure(len(buckets))
+    except OSError as exc:
+        sys.stderr.write(f"pbtest: cannot initialize shard progress: {exc}\n")
+        return 2
     procs = []
+    def run_client(index, command, proc, **kwargs):
+        try:
+            run_shard(index, command, proc, progress=progress, **kwargs)
+        finally:
+            progress.observe(index, kwargs["result"], completed=True)
     requested_roots = [
         [os.path.normpath(os.path.relpath(checkout / raw, checkout)),
          "directory" if (checkout / raw).is_dir() else "file"]
         for raw in args.paths or ["tests"]]
     for index, bucket in enumerate(buckets):
         plan = plan_of[index]
-        # Built in order rather than spliced into.  The repeatable --tag used
-        # to be inserted at a fixed index, which once landed between --demand
-        # and its argument and killed every shard on "expected one argument";
-        # appending each flag where it belongs cannot reach inside a pair.
-        flags = [
-            "/usr/bin/python3", str(PBRUN),
-            "--cwd", str(checkout),
-            "--transport", args.transport,
-        ]
-        # The known child sources/paths are sealed. In the shared runtime,
-        # an untagged CPU shard asserts that portability through pbrun's
-        # existing flag; otherwise its box-local venv path would retain a
-        # source-host pin. Explicit constraints and local runtimes keep
-        # their existing placement rules; never combine --anywhere and tags.
-        for tag in tags:
-            flags += ["--tag", tag]
-        if not tags and not pool.is_box_local_path(RUNTIME_ROOT):
-            flags += ["--anywhere"]
-        # A fenced shard requires its cohort's capability tags (#1495):
-        # explicit tags, which by design constrain placement beyond the
-        # base run's portability.
-        for tag in plan["capability_tags"]:
-            flags += ["--tag", tag]
-        # One --demand token per reserved kind, comma-joined: pbrun parses
-        # it as k=v pairs (#1008 item 4 adds disk_metadata beside mem_gb).
-        demand_terms = [f"{kind}={value}" for kind, value in shard_resources.items()
-                        if kind not in {"cpu", "gpu"}]
-        flags += [
-            "--demand", ",".join(demand_terms),
-            # pbrun fills the cpu demand from --cpus, and its default is 1.
-            # Naming it here is what makes the reservation match the thread
-            # ceiling above; it is sealed into the action's params, so a suite
-            # re-run at a different width is a different action rather than a
-            # cache hit.
-            "--cpus", str(shard_resources["cpu"]),
-        ]
-        if args.gpu:
-            flags += ["--gpu"]
-        if args.gpu_memory_gb is not None:
-            flags += ["--gpu-memory-gb", str(args.gpu_memory_gb)]
-        if plan["sealed_s"] is not None:
-            # ``str`` of the float, the spelling an explicit ``--timeout-s``
-            # was always forwarded in, so a request inside every announced
-            # ceiling reaches ``pbrun`` byte for byte as before (#939).
-            flags += ["--timeout-s", str(plan["sealed_s"])]
-        flags += ["--wait-s", str(args.wait_s)]
-        if args.priority != 0:
-            # Zero is pbrun's own default; forwarding only a non-zero hint
-            # leaves every existing shard argv byte-identical.
-            flags += ["--priority", str(args.priority)]
-        if args.profile is not None:
-            # Same rule, and it matters more here: --profile enters the shard's
-            # action key, so forwarding it unasked would re-key every suite run
-            # on the fleet.  pbrun owns which modes are legal and refuses the
-            # rest, so this passes the word through rather than listing them.
-            flags += ["--profile", str(args.profile)]
-        if args.data_manifest:
-            # Forwarded only when given: the manifest enters the action key,
-            # so an unasked flag would re-key every suite run (#915).
-            flags += ["--data-manifest", str(Path(args.data_manifest).resolve())]
-        if plan["selection"] is not None:
-            # The claim-relevant projection (#1495): the exact-file entries
-            # the claim gate hashes.  The full sealed selection travels in
-            # the shard's own selection JSON below, which is action
-            # identity, so a changed declaration re-keys the shard.  A
-            # tags-only fence has no exact-file entries: pbrun refuses an
-            # empty --requires-files by contract, so the flag is omitted
-            # entirely and the shard is submitted as an ordinary tagged
-            # row (#1495).
-            pins = [entry for entry in plan["selection"]["dependencies"]
-                    if "kind" not in entry]
-            if pins:
-                flags += ["--requires-files", json.dumps(pins)]
-        if args.residency != "none":
-            flags += ["--residency", args.residency]
+        pins = ([entry for entry in plan["selection"]["dependencies"] if "kind" not in entry]
+                if plan["selection"] is not None else [])
+        request = SubmissionRequest(cwd=str(checkout), transport=args.transport,
+            tag=(*tags, *plan["capability_tags"]),
+            anywhere=not tags and not plan["capability_tags"] and not pool.is_box_local_path(RUNTIME_ROOT),
+            demand=",".join(f"{kind}={value}" for kind, value in shard_resources.items()
+                            if kind not in {"cpu", "gpu"}),
+            cpus=shard_resources["cpu"], gpu=args.gpu, gpu_memory_gb=args.gpu_memory_gb,
+            timeout_s=plan["sealed_s"], wait_s=args.wait_s, priority=args.priority,
+            profile=args.profile,
+            data_manifest=str(Path(args.data_manifest).resolve()) if args.data_manifest else None,
+            requires_files=json.dumps(pins) if pins else None, residency=args.residency)
         # Explicit forwarding replaces addopts from both environment and
         # project config: either can hide -n auto or --dist each. Only an
         # explicit forwarding request seals the empty addopts override.
@@ -2196,7 +1757,7 @@ def main() -> int:
             "-p", "no:cacheprovider", *explicit_options,
             *shard_pytest_args(pytest_args, index), *pytest_workers, *bucket,
         ]
-        command = shard_command(flags, environment=environment,
+        command = shard_command(request, environment=environment,
                                 python_entry=python_entry, arguments=arguments)
         # Hold at most ``--max-clients`` pbrun clients (#1348): the next shard
         # starts when one exits.  Its wait budget starts here, at its own
@@ -2208,19 +1769,18 @@ def main() -> int:
         deadline = time.monotonic() + args.wait_s
         # ``errors="replace"``: a stray byte must not end the drain thread,
         # which would leave the pipe to fill and the shard's wait blocked.
-        proc = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            errors="replace")
         shard_result: dict = {}
+        proc = start_shard(index, command, result=shard_result, files=bucket, progress=progress)
         drain = threading.Thread(
-            target=run_shard, args=(index, command, proc),
+            target=run_client, args=(index, command, proc),
             kwargs={"wait_s": args.wait_s, "deadline": deadline,
                     "result": shard_result, "files": bucket},
             name=f"pbtest-shard-{index}", daemon=True)
         drain.start()
         procs.append((index, bucket, drain, shard_result))
 
-    results = []
+    observations = []
+    events_by_shard = {}
     for index, bucket, drain, shard_result in procs:
         # EOF comes when the shard's last pbrun exits, so the join is the wait.
         drain.join()
@@ -2228,15 +1788,32 @@ def main() -> int:
         attempts = shard_result["attempts"]
         returncode = shard_result["returncode"]
         out = "".join(lines)
-        # A cache hit prints the receipt where the shard's stdout would be, so
-        # look through it to the payload before asking whether pytest reported.
-        out = replayed_output(out or "") or (out or "")
+        events = shard_result['client_events']
+        events_by_shard[index] = events
+        if events.problem is not None:
+            _say(f"shard {index:>3} pbtest: client report unusable: {events.problem}")
+        ending = events.ending if events.problem is None else None
+        if ending is not None:
+            replay = action_client.read_cached_output(events.identity, ending)
+            if isinstance(replay, action_client.CachedOutput):
+                out = replay.text or out
+            elif isinstance(replay, action_client.CachedOutputUnavailable):
+                _say(f"shard {index:>3} pbtest: cached output unavailable: {replay.reason}")
+        timed_out = (returncode != 0 and ending is not None
+                     and isinstance(ending.verdict, action_client.ClientExecution)
+                     and ending.verdict.execution_timeout)
+        observations.append({"shard": index, "files": bucket, "returncode": returncode,
+            "output": out, "timed_out": timed_out, "attempts": attempts,
+            "action_key": shard_result.get("action_key")})
+    verdict = pbtest_outcomes.judge_shards(observations, requested_files=files)
+    results = []
+    for observation, shard_verdict in zip(observations, verdict["shards"], strict=True):
+        index, bucket = observation["shard"], observation["files"]
+        returncode, attempts = observation["returncode"], observation["attempts"]
+        out, timed_out = observation["output"], observation["timed_out"]
         tail = [line for line in out.strip().splitlines() if line.strip()]
-        summary = pytest_summary(tail)
-        test_completion = pbtest_outcomes.completion(out)
-        timed_out = returncode != 0 and any(re.match(
-            r"^pbrun: (?:[0-9a-f]{12} )?timeout (?:on|--)",
-            ANSI.sub("", line)) for line in tail)
+        summary, ran = shard_verdict["summary"], shard_verdict["ran"]
+        test_completion = shard_verdict["completion"]
         # Missing terminal output must stay visible: an empty summary once
         # hid 74 tests behind a killed submission (#208). But absence of the
         # summary cannot establish absence of execution (#1365): a deadline
@@ -2245,14 +1822,17 @@ def main() -> int:
         # question the flag is actually asked.  It used to mean "some line
         # mentioned passing, failing or an error", and those are not the same
         # claim: the second is true of a shard that died in argparse.
-        ran = bool(summary)
         if not ran:
             # Preserve the observed ending without inventing coverage. A
             # signal, timeout, or refused submission may leave no summary;
             # their return codes distinguish endings, not executed cases.
             rc = returncode
             how = f"signal {-rc}" if rc < 0 else f"rc={rc}"
-            unobserved = unobserved_outcome(tail) if rc == 74 else None
+            events = events_by_shard[index]
+            ending = events.ending if events.problem is None else None
+            unobserved = (ending.verdict.action_key[:12]
+                          if ending is not None and isinstance(ending.verdict, action_client.ClientUnavailable)
+                          and ending.verdict.action_key is not None else None)
             if unobserved is not None:
                 # pbrun could not read the shard's ending. The action may have
                 # run to completion or may still be running, so "did not run"
@@ -2281,10 +1861,10 @@ def main() -> int:
                     summary += "; TEST COMPLETION UNVERIFIED"
         # Each skip by node ID, with its reason (#942).  ``None`` is "this
         # shard printed no record", which is not "it skipped nothing".
-        skipped = recorded_skips(pbtest_outcomes.parse(out))
+        skipped = shard_verdict["skipped"]
         # The key as structured fields beside the returncode, so a report can
         # cite the action rather than a prefix dug out of ``output`` (#1012).
-        action_key = shard_result.get("action_key")
+        action_key = observation["action_key"]
         predicted_s = (round(sum(predicted.get(name, model_default)
                                  for name in bucket), 1)
                        if predicted else None)
@@ -2302,7 +1882,8 @@ def main() -> int:
                         "test_completion": test_completion,
                         "timed_out": timed_out,
                         "ran": ran, "skipped": skipped, "attempts": attempts,
-                        "output": out})
+                        "output": out, "reconciliation": shard_verdict["reconciliation"],
+                        "verdict": shard_verdict})
         state = "ok" if returncode == 0 else f"rc={returncode}"
         # A resubmitted shard says so on its own line, so the receipt records
         # that its first submission was refused (#1102).
@@ -2310,7 +1891,7 @@ def main() -> int:
                    "refused by a worker-offer discovery timeout]"
                    if attempts > 1 else "")
         keyed = (f" [action {action_key}]" if action_key else
-                 " [no action key: pbrun printed no queued or attached line]")
+                 " [no action key: the client reported no submission identity]")
         timed = ""
         if predicted:
             have = f"{actual_s:.1f}s" if actual_s is not None else "unknown"
@@ -2340,7 +1921,6 @@ def main() -> int:
             print(f"  shard {index:>3} {skip['nodeid']}{when} - "
                   f"{skip['reason'] or '(no reason given)'}{where}")
 
-    reconcile_shards(results)
     print_reconciliation(results)
     if predicted:
         # Item 4 of #1246: the run reports what the model promised against
@@ -2370,26 +1950,10 @@ def main() -> int:
         print(f"total predicted {total_want:.1f}s, total pytest "
               f"{total_have:.1f}s{total_note}")
 
-    # A shard is green when it exited 0 AND pytest reported a terminal summary.
-    # ``ran`` has been computed, printed and written to the JSON since #213, and
-    # the verdict never read it: ``returncode != 0`` alone called a shard that
-    # started no test green, and returned 0 to whoever was deciding a merge on
-    # it.  That is the #208 defect one level in -- the diagnostic improved and
-    # the thing acting on it did not read the diagnostic.  And it reconciled:
-    # a collected test with no outcome, or one two shards ran, is a missing or
-    # doubled result that no exit code reports (#941).
-    failed = [r for r in results if r["returncode"] != 0 or not r["ran"]
-              or (r.get("reconciliation") or {}).get("problems")]
-    # A positively excluded or collection-skipped quantum may succeed beside
-    # useful shards. The complete run still needs a real collected population.
-    population_empty = (bool(results) and all(
-        pbtest_outcomes.parse(r["output"]) is not None and
-        pbtest_outcomes.parse(r["output"]).get("file_selection") is not None
-        for r in results) and not any(
-            (r.get("reconciliation") or {}).get("collected", 0) for r in results))
-    if population_empty:
+    failed = [row for row, shard_verdict in zip(results, verdict["shards"], strict=True)
+              if not shard_verdict["green"]]
+    if any(p["code"] == "population_empty" for p in verdict["problems"]):
         print("pbtest: no tests collected in the requested population; no passing test coverage")
-        failed = results
     print(f"\n{len(results) - len(failed)}/{len(results)} shards green")
     for r in failed:
         print(f"\n--- shard {r['shard']} ({', '.join(r['files'])})")
@@ -2397,8 +1961,14 @@ def main() -> int:
         # busy shard. Keep the actual tracebacks visible without another run.
         print("\n".join(displayed(r["output"])))
     if args.json:
-        Path(args.json).write_text(json.dumps(results, indent=1))
-    return 1 if failed else 0
+        try:
+            report_bytes = json.dumps(results, indent=1).encode()
+            _write_report_bytes(Path(args.json), report_bytes, durable=True)
+            progress.finish(report_bytes)
+        except OSError as exc:
+            sys.stderr.write(f"pbtest: cannot publish requested output: {exc}\n")
+            return 1
+    return 0 if verdict["green"] and not progress.failed else 1
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ since the last check. The cost of one check grows with the entries of every
 claimed mover; the cost of a whole range grows with that times the range's
 own entries.
 
-``stage_release._CensusMemo.claims`` already exists to make this safe: a
+``kept_reads.CensusMemo.claims`` already exists to make this safe: a
 claimed range mover's *derived* stage paths depend only on its sealed
 request and its data manifest, both immutable under their digests, so once
 derived for a claim key the answer can never go stale. What must stay fresh,
@@ -51,9 +51,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_dead_owner_fragment_blocks_then_retires as base  # noqa: E402
 from test_dead_owner_fragment_blocks_then_retires import fleet  # noqa: E402,F401
 from prismabuild import core as pb  # noqa: E402
+from prismabuild import data_manifest as manifest_codec
 from prismabuild import pool  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import stage_move  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
 
 TIER = base.TIER
 SIZE = base.SIZE
@@ -91,13 +93,13 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
         "params": {"command": ["python3", "stage_move.py",
                                "--range-start-bytes", str(start),
                                "--range-end-bytes", str(end)]},
-        "inputs": [{"id": pb.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
+        "inputs": [{"id": manifest_codec.PBCAMPAIGN_DATA_MANIFEST_INPUT_ID,
                     "sha256": digest, "bytes": len(blob)}],
     }
     shard = cas / "requests" / key[:2]
     shard.mkdir(parents=True, exist_ok=True)
     (shard / f"{key}.json").write_text(json.dumps(request))
-    claimed_dir = queue.dir(pool.CLAIMED)
+    claimed_dir = queue.records.dir(pool.record_store.CLAIMED)
     claimed_dir.mkdir(parents=True, exist_ok=True)
     record = {
         "action_key": key,
@@ -108,15 +110,15 @@ def _claim_range(queue: pool.PoolQueue, cas: Path, key: str,
 
 
 def _publisher(queue: pool.PoolQueue, stage: Path, cas: Path,
-              mover: str) -> "stage_move._StagedPublisher":
-    return stage_move._StagedPublisher(
-        queue=queue, stage_root=stage, residency_root=queue.root / pool.RESIDENCY,
+              mover: str) -> 'staged_path.StagedPublisher':
+    return staged_path.StagedPublisher(
+        queue=queue, stage_root=stage, residency_root=queue.root / pool.record_store.RESIDENCY,
         mover_action_key=mover, manifest_sha256="a" * 64,
         tier_id=TIER, cas_root=str(cas))
 
 
 def _norm(stage: Path, path: str, offset: int, size: int) -> str:
-    relative = stage_move.stage_relative(path, offset, size,
+    relative = staged_path.stage_relative(path, offset, size,
                                          mount_prefix=MOUNT_PREFIX)
     return os.path.normpath(os.path.join(str(stage), relative))
 
@@ -129,7 +131,7 @@ def test_an_unchanged_claim_is_derived_once_across_many_checks(
         fleet, monkeypatch) -> None:
     """O(checks x entries) collapses to O(entries) when nothing changes.
 
-    ``stage_release.stage_relative`` runs exactly once per manifest entry
+    ``staged_path.stage_relative`` runs exactly once per manifest entry
     inside a derivation that actually resolves a claim's window (the memo
     skips the whole window computation on a hit), so counting its calls
     across repeated, unchanged checks is the direct measure of how many
@@ -147,13 +149,16 @@ def test_an_unchanged_claim_is_derived_once_across_many_checks(
     norm = _norm(stage, entries[1]["path"], 0, SIZE)
 
     derivations: list[int] = []
-    real_stage_relative = stage_release.stage_relative
+    real_stage_relative = staged_path.stage_relative
 
     def counting(*args, **kwargs):
-        derivations.append(1)
+        # The old role-module binding did not observe the legacy helper's
+        # internal call. The merged owner shares that binding.
+        if sys._getframe(1).f_code is not staged_path.pre_range_stage_relative.__code__:
+            derivations.append(1)
         return real_stage_relative(*args, **kwargs)
 
-    monkeypatch.setattr(stage_release, "stage_relative", counting)
+    monkeypatch.setattr(staged_path, 'stage_relative', counting)
 
     checks = 5
     for _ in range(checks):
@@ -205,7 +210,7 @@ def test_a_claim_that_ends_between_checks_is_seen_at_once(fleet) -> None:
     before, detail = publisher._live_claim_cover(norm)
     assert before is True, detail
 
-    (queue.dir(pool.CLAIMED) / f"{other_mover}.json").unlink()
+    (queue.records.dir(pool.record_store.CLAIMED) / f"{other_mover}.json").unlink()
 
     after, detail = publisher._live_claim_cover(norm)
     assert after is False, (

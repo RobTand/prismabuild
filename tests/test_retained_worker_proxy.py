@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from prismabuild import core as pb  # noqa: E402
 from prismabuild import pool  # noqa: E402
 from prismabuild import resource_scope  # noqa: E402
+from generation_fixture import generation_receipt
 
 KEY = "c" * 64
 NONCE = "b" * 32
@@ -47,9 +48,7 @@ def _copy_bytes(root: Path, rel: str, source: Path) -> None:
 
 
 def _seal_tree(root: Path, members: dict[str, str]) -> None:
-    (root / "RUNTIME_VERSION.json").write_text(json.dumps({
-        "schema": RECEIPT_SCHEMA, "generation": root.name,
-        "commit": COMMIT, "files": members}))
+    (root / "RUNTIME_VERSION.json").write_text(json.dumps(generation_receipt(root.name, COMMIT, members)))
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not path.exists():
             continue
@@ -85,6 +84,8 @@ def _published_generation(store: Path, name: str, *,
         add("src/prismabuild/core.py", _CHECKOUT / "src/prismabuild/core.py")
         add("src/prismabuild/digest_primitives.py",
             _CHECKOUT / "src/prismabuild/digest_primitives.py")
+        add("src/prismabuild/immutable_files.py",
+            _CHECKOUT / "src/prismabuild/immutable_files.py")
     else:
         rel = "src/prismabuild/core.py"
         original = subprocess.run(
@@ -97,12 +98,12 @@ def _published_generation(store: Path, name: str, *,
     # resource_exec.main imports the package before entering the broker
     # scope. Keep that real import closure in the retained fixture too.
     for module in ("__init__", "resource_scope", "progress",
-                   "residency_map", "storage_tiers"):
+                   "residency_map", "storage_tiers", "runtime_paths"):
         rel = f"src/prismabuild/{module}.py"
         add(rel, _CHECKOUT / rel)
     fleet_exec = _CHECKOUT / "tools" / "fleet" / "resource_exec.py"
     fleet_broker = _CHECKOUT / "tools" / "fleet" / "resource_broker.py"
-    fleet_paths = _CHECKOUT / "tools" / "fleet" / "runtime_paths.py"
+    fleet_paths = _CHECKOUT / "src" / "prismabuild" / "runtime_paths.py"
     if layout == "published":
         add("tools/resource_exec.py", fleet_exec)
         add("tools/resource_broker.py", fleet_broker)
@@ -170,7 +171,7 @@ def test_self_made_manifest_outside_store_refuses(tmp_path) -> None:
             ("tools/fleet/resource_broker.py",
              _CHECKOUT / "tools" / "fleet" / "resource_broker.py"),
             ("tools/fleet/runtime_paths.py",
-             _CHECKOUT / "tools" / "fleet" / "runtime_paths.py")):
+             _CHECKOUT / "src" / "prismabuild" / "runtime_paths.py")):
         _copy_bytes(fake, rel, source)
         members[rel] = hashlib.sha256((fake / rel).read_bytes()).hexdigest()
     _seal_tree(fake, members)
@@ -373,7 +374,7 @@ def test_real_contained_launch_uses_retained_proxy(
     if affinity:
         cpu = min(os.sched_getaffinity(0))
         tiers = {"preferred": [cpu], "fallback": []}
-        pool._write_json_atomic(
+        pool.immutable_files.write_json_atomic(
             queue.ledger().base / "cpu-map.json", tiers)
         item["cpu_allocation"] = queue.ledger().cpu_allocation(
             item["action_key"], tiers)
@@ -499,3 +500,22 @@ def test_authority_chain_matches_within_generation(
     # refused, never fed.
     with pytest.raises(core_b.ActionContractError):
         core_b._residency_environment(action, {})
+
+
+def test_receipt_listed_immutable_owner_tamper_refuses_before_proxy_launch(
+        fleet_store, tmp_path, monkeypatch) -> None:
+    gen = _published_generation(fleet_store, "gen-immutable-owner-tamper")
+    owner = gen / "src/prismabuild/immutable_files.py"
+    owner.chmod(0o644)
+    owner.write_bytes(owner.read_bytes() + b"\n# changed after publication\n")
+    owner.chmod(0o444)
+    worker = str(gen / "tools/prismabuild_worker.py")
+    queue, item = _retained_item(tmp_path, worker)
+    seen: list = []
+    _contained_harness(monkeypatch, tmp_path, queue, item, seen)
+    with pytest.raises(
+        OSError,
+        match="retained runtime hash mismatch: src/prismabuild/immutable_files.py",
+    ):
+        queue.execute(item, containment=True)
+    assert seen == [], "a tampered immutable owner must refuse before proxy launch"

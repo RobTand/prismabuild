@@ -22,6 +22,11 @@ main is recorded.  Everything runs on ``tmp_path`` queues and stage roots
 (#628).
 """
 from __future__ import annotations
+import pbrun
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
+
+from prismabuild import claim_identity
 
 import hashlib
 import inspect
@@ -39,12 +44,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import (  # noqa: E402
     pool, progress as pb_progress, reader_lease, residency_map,
     residency_plan, storage_tiers, window_credit)
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     GIB, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _row, _tier_record)
+from prismabuild import staged_path
 
 MANIFEST = _hexkey("1026shared")
 FIRST = _hexkey("1026first")
@@ -159,7 +165,7 @@ def _fan_out(queue: pool.PoolQueue, stage: Path) -> None:
 
 
 def _held(queue: pool.PoolQueue) -> int:
-    return int(queue.tier_ledger(TIER).held().get("stage_gib", 0))
+    return int(queue.tier(TIER).holdings().get('stage_gib', 0))
 
 
 def _egress(queue: pool.PoolQueue, stage: Path, plan: dict[str, object],
@@ -186,10 +192,10 @@ def _advance(queue: pool.PoolQueue, key: str, phase: str) -> None:
     The lease is rewritten in place.  ``write_lease`` would refuse it: the
     fixture's claim names ``dl380g10`` while the lease ``_claim`` wrote
     names the box the test runs on, and a second heartbeat checks the two
-    agree (``_check_claim_lease_identity``).
+    agree (``claim_identity.check_lease_identity``).
     """
 
-    path = queue.lease_path(key)
+    path = queue.records.lease_path(key)
     lease = json.loads(path.read_text())
     lease["progress_observation"] = {
         "source": "action-progress",
@@ -205,11 +211,11 @@ def _fail(queue: pool.PoolQueue, key: str) -> None:
     lease left behind reads as a live claim (``residency_plan.live_state``
     lists ``claimed/<key>.lease`` too), so the sweep would defer on it."""
 
-    claimed = queue.item_path(pool.CLAIMED, key)
+    claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
     record = json.loads(claimed.read_text())
     claimed.unlink()
-    queue.lease_path(key).unlink(missing_ok=True)
-    queue.item_path(pool.FAILED, key).write_text(
+    queue.records.lease_path(key).unlink(missing_ok=True)
+    queue.records.item_path(pool.record_store.FAILED, key).write_text(
         json.dumps({**record, "status": "failed"}))
 
 
@@ -244,6 +250,8 @@ def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
     """
 
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
     from test_the_sealed_stage_leg_is_chunked_per_phase import (
         READERS, STAGE_TIER, _Cas, _manifest, _template)
 
@@ -254,17 +262,14 @@ def _seal_for(tmp_path: Path, queue: pool.PoolQueue, consumer: str, *,
 
     if announce:
         _announce(tmp_path, queue)
-    tier = pbrun.resolve_stage_tier(queue, None)
-    args = types.SimpleNamespace(
+    tier = residency_plan.resolve_stage_tier(queue, None)
+    args = submit_core.SubmissionRequest(
         priority=-10, max_attempts=1, retry_safe=False,
         residency="stage", residency_tier=None, residency_mover_mem_gb=1,
         residency_mover_readers=READERS, residency_mover_max_attempts=3,
         residency_share=share)
     cas = _Cas(manifest_path)
-    staged = pbrun.residency_stage_rows(
-        _template(digest, manifest_path.stat().st_size),
-        consumer_action_key=consumer, tier=tier, args=args, queue=queue,
-        cas=cas)
+    staged = residency_plan.prepare_window(_template(digest, manifest_path.stat().st_size), consumer_action_key=consumer, tier=tier, queue=queue, cas=cas, options=submit_core.filing_options(args), publication=submit_core.row_publication(args, pbrun.configured_store()))
     return staged, cas, digest, STAGE_TIER
 
 
@@ -372,7 +377,7 @@ def test_one_readers_egress_leaves_the_range_and_the_last_one_deletes(
     queue, stage = _fixture_queue(tmp_path, 20)
     plans, movers = _sharers(queue, stage,
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     _fan_out(queue, stage)
     for key in (FIRST, SECOND):
         assert residency_map.fragment_path(root, key, movers[0]).exists()
@@ -410,7 +415,7 @@ def test_a_dead_sharers_eviction_keeps_the_range_for_the_live_one(
     _fan_out(queue, stage)
     _fail(queue, SECOND)
 
-    receipt = stage_release.evict(
+    receipt = staged_path.evict(
         queue, movers[0], consumer_action_key=SECOND, stage_root=str(stage),
         reason="dead-owner", whole=True)
 
@@ -419,7 +424,7 @@ def test_a_dead_sharers_eviction_keeps_the_range_for_the_live_one(
     assert _files(stage, 0).exists()
     assert _held(queue) == PHASE_GIB
     assert residency_map.fragment_path(
-        queue.residency_fragment_root(), FIRST, movers[0]).exists()
+        queue.records.residency_fragment_root(), FIRST, movers[0]).exists()
 
 
 def test_a_dead_consumers_shared_mover_is_not_withdrawn_while_another_reads_it(
@@ -436,15 +441,15 @@ def test_a_dead_consumers_shared_mover_is_not_withdrawn_while_another_reads_it(
 
     first_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert queue.item_path(pool.READY, movers[1]).exists(), first_pass
-    assert not queue.item_path(pool.WITHDRAWN, movers[1]).exists(), first_pass
+    assert queue.records.item_path(pool.record_store.READY, movers[1]).exists(), first_pass
+    assert not queue.records.item_path(pool.record_store.WITHDRAWN, movers[1]).exists(), first_pass
 
     _fail(queue, SECOND)
     second_pass = tier_loop.withdraw_dead_consumer_movers(queue)
 
-    assert not queue.item_path(pool.READY, movers[1]).exists(), (
+    assert not queue.records.item_path(pool.record_store.READY, movers[1]).exists(), (
         first_pass, second_pass)
-    assert queue.item_path(pool.WITHDRAWN, movers[1]).exists(), second_pass
+    assert queue.records.item_path(pool.record_store.WITHDRAWN, movers[1]).exists(), second_pass
 
 
 # ------------------------------------------------------ the crash, the stale
@@ -464,16 +469,16 @@ def test_a_mover_crash_with_two_dependents_copies_once_and_both_wait(
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
     row = dict(plans[FIRST]["phases"][0]["mover_row"])     # type: ignore[index]
     queue.publish(**row, max_attempts=3, retry_safe=True)
-    ready = queue.item_path(pool.READY, movers[0])
+    ready = queue.records.item_path(pool.record_store.READY, movers[0])
     record = json.loads(ready.read_text())
     ready.unlink()
     record.update({"claimed_unix": 1.0, "claimed_by": "crashed-worker",
                    "claimed_host": "dl380g10"})
-    queue.item_path(pool.CLAIMED, movers[0]).write_text(json.dumps(record))
+    queue.records.item_path(pool.record_store.CLAIMED, movers[0]).write_text(json.dumps(record))
 
     queue.reap_stale(timeout_s=0.0)
 
-    assert queue.item_path(pool.READY, movers[0]).exists()
+    assert queue.records.item_path(pool.record_store.READY, movers[0]).exists()
     ranged = [item for item in queue.ready_items()
               if isinstance(item, dict)
               and (item.get("residency") or {}).get("range_start_bytes") == 0]
@@ -488,7 +493,7 @@ def test_a_mover_crash_with_two_dependents_copies_once_and_both_wait(
         assert verdict is not None
         assert verdict["exempt"] is True, verdict
         assert verdict["movers"][0]["key"] == movers[0]
-        assert verdict["movers"][0]["state"] == pool.READY
+        assert verdict["movers"][0]["state"] == pool.record_store.READY
 
 
 def test_a_stale_done_shared_mover_holds_nothing_and_is_staged_again(
@@ -501,7 +506,7 @@ def test_a_stale_done_shared_mover_holds_nothing_and_is_staged_again(
     plans, movers = _sharers(queue, stage, land=(),
                              reading={FIRST: "phase-0", SECOND: "phase-0"})
     row = dict(plans[FIRST]["phases"][0]["mover_row"])     # type: ignore[index]
-    done = queue.item_path(pool.DONE, movers[0])
+    done = queue.records.item_path(pool.record_store.DONE, movers[0])
     done.parent.mkdir(parents=True, exist_ok=True)
     done.write_text(json.dumps({**row, "status": "done"}))
 
@@ -555,7 +560,7 @@ def test_the_fan_out_copies_dated_entries_only_and_both_maps_name_the_range(
     queue, stage = _fixture_queue(tmp_path, 20)
     _plans, movers = _sharers(queue, stage,
                               reading={FIRST: "phase-0", SECOND: "phase-0"})
-    root = queue.residency_fragment_root()
+    root = queue.records.residency_fragment_root()
     namespace = _namespace(FIRST, MANIFEST, 0, PHASE_GIB * GIB)
     source_path = residency_map.fragment_path(root, namespace, movers[0])
     source = json.loads(source_path.read_text())
@@ -576,7 +581,7 @@ def test_the_fan_out_copies_dated_entries_only_and_both_maps_name_the_range(
                     receipts=tier_loop.ReceiptCache(),
                     discover=lambda **_kwargs: {TIER: _tier_record(stage, gib=20)})
     for key in (FIRST, SECOND):
-        mapped = residency_map.read_map(queue.residency_map_path(key))
+        mapped = residency_map.read_map(queue.records.residency_map_path(key))
         assert any(str(entry.get("stage_path", "")).endswith("phase-0/part-0.bin")
                    for entry in dict(mapped.get("entries") or {}).values()), mapped
 
@@ -607,8 +612,8 @@ def _land_published(queue: pool.PoolQueue, stage: Path,
         key = str(item["action_key"])
         start = int(residency["range_start_bytes"])
         end = int(residency["range_end_bytes"])
-        queue.item_path(pool.READY, key).unlink()
-        queue.item_path(pool.DONE, key).write_text(
+        queue.records.item_path(pool.record_store.READY, key).unlink()
+        queue.records.item_path(pool.record_store.DONE, key).write_text(
             json.dumps({**item, "status": "done"}))
         landings[(start, end)] = landings.get((start, end), 0) + 1
         registered = getattr(residency_plan, "share_namespace_of", None)
@@ -638,7 +643,7 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
     for n, key in enumerate(consumers):
         _claim(queue, key, phase="phase-0", claimed_unix=now - 1000.0 + n,
                reported_unix=now - 10.0)
-        claimed = queue.item_path(pool.CLAIMED, key)
+        claimed = queue.records.item_path(pool.record_store.CLAIMED, key)
         record = json.loads(claimed.read_text())
         record["claimed_host"] = CAMPAIGN_HOSTS[n % len(CAMPAIGN_HOSTS)]
         claimed.write_text(json.dumps(record))
@@ -660,16 +665,15 @@ def test_the_campaign_shape_copies_each_phase_once_charged_once(
         _published, staged = tier_loop._mover_state(queue, plans[key], TIER)
         lead = str(plans[key]["phases"][0]["mover_row"]["action_key"])  # type: ignore[index]
         assert lead in staged, (key[:12], sorted(staged))
-    ledger = queue.tier_ledger(TIER)
+    ledger = queue.tier(TIER)
     ranges: dict[tuple[int, int], list[str]] = {}
-    for holder in ledger.held_keys():
+    for holder in ledger.holders():
         receipt = queue.move_record(holder)
-        if isinstance(receipt, dict) and ledger.holder_tokens(holder):
+        if isinstance(receipt, dict) and ledger.holdings(holder):
             ranges.setdefault((int(receipt["range_start_bytes"]),
                                int(receipt["range_end_bytes"])), []).append(holder)
     assert all(len(holders) == 1 for holders in ranges.values()), ranges
-    held = {holder: int(ledger.holder_tokens(holder).get("stage_gib", 0))
-            for holder in ledger.held_keys()}
+    held = {holder: int(ledger.holdings(holder).get('stage_gib', 0)) for holder in ledger.holders()}
     movers = sum(gib for holder, gib in held.items()
                  if not holder.startswith(window_credit.GRANT_PREFIX))
     fences = sum(gib for holder, gib in held.items()

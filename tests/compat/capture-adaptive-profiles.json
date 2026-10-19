@@ -1,0 +1,29 @@
+{
+  "capture_name": "state-cpu-profile-capture-02",
+  "capture_report_sha256": "f40388458c6ca39d76fff36446d0373bde4b509305a5c689de6afe691dbbf905",
+  "excluded_cases": [],
+  "files": {
+    "goldens-adaptive-profiles.jsonl": "a171eeee5042e1f9fe3de26130858a1924c89b981a063b1ed89a234c45c5c6fb",
+    "historical-adaptive-profiles.jsonl": "ef25467100a28a98a2013538b8d5c348b45c679bba89f71fb8a8917ca05d44bc"
+  },
+  "finished_at": "2026-10-17T00:20:17.838935+00:00",
+  "generations": [
+    "a17477b2b206-1791745175-65dffa700dfb",
+    "unpublished-bridge-6fa9b780304d"
+  ],
+  "retained_failures": [],
+  "selected_cases": [
+    "state-cpu-profile/learned",
+    "state-cpu-profile/live",
+    "state-cpu-profile/replay",
+    "state-cpu-profile/single"
+  ],
+  "source_git": {
+    "parents": [
+      "325a4e20ada20432f1889a48ddf6a5f00c6ed08a"
+    ],
+    "snapshot": "275423a1aef5cf6319d59a2c5d7c437e09ff8528",
+    "tree": "24f712175b5943037d7e4ade766f47af92d43ab1"
+  },
+  "started_at": "2026-10-17T00:19:18.313005+00:00"
+}

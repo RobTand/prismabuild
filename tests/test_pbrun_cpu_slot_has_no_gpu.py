@@ -13,6 +13,7 @@ action fails rather than steals.  That is the same mechanism ``require_pool``
 already trusts for its own no-device escape hatch.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 from pathlib import Path
 import subprocess
@@ -23,6 +24,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun
+from prismabuild import submission as submit_core
 
 
 def _variables(argv, monkeypatch, tmp_path):
@@ -49,12 +51,12 @@ def _variables(argv, monkeypatch, tmp_path):
     class _Stop(Exception):
         pass
 
-    monkeypatch.setattr(pbrun.pb, "seal_action", _stop)
-    monkeypatch.setattr(pbrun, "SH", tmp_path / "fleet")
-    monkeypatch.setattr(pbrun, "git_repository_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(submit_core.pb, "seal_action", _stop)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path / "fleet")
+    monkeypatch.setattr(submit_core, "git_repository_root", lambda _cwd, **_context: tmp_path)
     monkeypatch.setattr(
-        pbrun,
-        "build_git_checkout_snapshot",
+        submit_core,
+        'snapshot_checkout',
         lambda *_args, **_kwargs: {"input": {"id": "test"}},
     )
     monkeypatch.setattr(sys, "argv", ["pbrun.py", "--cwd", str(tmp_path), *argv])

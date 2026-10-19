@@ -105,6 +105,12 @@
     "detail": "unknown",
     "state": "unknown"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "ID-02",
    "scoped_repair_1187": {
     "target": "Execution receipt read-back names this attempt's output, not another execution's canonical cache result.",
@@ -127,6 +133,63 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_c07_review_20261017": {
+    "target": "Attempts keyed (key, nonce, scope); retries mint attempts, request immutable, terminal reason recorded.",
+    "implemented_source": {
+     "commit": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "tree": "6f6d41c82999deaa4fd29fc0da445e6a30ec9774",
+     "scope": "Preserve the exact immutable attempt path, bytes, generation, logs and slot; no invented cancellation execution."
+    },
+    "validated_source": {
+     "state": "scoped-component-only",
+     "actions": [
+      "3ce2d305c5caea1e38f8644af37fac4776e0cd46d28fb8953e6fb9c2282cdfa1"
+     ],
+     "outcome": "18 passed, zero skips, complete native call/teardown; all eight architecture controls; real filesystem crash windows and four actual inner broker scopes",
+     "receipt_sha256": "4aa3b7c4852b7ac70436321cd5fd44f5580a30659e28865cecd3ce4b4bf171b9",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/qualification.json"
+    },
+    "deployment": "No deployment of this repair is performed or claimed; historical deployment axis is unchanged.",
+    "workload_proof": "No live workload or campaign proof is added; historical workload axis is unchanged.",
+    "remaining_target": "Whole requirement remains at its existing axes; Root combined-source full gate and policy/workload gates remain separate.",
+    "consumer_validation": {
+     "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "whole_files": 273,
+     "native_ids": 4603,
+     "counted_reports": {
+      "passed": 4578,
+      "failed": 5,
+      "skipped": 20
+     },
+     "failed_nodeids": [
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[claim]",
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[drain-then-claim]",
+      "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+      "tests/test_submission_ownership_c14.py::test_pool_wait_begins_after_growth_release",
+      "tests/test_submission_ownership_c14.py::test_staged_publication_reaches_the_same_gate_and_ownership_transaction"
+     ],
+     "verdict": "RED: five inherited C14 fixtures; owned repair controls passed. No failed action gets a success receipt.",
+     "action_keys": [
+      "11c301a8c02369ea34e04c3a056d7aa4934ed5a9c01c4be8b19d2349dea2b92d",
+      "63a334892e6292d47d13aa143e54921041c833881e51f59b96f2b7be26002acd",
+      "c6f32eb3d40a7ee36991546f91d96fa5925ffedfaf5b0458ef7b13089c9afcaa",
+      "cd9615606849e6742d80b3cbfa973bd231dfcc45212408d61c5881aaf498cbea",
+      "53ed5d4091fa74fd0d2e9d2fe4cc647f252122cb495f1fead30d7126a27e23ac"
+     ],
+     "source_mapping": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+     "proofs": {
+      "consumer-portable/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+      "consumer-portable/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/root-scope-closure.json",
+      "consumer-capability/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/verified.json",
+      "consumer-capability/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/root-scope-closure.json",
+      "consumer-portable/lifecycle-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/lifecycle-inner-scope-proof.json",
+      "consumer-portable/review-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/review-inner-scope-proof.json"
+     },
+     "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
+    },
+    "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
    }
   },
   {
@@ -445,6 +508,12 @@
     "detail": "2026-09-23 update (snapshot 13:50Z): #794, #831 and #887 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #953, #962 and #969 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
     "state": "yes"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "SM-01",
    "implementation": {
     "commit": "PB:ca0f5555; 2026-09-23 update (snapshot 13:50Z): PB:58bed81e040e (#794), cd7e1b97e5dc (#831), 44098612105d (#887) deployed; 5e0bdc037537 (#953), a12de512c6a0 (#962), f5ae2a06efc9 (#969) merged, not deployed",
@@ -461,6 +530,63 @@
    "workload_proof": {
     "detail": "2026-09-23 update (snapshot 13:50Z): R12 (action 683cb3caa5ea, generation c2bda68758a3-1790110205-9e9735511db2, withdrawn from claimed at chain-016 on 2026-09-23T10:43:47Z) was withdrawn from claimed by rob@sparky; the record is pb-queue/withdrawn/683cb3caa5ea....json. That exercises one transition on a real campaign; the other transitions have no workload record.",
     "state": "partial"
+   },
+   "scoped_repair_c07_review_20261017": {
+    "target": "Action lifecycle with named durable record per transition; withdrawal from waiting/admitted/running by authorized lifecycle only, with containment plus durable attempt terminal before release/retry; terminal success requires PB publication success (result-ingestion-failed is distinct from execution failure).",
+    "implemented_source": {
+     "commit": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "tree": "6f6d41c82999deaa4fd29fc0da445e6a30ec9774",
+     "scope": "Verified existing non-withdrawn attempt permits exact cancellation release after containment; withdrawal remains operator decision."
+    },
+    "validated_source": {
+     "state": "scoped-component-only",
+     "actions": [
+      "3ce2d305c5caea1e38f8644af37fac4776e0cd46d28fb8953e6fb9c2282cdfa1"
+     ],
+     "outcome": "18 passed, zero skips, complete native call/teardown; all eight architecture controls; real filesystem crash windows and four actual inner broker scopes",
+     "receipt_sha256": "4aa3b7c4852b7ac70436321cd5fd44f5580a30659e28865cecd3ce4b4bf171b9",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/qualification.json"
+    },
+    "deployment": "No deployment of this repair is performed or claimed; historical deployment axis is unchanged.",
+    "workload_proof": "No live workload or campaign proof is added; historical workload axis is unchanged.",
+    "remaining_target": "Whole requirement remains at its existing axes; Root combined-source full gate and policy/workload gates remain separate.",
+    "consumer_validation": {
+     "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "whole_files": 273,
+     "native_ids": 4603,
+     "counted_reports": {
+      "passed": 4578,
+      "failed": 5,
+      "skipped": 20
+     },
+     "failed_nodeids": [
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[claim]",
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[drain-then-claim]",
+      "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+      "tests/test_submission_ownership_c14.py::test_pool_wait_begins_after_growth_release",
+      "tests/test_submission_ownership_c14.py::test_staged_publication_reaches_the_same_gate_and_ownership_transaction"
+     ],
+     "verdict": "RED: five inherited C14 fixtures; owned repair controls passed. No failed action gets a success receipt.",
+     "action_keys": [
+      "11c301a8c02369ea34e04c3a056d7aa4934ed5a9c01c4be8b19d2349dea2b92d",
+      "63a334892e6292d47d13aa143e54921041c833881e51f59b96f2b7be26002acd",
+      "c6f32eb3d40a7ee36991546f91d96fa5925ffedfaf5b0458ef7b13089c9afcaa",
+      "cd9615606849e6742d80b3cbfa973bd231dfcc45212408d61c5881aaf498cbea",
+      "53ed5d4091fa74fd0d2e9d2fe4cc647f252122cb495f1fead30d7126a27e23ac"
+     ],
+     "source_mapping": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+     "proofs": {
+      "consumer-portable/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+      "consumer-portable/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/root-scope-closure.json",
+      "consumer-capability/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/verified.json",
+      "consumer-capability/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/root-scope-closure.json",
+      "consumer-portable/lifecycle-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/lifecycle-inner-scope-proof.json",
+      "consumer-portable/review-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/review-inner-scope-proof.json"
+     },
+     "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
+    },
+    "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
    }
   },
   {
@@ -551,6 +677,12 @@
     "detail": "2026-09-23 update (snapshot 13:50Z): #840 through #931 are in generation 81d95cba8d91-1790160372-5d100532e024 and in the current generation a0fdcd2f7482-1790170897-121d887b4732 (contract section 12 records both roll-outs); #947, #951 and #956 are merged after 81d95cba8d91-1790160372-5d100532e024 and deployed in the current generation a0fdcd2f7482-1790170897-121d887b4732.",
     "state": "yes"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "INV-01",
    "implementation": {
     "commit": "PB:e534da78cf649b74c950f29fbda335b27b63d846 + integrated d4dd2a19db512070cb90ab65982ae0c241946ea8; 2026-09-23 update (snapshot 13:50Z): PB:3f0f752d4211 (#840), bb939e987ab9 (#845), 288a9d90fe4e (#865), 7d618325ad4b (#875), a926a4e0c81b (#880), 1e51518108d3 (#882), b50c4b9124be (#902), 5a972f1d3e35 (#904), 0bb9de9001c1 (#922), 97faa0e67200 (#928), 2c55b69482ef (#931) deployed; ee2420db7dfd (#947), bce50d049cfd (#951), 4448dd9dcec5 (#956) merged, not deployed; 2026-09-26 update (#905 host-spool accounting lane): `pbrun.spool_window_terms` returned no `spool_gb` term for a new submission that declared `PRISMABUILD_PRODUCED_SPOOL_MAX_BYTES` without `PRISMABUILD_PRODUCED_SPOOL_HOST_WINDOW`, so the claim charged the executing box's host ledger nothing for a declared spool. A declared bound is now normalized before sealing (`pbrun.normalize_spool_declaration`: the effective switch is sealed as 1, the demand carries ceil(bytes/GiB), and HOST_WINDOW=0 beside a declared bound is refused by name); `produced_spool.host_window_terms` keeps its switch-gated meaning for already-sealed requests, explicit 0 included. Branch maintenance/905-spool-charge-20260926, base 0fcd2b2567f5; merge and deployment pending at this update.",
@@ -574,7 +706,64 @@
      "violation": "an admitted host resource (a declared local produced-spool bound) was not charged on the host ledger",
      "status": "source fix on branch maintenance/905-spool-charge-20260926 (red c1fcb38b53a0, green 1933469e9b2b); not merged, not deployed"
     }
-   ]
+   ],
+   "scoped_repair_c07_review_20261017": {
+    "target": "Admitted resources fit aggregate lifetimes; concluded on both ledgers via one helper.",
+    "implemented_source": {
+     "commit": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "tree": "6f6d41c82999deaa4fd29fc0da445e6a30ec9774",
+     "scope": "Conclude through existing _commit_claim/_release_reservation only after exact ownership and containment."
+    },
+    "validated_source": {
+     "state": "scoped-component-only",
+     "actions": [
+      "3ce2d305c5caea1e38f8644af37fac4776e0cd46d28fb8953e6fb9c2282cdfa1"
+     ],
+     "outcome": "18 passed, zero skips, complete native call/teardown; all eight architecture controls; real filesystem crash windows and four actual inner broker scopes",
+     "receipt_sha256": "4aa3b7c4852b7ac70436321cd5fd44f5580a30659e28865cecd3ce4b4bf171b9",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/qualification.json"
+    },
+    "deployment": "No deployment of this repair is performed or claimed; historical deployment axis is unchanged.",
+    "workload_proof": "No live workload or campaign proof is added; historical workload axis is unchanged.",
+    "remaining_target": "Whole requirement remains at its existing axes; Root combined-source full gate and policy/workload gates remain separate.",
+    "consumer_validation": {
+     "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "whole_files": 273,
+     "native_ids": 4603,
+     "counted_reports": {
+      "passed": 4578,
+      "failed": 5,
+      "skipped": 20
+     },
+     "failed_nodeids": [
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[claim]",
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[drain-then-claim]",
+      "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+      "tests/test_submission_ownership_c14.py::test_pool_wait_begins_after_growth_release",
+      "tests/test_submission_ownership_c14.py::test_staged_publication_reaches_the_same_gate_and_ownership_transaction"
+     ],
+     "verdict": "RED: five inherited C14 fixtures; owned repair controls passed. No failed action gets a success receipt.",
+     "action_keys": [
+      "11c301a8c02369ea34e04c3a056d7aa4934ed5a9c01c4be8b19d2349dea2b92d",
+      "63a334892e6292d47d13aa143e54921041c833881e51f59b96f2b7be26002acd",
+      "c6f32eb3d40a7ee36991546f91d96fa5925ffedfaf5b0458ef7b13089c9afcaa",
+      "cd9615606849e6742d80b3cbfa973bd231dfcc45212408d61c5881aaf498cbea",
+      "53ed5d4091fa74fd0d2e9d2fe4cc647f252122cb495f1fead30d7126a27e23ac"
+     ],
+     "source_mapping": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+     "proofs": {
+      "consumer-portable/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+      "consumer-portable/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/root-scope-closure.json",
+      "consumer-capability/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/verified.json",
+      "consumer-capability/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/root-scope-closure.json",
+      "consumer-portable/lifecycle-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/lifecycle-inner-scope-proof.json",
+      "consumer-portable/review-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/review-inner-scope-proof.json"
+     },
+     "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
+    },
+    "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
+   }
   },
   {
    "acceptance_assertion": "Lead-executed/same-manifest/pinned admission plus not_resident-vs-terminal denial split observed (partial: denial_top evidence only).",
@@ -1503,6 +1692,12 @@
     "detail": "unknown",
     "state": "unknown"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "ACC-02",
    "implementation": {
     "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
@@ -1519,6 +1714,63 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_c07_review_20261017": {
+    "target": "Lifecycle state-machine/property/race tests incl. staged-lease races.",
+    "implemented_source": {
+     "commit": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "tree": "6f6d41c82999deaa4fd29fc0da445e6a30ec9774",
+     "scope": "Real filesystem archive/interruption, cancellation, Unknown retention and live-successor controls."
+    },
+    "validated_source": {
+     "state": "scoped-component-only",
+     "actions": [
+      "3ce2d305c5caea1e38f8644af37fac4776e0cd46d28fb8953e6fb9c2282cdfa1"
+     ],
+     "outcome": "18 passed, zero skips, complete native call/teardown; all eight architecture controls; real filesystem crash windows and four actual inner broker scopes",
+     "receipt_sha256": "4aa3b7c4852b7ac70436321cd5fd44f5580a30659e28865cecd3ce4b4bf171b9",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/qualification.json"
+    },
+    "deployment": "No deployment of this repair is performed or claimed; historical deployment axis is unchanged.",
+    "workload_proof": "No live workload or campaign proof is added; historical workload axis is unchanged.",
+    "remaining_target": "Whole requirement remains at its existing axes; Root combined-source full gate and policy/workload gates remain separate.",
+    "consumer_validation": {
+     "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "whole_files": 273,
+     "native_ids": 4603,
+     "counted_reports": {
+      "passed": 4578,
+      "failed": 5,
+      "skipped": 20
+     },
+     "failed_nodeids": [
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[claim]",
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[drain-then-claim]",
+      "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+      "tests/test_submission_ownership_c14.py::test_pool_wait_begins_after_growth_release",
+      "tests/test_submission_ownership_c14.py::test_staged_publication_reaches_the_same_gate_and_ownership_transaction"
+     ],
+     "verdict": "RED: five inherited C14 fixtures; owned repair controls passed. No failed action gets a success receipt.",
+     "action_keys": [
+      "11c301a8c02369ea34e04c3a056d7aa4934ed5a9c01c4be8b19d2349dea2b92d",
+      "63a334892e6292d47d13aa143e54921041c833881e51f59b96f2b7be26002acd",
+      "c6f32eb3d40a7ee36991546f91d96fa5925ffedfaf5b0458ef7b13089c9afcaa",
+      "cd9615606849e6742d80b3cbfa973bd231dfcc45212408d61c5881aaf498cbea",
+      "53ed5d4091fa74fd0d2e9d2fe4cc647f252122cb495f1fead30d7126a27e23ac"
+     ],
+     "source_mapping": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+     "proofs": {
+      "consumer-portable/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+      "consumer-portable/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/root-scope-closure.json",
+      "consumer-capability/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/verified.json",
+      "consumer-capability/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/root-scope-closure.json",
+      "consumer-portable/lifecycle-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/lifecycle-inner-scope-proof.json",
+      "consumer-portable/review-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/review-inner-scope-proof.json"
+     },
+     "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
+    },
+    "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
    }
   },
   {
@@ -1557,6 +1809,12 @@
     "detail": "unknown",
     "state": "unknown"
    },
+   "finish_authority_component_2026_10_17": {
+    "source": "e2e9b1697b7fdd612d61767d328d789206762d21",
+    "state": "source-and-component-qualified",
+    "acceptance_record": "docs/evidence/finish_authority_acceptance_2026-10-17.json",
+    "scope": "Restored-finisher terminal and retry authority only; existing requirement axes unchanged"
+   },
    "id": "ACC-04",
    "implementation": {
     "commit": "PB:c50a7759a92131c742dcbfec87731e7a6fb6d526",
@@ -1573,6 +1831,63 @@
    "workload_proof": {
     "detail": "unknown",
     "state": "unknown"
+   },
+   "scoped_repair_c07_review_20261017": {
+    "target": "Restart/retry incl. lease-crash cases with attempt identity preserved.",
+    "implemented_source": {
+     "commit": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "tree": "6f6d41c82999deaa4fd29fc0da445e6a30ec9774",
+     "scope": "Repeated recovery of actual lease-lost/worker crash windows; real stopped scope proofs and immutable history."
+    },
+    "validated_source": {
+     "state": "scoped-component-only",
+     "actions": [
+      "3ce2d305c5caea1e38f8644af37fac4776e0cd46d28fb8953e6fb9c2282cdfa1"
+     ],
+     "outcome": "18 passed, zero skips, complete native call/teardown; all eight architecture controls; real filesystem crash windows and four actual inner broker scopes",
+     "receipt_sha256": "4aa3b7c4852b7ac70436321cd5fd44f5580a30659e28865cecd3ce4b4bf171b9",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/qualification.json"
+    },
+    "deployment": "No deployment of this repair is performed or claimed; historical deployment axis is unchanged.",
+    "workload_proof": "No live workload or campaign proof is added; historical workload axis is unchanged.",
+    "remaining_target": "Whole requirement remains at its existing axes; Root combined-source full gate and policy/workload gates remain separate.",
+    "consumer_validation": {
+     "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+     "whole_files": 273,
+     "native_ids": 4603,
+     "counted_reports": {
+      "passed": 4578,
+      "failed": 5,
+      "skipped": 20
+     },
+     "failed_nodeids": [
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[claim]",
+      "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[drain-then-claim]",
+      "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+      "tests/test_submission_ownership_c14.py::test_pool_wait_begins_after_growth_release",
+      "tests/test_submission_ownership_c14.py::test_staged_publication_reaches_the_same_gate_and_ownership_transaction"
+     ],
+     "verdict": "RED: five inherited C14 fixtures; owned repair controls passed. No failed action gets a success receipt.",
+     "action_keys": [
+      "11c301a8c02369ea34e04c3a056d7aa4934ed5a9c01c4be8b19d2349dea2b92d",
+      "63a334892e6292d47d13aa143e54921041c833881e51f59b96f2b7be26002acd",
+      "c6f32eb3d40a7ee36991546f91d96fa5925ffedfaf5b0458ef7b13089c9afcaa",
+      "cd9615606849e6742d80b3cbfa973bd231dfcc45212408d61c5881aaf498cbea",
+      "53ed5d4091fa74fd0d2e9d2fe4cc647f252122cb495f1fead30d7126a27e23ac"
+     ],
+     "source_mapping": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json",
+     "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+     "proofs": {
+      "consumer-portable/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+      "consumer-portable/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/root-scope-closure.json",
+      "consumer-capability/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/verified.json",
+      "consumer-capability/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/root-scope-closure.json",
+      "consumer-portable/lifecycle-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/lifecycle-inner-scope-proof.json",
+      "consumer-portable/review-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/review-inner-scope-proof.json"
+     },
+     "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
+    },
+    "acceptance_record": "docs/evidence/c07_review_repairs_acceptance_2026-10-17.json"
    }
   },
   {

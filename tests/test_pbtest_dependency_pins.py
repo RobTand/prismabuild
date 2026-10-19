@@ -69,7 +69,7 @@ def dispatch(checkout, monkeypatch):
 
     def admitted_payload(command, **kwargs):
         calls.append(command)
-        argv, environment = admitted_child(command)
+        argv, environment = admitted_child(command, environment=kwargs.pop("env", None))
         return original(argv, cwd=checkout, env=environment, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", admitted_payload)

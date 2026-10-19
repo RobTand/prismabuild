@@ -8,6 +8,7 @@ tolerates both.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -39,26 +40,12 @@ PER_ACTION = (
 )
 
 
+from fleet_world import Admission, FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = AdmittedQueueFixture(
-        pool.PoolQueue(tmp_path / "pb-queue"), capacity={"cpu": 1},
-        default_demand={"cpu": 1, "mem_gb": 1})
-    q.ensure_layout()
-    return q
-
-
-def _publish(q: pool.PoolQueue, key: str, **kw: object) -> None:
-    q.publish(
-        action_key=key,
-        cas_root=kw.pop("cas_root", "/cas"),
-        checkout_root=kw.pop("checkout_root", "/co"),
-        worker_script=kw.pop("worker_script", "/w.py"),
-        max_attempts=kw.pop("max_attempts", 3),
-        retry_safe=kw.pop("retry_safe", True),
-        resources={"cpu": 1},
-        **kw,
-    )
+    return FleetWorld(tmp_path, admission=Admission(capacity={'cpu': 1}, default_demand={'cpu': 1, 'mem_gb': 1})).queue
 
 
 def _tag(key: str) -> str:
@@ -68,25 +55,37 @@ def _tag(key: str) -> str:
 
 
 def _requeued_by_finish(q: pool.PoolQueue, key: str) -> dict:
-    _publish(q, key, tags=[_tag(key)])
+    ActionRows(q).publish(
+        key,
+        max_attempts=3,
+        retry_safe=True,
+        resources={'cpu': 1},
+        tags=[_tag(key)],
+    )
     claimed = q.claim(tags=[_tag(key)], capacity={"cpu": 1},
                       cpu_tiers={"preferred": [0], "fallback": []})
     assert claimed is not None and claimed["action_key"] == key
     q.finish(key, status="failed", detail={"returncode": 3},
              claim_snapshot=claimed)
     return json.loads(
-        q.item_path(pool.READY, key).read_text(encoding="utf-8")
+        q.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8")
     )
 
 
 def _requeued_by_the_reaper(q: pool.PoolQueue, key: str) -> dict:
-    _publish(q, key, tags=[_tag(key)])
+    ActionRows(q).publish(
+        key,
+        max_attempts=3,
+        retry_safe=True,
+        resources={'cpu': 1},
+        tags=[_tag(key)],
+    )
     claimed = q.claim(tags=[_tag(key)], capacity={"cpu": 1},
                       cpu_tiers={"preferred": [0], "fallback": []})
     assert claimed is not None and claimed["action_key"] == key
     assert q.reap_stale(timeout_s=-1.0) == [key]
     return json.loads(
-        q.item_path(pool.READY, key).read_text(encoding="utf-8")
+        q.records.item_path(pool.record_store.READY, key).read_text(encoding="utf-8")
     )
 
 

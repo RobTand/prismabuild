@@ -1,4 +1,5 @@
 """A slightly faster worker clock must not hide the fleet's only x86 box."""
+from fleet_world import Clock as FleetClock
 
 import json
 from pathlib import Path
@@ -10,18 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 from prismabuild import pool
+from prismabuild import census as fleet_census
 import pbstatus
 
 
 def _offers(tmp_path, monkeypatch, ahead_s):
     queue = pool.PoolQueue(tmp_path / "queue")
-    monkeypatch.setattr(pool, "_now", lambda: 1000.0)
+    FleetClock(source=lambda: 1000.0).install(monkeypatch, scope="pool")
     monkeypatch.setattr(pbstatus.time, "time", lambda: 1000.0)
     queue.announce(host="sparky", tags=["gb10"], has_gpu=True,
                    capacity={"cpu": 20, "mem_gb": 104, "gpu": 1})
     queue.announce(host="dl380g10", tags=["x86"], has_gpu=False,
                    capacity={"cpu": 80, "mem_gb": 96}, timeout_ceiling_s=3600)
-    path = queue.root / pool.WORKERS / "dl380g10.json"
+    path = queue.root / pool.record_store.WORKERS / "dl380g10.json"
     record = json.loads(path.read_text())
     record["announced_unix"] = 1000.0 + ahead_s
     path.write_text(json.dumps(record))
@@ -51,7 +53,7 @@ def test_status_reports_future_skew_without_granting_admission(tmp_path, monkeyp
     directory = queue.ledger("dl380g10").base / "adaptive"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "cpu-sample.json").write_text(json.dumps({"sampled_unix": 1007.0}))
-    result = pbstatus.read_pool(queue.root)
+    result = fleet_census.action_rows(queue.root).value
     node = next(node for node in result["nodes"] if node["node"] == "dl380g10")
     assert node["state"] == expected_state
     assert node["offer_clock_skew_s"] == ahead_s

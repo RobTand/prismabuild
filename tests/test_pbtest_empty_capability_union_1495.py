@@ -11,6 +11,7 @@ reports are unchanged; an explicit ``--requires-files`` on a standalone
 submission still names at least one entry.
 """
 from __future__ import annotations
+from submission_support import refusal_value
 
 import hashlib
 import json
@@ -24,12 +25,15 @@ from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
     _FinishedProcess, pbtest,
 )
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
+from prismabuild import capability_eligibility
+from prismabuild import contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 
-TAG = dependency_digest.DEPENDENCY_DIGEST_TAG
+TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 8, "mem_gb": 16}
 SCHEMA = "prismabuild.pbtest_capabilities.v1"
 MARKED = (
@@ -57,11 +61,20 @@ def _config(checkout: Path, capabilities: dict) -> None:
 
 def _stub_queue(tmp_path: Path, monkeypatch, *, tags, answers=()):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    queue.announce(host="fenced-box", tags=list(tags), has_gpu=False,
-                   capacity=dict(CAPACITY),
-                   dependency_files=(list(answers) or None) if answers else None,
-                   dependency_files_absent=None)
+    queue.records.ensure_layout()
+    queue.announce(
+        host="fenced-box",
+        tags=list(tags),
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                (list(answers) or None) if answers else None,
+                None,
+            ),
+        ),
+    )
     monkeypatch.setattr(pbtest, "fleet_queue", lambda: queue)
     return queue
 
@@ -208,9 +221,8 @@ def test_a_nonempty_union_still_forwards_the_flag(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_a_standalone_empty_requires_files_is_still_refused(capsys):
-    args = pbrun.parse_args(["--requires-files", "[]", "--", "true"])
     with pytest.raises(SystemExit) as excinfo:
-        pbrun.prepare_submission(args)
+        pbrun.main(["--requires-files", "[]", "--", "true"])
     assert excinfo.value.code == 2
     err = capsys.readouterr().err
     assert "--requires-files" in err and "nonempty" in err

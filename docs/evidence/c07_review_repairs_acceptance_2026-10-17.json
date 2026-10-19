@@ -1,0 +1,146 @@
+{
+  "schema": "pb.staged_read_acceptance.v1",
+  "step": "complete",
+  "step_scope": "C07 review-response source repairs only; no merge, deploy or campaign completion acceptance",
+  "contract_commit": "37b72cc431b876b6dc4889fa1f5889dd1656b97d",
+  "ledger_commit": "c0abffbd46bf21d455c52f7fa016b89b21eec506",
+  "scope": [
+    "ID-02",
+    "SM-01",
+    "INV-01",
+    "ACC-02",
+    "ACC-04"
+  ],
+  "prelaunch": {
+    "status": "not-this-step"
+  },
+  "merge": {
+    "status": "not-this-step"
+  },
+  "deploy": {
+    "status": "not-this-step"
+  },
+  "complete": {
+    "application_gates": [
+      {
+        "gate": "M1/T1/L2 scoped repair controls plus all eight architecture cases",
+        "verdict": "pass",
+        "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+        "action": "3ce2d305c5caea1e38f8644af37fac4776e0cd46d28fb8953e6fb9c2282cdfa1",
+        "receipt_sha256": "4aa3b7c4852b7ac70436321cd5fd44f5580a30659e28865cecd3ce4b4bf171b9",
+        "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/qualification.json"
+      },
+      {
+        "gate": "Existing test/assertion/decorator/definition retention",
+        "verdict": "pass",
+        "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green-source-audit/audit.json",
+        "detail": "All 1,137 original test/support Python files are byte-identical: 36,386 assertions, 2,214 decorators and 16,728 definitions preserved, including embedded child code."
+      },
+      {
+        "gate": "New real scope and live successor controls",
+        "verdict": "pass",
+        "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/repairs-green/inner-scope-proof.json",
+        "detail": "Four actual scopes, six raw proof rows and two live successors. Closed scopes export empty/ok/settled/released/stopped=true,tickets_pending=false."
+      },
+      {
+        "gate": "Affected whole consumer-file execution",
+        "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+        "whole_files": 273,
+        "native_ids": 4603,
+        "counted_reports": {
+          "passed": 4578,
+          "failed": 5,
+          "skipped": 20
+        },
+        "failed_nodeids": [
+          "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[claim]",
+          "tests/test_ready_gpu_residency_releases_cpu_admission.py::test_a_production_lead_is_pinned_and_residency_resumption_restores_the_cpu_veto[drain-then-claim]",
+          "tests/test_submission_ownership_c14.py::test_deferred_release_enters_the_common_gate_before_publishing",
+          "tests/test_submission_ownership_c14.py::test_pool_wait_begins_after_growth_release",
+          "tests/test_submission_ownership_c14.py::test_staged_publication_reaches_the_same_gate_and_ownership_transaction"
+        ],
+        "verdict": "RED: five inherited C14 fixtures; owned repair controls passed. No failed action gets a success receipt.",
+        "action_keys": [
+          "11c301a8c02369ea34e04c3a056d7aa4934ed5a9c01c4be8b19d2349dea2b92d",
+          "63a334892e6292d47d13aa143e54921041c833881e51f59b96f2b7be26002acd",
+          "c6f32eb3d40a7ee36991546f91d96fa5925ffedfaf5b0458ef7b13089c9afcaa",
+          "cd9615606849e6742d80b3cbfa973bd231dfcc45212408d61c5881aaf498cbea",
+          "53ed5d4091fa74fd0d2e9d2fe4cc647f252122cb495f1fead30d7126a27e23ac"
+        ],
+        "source_mapping": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json",
+        "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+        "proofs": {
+          "consumer-portable/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/verified.json",
+          "consumer-portable/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/root-scope-closure.json",
+          "consumer-capability/verified.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/verified.json",
+          "consumer-capability/root-scope-closure.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-capability/root-scope-closure.json",
+          "consumer-portable/lifecycle-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/lifecycle-inner-scope-proof.json",
+          "consumer-portable/review-inner-scope-proof.json": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/consumer-portable/review-inner-scope-proof.json"
+        },
+        "repeat_policy": "Root explicitly directed no closure rerun for inherited failures; no C14/signal source imported."
+      }
+    ],
+    "open_unknowns": [
+      "Broader consumer gate is RED only on five old C14 fixtures. Exact qualified 07d9ecc83 mappings are read-only; this candidate retains them and borrows no C14 pass credit.",
+      "L1 terminal replacement/unlink race remains open; an inode check before unlink is not a repair. Bounded proposal in grounding.md.",
+      "Root owns C10/C27 final composition, separately qualified 8c79 signal repair review/composition, and the final combined-source full gate. No duplicate full or observer gate was run.",
+      "No candidate runtime publication, deployment, live campaign, cross-host induced crash, staged data-reader conformance or power-loss durability proof.",
+      "Every historical target/implementation/validation/deployment/workload axis is unchanged. Added evidence is candidate component-scoped only."
+    ]
+  },
+  "exceptions": [],
+  "source_pin": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+  "source_tree": "6f6d41c82999deaa4fd29fc0da445e6a30ec9774",
+  "branch": "sol/c07-review-repairs-20261017",
+  "original_source_red": {
+    "action": "3edabaf0819385f71c455352fc070c0b35e98e56128566abfe3c45b767cb5240",
+    "source": "e6654e73bff27450b4cbe306692ba47bca937daf",
+    "production": "byte-identical to b26",
+    "result": "7 passed, 9 failed: five valid M1/T1 failures, two new read-only tamper fixture failures, two new audit architecture failures; all retained, no receipt."
+  },
+  "corrected_policy_red": {
+    "action": "06f1fccc5b3bddda7c483e4801d4178f74eafef21a47f46b3d9f709c0fce4400",
+    "source": "fbdf43df694b4401b0eaafd32f342979e95be20f",
+    "result": "11 passed, 7 failed: four M1, one T1 and two L2; architecture 8/8; no receipt."
+  },
+  "evidence_root": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs",
+  "persistence_assumption": "Process interruption after real filesystem effects in disposable queues under worker TMPDIR. Stable-storage and power-loss durability are not tested. The published runtime runs these controls; candidate source is not published.",
+  "native_closure_export": {
+    "source": "c15af950b4a3784b2e3dd0b3090040f6370ca0ed",
+    "collection_actions": 20,
+    "whole_files": 1038,
+    "native_ids": 16074,
+    "component_whole_files": 273,
+    "component_native_ids": 4603,
+    "root_collection_sources": [
+      {
+        "phase": "root-closure-collection-r3",
+        "sha256": "64399836f987f6a678dd92eeb88bf772dd2cabbaa0bed19d03f714e5dc45b155"
+      },
+      {
+        "phase": "capability-collection",
+        "sha256": "cfe221ab7a9021d11871911b6cee4aa07b1753cc0aa216327f6cbb54f57ed3c2"
+      }
+    ],
+    "credit": "Actual collection only. Native completion remains incomplete by design; no outcomes or teardown exist. Root owns the combined-source full execution after C10/C27 composition.",
+    "importer_scope": "Conservative source imports, embedded string references and implicit ancestor conftests; this expands to the complete1038-file test population.",
+    "dependencies": "152native IDs in2files require the declared d38_x86_receipt_fixture; use an explicit x86 cohort through published PB. Other files remain portable.",
+    "unsupported_published_launcher": "The automatic capability cohort combines --anywhere with x86; original refused records retained, actual missing cohort admitted separately without changing runtime.",
+    "new_controls": [
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_reaper_releases_a_verified_prior_attempt[lease_lost]",
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_reaper_releases_a_verified_prior_attempt[executed]",
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_reaper_retains_unverifiable_attempt[unknown]",
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_reaper_retains_unverifiable_attempt[malformed]",
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_reaper_retains_unverifiable_attempt[wrong-generation]",
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_recovery_preserves_real_containment_and_live_successor[lease_lost]",
+      "tests/test_lifecycle_review_repairs.py::test_withdrawn_recovery_preserves_real_containment_and_live_successor[executed]",
+      "tests/test_lifecycle_review_repairs.py::test_claim_recovery_starts_with_documented_interpreter_and_no_pythonpath",
+      "tests/test_lifecycle_review_repairs.py::test_historical_retirement_reports_why_it_retains_authority[missing-archive-superseded archive unavailable]",
+      "tests/test_lifecycle_review_repairs.py::test_historical_retirement_reports_why_it_retains_authority[wrong-conclusion-superseded archive does not match]"
+    ],
+    "proof_limit": "No full-suite execution submitted in this round; collection receipts are not test-pass evidence.",
+    "proof": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-final-native-roster.txt"
+  },
+  "source_equivalence_after_docs": "final-source-equivalence.json in evidence root proves validated c15 code/test bytes unchanged through final documentation commit.",
+  "root_update": "/mnt/shared/prismabuild-agent-evidence-rob/refactor-20261016/active/c07-review-repairs/root-update-fixed-source-mapping.json"
+}

@@ -21,6 +21,9 @@ the "Client SDK" section of ``docs/design.md`` in the same change.
 """
 from __future__ import annotations
 
+from prismabuild import scratch_lifetime
+from prismabuild import batch_ledger as bl, output_contract as oc
+
 import ast
 import inspect
 import json
@@ -30,6 +33,8 @@ from pathlib import Path
 import pytest
 
 import prismabuild.client as client
+from prismabuild import contracts
+from prismabuild import manifest_layout
 from prismabuild import (
     action_result,
     local_scratch,
@@ -40,6 +45,7 @@ from prismabuild import (
     storage_tiers,
 )
 from prismabuild import core as pb
+from prismabuild import data_manifest as manifest_codec
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -167,12 +173,12 @@ REEXPORTS = {
     "ephemeral_scratch_path": local_scratch.ephemeral_scratch_path,
     "SCRATCH_DECLARATION_RECORD_SCHEMA_V1": local_scratch.SCRATCH_DECLARATION_RECORD_SCHEMA_V1,
     "record_ephemeral_scratch_declarations": local_scratch.record_ephemeral_scratch_declarations,
-    "SCRATCH_LIFETIME_TAG": local_scratch.SCRATCH_LIFETIME_TAG,
-    "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
-    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": local_scratch.SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
-    "SCRATCH_LIFETIME_FIELD": local_scratch.SCRATCH_LIFETIME_FIELD,
+    "SCRATCH_LIFETIME_TAG": contracts.SCRATCH_LIFETIME_TAG,
+    "SCRATCH_LIFETIME_SELECTION_SCHEMA_V1": scratch_lifetime.SCRATCH_LIFETIME_SELECTION_SCHEMA_V1,
+    "SCRATCH_LIFETIME_RECORD_SCHEMA_V1": scratch_lifetime.SCRATCH_LIFETIME_RECORD_SCHEMA_V1,
+    "SCRATCH_LIFETIME_FIELD": scratch_lifetime.SCRATCH_LIFETIME_FIELD,
     "SCRATCH_LIFETIME_DECLARATIONS_ENV": local_scratch.DECLARATIONS_ENV,
-    "build_scratch_lifetime_selection": local_scratch.build_scratch_lifetime_selection,
+    "build_scratch_lifetime_selection": scratch_lifetime.build_scratch_lifetime_selection,
     "READER_LEASE_TAG": reader_lease.READER_LEASE_TAG,
     "injected_context": reader_lease.injected_context,
     "acquire_for": reader_lease.acquire_for,
@@ -182,11 +188,11 @@ REEXPORTS = {
     "leases_root": reader_lease.leases_root,
     "live_for": reader_lease.live_for,
     "containment_certificate_ok": reader_lease.containment_certificate_ok,
-    "read_data_manifest": pb.read_data_manifest,
-    "manifest_read_entries": storage_tiers.manifest_read_entries,
+    "read_data_manifest": manifest_codec.read_data_manifest,
+    "manifest_read_entries": manifest_layout.manifest_read_entries,
     "PoolQueue": pool.PoolQueue,
-    "CLAIMED": pool.CLAIMED,
-    "RESIDENCY": pool.RESIDENCY,
+    "CLAIMED": pool.record_store.CLAIMED,
+    "RESIDENCY": pool.record_store.RESIDENCY,
     "POOL_OUTCOME_SCHEMA_V1": pool.POOL_OUTCOME_SCHEMA_V1,
     "validate_residency_map": residency_map.validate_map,
     "read_residency_map": residency_map.read_map,
@@ -205,17 +211,37 @@ REEXPORTS = {
     "ActionResultError": action_result.ActionResultError,
     "read_verified_action_result": action_result.read_verified_action_result,
     "bind_standard_capture_command": action_result.bind_standard_capture_command,
-    **{name: getattr(produced_output, name) for name in (
-        "TEMPLATE_SCHEMA_V1", "DESCRIPTOR_SCHEMA_V2", "declared_template",
-        "validate_template", "bind_declared_instance", "declare_instance",
-        "admit_instance", "validate_instance", "instance_dir",
-        "checked_instance_maxima", "owner_demand_terms", "admit_funded_window",
-        "refill_window", "require_prewrite", "abort_prewrite",
-        "validate_descriptor", "output_manifest_sha256", "batch_namespace",
-        "output_fragment_root", "publish_prepaid_batch", "commit_batch",
-        "commit_origin_batch", "retire_batch", "reclaim_origin",
-        "recover_batches", "due_mover_rows", "materialization_state",
-        "ensure_batch_materialized", "safe_release_instance")},
+    **{
+        'TEMPLATE_SCHEMA_V1': oc.TEMPLATE_SCHEMA_V1,
+        'DESCRIPTOR_SCHEMA_V2': oc.DESCRIPTOR_SCHEMA_V2,
+        'declared_template': produced_output.declared_template,
+        'validate_template': oc.validate_template,
+        'bind_declared_instance': produced_output.bind_declared_instance,
+        'declare_instance': bl.declare_instance,
+        'admit_instance': bl.BatchLedger.admit,
+        'validate_instance': oc.validate_instance,
+        'instance_dir': bl.scope_dir,
+        'checked_instance_maxima': oc.checked_instance_maxima,
+        'owner_demand_terms': oc.owner_demand_terms,
+        'admit_funded_window': produced_output.admit_funded_window,
+        'refill_window': produced_output.refill_window,
+        'require_prewrite': bl.BatchLedger.reserve,
+        'abort_prewrite': bl.BatchLedger.abort,
+        'validate_descriptor': oc.validate_descriptor,
+        'output_manifest_sha256': oc.output_manifest_sha256,
+        'batch_namespace': oc.batch_namespace,
+        'output_fragment_root': bl.output_fragment_root,
+        'publish_prepaid_batch': produced_output.publish_prepaid_batch,
+        'commit_batch': produced_output.commit_batch,
+        'commit_origin_batch': bl.BatchLedger.commit_origin,
+        'retire_batch': produced_output.retire_batch,
+        'reclaim_origin': bl.BatchLedger.reclaim,
+        'recover_batches': produced_output.recover_batches,
+        'due_mover_rows': bl.BatchLedger.due_mover_rows,
+        'materialization_state': bl.BatchLedger.materialization,
+        'ensure_batch_materialized': produced_output.ensure_batch_materialized,
+        'safe_release_instance': produced_output.safe_release_instance,
+    },
 }
 
 
@@ -271,15 +297,27 @@ def test_the_patterns_keep_their_grammar():
 
 
 @pytest.mark.parametrize("name", sorted(REEXPORTS))
-def test_a_reexport_is_the_internal_object_itself(name):
-    assert getattr(client, name) is REEXPORTS[name]
+def test_a_reexport_is_the_internal_object_itself(name, monkeypatch):
+    if name == "due_mover_rows":
+        calls = []
+        result = []
+        def due(queue, instance, template, *, residency_schema):
+            calls.append((queue, instance, template, residency_schema))
+            return result
+        monkeypatch.setattr(bl.BatchLedger, "due_mover_rows", due)
+        monkeypatch.setattr(pool, "RESIDENCY_SCHEMA_V1", "live-schema-owner")
+        queue, instance, template = object(), object(), object()
+        assert client.due_mover_rows(queue, instance, template) is result
+        assert calls == [(queue, instance, template, "live-schema-owner")]
+    else:
+        assert getattr(client, name) is REEXPORTS[name]
 
 
 def test_every_non_reexport_is_defined_by_the_sdk():
     """What is not a re-export is one of the few functions the SDK defines."""
 
-    own = {"read_claimed_record", "release_produced_instance", "cas_receipt_self_check"}
-    functions = set(SIGNATURES) - set(REEXPORTS)
+    own = {"read_claimed_record", "release_produced_instance", "cas_receipt_self_check", "due_mover_rows"}
+    functions = set(SIGNATURES) - (set(REEXPORTS) - {"due_mover_rows"})
     assert functions == own
     for name in own:
         assert getattr(client, name).__module__ == "prismabuild.client"
@@ -292,13 +330,12 @@ def test_the_liveness_bound_is_the_one_the_pool_applies():
 
 def test_each_advertised_capability_is_backed_by_this_tree():
     assert client.READER_LEASE_TAG in client.CAPABILITIES
-    assert pb.PROGRESS_TAG in client.CAPABILITIES
+    assert contracts.PROGRESS_TAG in client.CAPABILITIES
     assert client.DECOMPOSITION_TAG in client.CAPABILITIES
     assert client.VERIFIED_ACTION_RESULT_TAG in client.CAPABILITIES
     assert client.NATIVE_PRODUCER_CONTEXT_TAG in client.CAPABILITIES
     assert client.SCRATCH_LIFETIME_TAG in client.CAPABILITIES
-    assert client.SCRATCH_LIFETIME_TAG == local_scratch.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
-    assert "SCRATCH_LIFETIME_TAG" in (ROOT / "tools" / "fleet" / "worker_loop.py").read_text()
+    assert client.SCRATCH_LIFETIME_TAG == contracts.SCRATCH_LIFETIME_TAG == "scratch-lifetime-v1"
     assert "require_native_producer_context" in inspect.signature(client.read_verified_action_result).parameters
     assert callable(client.read_verified_action_result)
     assert callable(client.bind_standard_capture_command)
@@ -325,12 +362,12 @@ def test_the_sdk_imports_no_client_and_no_tool():
 def test_read_claimed_record_reads_the_claimed_row(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
     key = "a" * 64
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {"action_key": key, "cas_root": "/cas", "residency": {"manifest_sha256": "b" * 64}}
     path.write_text(json.dumps(row), encoding="utf-8")
     assert client.read_claimed_record(queue, key) == row
-    assert client.read_claimed_record(queue, key) == pool._read_json(path)
+    assert client.read_claimed_record(queue, key) == pool.record_store.read_document(path)
 
 
 def test_read_claimed_record_is_none_when_not_claimed(tmp_path: Path):
@@ -341,7 +378,7 @@ def test_read_claimed_record_is_none_when_not_claimed(tmp_path: Path):
 def test_read_claimed_record_refuses_a_row_that_is_not_an_object(tmp_path: Path):
     queue = pool.PoolQueue(tmp_path / "queue")
     key = "d" * 64
-    path = queue.item_path(pool.CLAIMED, key)
+    path = queue.records.item_path(pool.record_store.CLAIMED, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("[1, 2]", encoding="utf-8")
     with pytest.raises(pool.PoolContractError):

@@ -27,6 +27,8 @@ from prismabuild import pool  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 
@@ -47,21 +49,21 @@ def preempted(tmp_path: Path):
     """A queue where a foreground denial has just preempted the holder."""
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.ledger().ensure_capacity({"gpu": 1})
 
     q.publish(action_key=BACKGROUND, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", priority=-10, resources={"gpu": 1},
               retry_safe=True, max_attempts=3)
-    holder = q.claim(capacity={"gpu": 1})
+    holder = q.claim(has_gpu=True, capacity={"gpu": 1})
     assert holder is not None and holder["action_key"] == BACKGROUND
 
     q.publish(action_key=FOREGROUND, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", priority=0, resources={"gpu": 1})
-    assert q.claim(capacity={"gpu": 1}) is None
+    assert q.claim(has_gpu=True, capacity={"gpu": 1}) is None
 
     stopped = float(holder["published_unix"])
-    requeued = json.loads(q.item_path(pool.READY, BACKGROUND).read_text())
+    requeued = json.loads(q.records.item_path(pool.record_store.READY, BACKGROUND).read_text())
     assert float(requeued["published_unix"]) != stopped
     return q, holder, stopped
 
@@ -74,25 +76,25 @@ def test_a_waiter_follows_the_preemption_to_the_generation_it_requeued(
     q, holder, stopped = preempted
 
     # Nothing has ended: the retry is waiting to run.
-    assert pbrun.landed_outcome(q, BACKGROUND, wait_s=0.0,
+    assert submit_core.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
                                 generation=stopped) is None
 
     # The holder concludes the stop; the foreground item it yielded to runs.
     q.finish(BACKGROUND, status="withdrawn", detail={"returncode": -15},
              claim_snapshot=holder)
-    first = q.claim(capacity={"gpu": 1})
+    first = q.claim(has_gpu=True, capacity={"gpu": 1})
     assert first is not None and first["action_key"] == FOREGROUND
     q.finish(FOREGROUND, status="executed", detail={"returncode": 0},
              claim_snapshot=first)
 
     # And then the retry runs and succeeds.  A waiter that named the stopped
     # generation is told about that ending, not about the stop.
-    retry = q.claim(capacity={"gpu": 1})
+    retry = q.claim(has_gpu=True, capacity={"gpu": 1})
     assert retry is not None and retry["action_key"] == BACKGROUND
     q.finish(BACKGROUND, status="executed", detail={"returncode": 0},
              claim_snapshot=retry)
 
-    landed = pbrun.landed_outcome(q, BACKGROUND, wait_s=0.0,
+    landed = submit_core.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
                                   generation=stopped)
     assert landed is not None
     assert landed[1]["status"] == "executed"
@@ -103,15 +105,15 @@ def test_an_operator_withdrawal_still_ends_the_wait(tmp_path: Path) -> None:
     """Only a preemption is followed.  A decision is still a decision."""
 
     q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
+    q.records.ensure_layout()
     q.publish(action_key=BACKGROUND, cas_root="/cas", checkout_root="/co",
               worker_script="/w.py", priority=-10)
     generation = float(json.loads(
-        q.item_path(pool.READY, BACKGROUND).read_text())["published_unix"])
+        q.records.item_path(pool.record_store.READY, BACKGROUND).read_text())["published_unix"])
     q.withdraw(BACKGROUND, reason="an operator changed their mind",
                by="an operator")
 
-    landed = pbrun.landed_outcome(q, BACKGROUND, wait_s=0.0,
+    landed = submit_core.action_wait.await_ending(q, BACKGROUND, wait_s=0.0,
                                   generation=generation)
     assert landed is not None
     assert landed[1]["status"] == "withdrawn"
@@ -125,14 +127,14 @@ def test_pbstatus_names_the_preemption_on_the_ending_and_on_the_requeue(
 
     q, _, _ = preempted
 
-    endings = pbstatus.read_endings(q.root)
+    endings = fleet_census.endings(q.root)
     withdrawn = [row for row in endings if row["status"] == "withdrawn"]
     assert len(withdrawn) == 1
     assert withdrawn[0]["preempted_by"] == FOREGROUND
     assert f"preempted by {FOREGROUND[:12]}" in "\n".join(
         pbstatus.ending_lines(endings))
 
-    pool_state = pbstatus.read_pool(q.root)
+    pool_state = fleet_census.action_rows(q.root).value
     rows = [row for row in pool_state["jobs"]
             if row["action_key"] == BACKGROUND and row["state"] == "READY"]
     assert len(rows) == 1
@@ -150,7 +152,7 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
     allow_publish = threading.Event()
     reader_checkpoint = threading.Event()
     publish = q.publish
-    transition = q._transition_locked
+    transition = q.action_transition_lock
     reader_ident = []
 
     def pause_publish(**kw):
@@ -167,15 +169,15 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
     def wait_for_outcome():
         reader_ident.append(threading.get_ident())
         try:
-            return pbrun.landed_outcome(q, bg, wait_s=0,
+            return submit_core.action_wait.await_ending(q, bg, wait_s=0,
                                        generation=holder['published_unix'])
         finally:
             reader_checkpoint.set()
 
     monkeypatch.setattr(q, 'publish', pause_publish)
-    monkeypatch.setattr(q, '_transition_locked', watch_transition)
+    monkeypatch.setattr(q, 'action_transition_lock', watch_transition)
     with ThreadPoolExecutor(max_workers=2) as workers:
-        writer = workers.submit(q.claim, capacity={'gpu': 1})
+        writer = workers.submit(q.claim, has_gpu=True, capacity={'gpu': 1})
         try:
             assert stopped.wait(10)
             reader = workers.submit(wait_for_outcome)
@@ -191,18 +193,18 @@ def test_waiter_cannot_finish_between_withdrawal_and_requeue(tmp_path, monkeypat
 def test_waiter_reports_its_requeue_not_an_unrelated_later_generation(tmp_path):
     from test_preemption_review_boundaries import setup_holder
     q, bg, fg, holder = setup_holder(tmp_path, max_attempts=2)
-    assert q.claim(capacity={'gpu': 1}) is None
+    assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
     q.finish(bg, status='withdrawn', claim_snapshot=holder)
-    foreground = q.claim(capacity={'gpu': 1})
+    foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(fg, status='executed', claim_snapshot=foreground)
-    retry = q.claim(capacity={'gpu': 1})
+    retry = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(bg, status='failed', detail={'returncode': 1}, claim_snapshot=retry)
-    assert q.item_path(pool.FAILED, bg).exists()
+    assert q.records.item_path(pool.record_store.FAILED, bg).exists()
     q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1})
-    unrelated = q.claim(capacity={'gpu': 1})
+    unrelated = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(bg, status='executed', claim_snapshot=unrelated)
-    landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=holder['published_unix'])
+    landed = submit_core.action_wait.await_ending(q, bg, wait_s=0, generation=holder['published_unix'])
     assert landed is not None
     assert landed[1]['published_unix'] == retry['published_unix']
     assert landed[1]['status'] == 'failed'
@@ -216,11 +218,11 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     q, bg, fg, holder = setup_holder(tmp_path, max_attempts=interruptions + 1)
     original_generation = holder['published_unix']
     for index in range(interruptions):
-        assert q.claim(capacity={'gpu': 1}) is None
+        assert q.claim(has_gpu=True, capacity={'gpu': 1}) is None
         q.finish(bg, status='withdrawn', claim_snapshot=holder)
-        foreground = q.claim(capacity={'gpu': 1})
+        foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
         q.finish(fg, status='executed', claim_snapshot=foreground)
-        holder = q.claim(capacity={'gpu': 1})
+        holder = q.claim(has_gpu=True, capacity={'gpu': 1})
         if index + 1 < interruptions:
             q.publish(action_key=fg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
                       worker_script=tmp_path / 'worker.py', resources={'gpu': 1})
@@ -231,20 +233,23 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
     q.publish(action_key=bg, cas_root=tmp_path / 'cas', checkout_root=tmp_path,
               worker_script=tmp_path / 'worker.py', priority=0, resources={'gpu': 1},
               max_attempts=1, retry_safe=False)
-    unrelated = q.claim(capacity={'gpu': 1})
+    unrelated = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(bg, status=status, detail={'returncode': 9 if status == 'failed' else 0,
                                       'stdout': 'unrelated later run'},
              claim_snapshot=unrelated)
-    terminal = q.item_path(pool.FAILED if status == 'failed' else pool.DONE, bg)
+    terminal = q.records.item_path(
+        pool.record_store.FAILED if status == 'failed' else pool.record_store.DONE,
+        bg,
+    )
     assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
-    landed = pbrun.landed_outcome(q, bg, wait_s=0, generation=original_generation)
+    landed = submit_core.action_wait.await_ending(q, bg, wait_s=0, generation=original_generation)
     assert landed is not None
     assert landed[1]['published_unix'] == retry['published_unix']
-    summary = pbrun.outcome_summary(q, *landed)
+    summary = submit_core.action_client.outcome_summary(q, *landed)
     assert summary['status'] == status
     assert summary['returncode'] == retry_code
     assert summary['detail']['stdout'] == 'causal retry'
-    assert landed[0] == q.attempt_path(landed[1], landed[1]['attempts'])
+    assert landed[0] == q.records.attempt_path(landed[1], landed[1]['attempts'])
     assert landed[0].exists()
     # Recovery is read-only: it must not replace G3's current summary with G2.
     assert json.loads(terminal.read_text())['published_unix'] == unrelated['published_unix']
@@ -254,9 +259,9 @@ def test_late_waiter_recovers_overwritten_retry_from_immutable_attempts(
 def test_archived_retry_recovery_revalidates_immutable_evidence(preempted, damage):
     q, holder, stopped = preempted
     q.finish(BACKGROUND, status='withdrawn', claim_snapshot=holder)
-    foreground = q.claim(capacity={'gpu': 1})
+    foreground = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(FOREGROUND, status='executed', claim_snapshot=foreground)
-    retry = q.claim(capacity={'gpu': 1})
+    retry = q.claim(has_gpu=True, capacity={'gpu': 1})
     q.finish(BACKGROUND, status='executed', detail={'stdout': 'verified original'},
              claim_snapshot=retry)
     recovered = q.archived_preemption_outcomes(BACKGROUND)

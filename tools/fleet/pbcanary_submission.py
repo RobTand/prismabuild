@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import runpy
 import signal
 import socket
 import struct
@@ -124,10 +123,10 @@ def main():
     fd, value, timeout_s, pbrun_path, *arguments = sys.argv[1:]
     intent = json.loads(value)
     deadline = time.monotonic() + float(timeout_s)
-    sys.argv = [pbrun_path, *arguments]
-    module = runpy.run_path(pbrun_path, run_name="_publication_canary_pbrun")
+    sys.path.insert(0, str(Path(pbrun_path).resolve(strict=True).parent))
+    from pbrun import main as run_submission
     with socket.socket(fileno=int(fd)) as sock:
-        return module["main"](
+        return run_submission(arguments,
             publication_canary_intent=intent,
             authorize_canary=lambda action: _send_action(sock, action, deadline))
 

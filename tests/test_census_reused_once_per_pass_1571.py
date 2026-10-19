@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from prismabuild import _measurement_reservation as reservation, adaptive_cpu, pool
 
+from test_measurement_drains_gpu_backfill import cpu_sample, gpu_sample
 from test_census_tmpfs_state_1451 import (  # noqa: F401  (fixtures)
     tmpfs_mount, tmpfs_state)
 from test_measurement_drains_gpu_backfill import fleet as fleet_fixture
@@ -38,7 +39,9 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
     keys = [publish(f"reuse-candidate-{index}", priority=-10,
                     cpu=2, gpu=0, mem_gb=16)
             for index in range(CANDIDATES)]
-    records = [pool._read_json(queue.item_path(pool.READY, key)) for key in keys]
+    records = [pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) for key in keys]
 
     scans: list[int] = []
     real_census = reservation.CensusReader._census
@@ -51,7 +54,9 @@ def test_a_free_fence_scans_once_per_pass_not_twice_per_candidate(
 
     assert queue.claim(
         capacity=CAPACITY, cpu_tiers=TIERS, adaptive_cpu=True,
-        has_gpu=True, tags=["gb10", "sparklina"], ready=records) is None
+        has_gpu=True, tags=["gb10", "sparklina"], ready=records,
+        cpu_sampler=lambda: cpu_sample(clock, readings),
+        gpu_sampler=lambda: gpu_sample(sample, readings)) is None
     assert all(queue.passes(key) == 1 for key in keys), (
         "every candidate must reach its resource decision, not a census refusal")
 

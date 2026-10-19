@@ -43,7 +43,7 @@ REAL_POPEN = subprocess.Popen
 
 
 def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
-               *, run: str = "run", with_exit: bool = False):
+               *, run: str = "run", with_exit: bool = False, client_reply=None):
     """Run one shard whose pbrun produced ``output``, and read its record.
 
     The shard is mocked at ``Popen`` because the endings under test are
@@ -68,7 +68,10 @@ def _one_shard(tmp_path: Path, monkeypatch, output: str, returncode: int,
 
     def popen(command, **kwargs):
         if str(pbtest.PBRUN) in [str(part) for part in command]:
-            return FinishedProcess()
+            from pbtest_shard_output import ClientReply, emit_client_events
+            reply = (client_reply if client_reply is not None else
+                     ClientReply(output, pbtest.action_client.ClientCommand(returncode)))
+            return emit_client_events(FinishedProcess(), kwargs, reply)
         return REAL_POPEN(command, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
@@ -232,9 +235,18 @@ def test_a_cache_hit_is_read_through_to_the_shards_own_output(
     receipt = ('{"payload_path": "%s", "receipt": {"worker_id": "dl380g10"}, '
                '"status": "cache_hit"}\n' % payload)
 
+    from pbtest_shard_output import ClientReply
+    client = pbtest.action_client
+    identity = client.CachedClientIdentity('a' * 64, pbtest.store_for(pbtest.__file__).root / 'pb-queue',
+        pbtest.store_for(pbtest.__file__).root / 'cas', client.ClientTransport.POOL, 'b' * 64)
+    monkeypatch.setattr(client, 'read_cached_output',
+        lambda observed, ending: client.CachedOutput(payload.read_text())
+        if observed == identity else pytest.fail('replay used a different typed identity'))
     exit_code, record = _one_shard(
         tmp_path, monkeypatch, "pbrun: executed on dl380g10 in 0s\n" + receipt,
-        0, with_exit=True)
+        0, with_exit=True,
+        client_reply=ClientReply('pbrun: executed on dl380g10 in 0s\n' + receipt,
+            client.ClientSubmitted(identity), identity))
 
     assert record["ran"] is True, record["summary"]
     assert record["summary"] == "561 passed, 1 skipped in 28.51s"
@@ -254,8 +266,15 @@ def test_a_cache_hit_whose_payload_is_gone_is_not_green(
     receipt = ('{"payload_path": "%s", "status": "cache_hit"}\n'
                % (tmp_path / "reaped.txt"))
 
+    from pbtest_shard_output import ClientReply
+    client = pbtest.action_client
+    identity = client.CachedClientIdentity('a' * 64, pbtest.store_for(pbtest.__file__).root / 'pb-queue',
+        pbtest.store_for(pbtest.__file__).root / 'cas', client.ClientTransport.POOL, 'b' * 64)
+    monkeypatch.setattr(client, 'read_cached_output',
+        lambda observed, ending: client.CachedOutputUnavailable('the blob was reaped'))
     exit_code, record = _one_shard(
-        tmp_path, monkeypatch, receipt, 0, with_exit=True)
+        tmp_path, monkeypatch, receipt, 0, with_exit=True,
+        client_reply=ClientReply(receipt, client.ClientSubmitted(identity), identity))
 
     assert record["ran"] is False
     assert exit_code == 1

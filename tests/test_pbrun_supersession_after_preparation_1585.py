@@ -10,6 +10,7 @@ nothing, and files the record immediately before the row goes in.
 Real ``pbrun.main`` against a local queue, as in ``test_pbrun_residency_stage_submission``.
 """
 from __future__ import annotations
+from submission_support import patch_store
 
 import json
 from pathlib import Path
@@ -23,6 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 from prismabuild import action_edges as ae, pool, residency_plan  # noqa: E402
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
+from prismabuild import residency_plan  # noqa: E402
+from prismabuild.queue_publication import RowPublication  # noqa: E402
 from test_pbrun_detach import _checkout  # noqa: E402
 from test_pbrun_residency_stage_submission import _announce_tier, _manifest  # noqa: E402
 
@@ -38,8 +42,8 @@ def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, tier: bool = True
                    capacity={"cpu": 4, "mem_gb": 16, "gpu": 1})
     if tier:
         _announce_tier(queue, mountpoint=tmp_path / "stage")
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     return queue, work, manifest
 
@@ -92,7 +96,9 @@ def test_a_staged_submission_refused_in_preparation_files_no_supersession_and_th
     corrected = _submitted(monkeypatch, capsys, work, manifest, "--residency", "stage",
                            "--supersedes", OLD, word="printf corrected")
     assert ae.read_supersession(queue.root, OLD)["new"] == corrected
-    assert pool._read_json(queue.item_path(pool.READY, corrected)) is not None, "the replacement never published"
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, corrected),
+    ) is not None, "the replacement never published"
 
 
 def test_a_refused_seal_after_the_phase_table_files_no_supersession(tmp_path, monkeypatch):
@@ -103,7 +109,7 @@ def test_a_refused_seal_after_the_phase_table_files_no_supersession(tmp_path, mo
     def refuse(*args, **kwargs):
         raise residency_plan.ResidencyPlanError("the window cannot be sealed")
 
-    monkeypatch.setattr(pbrun.residency_plan, "seal_window", refuse)
+    monkeypatch.setattr(submit_core.residency_plan, "seal_window", refuse)
     message = _refused(monkeypatch, work, manifest, "--residency", "stage", "--supersedes", OLD,
                        word="printf sealed")
     assert "cannot be sealed" in message, message
@@ -117,7 +123,7 @@ def test_a_refused_row_on_the_plain_path_files_no_supersession(tmp_path, monkeyp
     def refuse(*args, **kwargs):
         raise SystemExit("pbrun: the row cannot be built")
 
-    monkeypatch.setattr(pbrun, "publication_row", refuse)
+    monkeypatch.setattr(RowPublication, "row", refuse)
     assert "row cannot be built" in _refused(monkeypatch, work, manifest, "--supersedes", OLD, word="printf plain")
     assert ae.read_supersession(queue.root, OLD) is None
 
@@ -130,7 +136,7 @@ def test_what_can_be_refused_early_is_refused_before_any_preparation(tmp_path, m
     def prepared(*args, **kwargs):
         raise AssertionError("the window was prepared for a submission that could never supersede")
 
-    monkeypatch.setattr(pbrun, "residency_stage_rows", prepared)
+    monkeypatch.setattr(residency_plan, "prepare_window", prepared)
     message = _refused(monkeypatch, work, manifest, "--residency", "stage", "--supersedes", OLD,
                        word="printf early")
     assert "cannot be superseded" in message, message
@@ -146,7 +152,7 @@ def test_the_record_is_filed_at_the_commit_point_and_a_publish_refusal_is_recove
     """
     queue, work, manifest = _setup(tmp_path, monkeypatch)
     _publish_old(queue)
-    real = pbrun.publish_or_refuse
+    real = submit_core.publish_or_refuse
     calls = []
 
     def flaky(*args, **kwargs):
@@ -155,7 +161,7 @@ def test_the_record_is_filed_at_the_commit_point_and_a_publish_refusal_is_recove
             raise SystemExit("pbrun: the queue refused the row once")
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(pbrun, "publish_or_refuse", flaky)
+    monkeypatch.setattr(submit_core, "publish_or_refuse", flaky)
     assert "refused the row once" in _refused(monkeypatch, work, manifest, "--residency", "stage",
                                               "--supersedes", OLD, word="printf retry")
     filed = ae.read_supersession(queue.root, OLD)
@@ -163,12 +169,14 @@ def test_the_record_is_filed_at_the_commit_point_and_a_publish_refusal_is_recove
     key = _submitted(monkeypatch, capsys, work, manifest, "--residency", "stage", "--supersedes", OLD,
                      word="printf retry")
     assert key == filed["new"], "the retry is the same work, so it is the key the record names"
-    assert pool._read_json(queue.item_path(pool.READY, key)) is not None
+    assert pool.record_store.value_or_raise(
+        queue.records.item(pool.record_store.READY, key),
+    ) is not None
 
 
 def test_check_supersession_writes_nothing_and_refuses_what_filing_refuses(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _publish_old(queue)
     new, other = "2" * 64, "3" * 64
     record = ae.check_supersession(queue, OLD, new=new, new_kind=ae.PRODUCER_KEY)
@@ -188,7 +196,7 @@ def test_check_supersession_writes_nothing_and_refuses_what_filing_refuses(tmp_p
 
 def test_check_supersession_refuses_a_key_that_has_not_ended(tmp_path):
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     _publish_old(queue, ended=False)
     with pytest.raises(ae.ActionEdgeError, match="cannot be superseded"):
         ae.check_supersession(queue, OLD, new="2" * 64, new_kind=ae.PRODUCER_KEY)

@@ -31,6 +31,7 @@ sys.path.insert(
 )
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 
 def _refusal(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> str:
@@ -73,4 +74,4 @@ def test_this_copy_of_pbrun_is_the_one_the_guard_repoints(tmp_path: Path) -> Non
     guard."""
 
     assert sys.modules.get("pbrun") is pbrun
-    assert tmp_path in pbrun.SH.parents, pbrun.SH
+    assert tmp_path in pbrun.configured_store().root.parents, pbrun.configured_store().root

@@ -13,9 +13,11 @@ These tests pin the metric and the one matcher it shares with placement.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import importlib.util
 import json
+from functools import partial
 from pathlib import Path
 import socket
 import sys
@@ -33,6 +35,9 @@ GB10 = {"gpu": 2, "mem_gb": 48, "cpu": 10}
 X86 = {"gpu": 0, "mem_gb": 60, "cpu": 80}
 
 
+from prismabuild import role_session
+
+
 def _fleet(tmp_path: Path) -> pool.PoolQueue:
     """The live fleet's shape, from ``tools/fleet/fleet_boxes.json``."""
 
@@ -44,15 +49,6 @@ def _fleet(tmp_path: Path) -> pool.PoolQueue:
     queue.announce(host="dl380g10", tags=["cpu", "dl380g10", "x86"],
                    has_gpu=False, capacity=X86)
     return queue
-
-
-def _publish(queue: pool.PoolQueue, seed: str, **kw) -> None:
-    queue.publish(
-        action_key=seed * 64, cas_root=queue.root / "cas",
-        checkout_root="/home/rob/tmp/ts101",
-        worker_script="/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py",
-        **kw,
-    )
 
 
 def test_placeable_hosts_names_every_box_that_fits(tmp_path: Path) -> None:
@@ -107,11 +103,46 @@ def test_the_census_counts_items_placeable_on_exactly_one_box(
 
     queue = _fleet(tmp_path)
     with mock.patch.object(pool.socket, "gethostname", return_value="sparky"):
-        _publish(queue, "a", tags=["sparky"], resources={"cpu": 1, "mem_gb": 4})
-        _publish(queue, "b", tags=["sparky"], resources={"cpu": 2, "mem_gb": 8})
-        _publish(queue, "c", tags=["gx10-6b77"], resources={"cpu": 1, "mem_gb": 4})
-        _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
-        _publish(queue, "e", tags=["dl380g10"], resources={"mem_gb": 4096})
+        ActionRows(queue).publish(
+            'a' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['sparky'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
+        ActionRows(queue).publish(
+            'b' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['sparky'],
+            resources={'cpu': 2, 'mem_gb': 8},
+        )
+        ActionRows(queue).publish(
+            'c' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['gx10-6b77'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
+        ActionRows(queue).publish(
+            'd' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['gb10'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
+        ActionRows(queue).publish(
+            'e' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['dl380g10'],
+            resources={'mem_gb': 4096},
+        )
 
     census = queue.placement_census()
 
@@ -193,15 +224,31 @@ def test_an_idle_worker_says_how_much_of_the_queue_is_one_box_wide(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="otherbox", tags=["otherbox"], has_gpu=False,
                    capacity={"cpu": 8, "mem_gb": 16})
-    _publish(queue, "a", tags=["otherbox"], resources={"cpu": 1, "mem_gb": 4})
+    ActionRows(queue).publish(
+        'a' * 64,
+        cas_root=queue.root / 'cas',
+        checkout_root='/home/rob/tmp/ts101',
+        worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+        tags=['otherbox'],
+        resources={'cpu': 1, 'mem_gb': 4},
+    )
 
     spec = importlib.util.spec_from_file_location("wl_census", WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(module, "SH", tmp_path), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(module, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(module, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(module.container_images, "InventoryCache", partial(
+             module.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
                                          "0", "--class", "x86", "--all-cores"]):
         assert module.main() == 0
@@ -225,7 +272,14 @@ def test_a_box_local_checkout_caps_the_width_at_one_box(tmp_path: Path) -> None:
 
     queue = _fleet(tmp_path)
     with mock.patch.object(pool.socket, "gethostname", return_value="sparky"):
-        _publish(queue, "d", tags=["gb10"], resources={"cpu": 1, "mem_gb": 4})
+        ActionRows(queue).publish(
+            'd' * 64,
+            cas_root=queue.root / 'cas',
+            checkout_root='/home/rob/tmp/ts101',
+            worker_script='/mnt/shared/prismabuild-fleet/repo/tools/prismabuild_worker.py',
+            tags=['gb10'],
+            resources={'cpu': 1, 'mem_gb': 4},
+        )
 
     census = queue.placement_census()
 
@@ -267,8 +321,8 @@ def test_one_malformed_ready_item_does_not_take_the_worker_with_it(
     queue = pool.PoolQueue(tmp_path / "pb-queue")
     queue.announce(host="otherbox", tags=["otherbox"], has_gpu=False,
                    capacity={"cpu": 8, "mem_gb": 16})
-    queue.ensure_layout()
-    (queue.dir("ready") / f"{'f' * 64}.json").write_text(json.dumps({
+    queue.records.ensure_layout()
+    (queue.records.dir("ready") / f"{'f' * 64}.json").write_text(json.dumps({
         "schema": pool.POOL_ITEM_SCHEMA_V1, "action_key": "f" * 64,
         "cas_root": str(queue.root / "cas"), "checkout_root": "/home/rob/tmp/ts101",
         "worker_script": "/mnt/shared/prismabuild-fleet/repo/tools/x.py",
@@ -285,10 +339,19 @@ def test_one_malformed_ready_item_does_not_take_the_worker_with_it(
     spec = importlib.util.spec_from_file_location("wl_bad_item", WORKER_LOOP)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for name in ("loaded.json", "published.json"):
+        (tmp_path / name).write_text(json.dumps({"commit": "deadbeef", "generation": "test"}))
+    gate = tmp_path / "maintenance.json"
+    gate.write_text(json.dumps({"draining": False}))
     with mock.patch.object(module, "SH", tmp_path), \
          mock.patch.object(module.cpu_topology, "pin_to_preferred", return_value=None), \
-         mock.patch.object(module, "loaded_runtime_commit", return_value="deadbeef"), \
-         mock.patch.object(module, "published_commit", return_value="deadbeef"), \
+         mock.patch.object(role_session, "GENERATION_VERSION", tmp_path / "loaded.json"), \
+         mock.patch.object(role_session, "RUNTIME_VERSION", tmp_path / "published.json"), \
+         mock.patch.object(role_session, "MAINTENANCE_GATE", gate), \
+         mock.patch.object(role_session, "PARKED_ROOT", tmp_path / "parked"), \
+         mock.patch.object(module, "PUBLICATION_LOCK_ROOT", tmp_path / "offer-locks"), \
+         mock.patch.object(module.container_images, "InventoryCache", partial(
+             module.container_images.InventoryCache, root=tmp_path / "images")), \
          mock.patch.object(sys, "argv", ["worker_loop.py", "--once", "--gpu-slots",
                                          "0", "--class", "x86", "--all-cores"]):
         assert module.main() == 0              # the item is bad; the box is not

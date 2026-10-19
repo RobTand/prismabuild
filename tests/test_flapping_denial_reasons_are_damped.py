@@ -9,6 +9,7 @@ a fresh entry every flip and, within 16 flips, evicted the very first
 transition: the one that diagnoses where the starvation began.
 """
 from __future__ import annotations
+from fleet_world import Clock as FleetClock
 
 from pathlib import Path
 import sys
@@ -26,7 +27,7 @@ def test_forty_flaps_keep_the_first_transition_of_each_reason(tmp_path, monkeypa
     item = fx._publish_export(queue, fx._hexkey("owner"), "flapping")
     key = str(item["action_key"])
     clock = [1000.0]
-    monkeypatch.setattr(pool, "_now", lambda: clock[0])
+    FleetClock(source=lambda: clock[0]).install(monkeypatch, scope="pool")
 
     queue.record_denial(item, "measurement_holder")
     clock[0] += 1.0

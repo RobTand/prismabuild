@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tools/fleet")]
 from prismabuild import adaptive_cpu, adaptive_gpu, adaptive_snapshot, pool  # noqa: E402
+from prismabuild import census as fleet_census
 import pbstatus  # noqa: E402
 
 from admitted_queue_fixture import AdmittedQueueFixture  # noqa: E402
@@ -34,12 +35,12 @@ def test_transition_busy_is_recorded_while_a_neighbour_claims(tmp_path, monkeypa
         default_demand={"cpu": 1, "mem_gb": 1})
     publish(queue, KEY_A, priority=1)
     publish(queue, KEY_B)
-    original = queue._transition_locked
+    original = queue.action_transition_lock
 
     def contested(key, **kwargs):
         return original(key, blocking=False) if key != KEY_A else _unheld()
 
-    monkeypatch.setattr(queue, "_transition_locked", contested)
+    monkeypatch.setattr(queue, "action_transition_lock", contested)
     assert queue.claim()["action_key"] == KEY_B
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "transition_busy"
@@ -75,7 +76,7 @@ def test_diagnostic_failure_does_not_change_a_claim_or_passes(tmp_path, monkeypa
             raise OSError("full")
         return original_write(path, value)
     monkeypatch.setattr(adaptive_cpu, "write_json", fail_denial)
-    assert queue.claim(capacity={"gpu": 2})["action_key"] == KEY_B
+    assert queue.claim(has_gpu=True, capacity={"gpu": 2})["action_key"] == KEY_B
     assert queue.passes(KEY_A) == 0
 
 
@@ -84,14 +85,14 @@ def test_cpu_and_gpu_refusals_keep_the_actual_current_decision(tmp_path, monkeyp
     ledger = queue.ledger()
     ledger.ensure_capacity({"cpu": 2, "gpu": 1})
     tiers = {"preferred": [0, 1], "fallback": []}
-    cpu = adaptive_cpu.Controller(ledger, tiers)
-    monkeypatch.setattr(cpu, "sample", lambda: {"sampled_unix": time.time(), "busy_cpus": 1.95,
-                                                   "psi_some": .2, "cpu_count": 2, "interval_s": 1.})
+    cpu = adaptive_cpu.Controller(
+        ledger, tiers, sampler=lambda: {"sampled_unix": time.time(), "busy_cpus": 1.95,
+                                      "psi_some": .2, "cpu_count": 2, "interval_s": 1.})
     assert cpu.decision({"action_key": KEY_A}, {"cpu": 1}, identity=(None, False)) is None
     assert cpu.last_decision["reason"] == "host_pressure"
     assert cpu.last_decision["sample"]["psi_some"] == .2
 
-    gpu = adaptive_gpu.Controller(ledger)
+    gpu = adaptive_gpu.Controller(ledger, sampler=lambda: sample)
     gpu.last_decision = {"reason": "old"}
     sample = {"sampled_unix": time.time(), "schema": "prismabuild.gpu_capacity.v1", "complete": True,
               "attributed": True, "sample_id": "now", "foreign_processes": [], "jobs": [],
@@ -99,7 +100,6 @@ def test_cpu_and_gpu_refusals_keep_the_actual_current_decision(tmp_path, monkeyp
               "memory_pressure_some": 0., "memory_pressure_full": 0., "cpu_pressure_some": 0.,
               "devices": [{"power_w": 1., "power_limit_w": 10., "uuid": "gpu", "limited": False,
                            "memory_domain": "discrete"}]}
-    monkeypatch.setattr(gpu, "sample", lambda: sample)
     assert gpu.decision({"action_key": KEY_A}, {"gpu": 1}, contract=(None, False, False, 1)) is None
     assert gpu.last_decision["reason"] == "gpu_memory_sample_invalid"
     assert gpu.last_decision["sample"] is sample
@@ -114,22 +114,22 @@ def test_unfunded_denial_distinguishes_withholding_from_past_ceiling(tmp_path):
     assert ledger.acquire("0" * 64, {"gpu": 2})
     for _ in range(pool.STARVATION_FLOOR - 1):
         queue.record_pass(KEY_A)
-    assert queue.claim(capacity={"gpu": 4}) is None
+    assert queue.claim(has_gpu=True, capacity={"gpu": 4}) is None
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_withholding"
-    sidecar = json.loads(queue.passes_path(KEY_A).read_text())
+    sidecar = json.loads(queue.records.passes_path(KEY_A).read_text())
     sidecar["first_unix"] -= pool.WITHHOLD_CEILING_S + 1
-    queue.passes_path(KEY_A).write_text(json.dumps(sidecar))
-    assert queue.claim(capacity={"gpu": 4})["action_key"] == KEY_B
+    queue.records.passes_path(KEY_A).write_text(json.dumps(sidecar))
+    assert queue.claim(has_gpu=True, capacity={"gpu": 4})["action_key"] == KEY_B
     denial = next(value for value in local_records(queue).values() if value["action_key"] == KEY_A)
     assert denial["reason"] == "reservation_unavailable_past_ceiling"
 
 
 def test_status_keeps_two_hosts_and_rejects_old_or_future_evidence(tmp_path):
     queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     publish(queue, KEY_A, resources={"cpu": 1})
-    item = json.loads(queue.item_path(pool.READY, KEY_A).read_text())
+    item = json.loads(queue.records.item_path(pool.record_store.READY, KEY_A).read_text())
     for host, stamp, generation in (("one", time.time() - 1, item["published_unix"]),
                                     ("two", time.time() - 2, item["published_unix"]),
                                     ("old", time.time() - 3, 0.0),
@@ -139,7 +139,7 @@ def test_status_keeps_two_hosts_and_rejects_old_or_future_evidence(tmp_path):
         path.write_text(json.dumps({"schema": pool.CLAIM_DENIALS_SCHEMA_V1, "records": {host: {
             "action_key": KEY_A, "published_unix": generation, "host": host,
             "reason": "fixture", "evidence": {}, "denied_unix": stamp}}}))
-    row = next(row for row in pbstatus.read_pool(queue.root)["jobs"] if row["action_key"] == KEY_A)
+    row = next(row for row in fleet_census.action_rows(queue.root).value["jobs"] if row["action_key"] == KEY_A)
     assert [record["host"] for record in row["admission_denials"]] == ["one", "two"]
 
 
@@ -216,4 +216,113 @@ def test_a_row_behind_a_whole_box_withhold_says_so(tmp_path):
     assert records[KEY_A]["reason"] == "reservation_unavailable_withholding"
     assert records[KEY_B]["reason"] == "deferred_behind_withheld_row"
     assert records[KEY_B]["evidence"]["withheld_for"] == KEY_A
-    assert not queue.passes_path(KEY_B).exists()      # held back, not refused
+    assert not queue.records.passes_path(KEY_B).exists()      # held back, not refused
+
+
+def test_separate_queues_use_their_own_injected_cpu_observations(tmp_path):
+    hot = {"sampled_unix": time.time(), "busy_cpus": 2., "psi_some": .2,
+           "cpu_count": 2, "interval_s": 1.}
+    idle = {**hot, "busy_cpus": 0., "psi_some": 0.}
+    blocked = pool.PoolQueue(tmp_path / "blocked")
+    available = pool.PoolQueue(tmp_path / "available")
+    for queue in (blocked, available):
+        publish(queue, KEY_A, resources={"cpu": 1, "mem_gb": 1})
+    args = {"capacity": {"cpu": 2, "mem_gb": 2},
+            "cpu_tiers": {"preferred": [0, 1], "fallback": []}, "adaptive_cpu": True}
+    assert blocked.claim(**args, cpu_sampler=lambda: hot) is None
+    admitted = available.claim(**args, cpu_sampler=lambda: idle)
+    assert admitted is not None and admitted["action_key"] == KEY_A
+    assert available.ledger().held() == {"cpu": 1, "mem_gb": 1}
+    assert blocked.claim(**args, cpu_sampler=lambda: hot) is None
+    assert blocked.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert blocked.ledger().held() == {}
+    denial = next(value for value in blocked._host_denial_records().values()
+                  if value.get("action_key") == KEY_A)
+    assert denial["reason"] == "adaptive_cpu_refused"
+    assert denial["evidence"]["decision"]["sample"]["busy_cpus"] == 2.
+
+
+def test_one_claim_pass_reuses_cpu_observation_after_a_candidate_refusal(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    publish(queue, KEY_A, priority=1, resources={"cpu": 2, "mem_gb": 1})
+    publish(queue, KEY_B, resources={"cpu": 1, "mem_gb": 1})
+    reads = []
+
+    def sample():
+        reads.append(1)
+        return {"sampled_unix": time.time(), "busy_cpus": .1, "psi_some": .2,
+                "cpu_count": 2, "interval_s": 1., "per_cpu_busy": {"0": 0., "1": 0.}}
+
+    admitted = queue.claim(capacity={"cpu": 2, "mem_gb": 2},
+                           cpu_tiers={"preferred": [0, 1], "fallback": []},
+                           adaptive_cpu=True, cpu_sampler=sample)
+    assert admitted is not None and admitted["action_key"] == KEY_B
+    assert queue.records.item_path(pool.record_store.READY, KEY_A).exists()
+    assert queue.ledger().held() == {"cpu": 1, "mem_gb": 1}
+    assert len(reads) == 1
+
+
+@pytest.mark.parametrize("kind", ["cpu", "gpu"])
+def test_sampler_errors_retain_identity_through_real_controller_decisions(tmp_path, kind):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    ledger = queue.ledger()
+    error = RuntimeError("sampler failed")
+
+    def sample():
+        raise error
+
+    if kind == "cpu":
+        controller = adaptive_cpu.Controller(
+            ledger, {"preferred": [0], "fallback": []}, sampler=sample)
+        decide = lambda: controller.decision({"action_key": KEY_A}, {"cpu": 1},
+                                             identity=(None, False))
+    else:
+        controller = adaptive_gpu.Controller(ledger, sampler=sample)
+        decide = lambda: controller.decision({"action_key": KEY_A}, {"gpu": 1},
+                                             contract=(None, False, False, 1))
+    with adaptive_cpu.AdmissionGate(ledger).locked():
+        with pytest.raises(RuntimeError) as raised:
+            decide()
+    assert raised.value is error
+    assert not ledger.held_keys()
+
+
+def test_gpu_evidence_fallback_preserves_the_decision_cache_schedule(tmp_path):
+    queue = pool.PoolQueue(tmp_path / "queue")
+    reads = []
+    observation = {}
+
+    def sample():
+        reads.append(1)
+        return observation
+
+    ledger = queue.ledger()
+    ledger.ensure_capacity({"gpu": 1})
+    controller = adaptive_gpu.Controller(ledger, sampler=sample)
+    assert pool._gpu_sample_for(controller, {"gpu": 1}) is observation
+    assert pool._gpu_sample_for(controller, {"gpu": 1}) is observation
+    assert len(reads) == 2
+    with adaptive_cpu.AdmissionGate(queue.ledger()).locked():
+        assert controller.decision({"action_key": KEY_A}, {"gpu": 1},
+                                   contract=(None, False, False, 1)) is None
+    assert controller.last_decision["reason"] == "sample_invalid_or_stale"
+    assert controller.last_decision["sample"] is observation
+    assert pool._gpu_sample_for(controller, {"gpu": 1}) is observation
+    assert len(reads) == 3
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError, RuntimeError])
+def test_gpu_evidence_fallback_keeps_its_original_exception_boundary(tmp_path, error_type):
+    error = error_type("broker read failed")
+
+    def sample():
+        raise error
+
+    controller = adaptive_gpu.Controller(
+        pool.PoolQueue(tmp_path / "queue").ledger(), sampler=sample)
+    if error_type in (OSError, ValueError):
+        assert pool._gpu_sample_for(controller, {"gpu": 1}) == {}
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            pool._gpu_sample_for(controller, {"gpu": 1})
+        assert raised.value is error

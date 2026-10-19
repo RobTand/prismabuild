@@ -1,0 +1,49 @@
+{
+  "captured_at": "2026-10-16T15:25:57.683291+00:00",
+  "complete": true,
+  "excluded": [
+    {
+      "node": "DESKTOP-P5UOGNJ",
+      "state": "retired"
+    }
+  ],
+  "generations": [
+    {
+      "archive_sha256": "151e169f7d2abf53168fb195ee063128ca29c2e9b7c5a9857eb383621d81f0c7",
+      "commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34",
+      "generation": "a17477b2b206-1791745175-65dffa700dfb",
+      "receipt_sha256": "5cef73692997fbd9f3d8d187c9f7aad15ee6b699912ceb1cf88fe9444082c9dd"
+    }
+  ],
+  "live": [
+    {
+      "age_s": 0.41129279136657715,
+      "healthy": true,
+      "loops": 16,
+      "node": "dl380g10",
+      "runtime_commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34"
+    },
+    {
+      "age_s": 0.4176452159881592,
+      "healthy": true,
+      "loops": 4,
+      "node": "sparklina",
+      "runtime_commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34"
+    },
+    {
+      "age_s": 0.09047293663024902,
+      "healthy": true,
+      "loops": 6,
+      "node": "sparky",
+      "runtime_commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34"
+    }
+  ],
+  "policy": "live worker generations plus designated rollback target",
+  "rollback": {
+    "authority": "Rob, implementation brief 2026-10-16",
+    "commit": "a17477b2b206adf79d89e65c7b9d09584f0bfa34",
+    "generation": "a17477b2b206-1791745175-65dffa700dfb"
+  },
+  "status_mtime_unix": 1792163988.6888356,
+  "status_sha256": "21afde8b69cc83e2f3ed33bb6253e33bd68e079d02cefaed92d90cb1a7014974"
+}

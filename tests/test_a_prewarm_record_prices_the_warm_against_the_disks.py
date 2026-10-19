@@ -23,7 +23,7 @@ from test_the_prewarm_reader_is_paced_by_the_disks import (  # noqa: E402
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
-import prewarm_loop  # noqa: E402
+from prismabuild import prewarm_loop  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 

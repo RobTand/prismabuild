@@ -7,6 +7,9 @@ before spending an attempt, and the submit-side verdict refuses a fleet that
 offers no capability at all.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
+import pbrun
+from prismabuild import submission as submit_core
 
 import hashlib
 import importlib.util
@@ -20,17 +23,19 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
+from prismabuild import capability_eligibility, contracts
 from prismabuild import dependency_digest, pool  # noqa: E402
 from prismabuild import core as pb  # noqa: E402
 
-TAG = dependency_digest.DEPENDENCY_DIGEST_TAG
+TAG = contracts.DEPENDENCY_DIGEST_TAG
 CAPACITY = {"cpu": 4, "mem_gb": 16}
 
 
+from fleet_world import FleetWorld
+
+
 def _queue_at(tmp_path: Path) -> pool.PoolQueue:
-    queue = pool.PoolQueue(tmp_path / "queue")
-    queue.ensure_layout()
-    return queue
+    return FleetWorld(tmp_path, queue_name='queue').queue
 
 
 def _dependency(tmp_path: Path, payload: bytes = b"required bytes") -> dict:
@@ -41,14 +46,8 @@ def _dependency(tmp_path: Path, payload: bytes = b"required bytes") -> dict:
             "sha256": hashlib.sha256(payload).hexdigest()}
 
 
-def _publish(queue, key, **kwargs):
-    queue.publish(action_key=key, cas_root="/cas", checkout_root="/co",
-                  worker_script="/w.py", resources={"cpu": 1, "mem_gb": 1},
-                  **kwargs)
-
-
 def _item_of(queue, key):
-    return json.loads(queue.item_path(pool.READY, key).read_text())
+    return json.loads(queue.records.item_path(pool.record_store.READY, key).read_text())
 
 
 def _denials(queue):
@@ -59,9 +58,9 @@ def _denials(queue):
     return list(records.values())
 
 
-def _intent(path: str) -> dict:
+def _intent(entry: dict) -> dict:
     return {"tags": [TAG], "resources": {"cpu": 1, "mem_gb": 1},
-            "requires_files": [{"path": path}]}
+            "requires_files": [entry]}
 
 
 # --------------------------------------------------------------------------
@@ -72,7 +71,7 @@ def test_publish_seals_the_requirements_and_adds_the_capability_tag(
         tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "a" * 64, requires_files=[entry])
+    ActionRows(queue).publish('a' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     record = _item_of(queue, "a" * 64)
     assert record["requires_files"] == [entry]
@@ -82,21 +81,27 @@ def test_publish_seals_the_requirements_and_adds_the_capability_tag(
 def test_publish_refuses_malformed_entries_and_a_bare_capability(tmp_path):
     queue = _queue_at(tmp_path)
     with pytest.raises(pool.PoolContractError, match="requires_files"):
-        _publish(queue, "b" * 64,
-                 requires_files=[{"path": "relative/x", "sha256": "a" * 64}])
+        ActionRows(queue).publish(
+            'b' * 64,
+            resources={'cpu': 1, 'mem_gb': 1},
+            requires_files=[{'path': 'relative/x', 'sha256': 'a' * 64}],
+        )
     with pytest.raises(pool.PoolContractError, match="requires_files"):
-        _publish(queue, "c" * 64,
-                 requires_files=[{"path": "/x", "sha256": "nope"}])
+        ActionRows(queue).publish(
+            'c' * 64,
+            resources={'cpu': 1, 'mem_gb': 1},
+            requires_files=[{'path': '/x', 'sha256': 'nope'}],
+        )
     with pytest.raises(pool.PoolContractError, match=TAG):
-        _publish(queue, "d" * 64, tags=[TAG])
-    assert not queue.item_path(pool.READY, "b" * 64).exists()
-    assert not queue.item_path(pool.READY, "c" * 64).exists()
-    assert not queue.item_path(pool.READY, "d" * 64).exists()
+        ActionRows(queue).publish('d' * 64, resources={'cpu': 1, 'mem_gb': 1}, tags=[TAG])
+    assert not queue.records.item_path(pool.record_store.READY, "b" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "c" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "d" * 64).exists()
 
 
 def test_an_item_without_requirements_is_byte_identical_to_before(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "e" * 64)
+    ActionRows(queue).publish('e' * 64, resources={'cpu': 1, 'mem_gb': 1})
     record = _item_of(queue, "e" * 64)
     assert "requires_files" not in record
     assert TAG not in record["tags"]
@@ -109,19 +114,41 @@ def test_an_item_without_requirements_is_byte_identical_to_before(tmp_path):
 def test_only_a_tag_carrying_offer_that_answers_for_the_path_matches(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "f" * 64, requires_files=[entry])
+    ActionRows(queue).publish('f' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
-    probe = _intent(entry["path"])
+    probe = _intent(entry)
     # An old generation: no tag, no answers -> never capable.
     queue.announce(host="old", tags=[], has_gpu=False, capacity=dict(CAPACITY))
     assert queue.placeable(probe) is False
     # New generation, silent answers: unknown is not capable (#1263's rule).
-    queue.announce(host="new", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[])
+    queue.announce(
+        host="new",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [],
+                None,
+            ),
+        ),
+    )
     assert queue.placeable(probe) is False
     # The same box, having answered: capable.
-    queue.announce(host="new", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[entry["path"]])
+    queue.announce(
+        host="new",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [entry["path"]],
+                None,
+            ),
+        ),
+    )
     assert queue.placeable(probe) is True
 
 
@@ -132,7 +159,7 @@ def test_only_a_tag_carrying_offer_that_answers_for_the_path_matches(tmp_path):
 def test_the_claim_denies_a_dependency_this_box_does_not_have(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "1" * 64, requires_files=[entry])
+    ActionRows(queue).publish('1' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     os_path = Path(entry["path"])
     os_path.unlink()
@@ -140,13 +167,13 @@ def test_the_claim_denies_a_dependency_this_box_does_not_have(tmp_path):
     denial = _denials(queue)[-1]
     assert denial["reason"] == "dependency_not_present"
     assert denial["evidence"]["paths"] == [entry["path"]]
-    assert queue.item_path(pool.READY, "1" * 64).exists()
+    assert queue.records.item_path(pool.record_store.READY, "1" * 64).exists()
 
 
 def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "2" * 64, requires_files=[entry])
+    ActionRows(queue).publish('2' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     Path(entry["path"]).write_bytes(b"drifted")
     assert queue.claim(capacity=dict(CAPACITY), tags=[TAG]) is None
@@ -155,25 +182,25 @@ def test_the_claim_denies_drifted_bytes_with_both_digests(tmp_path):
     assert denial["evidence"]["expected"] == entry["sha256"]
     assert denial["evidence"]["observed"] == hashlib.sha256(
         b"drifted").hexdigest()
-    assert queue.item_path(pool.READY, "2" * 64).exists()
+    assert queue.records.item_path(pool.record_store.READY, "2" * 64).exists()
 
 
 def test_the_claim_takes_bytes_that_match_the_requirement(tmp_path):
     queue = _queue_at(tmp_path)
     entry = _dependency(tmp_path)
-    _publish(queue, "3" * 64, requires_files=[entry])
+    ActionRows(queue).publish('3' * 64, resources={'cpu': 1, 'mem_gb': 1}, requires_files=[entry])
 
     claimed = queue.claim(capacity=dict(CAPACITY), tags=[TAG])
     assert claimed is not None
-    assert not queue.item_path(pool.READY, "3" * 64).exists()
+    assert not queue.records.item_path(pool.record_store.READY, "3" * 64).exists()
 
 
 def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "4" * 64)
+    ActionRows(queue).publish('4' * 64, resources={'cpu': 1, 'mem_gb': 1})
     item = _item_of(queue, "4" * 64)
     item["tags"] = sorted([*item["tags"], TAG])
-    queue.item_path(pool.READY, "4" * 64).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.READY, "4" * 64).write_text(json.dumps(item))
 
     assert queue.claim(capacity=dict(CAPACITY), tags=[TAG]) is None
     denial = _denials(queue)[-1]
@@ -182,11 +209,11 @@ def test_a_tag_without_requirements_on_a_row_fails_closed(tmp_path):
 
 def test_a_row_with_malformed_requirements_is_denied_not_run(tmp_path):
     queue = _queue_at(tmp_path)
-    _publish(queue, "5" * 64)
+    ActionRows(queue).publish('5' * 64, resources={'cpu': 1, 'mem_gb': 1})
     item = _item_of(queue, "5" * 64)
     item["tags"] = sorted([*item["tags"], TAG])
     item["requires_files"] = [{"path": "relative"}]
-    queue.item_path(pool.READY, "5" * 64).write_text(json.dumps(item))
+    queue.records.item_path(pool.record_store.READY, "5" * 64).write_text(json.dumps(item))
 
     assert queue.claim(capacity=dict(CAPACITY), tags=[TAG]) is None
     denial = _denials(queue)[-1]
@@ -203,7 +230,7 @@ def test_the_verdict_refuses_a_fleet_with_no_capability(tmp_path):
     queue.announce(host="old", tags=[], has_gpu=False, capacity=dict(CAPACITY))
 
     assert queue.dependency_placement_verdict(
-        _intent(entry["path"])) == "unknown_capability"
+        _intent(entry)) == "unknown_capability"
 
 
 def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
@@ -211,20 +238,51 @@ def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
     entry = _dependency(tmp_path)
     absent_entry = {"path": "/no/such/secondary", "sha256": "a" * 64}
 
-    queue.announce(host="box", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[])
-    intent = _intent(entry["path"])
+    queue.announce(
+        host="box",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [],
+                None,
+            ),
+        ),
+    )
+    intent = _intent(entry)
     assert queue.dependency_placement_verdict(intent) == "unknown_paths"
 
-    queue.announce(host="box", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[],
-                   dependency_files_absent=[absent_entry["path"]])
+    queue.announce(
+        host="box",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [],
+                [absent_entry["path"]],
+            ),
+        ),
+    )
     assert queue.dependency_placement_verdict(
-        _intent(absent_entry["path"])) == "absent"
+        _intent(absent_entry)) == "absent"
 
-    queue.announce(host="box", tags=[TAG], has_gpu=False,
-                   capacity=dict(CAPACITY), dependency_files=[entry["path"]],
-                   dependency_files_absent=[absent_entry["path"]])
+    queue.announce(
+        host="box",
+        tags=[TAG],
+        has_gpu=False,
+        capacity=dict(CAPACITY),
+        capabilities=capability_eligibility.OfferCapabilities(
+            dependencies=capability_eligibility.DependencyAnswers.from_observed(
+                None,
+                [entry["path"]],
+                [absent_entry["path"]],
+            ),
+        ),
+    )
     assert queue.dependency_placement_verdict(
         intent) == "present"
 
@@ -234,15 +292,14 @@ def test_the_verdict_answers_present_absent_and_unknown(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_the_lookup_answers_exactly_the_paths_items_ask_about(tmp_path):
-    from worker_loop import dependency_lookup
     entry = _dependency(tmp_path)
     items = [{"requires_files": [entry]},
              {"requires_files": [{"path": "/no/such/secondary",
                                   "sha256": "a" * 64}]},
              {"interpreter": "/ignored"}]
-    present, absent = dependency_lookup(items)
-    assert present == [entry["path"]]
-    assert absent == ["/no/such/secondary"]
+    answers = capability_eligibility.observe_dependencies(items, python=sys.executable)
+    assert answers.offer_fields()["dependency_files"] == [entry["path"]]
+    assert answers.offer_fields()["dependency_files_absent"] == ["/no/such/secondary"]
 
 
 # --------------------------------------------------------------------------
@@ -256,15 +313,30 @@ def test_publication_row_carries_the_sealed_requirements(tmp_path):
     spec.loader.exec_module(pbrun)
 
     entry = _dependency(tmp_path)
-    row = pbrun.publication_row(
-        {"action_key": "6" * 64,
-         "params": {"demand": {}, "placement": {"required_tags": [TAG]},
-                    "checkout_snapshot": {},
-                    "requires_files": [entry]},
-         "environment": {"variables": {pbrun.CONTAINER_OWNER_ENV:
-                                      "publication-row-test"}}},
-        args=type("Args", (), {"priority": 0, "max_attempts": 1,
-                               "retry_safe": True, "priority_reason": None})(),
-        queue=pool.PoolQueue(tmp_path / "queue"))
+    row = submit_core.row_publication(type('Args', (), {'priority': 0, 'max_attempts': 1, 'retry_safe': True, 'priority_reason': None})(), pbrun.configured_store()).row({'action_key': '6' * 64, 'params': {'demand': {}, 'placement': {'required_tags': [TAG]}, 'checkout_snapshot': {}, 'requires_files': [entry]}, 'environment': {'variables': {submit_core.CONTAINER_OWNER_ENV: 'publication-row-test'}}}, queue=pool.PoolQueue(tmp_path / 'queue'))
     assert row["requires_files"] == [entry]
     assert row["tags"] == [TAG]
+
+
+def test_first_use_unknown_files_publish_with_their_sealed_requirement(
+        tmp_path, monkeypatch, capsys):
+    from test_pbrun_detach import _checkout, _queue, _run_pbrun
+
+    queue = _queue(tmp_path)
+    queue.announce(host="sparky", tags=["sparky", TAG], has_gpu=False,
+                   capacity=dict(CAPACITY))
+    entry = _dependency(tmp_path)
+
+    assert _run_pbrun(
+        tmp_path, monkeypatch, _checkout(tmp_path), "--detach",
+        "--requires-files", json.dumps([entry])) == 0
+
+    assert "no worker has answered for the required dependencies" in capsys.readouterr().err
+    [row] = queue.ready_items()
+    assert row["requires_files"] == [entry]
+    assert TAG in row["tags"]
+    claimed = queue.claim(capacity=dict(CAPACITY), tags=["sparky", TAG])
+    assert claimed is not None and claimed["action_key"] == row["action_key"]
+    queue.finish(row["action_key"], status="executed", claim_snapshot=claimed)
+    assert queue.ledger().held_keys() == []
+    assert not queue.records.lease_path(row["action_key"]).exists()

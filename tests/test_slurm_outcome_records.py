@@ -12,6 +12,7 @@ second writer may overwrite it, and the withdrawal marker that stops
 ``pool_reset`` from re-submitting a cancellation.
 """
 from __future__ import annotations
+from prismabuild import submission
 
 import json
 import os
@@ -31,6 +32,7 @@ from prismabuild import slurm_lane as sl  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 
 import pbrun  # noqa: E402
+from prismabuild import submission as submit_core
 
 from test_slurm_lane import (  # noqa: E402
     JOB_ENTRY,
@@ -84,8 +86,8 @@ def test_a_job_that_published_a_receipt_is_filed_under_done(
     assert result.receipt is not None
 
     key = str(action["action_key"])
-    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
-    record = _record(queue_root, pool.DONE, key)
+    assert not (queue_root / pool.record_store.FAILED / f"{key}.json").exists()
+    record = _record(queue_root, pool.record_store.DONE, key)
 
     assert record["schema"] == sl.OUTCOME_SCHEMA_V1
     assert record["transport"] == "slurm"
@@ -144,8 +146,8 @@ def test_a_job_that_published_no_receipt_is_filed_under_failed(
     assert result.receipt is None
 
     key = str(action["action_key"])
-    assert not (queue_root / pool.DONE / f"{key}.json").exists()
-    record = _record(queue_root, pool.FAILED, key)
+    assert not (queue_root / pool.record_store.DONE / f"{key}.json").exists()
+    record = _record(queue_root, pool.record_store.FAILED, key)
     assert record["status"] == "failed"
     assert record["detail"]["status"] == "failed"
     assert record["detail"]["returncode"] == 7
@@ -179,12 +181,12 @@ def test_a_withdrawal_files_the_marker_pool_reset_reads(
         retry_safe=False, max_attempts=1,
     )
 
-    assert pbrun.withdraw_slurm_main(
+    assert submit_core.withdraw_slurm_main(
         [key[:12]], reason="changed my mind", by="rob@sparky",
         queue_root=queue_root,
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
 
-    marker = _record(queue_root, pool.WITHDRAWN, key)
+    marker = _record(queue_root, pool.record_store.WITHDRAWN, key)
     assert marker["status"] == "withdrawn"
     assert marker["withdrawn_by"] == "rob@sparky"
     assert marker["reason"] == "changed my mind"
@@ -194,8 +196,8 @@ def test_a_withdrawal_files_the_marker_pool_reset_reads(
 
     # The ending enriches the marker in place; nothing lands in failed/,
     # which is the pool's rule: a withdrawal is a decision, not a failure.
-    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
-    outcome = _record(queue_root, pool.WITHDRAWN, key)
+    assert not (queue_root / pool.record_store.FAILED / f"{key}.json").exists()
+    outcome = _record(queue_root, pool.record_store.WITHDRAWN, key)
     assert outcome["status"] == "withdrawn"
     assert outcome["withdrawn_by"] == "rob@sparky"
     assert isinstance(outcome["withdrawn_unix"], float)
@@ -228,17 +230,17 @@ def test_the_first_writer_of_a_generation_keeps_the_record(
     first = sl.publish_outcome(published_unix=100.0, detail={"note": "first"},
                                **common)
     assert first is not None
-    assert _record(queue_root, pool.FAILED, key)["detail"]["note"] == "first"
+    assert _record(queue_root, pool.record_store.FAILED, key)["detail"]["note"] == "first"
 
     # Same generation: the first writer's account stands.
     assert sl.publish_outcome(published_unix=100.0, detail={"note": "second"},
                               **common) is None
-    assert _record(queue_root, pool.FAILED, key)["detail"]["note"] == "first"
+    assert _record(queue_root, pool.record_store.FAILED, key)["detail"]["note"] == "first"
 
     # A later generation is a new request for the same work, and replaces it.
     assert sl.publish_outcome(published_unix=200.0, detail={"note": "later"},
                               **common) is not None
-    assert _record(queue_root, pool.FAILED, key)["detail"]["note"] == "later"
+    assert _record(queue_root, pool.record_store.FAILED, key)["detail"]["note"] == "later"
 
 
 def test_a_withdrawal_whose_scancel_was_refused_can_be_asked_for_again(
@@ -283,19 +285,19 @@ def test_a_withdrawal_whose_scancel_was_refused_can_be_asked_for_again(
                     queue_root=queue_root, scancel=str(flaky))
 
     monkeypatch.setenv("FAKE_SCANCEL_REFUSE", "1")
-    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 2
+    assert submit_core.withdraw_slurm_main([key[:12]], **withdraw, store=pbrun.configured_store(), display=pbrun.render_submission) == 2
     assert not (fleet / "cancelled").exists()
     assert "scancel refused" in capsys.readouterr().err
     # The decision is on disk either way; the scheduler just has not honoured it.
-    assert _record(queue_root, pool.WITHDRAWN, key)["withdrawn_by"] == "rob@sparky"
+    assert _record(queue_root, pool.record_store.WITHDRAWN, key)["withdrawn_by"] == "rob@sparky"
 
     monkeypatch.delenv("FAKE_SCANCEL_REFUSE")
-    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 0
+    assert submit_core.withdraw_slurm_main([key[:12]], **withdraw, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert (fleet / "cancelled").read_text().split() == [job.job_id]
     err = capsys.readouterr().err
     assert "already has an outcome filed" not in err
     assert f"cancelled slurm job {job.job_id}" in err
-    record = _record(queue_root, pool.WITHDRAWN, key)
+    record = _record(queue_root, pool.record_store.WITHDRAWN, key)
     # The first decision, not a second one.
     assert record["withdrawn_by"] == "rob@sparky"
     assert record["reason"] == "wrong branch"
@@ -303,7 +305,7 @@ def test_a_withdrawal_whose_scancel_was_refused_can_be_asked_for_again(
 
     # Once scancel has taken the job, asking a third time is the
     # already-finished case: no second scancel, exit 0.
-    assert pbrun.withdraw_slurm_main([key[:12]], **withdraw) == 0
+    assert submit_core.withdraw_slurm_main([key[:12]], **withdraw, store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     assert (fleet / "cancelled").read_text().split() == [job.job_id]
     assert "already has an outcome filed" in capsys.readouterr().err
 
@@ -325,8 +327,8 @@ def test_a_new_submission_retires_the_withdrawal_it_supersedes(
     queue_root = _queue(tmp_path)
     key = str(action["action_key"])
 
-    (queue_root / pool.WITHDRAWN).mkdir(parents=True, exist_ok=True)
-    (queue_root / pool.WITHDRAWN / f"{key}.json").write_text(json.dumps({
+    (queue_root / pool.record_store.WITHDRAWN).mkdir(parents=True, exist_ok=True)
+    (queue_root / pool.record_store.WITHDRAWN / f"{key}.json").write_text(json.dumps({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
         "status": "withdrawn", "withdrawn_unix": 1.0, "withdrawn_by": "rob",
         "reason": "an older decision",
@@ -339,9 +341,9 @@ def test_a_new_submission_retires_the_withdrawal_it_supersedes(
         queue_root=queue_root, poll_s=0.0,
     )
 
-    assert not (queue_root / pool.WITHDRAWN / f"{key}.json").exists()
+    assert not (queue_root / pool.record_store.WITHDRAWN / f"{key}.json").exists()
     assert key not in pool.PoolQueue(queue_root).withdrawn_keys()
-    kept = sorted((queue_root / pool.WITHDRAWN / "superseded").glob(f"{key}.*"))
+    kept = sorted((queue_root / pool.record_store.WITHDRAWN / "superseded").glob(f"{key}.*"))
     assert kept, "the decision must be kept, not deleted"
     assert json.loads(kept[0].read_text())["reason"] == "an older decision"
 
@@ -361,7 +363,7 @@ def test_a_refused_submission_leaves_the_withdrawal_it_would_have_retired(
     request = cas.publish_action_request(action)
     queue_root = _queue(tmp_path)
     key = str(action["action_key"])
-    marker = queue_root / pool.WITHDRAWN / f"{key}.json"
+    marker = queue_root / pool.record_store.WITHDRAWN / f"{key}.json"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({
         "schema": pool.POOL_OUTCOME_SCHEMA_V1, "action_key": key,
@@ -380,7 +382,7 @@ def test_a_refused_submission_leaves_the_withdrawal_it_would_have_retired(
     assert marker.exists()
     assert json.loads(marker.read_text())["reason"] == "an older decision"
     assert key in pool.PoolQueue(queue_root).withdrawn_keys()
-    assert not list((queue_root / pool.WITHDRAWN / "superseded").glob(f"{key}.*"))
+    assert not list((queue_root / pool.record_store.WITHDRAWN / "superseded").glob(f"{key}.*"))
 
 
 # --------------------------------------------------------------------------
@@ -413,7 +415,7 @@ def test_the_record_carries_what_sacct_said_about_the_job(
         queue_root=queue_root, poll_s=0.0,
     )
 
-    record = _record(queue_root, pool.FAILED, str(action["action_key"]))
+    record = _record(queue_root, pool.record_store.FAILED, str(action["action_key"]))
     assert record["claimed_host"] == "dl380g10"
     assert record["finished_host"] == "dl380g10"
     assert record["detail"]["elapsed_s"] == 930.0
@@ -446,7 +448,7 @@ def test_an_unparseable_scheduler_answer_leaves_nulls_not_a_refusal(
         queue_root=queue_root, poll_s=0.0,
     )
 
-    record = _record(queue_root, pool.FAILED, str(action["action_key"]))
+    record = _record(queue_root, pool.record_store.FAILED, str(action["action_key"]))
     assert record["claimed_unix"] is None
     assert record["claimed_host"] is None
     assert record["detail"]["elapsed_s"] is None
@@ -503,7 +505,7 @@ def test_a_job_slurm_killed_at_its_limit_files_the_pools_timeout_convention(
     )
     assert result.receipt is None
 
-    record = _record(queue_root, pool.FAILED, key)
+    record = _record(queue_root, pool.record_store.FAILED, key)
     assert record["status"] == "failed"
     detail = record["detail"]
     assert detail["status"] == "timeout"
@@ -582,7 +584,7 @@ def test_the_actions_own_exit_status_reaches_the_terminal_record(
         ),
     )
 
-    detail = _record(queue_root, pool.FAILED, key)["detail"]
+    detail = _record(queue_root, pool.record_store.FAILED, key)["detail"]
     assert detail["returncode"] == 1, "the launcher's own status is unchanged"
     assert detail["action_returncode"] == 7
     assert "action_signal" not in detail
@@ -606,7 +608,7 @@ def test_a_record_with_no_sidecar_carries_no_action_status(
         queue_root=queue_root, poll_s=0.0,
     )
 
-    detail = _record(queue_root, pool.FAILED, str(action["action_key"]))["detail"]
+    detail = _record(queue_root, pool.record_store.FAILED, str(action["action_key"]))["detail"]
     assert detail["returncode"] == 7
     assert "action_returncode" not in detail
     assert "action_signal" not in detail
@@ -651,7 +653,7 @@ def test_a_resumed_ending_carries_the_action_status_too(
         wait_s=0.0, poll_s=0.0,
     )
 
-    detail = _record(queue_root, pool.FAILED, key)["detail"]
+    detail = _record(queue_root, pool.record_store.FAILED, key)["detail"]
     assert detail["returncode"] == 1
     assert detail["action_returncode"] == 7
 
@@ -719,20 +721,20 @@ def test_withdraw_without_a_named_transport_still_finds_the_slurm_job(
         retry_safe=False, max_attempts=1,
     )
 
-    assert pbrun.withdraw_routed(
+    assert submit_core.withdraw_routed(
         [key[:12]], transport="pool", reason="routed", by="rob@sparky",
         queue_root=queue_root,
-    ) == 0
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 0
     cancelled = (Path(os.environ["FAKE_SLURM_STATE"]) / "cancelled").read_text()
     assert job.job_id in cancelled.split()
-    assert _record(queue_root, pool.WITHDRAWN, key)["status"] == "withdrawn"
+    assert _record(queue_root, pool.record_store.WITHDRAWN, key)["status"] == "withdrawn"
 
     # A prefix nobody recorded on the lane still goes to the pull queue, which
     # says so in its own words.
-    assert pbrun.withdraw_routed(
+    assert submit_core.withdraw_routed(
         ["deadbeef0000"], transport="pool", reason="", by="rob@sparky",
         queue=pool.PoolQueue(queue_root),
-    ) == 2
+    store=pbrun.configured_store(), display=pbrun.render_submission) == 2
 
 
 def _withdraw_mid_flight(queue_root: Path, job) -> None:
@@ -782,9 +784,9 @@ def test_a_job_that_finishes_before_scancel_lands_is_still_a_withdrawal(
     )
     assert result.receipt is not None          # the work really did happen
 
-    assert not (queue_root / pool.DONE / f"{key}.json").exists()
-    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
-    record = _record(queue_root, pool.WITHDRAWN, key)
+    assert not (queue_root / pool.record_store.DONE / f"{key}.json").exists()
+    assert not (queue_root / pool.record_store.FAILED / f"{key}.json").exists()
+    record = _record(queue_root, pool.record_store.WITHDRAWN, key)
     assert record["status"] == "withdrawn"
     assert record["withdrawn_by"] == "rob@sparky"
     assert record["reason"] == "wrong branch"
@@ -823,7 +825,7 @@ def test_a_withdrawal_between_attempts_stops_the_next_one(
     # it is what keeps a second run of this key from colliding with this one.
     names = sorted(x.name for x in submissions.iterdir())
     assert len(names) == 1 and names[0].endswith("-001.json"), names
-    record = _record(queue_root, pool.WITHDRAWN, str(action["action_key"]))
+    record = _record(queue_root, pool.record_store.WITHDRAWN, str(action["action_key"]))
     assert record["status"] == "withdrawn"
     assert record["attempts"] == 1
 
@@ -862,7 +864,7 @@ def test_the_record_says_whether_the_job_had_the_whole_device(
             resources=resources.demand(), job=job,
         )
         filed[name] = _record(
-            queue_root, pool.FAILED, job.action_key)["detail"]["slurm"]["gres"]
+            queue_root, pool.record_store.FAILED, job.action_key)["detail"]["slurm"]["gres"]
 
     assert filed == {"whole": "gpu:1", "slot": "shard:1", "none": None}
 
@@ -892,9 +894,9 @@ def test_a_cancelled_job_is_filed_under_withdrawn_and_never_under_failed(
     )
     assert result.receipt is None
 
-    assert not (queue_root / pool.FAILED / f"{key}.json").exists()
-    assert not (queue_root / pool.DONE / f"{key}.json").exists()
-    record = _record(queue_root, pool.WITHDRAWN, key)
+    assert not (queue_root / pool.record_store.FAILED / f"{key}.json").exists()
+    assert not (queue_root / pool.record_store.DONE / f"{key}.json").exists()
+    record = _record(queue_root, pool.record_store.WITHDRAWN, key)
     assert record["status"] == "withdrawn"
     assert record["withdrawn_by"] == "slurm:scancel"
     assert isinstance(record["withdrawn_unix"], float)

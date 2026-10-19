@@ -33,6 +33,7 @@ Nothing here touches the live queue.
 """
 
 from __future__ import annotations
+from fleet_world import ActionRows
 
 import json
 from pathlib import Path
@@ -49,19 +50,12 @@ OTHER = "b" * 64
 POISON = "c" * 64
 
 
+from fleet_world import FleetWorld
+
+
 @pytest.fixture()
 def queue(tmp_path: Path) -> pool.PoolQueue:
-    q = pool.PoolQueue(tmp_path / "pb-queue")
-    q.ensure_layout()
-    return q
-
-
-def _publish(queue: pool.PoolQueue, key: str, **kw: object) -> None:
-    queue.publish(
-        action_key=key, cas_root=queue.root / "cas",
-        checkout_root=queue.root / "co",
-        worker_script=queue.root / "worker.py",
-        resources={"cpu": 1}, **kw)
+    return FleetWorld(tmp_path).queue
 
 
 def _poison(queue: pool.PoolQueue, key: str, field: str, value: object) -> Path:
@@ -74,8 +68,14 @@ def _poison(queue: pool.PoolQueue, key: str, field: str, value: object) -> Path:
     else.
     """
 
-    _publish(queue, key)
-    path = queue.item_path(pool.READY, key)
+    ActionRows(queue).publish(
+        key,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
+    path = queue.records.item_path(pool.record_store.READY, key)
     record = json.loads(path.read_text())
     record[field] = value
     path.write_text(json.dumps(record))
@@ -96,8 +96,20 @@ def test_a_foreign_sort_field_does_not_stop_the_listing(
 ) -> None:
     """The issue's own reproduction: before this, ``ready_items`` raised."""
 
-    _publish(queue, GOOD)
-    _publish(queue, OTHER)
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
+    ActionRows(queue).publish(
+        OTHER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _poison(queue, POISON, field, value)
 
     listed = [str(item["action_key"]) for item in queue.ready_items()]
@@ -108,7 +120,13 @@ def test_a_foreign_sort_field_does_not_stop_the_listing(
 def test_the_other_records_still_claim(queue: pool.PoolQueue) -> None:
     """A listing that raises is a box that claims nothing, not one item lost."""
 
-    _publish(queue, GOOD)
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _poison(queue, POISON, "priority", "high")
 
     claimed = queue.claim(owner="worker", capacity={"cpu": 4})
@@ -140,8 +158,22 @@ def test_the_order_of_orderable_records_is_unchanged(
 ) -> None:
     """Regression: band first, then aging, then oldest -- with a poison present."""
 
-    _publish(queue, GOOD, priority=-10)
-    _publish(queue, OTHER, priority=5)
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        priority=-10,
+    )
+    ActionRows(queue).publish(
+        OTHER,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        priority=5,
+    )
     _poison(queue, POISON, "published_unix", "not a time")
 
     assert [str(item["action_key"]) for item in queue.ready_items()] == [
@@ -156,14 +188,20 @@ def test_the_poison_record_is_filed_rather_than_left_resident(
 ) -> None:
     """Skipping alone would be a second silence: counted nowhere, gone never."""
 
-    _publish(queue, GOOD)
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+    )
     _poison(queue, POISON, "priority", "high")
 
     assert queue.quarantine_orphans() == [POISON]
 
-    assert not queue.item_path(pool.READY, POISON).exists()
-    assert queue.item_path(pool.READY, GOOD).exists()
-    filed = json.loads(queue.item_path(pool.FAILED, POISON).read_text())
+    assert not queue.records.item_path(pool.record_store.READY, POISON).exists()
+    assert queue.records.item_path(pool.record_store.READY, GOOD).exists()
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, POISON).read_text())
     assert filed["status"] == "orphaned_stub"
     assert filed["detail"]["unorderable_field"] == "priority"
     assert filed["detail"]["unorderable_value"] == repr("high")
@@ -176,7 +214,7 @@ def test_the_filed_record_names_a_foreign_published_unix_too(
 
     assert queue.quarantine_orphans() == [POISON]
 
-    filed = json.loads(queue.item_path(pool.FAILED, POISON).read_text())
+    filed = json.loads(queue.records.item_path(pool.record_store.FAILED, POISON).read_text())
     assert filed["detail"]["unorderable_field"] == "published_unix"
 
 
@@ -185,7 +223,14 @@ def test_an_executable_record_is_not_filed_by_this_guard(
 ) -> None:
     """Regression: the sweep files what cannot run, and nothing else."""
 
-    _publish(queue, GOOD, priority=-10)
+    ActionRows(queue).publish(
+        GOOD,
+        cas_root=queue.root / 'cas',
+        checkout_root=queue.root / 'co',
+        worker_script=queue.root / 'worker.py',
+        resources={'cpu': 1},
+        priority=-10,
+    )
 
     assert queue.quarantine_orphans() == []
-    assert queue.item_path(pool.READY, GOOD).exists()
+    assert queue.records.item_path(pool.record_store.READY, GOOD).exists()

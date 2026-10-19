@@ -38,18 +38,28 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 RUNTIME_ROOT = generation_root(__file__)
 sys.path.insert(0, str(RUNTIME_ROOT / "src"))
+from prismabuild import action_client  # noqa: E402
+from prismabuild.submission_frontend import store_for, render_submission
+from prismabuild.submission_types import SubmissionRequest, SubmissionRefused
+
+
+from prismabuild import action_wait, endings  # noqa: E402
 from prismabuild import core as pb, pool, slurm_lane  # noqa: E402
 
-import pbrun  # noqa: E402
+from prismabuild import submission
+from prismabuild import submission
 
 #: What this exits with when it stopped waiting before the work finished.
 #: ``pbrun`` spells it the same way and means the same thing by it: the work is
 #: still running.
-GAVE_UP_EXIT = pbrun.GAVE_UP_EXIT
+GAVE_UP_EXIT = action_client.GAVE_UP_EXIT
 
 #: What this exits with when the key an operator typed names nothing this can
 #: wait on.  ``pbrun --withdraw`` exits 2 for the same two refusals, and the
@@ -66,12 +76,6 @@ KEY_WIDTH = 12
 #: must not leave the caller in a hard shared-filesystem operation before the
 #: actual wait has begun. This is separate from ``--wait-s``.
 PREFIX_RESOLUTION_READ_TIMEOUT_S = 5.0
-
-#: A detached wait has the same hard shared-filesystem failure mode as the
-#: synchronous pool wait.  This is a reader budget, not ``--wait-s``: it limits
-#: one read-only submission/CAS/outcome observation or one immutable-summary
-#: verification while the parent retains the run identity and any SLURM work.
-PBWAIT_READ_TIMEOUT_S = pbrun.OUTCOME_READ_TIMEOUT_S
 
 _COLUMNS = (
     ("key", "key"),
@@ -116,36 +120,13 @@ def _prefix_candidates(q, text: str, *, lane_root=None) -> list[str]:
         for record in slurm_lane.resolve_recorded(
             text, root=lane_root, report_unavailable=True)
     }
-    for state in (pool.READY, pool.CLAIMED, pool.DONE, pool.FAILED,
-                  pool.WITHDRAWN):
-        try:
-            names = os.listdir(q.dir(state))
-        except FileNotFoundError:
-            continue
-        found.update(
-            entry[: -len(".json")] for entry in names
-            if entry.startswith(text) and entry.endswith(".json")
-        )
-    decisions = q.dir(pool.WITHDRAWN) / "decisions"
-    try:
-        decision_names = os.listdir(decisions)
-    except FileNotFoundError:
-        decision_names = []
-    for name in decision_names:
-        if not name.startswith(text):
-            continue
-        try:
-            entries = os.listdir(decisions / name)
-        except FileNotFoundError:
-            continue
-        if any(entry.endswith(".json") for entry in entries):
-            found.add(name)
+    found.update(q.records.wait_prefix(text))
     return sorted(found)
 
 
 def _prefix_unavailable(message: str) -> SystemExit:
     print(f"pbwait: prefix resolution unavailable: {message}", file=sys.stderr)
-    return SystemExit(pbrun.RECORD_WRITE_FAILED_EXIT)
+    return SystemExit(action_client.RECORD_WRITE_FAILED_EXIT)
 
 
 def resolve_key(q, name: str, *, lane_root=None) -> str:
@@ -163,12 +144,12 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
     if not text:
         raise _misnamed("pbwait: an empty key resolves to nothing")
     try:
-        found = set(pbrun._bounded_pool_read(
+        found = set(action_wait.read_observation(
             "pbwait prefix resolution",
             lambda: _prefix_candidates(q, text, lane_root=lane_root),
             budget_s=PREFIX_RESOLUTION_READ_TIMEOUT_S,
         ))
-    except (pbrun.OutcomeReadUnavailable, OSError) as exc:
+    except (action_wait.OutcomeReadUnavailable, OSError) as exc:
         raise _prefix_unavailable(str(exc)) from None
     if not found:
         raise _misnamed(
@@ -188,7 +169,7 @@ def resolve_key(q, name: str, *, lane_root=None) -> str:
 #: ``pbrun`` reads the same submissions to decide whether to attach to a run
 #: instead of starting a second copy of it, so the reading lives there and this
 #: is the waiter's name for it.
-outstanding = pbrun.outstanding_submission
+outstanding = submission.outstanding_submission
 
 
 def recorded_action(cas, key: str):
@@ -210,15 +191,13 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
         generation = found[1]
     effective_generation = generation
     try:
-        landed, next_generation = pbrun.outcome_poll(
+        landed, next_generation = action_wait.outcome_poll(
             q, key, generation, report_unreadable=True)
         outcome = {
             "generation": next_generation,
-            "landed": None if landed is None else {
-                "path": str(landed[0]), "record": landed[1],
-            },
+            **action_client.encode_outcome_ending(landed),
         }
-    except pbrun.UnreadableTerminal as exc:
+    except action_wait.UnreadableTerminal as exc:
         # Keep the already selected generation with an unreadable record. The
         # parent needs it to decide whether this is the recorded SLURM run it
         # may repair; pbrun's public helper intentionally only needs the error.
@@ -227,7 +206,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
     # An ending is the first answer.  In particular, do not let a later CAS
     # payload verification hide an already-filed (or unreadable) terminal
     # record, and do not spend that work when no SLURM recovery needs it.
-    if outcome.get("landed") is not None:
+    if outcome.get("landed") is not None or outcome.get("superseded") is not None:
         action = None
         receipt = None
     elif (effective_generation is not None
@@ -262,7 +241,7 @@ def _bounded_observation_value(q, key: str, cas, generation, *, lane_root=None):
     }
 
 
-def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
+def bounded_observation(q, key: str, cas, generation, *, lane_root=None, budget_s=None):
     """Return one verified read-only wait snapshot without blocking its parent.
 
     The child only reads the submission namespaces, terminal records, immutable
@@ -272,14 +251,14 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
     identity on every later observation.
     """
 
-    value = pbrun._bounded_pool_read(
+    value = action_wait.read_observation(
         "pbwait observation",
         lambda: _bounded_observation_value(
             q, key, cas, generation, lane_root=lane_root),
-        budget_s=PBWAIT_READ_TIMEOUT_S,
+        budget_s=(action_wait.OUTCOME_READ_TIMEOUT_S if budget_s is None else budget_s),
     )
     if not isinstance(value, dict):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid payload")
     raw_found = value.get("found")
     if raw_found is None:
@@ -294,50 +273,45 @@ def bounded_observation(q, key: str, cas, generation, *, lane_root=None):
             raw_found["submission"],
         )
     else:
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid submission")
     raw_outcome = value.get("outcome")
     if not isinstance(raw_outcome, dict):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid outcome")
     unreadable = raw_outcome.get("unreadable")
     if unreadable is not None:
         if (not isinstance(unreadable, dict)
                 or not isinstance(unreadable.get("path"), str)
                 or not isinstance(unreadable.get("reason"), str)):
-            raise pbrun.OutcomeReadUnavailable(
+            raise action_wait.OutcomeReadUnavailable(
                 "pbwait observation returned an invalid unreadable ending")
         unreadable = Path(unreadable["path"]), unreadable["reason"]
     next_generation = raw_outcome.get("generation")
     if (next_generation is not None
             and (not isinstance(next_generation, (int, float))
                  or isinstance(next_generation, bool))):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid generation")
-    raw_landed = raw_outcome.get("landed")
-    if raw_landed is None:
-        landed = None
-    elif (isinstance(raw_landed, dict)
-          and isinstance(raw_landed.get("path"), str)
-          and isinstance(raw_landed.get("record"), dict)):
-        landed = Path(raw_landed["path"]), raw_landed["record"]
-    else:
-        raise pbrun.OutcomeReadUnavailable(
-            "pbwait observation returned an invalid ending")
+    landed = action_client.decode_outcome_ending(q, key, next_generation, raw_outcome)
     action = value.get("action")
     if action is not None and not isinstance(action, dict):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid sealed action")
     receipt_published = value.get("receipt_published")
     if not isinstance(receipt_published, bool):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid receipt result")
     observed_generation = value.get("observed_generation")
     if (observed_generation is not None
             and (not isinstance(observed_generation, (int, float))
                  or isinstance(observed_generation, bool))):
-        raise pbrun.OutcomeReadUnavailable(
+        raise action_wait.OutcomeReadUnavailable(
             "pbwait observation returned an invalid observed generation")
+    if isinstance(landed, endings.PublicationSupersession):
+        expected = generation if generation is not None else found[1] if found else None
+        if next_generation != observed_generation or next_generation != expected:
+            raise action_wait.OutcomeReadUnavailable("publication supersession changed the watched generation")
     return found, landed, (
         float(next_generation) if next_generation is not None else None
     ), action, receipt_published, unreadable, (
@@ -376,9 +350,18 @@ def _job_id(found) -> str:
     return str(submission.get("job_id") or "-")
 
 
-def _from_record(q, outcome_path, outcome) -> dict:
-    rendered = pbrun.bounded_outcome_render(
-        q, outcome_path, outcome, budget_s=PBWAIT_READ_TIMEOUT_S,
+def _from_ending(q, ending: endings.ObservedEnding) -> dict:
+    if isinstance(ending, endings.PublicationSupersession):
+        return _row(
+            ending.action_key, "superseded", transport="pool",
+            published_unix=ending.published_unix,
+            superseded_by_published_unix=ending.successor_published_unix,
+            note=(f"publication {ending.published_unix!r} superseded by "
+                  f"publication {ending.successor_published_unix!r}; no execution verdict"),
+        )
+    outcome_path, outcome = ending
+    rendered = action_client.bounded_outcome_render(
+        q, outcome_path, outcome, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S,
         diagnose_conflicts=True)
     diagnostic = rendered.get("integrity_error")
     if diagnostic is not None:
@@ -430,169 +413,95 @@ def wait_one(
     queue_root=None,
     **lane_commands,
 ) -> dict:
-    """Block until this action's ending is filed, and reduce it to one row.
-
-    ``deadline`` is a monotonic instant shared by every key in one call, so
-    ``--wait-s`` bounds the whole wait rather than each key in turn.
-
-    The order is: an ending already filed for this generation, then the CAS
-    receipt, then the scheduler.  The receipt outranks the scheduler because
-    it is the only one of the two that survives ``MinJobAge``.
-
-    ``generation`` says which run is meant.  A caller that submitted the work
-    knows it -- ``pbrun --detach`` prints it -- and should pass it, because
-    reading it back off the queue is a race: a worker can claim and finish the
-    item before this looks, leaving nothing outstanding to read it from.
-
-    A wait that finds no submission keeps looking for one, and not only for an
-    ending.  ``resolve_key`` accepts a full key for work nothing has recorded
-    yet, so a wait legitimately starts before its submission exists -- and
-    under SLURM this waiter is the only thing that will ever file that
-    submission's ending.  Watching terminal files alone therefore spent the
-    whole of ``--wait-s`` on a job that had run and finished, and a second
-    wait started afterwards reported it at once.
-    """
-
-    # Said on stderr, beside the table this returns a row for: a wait that
-    # prints nothing for an hour gives an operator no way to tell a job the
-    # scheduler is holding on purpose from one that is stuck.  ``resume``
-    # reports both through this.
+    """Await one row with the detached profile and its shared absolute deadline."""
     lane_commands.setdefault(
         "on_notice",
         lambda text: print(f"pbwait: {text}", file=sys.stderr, flush=True))
-    state = {"generation": generation, "found": None, "action": None,
-             "receipt_published": False, "handoff": False}
-    entered = time.monotonic()
-    unavailable_count = 0
-    last_notice = None
-    while True:
-        row = _look_once(
-            q, key, cas=cas, deadline=deadline, state=state,
-            lane_root=lane_root, queue_root=queue_root, **lane_commands,
-        )
-        if row is not None and row.get("observation_timed_out"):
-            # The reader timed out and was reaped, so nothing is left to race
-            # a later read. A caller with patience left retries at the next
-            # poll under the same deadline; a caller without patience gets
-            # the row as it is.
-            unavailable_count += 1
-            now = time.monotonic()
-            if now < deadline:
-                if last_notice is None or now - last_notice >= \
-                        pbrun.UNAVAILABLE_NOTICE_INTERVAL_S:
-                    last_notice = now
-                    print(f"pbwait: {key[:12]} not observed yet ({row['note']}); "
-                          f"{unavailable_count} consecutive unavailable read(s), "
-                          "retrying inside --wait-s", file=sys.stderr, flush=True)
-                time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
-                continue
-            if deadline > entered:
-                row = dict(row, note=(
-                    f"{row['note']}; still unavailable when the wait ended after "
-                    f"{unavailable_count} consecutive unavailable read(s). The "
-                    "action may still be running or may already have landed"))
-            return row
-        if row is not None and row.get("retained_readers"):
-            # The reader timed out and could not be reaped (#1048).  Wait for
-            # it to exit before any later read, as ``pbrun`` does (#1033), so
-            # no second reader starts beside it.  Past the deadline this is
-            # one non-blocking reap, and the row goes back as it is.
-            unavailable_count += 1
-            still, waited_s = pbrun.wait_out_retained_readers(
-                row["retained_readers"], deadline, tool="pbwait",
-                subject=key[:12])
-            now = time.monotonic()
-            if not still and now < deadline:
-                if last_notice is None or now - last_notice >= \
-                        pbrun.UNAVAILABLE_NOTICE_INTERVAL_S:
-                    last_notice = now
-                    print(f"pbwait: {key[:12]} not observed yet ({row['note']}); "
-                          "the reader has exited and was reaped, "
-                          f"{unavailable_count} consecutive unavailable read(s), "
-                          "retrying inside --wait-s", file=sys.stderr, flush=True)
-                continue
+    context = {"generation": generation, "found": None, "action": None,
+               "receipt_published": False, "handoff": False}
+    def waiting_row():
+        found = context['found']
+        return _row(key, 'waiting', transport=found[0] if found else '-', job=_job_id(found))
+
+    def observe(*, budget_s, generation, remaining_s):
+        context['generation'] = generation
+        try:
+            row = _look_once_checked(
+                q, key, cas=cas, remaining_s=remaining_s, budget_s=budget_s,
+                state=context, lane_root=lane_root, queue_root=queue_root, **lane_commands)
+        except (action_wait.OutcomeObservationTimedOut, action_wait.OutcomeReaderRetained) as exc:
+            return action_wait.ReadFault(exc, context['generation'], diagnostic=waiting_row())
+        except (action_wait.UnreadableTerminal, action_wait.OutcomeReadUnavailable,
+                pool.PoolContractError, OSError, slurm_lane.SlurmLaneError) as exc:
+            return action_wait.Ready(
+                _observation_error_row(key, exc, waiting=waiting_row()), context['generation'])
+        selected = context['generation']
+        if row is not None:
+            return action_wait.Ready(row, selected)
+        handoff = context['handoff']
+        context['handoff'] = False
+        return action_wait.Pending(selected, handoff, waiting_row())
+
+    def notice(event):
+        reaped = ('the reader has exited and was reaped, '
+                  if event.reader_reaped else '')
+        print(f"pbwait: {key[:12]} not observed yet ({event.fault.error}); "
+              f"{reaped}{event.count} consecutive unavailable read(s), "
+              "retrying inside --wait-s", file=sys.stderr, flush=True)
+
+    result = action_wait.await_action(
+        observe, generation=generation, patience=action_wait.WaitUntil(deadline),
+        profile=action_wait.AwaitProfile.DETACHED,
+        tool='pbwait', subject=key[:12], notice=notice)
+    if isinstance(result, action_wait.Ready):
+        return result.value
+    if isinstance(result, action_wait.Unreadable):
+        return _row(key, 'unreadable', note=str(result.error))
+    if isinstance(result, action_wait.Unavailable):
+        waiting = result.fault.diagnostic
+        if waiting is None:
+            waiting = _row(key, 'waiting')
+        row = _observation_error_row(key, result.fault.error, waiting=waiting)
+        if result.ending is action_wait.WaitEnd.RETAINED:
+            still = [child.to_record() for child in result.retained]
             row = dict(row, retained_readers=still)
-            if deadline > entered:
+            if result.had_patience:
                 if still:
                     ending = (f"that reader was still retained when the wait "
-                              f"ended, {waited_s:.1f}s after its read timed out "
+                              f"ended, {result.waited_s:.1f}s after its read timed out "
                               f"(retained reader={json.dumps(still, sort_keys=True)}), "
                               "so no second reader was started beside it")
                 else:
                     ending = ("its reader was reaped when the wait ended, with "
                               "no time left to read again")
-                row["note"] = (
-                    f"{row['note']}; {ending}, after {unavailable_count} "
+                row['note'] = (
+                    f"{row['note']}; {ending}, after {result.count} "
                     "consecutive unavailable read(s). The action may still be "
                     "running or may already have landed")
-            return row
-        unavailable_count = 0
-        if row is not None:
-            return row
-        if state["handoff"]:
-            # ``outcome_poll`` named the exact preemption successor. This is a
-            # causal handoff, not an idle poll: follow it immediately even
-            # when the original deadline elapsed while observing the stop.
-            state["handoff"] = False
-            continue
-        # Nothing is recorded and nothing is filed.  ``>=`` so a caller with
-        # no patience does not spend a poll interval finding that out, which
-        # is how ``pbrun.landed_outcome`` spells the same test.
-        if time.monotonic() >= deadline:
-            found = state["found"]
-            return _row(
-                key, "waiting", transport=found[0] if found else "-",
-                job=_job_id(found),
-            )
-        # Read on each pass rather than captured: a test that shortens the
-        # interval sets it on the module.
-        time.sleep(max(0.0, min(pbrun.POLL_S, deadline - time.monotonic())))
+        elif result.ending is action_wait.WaitEnd.DEADLINE and result.had_patience:
+            row = dict(row, note=(
+                f"{row['note']}; still unavailable when the wait ended after "
+                f"{result.count} consecutive unavailable read(s). The "
+                "action may still be running or may already have landed"))
+        return row
+    return result.diagnostic if result.diagnostic is not None else _row(key, 'waiting')
 
 
-def _look_once(q, key: str, *, cas, **kwargs):
-    """Convert filesystem faults into per-key rows without losing other waits."""
-
-    try:
-        return _look_once_checked(q, key, cas=cas, **kwargs)
-    except pbrun.UnreadableTerminal as exc:
-        return _row(
-            key, "unreadable", note=str(exc))
-    except pbrun.OutcomeObservationTimedOut as exc:
-        # The reader ran out of budget and was killed and reaped, so no
-        # earlier reader remains for a later read to race. The row is marked
-        # so that ``wait_one`` and a ``pbcampaign`` window can look again
-        # while their deadline lasts; at the deadline it stays exit 74.
-        return _row(key, "record_error", note=str(exc), observation_timed_out=True)
-    except pbrun.OutcomeReaderRetained as exc:
-        # The reader timed out and is still in the kernel.  ``wait_one`` (and
-        # a ``pbcampaign`` window) waits it out before any later read, and the
-        # row carries it by PID and starttime so they can (#1048).
-        return _row(key, "record_error", note=str(exc),
-                    retained_readers=exc.retained)
-    except pool.PoolContractError as exc:
-        # Other integrity failures have no verified diagnostic. Refuse this
-        # key without rereading evidence or aborting the other keys (#1351).
-        return _row(key, "record_error", note=str(exc))
-    except pbrun.OutcomeReadUnavailable as exc:
-        # A failed child, or one that delivered and was not reaped, is the
-        # exact reader a later diagnostic read would race.  Refuse this key
-        # without another shared-filesystem observation, lookup, or record
-        # mutation.
-        return _row(key, "record_error", note=str(exc))
-    except (OSError, slurm_lane.SlurmLaneError) as exc:
-        state = kwargs.get("state") or {}
-        found = state.get("found")
-        job_id = str(getattr(exc, "job_id", "") or _job_id(found))
-        # This can be a reader setup failure.  Do not re-read the submission
-        # or CAS in the parent: the observation that failed is exactly the one
-        # a later diagnostic lookup would race.  A SLURM resume failure also
-        # keeps its mutation in this parent, but uses only the already bounded
-        # snapshot for its row and leaves recovery to the next invocation.
-        note = f"{exc}; retry tools/fleet/pbwait.py {key[:12]}"
-        print(f"pbwait: {note}", file=sys.stderr)
-        return _row(
-            key, "record_error", transport=found[0] if found else "-",
-            job=job_id, note=str(exc))
+def _observation_error_row(key, exc, *, waiting):
+    """Render an observation failure using only its already captured context."""
+    if isinstance(exc, action_wait.UnreadableTerminal):
+        return _row(key, 'unreadable', note=str(exc))
+    if isinstance(exc, action_wait.OutcomeObservationTimedOut):
+        return _row(key, 'record_error', note=str(exc), observation_timed_out=True)
+    if isinstance(exc, action_wait.OutcomeReaderRetained):
+        return _row(key, 'record_error', note=str(exc), retained_readers=exc.retained)
+    if isinstance(exc, action_wait.RetainedIdentityUnavailable):
+        return _row(key, 'record_error', note=str(exc), unresolved_readers=exc.records)
+    if isinstance(exc, (pool.PoolContractError, action_wait.OutcomeReadUnavailable)):
+        return _row(key, 'record_error', note=str(exc))
+    job_id = str(getattr(exc, 'job_id', '') or waiting['job'])
+    print(f"pbwait: {exc}; retry tools/fleet/pbwait.py {key[:12]}", file=sys.stderr)
+    return _row(key, 'record_error', transport=waiting['transport'], job=job_id, note=str(exc))
 
 
 def _look_once_checked(
@@ -600,7 +509,8 @@ def _look_once_checked(
     key: str,
     *,
     cas,
-    deadline: float,
+    remaining_s,
+    budget_s=None,
     generation: float | None = None,
     state=None,
     lane_root=None,
@@ -613,8 +523,11 @@ def _look_once_checked(
     recorded, no ending is filed, and the CAS holds no receipt.  Every other
     answer is a row, because every other answer is about a run this can name.
 
-    Split out of ``wait_one`` so the pass reads in one screen and the loop
-    around it holds nothing but the deadline and the interval.
+    A wait can begin before submission exists. Once a publication is selected,
+    later publications cannot replace its generation. Receipts are checked
+    before asking SLURM; this waiter may be the only process that can file a
+    completed scheduler job's terminal record. Resume stays in the parent,
+    after the bounded read has ended, with freshly measured remaining patience.
     """
 
     previous_generation = generation
@@ -622,7 +535,7 @@ def _look_once_checked(
         generation = state["generation"]
         previous_generation = generation
     found, landed, generation, action, receipt, unreadable, observed_generation = bounded_observation(
-        q, key, cas, generation, lane_root=lane_root)
+        q, key, cas, generation, lane_root=lane_root, budget_s=budget_s)
     if state is not None:
         state["generation"] = generation
         state["found"] = found
@@ -635,7 +548,7 @@ def _look_once_checked(
                  and found[1] == generation)
 
     if landed is not None:
-        return _from_record(q, *landed)
+        return _from_ending(q, landed)
     if unreadable is not None:
         if slurm_run and action is not None:
             # The lane owns recovery of its own missing/corrupt terminal
@@ -646,12 +559,12 @@ def _look_once_checked(
                 queue_root=q.root if queue_root is None else queue_root,
                 wait_s=0.0, **lane_commands,
             )
-            landed, generation = pbrun.bounded_outcome_observation(
-                q, key, generation, budget_s=PBWAIT_READ_TIMEOUT_S)
+            landed, generation = action_client.bounded_outcome_observation(
+                q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
             if state is not None:
                 state["generation"] = generation
             if landed is not None:
-                return _from_record(q, *landed)
+                return _from_ending(q, landed)
         return _row(
             key, "unreadable", transport=found[0] if found else "-",
             job=_job_id(found), note=f"{unreadable[1]}: {unreadable[0]}",
@@ -673,12 +586,12 @@ def _look_once_checked(
                 queue_root=q.root if queue_root is None else queue_root,
                 wait_s=0.0, **lane_commands,
             )
-            landed, generation = pbrun.bounded_outcome_observation(
-                q, key, generation, budget_s=PBWAIT_READ_TIMEOUT_S)
+            landed, generation = action_client.bounded_outcome_observation(
+                q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
             if state is not None:
                 state["generation"] = generation
             if landed is not None:
-                return _from_record(q, *landed)
+                return _from_ending(q, landed)
         # Nothing outstanding, or nothing that could file: the work is done
         # and was memoized.  Which transport delivered it does not enter into
         # it, which is the property the CAS exists to give.
@@ -700,15 +613,15 @@ def _look_once_checked(
             action=action,
             cas=cas,
             queue_root=q.root if queue_root is None else queue_root,
-            wait_s=max(0.0, deadline - time.monotonic()),
+            wait_s=remaining_s(),
             **lane_commands,
         )
-        landed, generation = pbrun.bounded_outcome_observation(
-            q, key, generation, budget_s=PBWAIT_READ_TIMEOUT_S)
+        landed, generation = action_client.bounded_outcome_observation(
+            q, key, generation, budget_s=action_wait.OUTCOME_READ_TIMEOUT_S)
         if state is not None:
             state["generation"] = generation
         if landed is not None:
-            return _from_record(q, *landed)
+            return _from_ending(q, landed)
         return _row(key, "waiting", transport="slurm",
                     job=_job_id(found),
                     host=str(found[2].get("submitted_host") or "-"))
@@ -741,7 +654,7 @@ def wait_for_keys(
     if not unique:
         return []
     stamped = dict(generations or {})
-    deadline = time.monotonic() + float(wait_s)
+    deadline = action_wait.time.monotonic() + float(wait_s)
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(32, len(unique))
     ) as pens:
@@ -812,7 +725,7 @@ def verdict(rows) -> int:
     """0 when every action's work is done, and otherwise which way it is not.
 
     ``cache_hit`` counts as done.  That is the pull queue's own rule, applied
-    in ``adopted_attempt_summary``, which routes both it and ``executed`` to
+    in ``attempt_ending``, which routes both it and ``executed`` to
     ``done/``; a memoized result is the same result.
 
     A failure outranks a wait: an action that is still running is news the
@@ -821,9 +734,11 @@ def verdict(rows) -> int:
     """
 
     if any(row["status"] == "record_error" for row in rows):
-        return pbrun.RECORD_WRITE_FAILED_EXIT
-    if any(not row["succeeded"] and row["status"] != "waiting" for row in rows):
+        return action_client.RECORD_WRITE_FAILED_EXIT
+    if any(not row["succeeded"] and row["status"] not in {"waiting", "superseded"} for row in rows):
         return 1
+    if any(row["status"] == "superseded" for row in rows):
+        return action_client.PUBLICATION_SUPERSEDED_EXIT
     if any(row["status"] == "waiting" for row in rows):
         return GAVE_UP_EXIT
     return 0
@@ -853,8 +768,8 @@ def main(argv=None) -> int:
     elif args.generation is not None or args.attempt is not None:
         ap.error("--generation and --attempt require --reconcile-pool")
 
-    queue = pool.PoolQueue(pbrun.SH / "pb-queue")
-    cas = pb.PrismaBuildCAS(pbrun.SH / "cas")
+    queue = pool.PoolQueue(store_for(__file__).root / "pb-queue")
+    cas = pb.PrismaBuildCAS(store_for(__file__).root / "cas")
     keys = [resolve_key(queue, name) for name in args.keys]
     if args.reconcile_pool:
         from prismabuild.pool_reconcile import reconcile

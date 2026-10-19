@@ -4,13 +4,14 @@ import json
 import pytest
 
 from prismabuild import core
+from prismabuild import data_manifest as manifest_codec
 
 
 def source(tmp_path):
     root = tmp_path / "canonical"
     root.mkdir()
     (root / "weights").write_bytes(b"weights")
-    manifest = {"schema": core.DATA_MANIFEST_SCHEMA_V1,
+    manifest = {"schema": manifest_codec.DATA_MANIFEST_SCHEMA_V1,
                 "produced_by": {}, "annotations": {}, "mount_prefix": str(root),
                 "entries": [{"path": str(root / "weights"), "offset": 0,
                              "bytes": 7, "sha256": hashlib.sha256(b"weights").hexdigest()}],
@@ -21,7 +22,7 @@ def source(tmp_path):
 def publish(tmp_path, **changes):
     from prismabuild import resident_sets as rs
     from prismabuild import pool
-    pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
+    pool.PoolQueue(tmp_path / 'queue').tier('local:test-host').mint({'local_gib': 1})
     root, manifest = source(tmp_path)
     args = dict(manifest=manifest, canonical_root=str(root), hosts=["test-host"],
                 lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
@@ -42,7 +43,7 @@ def test_manifest_id_keeps_the_existing_ascii_escape_recipe(tmp_path):
                               revision="3916c1f621")
     legacy_bytes = legacy._json(normalized)
     expected_id = hashlib.sha256(legacy_bytes).hexdigest()
-    pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
+    pool.PoolQueue(tmp_path / 'queue').tier('local:test-host').mint({'local_gib': 1})
     store = rs.ResidentSets(tmp_path / "queue")
     record = store.publish(manifest=manifest, canonical_root=str(root), hosts=["test-host"],
         lease={"until": 150, "hard_max": 200}, created_by="test", now=100)
@@ -102,7 +103,7 @@ def test_cli_publish_status_release_and_policy_publication(tmp_path, capsys, mon
     import publish_runtime
     monkeypatch.setattr(pbresident, "submit_copies", lambda *args, **kwargs: {})
     from prismabuild import pool
-    pool.PoolQueue(tmp_path / "queue").mint_tier_capacity("local:test-host", {"local_gib": 1})
+    pool.PoolQueue(tmp_path / 'queue').tier('local:test-host').mint({'local_gib': 1})
     root, manifest = source(tmp_path)
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))

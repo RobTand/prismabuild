@@ -28,7 +28,10 @@ import sys
 #: in each of the publisher's layouts (tools/, tools/fleet/) and from a
 #: checkout (#1386).  ``runtime_paths`` ships beside the tool in all three.
 sys.path.insert(0, str(Path(__file__).resolve(strict=True).parent))
-from runtime_paths import generation_root  # noqa: E402
+_PB_ENTRYPOINT = Path(__file__).resolve(strict=True)
+sys.path.insert(0, str(_PB_ENTRYPOINT.parents[
+    2 if _PB_ENTRYPOINT.parent.name == "fleet" else 1] / "src"))
+from prismabuild.runtime_paths import generation_root  # noqa: E402
 
 sys.path.insert(0, str(generation_root(__file__) / "src"))
 from prismabuild import core  # noqa: E402
@@ -74,8 +77,8 @@ for my $rc (@ARGV[1 .. $#ARGV]) {
 def _fail(message: str) -> int:
     """The process-boundary refusal: prints and returns status 2.
 
-    Distinct from ``core._fail`` and ``dagster._fail``, which raise their
-    own contract errors inside library validation; the collision is a
+    Distinct from ``core._fail``, which raises its
+    contract error inside library validation; the collision is a
     registered exact-name exception (same_name_distinct, #1386).
     """
 

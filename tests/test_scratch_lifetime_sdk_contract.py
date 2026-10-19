@@ -7,6 +7,8 @@ contract through the public SDK.
 """
 from __future__ import annotations
 
+from prismabuild import scratch_lifetime
+
 import inspect
 import json
 
@@ -54,7 +56,7 @@ def test_sdk_selection_builder_matches_pool_intent(tmp_path):
     }
     sealed = {**variables,
               client.SCRATCH_LIFETIME_DECLARATIONS_ENV: json.dumps(selection)}
-    assert local_scratch._scratch_lifetime_selections(sealed) == [
+    assert scratch_lifetime.selections(sealed) == [
         {"root_env": "TEMP_ROOT", "name": "row-temp", "lifetime": "ephemeral",
          "max_env": "TEMP_MAX", "root": str(tmp_path / "temporary"), "max_bytes": 1024},
         {"root_env": "CACHE_ROOT", "name": "compile", "lifetime": "persistent",
@@ -99,14 +101,14 @@ def test_sdk_selection_byte_boundary_matches_sealed_parser(tmp_path):
         root_env: str(tmp_path / "temporary"), "TEMP_MAX": "1024",
         client.SCRATCH_LIFETIME_DECLARATIONS_ENV: encoded,
     }
-    assert local_scratch._scratch_lifetime_selections(variables) == [
+    assert scratch_lifetime.selections(variables) == [
         {**entry, "max_env": "TEMP_MAX", "root": str(tmp_path / "temporary"),
          "max_bytes": 1024},
     ]
     with pytest.raises(local_scratch.LocalScratchError, match="16 KiB"):
         client.build_scratch_lifetime_selection([{**entry, "root_env": root_env + "R"}])
     with pytest.raises(local_scratch.LocalScratchError, match="16 KiB"):
-        local_scratch._scratch_lifetime_selections({
+        scratch_lifetime.selections({
             **variables, client.SCRATCH_LIFETIME_DECLARATIONS_ENV: encoded + " "})
 
 

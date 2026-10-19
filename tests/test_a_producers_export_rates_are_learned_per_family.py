@@ -22,6 +22,9 @@ export's completion is fed through ``PoolQueue._learn_export``, the hook its
 resource-scope cleanup calls, with its landing time stated.
 """
 from __future__ import annotations
+from fleet_world import ActionRows
+from prismabuild import batch_ledger as bl
+from prismabuild import output_contract as oc
 
 import math
 from pathlib import Path
@@ -47,7 +50,7 @@ def _template(tmp_path: Path, template_id: str, family: str | None) -> dict:
     body = dict(fx._template(str(tmp_path / template_id)), template_id=template_id)
     if family is not None:
         body["export_rate_family"] = family
-    return po.validate_template(body)
+    return oc.validate_template(body)
 
 
 def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
@@ -63,18 +66,21 @@ def _publish(tmp_path: Path, queue: pool.PoolQueue, template: dict,
     action = core.seal_action(request)
     cas.publish_action_request(action)
     owner = str(action["action_key"])
-    queue.publish(action_key=owner, cas_root=str(cas_root),
-                  worker_script=str(fx.REPO / "tools" / "prismabuild_worker.py"),
-                  checkout_root=str(tmp_path / "mover-checkout"),
-                  resources={**demand, **po.owner_demand_terms(template)},
-                  produced_output_template=template)
+    ActionRows(queue).publish(
+        owner,
+        cas_root=str(cas_root),
+        worker_script=str(fx.REPO / 'tools' / 'prismabuild_worker.py'),
+        checkout_root=str(tmp_path / 'mover-checkout'),
+        resources={**demand, **oc.owner_demand_terms(template)},
+        produced_output_template=template,
+    )
     return owner
 
 
 def _claim_producer(queue: pool.PoolQueue, monkeypatch, owner: str) -> dict:
-    al._sample(monkeypatch, psi=0.)
+    cpu_sampler = al._sample(psi=0.)
     claimed = queue.claim(owner="spool-producer", capacity=al.CAPACITY,
-                          cpu_tiers=al.CPU_TIERS, adaptive_cpu=True)
+                          cpu_tiers=al.CPU_TIERS, adaptive_cpu=True, cpu_sampler=cpu_sampler)
     assert claimed is not None and claimed["action_key"] == owner
     return claimed
 
@@ -109,21 +115,21 @@ def test_a_second_producer_of_a_family_inherits_its_measured_slots(
     queue = fx._queue(tmp_path)
     first_template = _template(tmp_path, "stageb-row-029", FAMILY)
     second_template = _template(tmp_path, "stageb-row-030", FAMILY)
-    assert po.template_sha256(first_template) != po.template_sha256(second_template)
+    assert oc.template_sha256(first_template) != oc.template_sha256(second_template)
 
     first = _publish(tmp_path, queue, first_template, SMALL)
     _claim_producer(queue, monkeypatch, first)
     allowance = _allowance(queue, first)
     assert allowance["slots"] == 1
     assert allowance["basis"] == {
-        "basis": "unmeasured", "template_sha256": po.template_sha256(first_template),
+        "basis": "unmeasured", "template_sha256": oc.template_sha256(first_template),
         "export_rate_family": FAMILY, "landings": 0, "spacings": 0}
 
     assert _land(queue, first, "1" * 64, published_unix=1000., landing_s=12.)
     assert _land(queue, first, "2" * 64, published_unix=1010., landing_s=21.)
     rates = _rates(queue)
     # Learned under the family, never under the template it came from.
-    assert po.template_sha256(first_template) not in rates
+    assert oc.template_sha256(first_template) not in rates
     assert list(rates) == [adaptive_cpu.export_rate_key(None, FAMILY)]
 
     second = _publish(tmp_path, queue, second_template, SMALL)
@@ -136,7 +142,7 @@ def test_a_second_producer_of_a_family_inherits_its_measured_slots(
     assert allowance["slots"] == math.ceil(21. / 10.) == 3
     assert allowance["basis"] == {
         "basis": "measured", "rule": "ceil(max landing_s / min spacing_s)",
-        "template_sha256": po.template_sha256(second_template),
+        "template_sha256": oc.template_sha256(second_template),
         "export_rate_family": FAMILY, "landing_s": 21., "spacing_s": 10.,
         "landings": 2, "spacings": 1}
     assert al._tokens(queue, second, "cpu") == SMALL["cpu"] + 3
@@ -164,13 +170,13 @@ def test_an_undeclared_producer_still_keys_on_its_template(
     allowance = _allowance(queue, plain)
     assert allowance["slots"] == 1
     assert allowance["basis"] == {
-        "basis": "unmeasured", "template_sha256": po.template_sha256(plain_template),
+        "basis": "unmeasured", "template_sha256": oc.template_sha256(plain_template),
         "landings": 0, "spacings": 0}, allowance
 
     assert _land(queue, plain, "3" * 64, published_unix=2000., landing_s=30.)
     assert _land(queue, plain, "4" * 64, published_unix=2020., landing_s=8.)
     rates = _rates(queue)
-    assert rates[po.template_sha256(plain_template)]["landing_s"] == [30., 8.]
+    assert rates[oc.template_sha256(plain_template)]["landing_s"] == [30., 8.]
     assert rates[adaptive_cpu.export_rate_key(None, FAMILY)]["landing_s"] == [12., 21.]
 
     # Same template, a different producer: it inherits the template's rates,
@@ -181,7 +187,7 @@ def test_an_undeclared_producer_still_keys_on_its_template(
     allowance = _allowance(queue, again)
     assert allowance["slots"] == 2
     assert allowance["basis"]["basis"] == "measured"
-    assert allowance["basis"]["template_sha256"] == po.template_sha256(plain_template)
+    assert allowance["basis"]["template_sha256"] == oc.template_sha256(plain_template)
     assert "export_rate_family" not in allowance["basis"]
 
 
@@ -217,17 +223,18 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
         claim_snapshot=claimed, env={"PRISMABUILD_ACTION_KEY": owner,
             "PRISMABUILD_ACTION_NONCE": control["nonce"],
             "PRISMABUILD_ACTION_SCOPE": control["scope_id"]})
-    po.declare_instance(queue.root, instance)
-    assert po.admit_instance(queue, instance, template)["ok"]
+    bl.declare_instance(queue.root, instance)
+    assert bl.BatchLedger.admit(queue, instance, template)["ok"]
     fx._announce_tier(queue, tmp_path / "stage")
     spool = ps.ProducedSpool(queue, instance, template, cas_root=cas_root,
                              root=tmp_path / "local", max_bytes=256)
     cas = core.PrismaBuildCAS(cas_root)
 
     foreign = al._foreign(spool, cas, "three-gib", {"cpu": 2, "mem_gb": 3})
-    al._running(spool, monkeypatch, psi=0.)
+    cpu_sampler = al._running(spool, monkeypatch, psi=0.)
     for _ in range(pool.STARVATION_FLOOR + 1):
-        assert al._claim(queue, spool.host) is None, "the foreign action took the export's room"
+        assert al._claim(queue, spool.host,
+        cpu_sampler=cpu_sampler) is None, "the foreign action took the export's room"
         if al._denial(queue, foreign)["reason"].endswith("_withholding"):
             break
     assert al._denial(queue, foreign)["reason"] == "reservation_unavailable_withholding"
@@ -235,8 +242,8 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
     funded = []
     for batch in ("g0", "g1"):
         export_key = al._export(spool, batch)
-        al._running(spool, monkeypatch, psi=0.)
-        claim = al._claim(queue, spool.host)
+        cpu_sampler = al._running(spool, monkeypatch, psi=0.)
+        claim = al._claim(queue, spool.host, cpu_sampler=cpu_sampler)
         if claim is None:
             denial = al._denial(queue, export_key)
             raise AssertionError(
@@ -249,18 +256,18 @@ def test_a_funded_export_runs_under_a_withhold_and_an_unfunded_one_waits(
         assert al._tokens(queue, export_key, "cpu") == al._tokens(queue, export_key, "mem_gb") == 0
         funded.append(export["funded"]["cpus"])
     assert sorted(funded) == [[cpu] for cpu in sorted(_allowance(queue, owner)["cpus"])]
-    assert queue.item_path(pool.READY, foreign).exists()
+    assert queue.records.item_path(pool.record_store.READY, foreign).exists()
 
     unfunded = al._export(spool, "g2")
     bystander = al._foreign(spool, cas, "bystander", {"cpu": 1, "mem_gb": 1})
-    assert al._claim(queue, spool.host) is None
+    assert al._claim(queue, spool.host, cpu_sampler=cpu_sampler) is None
     assert al._denial(queue, foreign)["reason"] == "reservation_unavailable_withholding"
     denial = al._denial(queue, unfunded)
     assert denial["reason"] == "deferred_behind_withholding", denial
     assert denial["evidence"]["withheld_for"] == foreign
     assert denial["evidence"]["dependent_of"] == owner
     assert queue.passes(unfunded) == 0
-    assert queue.item_path(pool.READY, bystander).exists()
+    assert queue.records.item_path(pool.record_store.READY, bystander).exists()
     assert queue.passes(bystander) == 0
 
 
@@ -275,18 +282,18 @@ def test_the_family_is_sealed_and_a_malformed_one_is_refused(tmp_path) -> None:
     member = _template(tmp_path, "stageb-row-029", FAMILY)
     assert "export_rate_family" not in plain
     assert member["export_rate_family"] == FAMILY
-    assert po.template_sha256(member) != po.template_sha256(plain)
-    assert po.template_sha256(member) != po.template_sha256(
+    assert oc.template_sha256(member) != oc.template_sha256(plain)
+    assert oc.template_sha256(member) != oc.template_sha256(
         _template(tmp_path, "stageb-row-029", "another-family"))
     for malformed in ("", "Upper", "-leading", "has space", "x" * 257, None, 3, ["a"]):
-        with pytest.raises(po.ProducedOutputError, match="export_rate_family"):
-            po.validate_template(dict(plain, export_rate_family=malformed))
+        with pytest.raises(oc.ProducedOutputError, match="export_rate_family"):
+            oc.validate_template(dict(plain, export_rate_family=malformed))
 
     # The reader refuses a row whose reference names a malformed family,
     # rather than falling back to the template.
     cas = core.PrismaBuildCAS(tmp_path / "cas")
     key = al._plain_request(cas, "tests/family", {adaptive_cpu.SPOOL_ROOT_ENV: "/spool"})
-    template = po.template_sha256(plain)
+    template = oc.template_sha256(plain)
     rates = {template: {"landing_s": [30.], "spacing_s": [10.]},
              adaptive_cpu.export_rate_key(None, FAMILY): {"landing_s": [21.], "spacing_s": [10.]}}
 

@@ -6,6 +6,7 @@ test_window_two_consumers_hold_and_wait.py. Each test drives
 tier_loop.residency_window through real transitions. The integrator runs
 them; nothing here runs anything itself.
 """
+
 from pathlib import Path
 import sys
 
@@ -15,13 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prismabuild import pool, residency_plan  # noqa: E402
 from prismabuild import prelaunch_group as pg  # noqa: E402
-import prelaunch_tier as pt  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import prelaunch_tier as pt  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_prelaunch_group_reconcile_1594 import (  # noqa: E402
     _hexkey, _queue, GIB, MANIFEST)
 from test_prelaunch_tier_module_1594 import (  # noqa: E402
     _consumer, _declared_plan, OTHER_TIER, TIER, TIERS)
+from prismabuild import staged_path
 
 RAM_TIER = "ram:dl380g10"
 EPOCH = "1695052800-1a2b3c4d5e6f7a8b"
@@ -31,7 +33,7 @@ def _stage(queue, tier):
     """A registered stage root with the tier record the window reads."""
     root = queue.root.parent / f"stage-{tier.replace(':', '-')}"
     root.mkdir(parents=True, exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=tier, stage_root=str(root)) == "registered"
     return {"tier_id": tier, "tier": "stage", "mountpoint": str(root)}
 
@@ -71,12 +73,12 @@ def test_declared_window_reserves_then_publishes_and_binds(tmp_path) -> None:
     seen: list[dict] = []
     for _ in range(10):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-        if all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+        if all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers):
             break
-    assert all(queue.item_path(pool.READY, mover).exists()
-               or queue.item_path(pool.CLAIMED, mover).exists()
+    assert all(queue.records.item_path(pool.record_store.READY, mover).exists()
+               or queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers), [
         (event.get("event"), event.get("reason"), event.get("phase"))
         for event in seen]
@@ -84,7 +86,7 @@ def test_declared_window_reserves_then_publishes_and_binds(tmp_path) -> None:
              if event.get("event") == "prelaunch-chunk-published"]
     assert {event["mover"] for event in bound} == set(movers)
     for mover in movers:
-        record = queue.read_funding(mover, TIER)
+        record = queue.funding.read_window(mover, TIER)
         assert record is not None and record["state"] == "transferring"
 
 
@@ -100,15 +102,14 @@ def test_declared_window_without_room_stalls_for_room(tmp_path) -> None:
     seen: list[dict] = []
     for _ in range(4):
         seen.extend(tier_loop.residency_window(queue, tiers=tiers))
-    assert all(not queue.item_path(pool.READY, mover).exists()
-               and not queue.item_path(pool.CLAIMED, mover).exists()
+    assert all(not queue.records.item_path(pool.record_store.READY, mover).exists()
+               and not queue.records.item_path(pool.record_store.CLAIMED, mover).exists()
                for mover in movers)
     stalls = [event for event in seen
               if event.get("event") == "window-stalled"]
     assert any(event.get("reason") == "prelaunch_waiting_for_room"
                for event in stalls)
-    assert queue.tier_ledger(TIER).holder_tokens(unit.holder).get(
-        "stage_gib", 0) == 0
+    assert queue.tier(TIER).holdings(unit.holder).get('stage_gib', 0) == 0
 
 
 def test_undeclared_window_calls_window_without_held_flag(
@@ -121,13 +122,14 @@ def test_undeclared_window_calls_window_without_held_flag(
     plan = _declared_plan(queue, consumer, specs, tag="plain")
     _live(queue, plan, consumer, specs)
     calls: list[dict] = []
-    real_window = residency_plan.window
+    real_window = residency_plan.ConsumerWindow.decision.func
 
-    def spy(plan, *args, **kwargs):
-        calls.append(dict(kwargs))
-        return real_window(plan, *args, **kwargs)
+    def spy(self):
+        calls.append({} if self.budget.prelaunch_held is None else
+                     {"prelaunch_held": self.budget.prelaunch_held})
+        return real_window(self)
 
-    monkeypatch.setattr(residency_plan, "window", spy)
+    monkeypatch.setattr(residency_plan.ConsumerWindow, "decision", property(spy))
     events = tier_loop.residency_window(queue, tiers=tiers)
     assert calls
     assert all("prelaunch_held" not in kwargs for kwargs in calls)
@@ -138,7 +140,7 @@ def test_undeclared_window_calls_window_without_held_flag(
 def test_multi_tier_gang_gets_unsupported_and_no_holder(tmp_path) -> None:
     """A gang across tiers reserves nowhere and names its reason."""
     queue = _queue(tmp_path, stage_gib=300)
-    queue.mint_tier_capacity(OTHER_TIER, {"stage_gib": 300})
+    queue.tier(OTHER_TIER).mint({'stage_gib': 300})
     tiers = {TIER: _stage(queue, TIER), OTHER_TIER: _stage(queue, OTHER_TIER)}
     group = _hexkey("gang-group")[:32]
     first = _hexkey("gang-first")
@@ -155,7 +157,7 @@ def test_multi_tier_gang_gets_unsupported_and_no_holder(tmp_path) -> None:
                and event.get("reason") == pt.UNSUPPORTED_MULTI_TIER
                for event in events)
     for tier_id in (TIER, OTHER_TIER):
-        held = queue.tier_ledger(tier_id).held_keys()
+        held = queue.tier(tier_id).holders()
         assert not [key for key in held
                     if key.startswith(pg.HOLDER_PREFIX)]
 
@@ -182,8 +184,7 @@ def test_superseded_declared_unit_releases_its_group(tmp_path) -> None:
     events = tier_loop.residency_window(queue, tiers=tiers)
     assert any(event.get("event") == "prelaunch-group-released"
                for event in events)
-    assert queue.tier_ledger(TIER).holder_tokens(unit.holder).get(
-        "stage_gib", 0) == 0
+    assert queue.tier(TIER).holdings(unit.holder).get('stage_gib', 0) == 0
 
 
 def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
@@ -191,14 +192,15 @@ def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
     queue = _queue(tmp_path, stage_gib=300)
     ram = tmp_path / "ram"
     ram.mkdir(exist_ok=True)
-    assert stage_release.register_stage_root(
+    assert staged_path.register_stage_root(
         queue, tier_id=RAM_TIER, stage_root=str(ram)) == "registered"
     tiers = {RAM_TIER: {"tier": "ram", "tier_id": RAM_TIER,
                         "host": "dl380g10", "mountpoint": str(ram),
                         "epoch": EPOCH}}
+    queue.ledger("dl380g10").ensure_capacity({"mem_gb": 8})
     holder = pg.holder_name(_hexkey("ram-unit"), RAM_TIER, ["phase-a"])
-    queue.mint_tier_capacity(RAM_TIER, {"ram_gib": 8})
-    assert queue.tier_ledger(RAM_TIER).acquire(holder, {"ram_gib": 2})
+    queue.tier(RAM_TIER).mint({'ram_gib': 8})
+    assert queue.tier(RAM_TIER).take(holder, {'ram_gib': 2})
     queue.record_move(holder, {
         "consumer_action_key": _hexkey("ram-consumer"), "tier_id": RAM_TIER,
         "ram_root": str(ram), "manifest_sha256": MANIFEST,
@@ -209,4 +211,4 @@ def test_ram_ghost_census_keeps_a_group_holder(tmp_path) -> None:
         queue, tiers=tiers)
     assert all(event.get("holder") != holder and event.get("mover") != holder
                for event in events)
-    assert queue.tier_ledger(RAM_TIER).holder_tokens(holder) == {"ram_gib": 2}
+    assert queue.tier(RAM_TIER).holdings(holder) == {'ram_gib': 2}

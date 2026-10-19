@@ -1,6 +1,8 @@
 """pbrun retries require a contract distinct from numeric determinism."""
 
 from __future__ import annotations
+from submission_support import patch_store
+from prismabuild import submission as submit_core
 
 import importlib.util
 import json
@@ -56,8 +58,8 @@ def _submit(
     work: Path,
     *options: str,
 ) -> int:
-    monkeypatch.setattr(pbrun, "SH", tmp_path)
-    monkeypatch.setattr(pbrun, "POLL_S", 0.001)
+    patch_store(monkeypatch, client=pbrun, root=tmp_path)
+    monkeypatch.setattr(submit_core.action_wait, "POLL_S", 0.001)
     monkeypatch.setattr(socket, "gethostname", lambda: "sparky")
     monkeypatch.setattr(
         sys,
@@ -68,7 +70,7 @@ def _submit(
             str(work),
             # Zero is one observation with the full read budget, then 75
             # when nothing has landed.  A positive wait caps the first
-            # forked reader's budget at the time left (``await_outcome``
+            # forked reader's budget at the time left (``report_pool_outcome``
             # passes ``min(OUTCOME_READ_TIMEOUT_S, remaining)``), so 10 ms
             # timed the reader out on a loaded box and the wait ended 74
             # (#918).
@@ -99,7 +101,7 @@ def test_a_stochastic_external_output_defaults_to_one_attempt(
 
     work, queue = _work_and_queue(tmp_path)
     assert _submit(tmp_path, monkeypatch, work) == 75
-    ready = list(queue.dir(pool.READY).glob("*.json"))
+    ready = list(queue.records.dir(pool.record_store.READY).glob("*.json"))
     assert len(ready) == 1
     item = json.loads(ready[0].read_text(encoding="utf-8"))
     assert item["max_attempts"] == 1
@@ -112,8 +114,8 @@ def test_a_stochastic_external_output_defaults_to_one_attempt(
     )
     assert first is not None and first["status"] == "failed"
     assert (tmp_path / "external-output.bin").read_text(encoding="utf-8") == "artifact"
-    assert queue.item_path(pool.FAILED, str(item["action_key"])).exists()
-    assert not queue.item_path(pool.READY, str(item["action_key"])).exists()
+    assert queue.records.item_path(pool.record_store.FAILED, str(item["action_key"])).exists()
+    assert not queue.records.item_path(pool.record_store.READY, str(item["action_key"])).exists()
 
     second = queue.serve_once(
         tags=["sparky"],
@@ -140,7 +142,7 @@ def test_deterministic_does_not_authorize_external_side_effect_retries(
         )
 
     assert "--retry-safe" in str(caught.value)
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []
 
 
 def test_pool_refuses_an_explicitly_unsafe_retry_bound(tmp_path: Path) -> None:
@@ -169,7 +171,7 @@ def test_retry_safe_policy_is_explicit_bounded_and_sealed(
         "2",
     ) == 75
 
-    ready_path = next(queue.dir(pool.READY).glob("*.json"))
+    ready_path = next(queue.records.dir(pool.record_store.READY).glob("*.json"))
     item = json.loads(ready_path.read_text(encoding="utf-8"))
     assert item["max_attempts"] == 2
     request = json.loads(
@@ -236,7 +238,7 @@ def test_new_submitter_keeps_one_attempt_during_an_old_pool_runtime_window(
     work, queue = _work_and_queue(tmp_path)
     assert _submit(tmp_path, monkeypatch, work) == 75
     item = json.loads(
-        next(queue.dir(pool.READY).glob("*.json")).read_text(encoding="utf-8")
+        next(queue.records.dir(pool.record_store.READY).glob("*.json")).read_text(encoding="utf-8")
     )
     assert item["max_attempts"] == 1
     assert "retry_safe" not in item
@@ -291,4 +293,4 @@ def test_new_submitter_refuses_an_old_pool_runtime_that_cannot_carry_the_tested_
     work, queue = _work_and_queue(tmp_path)
     with pytest.raises(pool.PoolContractError, match="does not support tested_repository"):
         _submit(tmp_path, monkeypatch, work)
-    assert list(queue.dir(pool.READY).glob("*.json")) == []
+    assert list(queue.records.dir(pool.record_store.READY).glob("*.json")) == []

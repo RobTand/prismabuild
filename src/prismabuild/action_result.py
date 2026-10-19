@@ -26,11 +26,15 @@ carry no hard NFS deadline.
 
 from __future__ import annotations
 
+from . import immutable_files
+
+import ast
 import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
 
+from . import endings
 from . import core as pb
 from . import movement_actions
 from . import pool as _pool
@@ -137,8 +141,11 @@ def _normalize_input_limits(
 
 def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
     try:
-        return pb._read_regular_file_nofollow(
-            path, where=where, require_readonly=require_readonly,
+        reader = (immutable_files.read_immutable_file if require_readonly
+                  else immutable_files.read_stable_file)
+        return reader(
+            path,
+            where=where,
             max_bytes=max_bytes,
         )
     except FileNotFoundError as exc:
@@ -151,7 +158,7 @@ def _read_bounded(path, *, where: str, max_bytes: int, require_readonly: bool):
 
 def _decode_json(raw: bytes, *, where: str) -> object:
     try:
-        return pb._decode_strict_json(raw, where=where)
+        return pb.digest_primitives.decode_strict_json(raw, where=where)
     except pb.PrismaBuildError as exc:
         raise ActionResultError(f"{where} is not strict JSON: {exc}") from exc
 
@@ -166,9 +173,10 @@ def _select_terminal(queue, key, published, number, evidence_cap):
     """
 
     try:
-        readable, unreadable = queue.read_terminal_candidates(
+        capture = queue.records.terminal_candidates(
             key, max_bytes=evidence_cap)
-        ending = queue.resolve_ending(readable, unreadable)
+        ending = endings.resolve_current(capture)
+        unreadable = ending["unreadable"]
     except (OSError, _pool.PoolError, pb.PrismaBuildError, ValueError) as exc:
         raise ActionResultError(
             f"terminal evidence for {key[:12]} could not be captured: {exc}") from exc
@@ -176,7 +184,7 @@ def _select_terminal(queue, key, published, number, evidence_cap):
         states = ", ".join(str(entry["state"]) for entry in unreadable)
         raise ActionResultError(
             f"terminal evidence for {key[:12]} is present but unreadable: {states}")
-    if ending["state"] != _pool.DONE or ending["ambiguous"]:
+    if ending["state"] != _pool.record_store.DONE or ending["ambiguous"]:
         raise ActionResultError(
             f"{key[:12]} does not have an unambiguous done ending "
             f"(state={ending['state']!r}, ambiguous={ending['ambiguous']})")
@@ -206,7 +214,7 @@ def _select_terminal(queue, key, published, number, evidence_cap):
     if link is None:
         raise ActionResultError(
             f"attempt {number} is not linked by the terminal's history")
-    attempt_path = queue.attempt_path(record, number)
+    attempt_path = queue.records.attempt_path(record, number)
     if link.get("outcome") != str(attempt_path.relative_to(queue.root)):
         raise ActionResultError("the selected attempt link is not its canonical path")
     return record, generation, attempt_path
@@ -246,7 +254,7 @@ def _bind_attempt(
         raise ActionResultError(f"pool attempt outcome refused: {exc}") from exc
     if attempt_record.get("status") != record.get("status"):
         raise ActionResultError("pool attempt status differs from the terminal")
-    if attempt_record.get("disposition") != _pool.DONE:
+    if attempt_record.get("disposition") != _pool.record_store.DONE:
         raise ActionResultError("pool attempt disposition is not done")
     if attempt_record.get("status") not in {"executed", "cache_hit"}:
         raise ActionResultError("pool attempt status is not a success")
@@ -259,7 +267,7 @@ def _bind_attempt(
             f"pool attempt did not exit zero: {returncode!r}")
 
 
-def _result_announcement(stdout: bytes) -> Mapping[str, object]:
+def decode_result_announcement(stdout: bytes) -> Mapping[str, object]:
     """The one worker result announcement in a selected attempt's stdout.
 
     ``core.main`` prints its result object as the last stdout line; the object
@@ -282,8 +290,10 @@ def _result_announcement(stdout: bytes) -> Mapping[str, object]:
         if not stripped.startswith("{") or not stripped.endswith("}"):
             continue
         try:
-            value = pb._decode_strict_json(
-                stripped.encode("utf-8"), where="pool attempt stdout line")
+            value = pb.digest_primitives.decode_strict_json(
+                stripped.encode("utf-8"),
+                where="pool attempt stdout line",
+            )
         except pb.PrismaBuildError:
             continue
         if not isinstance(value, dict):
@@ -453,7 +463,13 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
         nonce=nonce, token=scope["token"])
     if native_argv != expected:
         raise ActionResultError("immutable native launch argv differs from selected broker control or request")
-    for source in (core, launcher):
+    runtime_sources = [core, launcher]
+    if "immutable_files" in runtime:
+        immutable_owner = runtime["immutable_files"]
+        if Path(immutable_owner["path"]) != root / "src/prismabuild/immutable_files.py":
+            raise ActionResultError("native producer immutable owner differs from attested helper root")
+        runtime_sources.append(immutable_owner)
+    for source in runtime_sources:
         path = Path(source["path"])
         try:
             canonical = path.resolve(strict=True)
@@ -465,12 +481,36 @@ def _native_producer_context(queue, record, attempt_record, action, receipt, *,
                             max_bytes=evidence_cap, require_readonly=True)
         if len(raw) != source["bytes"] or pb.raw_sha256(raw) != source["sha256"]:
             raise ActionResultError("native producer runtime source differs from receipt")
+        if source is core:
+            # New Core bytes bind the extracted owner without extending the
+            # closed worker_runtime.v1 field set. Older Core has no such pin.
+            try:
+                pins = [node.value for node in ast.parse(raw).body if isinstance(node, ast.Assign)
+                        and any(isinstance(target, ast.Name) and target.id == "_IMMUTABLE_FILES_SOURCE"
+                                for target in node.targets)]
+                if len(pins) > 1:
+                    raise ValueError("ambiguous Core owner pin")
+                if pins:
+                    pin = ast.literal_eval(pins[0])
+                    if (not isinstance(pin, dict) or set(pin) != {"sha256", "bytes"}
+                            or not isinstance(pin["sha256"], str) or not _ACTION_KEY_RE.fullmatch(pin["sha256"])
+                            or type(pin["bytes"]) is not int or pin["bytes"] < 0):
+                        raise ValueError("malformed Core owner pin")
+                    owner_path = str(root / "src/prismabuild/immutable_files.py")
+                    expected = {"path": owner_path, "resolved_path": owner_path, **pin}
+                    if "immutable_files" in runtime:
+                        if runtime["immutable_files"] != expected:
+                            raise ValueError("runtime owner differs from Core pin")
+                    else:
+                        runtime_sources.append(expected)
+            except (SyntaxError, ValueError, TypeError) as exc:
+                raise ActionResultError("native producer Core source pin is invalid") from exc
     return {
         "schema": NATIVE_PRODUCER_CONTEXT_SCHEMA_V1,
         "queue_root": str(Path(queue.root).resolve()),
         "action_key": key, "published_unix": record["published_unix"],
         "attempt": attempt_record["attempt"],
-        "generation": queue.attempt_generation(record),
+        "generation": queue.records.attempt_generation(record),
         "nonce": nonce, "scope_id": scope_id, "worker": worker, "host": host,
         "incarnation": worker, "helper_root": str(root),
         "resources": dict(resources),
@@ -572,7 +612,7 @@ def read_verified_action_result(
         raise ActionResultError("the selected attempt stdout digest is invalid")
     if declared_bytes > evidence_cap:
         raise ActionResultError("the selected attempt stdout exceeds the evidence cap")
-    stdout_path = queue.attempt_log_path(record, number, "stdout", declared_sha)
+    stdout_path = queue.records.attempt_log_path(record, number, "stdout", declared_sha)
     if stdout_meta.get("path") != str(stdout_path.relative_to(queue.root)):
         raise ActionResultError("the selected attempt stdout link is not canonical")
     stdout = _read_bounded(
@@ -581,7 +621,7 @@ def read_verified_action_result(
     if len(stdout) != declared_bytes or pb.raw_sha256(stdout) != declared_sha:
         raise ActionResultError("the selected attempt stdout differs from its address")
 
-    announcement = _result_announcement(stdout)
+    announcement = decode_result_announcement(stdout)
     announced_receipt = announcement.get("receipt")
     assert isinstance(announced_receipt, Mapping)
     receipt_sha256 = announced_receipt.get("receipt_sha256")
@@ -657,7 +697,7 @@ def read_verified_action_result(
 
     worker = attempt_record.get("claimed_by")
     host = attempt_record.get("claimed_host")
-    generation_digest = queue.attempt_generation(record)
+    generation_digest = queue.records.attempt_generation(record)
     result = {
         "schema": ACTION_RESULT_SCHEMA_V1,
         "action_key": key,
@@ -683,16 +723,16 @@ def bind_standard_capture_command(request: object) -> list[str]:
     A generic result reader returns the sealed request honestly but does not
     claim that its ``params.command`` metadata is what the worker executed:
     Core runs ``task.argv``, and ``validate_action`` only checks the schema.
-    This helper reconstructs the one standard capture wrapper pbrun seals --
+    This helper reconstructs the current and retained S5 capture wrappers --
     from the validated request's ``environment.variables.PATH``,
     ``params.command`` and ``task.result_path`` -- and requires the sealed
-    ``task.argv`` to equal it byte for byte.  It returns the reconstructed argv
+    ``task.argv`` to equal one byte for byte. It returns the matched sealed argv
     on success.
 
     The first implementation supports the standard captured-log result only,
     where the declared ``result_path`` *is* the captured log's name.  A
     file-result recipe (a declared result other than the log), a scratch
-    recorder, a legacy or any other wrapper refuses explicitly; nothing here
+    recorder or any other wrapper refuses explicitly; nothing here
     parses a shell, imports a CLI, or clones PrismaQuant.
     """
 
@@ -720,14 +760,13 @@ def bind_standard_capture_command(request: object) -> list[str]:
     log_name = task.get("result_path")
     if not isinstance(log_name, str) or not log_name:
         raise ActionResultError("the request declares no result_path to bind")
-    expected = movement_actions.standard_capture_argv(
-        command, log_name, path_prefix=path.split(":", 1)[0])
     sealed = task.get("argv")
-    if not isinstance(sealed, list) or list(sealed) != expected:
+    if not isinstance(sealed, list) or not movement_actions.capture_argv_matches(
+        sealed, command, log_name, path_prefix=path.split(":", 1)[0]):
         raise ActionResultError(
             "the sealed task.argv is not the standard captured-log recipe; "
-            "file-result, legacy and unsupported recipes are refused")
-    return expected
+            "file-result and unsupported recipes are refused")
+    return list(sealed)
 
 
 __all__ = [

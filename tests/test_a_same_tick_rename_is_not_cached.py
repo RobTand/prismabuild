@@ -9,7 +9,7 @@ replaces a leaf in that tick leaves the recorded stamp current, the next pass
 hits the checkpoint, and the stale path is never pruned while nothing else
 touches the directory.
 
-``stage_move._trusted_directory_stamp`` closes that hole for the #992
+``kept_reads.filesystem_trust.directory_before`` closes that hole for the #992
 listings: it reads the coarse clock first and refuses a stamp whose mtime or
 ctime is not strictly before it.  These tests hold the checkpoint to the same
 rule.  A directory stamped in the tick of its last change is never cached
@@ -38,13 +38,14 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_stale_material_done_owner_retires as red  # noqa: E402
 from test_stale_material_done_owner_retires import fleet  # noqa: E402,F401
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import kept_reads
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
+from prismabuild import staged_path
 
 NAMES = red.NAMES
 TIER = red.TIER
-COARSE = stage_move._COARSE_REALTIME
+COARSE = kept_reads._COARSE_REALTIME
 TICK_NS = 1_000_000
 
 pytestmark = pytest.mark.skipif(
@@ -53,9 +54,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _fresh_checkpoints():
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
     yield
-    stage_release.reset_skip_checkpoints()
+    staged_path.reset_skip_checkpoints()
 
 
 class _Pinned:
@@ -103,7 +104,7 @@ def _pin(monkeypatch, stage: Path, filesystem: str) -> dict[str, int]:
 
     monkeypatch.setattr(os, "lstat", lstat)
     monkeypatch.setattr(time, "clock_gettime_ns", clock)
-    monkeypatch.setattr(stage_move, "_filesystem_type",
+    monkeypatch.setattr(kept_reads, '_filesystem_type',
                         lambda device: filesystem)
     return state
 
@@ -115,12 +116,12 @@ def _path(stage: Path, name: str) -> Path:
 def _pass(queue, stage, index=None):
     return stage_release.sweep_dead_owner_fragments(
         queue, stage_roots={TIER: str(stage)},
-        residency_root=queue.residency_fragment_root(), index=index)
+        residency_root=queue.records.residency_fragment_root(), index=index)
 
 
 def _receipts_for(receipts, mover: str) -> list[dict]:
     return [entry for entry in receipts
-            if entry.get("event") == stage_release.STALE_MENTION_EVENT
+            if entry.get("event") == staged_path.STALE_MENTION_EVENT
             and entry.get("action_key") == mover]
 
 
@@ -185,11 +186,11 @@ def test_a_directory_stamped_after_the_tick_installs_and_hits(
                                       replace=False)
     state = _pin(monkeypatch, stage, filesystem)
     state["clock"] = state["stamp"] + TICK_NS
-    key = stage_release._skip_checkpoint_key(
-        queue, queue.residency_fragment_root(), stage, TIER, consumer, mover)
+    key = staged_path._skip_checkpoint_key(
+        queue, queue.records.residency_fragment_root(), stage, TIER, consumer, mover)
 
     assert _one(_pass(queue, stage), mover)["cacheable"] is True
-    assert key in stage_release._skip_checkpoints
+    assert key in staged_path._skip_checkpoints
     assert _receipts_for(_pass(queue, stage), mover) == []
 
     # A change after the stamped tick moves the stamp: the fence still bites.

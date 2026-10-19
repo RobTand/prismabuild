@@ -10,6 +10,7 @@ requested CAS did not have.  Nothing refused.  The submission succeeded and the
 node that won the allocation could not materialize the tree.
 """
 from __future__ import annotations
+from prismabuild import submission as submit_core
 
 from pathlib import Path
 import subprocess
@@ -23,7 +24,7 @@ sys.path.insert(0, str(REPOSITORY / "tools" / "fleet"))
 
 from prismabuild import core as pb  # noqa: E402
 
-import fleet_submit  # noqa: E402
+from prismabuild import fleet_submit  # noqa: E402
 
 
 def _producer_checkout(root: Path) -> Path:
@@ -49,7 +50,7 @@ def test_one_checkout_sealed_into_two_stores_lands_in_both(tmp_path: Path) -> No
     checkout = _producer_checkout(tmp_path / "source")
     first = pb.PrismaBuildCAS(tmp_path / "first-cas")
     second = pb.PrismaBuildCAS(tmp_path / "second-cas")
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
 
     one = fleet_submit.seal_checkout_snapshot(checkout, cas=first)
     two = fleet_submit.seal_checkout_snapshot(checkout, cas=second)
@@ -65,22 +66,24 @@ def test_the_same_store_still_bundles_one_tree_once(tmp_path: Path) -> None:
 
     checkout = _producer_checkout(tmp_path / "source")
     cas = pb.PrismaBuildCAS(tmp_path / "cas")
-    fleet_submit._SNAPSHOT_CACHE.clear()
+    submit_core._SNAPSHOT_CACHE.clear()
 
     calls = 0
     import pbrun
+    from prismabuild import submission
+    from submission_support import patch_store
 
-    original = pbrun.build_git_checkout_snapshot
+    original = submit_core.snapshot_checkout
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    pbrun.build_git_checkout_snapshot = counted
+    submit_core.snapshot_checkout = counted
     try:
         for _ in range(3):
             fleet_submit.seal_checkout_snapshot(checkout, cas=cas)
     finally:
-        pbrun.build_git_checkout_snapshot = original
+        submit_core.snapshot_checkout = original
     assert calls == 1

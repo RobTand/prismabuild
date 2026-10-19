@@ -33,7 +33,7 @@ def _capture(tmp_path, command, *, capture_status=0, prefer_gnu=False):
     log = tmp_path / "result with spaces.log"
     argv = movement_actions.captured_command(command, str(log))
     done = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-c", argv],
+        argv,
         env={**os.environ, "PATH": str(tools)}, capture_output=True,
     )
     return done, log, tools
@@ -80,8 +80,7 @@ def test_tee_fallback_still_records_its_actual_executable(tmp_path):
 def test_missing_capture_tool_is_an_explicit_failure(tmp_path):
     log = tmp_path / "missing.log"
     done = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-c",
-         movement_actions.captured_command([sys.executable, "-c", "print('data')"], str(log))],
+        movement_actions.captured_command([sys.executable, "-c", "print('data')"], str(log)),
         env={**os.environ, "PATH": str(tmp_path)}, capture_output=True,
     )
     assert done.returncode != 0
@@ -106,8 +105,7 @@ def test_native_gnu_capture_keeps_binary_burst_bytes_exact(tmp_path, blocks):
                 f"import sys;sys.stdout.buffer.write(bytes(range(256))*128*{blocks}+b'\\x00\\xfftrailing\\n')"]
     log = tmp_path / "native.log"
     done = subprocess.run(
-        ["/bin/bash", "--noprofile", "--norc", "-c",
-         movement_actions.captured_command(producer, str(log))],
+        movement_actions.captured_command(producer, str(log)),
         env={**os.environ, "PATH": str(tool_dir)}, capture_output=True,
     )
     assert done.returncode == 0, done.stderr

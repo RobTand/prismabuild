@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "fleet"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, residency_plan, window_credit  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     _claim, _fixture_queue, _land, _publish_consumer)
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
@@ -163,7 +163,7 @@ def test_a_sharers_fence_grant_is_holding_toward_every_sharer(
              second: _plan(queue, second, label="sharer", phases=4)}
     _land_phase(queue, stage, plans[first], 0)
     grant = window_credit.grant_key(first, TIER, "mover_row", "phase-1")
-    assert queue.tier_ledger(TIER).acquire(grant, {"stage_gib": PHASE_GIB})
+    assert queue.tier(TIER).take(grant, {'stage_gib': PHASE_GIB})
     for key in (first, second):
         _claim_at(queue, key)
 

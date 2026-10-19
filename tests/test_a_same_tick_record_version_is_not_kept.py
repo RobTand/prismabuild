@@ -6,7 +6,7 @@ unlinked and another created under the same name in one coarse clock tick
 (1 ms on the Sparks) can be given the freed inode number, and with the same
 size all five fields match: the old record would be served until the file
 changed again.  The directory stamp already refuses a version not strictly
-before a clock read taken first (``stage_move._trusted_directory_stamp``);
+before a clock read taken first (``kept_reads.filesystem_trust.directory_before``);
 these tests hold each kept file version to the same rule.
 
 The tick is modelled, not raced: the coarse clock is pinned to the file's
@@ -23,16 +23,20 @@ import sys
 import time
 
 import pytest
+from kept_read_clock import directory_before
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "fleet"))
 
-import pbmetrics  # noqa: E402
-import stage_move  # noqa: E402
-import stage_release  # noqa: E402
+from prismabuild import census as fleet_census
 
-COARSE = stage_move._COARSE_REALTIME
+import pbmetrics  # noqa: E402
+from prismabuild import kept_reads
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import staged_path
+
+COARSE = kept_reads._COARSE_REALTIME
 TICK_NS = 1_000_000
 
 pytestmark = pytest.mark.skipif(
@@ -58,7 +62,7 @@ def clock(monkeypatch):
         return real(clock_id)
 
     monkeypatch.setattr(time, "clock_gettime_ns", pinned)
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "zfs")
+    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda device: "zfs")
     return state
 
 
@@ -100,7 +104,7 @@ def test_directory_records_rereads_a_record_filed_in_the_fence_tick(
     directory.mkdir()
     record = directory / "r.json"
     _write(record, b'{"v": 1}')
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
 
     clock["now"] = os.stat(record).st_ctime_ns
     first = reader.read(directory, select=lambda _entry: True, parse=_parse)
@@ -120,14 +124,24 @@ def test_directory_records_keeps_a_record_older_than_the_fence(
     directory.mkdir()
     record = directory / "r.json"
     _write(record, b'{"v": 1}')
-    reader = stage_release.DirectoryRecords()
+    reader = kept_reads.DirectoryRecords()
 
     clock["now"] = os.stat(record).st_ctime_ns + TICK_NS
     reader.read(directory, select=lambda _entry: True, parse=_parse)
-    # The directory's own stamp holds as well; move it so the entries are
-    # stat-ed and compared, which is the path under test.
+    # The modeled clock has advanced beyond the real filesystem clock.
+    # Establish a new directory generation for the file-version comparison.
+    initial = os.stat(directory)
     (directory / "other.json").write_bytes(b"{}")
     os.utime(directory)
+    changed = os.stat(directory)
+    if ((changed.st_mtime_ns, changed.st_ctime_ns)
+            == (initial.st_mtime_ns, initial.st_ctime_ns)):
+        os.utime(directory, ns=(changed.st_atime_ns, changed.st_mtime_ns + 1))
+        changed = os.stat(directory)
+    assert (changed.st_mtime_ns, changed.st_ctime_ns) != (
+        initial.st_mtime_ns, initial.st_ctime_ns)
+    assert (changed.st_dev, changed.st_ino, changed.st_mode) == (
+        initial.st_dev, initial.st_ino, initial.st_mode)
     parsed = reader.parsed
     clock["now"] = time.clock_gettime_ns(COARSE) + TICK_NS * 10**6
     reader.read(directory, select=lambda _entry: True, parse=_parse)
@@ -140,8 +154,8 @@ def test_no_version_is_kept_on_a_network_filesystem(
     directory.mkdir()
     record = directory / "r.json"
     _write(record, b'{"v": 1}')
-    monkeypatch.setattr(stage_move, "_filesystem_type", lambda device: "nfs4")
-    reader = stage_release.DirectoryRecords()
+    monkeypatch.setattr(kept_reads, '_filesystem_type', lambda device: "nfs4")
+    reader = kept_reads.DirectoryRecords()
 
     clock["now"] = os.stat(record).st_ctime_ns + TICK_NS * 10**6
     reader.read(directory, select=lambda _entry: True, parse=_parse)
@@ -156,17 +170,17 @@ def test_the_fragment_memo_rereads_a_fragment_filed_in_the_fence_tick(
                         lambda document: document)
     fragment = tmp_path / "fragment.json"
     _write(fragment, b'{"entries": {}, "v": 1}')
-    memo = stage_release._CensusMemo()
+    memo = kept_reads.CensusMemo()
 
     clock["now"] = os.stat(fragment).st_ctime_ns
-    document = stage_release._read_fragment(fragment, memo)
+    document = staged_path._read_fragment(fragment, memo)
     assert document["v"] == 1
     # Nor may a skip checkpoint be fenced on it (#1056 reads this version).
     assert memo.version_of(document) is None
 
     clock["now"] = None
     _replace_in_the_same_tick(monkeypatch, fragment, b'{"entries": {}, "v": 2}')
-    assert stage_release._read_fragment(fragment, memo)["v"] == 2
+    assert staged_path._read_fragment(fragment, memo)["v"] == 2
 
 
 def test_the_fragment_memo_keeps_a_fragment_older_than_the_fence(
@@ -175,12 +189,12 @@ def test_the_fragment_memo_keeps_a_fragment_older_than_the_fence(
                         lambda document: document)
     fragment = tmp_path / "fragment.json"
     _write(fragment, b'{"entries": {}, "v": 1}')
-    memo = stage_release._CensusMemo()
+    memo = kept_reads.CensusMemo()
 
     clock["now"] = os.stat(fragment).st_ctime_ns + TICK_NS
-    document = stage_release._read_fragment(fragment, memo)
+    document = staged_path._read_fragment(fragment, memo)
     assert memo.version_of(document) is not None
-    assert stage_release._read_fragment(fragment, memo) is document
+    assert staged_path._read_fragment(fragment, memo) is document
     assert memo.counts() == (1, 1)
 
 
@@ -192,14 +206,14 @@ def test_the_material_memo_rereads_a_sidecar_filed_in_the_fence_tick(
     monkeypatch.setattr(stage_release.reader_lease, "material_path",
                         lambda root, consumer, mover: path)
     _write(path, b'{"v": 1}')
-    memo = stage_release._CensusMemo()
+    memo = kept_reads.CensusMemo()
 
     clock["now"] = os.stat(path).st_ctime_ns
-    assert stage_release._read_own_material(tmp_path, "c", "m", memo) == {"v": 1}
+    assert staged_path._read_own_material(tmp_path, "c", "m", memo) == {"v": 1}
 
     clock["now"] = None
     _replace_in_the_same_tick(monkeypatch, path, b'{"v": 2}')
-    assert stage_release._read_own_material(tmp_path, "c", "m", memo) == {"v": 2}
+    assert staged_path._read_own_material(tmp_path, "c", "m", memo) == {"v": 2}
 
 
 def test_a_kept_history_entry_changed_in_the_fence_tick_is_derived_again(
@@ -210,26 +224,27 @@ def test_a_kept_history_entry_changed_in_the_fence_tick_is_derived_again(
     _write(record, b'{"v": 1}')
     # An in-place change moves the file's ctime and not the directory's, so
     # the directory's own stamp is trusted while the entry is in its tick.
-    time.sleep(0.02)
     os.chmod(record, 0o640)
-    reader = pbmetrics.KeptReads()
+    directory_before(monkeypatch, directory, os.stat(record).st_ctime_ns)
+    reader = fleet_census.KeptReads()
 
     def scrape() -> list:
         reader.begin()
-        entries = list(reader.history(directory, select=lambda _entry: True))
+        entries = list(reader.queue_store(tmp_path).mover_entries())
+        rows = []
         for entry in entries:
-            reader.derive("row", entry, lambda: _parse(Path(entry.path)))
+            rows.append(reader.derive("row", entry, lambda: _parse(Path(entry.path))))
         reader.end()
-        return entries
+        return rows
 
     clock["now"] = os.stat(record).st_ctime_ns
     assert os.lstat(directory).st_mtime_ns < clock["now"]
     first = scrape()
-    assert first[0].derived == {"v": 1}
+    assert first[0] == {"v": 1}
 
     clock["now"] = None
     _replace_in_the_same_tick(monkeypatch, record, b'{"v": 2}')
     second = scrape()
-    assert second[0].derived == {"v": 2}, (
+    assert second[0] == {"v": 2}, (
         "an entry kept at a version stat-ed in its own change's tick "
         "carried what was derived from the replaced file")

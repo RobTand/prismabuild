@@ -52,14 +52,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prismabuild import pool, reader_lease, residency_map, residency_plan  # noqa: E402
 from prismabuild import storage_tiers  # noqa: E402
 from storage_host_ledger import mint_storage_host_ledger  # noqa: E402
-import stage_release  # noqa: E402
-import tier_loop  # noqa: E402
+from prismabuild import stage_release  # noqa: E402
+from prismabuild import tier_cycle as tier_loop  # noqa: E402
 from test_a_resident_range_is_adopted_rather_than_recopied import (  # noqa: E402
     DIGEST, GIB, PHASE_GIB, STAGE_KIND, TIER, _hexkey, _row, _stage_range,
     _tier_record)
 from test_a_consumer_stages_only_to_its_refill_horizon import (  # noqa: E402
     CLAIMED_AGO_S, MOVER_SECONDS, REPORTED_AGO_S, _claim, _claim_shortage,
     _newcomer)
+from prismabuild import staged_path
 
 RAM_TIER = "ram:dl380g10"
 RAM_KIND = f"ram_gib@{RAM_TIER}"
@@ -162,17 +163,15 @@ def _ram_range(queue: pool.PoolQueue, *, promotion: str, consumer: str,
             f"/pool/{manifest[:8]}/phase-{ordinal}/part-{index}.bin", 0)] = {
                 "stage_path": str(path), "bytes": size, "offset": 0,
                 "sha256": DIGEST}
-    assert queue.tier_ledger(RAM_TIER).acquire(promotion, {"ram_gib": PHASE_GIB})
-    residency_map.write_fragment(queue.residency_fragment_root(), {
+    assert queue.tier(RAM_TIER).take(promotion, {'ram_gib': PHASE_GIB})
+    staged_path.publish_vouch(
+        queue.records.residency_fragment_root(), {
         "schema": residency_map.RESIDENCY_MAP_FRAGMENT_SCHEMA_V1,
         "consumer_action_key": consumer, "mover_action_key": promotion,
         "tier_id": RAM_TIER, "stage_root": str(ram), "manifest_sha256": manifest,
-        "epoch": epoch, "entries": entries})
-    reader_lease.write_material(
-        queue.residency_fragment_root(), consumer_action_key=consumer,
-        mover_action_key=promotion, tier_id=RAM_TIER, stage_root=str(ram),
-        manifest_sha256=manifest, generation="b" * 32, epoch=epoch,
-        entries={key: {**mention,
+        "epoch": epoch, "entries": entries},
+        generation="b" * 32,
+        material_entries={key: {**mention,
                        "file_id": reader_lease.stat_identity(
                            str(mention["stage_path"]))}
                  for key, mention in entries.items()})
@@ -192,7 +191,7 @@ class Box:
 
     def __init__(self, tmp_path: Path, *, stage_gib: int, ram_gib: int) -> None:
         self.queue = pool.PoolQueue(tmp_path / "pb-queue")
-        self.queue.ensure_layout()
+        self.queue.records.ensure_layout()
         self.stage = tmp_path / "stage"
         self.ram = tmp_path / "ram"
         self.stage.mkdir()
@@ -204,10 +203,10 @@ class Box:
         # The loop registers both roots on every cycle; a test that evicts
         # before its first cycle stands in for that loop (#628).
         for tier_id, root in ((TIER, self.stage), (RAM_TIER, self.ram)):
-            assert stage_release.register_stage_root(
+            assert staged_path.register_stage_root(
                 self.queue, tier_id=tier_id, stage_root=root) == "registered"
-        self.queue.mint_tier_capacity(TIER, {"stage_gib": stage_gib})
-        self.queue.mint_tier_capacity(RAM_TIER, {"ram_gib": ram_gib})
+        self.queue.tier(TIER).mint({'stage_gib': stage_gib})
+        self.queue.tier(RAM_TIER).mint({'ram_gib': ram_gib})
         # A RAM fill's host half lands in the storage host's ledger (#1258).
         mint_storage_host_ledger(self.queue)
         self.queue.announce_tier(self.ram_record())
@@ -215,7 +214,7 @@ class Box:
     def ram_record(self) -> dict[str, object]:
         """The tmpfs as the loop announces it: writable plus landed is the tier."""
 
-        held = int(self.queue.tier_ledger(RAM_TIER).held().get("ram_gib", 0))
+        held = int(self.queue.tier(RAM_TIER).holdings().get('ram_gib', 0))
         return {"schema": storage_tiers.TIER_RECORD_SCHEMA_V1, "tier": "ram",
                 "tier_id": RAM_TIER, "host": "dl380g10",
                 "mountpoint": str(self.ram), "epoch": self.epoch,
@@ -232,7 +231,8 @@ class Box:
         tier_loop.cycle(self.queue, host="dl380g10",
                         source_pool="storage_pool",
                         receipts=tier_loop.ReceiptCache(),
-                        discover=lambda **_kwargs: records)
+                        discover=lambda **_kwargs: records,
+                        supply_reader_for=lambda *_a, **_k: None)
 
     def reader(self, *, staged, promoted) -> tuple[dict, dict]:
         """The reader, claimed inside ``phase-0``, with ranges on both tiers."""
@@ -270,7 +270,7 @@ class Box:
         return _promotion("promoter", 0)
 
     def held(self, tier_id: str, key: str) -> bool:
-        return bool(self.queue.tier_ledger(tier_id).holder_tokens(key))
+        return bool(self.queue.tier(tier_id).holdings(key))
 
 
 def _promoted(events: list[dict[str, object]]) -> list[str]:
@@ -288,7 +288,7 @@ def assert_ledgers_match_the_roots(box: Box) -> None:
     ledger.
     """
 
-    root = box.queue.residency_fragment_root()
+    root = box.queue.records.residency_fragment_root()
     accounted: dict[str, dict[str, int]] = {TIER: {}, RAM_TIER: {}}
     consumers = sorted(entry.name for entry in root.iterdir()
                        if entry.is_dir()
@@ -307,9 +307,8 @@ def assert_ledgers_match_the_roots(box: Box) -> None:
                     int(receipt["range_end_bytes"])
                     - int(receipt["range_start_bytes"])))
     for tier_id, kind in ((TIER, "stage_gib"), (RAM_TIER, "ram_gib")):
-        ledger = box.queue.tier_ledger(tier_id)
-        held = {key: int(ledger.holder_tokens(key).get(kind, 0))
-                for key in ledger.held_keys()}
+        ledger = box.queue.tier(tier_id)
+        held = {key: int(ledger.holdings(key).get(kind, 0)) for key in ledger.holders()}
         held = {key: gib for key, gib in held.items() if gib
                 and box.queue.move_record(key) is not None}
         assert held == accounted[tier_id], (
@@ -338,8 +337,8 @@ def test_the_ram_window_promotes_only_to_its_refill_horizon(
 
     assert _promoted(events) == ["phase-1", "phase-2"], events
     for ordinal in range(ADVANCE, PHASES):
-        assert not box.queue.item_path(
-            pool.READY, _promotion("reader", ordinal)).exists(), ordinal
+        assert not box.queue.records.item_path(
+            pool.record_store.READY, _promotion("reader", ordinal)).exists(), ordinal
     assert [event for event in events
             if event.get("event") == "ram-window-stalled"] == [], events
 
@@ -388,7 +387,7 @@ def test_a_ram_range_past_the_horizon_makes_room_for_another_promotion(
 
     box.cycle()
 
-    assert box.queue.item_path(pool.READY, head).exists()
+    assert box.queue.records.item_path(pool.record_store.READY, head).exists()
     assert not box.held(RAM_TIER, _promotion("reader", 7))
     assert not any(path.exists() for path in ram_files[7])
     for ordinal in range(PHASES - 1):
@@ -416,12 +415,12 @@ def test_an_evicted_promotion_is_published_again_when_its_reader_nears_it(
     box.promoter()
     box.cycle()
     assert not box.held(RAM_TIER, _promotion("reader", 7))
-    assert not box.queue.item_path(
-        pool.READY, _promotion("reader", 7)).exists()
+    assert not box.queue.records.item_path(
+        pool.record_store.READY, _promotion("reader", 7)).exists()
 
     # The worker's next heartbeat, filed into the lease the claim wrote
     # (``write_lease`` refuses a second write from another box's claim).
-    lease_path = box.queue.lease_path(READER)
+    lease_path = box.queue.records.lease_path(READER)
     lease = json.loads(lease_path.read_text())
     lease["progress_observation"] = {
         "source": "action-progress",
@@ -431,10 +430,10 @@ def test_an_evicted_promotion_is_published_again_when_its_reader_nears_it(
 
     box.cycle()
 
-    assert box.queue.item_path(pool.READY, _promotion("reader", 7)).exists()
+    assert box.queue.records.item_path(pool.record_store.READY, _promotion("reader", 7)).exists()
     for ordinal in range(5):
         release = _hexkey(f"readerramrelease{ordinal}")
-        assert box.queue.item_path(pool.READY, release).exists(), ordinal
+        assert box.queue.records.item_path(pool.record_store.READY, release).exists(), ordinal
 
 
 def test_a_stage_range_past_the_horizon_takes_its_ram_copy_first(
@@ -554,7 +553,7 @@ def test_r12s_ram_window_is_unchanged_by_its_ram_horizon(
     """
 
     queue = pool.PoolQueue(tmp_path / "pb-queue")
-    queue.ensure_layout()
+    queue.records.ensure_layout()
     built = []
     for ordinal, phase in enumerate(R12_RAM["phases"]):
         start, end = int(phase["start_bytes"]), int(phase["end_bytes"])
@@ -615,9 +614,8 @@ def test_r12s_ram_window_is_unchanged_by_its_ram_horizon(
             capacity_gib=capacity, published=held, staged=held,
             runahead_cap_gib=R12_RAM["ram"]["prefill_depth"],
             mover_role="ram_mover_row")
-        before = residency_plan.window(plan, **arguments)
-        after = residency_plan.window(
-            plan, **arguments, horizon_end_bytes=horizon["horizon_end_bytes"])
+        before = residency_plan.ConsumerWindow(plan, arguments['accepted_phase'], residency_plan.LegObservation(published=arguments["published"], staged=arguments["staged"], mover_role=arguments["mover_role"]), residency_plan.WindowBudget(free_gib=arguments['free_gib'], capacity_gib=arguments['capacity_gib'], runahead_cap_gib=arguments['runahead_cap_gib'])).decision
+        after = residency_plan.ConsumerWindow(plan, arguments['accepted_phase'], residency_plan.LegObservation(published=arguments["published"], staged=arguments["staged"], mover_role=arguments["mover_role"], horizon_end_bytes=horizon['horizon_end_bytes']), residency_plan.WindowBudget(free_gib=arguments['free_gib'], capacity_gib=arguments['capacity_gib'], runahead_cap_gib=arguments['runahead_cap_gib'])).decision
         assert after == before, free
         stall = before["stall"]
         assert isinstance(stall, dict) and stall["reason"] == "runahead_budget"
