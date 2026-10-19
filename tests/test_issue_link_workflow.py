@@ -80,6 +80,8 @@ def test_issue_link_decision(body, issues, sidebar, accepted):
 @pytest.mark.skipif(NODE is None, reason='node is not installed on this worker')
 @pytest.mark.parametrize('branch,body,issues,accepted', [
     ('prismabuild-123', 'Refs #123', {'123': {'number': 123}}, True),
+    ('tl/release-operation', 'Refs #123', {'123': {'number': 123}}, True),
+    ('tlx/release-operation', 'Refs #123', {'123': {'number': 123}}, False),
     ('prismabuild-123-gpu', 'Refs #123', {'123': {'number': 123}}, True),
     ('prismabuild-123-gpu-2', 'Refs #123', {'123': {'number': 123}}, True),
     ('prismabuild-123', 'Fixes https://github.com/RobTand/prismabuild/issues/123',
@@ -111,6 +113,8 @@ def test_branch_requires_matching_actual_body_issue(branch, body, issues, accept
 @pytest.mark.parametrize('branch,created_at,accepted', [
     ('ig/train/x-9', '2026-10-09T17:00:00Z', True),
     ('ig/older-pipeline', '2026-10-10T00:00:00Z', True),
+    ('tl/release-operation', '2026-10-10T00:00:00Z', True),
+    ('tlx/release-operation', '2026-10-10T00:00:00Z', False),
     ('release', '2026-10-09T17:00:00Z', True),
     ('release/1.0', '2026-10-10T00:00:00Z', True),
     ('release-1.0', '2026-10-10T00:00:00Z', True),
@@ -131,6 +135,7 @@ def test_branch_exemptions_and_cutoff(branch, created_at, accepted):
 @pytest.mark.skipif(NODE is None, reason='node is not installed on this worker')
 @pytest.mark.parametrize('branch,created_at', [
     ('ig/train/x-9', '2026-10-09T17:00:00Z'),
+    ('tl/release-operation', '2026-10-10T00:00:00Z'),
     ('release/1.0', '2026-10-09T17:00:00Z'),
     ('fix/something', '2026-10-09T16:59:59Z'),
 ])
