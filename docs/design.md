@@ -1427,6 +1427,26 @@ a concurrently repaired record without replacing another submission and never
 overwrites an existing failed outcome. These contracts have local filesystem
 regression coverage; they are not a cross-host NFS qualification claim.
 
+Successful public container cleanup retires `container_cleanup_pending` before
+lease-expiry attempt archival and terminal publication, just as worker finish
+does. Retry counts and first-failure/check timestamps remain historical
+observations; they are not active blockers. An incomplete result retains the
+claim and reservation and counts another cleanup failure, even when exact
+scope release succeeded but scratch finalization is still incomplete.
+
+Ordinary worker polling also reconciles legacy `done/` and `failed/` records
+that still carry this active marker alongside successful exact-nonce scope
+cleanup evidence (#1838). Under the same nonblocking per-key transition lock,
+only the claiming host validates the full scope authority and retries the
+public cleanup wrapper, including scratch finalization. Empty `remaining`
+alone is never proof. Missing/mismatched scope proof, `finish_pending`, an
+active ready row/claim/lease, or another visible terminal leaves the record
+untouched. Only wrapper success removes the active marker; the original
+verdict, detail, attempt history, finish timestamps and scope evidence stay
+unchanged. This repair creates no attempt, runnable row, lease or reservation,
+and performs no execution. It does not change lost-lease budgets, scheduling,
+staged-read requirements, deployment status or workload-completion claims.
+
 Ownership mutations hold a per-key POSIX record lock under
 `transition-locks/<sha256(action_key)>.lock`. Publication, scope startup and
 recovery, heartbeat writes, finish, withdrawal and recovery sweeps use the same

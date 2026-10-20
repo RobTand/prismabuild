@@ -619,7 +619,7 @@ def _worker_finish(
             queue.records.replace_record_at(lost, filed)
         return lost
     record.pop("finish_pending", None)
-    record.pop("container_cleanup_pending", None)
+    _resolve_cleanup_pending(record, container_cleanup)
     prior_attempts = int(record.get("attempts", 0))
     attempts = prior_attempts + 1
     limit = int(record.get("max_attempts", pool.DEFAULT_MAX_ATTEMPTS))
@@ -909,6 +909,73 @@ def _recover_cancelled_claim(queue, policy: ExpiredClaim, container_cleanup) -> 
     return None
 
 
+def reconcile_terminal_cleanup(queue) -> list[str]:
+    """Retry contradictory legacy terminals on their claiming host, never execute.
+
+    This is deliberately not a terminal conclusion: only the active cleanup
+    marker may change. No attempt, verdict, timestamp or scope proof is filed.
+    """
+    reconciled = []
+    for state in (DONE, FAILED):
+        for path in queue.records.json_slot_paths(state):
+            key = path.stem
+            try:
+                with queue.action_transition_lock(key, blocking=False) as acquired:
+                    if not acquired:
+                        continue
+                    record = record_store.read_document(path)
+                    if (not record or record.get("action_key") != key
+                            or record.get("claimed_host") != socket.gethostname()
+                            or not record.get("container_cleanup_pending")
+                            or record.get("finish_pending")
+                            or type(record.get("published_unix")) not in (int, float)):
+                        continue
+                    # Never involve an active successor or an ambiguous ending.
+                    if any(record_store.read_document(queue.records.item_path(other, key))
+                           is not None for other in (READY, CLAIMED, DONE, FAILED, WITHDRAWN)
+                           if other != state):
+                        continue
+                    if record_store.read_document(queue.records.lease_path(key)) is not None:
+                        continue
+                    proof = record.get("resource_scope_cleanup")
+                    control = record.get("resource_scope")
+                    if (not isinstance(proof, dict) or proof.get("complete") is not True
+                            or not isinstance(control, dict)
+                            or proof.get("nonce") != control.get("nonce")):
+                        continue
+                    # Validate full key/nonce/control authority and the local host
+                    # even though the completed-scope shortcut needs no broker RPC.
+                    queue.scope_for_record(record)
+                    cleanup = queue.cleanup_action_containers(dict(record))
+                    if cleanup.get("complete") is not True:
+                        continue
+                    # The public wrapper can persist scratch cleanup. Re-read
+                    # rather than overwriting any evidence it just finalized.
+                    current = record_store.read_document(path)
+                    if (current is None or not claim_identity.same_claim(current, record)
+                            or current.get("resource_scope") != control
+                            or current.get("resource_scope_cleanup") != proof
+                            or current.get("finish_pending")):
+                        continue
+                    _resolve_cleanup_pending(current, cleanup)
+                    queue.records.replace_record_at(path, current)
+                    reconciled.append(key)
+            except (OSError, ValueError, PoolContractError) as exc:
+                print(f"pool terminal-cleanup retry skipped {key}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    return reconciled
+
+
+def _resolve_cleanup_pending(record: dict[str, object], cleanup: Mapping[str, object]) -> None:
+    """Retire the active blocker only after the public cleanup owner succeeds.
+
+    Keep retry diagnostics as history. Scope release alone is not sufficient:
+    the wrapper also owns scratch finalization.
+    """
+    if cleanup.get("complete") is True:
+        record.pop("container_cleanup_pending", None)
+
+
 def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
     from . import pool
 
@@ -921,6 +988,7 @@ def _expired_claim(queue, policy: ExpiredClaim) -> Path | None:
         queue._note_cleanup_attempt(pending, record, container_cleanup)
         queue.records.replace_record_at(path, pending)
         return None
+    _resolve_cleanup_pending(record, container_cleanup)
     terminal = queue.terminal_outcome_covers(
         record, action_key=key, terminal=terminal_keys
     )

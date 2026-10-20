@@ -22121,6 +22121,7 @@ class PoolQueue:
 
         if self._sweep_due():
             self.reap_stale()
+            lifecycle.reconcile_terminal_cleanup(self)
             self.sweep_orphan_passes()
             self.sweep_gangs()
         item = self.claim(tags=tags, has_gpu=has_gpu, capacity=capacity,
