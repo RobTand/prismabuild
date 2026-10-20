@@ -23,7 +23,7 @@ The contract tested here, against real subprocesses and real locks:
 3. the lock path does not move when the generation is republished, one
    role's lock never excludes another role, and the lock is released when
    its holder exits.  Refusal never depends on naming the holder: the pid is
-   a /proc/locks diagnostic, and contention is safe without it.
+   a verified holder-record diagnostic, and contention is safe without it.
 
 Nothing here inspects or signals a live fleet process: the contender is a
 real child of this test, and the only ``SIGSTOP`` in the suite is a test
@@ -74,15 +74,16 @@ def _wait_for(predicate, timeout: float = 10.0) -> bool:
     return True
 
 
-#: Hold a real flock on a role lock with no knowledge of the new API, so the
-#: defect is reproduced even before the guard exists.  The lock root is the
-#: test's own; nothing live is touched.
-_HOLD_LOCK = """
+#: Hold a real flock and record its identity under the test's own lock root.
+_HOLD_LOCK = f"""
 import fcntl, os, pathlib, sys, time
+sys.path.insert(0, {str(ROOT / "src")!r})
+from prismabuild import flock_owner
 lock = pathlib.Path(sys.argv[1])
 lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
 fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+flock_owner.record_holder(fd)
 pathlib.Path(sys.argv[2]).touch()
 time.sleep(float(sys.argv[3]))
 """
@@ -365,8 +366,7 @@ def test_contention_refuses_even_when_no_holder_can_be_named(
 ) -> None:
     """Safety is the flock, not a pid file: an unreadable holder still refuses.
 
-    The holder here writes nothing anywhere.  The refusal reads /proc/locks
-    only to decorate its message, and a failure to do so must not change the
+    The holder here writes no identity. A missing diagnostic must not change the
     answer: "held, holder unknown" is never free.
     """
 
@@ -376,9 +376,6 @@ def test_contention_refuses_even_when_no_holder_can_be_named(
     lock.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    # A procfs failure must leave the kernel-proven refusal intact.
-    monkeypatch.setattr(flock_owner, "holder_pid",
-                        lambda descriptor: None)
     try:
         assert role_session.role_singleton_holder(script) == (True, None)
         with pytest.raises(role_session.RoleLockHeld) as refusal:

@@ -54,14 +54,16 @@ def _probe(path: Path) -> bool:
 def _blocked_on(pid: int, path: Path) -> bool:
     """Whether ``pid`` is queued behind a POSIX lock on ``path``'s inode."""
 
-    inode = os.stat(path).st_ino
-    for line in Path("/proc/locks").read_text().splitlines():
-        fields = line.split()
-        if "->" in fields and "POSIX" in fields:
-            rest = fields[fields.index("->") + 1:]
-            # ``POSIX ADVISORY WRITE <pid> <maj:min:inode> <start> <end>``
-            if len(rest) >= 5 and rest[3] == str(pid) and rest[4].endswith(f":{inode}"):
+    wanted = os.stat(path)
+    try:
+        if Path(f"/proc/{pid}/wchan").read_text().strip() != "locks_lock_inode_wait":
+            return False
+        for descriptor in Path(f"/proc/{pid}/fd").iterdir():
+            info = descriptor.stat()
+            if (info.st_dev, info.st_ino) == (wanted.st_dev, wanted.st_ino):
                 return True
+    except OSError:
+        return False
     return False
 
 
