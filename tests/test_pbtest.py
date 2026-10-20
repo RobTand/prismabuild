@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from pbtest_shard_output import ShardProcess, ONE_PASS, admitted_child, shard_environment  # noqa: E402
+from pbtest_shard_output import ShardProcess, ONE_PASS, admitted_child, shard_environment, bind_output  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +55,7 @@ def test_box_local_git_checkout_is_dispatched_without_leaking_its_path(
         returncode = 0
 
         def communicate(self):
-            return ONE_PASS, None
+            return bind_output(ONE_PASS, calls[-1]), None
 
     def popen(command, **_kwargs):
         calls.append(command)
@@ -104,7 +104,7 @@ def _dispatch(tmp_path: Path, monkeypatch, extra: list[str]) -> list[str]:
         returncode = 0
 
         def communicate(self):
-            return ONE_PASS, None
+            return bind_output(ONE_PASS, calls[-1]), None
 
     def popen(command, **_kwargs):
         calls.append(command)

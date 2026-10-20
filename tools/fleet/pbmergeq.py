@@ -731,7 +731,7 @@ class Runner:
             for row in report:
                 if not isinstance(row, dict) or not row.get("ran"):
                     continue
-                record = self.outcomes.parse(row.get("output") or "")
+                record = self.outcomes.parse(row.get("output") or "", row.get("record_binding"))
                 durations = record.get("file_durations") if record else None
                 files = row.get("files")
                 if (not isinstance(durations, dict) or not durations

@@ -85,6 +85,27 @@ def admitted_child(command, *, environment=None):
         **(os.environ if environment is None else environment), **shard_environment(command)}
 
 
+def bind_output(output: str, command) -> str:
+    """Migrate a historical stand-in to the binding of its submitted command.
+
+    Only test transports use this: real payloads emit their own v2 records.
+    """
+    binding = pbtest_outcomes.binding_from_argv(list(command))
+    if binding is None:
+        return output
+    lines = []
+    for line in output.splitlines(keepends=True):
+        for prefix in (pbtest_outcomes.PREFIX, pbtest_outcomes.COMPLETION_PREFIX):
+            if line.startswith(prefix):
+                record = json.loads(line[len(prefix):])
+                record["schema"] = record["schema"].removesuffix("v1") + "v2"
+                record["record_binding"] = binding
+                line = prefix + json.dumps(record) + "\n"
+                break
+        lines.append(line)
+    return "".join(lines)
+
+
 def shard_output(passed: int = 1, skipped: int = 0, *, file: str = "tests/test_one.py",
                  duration: str = "0.01s", prefix: str = "") -> str:
     """A shard's stdout: ``prefix``, then a record that reconciles, then the summary."""
@@ -118,7 +139,7 @@ def shard_output_for(command) -> str:
     payload = list(command)[list(command).index("--") + 1:] if "--" in command else []
     files = [part for part in payload if part.endswith(".py") and "\n" not in part]
     if not files:
-        return ONE_PASS
+        return bind_output(ONE_PASS, command)
     nodeids = [f"{file}::test_one" for file in files]
     record = pbtest_outcomes.PREFIX + json.dumps({
         "schema": pbtest_outcomes.SCHEMA, "collect_only": False,
@@ -126,7 +147,7 @@ def shard_output_for(command) -> str:
         "reports": [[nodeid, "call", "passed", None, None] for nodeid in nodeids],
         "uncounted": [],
     })
-    return f"{record}\n{len(nodeids)} passed in 0.01s\n"
+    return bind_output(f"{record}\n{len(nodeids)} passed in 0.01s\n", command)
 
 
 class ShardProcess:
