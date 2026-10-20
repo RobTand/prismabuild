@@ -4,8 +4,8 @@
 codebase already measured what that does to a lookup of a path that did not
 exist yet: the client caches the negative entry, so ``exists()`` keeps
 answering False and ``open()`` keeps raising ``ENOENT`` after the file has
-landed.  ``pbrun.action_wait.terminal_record`` polls by ``os.listdir`` for exactly that
-reason, and says so.
+landed.  ``pbrun.action_wait.terminal_record`` revalidates the directory for exactly
+that reason, and says so.
 
 Three reads in ``slurm_lane`` trusted the lookup instead, and what they lose is
 one operator's decision.  An operator on another box withdraws a key inside the
@@ -17,8 +17,9 @@ replaced, ``withdrawn_by`` becomes ``slurm:scancel``, the reason is lost, and
 ``publish_outcome`` copies both into the terminal record.
 
 The shape is modelled rather than reproduced: a directory whose entries this
-client denies until something lists it.  That is what the fix has to defeat,
-and it needs no NFS mount to state.
+client denies until something revalidates it by listing or opening it
+(close-to-open, #808).  That is what the fix has to defeat, and it needs no
+NFS mount to state.
 """
 from __future__ import annotations
 
@@ -38,23 +39,36 @@ KEY = "ab" * 32
 
 
 class _NegativelyCachedDirectory:
-    """Every name in one directory reads as absent until somebody lists it."""
+    """Every name in one directory reads as absent until it is revalidated.
+
+    Listing the directory or opening it revalidates it, as on the real client.
+    """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, directory: Path):
         self.directory = directory
         self.revalidated = False
-        self.listed: list[str] = []
+        self.revalidations: list[str] = []
         real_listdir = os.listdir
+        real_open = os.open
         real_exists = Path.exists
         real_is_file = Path.is_file
         real_read_text = Path.read_text
 
         def listdir(path):
-            self.listed.append(str(path))
+            self.revalidations.append(str(path))
             entries = real_listdir(path)
             if Path(path) == self.directory:
                 self.revalidated = True
             return entries
+
+        def open_(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if (flags & os.O_DIRECTORY and kwargs.get("dir_fd") is None
+                    and isinstance(path, (str, os.PathLike))):
+                self.revalidations.append(str(path))
+                if Path(path) == self.directory:
+                    self.revalidated = True
+            return descriptor
 
         def stale(path: Path) -> bool:
             return path.parent == self.directory and not self.revalidated
@@ -71,6 +85,7 @@ class _NegativelyCachedDirectory:
             return real_read_text(this, *args, **kwargs)
 
         monkeypatch.setattr(os, "listdir", listdir)
+        monkeypatch.setattr(os, "open", open_)
         monkeypatch.setattr(Path, "exists", exists)
         monkeypatch.setattr(Path, "is_file", is_file)
         monkeypatch.setattr(Path, "read_text", read_text)
@@ -95,10 +110,10 @@ def _operators_marker(queue_root: Path, *, published_unix: float) -> Path:
     return path
 
 
-def test_publish_withdrawal_lists_the_directory_before_it_reads(
+def test_publish_withdrawal_revalidates_the_directory_before_it_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Listing is what revalidates the entry, so it has to happen first."""
+    """Revalidating the directory is what clears the entry, so it comes first."""
 
     queue_root = tmp_path / "pb-queue"
     _operators_marker(queue_root, published_unix=100.0)
@@ -109,7 +124,7 @@ def test_publish_withdrawal_lists_the_directory_before_it_reads(
         reason="the job was cancelled", by="slurm:scancel",
     )
 
-    assert str(queue_root / pool.record_store.WITHDRAWN) in client.listed
+    assert str(queue_root / pool.record_store.WITHDRAWN) in client.revalidations
     assert filed["withdrawn_by"] == "rob@dl380g10"
     assert filed["reason"] == "superseded by the 4.75 arm"
 

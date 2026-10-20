@@ -4,8 +4,8 @@ PR #54 gave the lane ``read_withdrawal_marker`` and routed three readers of
 ``pb-queue/withdrawn`` through it, because that directory is on NFS with
 default attribute caching: a lookup of a name that did not exist yet is
 negatively cached, so ``exists()`` keeps answering False and ``open()`` keeps
-raising ``ENOENT`` after the file has landed.  ``pbrun.action_wait.terminal_record`` polls
-by ``os.listdir`` for the same reason and says so.
+raising ``ENOENT`` after the file has landed.  ``pbrun.action_wait.terminal_record``
+revalidates the directory for the same reason and says so.
 
 ``pbrun._file_slurm_withdrawal`` was left behind.  It asks all three terminal
 directories whether this generation already ended, and it asked with
@@ -18,8 +18,8 @@ who wanted it stopped.  It succeeded.
 
 The shape is modelled rather than reproduced, exactly as
 ``tests/test_slurm_withdrawal_marker_reads.py`` models it: a directory whose
-entries this client denies until something lists it.  That needs no NFS mount
-to state.
+entries this client denies until something revalidates it.  That needs no NFS
+mount to state.
 """
 from __future__ import annotations
 
@@ -44,16 +44,19 @@ GENERATION = 1757000000.0
 
 
 class _NegativelyCachedDirectory:
-    """Every name in one directory reads as absent until somebody lists it.
+    """Every name in one directory reads as absent until it is revalidated.
 
     Copied from ``tests/test_slurm_withdrawal_marker_reads.py``, which is where
-    PR #54 introduced it for the same failure in ``slurm_lane``.
+    PR #54 introduced it for the same failure in ``slurm_lane``.  Listing the
+    directory or opening it (close-to-open, #808) revalidates it, as on the
+    real client.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, directory: Path):
         self.directory = directory
         self.revalidated = False
         real_listdir = os.listdir
+        real_open = os.open
         real_exists = Path.exists
         real_is_file = Path.is_file
         real_read_text = Path.read_text
@@ -63,6 +66,14 @@ class _NegativelyCachedDirectory:
             if Path(path) == self.directory:
                 self.revalidated = True
             return entries
+
+        def open_(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if (flags & os.O_DIRECTORY and kwargs.get("dir_fd") is None
+                    and isinstance(path, (str, os.PathLike))
+                    and Path(path) == self.directory):
+                self.revalidated = True
+            return descriptor
 
         def stale(path: Path) -> bool:
             return path.parent == self.directory and not self.revalidated
@@ -79,6 +90,7 @@ class _NegativelyCachedDirectory:
             return real_read_text(this, *args, **kwargs)
 
         monkeypatch.setattr(os, "listdir", listdir)
+        monkeypatch.setattr(os, "open", open_)
         monkeypatch.setattr(Path, "exists", exists)
         monkeypatch.setattr(Path, "is_file", is_file)
         monkeypatch.setattr(Path, "read_text", read_text)
