@@ -43,6 +43,7 @@ import pbrun  # noqa: E402
 from prismabuild import submission as submit_core
 from prismabuild import pool, pytest_test_bound  # noqa: E402
 from worker_loop import DEFAULT_EXECUTION_CEILING_S  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 class _FinishedProcess(ShardProcess):
@@ -85,6 +86,7 @@ def _dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra, *, shards=
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

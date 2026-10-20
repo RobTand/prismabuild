@@ -26,6 +26,7 @@ from test_pbtest_seals_its_shard_deadline import (  # noqa: E402
     _announce, _exported_bound, _FinishedProcess, _sealed, pbtest,
 )
 from prismabuild import pool  # noqa: E402
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 SPARK_CEILING_S = 86400.0
 
@@ -47,6 +48,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra, *, shards=2):
         return _FinishedProcess(command)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", _popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(
         sys, "argv",
         ["pbtest.py", "--checkout", str(checkout), "--python", "/target/python",

@@ -20,6 +20,7 @@ import threading
 import pytest
 
 from pbtest_shard_output import ONE_PASS
+from pbtest_shard_output import pbrun_client  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +90,7 @@ def test_pbrun_lines_are_printed_while_the_shard_is_still_running(
         return REAL_POPEN(command, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, "stdout", sink)
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
@@ -153,6 +155,7 @@ def test_every_shard_is_drained_at_once_not_in_turn(
         return REAL_POPEN(command, **kwargs)
 
     monkeypatch.setattr(pbtest.subprocess, "Popen", popen)
+    monkeypatch.setattr(pbtest, "publish_shard", pbrun_client(pbtest))
     monkeypatch.setattr(sys, "argv", [
         "pbtest.py", "--checkout", str(checkout), "--python", "/target/python",
         "--shards", "2", "tests"])

@@ -78,6 +78,25 @@ def shard_environment(command):
                 for index, flag in enumerate(flags) if flag == "--env")
 
 
+def pbrun_client(pbtest):
+    """``publish_shard`` as one stand-in ``pbrun`` client process per shard.
+
+    Since pb-identity ``pbtest`` publishes pool shards itself, one checkout
+    snapshot per plan, and observes each with ``client_recovery``
+    (``test_pbtest_identifies_its_checkout_once.py`` and
+    ``test_pbtest_publishes_its_own_shards.py`` test that path).  Tests about
+    what a shard asks for, and how ``pbtest`` reads a shard's client, still
+    model that client as a process given the shard's request as ``pbrun``
+    argv: ``shard_command`` renders it with the same ``request_arguments``
+    the SLURM lane still sends.  Install it with the stand-in ``Popen``.
+    """
+
+    def publish(templates, index, request, *, result, files=(), progress=None, **_):
+        return pbtest.start_shard(index, pbtest.shard_command(request), result=result,
+                                  files=files, progress=progress)
+    return publish
+
+
 def admitted_child(command, *, environment=None):
     """Execute a generated child inside a test's admitted action, with env."""
     child = command[command.index("--") + 1:]
