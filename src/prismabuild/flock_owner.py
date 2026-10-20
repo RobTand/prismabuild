@@ -1,94 +1,114 @@
-"""Name a contended local flock's holder from its descriptor and procfs.
+"""Best-effort names for cooperating holders of dedicated flock files.
 
-Call after a nonblocking flock acquisition is refused. None means the holder
-is unknown; it does not mean the lock is free.
+None means unknown, never free. Exclusion always comes from flock itself.
 """
+import json
 import os
+import stat
 
 
-def _parse_device_inode(field: str) -> tuple[int, int, int] | None:
-    """``(major, minor, inode)`` from a ``/proc/locks`` device field, or None.
+_SCHEMA = "prismabuild.flock_holder.v1"
+_MAX_RECORD_BYTES = 1024
 
-    Parsed rather than formatted-and-compared.  The kernel prints the device as
-    ``%02x:%02x``, so a key built by formatting has to reproduce that padding
-    exactly, and getting it wrong yields a silent false negative that reads as
-    good news: #264 matched nothing at all on dl380g10, whose ``/tmp`` is tmpfs
-    with major 0, while looking correct on sparky, whose major 259 prints the
-    same either way.  Reading the numbers back out cannot have that bug, for
-    any padding the kernel might choose.
+
+def _process_starttime(pid: int) -> int:
+    with open(f"/proc/{pid}/stat", "rb") as stream:
+        payload = stream.read(4097)
+    if len(payload) > 4096:
+        raise ValueError("oversized process identity")
+    # comm can contain spaces and closing parentheses. Fields after its final
+    # parenthesis start at field 3; starttime is field 22.
+    fields = payload.rpartition(b")")[2].split()
+    if fields[0] in (b"Z", b"X", b"x"):
+        raise ValueError("holder is no longer alive")
+    return int(fields[19])
+
+
+def _boot_id() -> str:
+    with open("/proc/sys/kernel/random/boot_id", "r", encoding="ascii") as stream:
+        value = stream.read(65).strip()
+    if len(value) != 36:
+        raise ValueError("unreadable boot identity")
+    return value
+
+
+def record_holder(descriptor: int) -> None:
+    """Record this process after taking an exclusive lock on a dedicated file.
+
+    Only callers owning a lock-only file may use this writer. Never pass a
+    descriptor whose contents are application data. Publication is diagnostic;
+    failures must not break acquisition. No extra file or durable write is needed.
     """
-
-    parts = field.split(':')
-    if len(parts) != 3:
-        return None
     try:
-        return (int(parts[0], 16), int(parts[1], 16), int(parts[2]))
-    except ValueError:
-        return None
+        os.ftruncate(descriptor, 0)
+        info = os.fstat(descriptor)
+        pid = os.getpid()
+        record = {
+            "schema": _SCHEMA,
+            "pid": pid,
+            "starttime": _process_starttime(pid),
+            "boot_id": _boot_id(),
+            "pid_namespace": os.readlink("/proc/self/ns/pid"),
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "fd": descriptor,
+        }
+        payload = json.dumps(record, separators=(",", ":")).encode("ascii")
+        if len(payload) > _MAX_RECORD_BYTES:
+            return
+        if os.pwrite(descriptor, payload, 0) != len(payload):
+            os.ftruncate(descriptor, 0)
+    except Exception:
+        # This metadata grants no authority and must not turn a lock into an
+        # availability dependency on procfs or a writable diagnostic record.
+        return
 
 
 def holder_pid(descriptor: int) -> int | None:
-    """The pid holding the flock on ``descriptor``, or ``None`` if unreadable.
+    """Name a recorded live holder with this file open, or answer unknown.
 
-    Best effort and local: ``/proc/locks`` is procfs, so asking costs no I/O
-    on the shared mount -- which matters, because the reason this is being
-    asked at all is that something on the shared mount is slow.  Every failure
-    answers ``None`` rather than raising: a diagnostic must never be able to
-    turn a refusal into a crash.
-
-    The INODE identifies the lock and the device only breaks a tie, which is
-    not the obvious way round.  Requiring both to match makes this blind on
-    btrfs, where a subvolume carries its own anonymous device: ``fstat``
-    returns the subvolume's, while ``/proc/locks`` reports the superblock's,
-    and the two differ.  Measured on dl380g10 on 2026-09-06, one lock, one
-    row::
-
-        /home/rob/tmp  btrfs  fstat 00:1f:14164446
-                              /proc/locks 00:1e:14164446
-
-    Same inode, minor off by one, and #276 reported no holder at all for a
-    lock it was itself holding.  Matching on the inode recovers it, and costs
-    nothing: this is only ever asked after a non-blocking acquisition failed,
-    so a holder exists and its row is there to be found.  A second row on the
-    same inode number means some other filesystem also has one -- that is the
-    collision the device exists to resolve, and where it cannot resolve it
-    this answers ``None`` rather than naming a pid from another mount.
+    Read only this file and one recorded process. Verify its boot, PID namespace,
+    process start time and exact descriptor's device/inode, then recheck the
+    process and record. This is a racing diagnostic, never evidence of freedom
+    or authority to signal a process. Unrecorded locks remain unknown.
     """
-
     try:
         info = os.fstat(descriptor)
-    except OSError:
-        return None
-    wanted = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
-    candidates = []
-    try:
-        with open('/proc/locks') as handle:
-            for line in handle:
-                fields = line.split()
-                # "<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> 0 EOF",
-                # where the device numbers are hex and the inode is decimal.
-                # A waiter's line begins "<n>: -> FLOCK", which fails the test
-                # below and is skipped, so only the holder is ever named.
-                if len(fields) < 6 or fields[1] != 'FLOCK':
-                    continue
-                found = _parse_device_inode(fields[5])
-                if found is None or found[2] != info.st_ino:
-                    continue
-                candidates.append((found, int(fields[4])))
-    except (OSError, ValueError):
-        return None
-    if not candidates:
-        return None
-    if len(candidates) > 1:
-        # More than one filesystem has a lock on this inode NUMBER, so the
-        # number alone no longer names a lock and the device has to break the
-        # tie.  If it cannot -- neither row carries this descriptor's device,
-        # or both do -- the honest answer is that we do not know which.
-        exact = [row for row in candidates if row[0] == wanted]
-        if len(exact) != 1:
+        if not stat.S_ISREG(info.st_mode):
             return None
-        candidates = exact
-    held_by = candidates[0][1]
-    # -1 is the kernel's "no owning process" (an OFD lock); it is not a pid
-    # and must not be reported as one.
-    return held_by if held_by > 0 else None
+        payload = os.pread(descriptor, _MAX_RECORD_BYTES + 1, 0)
+        if len(payload) > _MAX_RECORD_BYTES:
+            return None
+        record = json.loads(payload)
+        if not isinstance(record, dict) or record.get("schema") != _SCHEMA:
+            return None
+        for name in ("pid", "starttime", "device", "inode", "fd"):
+            minimum = 0 if name in ("device", "fd") else 1
+            if type(record[name]) is not int or record[name] < minimum:
+                return None
+        pid = record["pid"]
+        wanted = (info.st_dev, info.st_ino)
+        if (record["device"], record["inode"]) != wanted:
+            return None
+        if record["boot_id"] != _boot_id():
+            return None
+        namespace = os.readlink("/proc/self/ns/pid")
+        if (record["pid_namespace"] != namespace
+                or os.readlink(f"/proc/{pid}/ns/pid") != namespace):
+            return None
+        if _process_starttime(pid) != record["starttime"]:
+            return None
+        target = f"/proc/{pid}/fd/{record['fd']}"
+        opened = os.stat(target)
+        if (opened.st_dev, opened.st_ino) != wanted:
+            return None
+        if _process_starttime(pid) != record["starttime"]:
+            return None
+        if os.pread(descriptor, _MAX_RECORD_BYTES + 1, 0) != payload:
+            return None
+        opened = os.stat(target)
+        if (opened.st_dev, opened.st_ino) != wanted:
+            return None
+        return pid
+    except Exception:
+        return None

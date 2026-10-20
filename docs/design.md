@@ -19975,3 +19975,36 @@ non-root test credit. Staging's existing reader-direction exemption authorizes
 sealing only; shape input, PB admission and later installed assessment remain
 required. The bootstrap canary overrides the ordinary existing-generation
 no-canary/new-publication retry advice without issuing a replacement grant.
+
+
+## Flock holder diagnostics without kernel lock-table reads
+
+PrismaBuild runtime code never reads `/proc/locks`. A read of that global
+list panicked dl380g10 on 2026-10-19 at 23:13Z when the kernel visited a stale
+lock. Per-process `fdinfo` lock lines use the same kernel formatter and are
+not a holder-identity source.
+
+`flock_owner.holder_pid(descriptor)` remains best effort and never raises.
+`None` means unknown, never free. After successful exclusive acquisition,
+role singletons and `AdmissionGate` record identity inside their existing
+dedicated local lock files. No application data file or additional shared
+file carries this metadata. The record binds boot ID, PID namespace, PID,
+process start time, descriptor number, device and inode. Publication failure
+does not fail acquisition.
+
+The reader bounds the record to 1024 bytes and checks the named live process
+and its exact `/proc/<pid>/fd/<fd>` target against the descriptor's device
+and inode. It rechecks process identity, file identity and record contents.
+Missing permissions, a stale or recycled PID, malformed data and observed
+races answer unknown. Other lock mechanisms retain their existing diagnostics;
+locks without a cooperating record remain unnamed. These names grant no
+admission, freedom or authority to signal a process.
+
+The mount-latency collector reads the same local records without taking locks.
+It preserves the report schema and available holder details. Waiters cannot
+be enumerated safely, so their existing fields contain zero or empty values
+and `identity_complete` is always false when lock files are present. Those
+values are unavailable measurements, never evidence of no contention. Gate
+and hold chart samples remain suppressed for incomplete identity; mount, RPC
+and probe reporting continue. Deployment and executed qualification remain
+the release master's responsibility.
