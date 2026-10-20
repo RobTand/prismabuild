@@ -71,15 +71,29 @@ def require_client_transition(forward, target):
 
 
 def require_receipt_participants(direction, installed, roster):
+    """Every enrolled participant proved a current installed updater that reads receipts.
+
+    ``installed`` maps each participant that presented current proof to the
+    digest of its installed updater; ``roster`` names every enrolled
+    participant. A refusal names the participants it is about.
+    """
     sources = (direction["candidate"], direction["rollback"])
     if not any(set(row["present"]) & RECEIPT_MEMBERS for row in sources):
         return
-    if not installed or set(installed) != set(roster):
+    installed = dict(installed or {})
+    enrolled = frozenset(roster)
+    outside = sorted(host for host in installed if host not in enrolled)
+    if outside:
+        raise WindowError(f"installed updater proof names hosts outside the enrolled roster: {outside}")
+    missing = sorted(host for host in enrolled if host not in installed)
+    if not enrolled or missing:
         raise WindowError("receipt activation requires current installed updater proof for every enrolled participant; "
-                          "a separately authorized installed-reader bootstrap is required")
+                          f"missing for {missing or 'an empty roster'}; present each participant's proof "
+                          "or use a separately authorized installed-reader bootstrap")
     capable = {row["updater_sha256"] for row in sources if row["receipt_member_protocol"] == 1}
-    if any(digest not in capable for digest in installed.values()):
-        raise WindowError("current installed updater lacks receipt-member recovery protocol 1")
+    incapable = sorted(host for host, digest in installed.items() if digest not in capable)
+    if incapable:
+        raise WindowError(f"current installed updater lacks receipt-member recovery protocol 1 on {incapable}")
 
 
 def require_predeploy(window, status, *, captured_unix=None, max_age_s=300, now=None):

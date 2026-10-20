@@ -3437,6 +3437,50 @@ and `rollout_reason` in `RUNTIME_VERSION.json`; the publisher also prints the
 reason. A reason on a barrier request is refused. Omitting `--rollout` never
 silently chooses rolling, and the reason does not waive the idle-queue requirement.
 
+A rolling transition between generations that carry the receipt reader
+(`generation_receipt.py` and `digest_primitives.py`) also needs current proof
+of the updater each enrolled participant has installed (#1850). Each host's
+root timer reads the next generation's receipt with that installed updater.
+Historical attestations under `rollout/agents/` do not prove what is
+installed now. The installed updater and its `status.json` are world-readable,
+so an ordinary action can produce the proof without root. From the checkout
+that will activate, run the proof tool once on each enrolled host:
+
+    pbrun.py --cwd <checkout> --tag <host> --priority 5 -- \
+        python3 tools/fleet/updater_proof.py --nonce "$(date +%s%N)"
+
+The nonce makes each run a new action, so a proof is never a cache hit. Then
+pass every key to the dry run and to the activation:
+
+    tools/fleet/publish_runtime.py --activate-generation <name> --rollout rolling \
+        --rollout-reason '<reviewed reason>' \
+        --installed-updater-proof <key> --installed-updater-proof <key> ...
+
+The publisher reads each proof from the action's verified CAS result. The
+host is the host the queue records as claiming that attempt. A proof counts
+only when all of the following hold:
+
+*   It came from this checkout's `updater_proof.py`.
+*   It is at most 15 minutes old.
+*   It shows a root-owned updater that is not group- or world-writable.
+*   The timer's last tick was `current`, ran within 5 minutes of the proof,
+    and reported the same installed bytes.
+*   The installed updater is one of the two generations' updaters with
+    receipt-member recovery protocol 1.
+
+The enrolled participants are the barrier roster: the union of both
+generations' declared boxes, less the boxes the target declares absent, as
+each one's live offer spells it. The activation refuses, and names the hosts,
+in each of these cases:
+
+*   A participant has no proof.
+*   A proof names a host outside the roster.
+*   A host has more than one proof.
+*   A participant's proof does not hold.
+
+The installed bootstrap below remains the route for a participant that
+genuinely lacks a capable installed updater.
+
 The generation includes the execution skill, `docs/**/*.md`, `README.md` and
 `AGENTS.md`. The skill's required policy and operating guide, and their linked
 reference guides, therefore travel with the code they describe. Follow the
