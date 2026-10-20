@@ -50,17 +50,34 @@ def queue(tmp_path: Path) -> pool.PoolQueue:
 
 
 def _listing_of(monkeypatch: pytest.MonkeyPatch, directory: Path, exc: BaseException) -> None:
-    """Make ``os.listdir`` fail for exactly one directory, as NFS does."""
+    """Make exactly one directory fail as a stale NFS handle does.
 
-    real = os.listdir
+    Listing it, scanning it and opening it all fail: a guard may revalidate
+    the directory by opening it and then read one name, rather than list it.
+    """
+
+    real_listdir, real_scandir, real_open = os.listdir, os.scandir, os.open
     target = str(directory)
 
-    def guarded(path, *args, **kwargs):
+    def listdir(path=".", *args, **kwargs):
         if str(path) == target:
             raise exc
-        return real(path, *args, **kwargs)
+        return real_listdir(path, *args, **kwargs)
 
-    monkeypatch.setattr(pool.os, "listdir", guarded)
+    def scandir(path=".", *args, **kwargs):
+        if str(path) == target:
+            raise exc
+        return real_scandir(path, *args, **kwargs)
+
+    def open_(path, flags, *args, **kwargs):
+        if (flags & os.O_DIRECTORY and kwargs.get("dir_fd") is None
+                and isinstance(path, (str, os.PathLike)) and str(path) == target):
+            raise exc
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(pool.os, "listdir", listdir)
+    monkeypatch.setattr(pool.os, "scandir", scandir)
+    monkeypatch.setattr(pool.os, "open", open_)
 
 
 def test_terminal_keys_is_loud_when_a_state_directory_cannot_be_read(

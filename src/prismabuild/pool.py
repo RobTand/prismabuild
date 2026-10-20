@@ -18173,7 +18173,7 @@ class PoolQueue:
             return None
         if self.withdrawal_covers(moved, action_key=key) is not None:
             # Withdrawn between the scan above and this rename.  The window
-            # is microseconds wide and closing it here costs one listing on
+            # is microseconds wide and closing it here costs one lookup on
             # a path taken once per claim; leaving it open costs a cancelled
             # action a full run before ``execute`` notices.
             reservation.abandon(_ClaimExit.DROP_EXACT_CLAIM)
@@ -18355,8 +18355,9 @@ class PoolQueue:
         # a worker is mid-``finish`` can leave a requeued ready record behind
         # it, and without this guard that record is claimed and the cancelled
         # work runs again -- which is the race the operator used to have to win
-        # by hand.  Read once per scan, not once per item.
-        withdrawn = self.withdrawn_keys()
+        # by hand.  Revalidated once per scan; each item is then one lookup,
+        # not a listing of every withdrawal the queue has kept.
+        withdrawn = self.records.filed_names(WITHDRAWN)
         # The same listing for keys an operator released from an origin batch
         # (#954).  Membership is only the placement-bypass hint below; the
         # guard lists the index fresh under the key's transition lock (#964),
@@ -19184,7 +19185,7 @@ class PoolQueue:
         claimed = self.records.dir(CLAIMED)
         if not self.records.state_directory_present(CLAIMED):
             return requeued
-        terminal_keys = self.terminal_keys()
+        terminal_keys = self.records.filed_names(DONE, FAILED)
         for path in self.records.json_slot_paths(CLAIMED):
             key = path.stem
             with self.action_transition_lock(key, blocking=False) as acquired:
@@ -20325,7 +20326,7 @@ class PoolQueue:
         record: Mapping[str, object] | None,
         *,
         action_key: str | None = None,
-        terminal: frozenset[str] | None = None,
+        terminal: Container[str] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         """The filed outcome for this record's generation, or ``None``.
 
@@ -20333,12 +20334,14 @@ class PoolQueue:
         equality of ``published_unix`` is already the queue's generation rule
         for withdrawal and is deliberately independent of clock ordering.
         Missing generation evidence cannot suppress a later submission.
+        Without ``terminal``, ``done/`` and ``failed/`` are read by name
+        (``RecordStore.filed_names``), as loud as :meth:`terminal_keys`.
         """
 
         key = str(action_key or (record or {}).get("action_key") or "")
         if not key or record is None:
             return None
-        known = self.terminal_keys() if terminal is None else terminal
+        known = self.records.filed_names(DONE, FAILED) if terminal is None else terminal
         if key not in known:
             return None
         mine = record.get("published_unix")
@@ -20616,14 +20619,15 @@ class PoolQueue:
     def live_withdrawal(self, action_key: str) -> dict[str, object] | None:
         """The visible cancellation marker filed for this key, if there is one.
 
-        Listed then read, for ``withdrawn_keys``' own NFS reason.  A marker
-        that is present but unreadable still answers with a record (carrying
-        no reason): an automatic publication refuses on it rather than
-        guessing that a damaged cancellation was never filed.
+        Revalidated then read by name, for ``withdrawn_keys``' own NFS
+        reason (``RecordStore.filed_names``).  A marker that is present but
+        unreadable still answers with a record (carrying no reason): an
+        automatic publication refuses on it rather than guessing that a
+        damaged cancellation was never filed.
         """
 
         key = str(action_key)
-        if key not in self.withdrawn_keys():
+        if key not in self.records.filed_names(WITHDRAWN):
             return None
         try:
             marker = record_store.value_or_raise(self.records.item(WITHDRAWN, key))
@@ -20694,7 +20698,7 @@ class PoolQueue:
         record: Mapping[str, object] | None,
         *,
         action_key: str | None = None,
-        withdrawn: frozenset[str] | None = None,
+        withdrawn: Container[str] | None = None,
     ) -> dict[str, object] | None:
         """The withdrawal that cancelled THIS record, or ``None``.
 
@@ -20724,9 +20728,12 @@ class PoolQueue:
         means "vanished".
 
         Immutable generation decisions survive retirement of the visible
-        marker on re-submission. Both paths enumerate before reading so NFS's
-        negative cache does not hide a decision just written by another host.
-        Legacy markers remain readable when no durable decision exists.
+        marker on re-submission. Both paths revalidate before reading so NFS's
+        negative cache does not hide a decision just written by another host:
+        the decision's own per-key directory is enumerated, and the visible
+        marker is read by name (``RecordStore.filed_names``), never by listing
+        every withdrawal the queue has kept.  Legacy markers remain readable
+        when no durable decision exists.
         """
 
         key = str(action_key or (record or {}).get("action_key") or "")
@@ -20739,7 +20746,7 @@ class PoolQueue:
                 # absence hiding a cancellation written by another host.
                 for path in immutable_files.match_optional(decision.parent, decision.name):
                     return self.records.withdrawal_decision(path)
-        known = self.withdrawn_keys() if withdrawn is None else withdrawn
+        known = self.records.filed_names(WITHDRAWN) if withdrawn is None else withdrawn
         if key not in known:
             return None
         marker = record_store.value_or_raise(self.records.item(WITHDRAWN, key))
