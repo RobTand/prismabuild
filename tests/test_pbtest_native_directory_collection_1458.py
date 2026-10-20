@@ -93,7 +93,8 @@ def _dispatch(root, monkeypatch, *, workers, shards=1, paths=("tests",)):
     ])
     code = pbtest.main()
     results = json.loads(report.read_text()) if report.exists() else []
-    records = [pbtest.pbtest_outcomes.parse(row["output"]) for row in results]
+    records = [pbtest.pbtest_outcomes.parse(row["output"], row["record_binding"])
+               for row in results]
     assert all(record is not None for record in records), results
     return code, calls, results, records
 

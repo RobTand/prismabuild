@@ -350,9 +350,19 @@ def _duration_history_two_trees(tmp_path, *, recorded_source=True):
 
 
 @pytest.mark.parametrize("recorded_source", [True, False])
-def test_duration_hints_cross_trees_without_reusing_baseline_results(tmp_path, recorded_source):
+@pytest.mark.parametrize("bound", [False, True], ids=["historical-v1", "bound-v2"])
+def test_duration_hints_cross_trees_without_reusing_baseline_results(tmp_path, recorded_source, bound):
     cfg, store, previous, current, report, rows = _duration_history_two_trees(
         tmp_path, recorded_source=recorded_source)
+    if bound:
+        outcomes = mq.load_outcomes(cfg.pbtest)
+        for index, row in enumerate(rows):
+            record = outcomes.parse(row["output"])
+            row["record_binding"] = f"duration-shard-{index}"
+            record.update(schema="prismabuild.pbtest_outcomes.v2",
+                          record_binding=row["record_binding"])
+            row["output"] = outcomes.PREFIX + json.dumps(record)
+        report.write_text(json.dumps(rows))
     original = report.read_bytes()
     hints = mq.Runner(cfg, store).history(current)
 
@@ -362,6 +372,23 @@ def test_duration_hints_cross_trees_without_reusing_baseline_results(tmp_path, r
     assert report.read_bytes() == original
     assert store.baseline(mq.baseline_key(cfg, current["source"][1], current)) == {}
     assert store.baseline(mq.baseline_key(cfg, previous["source"][1], previous))
+
+
+@pytest.mark.parametrize("binding", [None, "another-shard"], ids=["missing", "mismatched"])
+def test_bound_duration_hints_require_the_independent_report_binding(tmp_path, binding):
+    cfg, store, _, current, report, rows = _duration_history_two_trees(tmp_path)
+    outcomes = mq.load_outcomes(cfg.pbtest)
+    row = rows[0]
+    record = outcomes.parse(row["output"])
+    record.update(schema="prismabuild.pbtest_outcomes.v2", record_binding="expected-shard")
+    row["output"] = outcomes.PREFIX + json.dumps(record)
+    if binding is not None:
+        row["record_binding"] = binding
+    report.write_text(json.dumps([row]))
+    original = report.read_bytes()
+    assert outcomes.parse(row["output"], "expected-shard") is not None
+    assert mq.Runner(cfg, store).history(current) == []
+    assert report.read_bytes() == original
 
 
 @pytest.mark.parametrize("changed", ["python", "full_pin", "source_bytes", "config",
