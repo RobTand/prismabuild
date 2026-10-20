@@ -304,6 +304,35 @@ SPOOL_RETIRE_LOCK = "produced-spool-retire.lock"
 SPOOL_RETIRE_STAMP = "produced-spool-retire.stamp"
 
 
+def settle_membership(queue, host: str, *, drain: bool) -> None:
+    """Settle this box's membership handoffs in its sweep turn; never raises.
+
+    A resign CLI that died after withdrawing leaves owed rows no CLAIMED
+    scan can see, so the loops settle them through the existing retry path:
+    publish matured successors, adopt exact ones, preserve foreign rows.
+    The census reads every ``withdrawn/`` record (4,092 on 2026-10-20), so it
+    runs in the box's sweep turn -- ``serve_once``'s, or a drain's
+    saved-finish retry -- once per box per ``HEARTBEAT_S``, not on every
+    poll of every loop.  ``resign`` settles on each of its own rounds, so
+    nothing waits on this cadence.  A failure only skips this turn.
+    """
+
+    where = " in drain" if drain else ""
+    try:
+        from fleet_membership import reconcile_membership
+        reconciled = reconcile_membership(queue, host)
+        settled = (reconciled.get("published", [])
+                   + reconciled.get("adopted", []))
+        if settled:
+            print(f"[{host}] membership reconciled{where}: {settled}", flush=True)
+        retained = reconciled.get("retained", [])
+        if drain and retained:
+            print(f"[{host}] membership retained in drain: {retained}", flush=True)
+    except Exception as exc:                                     # noqa: BLE001
+        print(f"[{host}] membership reconciliation skipped{where or ' this turn'}: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+
+
 def spool_retirement(queue, *, host: str, cas_root: Path,
                      now: float | None = None) -> dict | None:
     """Run this box's spool retirement tick when it is due; ``None`` otherwise.
@@ -1208,30 +1237,6 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         if gate is not None:
             role_session.post_park_marker(gate)
             print(f"[{host}] resource broker draining for maintenance; admission paused", flush=True)
-            # Drain-path membership reconciliation (authoritative for
-            # resigned workers): a resign CLI that died after withdrawing
-            # leaves owed rows no CLAIMED scan can see, and a resigned
-            # worker never reaches the open-gate hook below — the
-            # ``continue`` here skips it. Settle through the existing
-            # retry path without claiming: publish matured successors,
-            # adopt exact ones, preserve foreign rows. Bounded (one
-            # withdrawn/ glob when empty) and exception-isolated; any
-            # failure only skips this poll's settlement.
-            try:
-                from fleet_membership import reconcile_membership
-                reconciled = reconcile_membership(queue, host)
-                settled = (reconciled.get("published", [])
-                           + reconciled.get("adopted", []))
-                if settled:
-                    print(f"[{host}] membership reconciled in drain: {settled}",
-                          flush=True)
-                retained = reconciled.get("retained", [])
-                if retained:
-                    print(f"[{host}] membership retained in drain: {retained}",
-                          flush=True)
-            except Exception as exc:                             # noqa: BLE001
-                print(f"[{host}] membership reconciliation skipped in drain: "
-                      f"{type(exc).__name__}: {exc}", flush=True)
             # Retry this box's own saved finishes under the closed gate
             # (#1403).  A saved outcome claims nothing, so it is safe while
             # admission is paused, and the queue applies the owner-host rule
@@ -1244,11 +1249,14 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
             # queue's host-local heartbeat throttle, the same deliberately
             # unlocked ``_sweep_due`` marker ``serve_once`` uses: two loops may
             # race a redundant pass; no strict at-most-one pass is promised.
-            # It is exception-isolated like the membership reconciliation
-            # above: a failure only skips this poll's retry and the parked
-            # offer below still publishes.
+            # The same turn settles membership first (authoritative for a
+            # resigned worker, which never reaches ``serve_once``;
+            # ``settle_membership``).  Exception-isolated: a failure only
+            # skips this poll's retry and the parked offer below still
+            # publishes.
             try:
-                retried = queue.retry_own_pending_finishes()
+                retried = queue.retry_own_pending_finishes(
+                    on_sweep=lambda: settle_membership(queue, host, drain=True))
                 if retried:
                     print(f"[{host}] saved finishes concluded in drain: "
                           f"{retried}", flush=True)
@@ -1541,23 +1549,6 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
         # shape is the box being broken, not the items.
         if stop.is_set():
             return 0
-        # Membership handoff reconciliation, through the existing retry
-        # path: a resign CLI that died after withdrawing leaves owed rows
-        # no CLAIMED scan can see. The loops themselves settle them here —
-        # publish matured successors, adopt exact ones, preserve foreign
-        # rows — so settlement does not depend on the requester surviving.
-        # Bounded and exception-isolated: an empty withdrawn/ directory
-        # costs one glob, and any failure only skips this poll.
-        try:
-            from fleet_membership import reconcile_membership
-            reconciled = reconcile_membership(queue, host)
-            settled = (reconciled.get("published", [])
-                       + reconciled.get("adopted", []))
-            if settled:
-                print(f"[{host}] membership reconciled: {settled}", flush=True)
-        except Exception as exc:                                 # noqa: BLE001
-            print(f"[{host}] membership reconciliation skipped this poll: "
-                  f"{type(exc).__name__}: {exc}", flush=True)
         # The spool retirement tick (#1001): a producer's host spool outlives
         # a producer that was killed or withdrawn, and only this box can
         # reach it.  Due once per interval per box, exception-isolated, and
@@ -1659,6 +1650,10 @@ def _run_loop(stop: Event, *, argv=None, on_outcome=None):
                 # the claim rename, so a resign drain that began after this
                 # poll's gate check still refuses the claim deterministically.
                 admission_open=lambda: role_session.read_maintenance_gate() is None,
+                # Membership handoffs settle in the box's sweep turn, so
+                # settlement does not depend on the requester surviving
+                # (``settle_membership``).
+                on_sweep=lambda: settle_membership(queue, host, drain=False),
             )
         except Exception as exc:                                 # noqa: BLE001
             # The raise may have come two hours into an action, so this loop
