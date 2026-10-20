@@ -946,7 +946,8 @@ def reconcile_terminal_cleanup(queue) -> list[str]:
                     # Validate full key/nonce/control authority and the local host
                     # even though the completed-scope shortcut needs no broker RPC.
                     queue.scope_for_record(record)
-                    cleanup = queue.cleanup_action_containers(dict(record))
+                    cleanup = queue.cleanup_action_containers(
+                        dict(record), scratch_owner_path=path)
                     if cleanup.get("complete") is not True:
                         continue
                     # The public wrapper can persist scratch cleanup. Re-read

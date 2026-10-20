@@ -1438,13 +1438,20 @@ Ordinary worker polling also reconciles legacy `done/` and `failed/` records
 that still carry this active marker alongside successful exact-nonce scope
 cleanup evidence (#1838). Under the same nonblocking per-key transition lock,
 only the claiming host validates the full scope authority and retries the
-public cleanup wrapper, including scratch finalization. Empty `remaining`
-alone is never proof. Missing/mismatched scope proof, `finish_pending`, an
-active ready row/claim/lease, or another visible terminal leaves the record
-untouched. Only wrapper success removes the active marker; the original
-verdict, detail, attempt history, finish timestamps and scope evidence stay
-unchanged. This repair creates no attempt, runnable row, lease or reservation,
-and performs no execution. It does not change lost-lease budgets, scheduling,
+public cleanup wrapper, including scratch finalization. The terminal path is
+its explicit durable scratch owner; recovery never recreates a claim. Scratch
+authority must match the registered claim envelope, including generation and
+scope identity, with exactly one attempt charged by terminal conclusion.
+Cleanup uses the pre-conclusion claim view only in memory; persistence changes
+only the terminal's scratch lifetime evidence, never its charged attempt count
+or ending metadata. Already-cleaned entries are idempotent, and unfinished
+entries still require the normal containment and directory-identity proofs.
+Empty `remaining` alone is never proof. Missing/mismatched scope proof,
+`finish_pending`, an active ready row/claim/lease, a pending finish transition,
+or another visible terminal leaves the record untouched. Only wrapper success
+removes the active marker; the original verdict, detail, attempt history, finish
+timestamps and scope evidence stay unchanged. This repair creates no attempt,
+runnable row, lease or reservation, and performs no execution. It does not change lost-lease budgets, scheduling,
 staged-read requirements, deployment status or workload-completion claims.
 
 Ownership mutations hold a per-key POSIX record lock under

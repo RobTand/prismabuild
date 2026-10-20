@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 from . import contracts, core as pb, local_scratch as scratch_declarations
-from .record_store import Absent, AmbiguousClaimHolder, Present, RecordStore, ScratchOwnerConflict, Unknown
+from .record_store import Absent, AmbiguousClaimHolder, DONE, FAILED, Present, RecordStore, ScratchOwnerConflict, Unknown
 
 SCRATCH_LIFETIME_SELECTION_SCHEMA_V1 = "prismabuild.scratch_lifetime_selection.v1"
 SCRATCH_LIFETIME_RECORD_SCHEMA_V1 = "prismabuild.scratch_lifetime_record.v1"
@@ -547,6 +547,14 @@ def register_attempt(
 def durable_owner(store: RecordStore, record: Mapping[str, object], *, scope_only=False,
                             owner_path: Path | None = None) -> tuple[Path, dict[str, object] | None]:
     """Read the exact existing recovery owner, never a caller-only snapshot."""
+    path, _, live = _durable_owner(store, record, scope_only=scope_only, owner_path=owner_path)
+    return path, live
+
+
+def _durable_owner(store: RecordStore, record: Mapping[str, object], *, scope_only=False,
+                   owner_path: Path | None = None
+                   ) -> tuple[Path, dict[str, object] | None, dict[str, object] | None]:
+    """Keep stored bytes separate from the claim-shaped cleanup authority."""
     key = str(record["action_key"])
     try:
         path, live = store.scratch_owner(record, scope_only=scope_only, owner_path=owner_path)
@@ -564,12 +572,29 @@ def durable_owner(store: RecordStore, record: Mapping[str, object], *, scope_onl
         live = {**live, **{k: v for k, v in envelope.items() if k != "owner_attempt"}}
         if scratch_declarations._scratch_claim_envelope(live) != envelope:
             raise scratch_declarations.LocalScratchError("scratch lease scope contradicts its lifetime owner")
+    stored = live
+    if path in (store.item_path(DONE, key), store.item_path(FAILED, key)) and live is not None:
+        if live.get("finish_pending"):
+            raise scratch_declarations.LocalScratchError("terminal scratch owner has a pending finish")
+        if field in live:
+            envelope = validate_record(live[field])["claim_envelope"]
+            # Conclusion charges the executed attempt; scratch was registered
+            # against its pre-conclusion claim. Project only cleanup authority,
+            # never the durable terminal verdict, history or attempt count.
+            attempts = live.get("attempts")
+            if (type(attempts) is not int or attempts != envelope["attempts"] + 1
+                    or type(record.get("attempts")) is not int
+                    or record.get("attempts") not in (envelope["attempts"], attempts)
+                    or scratch_declarations._scratch_claim_envelope(
+                        {**record, "attempts": envelope["attempts"]}) != envelope):
+                raise scratch_declarations.LocalScratchError("terminal scratch claim identity changed")
+            live = {**live, "attempts": envelope["attempts"]}
     if owner_path is not None and live is not None and field in live:
         envelope = validate_record(live[field])["claim_envelope"]
         if (envelope["action_key"] != key
                 or scratch_declarations._scratch_claim_envelope(live) != envelope):
             raise scratch_declarations.LocalScratchError("scratch recovery record contradicts its lifetime owner")
-    return path, live
+    return path, stored, live
 
 
 def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping[str, object],
@@ -580,7 +605,7 @@ def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping
     if checked["claim_envelope"] != scratch_declarations._scratch_claim_envelope(record):
         raise scratch_declarations.LocalScratchError("scratch lifetime owner changed before persistence")
     key = str(record["action_key"])
-    path, live = durable_owner(store,
+    path, stored, live = _durable_owner(store,
         record, scope_only=scope_only, owner_path=owner_path)
     if live is None or scratch_declarations._scratch_claim_envelope(live) != checked["claim_envelope"]:
         raise scratch_declarations.LocalScratchError("scratch lifetime durable owner unavailable")
@@ -612,7 +637,7 @@ def _persist(store: RecordStore, record: Mapping[str, object], evidence: Mapping
                     or before["cleaned"] and not after["cleaned"]):
                 raise scratch_declarations.LocalScratchError("scratch lifetime mirror regressed")
     if live.get(field) != checked:
-        store.replace_record_at(path, {**live, field: checked})
+        store.replace_record_at(path, {**stored, field: checked})
     if isinstance(record, dict):
         record[field] = checked
     if lease is not None and lease.get(field) != checked:

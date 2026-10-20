@@ -483,13 +483,25 @@ class RecordStore:
 
     def scratch_owner(self, record: Mapping[str, object], *, scope_only=False,
                       owner_path: Path | None = None) -> tuple[Path, JsonRecord | None]:
-        """Read one live, late, tombstone or widowed-lease scratch owner."""
+        """Read one live, late, tombstone, widowed-lease or terminal owner."""
         key = str(record["action_key"])
         claimed = self.dir(CLAIMED)
         live_path = self.item_path(CLAIMED, key)
         path = self.late_finish_path(record) if scope_only else live_path
         if owner_path is not None:
-            if (scope_only or owner_path.parent != claimed
+            terminal = owner_path in (self.item_path(DONE, key), self.item_path(FAILED, key))
+            if terminal:
+                # Terminal recovery is only for a retired owner, never a route
+                # around successor or pending-finish ownership. Callers hold
+                # the per-key transition lock across cleanup and persistence.
+                conflicts = [self.item_path(state, key)
+                             for state in (READY, CLAIMED, DONE, FAILED, WITHDRAWN)
+                             if self.item_path(state, key) != owner_path]
+                conflicts.append(self.lease_path(key))
+                if (scope_only or any(_read_json(other) is not None for other in conflicts)
+                        or any(mark.name.startswith(key + ".") for mark in self.finishing_paths())):
+                    raise ScratchOwnerConflict("terminal scratch owner conflicts with active queue state")
+            elif (scope_only or owner_path.parent != claimed
                     or not (owner_path == self.lease_path(key)
                             or (owner_path.name.startswith(key + ".")
                                 and owner_path.name.endswith(TOMBSTONE_SUFFIX)))
